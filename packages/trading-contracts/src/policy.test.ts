@@ -11,7 +11,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { PROFIT_TARGET_COST_MULTIPLE } from "./costs.ts";
-import { DIRECTION_SCORE_THRESHOLD } from "./marketStructure.ts";
+import { DEFAULT_INDICATOR_PERIODS } from "./indicators.ts";
+import { DIRECTION_SCORE_THRESHOLD, EMA_FAST_PERIOD, EMA_SLOW_PERIOD } from "./marketStructure.ts";
 import { PLAYBOOKS } from "./playbook.ts";
 import {
   ACTIVE_TRADING_POLICY,
@@ -97,6 +98,21 @@ describe("the policy in force", () => {
     expect(standing).toContain(
       `After ${ACTIVE_TRADING_POLICY.session.consecutiveLossesBeforeCooldown} consecutive`,
     );
+  });
+
+  it("points the ema doctrine at the pair the structure read actually serves", () => {
+    // The doctrine gates on `ema.direction`, `separationAtr` and
+    // `barsSinceCross`, and every one of those is computed at
+    // EMA_FAST_PERIOD/EMA_SLOW_PERIOD. Prose naming any other pair sends the
+    // model to a reading no gate here is written for — which is what the
+    // `indicators[]` default (20) would be if the playbook did not say so.
+    const crossPlaybook = PLAYBOOKS.find((entry) => entry.name === "ema_cross")!;
+    const ema = crossPlaybook.whenItApplies + playbook("ema_cross");
+    expect(ema).toContain(`${EMA_FAST_PERIOD}-period EMA crossing the ${EMA_SLOW_PERIOD}-period`);
+    expect(ema).toContain("defaults to period 20");
+    expect(ema).not.toContain("ema(20)");
+    expect(ema).not.toContain("ema(50)");
+    expect(DEFAULT_INDICATOR_PERIODS.ema).not.toBe(EMA_FAST_PERIOD);
   });
 });
 

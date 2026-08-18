@@ -890,7 +890,7 @@ const boundCandles = (history: MarketHistory, bars: number, note?: string): Mark
  * The bars in hand, with older ones from a second read prepended.
  *
  * Two reads of the same market are two moments: the forming bar moves between
- * them, and a look whose chart says one close while its `ema(20)` was computed
+ * them, and a look whose chart says one close while its `ema(9)` was computed
  * from another is the drift the shared market half exists to prevent. Bars that
  * closed, though, are finished — a bar from an hour ago reads the same at every
  * moment after it. So only the strictly older half of the deeper read is taken,
@@ -947,16 +947,17 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
 
   const gateway = yield* HyperliquidGateway;
 
-  // The indicator readings this call asked for — the model pulls `ema(20)`
-  // instead of deriving it from raw bars in context.
+  // The indicator readings this call asked for — the model pulls `ema(9)`
+  // instead of deriving it from raw bars in context. The `ema_cross` pair
+  // (9/21) is served by the structure read; these are for what it does not.
   //
   // Computed on the FULL window, never the bounded slice riding back, so a
   // 50-period read works beside `bars: 20`. When the window in hand is shorter
   // than the reading needs, the bars are fetched again at the depth
   // `indicatorLookbackBars` asks for: everything else here is measured over the
   // runtime's 120-bar lookback, and at 120 bars an `ema(50)` still carries its
-  // SMA seed — enough to report the wrong side of an `ema(20)/ema(50)` cross on
-  // 1.1% of ETH 1m bars. Only the indicator input widens, and only backwards —
+  // SMA seed — enough to report the wrong side of a two-EMA spread on 1.1% of
+  // ETH 1m bars. Only the indicator input widens, and only backwards —
   // volatility, structure and the echoed chart keep the window they have always
   // used, and the bars they share stay the ones they were observed as.
   const indicatorReadings = Effect.fn("TradingToolkit.indicatorReadings")(function* (

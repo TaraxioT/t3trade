@@ -1,15 +1,23 @@
 /**
  * On-demand indicator readings for `trading_look`'s `candles` scope.
  *
- * The model pulls the indicator it is reasoning with — `ema(20)`, `rsi(14)` —
+ * The model pulls the indicator it is reasoning with — `ema(9)`, `rsi(14)` —
  * instead of deriving it from raw bars in context or receiving a fixed panel
  * it may not read. The server computes on bars it already fetched for the
  * candle read, so a reading costs no extra exchange call.
  *
  * Each reading reports `value` (over every fetched bar, the in-progress one
  * included) and `previous` (the same computation one bar back). The pair is
- * what a crossover or slope check needs: `ema(20) > ema(50)` now and not one
+ * what a crossover or slope check needs: `ema(9) > ema(21)` now and not one
  * bar ago IS the cross, with no series riding back in the response.
+ *
+ * The pair the `ema_cross` playbook actually trades is `EMA_FAST_PERIOD` /
+ * `EMA_SLOW_PERIOD` from `./marketStructure.ts` — 9 and 21 — and the
+ * structure read already serves it as its own `ema` block, cross age and
+ * separation included. Nothing here recomputes that: these readings are for
+ * the periods the structure read does NOT serve, and every example below names
+ * the traded pair so a request modelled on one is never pointed at a pair the
+ * doctrine has no gate for.
  *
  * @module indicators
  */
@@ -27,6 +35,12 @@ export type IndicatorKind = typeof IndicatorKind.Type;
  * `vwap`'s 0 means "the whole fetched window" — a session-style read. A vwap
  * request may still name a period to read the volume-weighted price of just
  * the recent bars.
+ *
+ * `ema`'s 20 is a generic trend read and deliberately NOT `EMA_FAST_PERIOD`:
+ * the 9/21 pair the `ema_cross` doctrine gates on is computed by the structure
+ * read and served whole, so defaulting here to one half of it would offer a
+ * second, differently-seeded copy of a number the mission already has. A
+ * request that wants the traded pair names its period.
  */
 export const DEFAULT_INDICATOR_PERIODS: Readonly<Record<IndicatorKind, number>> = {
   ema: 20,
@@ -49,10 +63,12 @@ export const INDICATOR_MAX_PERIOD = 200;
  * The recursion below is seeded with the SMA of the first `period` closes, so
  * a short window leaves that seed weighing on the answer. Measured on ETH 1m:
  * over 120 bars an `ema(50)` sits up to $0.15 away from its converged value,
- * and 1.1% of bars that is enough to put the `ema(20)/ema(50)` spread on the
- * wrong side of zero — the `ema_cross` playbook reading a cross the chart does
- * not show. Five periods drives the seed's remaining weight under 0.1%, at
- * which point the reading and the chart agree to display precision.
+ * and 1.1% of bars that is enough to put a two-EMA spread on the wrong side of
+ * zero — a cross reported that the chart does not show. Five periods drives
+ * the seed's remaining weight under 0.1%, at which point the reading and the
+ * chart agree to display precision. The same multiple is what the structure
+ * read gives `EMA_SLOW_PERIOD`, so the `ema_cross` gates and any indicator
+ * request made beside them are converged alike.
  */
 export const INDICATOR_LOOKBACK_MULTIPLE = 5;
 

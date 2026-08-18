@@ -94,17 +94,18 @@ export const TRADING_LOOK_DEFAULT_BARS = 20;
 /**
  * The most bars a look echoes while the mission holds no position.
  *
- * A stand-aside turn asked for 120 bars and used them to recompute `ema(20)`
- * and `ema(50)` — readings the server had already computed and sent. Across
- * one 23-minute mission that was 293,500 characters of `trading_look`, 82% of
- * the model's entire context, to reach the same "no setup" thirteen times.
+ * A stand-aside turn asked for 120 bars and used them to recompute the EMA
+ * pair — readings the server had already computed and sent. Across one
+ * 23-minute mission that was 293,500 characters of `trading_look`, 82% of the
+ * model's entire context, to reach the same "no setup" thirteen times.
  *
  * Flat only. Entry and management turns keep whatever they asked for: the
  * shape of the chart is what a trade is contemplated and managed against.
  *
  * Safe by construction — the measurements and the indicator readings are
  * computed over the full fetched lookback, and only the echoed table is
- * trimmed, so a 50-period EMA is unaffected by a 60-bar echo.
+ * trimmed, so the 21-period EMA the `ema_cross` gates read is unaffected by a
+ * 60-bar echo.
  */
 export const TRADING_LOOK_FLAT_BAR_CAP = 60;
 
@@ -176,10 +177,12 @@ export const TradingLookInput = Schema.Struct({
   ),
   /**
    * Indicator readings computed server-side on the `candles` scope's bars —
-   * the model pulls `ema(20)` instead of deriving it from raw bars in
-   * context. Each reading returns `value` and `previous` (one bar back), the
-   * pair a cross or slope check needs. At most
-   * {@link INDICATOR_MAX_REQUESTS} per look.
+   * the model pulls `ema(9)` instead of deriving it from raw bars in context.
+   * Each reading returns `value` and `previous` (one bar back), the pair a
+   * cross or slope check needs. At most {@link INDICATOR_MAX_REQUESTS} per
+   * look. The `ema_cross` pair (9/21) needs none of them: the structure read
+   * serves it whole, and `ema` here defaults to 20 — a generic trend read the
+   * doctrine has no gate for.
    */
   indicators: Schema.optional(Schema.Array(IndicatorRequest)),
 });

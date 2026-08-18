@@ -14,6 +14,7 @@
  * @module TradingPlaybook
  */
 import { Schema } from "effect";
+import { EMA_FAST_PERIOD, EMA_SLOW_PERIOD } from "./marketStructure.ts";
 import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { TradingText } from "./primitives.ts";
 
@@ -182,9 +183,17 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
   {
     name: "ema_cross",
     whenItApplies:
-      "EMA CROSS, the simplest directional strategy there is: the 9-period EMA crossing the 21-period one on the thesis timeframe. A STANDALONE strategy, not a filter on the others — 'the cross says up and the structure says nothing' is a candidate to price, not a signal with nowhere to go.",
+      "EMA CROSS, the simplest directional strategy there is: the " +
+      EMA_FAST_PERIOD +
+      "-period EMA crossing the " +
+      EMA_SLOW_PERIOD +
+      "-period one on the thesis timeframe. A STANDALONE strategy, not a filter on the others — 'the cross says up and the structure says nothing' is a candidate to price, not a signal with nowhere to go.",
     procedure: [
-      "Read `ema` on the thesis timeframe of trading_look. `spreadUsd` is fast minus slow — its SIGN is the bias, its size is how separated the two are — and `barsSinceCross` is how long ago that sign last flipped. A cross older than " +
+      "Read `ema` on the thesis timeframe of trading_look — the structure read serves the " +
+        EMA_FAST_PERIOD +
+        "/" +
+        EMA_SLOW_PERIOD +
+        " pair itself, and an `indicators[]` ema request is a different reading (it defaults to period 20, which no gate here is written for). `spreadUsd` is fast minus slow — its SIGN is the bias, its size is how separated the two are — and `barsSinceCross` is how long ago that sign last flipped. A cross older than " +
         policy.emaCross.maxCrossAgeBars +
         " bars is not a signal, it is a description of where price has already been. Nothing scores this for you: `ema` carries the bias as `direction`, the separation as `separationAtr`, and the age as `barsSinceCross`, and the judgement is yours.",
       "Require the two averages to be genuinely apart: |spreadUsd| at least " +
