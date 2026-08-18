@@ -91,6 +91,7 @@ import {
   samePrice,
 } from "@t3tools/trading-contracts/protection";
 import { ENTRY_PRICING_VALIDITY_MILLIS } from "@t3tools/trading-contracts/entry";
+import { toSignificantDigits } from "@t3tools/trading-contracts/precision";
 import type { TradingMissionStatus } from "@t3tools/trading-contracts";
 
 import { PERMANENT_TERMINAL_STATUSES, SUSPENDED_STATUSES } from "./MissionTransitions.ts";
@@ -241,6 +242,18 @@ export interface AbandonOutcome {
   readonly found: boolean;
   readonly cancelledCloids: ReadonlyArray<string>;
   readonly cloid?: string | undefined;
+  /**
+   * Base units the withdrawn orders asked for, and how much of that had
+   * already filled — the split the caller reports back to the model.
+   *
+   * A post-only entry fills when the market comes to it, which is frequently
+   * only partly: one measured mission asked for 0.2613 ETH and held 0.0103 of
+   * it when the withdrawal happened, and the message it got back said only
+   * that the entry was withdrawn. The model went on managing a plan sized to
+   * the request. Zero on both when nothing was found.
+   */
+  readonly requestedSize: number;
+  readonly filledSize: number;
 }
 
 /**
@@ -303,6 +316,9 @@ interface WorkingLineage {
 
 /** Sizes below this are rounding, not exposure (see PROTECTION_SIZE_EPSILON). */
 const SIZE_EPSILON = 1e-9;
+
+/** Significant digits a size is worth reporting at. Six, like every derived price. */
+const SIZE_DIGITS = 6;
 
 /**
  * The envelope facts that make a replacement the same trade the wake approved.
@@ -1430,8 +1446,29 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
           !(entriesOnly && order.reduceOnly),
       );
       if (resting.length === 0) {
-        return { found: false, cancelledCloids: [] } satisfies AbandonOutcome;
+        return {
+          found: false,
+          cancelledCloids: [],
+          requestedSize: 0,
+          filledSize: 0,
+        } satisfies AbandonOutcome;
       }
+      // What the withdrawn orders asked for, and what the book already gave
+      // them. `size` is the order as submitted and `remainingSize` is what is
+      // still out, so the difference IS the fill — read from canonical state a
+      // moment before the cancel, which is the last moment it is knowable
+      // from the order itself.
+      // Rounded at the seam, not at each caller: a difference of two IEEE
+      // sizes is 0.010299999999999976, and that number rides into a line the
+      // model reads.
+      const requestedSize = toSignificantDigits(
+        resting.reduce((sum, order) => sum + order.size, 0),
+        SIZE_DIGITS,
+      );
+      const filledSize = toSignificantDigits(
+        resting.reduce((sum, order) => sum + Math.max(0, order.size - order.remainingSize), 0),
+        SIZE_DIGITS,
+      );
       const cancelled = yield* cancelBestEffort(
         input.market,
         resting.flatMap((o) => (o.cloid === undefined ? [] : [o.cloid])),
@@ -1440,6 +1477,8 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
         found: true,
         cancelledCloids: cancelled,
         cloid: resting[0]?.cloid,
+        requestedSize,
+        filledSize,
       } satisfies AbandonOutcome;
     });
 

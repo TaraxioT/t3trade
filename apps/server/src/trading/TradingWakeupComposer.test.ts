@@ -13,6 +13,9 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
@@ -583,6 +586,53 @@ layer("TradingWakeupComposer", (it) => {
     Effect.gen(function* () {
       const wakeup = yield* compose("watch_up");
       assert.equal(wakeup.wakeReason, undefined);
+    }),
+  );
+
+  // Mission cf9dbd6f: the patient entry asked for 0.2613 ETH ($499.84) and had
+  // 0.0103 of it ($19.71) when the model next woke. Nothing on the wake said
+  // so, so the model read `position.size` as the trade it had put on and went
+  // on managing a $500 plan whose $0.70 target $19.71 could never reach.
+  it.effect("says how much of a resting entry has actually filled", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      yield* sql`
+        INSERT INTO trading_execution_records (
+          execution_id, mission_id, execution_sequence, action_type, cloid,
+          idempotency_key, market, side, size, limit_price, time_in_force,
+          reduce_only, signer_address, status, order_results_json,
+          created_at, updated_at
+        ) VALUES (
+          'exec_working', 'mission_1', 0, 'open', '0xworking', 'idem_working',
+          'ETH', 'sell', 0.2613, 1913.3, 'alo', 0,
+          '0x0000000000000000000000000000000000000001', 'accepted', '[]',
+          1000, 1000
+        )
+      `;
+      yield* sql`
+        INSERT INTO trading_fills (
+          fill_id, mission_id, cloid, order_id, market, side, filled_size,
+          avg_fill_price, fee_usd, fee_token, traded_at, observed_at
+        ) VALUES (
+          'fill_working', 'mission_1', '0xworking', 1, 'ETH', 'sell', 0.0103,
+          1913.3, 0.002956, 'USDC', 1100, 1100
+        )
+      `;
+
+      const composed = yield* composeFull({});
+
+      assert.deepStrictEqual(composed.wakeup.workingEntry, {
+        side: "sell",
+        requestedSize: 0.2613,
+        filledSize: 0.0103,
+        limitPrice: 1913.3,
+      });
+      // And it reaches the rendered text, where the model actually reads it.
+      assert.include(composed.text, "filled 0.0103 of 0.2613");
+
+      yield* sql`DELETE FROM trading_execution_records`;
+      yield* sql`DELETE FROM trading_fills`;
     }),
   );
 

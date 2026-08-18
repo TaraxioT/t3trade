@@ -428,9 +428,39 @@ const tradingLayerOverExchange = (fake: FakeExchange) =>
       Layer.provide(TradingStrategyServiceLive),
       Layer.provide(fakeCostEstimator),
     ),
-    Layer.succeed(TradingExecutionOutcome, {} as unknown as TradingExecutionOutcome["Service"]),
+    // The exit path stops at the reactor, which this layer does not run. These
+    // two stand in for it so the handler's own AFTERMATH — the resting entry
+    // withdrawn with the close — is reachable without a live execution loop.
+    Layer.succeed(TradingExecutionOutcome, {
+      awaitOutcome: () =>
+        Effect.succeed({
+          status: "filled" as const,
+          cloid: "0xfakeexit000000000000000000000001",
+          orderResults: [],
+          budget: { remainingCumulativeLossUsd: 0, exhausted: false },
+        }),
+    } as unknown as TradingExecutionOutcome["Service"]),
     Layer.succeed(TradingEntryService, {} as unknown as TradingEntryService["Service"]),
-    Layer.succeed(TradingExitService, {} as unknown as TradingExitService["Service"]),
+    Layer.succeed(TradingExitService, {
+      prepare: (request: { readonly missionId: string; readonly market?: string }) =>
+        Effect.succeed({
+          outcome: "accepted" as const,
+          intent: {
+            missionId: request.missionId,
+            executionSequence: 7,
+            actionType: "close" as const,
+            market: "ETH" as const,
+            side: "sell" as const,
+            size: 0.0103,
+            orderPreference: "marketable_ioc" as const,
+            limitPrice: 3_000,
+            reduceOnly: true,
+          },
+          expectedAuthorityVersion: 1,
+          activeHarnessRunId: "run_funnel",
+          note: null,
+        }),
+    } as unknown as TradingExitService["Service"]),
   );
 
 /** Either the real trading runtime or the fake-exchange rebuild above. */
@@ -2194,6 +2224,35 @@ it.effect("holds a patient plan to the round trip its own execution buys", () =>
   ),
 );
 
+it.effect("a close takes the resting entry with it, and says what had filled", () => {
+  // Mission cf9dbd6f: the patient entry asked for 0.2613 ETH ($499.84) and had
+  // 0.0103 of it when the model exited. Nothing withdrew the remainder on the
+  // close — the publish path retracts entries on a REVISION and the reactor
+  // takes everything at mission END, and a close in between fell through. A
+  // close that leaves an entry working re-opens the position it just closed.
+  const CLOID = "0xworkingentry0000000000000000002";
+  const fake = makeFakeExchange({
+    positionSize: 0.0103,
+    orders: [{ ...restingWorkingEntry(CLOID, 2_990), size: 0.2613, remainingSize: 0.251 }],
+  });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedHarnessRun }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        yield* seedHarnessRun();
+
+        const closed = yield* callTool(BOUND_THREAD, "trading_exit", { action: "close" });
+
+        assert.equal(closed.result.isError, false);
+        assert.include(fake.cancels, CLOID);
+        // And the split is stated, so the next plan is sized off what was
+        // actually held rather than off what the entry asked for.
+        assert.include(closed.result.body.detail, "0.0103 of the 0.2613");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
 it.effect("an accepted publish withdraws the mission's resting working entry", () => {
   // The audited risk fix (plan 29 step 4.2 aftermath): a resting patient entry
   // kept working up to the ~90s cross horizon even after the model changed
@@ -2224,6 +2283,9 @@ it.effect("an accepted publish withdraws the mission's resting working entry", (
           line.includes("resting patient entry was withdrawn"),
         );
         assert.isDefined(warning, "expected the publish response to report the retraction");
+        // Nothing had filled here, so there is nothing to say about what is
+        // held — the split rides the line only when it is a fact.
+        assert.notInclude(warning ?? "", "had already");
       }),
     tradingLayerOverExchange(fake),
   );

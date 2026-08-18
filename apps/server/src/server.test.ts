@@ -914,7 +914,13 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mock(TradingWorkingOrderService)({
-          abandon: () => Effect.succeed({ found: false, cancelledCloids: [] }),
+          abandon: () =>
+            Effect.succeed({
+              found: false,
+              cancelledCloids: [],
+              requestedSize: 0,
+              filledSize: 0,
+            }),
           ...options?.layers?.tradingWorkingOrder,
         }),
       ),

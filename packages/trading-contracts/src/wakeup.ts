@@ -16,7 +16,7 @@ import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
-import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
+import { Price, TradingId, TradingText, UnixMillis } from "./primitives.ts";
 import { TradingPlanState, TradingTimeframe } from "./strategy.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import {
@@ -197,6 +197,23 @@ export function describePositionCostLine(estimate: TradingCostEstimate): WakeupP
 }
 
 /**
+ * The resting entry as one line: what filled, of what, and what is still out.
+ *
+ * Prose rather than a struct because the number that matters is a comparison —
+ * `position.size` against what was asked for — and a struct invites the model
+ * to read one field. The measured failure was reading `position.size` alone
+ * and managing a plan sized to the request.
+ */
+export function describeWorkingEntryLine(entry: WakeupWorkingEntry): string {
+  const working = Math.max(0, entry.requestedSize - entry.filledSize);
+  return (
+    `${entry.side} entry: filled ${entry.filledSize} of ${entry.requestedSize} — ` +
+    `${working} still resting at ${entry.limitPrice}. Size the exit and the target off what is ` +
+    `HELD, not off what was asked for.`
+  );
+}
+
+/**
  * What one price level has already done to this mission - plan 27 B1.
  *
  * Written by the runtime at the seams that observe each fact (watch
@@ -263,6 +280,24 @@ export type PreviousStructureRead = typeof PreviousStructureRead.Type;
  * `cause` is the §11.2 `TradingHarnessRunCause` union verbatim, including
  * `mission_created` for the first run.
  */
+/**
+ * A resting patient entry, as one line on a wake — see `workingEntry`.
+ *
+ * Read from the execution record and the fills already reconciled against its
+ * cloid, not from the exchange: a wake is an alert and does not spend an
+ * order-book round trip to compose itself.
+ */
+export const WakeupWorkingEntry = Schema.Struct({
+  side: Schema.Literals(["buy", "sell"]),
+  /** Base units the entry asked for. */
+  requestedSize: Schema.Number,
+  /** Base units of it filled so far — this is what `position.size` reflects. */
+  filledSize: Schema.Number,
+  /** The price it rests at. */
+  limitPrice: Price,
+});
+export type WakeupWorkingEntry = typeof WakeupWorkingEntry.Type;
+
 export const TradingHarnessWakeup = Schema.Struct({
   /**
    * What this message is, for anything reading the serialized payload rather
@@ -304,6 +339,23 @@ export const TradingHarnessWakeup = Schema.Struct({
    * balance when a decision needs it.
    */
   accountSnapshot: Schema.optional(AgentAccountSnapshot),
+  /**
+   * The mission's resting patient ENTRY, when one is still working — and how
+   * much of it has already filled.
+   *
+   * A post-only entry fills when the market comes to it, which frequently
+   * means partly. One measured mission asked for 0.2613 ETH ($499.84), had
+   * 0.0103 of it ($19.71) when the model next woke, and nothing on the wake
+   * said so: the model read `position.size` as the trade it had put on, and
+   * managed a $500 plan with a $0.70 target against $19.71 of exposure that
+   * could never reach it.
+   *
+   * `position.size` is what is actually held. This is what was asked for and
+   * what is still working for the rest, so the exit and the target can be
+   * sized off the real number. Absent whenever no entry rests — which is most
+   * wakes.
+   */
+  workingEntry: Schema.optional(WakeupWorkingEntry),
   /**
    * The mission's net position for `market`, always present.
    *

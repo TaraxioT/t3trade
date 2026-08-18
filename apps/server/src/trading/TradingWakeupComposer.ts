@@ -80,11 +80,13 @@ import {
   describeArmedWatchLine,
   describePositionCostLine,
   describeTriggeringWatchLine,
+  describeWorkingEntryLine,
   findMisarmedEntryConditions,
   findUnarmedEntryConditions,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
   type TradingHarnessRunCause,
+  type WakeupWorkingEntry,
 } from "./Schemas.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
@@ -395,6 +397,12 @@ const renderLeanWakeup = (
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
+    // `position.size` is what is held; this is what was asked for and what is
+    // still working for the rest. A plan sized to the request and a position
+    // that is 4% of it is the case this exists for.
+    ...(wakeup.workingEntry === undefined
+      ? {}
+      : { workingEntry: describeWorkingEntryLine(wakeup.workingEntry) }),
     // One line, in the shape `costContext` already uses on the flat wakes.
     // The full estimate is a `trading_look` away and was a thousand
     // characters of every holding wake.
@@ -698,6 +706,55 @@ const make = Effect.gen(function* () {
         Effect.catchCause(() => Effect.succeed(null)),
       );
   };
+
+  /**
+   * The mission's resting patient entry, and how much of it has filled.
+   *
+   * Read from the tables the submit path and the fill reconciler already
+   * write, never from the exchange: a wake is an alert and does not buy an
+   * order-book round trip to compose itself. `status = 'accepted'` is the
+   * record's live state — the reconciler settles it the moment the order
+   * leaves the book, and deliberately does NOT settle it on a partial fill,
+   * which is exactly the state this reports.
+   *
+   * Null when nothing rests, which is most wakes. A failed read costs the
+   * field, never the wake.
+   */
+  const readWorkingEntry = (
+    missionId: string,
+    market: string,
+  ): Effect.Effect<WakeupWorkingEntry | null> =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        readonly cloid: string;
+        readonly side: "buy" | "sell";
+        readonly size: number;
+        readonly limit_price: number;
+      }>`
+        SELECT cloid, side, size, limit_price
+        FROM trading_execution_records
+        WHERE mission_id = ${missionId}
+          AND market = ${market}
+          AND time_in_force = 'alo'
+          AND reduce_only = 0
+          AND status = 'accepted'
+        ORDER BY created_at DESC, execution_sequence DESC
+        LIMIT 1
+      `;
+      const record = rows[0];
+      if (record === undefined) return null;
+
+      const filled = yield* sql<{ readonly filled: number | null }>`
+        SELECT SUM(filled_size) AS filled FROM trading_fills
+        WHERE mission_id = ${missionId} AND cloid = ${record.cloid}
+      `;
+      return {
+        side: record.side,
+        requestedSize: record.size,
+        filledSize: filled[0]?.filled ?? 0,
+        limitPrice: record.limit_price,
+      };
+    }).pipe(Effect.orElseSucceed(() => null));
 
   /**
    * The one cost line a flat wake carries — plan 29 step 3.1.
@@ -1057,6 +1114,11 @@ const make = Effect.gen(function* () {
       const positionCosts = rawPositionCosts === null ? null : roundCostEstimate(rawPositionCosts);
       const costContext = rawCostContext === null ? null : roundCostContext(rawCostContext);
 
+      // What the entry actually got on, against what it asked for. A patient
+      // entry fills when the market comes to it, which is frequently only
+      // partly — and until this, nothing on a wake said so.
+      const workingEntry = yield* readWorkingEntry(mission.id, market);
+
       const armed = yield* strategies
         .listWatches(mission.id)
         .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
@@ -1165,6 +1227,7 @@ const make = Effect.gen(function* () {
         userMessage: input.userMessage,
         marketSnapshot,
         position,
+        ...(workingEntry === null ? {} : { workingEntry }),
         ...(positionCosts === null ? {} : { positionCosts }),
         ...(costContext === null ? {} : { costContext }),
         ...(activeStrategy === undefined ? {} : { activeStrategy }),

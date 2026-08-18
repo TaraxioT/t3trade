@@ -243,10 +243,19 @@ export const publishPlanWithAftermath = Effect.fn(
       ),
     );
   const withdrewRestingEntry = retracted !== null && retracted.found;
-  if (withdrewRestingEntry) {
+  if (withdrewRestingEntry && retracted !== null) {
+    // What it had already got on before it was withdrawn. Without this the
+    // model reads "withdrawn" as "nothing happened": one mission asked for
+    // 0.2613 ETH, held 0.0103 of it, and went on managing a plan sized to the
+    // request with a target the real position could never reach.
+    const held =
+      retracted.filledSize > 0
+        ? ` ${retracted.filledSize} of the ${retracted.requestedSize} it asked for had already ` +
+          "filled, so that is what you hold — size the exit, the stop and the target off it."
+        : "";
     warnings.push(
       "the plan was revised, so its resting patient entry was withdrawn — re-place it under " +
-        "the new plan if you still want in",
+        `the new plan if you still want in.${held}`,
     );
   }
 

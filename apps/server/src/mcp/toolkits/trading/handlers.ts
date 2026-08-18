@@ -61,6 +61,7 @@ import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcom
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
+import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { publishPlanWithAftermath } from "../../../trading/TradingPlanPublication.ts";
@@ -578,16 +579,60 @@ const executeExit = (request: {
       activeHarnessRunId: prepared.activeHarnessRunId,
     });
 
+    // A close leaves nothing behind — including the entry that was still
+    // working when the model decided to leave.
+    const withdrawn = request.kind === "close" ? yield* withdrawWorkingEntry(mission) : null;
+
     // A size the server changed — clamped, or promoted past the dust threshold
     // — has to travel with the outcome, or the harness sizes its next decision
     // against the number it asked for rather than the one that went out.
-    if (prepared.note === null) return executed;
+    const notes = [prepared.note, withdrawn].filter((note) => note !== null);
+    if (notes.length === 0) return executed;
     return {
       ...executed,
-      detail:
-        executed.detail === undefined ? prepared.note : `${executed.detail}; ${prepared.note}`,
+      detail: [executed.detail, ...notes].filter((part) => part !== undefined).join("; "),
     };
   });
+
+/**
+ * Withdraw the mission's resting working ENTRY, as part of closing.
+ *
+ * A `close` says the mission is leaving. A post-only entry still resting says
+ * it wants back in at a price, and the two together mean the position comes
+ * off and then goes straight back on with no plan behind it. Nothing withdrew
+ * it: the publish path retracts entries on a revision and the reactor's
+ * retirement path takes everything at mission end, and a close in between fell
+ * between the two.
+ *
+ * After the close, not before. Cancelling a grouped entry parent takes its
+ * linked stop child with it, so withdrawing first would leave whatever HAS
+ * filled momentarily unprotected; withdrawing after leaves only the window
+ * between the close landing and this cancel, in which a fill would open
+ * exposure the very next pass reports.
+ *
+ * Returns the line for the model, or null when nothing rested. A failed cancel
+ * never fails the close — the working loop's own backstop retries it.
+ */
+const withdrawWorkingEntry = Effect.fn("TradingToolkit.withdrawWorkingEntry")(
+  function* (mission: TradingMission) {
+    const missions = yield* TradingMissionService;
+    const workingOrders = yield* TradingWorkingOrderService;
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    const outcome = yield* workingOrders.abandon({
+      missionId: mission.id,
+      masterAddress,
+      market: mission.market,
+      nowMs: yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+      scope: "entries",
+    });
+    if (!outcome.found) return null;
+    return (
+      `the resting patient entry was withdrawn with the close — ${outcome.filledSize} of the ` +
+      `${outcome.requestedSize} it asked for had filled, and the rest is off the book`
+    );
+  },
+  Effect.catchCause(() => Effect.succeed(null)),
+);
 
 /**
  * Read the multi-timeframe structure, priced at the size the mission would
