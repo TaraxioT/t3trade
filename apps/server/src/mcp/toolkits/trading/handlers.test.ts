@@ -354,21 +354,41 @@ const fakeCostEstimator = Layer.succeed(TradingCostEstimator, {
   estimate: (input: { readonly notionalUsd?: number | undefined }) =>
     Effect.succeed({
       market: "ETH",
+      // Every field the contract declares as required, because the `as
+      // unknown` cast below means an omitted one is a runtime undefined that
+      // only surfaces when something encodes the whole estimate — which
+      // `trading_look`'s position scope does, as a masked "internal server
+      // error" (see the regression test at the bottom of this file).
+      sizeEth: 0.25,
       notionalUsd: input.notionalUsd ?? 1_000,
+      referencePrice: 4_000,
+      takerFeeBpsPerSide: 4.5,
+      makerFeeBpsPerSide: 1.5,
+      feeRateSource: "hyperliquid_user_fees" as const,
+      entryFeeUsd: 0.45,
+      exitFeeUsd: 0.45,
       roundTripUsd: 1,
       roundTripFeeUsd: 0.9,
+      halfSpreadUsd: 0.05,
       roundTripSpreadUsd: 0.1,
+      buySlippageUsd: 0,
+      sellSlippageUsd: 0,
       roundTripSlippageUsd: 0,
+      bookDepthSufficient: true,
       // The resting orientations the flat cost line now carries; omitting
       // either is the encode failure this cast cannot surface at compile time.
       roundTripTakerMakerUsd: 0.7,
       roundTripMakerMakerUsd: 0.3,
       breakEvenPriceMoveUsd: 3,
+      breakEvenPriceMovePercent: 0.075,
       // Twice the round trip, as the real estimator derives it. The `as
       // unknown` cast below means an omitted field is a runtime undefined the
       // contract declares as a number, so it must be stated.
       preferredTargetUsd: 2,
+      measuredAt: 1_000_000,
+      freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 2_000 },
       degraded: false,
+      notes: [],
     }),
 } as unknown as TradingCostEstimator["Service"]);
 
@@ -2363,6 +2383,33 @@ it.effect("an accepted publish withdraws the mission's resting working entry", (
         // Nothing had filled here, so there is nothing to say about what is
         // held — the split rides the line only when it is a fact.
         assert.notInclude(warning ?? "", "had already");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+// The fixture above is cast through `as unknown`, so a required field it omits
+// is a runtime undefined nothing catches until something encodes the WHOLE
+// estimate. `trading_look`'s position scope does exactly that — the estimate
+// rides `positionCosts` — and the encode failure surfaces through
+// `registerToolkitLenient` as a masked "internal server error", which is the
+// trap plan 36 item 6a was reverted for. Every look in this file until now read
+// a flat mission, so nothing had ever encoded it.
+it.effect("serves the cost of the position it is holding", () => {
+  const fake = makeFakeExchange({ positionSize: -0.474 });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+
+        const held = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["position"],
+        });
+
+        assert.equal(held.result.isError, false);
+        assert.equal(held.result.body.position.size, -0.474);
+        assert.isDefined(held.result.body.positionCosts);
       }),
     tradingLayerOverExchange(fake),
   );
