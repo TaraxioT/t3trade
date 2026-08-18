@@ -97,15 +97,21 @@ export function runtimeTimeframe(instruction: string): TradingTimeframe {
  * bigger than the round trip is worth. It names the timeframe
  * even though every wakeup already carries `defaultTimeframe`, because a
  * harness weighs a direct instruction more heavily than a field in a snapshot,
- * and the two agreeing is what keeps the loop turning once a minute rather than
- * once every fifteen.
+ * and the two agreeing is what keeps the loop turning at the cadence the
+ * runtime is actually feeding it rather than once every fifteen.
+ *
+ * It defers to the mandate on the interval, because this note is APPENDED to
+ * the mandate and {@link runtimeTimeframe} reads the mandate: a mission told
+ * "scalp ETH on the 5m" gets 5m bars, a 5m paired higher read and a 30-minute
+ * flat wake floor, and a note that said "work on 1m candles" was the one thing
+ * in front of it pointing the other way.
  *
  * It names no market and no direction: those belong to the mandate the user
  * writes, and a standing note that contradicted it would be the same drift
  * again in the other direction.
  */
 export const POC_STANDING_INSTRUCTION =
-  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth — priced at the execution you intend? An entry resting at a level you armed (`urgency: patient`) pays the maker legs of the cost line, not the crossing ones. If the move cannot pay even that, stand down and say so in one line. The reading that answers it is `microstructure.volatilityRatio`: the recent pace against the whole window's, so 0.4 means the last twenty minutes have moved at 40% of the two-hour pace and the move you need is probably not there. Time the entry with `bookImbalance` (positive is bid-heavy, over the same levels a side) and `aggressorFlow` (the share of volume closing near bar highs, over `bars` that actually traded), and read both against `liquidity` — a lopsided ratio across a thin book is where a crossing order walks.";
+  "Work the interval your mandate names, else 1m candles, and arm each watch on THAT interval so a run wakes on its cadence — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth — priced at the execution you intend? An entry resting at a level you armed (`urgency: patient`) pays the maker legs of the cost line, not the crossing ones. If the move cannot pay even that, stand down and say so in one line. The reading that answers it is `microstructure.volatilityRatio`: the recent pace against the whole window's, so 0.4 means the last twenty minutes have moved at 40% of the two-hour pace and the move you need is probably not there. Time the entry with `bookImbalance` (positive is bid-heavy, over the same levels a side) and `aggressorFlow` (the share of volume closing near bar highs, over `bars` that actually traded), and read both against `liquidity` — a lopsided ratio across a thin book is where a crossing order walks.";
 
 /**
  * Prose the harness may leave out, decoded as an empty string.

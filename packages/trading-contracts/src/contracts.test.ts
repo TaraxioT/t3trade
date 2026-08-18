@@ -23,6 +23,7 @@ import { TradingHarnessRun, TradingMission } from "./mission.ts";
 import {
   AgentConditionInput,
   mandatedTimeframe,
+  POC_STANDING_INSTRUCTION,
   runtimeTimeframe,
   TradingPlanState,
 } from "./strategy.ts";
@@ -842,6 +843,20 @@ describe("the timeframe the runtime works a mission on", () => {
     expect(mandatedTimeframe("scalp ETH on the 15m")).toBe("15m");
     expect(mandatedTimeframe("trade the 5m, confirm on 15m")).toBe("5m");
     expect(mandatedTimeframe("trade BTC with momentum entries")).toBeUndefined();
+  });
+
+  it("keeps the mandate's interval when the standing note is appended to it", () => {
+    // The note is appended to every auto-created mission's instruction, and
+    // `mandatedTimeframe` scans the whole string — so the note must not
+    // contradict the mandate it is glued to, and must not out-rank it. A note
+    // that told a 5m mission to work 1m candles was the one thing in front of
+    // it pointing away from what the runtime was actually feeding it.
+    const mandate = "scalp ETH on the 5m";
+    const instruction = `${mandate}\n\n${POC_STANDING_INSTRUCTION}`;
+    expect(runtimeTimeframe(instruction)).toBe("5m");
+    expect(POC_STANDING_INSTRUCTION).not.toContain("Work on 1m candles");
+    // A mandate that names nothing still lands on the documented default.
+    expect(runtimeTimeframe(`scalp ETH\n\n${POC_STANDING_INSTRUCTION}`)).toBe("1m");
   });
 
   it("falls back to 1m rather than to whatever the plan published", () => {
