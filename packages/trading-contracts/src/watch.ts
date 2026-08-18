@@ -10,7 +10,7 @@
 import { Schema } from "effect";
 import { ACTIVE_TRADING_POLICY, type TradingPolicy } from "./policy.ts";
 import { PositiveUsdAmount, Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
-import { TradingTimeframe } from "./strategy.ts";
+import { POC_DEFAULT_TIMEFRAME, TradingTimeframe } from "./strategy.ts";
 
 export const WatchPriceSource = Schema.Literals(["mark", "mid"]);
 export type WatchPriceSource = typeof WatchPriceSource.Type;
@@ -277,7 +277,21 @@ export interface WatchRefusal {
  * A missing `interval` under `confirm: "close"` is NOT defaulted. Guessing a
  * timeframe there is how a 1h breakout becomes a 1m wick.
  */
-export function toMarketWatch(condition: WatchCondition): MarketWatch | WatchRefusal {
+export function toMarketWatch(
+  condition: WatchCondition,
+  /**
+   * The bar interval a metric that needs one falls back to — the MISSION's own
+   * timeframe, not a constant.
+   *
+   * Only `volume_ratio` needs it: the other metrics are point readings off a
+   * snapshot. It used to default to `1m` with a comment calling that "the
+   * runtime's own default timeframe", which is only true of a mission whose
+   * mandate names no interval. A 5m mission arming "wake me when volume picks
+   * up" got 1m bar ratios — a frame nothing else it reads is measured on, and
+   * five times as many chances to fire.
+   */
+  defaultBarInterval: TradingTimeframe = POC_DEFAULT_TIMEFRAME,
+): MarketWatch | WatchRefusal {
   switch (condition.kind) {
     case "price": {
       if ((condition.confirm ?? "touch") === "touch") {
@@ -345,10 +359,10 @@ export function toMarketWatch(condition: WatchCondition): MarketWatch | WatchRef
         metric: condition.metric,
         direction: condition.direction,
         value: condition.value,
-        // `volume_ratio` needs a bar series; 1m is the runtime's own default
-        // timeframe and the only interval a ratio should quietly assume.
+        // `volume_ratio` needs a bar series; unnamed, it is measured on the
+        // frame the mission works, so a ratio and a gate never read two.
         ...(condition.metric === "volume_ratio"
-          ? { interval: condition.interval ?? "1m" }
+          ? { interval: condition.interval ?? defaultBarInterval }
           : condition.interval === undefined
             ? {}
             : { interval: condition.interval }),

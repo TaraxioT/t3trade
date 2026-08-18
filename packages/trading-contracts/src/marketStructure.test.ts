@@ -16,11 +16,15 @@ import {
   compareCandidates,
   digestMarketStructure,
   DIRECTION_SCORE_THRESHOLD,
+  EMA_SLOW_PERIOD,
   findPivots,
+  MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
   MAX_REGIME_CONFLICTS,
   MIN_MARKET_STRUCTURE_BARS,
+  readEmaTrend,
 } from "./marketStructure.ts";
+import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 
 /** A bar with a given close and a fixed range around it. */
 const bar = (close: number, spread = 1): MarketCandle => ({
@@ -539,5 +543,91 @@ describe("digestMarketStructure", () => {
     const digest = digestMarketStructure(structure, "3m");
     assert.isDefined(digest.timeframes[0]?.ema);
     assert.isUndefined(digest.timeframes[1]?.ema);
+  });
+});
+
+/**
+ * The `ema_cross` signal, held to the bar it claims to have crossed on.
+ *
+ * The doctrine gates on three numbers and nothing scores them for the model:
+ * the sign of `spreadUsd`, the age in `barsSinceCross`, and `separationAtr`
+ * against the frame's own ATR. If the age is off by a bar the 5-bar freshness
+ * window is off by a bar, and on 5m that is five minutes of decision.
+ */
+describe("the ema cross the doctrine gates on", () => {
+  // Long enough that the SMA seed has decayed out of both averages before the
+  // interesting part: 300 bars down, then a rally that crosses the pair.
+  const crossSeries = [
+    ...Array.from({ length: 300 }, (_, i) => bar(3_300 - i * 1, 2)),
+    ...Array.from({ length: 40 }, (_, i) => bar(3_000 + i * 3, 2)),
+  ];
+
+  it("dates the cross to the bar the sign actually flipped", () => {
+    const read = readEmaTrend(crossSeries, 10)!;
+    assert.equal(read.direction, "up");
+    const age = read.barsSinceCross!;
+    assert.isNumber(age);
+
+    // Read the same series as it stood ON the bar the age points back to: the
+    // bias must already be up there, and brand new. One bar earlier it must
+    // still be down. Those two together pin the cross to one bar, using
+    // nothing but the function's own public answer.
+    const atCross = readEmaTrend(crossSeries.slice(0, crossSeries.length - age), 10)!;
+    assert.equal(atCross.direction, "up");
+    assert.equal(atCross.barsSinceCross, 0);
+
+    const beforeCross = readEmaTrend(crossSeries.slice(0, crossSeries.length - age - 1), 10)!;
+    assert.equal(beforeCross.direction, "down");
+  });
+
+  it("counts the age in bars of the input, one per bar", () => {
+    const read = readEmaTrend(crossSeries, 10)!;
+    // One more bar in the same direction is one more bar of age. Nothing about
+    // the count is wall-clock, which is what makes it comparable across
+    // intervals.
+    const older = readEmaTrend([...crossSeries, bar(3_130, 2)], 10)!;
+    assert.equal(older.barsSinceCross, read.barsSinceCross! + 1);
+    assert.equal(older.direction, "up");
+  });
+
+  it("normalises the separation by the same ATR the frame reports", () => {
+    // The gate is "|spreadUsd| at least 0.15x the frame's ATR", and the frame
+    // it means is the one the reading rides on. A separation normalised by a
+    // different ATR would make the doctrine's threshold mean something else.
+    const frame = analyseTimeframe({ interval: "5m", candles: crossSeries });
+    const ema = frame.ema!;
+    assert.closeTo(ema.separationAtr, Math.abs(ema.spreadUsd) / frame.atrUsd, 1e-9);
+    // And the gate is answerable from what rides back.
+    assert.isNumber(ACTIVE_TRADING_POLICY.emaCross.minSpreadAtrRatio);
+  });
+
+  it("reads the same on 5m bars as on 1m bars, so the 5-bar window is 25 minutes", () => {
+    // Nothing in the read is wall-clock: the same closes stamped five minutes
+    // apart give the identical block. The consequence the doctrine does not
+    // state is that `maxCrossAgeBars` is 5 minutes of freshness on 1m and 25
+    // on 5m — the same signal, a different amount of market.
+    const spaced = crossSeries.map((candle, i) => ({
+      ...candle,
+      openTime: i * 300_000,
+      closeTime: i * 300_000 + 299_000,
+    }));
+    assert.deepStrictEqual(readEmaTrend(spaced, 10), readEmaTrend(crossSeries, 10));
+  });
+
+  it("gives the slow EMA enough history to be the chart's number on any frame", () => {
+    // The seed-decay fix (7fdffdeff) covered the indicator path's own lookback.
+    // The structure read has its own, and this is the one the `ema_cross`
+    // gates actually read.
+    assert.isAtLeast(MARKET_STRUCTURE_LOOKBACK_BARS, 5 * EMA_SLOW_PERIOD);
+
+    const long = Array.from({ length: 600 }, (_, i) =>
+      bar(3_000 + 40 * Math.sin(i / 31) + 15 * Math.sin(i / 7), 3),
+    );
+    const converged = readEmaTrend(long, 10)!;
+    const atLookback = readEmaTrend(long.slice(-MARKET_STRUCTURE_LOOKBACK_BARS), 10)!;
+    // Display precision on an ETH-priced market: a cent.
+    assert.closeTo(atLookback.slowUsd, converged.slowUsd, 0.01);
+    assert.closeTo(atLookback.fastUsd, converged.fastUsd, 0.01);
+    assert.equal(atLookback.direction, converged.direction);
   });
 });

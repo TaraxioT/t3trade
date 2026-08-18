@@ -13,6 +13,7 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import type { TradingOrderIntent, TradingOrderResult } from "@t3tools/trading-contracts/execution";
 import type { TradingTimeframe, TradingUrgency } from "@t3tools/trading-contracts/strategy";
+import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
@@ -1776,7 +1777,9 @@ const handlers = {
       // is written, so a condition that cannot be armed arms nothing and costs
       // no transaction. What to do about it is the classifier's answer, not
       // this handler's — one place decides what a refusal means (step 6.2).
-      const derived = toMarketWatch(input.condition);
+      // A metric that needs a bar series is measured on the frame the mission
+      // works, not on a constant 1m — see `toMarketWatch`.
+      const derived = toMarketWatch(input.condition, runtimeTimeframe(mission.instruction));
       if (isWatchRefusal(derived)) {
         return {
           outcome: "refused" as const,

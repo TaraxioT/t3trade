@@ -96,25 +96,42 @@ describe("the condition the model writes", () => {
   });
 
   // A volume ratio is measured on a bar series; a metric condition that names
-  // none gets the runtime's own default interval, the same 1m every other
-  // cadence in the system assumes.
-  it("defaults a volume-ratio condition to the 1m bar series", () => {
-    const armed = toMarketWatch(
-      decode({
-        kind: "metric",
-        market: "ETH",
-        metric: "volume_ratio",
-        direction: "above",
-        value: 2,
-      }),
-    );
-    assert.deepEqual(armed, {
+  // none is measured on the frame the MISSION works. It used to be a flat 1m,
+  // which on a 5m mission is a frame nothing else it reads is measured on and
+  // five times as many chances to fire.
+  it("measures an unnamed volume ratio on the mission's own frame", () => {
+    const condition = decode({
+      kind: "metric",
+      market: "ETH",
+      metric: "volume_ratio",
+      direction: "above",
+      value: 2,
+    });
+    assert.deepEqual(toMarketWatch(condition, "5m"), {
+      type: "metric_threshold",
+      market: "ETH",
+      metric: "volume_ratio",
+      direction: "above",
+      value: 2,
+      interval: "5m",
+    });
+    // A mandate naming no interval still gets 1m, which is what it always was.
+    assert.deepEqual(toMarketWatch(condition), {
       type: "metric_threshold",
       market: "ETH",
       metric: "volume_ratio",
       direction: "above",
       value: 2,
       interval: "1m",
+    });
+    // And a condition that names its own interval keeps it.
+    assert.deepEqual(toMarketWatch({ ...condition, interval: "15m" }, "5m"), {
+      type: "metric_threshold",
+      market: "ETH",
+      metric: "volume_ratio",
+      direction: "above",
+      value: 2,
+      interval: "15m",
     });
   });
 
