@@ -4,6 +4,7 @@ import { describe } from "vite-plus/test";
 import { Tool } from "effect/unstable/ai";
 
 import { coerceToolArguments } from "./coerceToolArguments.ts";
+import { TradingPlanTool } from "./toolkits/trading/tools.ts";
 import { TradingToolkit } from "./toolkits/trading/tools.ts";
 
 /**
@@ -192,13 +193,58 @@ describe("coerceToolArguments", () => {
     ).toEqual({ conditions: [{ priceLevel: 3200 }, { priceLevel: 3300.5 }] });
   });
 
-  it("preserves an optional numeric field that is null", () => {
+  it("drops a null on an optional field, whatever the schema advertises", () => {
+    // `Schema.optional(Schema.Number)` is emitted as `anyOf: [number, null]`
+    // and decoded as `number | undefined`. Believing the emitted branch is how
+    // a live mission lost a `trading_plan` call to `Expected object | undefined
+    // at ["strategy"]["projection"]` — on a stand-aside plan correctly saying
+    // it had no projection, in the shape the schema had advertised.
     expect(
       coerceToolArguments(
         { type: "object", properties: { value: optionalNumberField } },
         { value: null },
       ),
+    ).toEqual({});
+  });
+
+  it("keeps a null on a required field whose schema declares one", () => {
+    // Required is a question the schema can still answer: nothing is being
+    // read around a decoder here, so a declared null is the caller's answer.
+    expect(
+      coerceToolArguments(
+        {
+          type: "object",
+          required: ["value"],
+          properties: { value: { anyOf: [{ type: "number" }, { type: "null" }] } },
+        },
+        { value: null },
+      ),
     ).toEqual({ value: null });
+  });
+
+  it("drops a null on a required field the schema gives no null branch", () => {
+    // Decode then reports the missing key rather than the wrong type — the
+    // error names what the caller actually has to supply.
+    expect(
+      coerceToolArguments(
+        { type: "object", required: ["value"], properties: { value: { type: "number" } } },
+        { value: null },
+      ),
+    ).toEqual({});
+  });
+
+  it("drops the `projection` null a live mission lost a `trading_plan` turn to", () => {
+    // Against the real advertised schema, not a hand-made one: `projection` is
+    // emitted as `anyOf: [object, null]`, which is what made the null look like
+    // an answer the tool had asked for.
+    const schema = Tool.getJsonSchema(TradingPlanTool);
+    const coerced = coerceToolArguments(schema, {
+      missionId: "616c6022-a778-4843-a506-49ddf3666baa",
+      expectedMissionVersion: 1,
+      strategy: { market: "ETH", intent: "stand_aside", projection: null, because: "no setup" },
+    }) as { readonly strategy: Record<string, unknown> };
+    expect("projection" in coerced.strategy).toBe(false);
+    expect(coerced.strategy.intent).toBe("stand_aside");
   });
 
   it("returns the args unchanged when the schema is not an object document", () => {

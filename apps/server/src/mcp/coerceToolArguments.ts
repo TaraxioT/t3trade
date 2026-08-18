@@ -159,10 +159,9 @@ const unwrapScalarObject = (
 /**
  * Whether a schema node would accept `null` as a value in its own right.
  *
- * Read before dropping a null-valued key, because the two readings of `null`
- * are opposites: a schema that declares null wants the null, and one that does
- * not was sent "I have nothing for this field" in the only vocabulary some
- * providers reach for.
+ * Only ever asked about a REQUIRED field. On an optional one the question does
+ * not arise: see the object recursion below for why the advertised schema is
+ * not the authority there.
  */
 const permitsNull = (node: JsonSchemaNode, root: JsonSchemaNode): boolean => {
   const schema = resolveNode(node, root);
@@ -214,17 +213,25 @@ const coerceValue = (value: unknown, node: JsonSchemaNode, root: JsonSchemaNode)
   if (schema.type === "object" || (isPlainObject(value) && schema.properties)) {
     if (!isPlainObject(value)) return value;
     const props = schema.properties ?? {};
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
     const coerced: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
       const childSchema = props[key];
-      // An explicit `null` on an optional field means "not supplied". No tool
-      // schema here declares a nullable input, so nothing can tell null from
-      // absent — but `Schema.optional` rejects the null and takes the whole
-      // call down with `Expected object | undefined`. One measured mission lost
-      // two turns that way, both on a stand-aside plan correctly saying it had
-      // no projection. A field that genuinely accepts null keeps it.
-      if (child === null && childSchema !== undefined && !permitsNull(childSchema, root)) {
-        continue;
+      // An explicit `null` on an OPTIONAL field means "not supplied", whatever
+      // the advertised schema says about null.
+      //
+      // It says plenty: Effect emits `Schema.optional(X)` as `anyOf: [X, null]`
+      // and then decodes it as `X | undefined`. The model is told null is a
+      // welcome answer and loses the whole call for giving one — measured live,
+      // a stand-aside plan correctly reporting `projection: null` against a
+      // schema advertising that exact shape. So on an optional field the
+      // advertised branch is not the authority; absence is the only reading.
+      //
+      // A required field is a different question, and one the schema can still
+      // answer: a null it genuinely declares is kept, and one it does not is
+      // dropped so decode reports the missing key rather than the wrong type.
+      if (child === null && childSchema !== undefined) {
+        if (!required.has(key) || !permitsNull(childSchema, root)) continue;
       }
       coerced[key] = childSchema ? coerceValue(child, childSchema, root) : child;
     }
