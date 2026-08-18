@@ -317,6 +317,8 @@ const COST_CONTEXT_DIGITS: Readonly<Record<string, number>> = {
   referenceNotionalUsd: PRICE_SCALE_DIGITS,
   roundTripUsd: PRICE_SCALE_DIGITS,
   roundTripBps: RATIO_DIGITS,
+  takerMakerUsd: PRICE_SCALE_DIGITS,
+  makerMakerUsd: PRICE_SCALE_DIGITS,
   preferredTargetUsd: PRICE_SCALE_DIGITS,
 };
 

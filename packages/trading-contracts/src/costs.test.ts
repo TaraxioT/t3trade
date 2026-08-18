@@ -220,21 +220,30 @@ describe("quick-trades sizing sanity at $1,000 equity (plan 27 I4)", () => {
 // nothing else.
 describe("costContextFromEstimate", () => {
   it("reduces an estimate to the bounded line", () => {
-    const estimate = estimateTradingCosts(input());
+    const estimate = estimateTradingCosts(input({ makerFeeBpsPerSide: 1.5 }));
     const context = costContextFromEstimate(estimate);
 
     expect(context.referenceNotionalUsd).toBe(2_000);
     expect(context.roundTripUsd).toBeCloseTo(3, 10);
     // 3 USD on 2,000 of notional is 15 bps.
     expect(context.roundTripBps).toBeCloseTo(15, 10);
+    // The resting orientations ride the flat line too: the flat turn is the
+    // one that decides whether the move pays the round trip, and until these
+    // existed it could only price the most expensive execution there is.
+    // Taker in (1.00 fee + 0.50 half-spread), maker out (0.30 fee).
+    expect(context.takerMakerUsd).toBeCloseTo(1.8, 10);
+    // Both legs resting: two maker fees, no spread, no walk.
+    expect(context.makerMakerUsd).toBeCloseTo(0.6, 10);
     // The rung a target must clear: twice the round trip, carried here because
     // the flat turn is the one that sets targets and has no `positionCosts`.
     expect(context.preferredTargetUsd).toBeCloseTo(6, 10);
     expect(Object.keys(context).sort()).toEqual([
+      "makerMakerUsd",
       "preferredTargetUsd",
       "referenceNotionalUsd",
       "roundTripBps",
       "roundTripUsd",
+      "takerMakerUsd",
     ]);
   });
 });

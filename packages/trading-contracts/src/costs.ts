@@ -153,10 +153,18 @@ export type TradingCostEstimate = typeof TradingCostEstimate.Type;
  * The one cost line a flat wakeup carries — plan 29 step 3.1.
  *
  * Cost stopped being a gate; it survives as context, and the context has to be
- * bounded: the round trip as USD and as bps of a stated reference notional, and
- * nothing else. The reference notional is the plan's intended entry notional
- * when a plan names one, else the mission's allocated capital — the line always
- * says which it was priced at.
+ * bounded: the round trip at a stated reference notional, priced at each of the
+ * three executions an entry can ask for, and the rung a target should clear.
+ * The reference notional is the plan's intended entry notional when a plan
+ * names one, else the mission's allocated capital — the line always says which
+ * it was priced at.
+ *
+ * The two resting orientations were measured missing on 2026-08-19: every fill
+ * but ten of a 209-fill history paid the taker rate, and the flat turn — the
+ * turn that decides whether the expected move pays the round trip — could only
+ * see the most expensive execution there is. A 1m move that cannot pay
+ * `roundTripUsd` frequently pays `takerMakerUsd`, and the entry the playbooks
+ * arm at a level the market must travel to is exactly the entry that can rest.
  */
 export const TradingCostContext = Schema.Struct({
   /** The notional the round trip was priced at. */
@@ -165,6 +173,10 @@ export const TradingCostContext = Schema.Struct({
   roundTripUsd: Schema.Number,
   /** The same cost in basis points of the reference notional. */
   roundTripBps: Schema.Number,
+  /** Crossing in and resting out — the round trip when the exit is patient. */
+  takerMakerUsd: Schema.Number,
+  /** Both legs resting post-only: two maker fees, no spread crossing, no walk. */
+  makerMakerUsd: Schema.Number,
   /**
    * The rung a target should clear at this notional — twice the round trip.
    *
@@ -186,6 +198,8 @@ export function costContextFromEstimate(estimate: TradingCostEstimate): TradingC
     roundTripUsd: estimate.roundTripUsd,
     roundTripBps:
       estimate.notionalUsd > 0 ? (estimate.roundTripUsd / estimate.notionalUsd) * 10_000 : 0,
+    takerMakerUsd: estimate.roundTripTakerMakerUsd,
+    makerMakerUsd: estimate.roundTripMakerMakerUsd,
     preferredTargetUsd: estimate.preferredTargetUsd,
   };
 }

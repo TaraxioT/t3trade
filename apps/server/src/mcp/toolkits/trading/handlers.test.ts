@@ -359,6 +359,10 @@ const fakeCostEstimator = Layer.succeed(TradingCostEstimator, {
       roundTripFeeUsd: 0.9,
       roundTripSpreadUsd: 0.1,
       roundTripSlippageUsd: 0,
+      // The resting orientations the flat cost line now carries; omitting
+      // either is the encode failure this cast cannot surface at compile time.
+      roundTripTakerMakerUsd: 0.7,
+      roundTripMakerMakerUsd: 0.3,
       breakEvenPriceMoveUsd: 3,
       // Twice the round trip, as the real estimator derives it. The `as
       // unknown` cast below means an omitted field is a runtime undefined the
