@@ -171,9 +171,18 @@ export interface TradingWatchServiceShape {
    * PnL, and everything the runtime armed to ask a question about a live trade,
    * goes with the position.
    *
-   * A model-armed price level survives — a level is still a level when flat —
-   * but loses its `prediction_version`, because the prediction it was bound to
-   * ended with the trade.
+   * A model-armed price level survives ONLY if it was armed while the mission
+   * was flat — a level is still a level when flat, and an entry trigger armed
+   * before the trade is not the trade's to retire. One armed WHILE holding is
+   * a proxy for the position: a mission armed a bare `price_cross` at the
+   * price its target reached, closed, and that level went on standing over a
+   * flat book — the runtime retired the `pnl_above` beside it and the model
+   * had to cancel this one by hand twenty seconds later. `armed_with_position`
+   * (migration 072) is the linkage, so the sweep keys off WHEN a watch was
+   * armed rather than what kind it is.
+   *
+   * A surviving level loses its `prediction_version`, because the prediction
+   * it was bound to ended with the trade.
    *
    * Returns the ids it superseded, for the log line.
    */
@@ -290,14 +299,25 @@ const makeTradingWatchService = Effect.gen(function* () {
                     input.replacedStatus ?? "cancelled",
                   );
 
+            // Was the mission holding when this was armed? A level armed
+            // over an open position belongs to that position's plan and is
+            // retired with it; the same level armed flat is a standing entry
+            // trigger and survives. Read inside the transaction so the answer
+            // is the one the insert is written against.
+            const holding = yield* sql<{ readonly size: number }>`
+              SELECT size FROM trading_position_snapshots
+              WHERE mission_id = ${input.missionId}
+            `;
+            const armedWithPosition = holding.some((row) => row.size !== 0) ? 1 : 0;
+
             yield* sql`
               INSERT INTO trading_watches
                 (watch_id, mission_id, watch_json, status, armed_reason, version,
-                 created_at, updated_at, prediction_version)
+                 created_at, updated_at, prediction_version, armed_with_position)
               VALUES
                 (${watchId}, ${input.missionId}, ${watchJson}, 'active',
                  ${input.armedReason ?? null}, 1, ${now}, ${now},
-                 ${input.predictionVersion ?? null})
+                 ${input.predictionVersion ?? null}, ${armedWithPosition})
             `;
 
             // §11.1 `analysing → waiting`, second actor (plan 29 step 4.4):
@@ -436,11 +456,12 @@ const makeTradingWatchService = Effect.gen(function* () {
           AND (
             json_extract(watch_json, '$.type') IN ${sql.in(POSITION_SCOPED_WATCH_TYPES)}
             OR ${sql.in("armed_reason", POSITION_SCOPED_ARMED_REASONS)}
+            OR armed_with_position = 1
           )
         RETURNING watch_id
       `.pipe(Effect.mapError(sqlFail("supersedePositionWatches")));
 
-      // What survives is a level the harness armed itself. It keeps its
+      // What survives is a level the harness armed while FLAT. It keeps its
       // condition and loses only its binding to a prediction that is over, so
       // the next plan revision does not sweep it as a stale projection.
       yield* sql`

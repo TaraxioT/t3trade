@@ -40,12 +40,26 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 71 });
+  yield* runMigrations({ toMigrationInclusive: 72 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM trading_plan_history`;
+  yield* sql`DELETE FROM trading_position_snapshots`;
 });
+
+/** Put a position on the mission, the way the reconciler's snapshot would. */
+const seedPosition = (size: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_position_snapshots
+        (mission_id, market, size, entry_price, unrealised_pnl, margin_used,
+         protected_size, observed_at, opened_at)
+      VALUES ('mission_1', 'ETH', ${size}, 1_913.3, 0, 100, 0, 1_000, 900)
+      ON CONFLICT (mission_id, market) DO UPDATE SET size = ${size}
+    `;
+  });
 
 /** Move the mission into `analysing`, where step 4.4's second actor starts. */
 const moveAnalysing = Effect.gen(function* () {
@@ -142,6 +156,56 @@ layer("TradingWatchService", (it) => {
       // It survives, but not still bound to a prediction that ended with the
       // trade — otherwise the next revision sweeps it as a stale projection.
       assert.equal(byId.get(level.id)?.prediction_version, null);
+    }),
+  );
+
+  // The other half of plan 36 item 3, found on mission cf9dbd6f: the
+  // position-linked `pnl_above` was superseded correctly and a bare
+  // `price_cross` the model had armed at the SAME target price survived the
+  // flat book. It was only cleaned up because the model cancelled it by hand
+  // twenty seconds later.
+  it.effect("retires a model-armed level that was armed while the position was open", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      const watches = yield* TradingWatchService;
+
+      // Armed flat: a standing entry trigger, and not the position's to take.
+      const { watch: entryLevel } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+
+      yield* seedPosition(-0.2613);
+
+      // Armed while holding: the model's own proxy for the target, at the
+      // price the target reaches. Same kind as the level above — only the
+      // moment it was armed tells them apart.
+      const { watch: targetProxy } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "below",
+          price: 1_910.4,
+        },
+      });
+
+      yield* sql`UPDATE trading_position_snapshots SET size = 0 WHERE mission_id = 'mission_1'`;
+      const retired = yield* watches.supersedePositionWatches({ missionId: "mission_1" });
+
+      assert.deepStrictEqual([...retired], [targetProxy.id]);
+      const statuses = yield* sql<{
+        readonly watch_id: string;
+        readonly status: string;
+      }>`SELECT watch_id, status FROM trading_watches WHERE mission_id = 'mission_1'`;
+      const byId = new Map(statuses.map((row) => [row.watch_id, row.status]));
+      assert.equal(byId.get(targetProxy.id), "superseded");
+      // The flat-armed level is still a level. Killing it would take the
+      // mission's way back in with the trade it just left.
+      assert.equal(byId.get(entryLevel.id), "active");
     }),
   );
 

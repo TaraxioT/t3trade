@@ -18,7 +18,7 @@ const CLOID = "c105e".padEnd(32, "0");
 /** Migrate the shared in-memory database and start each test from empty. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 71 });
+  yield* runMigrations({ toMigrationInclusive: 72 });
   yield* sql`DELETE FROM trading_protection_orders`;
 });
 
