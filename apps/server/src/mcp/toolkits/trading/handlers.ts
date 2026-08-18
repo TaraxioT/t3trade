@@ -887,6 +887,30 @@ const boundCandles = (history: MarketHistory, bars: number, note?: string): Mark
 };
 
 /**
+ * The bars in hand, with older ones from a second read prepended.
+ *
+ * Two reads of the same market are two moments: the forming bar moves between
+ * them, and a look whose chart says one close while its `ema(20)` was computed
+ * from another is the drift the shared market half exists to prevent. Bars that
+ * closed, though, are finished — a bar from an hour ago reads the same at every
+ * moment after it. So only the strictly older half of the deeper read is taken,
+ * and every bar the caller already had, the forming one included, is kept
+ * exactly as it was observed.
+ *
+ * A failed or too-short second read leaves the series untouched: a shallower
+ * indicator is a worse reading, a spliced-in disagreement is a wrong one.
+ */
+const extendHistoryBackwards = (
+  history: MarketHistory,
+  deeper: MarketHistory | null,
+): ReadonlyArray<MarketCandle> => {
+  const oldest = history.candles[0]?.openTime;
+  if (deeper === null || oldest === undefined) return history.candles;
+  const older = deeper.candles.filter((candle) => candle.openTime < oldest);
+  return older.length === 0 ? history.candles : [...older, ...history.candles];
+};
+
+/**
  * The book, bounded to the depth the readings beside it are measured over.
  *
  * The gateway returns twenty levels a side and `microstructure` scores ten of
@@ -932,25 +956,26 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   // `indicatorLookbackBars` asks for: everything else here is measured over the
   // runtime's 120-bar lookback, and at 120 bars an `ema(50)` still carries its
   // SMA seed — enough to report the wrong side of an `ema(20)/ema(50)` cross on
-  // 1.1% of ETH 1m bars. Only the indicator input widens; volatility,
-  // structure and the echoed chart keep the window they have always used.
+  // 1.1% of ETH 1m bars. Only the indicator input widens, and only backwards —
+  // volatility, structure and the echoed chart keep the window they have always
+  // used, and the bars they share stay the ones they were observed as.
   const indicatorReadings = Effect.fn("TradingToolkit.indicatorReadings")(function* (
     history: MarketHistory,
   ) {
     const requests = (input.indicators ?? []).slice(0, INDICATOR_MAX_REQUESTS);
     if (requests.length === 0) return {};
     const needed = indicatorLookbackBars(requests);
-    const deep =
-      history.candles.length >= needed
-        ? history
-        : ((yield* gateway
-            .getMarketHistory({
-              market: history.market,
-              interval: history.interval,
-              maxBars: needed,
-            })
-            .pipe(Effect.catchCause(() => Effect.succeed(null)))) ?? history);
-    return { indicators: requests.map((request) => computeIndicator(request, deep.candles)) };
+    if (history.candles.length >= needed) {
+      return { indicators: requests.map((request) => computeIndicator(request, history.candles)) };
+    }
+    const deeper = yield* gateway
+      .getMarketHistory({ market: history.market, interval: history.interval, maxBars: needed })
+      .pipe(Effect.catchCause(() => Effect.succeed(null)));
+    return {
+      indicators: requests.map((request) =>
+        computeIndicator(request, extendHistoryBackwards(history, deeper)),
+      ),
+    };
   });
   const wantsMarket = scopes.has("market");
   const wantsCandles = scopes.has("candles");

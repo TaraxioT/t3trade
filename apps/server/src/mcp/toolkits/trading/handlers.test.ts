@@ -7,6 +7,7 @@
  * capability check, thread-to-mission resolution, and the trading services.
  */
 import { TRADING_LOOK_FLAT_BAR_CAP } from "@t3tools/trading-contracts/observation";
+import { computeIndicator } from "@t3tools/trading-contracts/indicators";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
@@ -170,6 +171,8 @@ interface FakeExchange {
   orders: AgentOpenOrder[];
   cancels: string[];
   candles: MarketCandle[];
+  /** How far back this fake's market goes; 0 means only `candles`. */
+  historyDepth: number;
 }
 
 const makeFakeExchange = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
@@ -179,6 +182,7 @@ const makeFakeExchange = (overrides: Partial<FakeExchange> = {}): FakeExchange =
   askPrice: 3_010.5,
   orders: [],
   cancels: [],
+  historyDepth: 0,
   // Forty 1m candles ranging 12 USD, so the server's own ATR measures 12.
   candles: Array.from({ length: 40 }, (_, i) => ({
     openTime: 4_000_000 - (40 - i) * 60_000,
@@ -191,6 +195,27 @@ const makeFakeExchange = (overrides: Partial<FakeExchange> = {}): FakeExchange =
   })),
   ...overrides,
 });
+
+/**
+ * `count` bars older than a series, held at a price far from it.
+ *
+ * An EMA seeded here and one seeded inside the series answer differently, which
+ * is the whole point: it makes "which window was this computed over" a question
+ * the assertions can actually put to the reading.
+ */
+const olderBarsBefore = (series: ReadonlyArray<MarketCandle>, count: number): MarketCandle[] => {
+  const first = series[0];
+  if (first === undefined || count <= 0) return [];
+  return Array.from({ length: count }, (_, i) => ({
+    ...first,
+    openTime: first.openTime - (count - i) * 60_000,
+    closeTime: first.openTime - (count - i) * 60_000 + 59_000,
+    open: 2_500,
+    close: 2_500,
+    high: 2_500,
+    low: 2_500,
+  }));
+};
 
 /** A resting non-reduce-only limit with a cloid — the working entry's shape. */
 const restingWorkingEntry = (cloid: string, limitPrice: number): AgentOpenOrder =>
@@ -263,11 +288,18 @@ const exchangeGatewayLayer = (fake: FakeExchange) =>
         },
         freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
       }),
-    getMarketHistory: () =>
+    // The real gateway answers `maxBars` with that many bars when the market
+    // has them. `historyDepth` is how far back this fake pretends to go: left
+    // at zero it hands back the fixture whatever is asked for, which is what
+    // every test that does not care about lookback depth wants.
+    getMarketHistory: (request: { readonly maxBars?: number }) =>
       Effect.succeed({
         market: "ETH",
         interval: "1m",
-        candles: fake.candles,
+        candles: olderBarsBefore(
+          fake.candles,
+          Math.min(request.maxBars ?? 0, fake.historyDepth) - fake.candles.length,
+        ).concat(fake.candles),
         freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
       }),
     // `trading_look` reads all three (plan 29 step 6.1), so the fake answers
@@ -913,6 +945,46 @@ const manyCandles = Array.from({ length: 150 }, (_, i) => ({
   low: 3_000,
   volume: 100,
 }));
+
+it.effect("reads an ema(50) back far enough to be the chart's number", () => {
+  // 150 bars in hand, and `ema(50)` wants 250. The 100 it does not have are
+  // held at 2,500 against a series around 3,010, so a reading seeded inside the
+  // short window and one seeded before it cannot be confused for each other.
+  const fake = makeFakeExchange({ candles: manyCandles, historyDepth: 250 });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 150,
+          indicators: [{ kind: "ema", period: 50 }],
+        });
+        const read = look.result.body;
+        const reading = read.indicators[0];
+
+        // What the shallow window would have said, computed the same way.
+        const shallow = computeIndicator({ kind: "ema", period: 50 }, manyCandles);
+        assert.notEqual(reading.value, shallow.value);
+
+        // And what the deep one says: the far-off seed has not fully decayed
+        // over 250 bars, so the reading sits below the series it ends in.
+        const deep = computeIndicator(
+          { kind: "ema", period: 50 },
+          olderBarsBefore(manyCandles, 100).concat(manyCandles),
+        );
+        assert.equal(reading.value, deep.value);
+        assert.isBelow(reading.value ?? 0, shallow.value ?? 0);
+
+        // The chart is untouched by the deeper read — same bars, same window.
+        // A look must not quote one series and compute its indicator on another.
+        assert.equal(read.candles.bars.length, TRADING_LOOK_FLAT_BAR_CAP);
+        assert.equal(read.candles.bars.at(-1)?.[3], manyCandles.at(-1)?.close);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
 
 it.effect("caps the chart a flat look echoes, and says that it did", () => {
   const fake = makeFakeExchange({ candles: manyCandles });
