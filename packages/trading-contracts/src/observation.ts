@@ -23,6 +23,7 @@ import { ObservedMarketStructure } from "./marketStructure.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingTimeframe } from "./strategy.ts";
+import { LevelHistoryEntry, PreviousStructureRead } from "./wakeup.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingGetMissionResult } from "./tools.ts";
 
@@ -239,6 +240,28 @@ export const TradingObservation = Schema.Struct({
   higherTimeframeVolatility: Schema.optional(ObservedVolatility),
   /** Direction, alignment, regime, and the scored candidates with their cost. */
   structure: Schema.optional(ObservedMarketStructure),
+  /**
+   * What the levels near the mark have already done to THIS mission — plan 27
+   * B1, grouped with an ATR-scaled tolerance so 1899.7 and 1900.2 are one
+   * level.
+   *
+   * Rides the structure scope because it is read at the same moment as the
+   * boundary it qualifies: the `range_reversion` doctrine says a level with
+   * two `closedThrough` events is one the market has already gone through
+   * twice, and one with a `stopOuts` entry has already ended a trade of this
+   * mission's against the thesis. It was gathered by `observe` and dropped at
+   * both exits — the doctrine pointed at a field nothing returned.
+   */
+  levelHistory: Schema.optional(Schema.Array(LevelHistoryEntry)),
+  /**
+   * The mission's previous structure read — plan 27 B2, and the other half of
+   * the same gap.
+   *
+   * A boundary re-drawn in the same direction as the last read is a range
+   * walking, and the walk is the trade. Absent until the mission has read
+   * once.
+   */
+  previousStructureRead: Schema.optional(PreviousStructureRead),
   /**
    * What the book says, as readings — plan 29 phase 7. The same value the wake
    * carries, from the same read: a look and a wake quote one book, never two.

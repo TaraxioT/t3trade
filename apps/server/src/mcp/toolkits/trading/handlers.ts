@@ -1172,6 +1172,18 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
     ...(structure === null
       ? {}
       : { structure: digestMarketStructure(structure, namedInterval ?? facts.primaryTimeframe) }),
+    // What this mission's own levels have already done, and what its last read
+    // measured. `observe` has gathered both since plan 27, and neither exit
+    // carried them — so the `range_reversion` doctrine that says to read them
+    // before arming was pointing at fields nothing returned. They ride the
+    // structure scope because they qualify the boundary read at the same
+    // moment, and only when there is a mission whose memory it is.
+    ...(!wantsStructure || facts.levelHistory.length === 0
+      ? {}
+      : { levelHistory: facts.levelHistory }),
+    ...(!wantsStructure || facts.previousStructureRead === undefined
+      ? {}
+      : { previousStructureRead: facts.previousStructureRead }),
     ...(wantsPosition
       ? {
           account: facts.accountSnapshot,

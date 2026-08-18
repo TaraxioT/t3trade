@@ -496,6 +496,13 @@ const withMcpServer = <A, E>(
     readonly missions: TradingMissionService["Service"];
     /** Register one active watch, as a watch tool would. */
     readonly seedActiveWatch: (watchId: string) => Effect.Effect<void, never, never>;
+    /** Record one level event, as the watch evaluator would. */
+    readonly seedLevelEvent: (input: {
+      readonly id: string;
+      readonly level: number;
+      readonly kind: string;
+      readonly occurredAt: number;
+    }) => Effect.Effect<void, never, never>;
     /** Record one reconciled fill, as the reconciler would. */
     readonly seedFill: (input: {
       readonly fillId: string;
@@ -653,6 +660,20 @@ const withMcpServer = <A, E>(
             ${input.stopPrice}, ${input.plannedLossUsd}, ${input.createdAt}, ${input.createdAt}
           )
         `.pipe(Effect.asVoid, Effect.orDie);
+      const seedLevelEvent = (input: {
+        readonly id: string;
+        readonly level: number;
+        readonly kind: string;
+        readonly occurredAt: number;
+      }) =>
+        sql`
+          INSERT INTO trading_level_events
+            (event_id, mission_id, market, level, kind, price, occurred_at)
+          VALUES (
+            ${input.id}, ${MISSION_ID}, 'ETH', ${input.level}, ${input.kind},
+            ${input.level}, ${input.occurredAt}
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
       const seedHarnessRun = () =>
         sql`
           INSERT INTO trading_harness_runs (run_id, mission_id, cause, status, started_at, created_at)
@@ -743,6 +764,7 @@ const withMcpServer = <A, E>(
         seedPlan,
         seedEntryRecord,
         seedHarnessRun,
+        seedLevelEvent,
         readFirstRefusal,
       });
     }),
@@ -1216,6 +1238,50 @@ it.effect("returns the structure read digested, and the candidate table once", (
         // A candidate carries every field of the setup it was built from plus
         // the cost of taking it, so the two tables are never both sent.
         assert.isTrue(structure.candidates === undefined || structure.setups === undefined);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+// The `range_reversion` doctrine says to read `levelHistory` before arming and
+// to compare this read's boundary against `previousStructureRead`. Both were
+// gathered by `observe` and dropped at every exit, so both sentences pointed at
+// fields no tool returned.
+it.effect("serves the level memory the doctrine says to read before arming", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedLevelEvent }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        yield* seedLevelEvent({
+          id: "e1",
+          level: 3_010,
+          kind: "closed_through",
+          occurredAt: 900_000,
+        });
+        yield* seedLevelEvent({
+          id: "e2",
+          level: 3_010,
+          kind: "closed_through",
+          occurredAt: 950_000,
+        });
+
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["structure"],
+        });
+
+        const history = look.result.body.levelHistory;
+        assert.isDefined(history, "expected the structure scope to carry the level memory");
+        assert.equal(history[0].closedThrough, 2);
+
+        // And the read this call just took is remembered for the next one to
+        // compare against — the other half of the same doctrine sentence.
+        const again = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["structure"],
+        });
+        assert.isDefined(again.result.body.previousStructureRead);
       }),
     tradingLayerOverExchange(fake),
   );

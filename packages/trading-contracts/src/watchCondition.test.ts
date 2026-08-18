@@ -125,7 +125,15 @@ describe("the condition the model writes", () => {
       interval: "1m",
     });
     // And a condition that names its own interval keeps it.
-    assert.deepEqual(toMarketWatch({ ...condition, interval: "15m" }, "5m"), {
+    const named = decode({
+      kind: "metric",
+      market: "ETH",
+      metric: "volume_ratio",
+      direction: "above",
+      value: 2,
+      interval: "15m",
+    });
+    assert.deepEqual(toMarketWatch(named, "5m"), {
       type: "metric_threshold",
       market: "ETH",
       metric: "volume_ratio",
