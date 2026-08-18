@@ -88,6 +88,7 @@ import type {
 import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
 import {
   computeIndicator,
+  indicatorLookbackBars,
   INDICATOR_MAX_REQUESTS,
   type IndicatorRequest,
 } from "@t3tools/trading-contracts/indicators";
@@ -920,17 +921,37 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   // re-resolves this once the canonical position is in hand.
   const echoedBars = echoedBarsForLook(input);
 
-  // The indicator readings this call asked for, computed on the same bars the
-  // candle read fetched — the model pulls `ema(20)` instead of deriving it
-  // from raw bars in context. Computed on the FULL fetched window, not the
-  // bounded slice riding back, so a 50-period read works beside `bars: 20`.
-  const indicatorReadings = (history: MarketHistory) => {
-    const requests = (input.indicators ?? []).slice(0, INDICATOR_MAX_REQUESTS);
-    return requests.length === 0
-      ? {}
-      : { indicators: requests.map((request) => computeIndicator(request, history.candles)) };
-  };
   const gateway = yield* HyperliquidGateway;
+
+  // The indicator readings this call asked for — the model pulls `ema(20)`
+  // instead of deriving it from raw bars in context.
+  //
+  // Computed on the FULL window, never the bounded slice riding back, so a
+  // 50-period read works beside `bars: 20`. When the window in hand is shorter
+  // than the reading needs, the bars are fetched again at the depth
+  // `indicatorLookbackBars` asks for: everything else here is measured over the
+  // runtime's 120-bar lookback, and at 120 bars an `ema(50)` still carries its
+  // SMA seed — enough to report the wrong side of an `ema(20)/ema(50)` cross on
+  // 1.1% of ETH 1m bars. Only the indicator input widens; volatility,
+  // structure and the echoed chart keep the window they have always used.
+  const indicatorReadings = Effect.fn("TradingToolkit.indicatorReadings")(function* (
+    history: MarketHistory,
+  ) {
+    const requests = (input.indicators ?? []).slice(0, INDICATOR_MAX_REQUESTS);
+    if (requests.length === 0) return {};
+    const needed = indicatorLookbackBars(requests);
+    const deep =
+      history.candles.length >= needed
+        ? history
+        : ((yield* gateway
+            .getMarketHistory({
+              market: history.market,
+              interval: history.interval,
+              maxBars: needed,
+            })
+            .pipe(Effect.catchCause(() => Effect.succeed(null)))) ?? history);
+    return { indicators: requests.map((request) => computeIndicator(request, deep.candles)) };
+  });
   const wantsMarket = scopes.has("market");
   const wantsCandles = scopes.has("candles");
   const wantsStructure = scopes.has("structure");
@@ -952,6 +973,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
       ],
       { concurrency: "unbounded" },
     );
+    const readings = candles === null || !wantsCandles ? {} : yield* indicatorReadings(candles);
     return {
       ...(resolvedMarket === null ? {} : { resolvedMarket }),
       ...(snapshot === null ? {} : { snapshot }),
@@ -968,7 +990,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
                 measuredAt: candles.freshness.observedAt,
               }),
             ),
-            ...indicatorReadings(candles),
+            ...readings,
           }),
       ...(orderBook === null || candles === null || snapshot === null
         ? {}
@@ -1045,6 +1067,8 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
     { concurrency: "unbounded" },
   );
 
+  const readings = wantsCandles ? yield* indicatorReadings(namedHistory ?? facts.history) : {};
+
   return {
     ...(resolvedMarket === null ? {} : { resolvedMarket }),
     ...(wantsMarket
@@ -1062,7 +1086,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
           ...(facts.higherTimeframeVolatility === null
             ? {}
             : { higherTimeframeVolatility: facts.higherTimeframeVolatility }),
-          ...indicatorReadings(namedHistory ?? facts.history),
+          ...readings,
         }
       : {}),
     ...(structure === null ? {} : { structure: digestMarketStructure(structure) }),

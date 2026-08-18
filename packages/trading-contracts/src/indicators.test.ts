@@ -11,6 +11,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   computeIndicator,
   DEFAULT_INDICATOR_PERIODS,
+  indicatorLookbackBars,
   INDICATOR_MAX_REQUESTS,
 } from "./indicators.ts";
 import type { MarketCandle } from "./market.ts";
@@ -97,5 +98,44 @@ describe("computeIndicator", () => {
   it("caps one look at a handful of requests", () => {
     // The cap itself is enforced at the handler; the constant is the contract.
     expect(INDICATOR_MAX_REQUESTS).toBe(6);
+  });
+});
+
+describe("indicatorLookbackBars", () => {
+  it("asks for five periods of history, and never past the exchange's cap", () => {
+    expect(indicatorLookbackBars([{ kind: "ema", period: 50 }])).toBe(250);
+    // The longest request in the set decides for all of them.
+    expect(
+      indicatorLookbackBars([
+        { kind: "ema", period: 20 },
+        { kind: "ema", period: 50 },
+      ]),
+    ).toBe(250);
+    // A missing period is the kind's default, not zero.
+    expect(indicatorLookbackBars([{ kind: "ema" }])).toBe(100);
+    // 200 is the longest period the schema admits; five of those is past 500.
+    expect(indicatorLookbackBars([{ kind: "ema", period: 200 }])).toBe(500);
+    // `vwap`'s whole-window read asks for nothing extra.
+    expect(indicatorLookbackBars([{ kind: "vwap" }])).toBe(0);
+  });
+
+  it("gives an ema(50) enough seed decay to agree with the converged value", () => {
+    // Two overlapping cycles — the shape real price has, and the one the SMA
+    // seed reads wrong: the mean of the first 50 bars of a short window is not
+    // where the EMA actually stood there.
+    const closes = Array.from(
+      { length: 600 },
+      (_, i) => 1000 + 5 * Math.sin((2 * Math.PI * i) / 23) + 8 * Math.sin((2 * Math.PI * i) / 97),
+    );
+    const candles = closes.map((close) => bar(close));
+    const at = (bars: number) =>
+      computeIndicator({ kind: "ema", period: 50 }, candles.slice(-bars)).value ?? 0;
+
+    const converged = at(600);
+    // The old lookback: the seed is still in the answer.
+    expect(Math.abs(at(120) - converged)).toBeGreaterThan(0.05);
+    // The one `indicatorLookbackBars` asks for: two orders of magnitude closer.
+    expect(Math.abs(at(250) - converged)).toBeLessThan(0.005);
+    expect(indicatorLookbackBars([{ kind: "ema", period: 50 }])).toBe(250);
   });
 });

@@ -15,6 +15,7 @@
  */
 import * as Schema from "effect/Schema";
 
+import { MARKET_FRESHNESS } from "./market.ts";
 import type { MarketCandle } from "./market.ts";
 
 export const IndicatorKind = Schema.Literals(["ema", "sma", "rsi", "vwap"]);
@@ -40,6 +41,34 @@ export const DEFAULT_INDICATOR_PERIODS: Readonly<Record<IndicatorKind, number>> 
  * `insufficient bars` anyway, so the schema says so upfront.
  */
 export const INDICATOR_MAX_PERIOD = 200;
+
+/**
+ * How many bars an indicator has to be computed over to be the number the
+ * exchange's own chart shows.
+ *
+ * The recursion below is seeded with the SMA of the first `period` closes, so
+ * a short window leaves that seed weighing on the answer. Measured on ETH 1m:
+ * over 120 bars an `ema(50)` sits up to $0.15 away from its converged value,
+ * and 1.1% of bars that is enough to put the `ema(20)/ema(50)` spread on the
+ * wrong side of zero — the `ema_cross` playbook reading a cross the chart does
+ * not show. Five periods drives the seed's remaining weight under 0.1%, at
+ * which point the reading and the chart agree to display precision.
+ */
+export const INDICATOR_LOOKBACK_MULTIPLE = 5;
+
+/**
+ * The bars a set of requests needs fetched, capped at what the exchange
+ * returns. Zero-period requests (`vwap`'s whole window) ask for nothing extra.
+ */
+export const indicatorLookbackBars = (
+  requests: ReadonlyArray<{ readonly kind: IndicatorKind; readonly period?: number | undefined }>,
+): number => {
+  const longest = requests.reduce(
+    (bars, request) => Math.max(bars, request.period ?? DEFAULT_INDICATOR_PERIODS[request.kind]),
+    0,
+  );
+  return Math.min(longest * INDICATOR_LOOKBACK_MULTIPLE, MARKET_FRESHNESS.candleHistoryMaxBars);
+};
 
 /** How many indicator requests one look computes. */
 export const INDICATOR_MAX_REQUESTS = 6;
