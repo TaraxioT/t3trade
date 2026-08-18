@@ -51,7 +51,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 
-import type { PersistedWatch, TradingMission } from "../../../trading/Schemas.ts";
+import type {
+  PersistedWatch,
+  PublishTradingPlanBody,
+  TradingMission,
+} from "../../../trading/Schemas.ts";
 import type { TradingPlanState } from "../../../trading/Schemas.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
@@ -98,6 +102,7 @@ import {
   roundObservedVolatility,
 } from "@t3tools/trading-contracts/precision";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
+import { judgeTargetAgainstCosts, type TargetCostBars } from "@t3tools/trading-contracts/costs";
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
 import { readAccountMarginCapacityUsd } from "../../../trading/AccountMarginCapacity.ts";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
@@ -1340,28 +1345,57 @@ const moveStop = Effect.fn("TradingToolkit.moveStop")(function* (input: {
 });
 
 /**
- * Tell a plan that its target sits under the rung — in band, never blocking.
+ * The mission row's version right now, for a refusal that has to hand one back.
  *
- * The target is what the runtime arms `pnl_above` at, so a target below twice
- * the round trip wakes the mission to bank a move that barely paid for itself.
- * One measured mission published twelve such targets in fifteen directional
- * plans, and it was not the model's fault: the cost block is omitted when flat,
- * so every ENTRY plan was written with no rung in front of it and the accepted
- * result echoed no numbers back.
- *
- * A warning, not a refusal. A hard publish-time rejection was tried and
- * reverted — it made `trading_plan` fail in a way nothing could attribute —
- * and a refusal that fires on a degraded estimate is worse than a plan with an
- * optimistic target. So: state both numbers, accept the plan, let the next
- * revision act on it.
- *
- * Priced at what the account can actually fund, for the same reason the wake's
- * flat cost line is: the declared entry notional is not enforced anywhere, and
- * pricing the rung against a number the entry will not take produces a rung
- * that nothing fails.
+ * A target refusal writes nothing, so the version has not moved — but the
+ * harness retries against whatever this says, and echoing the expected number
+ * back would hide a mission that HAS moved on while the turn was thinking. The
+ * expected version is the fallback for a read that failed, which is the number
+ * a retry would have used anyway.
  */
-const targetBelowRungWarning = Effect.fn("TradingToolkit.targetBelowRungWarning")(
-  function* (input: { readonly mission: TradingMission; readonly strategy: TradingPlanState }) {
+const readMissionVersion = Effect.fn("TradingToolkit.readMissionVersion")(
+  function* (missionId: string, fallback: number) {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly version: number }>`
+      SELECT version FROM trading_missions WHERE mission_id = ${missionId}
+    `;
+    return rows[0]?.version ?? fallback;
+  },
+  (effect, _missionId, fallback) => Effect.catchCause(effect, () => Effect.succeed(fallback)),
+);
+
+/**
+ * Weigh a plan's target against what its own execution costs — the rung, and
+ * the floor underneath it.
+ *
+ * The target is what the runtime arms `pnl_above` at, so a target the round
+ * trip eats wakes the mission to bank a move that did not pay for itself. One
+ * measured mission published twelve such targets in fifteen directional plans,
+ * and it was not the model's fault: the cost block is omitted when flat, so
+ * every ENTRY plan was written with no rung in front of it.
+ *
+ * `preferredTargetUsd` alone was tried as a warning and was not enough — the
+ * same session published $1.60 and then $0.70 against a $1.899 rung, saying it
+ * had read the warning both times. So the rung stays a warning and a floor
+ * goes under it: {@link MINIMUM_TARGET_COST_MULTIPLE} times the round trip the
+ * plan's OWN `urgency` buys. Between floor and rung a target is thin but real
+ * and the plan stands with both numbers stated; below the floor the publish
+ * refuses and nothing is written.
+ *
+ * Priced at what the account can actually fund, for the same reason the flat
+ * wake's cost line is: the declared entry notional is not enforced anywhere,
+ * and a rung priced at a notional the entry will not take is a rung nothing
+ * fails.
+ *
+ * Judged from the INPUT, before the publish runs. A refusal has to mean the
+ * plan was not written, and the earlier attempt at a hard gate refused after
+ * the write — which is part of why it was reverted.
+ */
+const judgeTargetCost = Effect.fn("TradingToolkit.judgeTargetCost")(
+  function* (input: {
+    readonly mission: TradingMission;
+    readonly strategy: PublishTradingPlanBody;
+  }) {
     const target = input.strategy.target.profitUsd;
     if (input.strategy.intent === "stand_aside" || target === undefined || !(target > 0))
       return null;
@@ -1383,18 +1417,49 @@ const targetBelowRungWarning = Effect.fn("TradingToolkit.targetBelowRungWarning"
         input.mission.authority.allocatedCapitalUsd,
       fallbackTakerFeeBpsPerSide: input.mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
     });
-    if (target >= estimate.preferredTargetUsd) return null;
 
-    return (
-      `target ${target.toFixed(2)} USD is under the ${estimate.preferredTargetUsd.toFixed(2)} USD ` +
-      `this trade should clear — twice the ${estimate.roundTripUsd.toFixed(2)} USD round trip at the ` +
-      `${estimate.notionalUsd.toFixed(2)} USD the account can fund. The plan stands; the target wakes ` +
-      `you for a move that barely pays for itself.`
-    );
-    // A cost read is an enrichment. A plan is never held up because one failed.
+    return judgeTargetAgainstCosts({
+      targetUsd: target,
+      execution: input.strategy.entry.urgency === "patient" ? "patient" : "immediate",
+      estimate,
+    });
+    // A cost read is an enrichment. A plan is never held up because one failed
+    // — least of all now that the verdict can refuse it.
   },
   Effect.catchCause(() => Effect.succeed(null)),
 );
+
+/** The execution the plan named, as the refusal and the warning both spell it. */
+const executionLabel = (urgency: TradingUrgency): string =>
+  urgency === "patient" ? "the patient round trip (resting in, crossing out)" : "the round trip";
+
+/**
+ * The refusal text. It names the number to raise and what to raise it to,
+ * because a refusal the model cannot act on costs the same turn twice.
+ */
+const targetFloorRefusal = (input: {
+  readonly targetUsd: number;
+  readonly urgency: TradingUrgency;
+  readonly verdict: TargetCostBars;
+}): string =>
+  `target.profitUsd ${input.targetUsd.toFixed(2)} USD does not clear ` +
+  `${executionLabel(input.urgency)} of ${input.verdict.roundTripUsd.toFixed(2)} USD at the ` +
+  `${input.verdict.notionalUsd.toFixed(2)} USD the account can fund — the floor is ` +
+  `${input.verdict.floorUsd.toFixed(2)} USD and the rung to aim at is ` +
+  `${input.verdict.rungUsd.toFixed(2)} USD. Raise target.profitUsd to at least ` +
+  `${input.verdict.rungUsd.toFixed(2)}, or publish intent "stand_aside" if the move on offer ` +
+  `cannot pay it. Nothing was published.`;
+
+/** The in-band warning for a target between the floor and the rung. */
+const targetRungWarning = (input: {
+  readonly targetUsd: number;
+  readonly verdict: TargetCostBars;
+}): string =>
+  `target ${input.targetUsd.toFixed(2)} USD is under the ${input.verdict.rungUsd.toFixed(2)} USD ` +
+  `this trade should clear — twice the crossing round trip at the ` +
+  `${input.verdict.notionalUsd.toFixed(2)} USD the account can fund. It clears the ` +
+  `${input.verdict.floorUsd.toFixed(2)} USD floor, so the plan stands; the target wakes you for a ` +
+  `move that barely pays for itself.`;
 
 const handlers = {
   trading_look: (input) => readObservation(input),
@@ -1405,6 +1470,22 @@ const handlers = {
       // The strategy service keys off `input.missionId`; resolve it to the bound
       // mission so an omitted `missionId` reaches the publish path.
       const resolvedInput = { ...input, missionId: mission.id };
+
+      // Before the publish, so a refusal means nothing was written.
+      const verdict = yield* judgeTargetCost({ mission, strategy: input.strategy });
+      if (verdict !== null && verdict.kind === "under_floor") {
+        return {
+          outcome: "rejected" as const,
+          reason: "target_below_cost_floor" as const,
+          currentVersion: yield* readMissionVersion(mission.id, input.expectedMissionVersion),
+          detail: targetFloorRefusal({
+            targetUsd: input.strategy.target.profitUsd ?? 0,
+            urgency: input.strategy.entry.urgency,
+            verdict,
+          }),
+        };
+      }
+
       // Publish plus everything an accepted publish drags behind it — the
       // announcements, the exchange reconcile, the withdrawn resting entry.
       // It lives in `TradingPlanPublication` because step 8.4's chart drag is a
@@ -1418,15 +1499,18 @@ const handlers = {
       const published = outcome.published;
       if (published.outcome !== "accepted") return published;
 
-      const rungWarning = yield* targetBelowRungWarning({
-        mission,
-        strategy: published.strategy,
-      });
       const warnings = [
         ...(outcome.warnings.length === published.warnings.length
           ? published.warnings
           : outcome.warnings),
-        ...(rungWarning === null ? [] : [rungWarning]),
+        ...(verdict !== null && verdict.kind === "under_rung"
+          ? [
+              targetRungWarning({
+                targetUsd: input.strategy.target.profitUsd ?? 0,
+                verdict,
+              }),
+            ]
+          : []),
       ];
       if (warnings.length === published.warnings.length) return published;
       return { ...published, warnings };

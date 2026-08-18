@@ -98,6 +98,11 @@ describe("the policy in force", () => {
     expect(standing).toContain(
       `After ${ACTIVE_TRADING_POLICY.session.consecutiveLossesBeforeCooldown} consecutive`,
     );
+
+    // The publish-time floor is a rule with teeth, so the doctrine has to say
+    // it refuses rather than warns — a model told "in band, never blocking"
+    // and then refused has been lied to by its own reference.
+    expect(standing).toContain("`trading_plan` REFUSES a `target.profitUsd`");
   });
 
   it("points the ema doctrine at the pair the structure read actually serves", () => {

@@ -32,6 +32,107 @@ import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
 export const PROFIT_TARGET_COST_MULTIPLE = ACTIVE_TRADING_POLICY.readings.targetCostMultiple;
 
 /**
+ * The multiple of its OWN execution's round trip a target must clear to be
+ * publishable at all.
+ *
+ * {@link PROFIT_TARGET_COST_MULTIPLE} is the rung to aim at, and it is priced
+ * at the most expensive execution there is — crossing both ways. A plan that
+ * says it will rest its entry is not paying that, so refusing every target
+ * under the rung would refuse trades that genuinely pay. This is the floor
+ * underneath the rung: the target has to beat the round trip the plan's own
+ * `urgency` actually buys, by half again, or the trade is a fee with a
+ * decision attached.
+ *
+ * Half again rather than the rung's double because the two numbers do
+ * different jobs. Between the floor and the rung a target is thin but real —
+ * it banks something after costs, and the publish says so in a warning. Below
+ * the floor there is nothing left after the round trip that a tick of slippage
+ * or a fee tier could not take, and the publish refuses.
+ */
+export const MINIMUM_TARGET_COST_MULTIPLE = 1.5;
+
+/**
+ * How a plan says it intends to get in — the two shapes `urgency` maps to.
+ *
+ * `patient` rests at a level and pays the maker leg; `immediate` crosses. It
+ * is the plan's own word, not an observation of what the fill turned out to
+ * be: the target is set before the entry, so the cost it is judged against is
+ * the cost the plan declared it would pay.
+ */
+export type PlannedExecution = "patient" | "immediate";
+
+/**
+ * The round trip one plan's stated execution pays.
+ *
+ * A patient entry is priced at the taker/maker combination, not the
+ * maker/maker one, and the difference is the exit. The entry rests, so it pays
+ * the maker fee; nothing rests at the target — reaching it wakes the mission
+ * to decide, and the decision crosses. `makerMakerUsd` is what BOTH legs
+ * resting would cost, which a plan cannot promise in advance, so pricing the
+ * floor at it would price it at an execution the trade may never get.
+ */
+export function executionRoundTripUsd(
+  estimate: Pick<TradingCostEstimate, "roundTripUsd" | "roundTripTakerMakerUsd">,
+  execution: PlannedExecution,
+): number {
+  return execution === "patient" ? estimate.roundTripTakerMakerUsd : estimate.roundTripUsd;
+}
+
+/**
+ * What a published target is worth against what the trade costs.
+ *
+ * `clears_rung` is the plan aiming where the doctrine says to aim.
+ * `under_rung` is thin but real — publishable, with the numbers stated back.
+ * `under_floor` is a target the round trip eats, and the publish refuses it.
+ */
+export interface TargetCostBars {
+  /** {@link PROFIT_TARGET_COST_MULTIPLE} x the crossing round trip. */
+  readonly rungUsd: number;
+  /** {@link MINIMUM_TARGET_COST_MULTIPLE} x the plan's own round trip. */
+  readonly floorUsd: number;
+  /** The round trip the plan's declared execution pays. */
+  readonly roundTripUsd: number;
+  /** The notional all three numbers were priced at. */
+  readonly notionalUsd: number;
+}
+
+export type TargetCostVerdict =
+  | { readonly kind: "clears_rung" }
+  | ({ readonly kind: "under_rung" } & TargetCostBars)
+  | ({ readonly kind: "under_floor" } & TargetCostBars);
+
+/**
+ * Judge one published target against the two numbers it has to answer to.
+ *
+ * A degraded estimate never reaches `under_floor`. Part of the round trip
+ * could not be read and was substituted or left out, so the floor derived from
+ * it is a guess — and a refusal that fires on a guess costs a whole turn and
+ * teaches the model nothing it can act on. The warning still goes out, which
+ * is what the behaviour was for every target before this floor existed.
+ */
+export function judgeTargetAgainstCosts(input: {
+  readonly targetUsd: number;
+  readonly execution: PlannedExecution;
+  readonly estimate: TradingCostEstimate;
+}): TargetCostVerdict {
+  const rungUsd = input.estimate.preferredTargetUsd;
+  if (input.targetUsd >= rungUsd) return { kind: "clears_rung" };
+
+  const roundTripUsd = executionRoundTripUsd(input.estimate, input.execution);
+  const floorUsd = roundTripUsd * MINIMUM_TARGET_COST_MULTIPLE;
+  const bars: TargetCostBars = {
+    rungUsd,
+    floorUsd,
+    roundTripUsd,
+    notionalUsd: input.estimate.notionalUsd,
+  };
+
+  if (input.targetUsd >= floorUsd || input.estimate.degraded)
+    return { kind: "under_rung", ...bars };
+  return { kind: "under_floor", ...bars };
+}
+
+/**
  * The exit fee a held position has not paid yet.
  *
  * `unrealisedPnl` is gross: the exchange reports what the position is worth

@@ -3,6 +3,9 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   costContextFromEstimate,
   estimateTradingCosts,
+  executionRoundTripUsd,
+  judgeTargetAgainstCosts,
+  MINIMUM_TARGET_COST_MULTIPLE,
   notionalForProfitTarget,
   roundTripCostFractionOfNotional,
   targetNotionalForPlan,
@@ -407,5 +410,114 @@ describe("the sizing fraction and the estimate agree (plan 28 defect 5)", () => 
       estimate.roundTripFeeUsd + estimate.roundTripSpreadUsd,
       10,
     );
+  });
+});
+
+describe("judgeTargetAgainstCosts", () => {
+  // The round trip this floor was written for: the ~$500 patient ETH entry of
+  // mission cf9dbd6f, at the taker/maker pair it actually paid (4.5bps and
+  // 1.5) across a two-dollar book. It prices out at a rung near $1.90, which
+  // is the rung the measured session published $1.60 and then $0.70 against.
+  const estimate = estimateTradingCosts(
+    input({
+      sizeEth: 0.26,
+      referencePrice: 1_913,
+      takerFeeBpsPerSide: 4.5,
+      makerFeeBpsPerSide: 1.5,
+      bids: [
+        { price: 1_912, size: 10 },
+        { price: 1_911, size: 10 },
+      ],
+      asks: [
+        { price: 1_914, size: 10 },
+        { price: 1_915, size: 10 },
+      ],
+    }),
+  );
+
+  it("prices a patient plan at the taker/maker round trip, not the cheapest one", () => {
+    // The entry rests, so it pays the maker fee; nothing rests at the target,
+    // so the exit crosses. `makerMakerUsd` is an execution the plan cannot
+    // promise, and pricing the floor at it would price it at a trade that may
+    // never happen.
+    expect(executionRoundTripUsd(estimate, "patient")).toBe(estimate.roundTripTakerMakerUsd);
+    expect(executionRoundTripUsd(estimate, "immediate")).toBe(estimate.roundTripUsd);
+    expect(estimate.roundTripMakerMakerUsd).toBeLessThan(estimate.roundTripTakerMakerUsd);
+  });
+
+  it("passes a target at or above the rung", () => {
+    expect(
+      judgeTargetAgainstCosts({
+        targetUsd: estimate.preferredTargetUsd,
+        execution: "immediate",
+        estimate,
+      }).kind,
+    ).toBe("clears_rung");
+  });
+
+  it("warns between the floor and the rung, and refuses under the floor", () => {
+    const floorUsd = estimate.roundTripUsd * MINIMUM_TARGET_COST_MULTIPLE;
+
+    expect(
+      judgeTargetAgainstCosts({ targetUsd: floorUsd + 0.01, execution: "immediate", estimate })
+        .kind,
+    ).toBe("under_rung");
+
+    const eaten = judgeTargetAgainstCosts({
+      targetUsd: floorUsd - 0.01,
+      execution: "immediate",
+      estimate,
+    });
+    expect(eaten.kind).toBe("under_floor");
+    if (eaten.kind === "under_floor") {
+      // Every number the refusal has to name so the model can act on it.
+      expect(eaten.rungUsd).toBe(estimate.preferredTargetUsd);
+      expect(eaten.floorUsd).toBeCloseTo(floorUsd, 10);
+      expect(eaten.roundTripUsd).toBe(estimate.roundTripUsd);
+      expect(eaten.notionalUsd).toBe(estimate.notionalUsd);
+    }
+  });
+
+  it("holds a patient plan to a lower floor than a crossing one", () => {
+    const patient = (targetUsd: number) =>
+      judgeTargetAgainstCosts({ targetUsd, execution: "patient", estimate }).kind;
+    const crossing = (targetUsd: number) =>
+      judgeTargetAgainstCosts({ targetUsd, execution: "immediate", estimate }).kind;
+
+    // Between the two floors: a resting entry genuinely pays for this one and
+    // a crossing entry genuinely does not, which is the whole reason the floor
+    // is priced at the execution the plan named rather than at the rung.
+    const between =
+      (estimate.roundTripTakerMakerUsd + estimate.roundTripUsd) *
+      0.5 *
+      MINIMUM_TARGET_COST_MULTIPLE;
+    expect(patient(between)).toBe("under_rung");
+    expect(crossing(between)).toBe("under_floor");
+  });
+
+  it("reproduces the two targets the measured session published", () => {
+    // $1.60 is thin but real — it clears both floors and only warns. $0.70
+    // cannot pay even the patient round trip, and is the one this refuses.
+    const at = (targetUsd: number, execution: "patient" | "immediate") =>
+      judgeTargetAgainstCosts({ targetUsd, execution, estimate }).kind;
+
+    expect(estimate.preferredTargetUsd).toBeGreaterThan(1.8);
+    expect(at(1.6, "patient")).toBe("under_rung");
+    expect(at(1.6, "immediate")).toBe("under_rung");
+    expect(at(0.7, "patient")).toBe("under_floor");
+    expect(at(0.7, "immediate")).toBe("under_floor");
+  });
+
+  it("never refuses on a degraded estimate", () => {
+    // Part of the round trip could not be read, so the floor derived from it
+    // is a guess — and a refusal that fires on a guess costs a turn and
+    // teaches nothing. The warning still goes out.
+    const degraded = estimateTradingCosts(
+      input({ sizeEth: 0.26, referencePrice: 1_913, takerFeeBpsPerSide: 4.5, bids: [], asks: [] }),
+    );
+    expect(degraded.degraded).toBe(true);
+    expect(
+      judgeTargetAgainstCosts({ targetUsd: 0.01, execution: "immediate", estimate: degraded }).kind,
+    ).toBe("under_rung");
   });
 });

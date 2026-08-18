@@ -2104,6 +2104,96 @@ it.effect("reads the entry's approved stop, which was written before the positio
   );
 });
 
+it.effect("refuses a target the round trip would eat, and writes nothing", () =>
+  withMcpServer(({ callTool, seedTradingAccount }) =>
+    Effect.gen(function* () {
+      // The cost read needs the master wallet the account carries.
+      yield* seedTradingAccount();
+
+      // Over the fake book the crossing round trip is ~$1.23 on $1,000, so the
+      // rung is ~$2.46 and the floor under it ~$1.85. A $0.40 target is the
+      // shape the measured session published twice after acknowledging the
+      // warning both times — it wakes the mission to bank a move that did not
+      // pay for itself, and now it does not publish at all.
+      const refused = yield* callTool(BOUND_THREAD, "trading_plan", {
+        missionId: MISSION_ID,
+        expectedMissionVersion: 1,
+        strategy: {
+          ...strategyBody("a target under the floor"),
+          target: { profitUsd: 0.4 },
+        },
+      });
+
+      assert.equal(refused.result.isError, false);
+      assert.equal(refused.result.body.outcome, "rejected");
+      assert.equal(refused.result.body.reason, "target_below_cost_floor");
+      // Nothing moved, so the version the harness retries against is the one
+      // it already held.
+      assert.equal(refused.result.body.currentVersion, 1);
+
+      // The refusal names the field to raise and the number to raise it to —
+      // a refusal the model cannot act on costs the same turn twice.
+      const detail = refused.result.body.detail as string;
+      assert.include(detail, "target.profitUsd 0.40 USD does not clear");
+      assert.include(detail, "Nothing was published.");
+      const [, roundTrip, floor, rung, raiseTo] =
+        /round trip of ([\d.]+) USD.*floor is ([\d.]+) USD and the rung to aim at is ([\d.]+) USD\. Raise target\.profitUsd to at least ([\d.]+)/.exec(
+          detail,
+        ) ?? [];
+      assert.isDefined(rung, detail);
+      assert.equal(raiseTo, rung);
+      assert.isAbove(Number(rung), Number(floor));
+      assert.isAbove(Number(floor), Number(roundTrip));
+
+      // And the plan really was not written: the mission still has none.
+      const after = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
+      assert.equal(after.result.body.mission.missionVersion, 1);
+      assert.equal(after.result.body.mission.strategy, undefined);
+    }),
+  ),
+);
+
+it.effect("holds a patient plan to the round trip its own execution buys", () =>
+  withMcpServer(({ callTool, seedTradingAccount }) =>
+    Effect.gen(function* () {
+      yield* seedTradingAccount();
+
+      // Over the same book the taker/maker round trip is ~$0.77, so a resting
+      // entry answers to a ~$1.15 floor rather than the crossing ~$1.85. A
+      // $1.30 target pays for a patient trade and does not pay for a crossing
+      // one, which is the whole reason the floor is priced at the execution
+      // the plan named rather than at the rung.
+      const patient = yield* callTool(BOUND_THREAD, "trading_plan", {
+        missionId: MISSION_ID,
+        expectedMissionVersion: 1,
+        strategy: {
+          ...strategyBody("resting at the level, so the maker leg is what it pays"),
+          entry: { triggers: [{ description: "price returns to 3,000" }], urgency: "patient" },
+          target: { profitUsd: 1.3 },
+        },
+      });
+      assert.equal(patient.result.body.outcome, "accepted");
+      // Accepted, and still told what the rung was — the warning the floor
+      // sits underneath, not a replacement for it.
+      const warning = (patient.result.body.warnings as string[]).find((line: string) =>
+        line.includes("this trade should clear"),
+      );
+      assert.isDefined(warning, "expected the sub-rung warning to survive the floor");
+
+      const crossing = yield* callTool(BOUND_THREAD, "trading_plan", {
+        missionId: MISSION_ID,
+        expectedMissionVersion: 2,
+        strategy: {
+          ...strategyBody("the same target, chasing"),
+          target: { profitUsd: 1.3 },
+        },
+      });
+      assert.equal(crossing.result.body.outcome, "rejected");
+      assert.equal(crossing.result.body.reason, "target_below_cost_floor");
+    }),
+  ),
+);
+
 it.effect("an accepted publish withdraws the mission's resting working entry", () => {
   // The audited risk fix (plan 29 step 4.2 aftermath): a resting patient entry
   // kept working up to the ~90s cross horizon even after the model changed

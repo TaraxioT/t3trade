@@ -303,6 +303,12 @@ export type TradingPublishPlanInput = typeof TradingPublishPlanInput.Type;
 export const PublishTradingPlanRejection = Schema.Literals([
   "stale_mission_state",
   "mission_not_active",
+  /**
+   * The target cannot pay the round trip of the execution the plan named —
+   * see `MINIMUM_TARGET_COST_MULTIPLE` in `./costs.ts`. Nothing was written;
+   * `detail` names the number to raise and what to raise it to.
+   */
+  "target_below_cost_floor",
 ]);
 export type PublishTradingPlanRejection = typeof PublishTradingPlanRejection.Type;
 
