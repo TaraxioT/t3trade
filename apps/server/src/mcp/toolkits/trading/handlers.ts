@@ -1071,7 +1071,9 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
       ...(orderBook === null || candles === null || snapshot === null
         ? {}
         : withMicrostructure(orderBook, candles.candles, snapshot)),
-      ...(structure === null ? {} : { structure: digestMarketStructure(structure) }),
+      // No mandate to read a thesis timeframe from, so the interval this call
+      // named (or the 1m default above) is the frame it is about.
+      ...(structure === null ? {} : { structure: digestMarketStructure(structure, interval) }),
     };
   }
 
@@ -1165,7 +1167,10 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
           ...readings,
         }
       : {}),
-    ...(structure === null ? {} : { structure: digestMarketStructure(structure) }),
+    // The frame this call is about: the one it named, else the mission's own.
+    ...(structure === null
+      ? {}
+      : { structure: digestMarketStructure(structure, namedInterval ?? facts.primaryTimeframe) }),
     ...(wantsPosition
       ? {
           account: facts.accountSnapshot,

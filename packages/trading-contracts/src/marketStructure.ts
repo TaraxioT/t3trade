@@ -549,11 +549,43 @@ export const TimeframeDigest = Schema.Struct({
   atrPercent: Schema.Number,
   swingHighPrice: Schema.optional(Price),
   swingLowPrice: Schema.optional(Price),
+
+  // -- the thesis frame only ------------------------------------------------
+  //
+  // Everything below is present on ONE frame: the interval the mission is
+  // actually trading. They are the readings the playbooks name by field —
+  // `ema.separationAtr`, `rsi.condition`, `breakout.closedBeyond`,
+  // `swingHighTouches` — and digesting them away left every sentence of the
+  // `ema_cross` and `rsi_reversion` procedures pointing at a field no tool
+  // returned. `ema_cross` had no substitute at all: it is the one playbook
+  // that never appears in `candidates[]`.
+  //
+  // On the thesis frame only, because that is what the doctrine asks for
+  // ("read `ema` on the thesis timeframe") and because the whole point of the
+  // digest is that the other three frames are context — direction, ATR and
+  // the swing bounds — not the frame a trade is taken on.
+  ema: Schema.optional(EmaTrend),
+  rsi: Schema.optional(RsiRead),
+  breakout: Schema.optional(StructureBreakout),
+  pivotTrend: Schema.optional(PivotTrend),
+  lastImpulse: Schema.optional(SwingImpulse),
+  atrExpansionRatio: Schema.optional(Schema.Number),
+  rangeStabilityPercent: Schema.optional(Schema.Number),
+  swingHighTouches: Schema.optional(Schema.Number),
+  swingLowTouches: Schema.optional(Schema.Number),
+  swingHighDriftUsd: Schema.optional(Schema.Number),
+  swingLowDriftUsd: Schema.optional(Schema.Number),
 });
 export type TimeframeDigest = typeof TimeframeDigest.Type;
 
-/** One frame, cut to what a turn reads. */
-export const digestTimeframe = (frame: TimeframeReading): TimeframeDigest => ({
+/**
+ * One frame, cut to what a turn reads.
+ *
+ * `thesis` widens the cut to the readings the playbooks gate on. It is true
+ * for exactly one frame per read — the interval the mission works on — so the
+ * context the digest was written to save is still saved on the other three.
+ */
+export const digestTimeframe = (frame: TimeframeReading, thesis = false): TimeframeDigest => ({
   interval: frame.interval,
   sufficientData: frame.sufficientData,
   referencePrice: frame.referencePrice,
@@ -564,6 +596,24 @@ export const digestTimeframe = (frame: TimeframeReading): TimeframeDigest => ({
   atrPercent: frame.atrPercent,
   ...(frame.swingHighPrice === undefined ? {} : { swingHighPrice: frame.swingHighPrice }),
   ...(frame.swingLowPrice === undefined ? {} : { swingLowPrice: frame.swingLowPrice }),
+  ...(thesis ? thesisReadings(frame) : {}),
+});
+
+/** The doctrine-gated readings, carried on the thesis frame — see above. */
+const thesisReadings = (frame: TimeframeReading) => ({
+  ...(frame.ema === undefined ? {} : { ema: frame.ema }),
+  ...(frame.rsi === undefined ? {} : { rsi: frame.rsi }),
+  ...(frame.breakout === undefined ? {} : { breakout: frame.breakout }),
+  pivotTrend: frame.pivotTrend,
+  ...(frame.lastImpulse === undefined ? {} : { lastImpulse: frame.lastImpulse }),
+  ...(frame.atrExpansionRatio === undefined ? {} : { atrExpansionRatio: frame.atrExpansionRatio }),
+  ...(frame.rangeStabilityPercent === undefined
+    ? {}
+    : { rangeStabilityPercent: frame.rangeStabilityPercent }),
+  ...(frame.swingHighTouches === undefined ? {} : { swingHighTouches: frame.swingHighTouches }),
+  ...(frame.swingLowTouches === undefined ? {} : { swingLowTouches: frame.swingLowTouches }),
+  ...(frame.swingHighDriftUsd === undefined ? {} : { swingHighDriftUsd: frame.swingHighDriftUsd }),
+  ...(frame.swingLowDriftUsd === undefined ? {} : { swingLowDriftUsd: frame.swingLowDriftUsd }),
 });
 
 /**
@@ -586,17 +636,35 @@ export const ObservedMarketStructure = Schema.Struct({
 });
 export type ObservedMarketStructure = typeof ObservedMarketStructure.Type;
 
-/** {@link ObservedMarketStructure} from the full read. */
-export const digestMarketStructure = (structure: MarketStructure): ObservedMarketStructure => ({
-  market: structure.market,
-  measuredAt: structure.measuredAt,
-  timeframes: structure.timeframes.map(digestTimeframe),
-  alignment: structure.alignment,
-  regime: structure.regime,
-  ...(structure.candidates === undefined
-    ? { setups: structure.setups }
-    : { candidates: structure.candidates }),
-});
+/**
+ * {@link ObservedMarketStructure} from the full read.
+ *
+ * `thesisTimeframe` is the interval the mission works on — the one frame whose
+ * readings the playbooks gate on and which therefore rides back whole.
+ */
+export const digestMarketStructure = (
+  structure: MarketStructure,
+  thesisTimeframe: MarketCandleInterval,
+): ObservedMarketStructure => {
+  // A mission may work an interval this read does not cover — `3m` is a legal
+  // mandate and is not one of MARKET_STRUCTURE_TIMEFRAMES. The fastest frame
+  // stands in rather than leaving the read with no gated frame at all.
+  const thesisFrame = structure.timeframes.some((frame) => frame.interval === thesisTimeframe)
+    ? thesisTimeframe
+    : structure.timeframes[0]?.interval;
+  return {
+    market: structure.market,
+    measuredAt: structure.measuredAt,
+    timeframes: structure.timeframes.map((frame) =>
+      digestTimeframe(frame, frame.interval === thesisFrame),
+    ),
+    alignment: structure.alignment,
+    regime: structure.regime,
+    ...(structure.candidates === undefined
+      ? { setups: structure.setups }
+      : { candidates: structure.candidates }),
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Arithmetic

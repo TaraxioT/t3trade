@@ -1192,16 +1192,27 @@ it.effect("returns the structure read digested, and the candidate table once", (
         assert.notEqual(structure, undefined);
         assert.notEqual(structure.regime, undefined);
         assert.notEqual(structure.alignment, undefined);
+        // This mission's mandate names no interval, so its thesis frame is the
+        // 1m default — the one frame whose gated readings ride back whole.
         for (const frame of structure.timeframes) {
           assert.isString(frame.interval);
           assert.isNumber(frame.directionScore);
           assert.isNumber(frame.atrUsd);
-          // The detector-only half stays behind: nothing downstream of the
-          // scoring reads it, and four frames of it was 4,700 characters.
+          if (frame.interval === "1m") continue;
+          // The detector-only half stays behind on the context frames: nothing
+          // downstream of the scoring reads it, and four frames of it was
+          // 4,700 characters.
           assert.equal(frame.pivotTrend, undefined);
           assert.equal(frame.ema, undefined);
           assert.equal(frame.excursionSymmetryRatio, undefined);
         }
+        // And the thesis frame carries what the playbooks gate on — the whole
+        // of the `ema_cross` procedure reads fields that lived only here.
+        const thesis = structure.timeframes.find(
+          (frame: { readonly interval: string }) => frame.interval === "1m",
+        );
+        assert.isNumber(thesis?.ema?.separationAtr);
+        assert.isDefined(thesis?.rsi?.condition);
         // A candidate carries every field of the setup it was built from plus
         // the cost of taking it, so the two tables are never both sent.
         assert.isTrue(structure.candidates === undefined || structure.setups === undefined);

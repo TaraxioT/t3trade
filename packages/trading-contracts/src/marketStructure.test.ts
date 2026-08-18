@@ -14,6 +14,7 @@ import {
   analyseTimeframe,
   classifyRegime,
   compareCandidates,
+  digestMarketStructure,
   DIRECTION_SCORE_THRESHOLD,
   findPivots,
   MARKET_STRUCTURE_TIMEFRAMES,
@@ -482,5 +483,61 @@ describe("alignment", () => {
     assert.equal(frame?.barsObserved, 0);
     assert.equal(frame?.referencePrice, 1);
     assert.equal(frame?.lastImpulse, undefined);
+  });
+});
+
+describe("digestMarketStructure", () => {
+  // Every sentence of the `ema_cross` and `rsi_reversion` procedures tells the
+  // model to read a per-frame field — `ema.separationAtr`, `ema.barsSinceCross`,
+  // `rsi.condition` — and the digest carried none of them, so the whole of both
+  // playbooks pointed at fields no tool returned. `ema_cross` had no fallback
+  // at all: it is the one playbook that never appears in `candidates[]`.
+  const oscillating = Array.from({ length: 120 }, (_, i) =>
+    bar(3_000 + 30 * Math.sin(i / 7) + 12 * Math.sin(i / 23), 6),
+  );
+  const structure = analyseMarketStructure({
+    market: "ETH",
+    measuredAt: 1,
+    frames: MARKET_STRUCTURE_TIMEFRAMES.map((interval) => ({ interval, candles: oscillating })),
+  });
+
+  it("carries the doctrine's gated readings on the thesis frame", () => {
+    const digest = digestMarketStructure(structure, "5m");
+    const thesis = digest.timeframes.find((frame) => frame.interval === "5m")!;
+
+    // The `ema_cross` gates, field by field.
+    assert.isDefined(thesis.ema);
+    assert.isNumber(thesis.ema?.separationAtr);
+    assert.isDefined(thesis.ema?.direction);
+    assert.isNumber(thesis.ema?.spreadUsd);
+    assert.isNumber(thesis.ema?.fastUsd);
+    // The `rsi_reversion` gates.
+    assert.isDefined(thesis.rsi);
+    assert.isDefined(thesis.rsi?.condition);
+    // The momentum and ORB gates.
+    assert.isDefined(thesis.breakout);
+    assert.isDefined(thesis.pivotTrend);
+  });
+
+  it("leaves the other frames digested, which is what the digest is for", () => {
+    const digest = digestMarketStructure(structure, "5m");
+    for (const frame of digest.timeframes) {
+      if (frame.interval === "5m") continue;
+      // Context: where the frame is pointing and how wide it is swinging.
+      assert.isDefined(frame.direction);
+      assert.isNumber(frame.atrUsd);
+      // Not the frame a trade is taken on, so not the readings a trade gates on.
+      assert.isUndefined(frame.ema);
+      assert.isUndefined(frame.rsi);
+      assert.isUndefined(frame.breakout);
+    }
+  });
+
+  it("falls back to the fastest frame when the mandate names an uncovered one", () => {
+    // `3m` is a legal mandate and is not one of MARKET_STRUCTURE_TIMEFRAMES.
+    // Expanding nothing would leave that mission with no gated frame at all.
+    const digest = digestMarketStructure(structure, "3m");
+    assert.isDefined(digest.timeframes[0]?.ema);
+    assert.isUndefined(digest.timeframes[1]?.ema);
   });
 });
