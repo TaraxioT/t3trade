@@ -1067,6 +1067,9 @@ export function clusterConditions(
       direction: cluster.direction,
       met: cluster.members.some((member) => member.met),
       count: cluster.members.reduce((total, member) => total + (member.count ?? 1), 0),
+      // The representative member's watch id, so the cluster's chip still
+      // selects its row in the watch stream.
+      ...(nearest.id === undefined ? {} : { id: nearest.id }),
     };
   });
 }
