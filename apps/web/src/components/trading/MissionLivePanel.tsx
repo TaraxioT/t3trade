@@ -122,7 +122,7 @@ import {
   Wallet,
   type LucideIcon,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
@@ -496,6 +496,9 @@ export function MissionLivePanel({
   // chart" appear about a level that was already drawn.
   const chartConditions = dedupeConditions(deriveChartConditions(mission, pnlBasis));
   const droppedConditions = Math.max(0, chartConditions.length - MAX_DRAWN_CONDITIONS);
+  // The levels behind the "+N" chip, as their own rows: the chip's promise is
+  // that the full list is one hover away, and a count alone does not keep it.
+  const overflowConditionRows = chartConditions.slice(MAX_DRAWN_CONDITIONS);
 
   // Every fill the session has made, as circles on the axis. A position that
   // opened and closed an hour ago has no row on the projection any more, but its
@@ -738,6 +741,7 @@ export function MissionLivePanel({
         nowMillis={nowMillis}
         recentlyFired={recentlyFired}
         droppedConditions={droppedConditions}
+        overflowRows={overflowConditionRows}
         selection={selection}
         onHoverEvent={hoverPanelEvent}
       />
@@ -1951,6 +1955,7 @@ function WatchStream({
   nowMillis,
   recentlyFired,
   droppedConditions,
+  overflowRows,
   selection,
   onHoverEvent,
 }: {
@@ -1959,6 +1964,13 @@ function WatchStream({
   readonly recentlyFired: ReadonlySet<string>;
   /** Armed levels the chart could not draw, reported once under the list. */
   readonly droppedConditions: number;
+  /** Those same levels as rows, so the "+N" chip's promise can be kept. */
+  readonly overflowRows: ReadonlyArray<{
+    readonly price: number;
+    readonly direction: "above" | "below";
+    readonly met: boolean;
+    readonly id?: string | undefined;
+  }>;
   /** The shared chart/panel selection, for the two-way hover (phase 3). */
   readonly selection: ChartEventSelection | null;
   readonly onHoverEvent: (event: { id: string; atMillis: number } | null) => void;
@@ -1966,6 +1978,25 @@ function WatchStream({
   // The scroll container, so a chart-side selection can scroll its card into
   // view inside the stream's own scroller — never the window.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // The "+N" chip's list: closed until the chip is hovered or the count is
+  // pressed. Hovering the chip claims the selection with the reserved
+  // `chip-overflow` id, so opening on it needs no new store shape.
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowRef = useRef<HTMLDivElement | null>(null);
+  const overflowSeenRef = useRef(false);
+  useEffect(() => {
+    if (selection?.source !== "chart" || selection.eventId !== "chip-overflow") return;
+    // Once per hover: re-hovers re-run this effect, and re-scrolling a list
+    // already in view would fight the reader's own scroll.
+    if (overflowSeenRef.current) return;
+    overflowSeenRef.current = true;
+    setOverflowOpen(true);
+    overflowRef.current?.scrollIntoView({ block: "nearest", behavior: "instant" });
+    return () => {
+      overflowSeenRef.current = false;
+    };
+  }, [selection]);
 
   // Whether a row is the selection's card: by id (a chip named this watch) or
   // by moment (a chart tick named the time it settled).
@@ -2058,10 +2089,129 @@ function WatchStream({
         )}
       </div>
       {droppedConditions === 0 ? null : (
-        <p className={cn(BAND_PAD_CLASS, "pt-1.5 font-mono text-[11px] text-muted-foreground")}>
-          +{droppedConditions} more level{droppedConditions === 1 ? "" : "s"} armed, off the chart
-        </p>
+        <OverflowLevels
+          rows={overflowRows}
+          watchRows={rows}
+          open={overflowOpen}
+          highlighted={selection?.source === "chart" && selection.eventId === "chip-overflow"}
+          onToggle={() => setOverflowOpen((prev) => !prev)}
+          onHoverEvent={onHoverEvent}
+          sectionRef={overflowRef}
+        />
       )}
+    </div>
+  );
+}
+
+/**
+ * The levels the chart's gutter folded away, listed in full under the stream.
+ *
+ * The "+N" chip in the gutter says these exist; this is the list it opens.
+ * Hovering (or focusing) the chip itself expands it through the shared
+ * selection, and the row under the pointer here claims the selection back, so
+ * the drawn chip for a level that has one glows while its row is read — the
+ * same two-way join every other row in the panel keeps.
+ */
+function OverflowLevels({
+  rows,
+  watchRows,
+  open,
+  highlighted,
+  onToggle,
+  onHoverEvent,
+  sectionRef,
+}: {
+  readonly rows: ReadonlyArray<{
+    readonly price: number;
+    readonly direction: "above" | "below";
+    readonly met: boolean;
+    readonly id?: string | undefined;
+  }>;
+  /** The whole stream, to join a level back to the watch that armed it. */
+  readonly watchRows: ReadonlyArray<WatchStreamItem>;
+  readonly open: boolean;
+  /** While the chart's "+N" chip is the live selection. */
+  readonly highlighted: boolean;
+  readonly onToggle: () => void;
+  readonly onHoverEvent: (event: { id: string; atMillis: number } | null) => void;
+  readonly sectionRef: RefObject<HTMLDivElement | null>;
+}): ReactNode {
+  // The watch row a level was armed by, for its icon and its sentence. A level
+  // without one (the join lost an id) still lists: the price and its direction
+  // are the facts, and dropping the row would un-count a real level.
+  const rowFor = (id: string | undefined): WatchStreamRow | null => {
+    if (id === undefined) return null;
+    for (const item of watchRows) {
+      if (item.kind === "watch" && item.id === id) return item;
+      for (const member of item.kind === "group" ? item.members : []) {
+        if (member.id === id) return member;
+      }
+    }
+    return null;
+  };
+  return (
+    <div
+      ref={sectionRef}
+      data-testid="mission-overflow-levels"
+      className={cn("pt-1.5", highlighted && "rounded-lg bg-armed/10")}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className={cn(
+          BAND_PAD_CLASS,
+          "flex w-full items-baseline gap-x-1 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none",
+        )}
+      >
+        <span className="tabular-nums">
+          +{rows.length} more level{rows.length === 1 ? "" : "s"} armed, off the chart
+        </span>
+        <ChevronDown
+          className={cn(
+            "size-3 self-center transition-transform motion-reduce:transition-none",
+            open && "rotate-180",
+          )}
+          aria-hidden
+        />
+      </button>
+      {open ? (
+        <div className="divide-y divide-border/15">
+          {rows.map((row) => {
+            const watch = rowFor(row.id);
+            const Icon = watch === null ? Crosshair : WATCH_TYPE_ICON[watch.watchType];
+            return (
+              <div
+                key={row.id ?? `${row.price}-${row.direction}`}
+                data-watch-row={row.id}
+                onMouseEnter={() =>
+                  row.id === undefined ? undefined : onHoverEvent({ id: row.id, atMillis: 0 })
+                }
+                onMouseLeave={() => onHoverEvent(null)}
+                className={cn(
+                  BAND_PAD_CLASS,
+                  "flex items-baseline gap-x-2 py-2 font-mono text-[11.5px]",
+                )}
+              >
+                <Icon
+                  className="size-[11px] flex-none self-center text-muted-foreground/60"
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <span className="flex-none text-[9px] text-muted-foreground" aria-hidden>
+                  {row.direction === "above" ? "▲" : "▼"}
+                </span>
+                <span className="flex-none tabular-nums text-foreground/90">
+                  {formatPrice(row.price)}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                  {watch?.description ?? "armed level"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
