@@ -130,6 +130,8 @@ interface WatchRow {
   readonly created_at: number;
   readonly updated_at: number;
   readonly prediction_version: number | null;
+  /** The derived-watch evaluation cadence (migration 073); read by the sweep. */
+  readonly next_evaluate_at?: number | null;
 }
 
 /**
@@ -233,7 +235,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
   const listWatches: TradingStrategyServiceShape["listWatches"] = (missionId) =>
     sql<WatchRow>`
       SELECT watch_id, mission_id, watch_json, status, armed_reason,
-             created_at, updated_at, prediction_version
+             created_at, updated_at, prediction_version, next_evaluate_at
       FROM trading_watches
       WHERE mission_id = ${missionId}
       ORDER BY created_at DESC, watch_id DESC

@@ -89,6 +89,7 @@ import {
   TradingMissionReactor,
   TradingMissionReactorLive,
 } from "../src/trading/TradingMissionReactor.ts";
+import { TradingMarketArchiveLive } from "../src/trading/TradingMarketArchive.ts";
 import { WatchEvaluatorLive } from "../src/trading/WatchEvaluator.ts";
 import { TradingMissionProjection } from "../src/trading/TradingMissionProjection.ts";
 import { TradingMissionService } from "../src/trading/TradingMissionService.ts";
@@ -500,7 +501,14 @@ const tradingLayerForTest = Layer.mergeAll(
 function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
   return TradingMissionReactorLive.pipe(
     Layer.provideMerge(tradingLayerForTest),
-    Layer.provideMerge(WatchEvaluatorLive.pipe(Layer.provide(tradingLayerForTest))),
+    Layer.provideMerge(
+      WatchEvaluatorLive.pipe(
+        Layer.provide(tradingLayerForTest),
+        // The evaluator computes `metric_derived` watches through the archive
+        // seam; a missing archive file answers unavailable, never zero.
+        Layer.provide(TradingMarketArchiveLive),
+      ),
+    ),
     Layer.provideMerge(OrchestrationEngineLive),
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provideMerge(OrchestrationProjectionPipelineLive),

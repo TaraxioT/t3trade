@@ -10,10 +10,22 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+// @effect-diagnostics nodeBuiltinImport:off - temp files for a temp archive.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { openArchiveDatabase } from "./archive/db.ts";
+import { upsertFunding } from "./archive/funding.ts";
+import { makeTradingMarketArchive } from "./TradingMarketArchive.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { TradingHarnessBinding, MarketWatch } from "./Schemas.ts";
+import {
+  TradingMarketArchive,
+  type TradingMarketArchiveShape,
+  type DerivedMetricResult,
+} from "./TradingMarketArchive.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
@@ -66,6 +78,53 @@ const stubSnapshot: AgentMarketSnapshot = {
 };
 
 const unusedRead = () => Effect.die("not used by WatchEvaluator tests");
+
+/**
+ * The fake archive seam: `derivedMetric` records every call and delegates to a
+ * per-test script. Tests that need REAL computation (the sign-flip durability
+ * restart case) swap `derivedServe` for a `makeTradingMarketArchive` handle.
+ */
+const derivedCalls: Array<{
+  readonly market: string;
+  readonly metric: string;
+  readonly now: number;
+}> = [];
+
+const okMetric = (value: number): DerivedMetricResult => ({ status: "ok", value });
+
+let derivedServe: (input: {
+  readonly market: string;
+  readonly now: number;
+}) => Effect.Effect<DerivedMetricResult> = () => Effect.succeed(okMetric(1));
+
+const resetDerivedFake = (script?: (index: number) => DerivedMetricResult): void => {
+  derivedCalls.length = 0;
+  let calls = 0;
+  derivedServe = script ? () => Effect.succeed(script(calls++)) : () => Effect.succeed(okMetric(1));
+};
+
+const fakeArchive = Layer.succeed(
+  TradingMarketArchive,
+  TradingMarketArchive.of({
+    fundingStats: unusedRead,
+    fundingSeries: unusedRead,
+    oiPremium: unusedRead,
+    bookHistory: unusedRead,
+    derivedMetric: (input: {
+      readonly market: string;
+      readonly params: { readonly metric: string };
+      readonly now: number;
+    }) =>
+      Effect.suspend(() => {
+        derivedCalls.push({
+          market: input.market,
+          metric: input.params.metric,
+          now: input.now,
+        });
+        return derivedServe(input);
+      }),
+  } as unknown as TradingMarketArchiveShape),
+);
 
 /**
  * The position the stub gateway serves to `getPosition`. Mutable so a `pnl_above`
@@ -211,6 +270,14 @@ const seed = (watch: MarketWatch) =>
     return registered.watch;
   });
 
+/** Register another watch on the mission `seed` already created. */
+const seedMore = (watch: MarketWatch) =>
+  Effect.gen(function* () {
+    const watches = yield* TradingWatchService;
+    const registered = yield* watches.registerWatch({ missionId: "mission_1", watch });
+    return registered.watch;
+  });
+
 /** Build a WS delivery for the 5m candle closing at `closeTime`, priced `closePrice`. */
 const candleDelivery = (closeTime: number, closePrice: number): WsDelivery => ({
   subscription: { type: "candle", coin: "ETH", interval: "5m" },
@@ -246,6 +313,7 @@ const layer = it.layer(
     Layer.provideMerge(TradingEventInboxLive),
     Layer.provideMerge(fakeWebSocketClientLayer([])),
     Layer.provideMerge(stubGateway),
+    Layer.provideMerge(fakeArchive),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(stubEngine),
@@ -780,6 +848,454 @@ layer("WatchEvaluator", (it) => {
       const inbox = yield* TradingEventInbox;
       assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
       stubPosition = null;
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // `metric_derived` — plan 38 §3.5. The metric is the archive's; these pin
+  // the evaluator's half: the cadence, the write-backs, and the firing.
+  // -------------------------------------------------------------------------
+
+  /** Read a watch row's raw cadence/observation columns. */
+  const watchRow = (watchId: string) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly next_evaluate_at: number | null;
+        readonly last_observed_value: number | null;
+        readonly baseline_signature: string | null;
+      }>`
+        SELECT next_evaluate_at, last_observed_value, baseline_signature
+        FROM trading_watches WHERE watch_id = ${watchId}
+      `;
+      return rows[0];
+    });
+
+  it.effect("evaluates a derived funding watch once per its 30m cadence, not per sweep", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetDerivedFake();
+      const watch = yield* seed({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "funding_mean",
+        params: { metric: "funding_mean", windowDays: 7 },
+        direction: "below",
+        value: 0,
+        mode: "cross",
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+
+      yield* evaluator.sweep;
+      // Three more sweeps at the 2s cadence: the archive must not be asked.
+      for (let tick = 1; tick <= 3; tick += 1) {
+        yield* TestClock.setTime(NOW + tick * 2_000);
+        yield* evaluator.sweep;
+      }
+      assert.equal(derivedCalls.length, 1);
+
+      // Past the due time, the next sweep computes again.
+      yield* TestClock.setTime(NOW + 30 * 60_000 + 1);
+      yield* evaluator.sweep;
+      assert.equal(derivedCalls.length, 2);
+
+      // The due sweep re-armed the next 30m window from its own clock.
+      const row = yield* watchRow(watch.id);
+      assert.equal(row?.next_evaluate_at, NOW + 30 * 60_000 + 1 + 1_800_000);
+    }),
+  );
+
+  it.effect("never sweep-computes a bar_close-confirmed candle metric", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetDerivedFake();
+      const watch = yield* seed({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "sigma_return",
+        params: { metric: "sigma_return", interval: "5m", period: 72 },
+        direction: "below",
+        value: -2,
+        mode: "cross",
+        confirm: "bar_close",
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+
+      yield* evaluator.sweep;
+      yield* TestClock.setTime(NOW + 60_000);
+      yield* evaluator.sweep;
+      assert.equal(derivedCalls.length, 0);
+
+      // The sweep never even armed a cadence for it — delivery is its clock.
+      const row = yield* watchRow(watch.id);
+      assert.equal(row?.next_evaluate_at, null);
+    }),
+  );
+
+  it.effect(
+    "fires a cross watch exactly once on the out → in transition, and is terminal after",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        // First evaluation: value above 0 (out of the "below 0" region).
+        // Second: the mean has turned negative (in) — the entry.
+        resetDerivedFake((index) => okMetric(index === 0 ? 1e-6 : -1.2e-6));
+        const watch = yield* seed({
+          type: "metric_derived",
+          market: "ETH",
+          metric: "funding_mean",
+          params: { metric: "funding_mean", windowDays: 7 },
+          direction: "below",
+          value: 0,
+          mode: "cross",
+        });
+        yield* TestClock.setTime(NOW);
+        const evaluator = yield* WatchEvaluator;
+
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        const inbox = yield* TradingEventInbox;
+        assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+        // The arming evaluation persisted the "out" baseline.
+        assert.equal((yield* watchRow(watch.id))?.baseline_signature, "out");
+
+        yield* TestClock.setTime(NOW + 30 * 60_000 + 1);
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        const claimed = yield* inbox.claimPending("mission_1");
+        assert.equal(claimed.length, 1);
+        assert.equal(claimed[0]?.deduplicationKey, `metric_derived:${watch.id}:in`);
+        assert.match(claimed[0]?.summary ?? "", /7d mean funding .* \(below 0\)/);
+
+        const strategies = yield* TradingStrategyService;
+        const persisted = (yield* strategies.listWatches("mission_1")).find(
+          (w) => w.id === watch.id,
+        );
+        assert.equal(persisted?.status, "triggered");
+      }),
+  );
+
+  it.effect("does not fire a cross watch on the in → out transition", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetDerivedFake((index) => okMetric(index === 0 ? -1.2e-6 : 1.2e-6));
+      const watch = yield* seed({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "funding_mean",
+        params: { metric: "funding_mean", windowDays: 7 },
+        direction: "below",
+        value: 0,
+        mode: "cross",
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+
+      yield* evaluator.sweep;
+      yield* TestClock.setTime(NOW + 30 * 60_000 + 1);
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+      // Leaving only moved the baseline; the watch stays armed for a re-entry.
+      assert.equal((yield* watchRow(watch.id))?.baseline_signature, "out");
+      const strategies = yield* TradingStrategyService;
+      const persisted = (yield* strategies.listWatches("mission_1")).find((w) => w.id === watch.id);
+      assert.equal(persisted?.status, "active");
+    }),
+  );
+
+  // The giveback instant-refire guard, generalised: a watch armed while
+  // already inside its region records the baseline and stays silent until it
+  // has LEFT and come back.
+  it.effect(
+    "arms silently while already inside the region, and fires only after leave + re-enter",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const values = [-1.2e-6, -1.3e-6, 1.2e-6, -1.5e-6];
+        resetDerivedFake((index) => okMetric(values[Math.min(index, values.length - 1)] ?? 1));
+        const watch = yield* seed({
+          type: "metric_derived",
+          market: "ETH",
+          metric: "funding_mean",
+          params: { metric: "funding_mean", windowDays: 1 },
+          direction: "below",
+          value: 0,
+          mode: "cross",
+        });
+        yield* TestClock.setTime(NOW);
+        const evaluator = yield* WatchEvaluator;
+        const inbox = yield* TradingEventInbox;
+
+        // Armed while "in": records the baseline, fires nothing.
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+        assert.equal((yield* watchRow(watch.id))?.baseline_signature, "in");
+
+        // Still in: still nothing.
+        yield* TestClock.setTime(NOW + 30 * 60_000 + 1);
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+        // Leaves: updates the baseline, never fires.
+        yield* TestClock.setTime(NOW + 2 * (30 * 60_000) + 2);
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+        assert.equal((yield* watchRow(watch.id))?.baseline_signature, "out");
+
+        // Re-enters: the one fire.
+        yield* TestClock.setTime(NOW + 3 * (30 * 60_000) + 3);
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        const claimed = yield* inbox.claimPending("mission_1");
+        assert.equal(claimed.length, 1);
+        assert.match(claimed[0]?.summary ?? "", /\(below 0\)/);
+      }),
+  );
+
+  it.effect("fires a level watch when the metric moves beyond the threshold", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetDerivedFake((index) => okMetric(index === 0 ? 0.01 : 0.06));
+      const watch = yield* seed({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "oi_change_rate",
+        params: { metric: "oi_change_rate", windowMinutes: 60 },
+        direction: "above",
+        value: 0.05,
+        mode: "level",
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+      yield* TestClock.setTime(NOW + 60_000 + 1);
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.deduplicationKey, `metric_derived:${watch.id}`);
+      assert.match(claimed[0]?.summary ?? "", /oi change rate 60m .* \(above 0.05\)/);
+    }),
+  );
+
+  it.effect(
+    "advances next_evaluate_at and writes nothing true when the archive is unavailable",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        resetDerivedFake(() => ({
+          status: "unavailable",
+          kind: "archive",
+          reason: "archive file not found",
+        }));
+        const watch = yield* seed({
+          type: "metric_derived",
+          market: "ETH",
+          metric: "funding_mean",
+          params: { metric: "funding_mean", windowDays: 7 },
+          direction: "below",
+          value: 0,
+          mode: "cross",
+        });
+        yield* TestClock.setTime(NOW);
+        const evaluator = yield* WatchEvaluator;
+
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        // No fire, no observation write — a missing archive must never read
+        // as zero — but the retry clock advanced.
+        const inbox = yield* TradingEventInbox;
+        assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+        const row = yield* watchRow(watch.id);
+        assert.equal(row?.last_observed_value, null);
+        assert.equal(row?.next_evaluate_at, NOW + 1_800_000);
+
+        // And the sweep survives: the advanced cadence skips the next tick.
+        yield* TestClock.setTime(NOW + 2_000);
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+        assert.equal(derivedCalls.length, 1);
+      }),
+  );
+
+  it.effect("writes the per-metric default cadence, and honours evaluateEveryMs", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetDerivedFake();
+      const funding = yield* seed({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "funding_mean",
+        params: { metric: "funding_mean", windowDays: 7 },
+        direction: "above",
+        value: 1e9,
+        mode: "cross",
+      });
+      const sampled = yield* seedMore({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "oi_change_rate",
+        params: { metric: "oi_change_rate", windowMinutes: 60 },
+        direction: "above",
+        value: 1e9,
+        mode: "cross",
+      });
+      // 4h is not a delivered interval, so this one rides the sweep at its
+      // own bar cadence.
+      const fourHour = yield* seedMore({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "sigma_return",
+        params: { metric: "sigma_return", interval: "4h", period: 20 },
+        direction: "above",
+        value: 1e9,
+        mode: "cross",
+        confirm: "bar_close",
+      });
+      const overridden = yield* seedMore({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "funding_mean",
+        params: { metric: "funding_mean", windowDays: 7 },
+        direction: "above",
+        value: 1e9,
+        mode: "cross",
+        evaluateEveryMs: 5_000,
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      assert.equal((yield* watchRow(funding.id))?.next_evaluate_at, NOW + 1_800_000);
+      assert.equal((yield* watchRow(sampled.id))?.next_evaluate_at, NOW + 60_000);
+      assert.equal((yield* watchRow(fourHour.id))?.next_evaluate_at, NOW + 4 * 3_600_000);
+      assert.equal((yield* watchRow(overridden.id))?.next_evaluate_at, NOW + 5_000);
+    }),
+  );
+
+  it.effect(
+    "evaluates a bar_close watch on a finalised bar via the delivery path, not the sweep",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        resetDerivedFake((index) => okMetric(index === 0 ? -1 : -2.61));
+        const watch = yield* seed({
+          type: "metric_derived",
+          market: "ETH",
+          metric: "sigma_distance",
+          params: { metric: "sigma_distance", interval: "5m", period: 20, basis: "mean" },
+          direction: "below",
+          value: -2.5,
+          mode: "cross",
+          confirm: "bar_close",
+        });
+        yield* TestClock.setTime(NOW);
+        const evaluator = yield* WatchEvaluator;
+        yield* evaluator.forgetDeliveredCandles;
+
+        // The sweep never computes it (delivery is the clock)…
+        yield* evaluator.sweep;
+        assert.equal(derivedCalls.length, 0);
+
+        // …a finalised 5m bar does. First delivery arms (out), the rollover
+        // delivery sees the entry.
+        yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE, 3_100));
+        yield* evaluator.drain;
+        assert.equal(derivedCalls.length, 1);
+        const inbox = yield* TradingEventInbox;
+        assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+        yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE + 300_000, 3_100));
+        yield* evaluator.drain;
+        const claimed = yield* inbox.claimPending("mission_1");
+        assert.equal(claimed.length, 1);
+        assert.equal(claimed[0]?.deduplicationKey, `metric_derived:${watch.id}:in`);
+        assert.equal(claimed[0]?.summary, "sigma_distance 5m -2.61 (below -2.5)");
+      }),
+  );
+
+  // Plan 38 Phase 3 item 3: the baseline is durable, so a sign flip that
+  // happens while the server is down fires on the FIRST sweep after restart.
+  // Computation is real here — a temp archive seeded through the archiver's
+  // own upserters, mutated between the two evaluator generations.
+  it.effect("fires a sign flip on the first sweep after restart, from a durable baseline", () =>
+    Effect.gen(function* () {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "watch-flip-restart-"));
+      const path = NodePath.join(dir, "archive.sqlite");
+      const DAY = 24 * 60 * 60_000;
+      const seedFunding = (rate: number) => {
+        const writer = openArchiveDatabase(path);
+        // A holding reaching back before the 1d window start, then the
+        // in-window rates whose mean the metric reads.
+        upsertFunding(writer, [
+          { coin: "ETH", time: NOW - 2 * DAY, fundingRate: rate, premium: 0 },
+          { coin: "ETH", time: NOW - 12 * 3_600_000, fundingRate: rate, premium: 0 },
+          { coin: "ETH", time: NOW - 6 * 3_600_000, fundingRate: rate, premium: 0 },
+        ]);
+        writer.close();
+      };
+      seedFunding(0.0001);
+
+      const realArchive = makeTradingMarketArchive(path);
+      derivedCalls.length = 0;
+      derivedServe = (input) =>
+        realArchive.derivedMetric({
+          market: input.market,
+          params: { metric: "funding_sign_flip", windowDays: 1 },
+          now: input.now,
+        });
+
+      yield* migrated;
+      const watch = yield* seed({
+        type: "metric_derived",
+        market: "ETH",
+        metric: "funding_sign_flip",
+        params: { metric: "funding_sign_flip", windowDays: 1 },
+        mode: "cross",
+      });
+      yield* TestClock.setTime(NOW);
+      const inbox = yield* TradingEventInbox;
+
+      // The evaluator that was running before the restart records "pos".
+      const before = yield* WatchEvaluator;
+      yield* before.sweep;
+      yield* before.drain;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+      assert.equal((yield* watchRow(watch.id))?.baseline_signature, "pos");
+
+      // The mean flips while nothing is watching, and a fresh evaluator —
+      // same state DB, empty in-memory state, same archive file — comes up.
+      seedFunding(-0.0001);
+      // The flip happened after the first evaluator's cadence window opened,
+      // so the restart sweeps past that window.
+      yield* TestClock.setTime(NOW + 30 * 60_000 + 1);
+      yield* Effect.gen(function* () {
+        const restarted = yield* WatchEvaluator;
+        yield* restarted.sweep;
+        yield* restarted.drain;
+      }).pipe(Effect.provide(WatchEvaluatorLive));
+
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.match(claimed[0]?.summary ?? "", /1d mean funding .* \(sign flip, was positive\)/);
+
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+      resetDerivedFake();
     }),
   );
 });

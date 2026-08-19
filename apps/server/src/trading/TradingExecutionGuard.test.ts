@@ -235,7 +235,7 @@ it.effect("names an infrastructure failure as one, not as an exhausted budget", 
 
 it.effect("names a refused transition as one, not as an exhausted budget", () =>
   Effect.gen(function* () {
-    yield* runMigrations({ toMigrationInclusive: 72 });
+    yield* runMigrations({ toMigrationInclusive: 73 });
     const guard = yield* TradingExecutionGuard;
     const error = yield* Effect.flip(
       guard.blockForExhaustion("mission_1", 1, "0x00000000000000000000000000000000000000ff"),

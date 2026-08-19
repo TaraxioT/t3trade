@@ -1034,6 +1034,16 @@ export const PersistedWatch = Schema.Struct({
    * Absent in lockstep with `lastObservedValue`.
    */
   lastEvaluatedAt: Schema.optional(UnixMillis),
+  /**
+   * When the sweep may next evaluate this watch (plan 38 §3.5).
+   *
+   * Carried only by `metric_derived` watches, whose metrics are too expensive
+   * to recompute on every 2s sweep: null/absent means "evaluate every sweep",
+   * which is the behaviour every earlier watch type already has and keeps.
+   * `confirm: "bar_close"` derived watches are driven by candle delivery
+   * instead and never read this on the sweep path.
+   */
+  nextEvaluateAt: Schema.optional(UnixMillis),
 });
 export type PersistedWatch = typeof PersistedWatch.Type;
 

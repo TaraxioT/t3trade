@@ -30,6 +30,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { unpaidExitFeeUsd } from "@t3tools/trading-contracts/costs";
+import type { BarInterval, DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import { HyperliquidWebSocketClient, type WsDelivery } from "@t3tools/hyperliquid/WebSocketClient";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -44,8 +45,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
-import type { PersistedWatch } from "./Schemas.ts";
+import { INTERVAL_MS } from "./archive/config.ts";
+import type { MarketWatch, PersistedWatch } from "./Schemas.ts";
 import { TradingMarket, TradingTimeframe } from "./Schemas.ts";
+import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
@@ -179,6 +182,7 @@ const make = Effect.gen(function* () {
   const watches = yield* TradingWatchService;
   const strategies = yield* TradingStrategyService;
   const missions = yield* TradingMissionService;
+  const archive = yield* TradingMarketArchive;
   const inbox = yield* TradingEventInbox;
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
@@ -830,6 +834,289 @@ const make = Effect.gen(function* () {
       );
     });
 
+  // -------------------------------------------------------------------------
+  // `metric_derived` — plan 38 §3.5. The metric is computed by the market
+  // archive (never here); the evaluator only owns the clock, the write-backs,
+  // and the firing decision.
+  // -------------------------------------------------------------------------
+
+  /** 30 minutes: funding accrues hourly, so a 30m cadence never misses a rate. */
+  const DERIVED_FUNDING_CADENCE_MS = 30 * 60_000;
+  /** 1 minute: the archiver samples asset_ctx / book_summary ~1/min. */
+  const DERIVED_SAMPLE_CADENCE_MS = 60_000;
+
+  /** The interval a candle-sourced derived metric is measured on, if any. */
+  const derivedInterval = (params: DerivedMetricParams): BarInterval | undefined =>
+    "interval" in params ? params.interval : undefined;
+
+  /**
+   * The metric's natural evaluation cadence (plan 38 §3.3): 30m for funding,
+   * 1m for the sampled series, one bar for everything candle-sourced.
+   * `evaluateEveryMs` on the condition overrides the default.
+   */
+  const derivedCadenceMs = (watch: Extract<MarketWatch, { type: "metric_derived" }>): number => {
+    if (watch.evaluateEveryMs !== undefined) return watch.evaluateEveryMs;
+    switch (watch.metric) {
+      case "funding_mean":
+      case "funding_sign_flip":
+      case "funding_cumulative":
+        return DERIVED_FUNDING_CADENCE_MS;
+      case "oi_change_rate":
+      case "premium_mean":
+      case "depth_ratio":
+        return DERIVED_SAMPLE_CADENCE_MS;
+      default:
+        return INTERVAL_MS[derivedInterval(watch.params) ?? "1m"];
+    }
+  };
+
+  /** The metric as a fire summary names it, with its key params. */
+  const derivedMetricLabel = (watch: Extract<MarketWatch, { type: "metric_derived" }>): string => {
+    const params = watch.params;
+    switch (params.metric) {
+      case "funding_mean":
+      case "funding_sign_flip":
+        return `${params.windowDays}d mean funding`;
+      case "funding_cumulative":
+        return "cumulative funding since entry";
+      case "sigma_return":
+        return `sigma_return ${params.interval}`;
+      case "sigma_distance":
+        return `sigma_distance ${params.interval}`;
+      case "sigma_ratio":
+        return `sigma_ratio ${params.interval}`;
+      case "ema_distance":
+        return `ema_distance ${params.interval}`;
+      case "oi_change_rate":
+        return `oi change rate ${params.windowMinutes}m`;
+      case "premium_mean":
+        return `premium mean ${params.windowMinutes}m`;
+      case "depth_ratio":
+        return `depth ratio ${params.windowMinutes}m`;
+      case "bars_since":
+        return `bars_since ${params.interval}`;
+      case "hold_bars":
+        return `hold_bars ${params.interval}`;
+    }
+  };
+
+  /** A metric value for a fire summary: exponent form for the tiny ones. */
+  const formatMetricValue = (value: number): string => {
+    if (value === 0) return "0";
+    if (Math.abs(value) < 1e-4 || Math.abs(value) >= 1e7) return value.toExponential(2);
+    return `${Number(value.toPrecision(3))}`;
+  };
+
+  /**
+   * The start of the mission's current nonzero holding episode for `market`.
+   *
+   * Source: the reconciler's `trading_position_snapshots.opened_at` (migration
+   * 046) — stamped when the position is first observed non-flat, held while it
+   * stays non-flat, cleared on the flat transition. That is the honest live
+   * answer to "the position's first fill of the current episode": history.ts
+   * derives the same anchor (`first.firstFillAt`) for CLOSED trips by walking
+   * `trading_fills` and netting sizes to zero, but that walk can only group a
+   * trailing episode after it closes; `opened_at` is the same fact maintained
+   * incrementally by the component that owns position truth. Null (or no row,
+   * or a flat row) means there is no episode and the caller leaves
+   * `positionEntryAt` unset.
+   */
+  const readPositionEntryAt = (missionId: string, market: string) =>
+    sql<{ readonly opened_at: number | null }>`
+      SELECT opened_at FROM trading_position_snapshots
+      WHERE mission_id = ${missionId} AND market = ${market} AND size != 0
+    `.pipe(
+      Effect.orDie,
+      Effect.map((rows) => rows[0]?.opened_at ?? undefined),
+    );
+
+  /**
+   * When the `bars_since` reference watch fired, or undefined when it has not
+   * fired yet — `markTriggered` stamps `updated_at` with the trigger time, so
+   * a triggered row's `updated_at` IS the moment the counted window opens.
+   */
+  const readSinceTrigger = (sinceWatchId: string) =>
+    sql<{ readonly status: string; readonly updated_at: number }>`
+      SELECT status, updated_at FROM trading_watches WHERE watch_id = ${sinceWatchId}
+    `.pipe(
+      Effect.orDie,
+      Effect.map((rows) =>
+        rows[0]?.status === "triggered" ? (rows[0]?.updated_at as number) : undefined,
+      ),
+    );
+
+  /**
+   * The derived variant of `recordObservation`: the observed value lands under
+   * the same epsilon/refresh write-guard, and `next_evaluate_at` — the cadence
+   * that keeps a 72-bar sigma off the 2s sweep — is written in the same single
+   * UPDATE. The cadence must advance on EVERY real evaluation (guard or no
+   * guard), or a static value would pin the watch to per-sweep recomputation;
+   * the guard therefore governs only the observation columns.
+   */
+  const recordDerivedObservation = (
+    watchId: string,
+    observedValue: number,
+    observedAt: number,
+    nextEvaluateAt: number,
+  ) =>
+    sql`
+      UPDATE trading_watches
+      SET last_observed_value = CASE WHEN (
+        last_observed_value IS NULL
+        OR ABS(last_observed_value - ${observedValue}) > 1e-9
+        OR last_evaluated_at < ${observedAt - OBSERVATION_REFRESH_MILLIS}
+      ) THEN ${observedValue} ELSE last_observed_value END,
+      last_evaluated_at = CASE WHEN (
+        last_observed_value IS NULL
+        OR ABS(last_observed_value - ${observedValue}) > 1e-9
+        OR last_evaluated_at < ${observedAt - OBSERVATION_REFRESH_MILLIS}
+      ) THEN ${observedAt} ELSE last_evaluated_at END,
+      next_evaluate_at = ${nextEvaluateAt}
+      WHERE watch_id = ${watchId}
+    `.pipe(Effect.orDie);
+
+  /** Advance the retry clock without recording anything true. */
+  const advanceNextEvaluateAt = (watchId: string, nextEvaluateAt: number) =>
+    sql`
+      UPDATE trading_watches SET next_evaluate_at = ${nextEvaluateAt}
+      WHERE watch_id = ${watchId}
+    `.pipe(Effect.orDie);
+
+  /**
+   * The `cross` region signature, persisted in the same `baseline_signature`
+   * column `fireOnChange` uses. A watch has exactly one firing discipline, so
+   * a region signature ("in"/"out") and a change signature ("pos"/"neg") can
+   * never collide on the same row.
+   */
+  const fireOnRegionEntry = (tracked: TrackedWatch, region: "in" | "out", summary: string) =>
+    Effect.gen(function* () {
+      const key = tracked.watch.id;
+      const rows = yield* sql<{ readonly baseline_signature: string | null }>`
+        SELECT baseline_signature FROM trading_watches WHERE watch_id = ${key}
+      `.pipe(Effect.orDie);
+      const previous = rows[0]?.baseline_signature ?? null;
+      if (previous !== region) {
+        yield* sql`
+          UPDATE trading_watches SET baseline_signature = ${region} WHERE watch_id = ${key}
+        `.pipe(Effect.orDie);
+      }
+      // ENTRY-ONLY. The first evaluation arms (a watch armed while already
+      // inside its region must not fire — the giveback instant-refire guard
+      // of plan 34 step 6, generalised), and leaving the region never fires.
+      if (previous !== "out" || region !== "in") return;
+
+      yield* enqueueFire(tracked, `metric_derived:${key}:${region}`, summary, {
+        watchId: key,
+        region,
+        previous,
+      });
+    });
+
+  /**
+   * Evaluate a `metric_derived` watch. `onDelivery` is true on the
+   * candle-delivery path, where the delivery is the clock: no cadence is read
+   * or written there (the sweep never evaluates a delivered-interval bar_close
+   * watch), while the sweep path both gates on and advances
+   * `next_evaluate_at`.
+   */
+  const evaluateDerived = Effect.fn("WatchEvaluator.evaluateDerived")(function* (
+    tracked: TrackedWatch,
+    now: number,
+    onDelivery: boolean,
+  ) {
+    const watch = tracked.watch.watch;
+    if (watch.type !== "metric_derived") return;
+    const cadenceMs = derivedCadenceMs(watch);
+
+    // The two anchors the archive cannot resolve itself.
+    let positionEntryAt: number | undefined;
+    let sinceMs: number | undefined;
+    if (watch.metric === "funding_cumulative" || watch.metric === "hold_bars") {
+      positionEntryAt = yield* readPositionEntryAt(tracked.missionId, watch.market);
+    }
+    if (watch.params.metric === "bars_since") {
+      sinceMs = yield* readSinceTrigger(watch.params.sinceWatchId);
+      if (sinceMs === undefined) {
+        // The reference watch has not fired: unavailable-kind "context" this
+        // cycle. Retry later, fire nothing, write nothing true.
+        if (!onDelivery) yield* advanceNextEvaluateAt(tracked.watch.id, now + cadenceMs);
+        return;
+      }
+    }
+
+    const result = yield* archive.derivedMetric({
+      market: watch.market,
+      params: watch.params,
+      now,
+      ...(positionEntryAt === undefined ? {} : { positionEntryAt }),
+      ...(sinceMs === undefined ? {} : { sinceMs }),
+    });
+
+    if (result.status === "unavailable") {
+      // Absence is an answer, never a number: no fire, no observation write,
+      // but the retry clock advances. A missing archive must never read as 0.
+      if (!onDelivery) yield* advanceNextEvaluateAt(tracked.watch.id, now + cadenceMs);
+      return;
+    }
+    const value = result.value;
+
+    if (onDelivery) {
+      yield* recordObservation(tracked.watch.id, value, now);
+    } else {
+      yield* recordDerivedObservation(tracked.watch.id, value, now, now + cadenceMs);
+    }
+
+    const label = derivedMetricLabel(watch);
+    if (watch.metric === "funding_sign_flip") {
+      // The existing durable-baseline machinery, verbatim: the first
+      // evaluation records the sign and fires nothing; any later difference
+      // fires once. Durable, so a flip during downtime fires on the first
+      // sweep after restart.
+      const signature = value < 0 ? "neg" : "pos";
+      yield* fireOnChange(
+        tracked,
+        signature,
+        () =>
+          `${label} ${formatMetricValue(value)} (sign flip, was ` +
+          `${signature === "neg" ? "positive" : "negative"})`,
+      );
+      return;
+    }
+
+    const direction = watch.direction ?? "above";
+    const threshold = watch.value ?? 0;
+    const inRegion = direction === "above" ? value >= threshold : value <= threshold;
+    const summary = `${label} ${formatMetricValue(value)} (${direction} ${threshold})`;
+
+    if (watch.mode === "level") {
+      if (!inRegion) return;
+      yield* enqueueFire(tracked, `metric_derived:${tracked.watch.id}`, summary, {
+        metric: watch.metric,
+        value,
+        threshold,
+        observedAt: now,
+        watchId: tracked.watch.id,
+      });
+      return;
+    }
+    yield* fireOnRegionEntry(tracked, inRegion ? "in" : "out", summary);
+  });
+
+  /** The delivery-path filter: a bar of `interval` finalised for `market`. */
+  const evaluateDerivedDelivery = (tracked: TrackedWatch, market: string, interval: string) =>
+    Effect.gen(function* () {
+      const watch = tracked.watch.watch;
+      if (watch.type !== "metric_derived") return;
+      if (watch.confirm !== "bar_close") return;
+      if (market !== watch.market) return;
+      if (derivedInterval(watch.params) !== interval) return;
+      // The delivery event is the clock; the archive is the data. The
+      // archiver lags the WS by up to ~60s, so the metric may exclude the
+      // just-closed bar — acceptable and documented (plan 38 §3.5): the next
+      // bar's delivery re-evaluates against a complete archive.
+      yield* evaluateDerived(tracked, yield* nowMs, true);
+    });
+
   /** Fire a `scheduled_reassessment` watch whose `runAt` has passed. */
   const evaluateScheduled = (tracked: TrackedWatch, observedAt: number) =>
     Effect.gen(function* () {
@@ -867,6 +1154,7 @@ const make = Effect.gen(function* () {
 
       const tracked = yield* activeTrackedWatches();
       yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, market, interval, finalized));
+      yield* Effect.forEach(tracked, (t) => evaluateDerivedDelivery(t, market, interval));
       if (finalVolume !== undefined) {
         yield* Effect.forEach(tracked, (t) =>
           evaluateVolumeRatio(t, market, interval, finalVolume, priorVolumes),
@@ -893,15 +1181,40 @@ const make = Effect.gen(function* () {
         return evaluatePnlGiveback(t);
       case "metric_threshold":
         return evaluateMetricThreshold(t);
+      case "metric_derived":
+        return evaluateDerived(t, observedAt, false);
       default:
         return Effect.void;
     }
+  };
+
+  /**
+   * O(1) sweep skip for a derived watch, before any archive call (plan 38
+   * §3.5). A `confirm: "bar_close"` watch on an interval the delivery path
+   * carries is never sweep-evaluated; any derived watch whose cadence has not
+   * come due is skipped until it has.
+   */
+  const sweepSkipsDerived = (t: TrackedWatch, now: number): boolean => {
+    const watch = t.watch.watch;
+    if (watch.type !== "metric_derived") return false;
+    if (watch.confirm === "bar_close") {
+      const interval = derivedInterval(watch.params);
+      // DIRECT_INTERVALS (1m/3m/5m/15m/1h) are the delivered intervals. A
+      // bar_close watch on 4h/1d has no delivery to ride, so it falls back to
+      // the sweep at its interval's cadence below.
+      if (interval !== undefined && (DIRECT_INTERVALS as readonly string[]).includes(interval)) {
+        return true;
+      }
+    }
+    const due = t.watch.nextEvaluateAt;
+    return due !== undefined && due > now;
   };
 
   const sweep: WatchEvaluatorShape["sweep"] = Effect.gen(function* () {
     const tracked = yield* activeTrackedWatches();
     const observedAt = yield* nowMs;
     for (const t of tracked) {
+      if (sweepSkipsDerived(t, observedAt)) continue;
       // Contained per watch: the evaluators read the exchange and the DB
       // through `orDie`, and one watch's transient failure must not starve the
       // rest of this sweep — a silent evaluator is a deaf mission wearing a

@@ -109,7 +109,7 @@ const harness: TradingHarnessBinding = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 72 });
+  yield* runMigrations({ toMigrationInclusive: 73 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_harness_runs`;
@@ -676,7 +676,7 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
     );
 
     yield* Effect.gen(function* () {
-      yield* runMigrations({ toMigrationInclusive: 72 });
+      yield* runMigrations({ toMigrationInclusive: 73 });
       const missions = yield* TradingMissionService;
       yield* missions.createMission({
         missionId: "mission_1",

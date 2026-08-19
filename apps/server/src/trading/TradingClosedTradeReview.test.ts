@@ -135,7 +135,7 @@ const FILLS: ReadonlyArray<{
 
 const seedFills = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 72 });
+  yield* runMigrations({ toMigrationInclusive: 73 });
   yield* sql`DELETE FROM trading_fills`;
   let index = 0;
   for (const fill of FILLS) {
@@ -210,7 +210,7 @@ layer("TradingClosedTradeReview", (it) => {
   it.effect("leaves a trade whose fills all trade after the observation unchanged", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 72 });
+      yield* runMigrations({ toMigrationInclusive: 73 });
       yield* sql`DELETE FROM trading_fills`;
       yield* sql`
         INSERT INTO trading_fills (

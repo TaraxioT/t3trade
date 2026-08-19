@@ -32,7 +32,7 @@ const harness: TradingHarnessBinding = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 72 });
+  yield* runMigrations({ toMigrationInclusive: 73 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;

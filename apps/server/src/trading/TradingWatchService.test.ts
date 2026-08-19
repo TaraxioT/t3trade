@@ -40,7 +40,7 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 72 });
+  yield* runMigrations({ toMigrationInclusive: 73 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -206,6 +206,89 @@ layer("TradingWatchService", (it) => {
       // The flat-armed level is still a level. Killing it would take the
       // mission's way back in with the trade it just left.
       assert.equal(byId.get(entryLevel.id), "active");
+    }),
+  );
+
+  // Plan 38 Phase 3 item 4: a derived metric watch gets the same 072
+  // treatment as a model-armed level. `metric_derived` is not position-scoped
+  // by type (a funding or OI condition is a fact about the market, not the
+  // trade), so WHEN it was armed is the only thing that can retire it.
+  it.effect(
+    "keeps a derived watch armed flat through a position opening and closing beneath it",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        yield* seedMission;
+        const sql = yield* SqlClient.SqlClient;
+        const watches = yield* TradingWatchService;
+
+        const { watch: derived } = yield* watches.registerWatch({
+          missionId: "mission_1",
+          watch: {
+            type: "metric_derived",
+            market: "ETH",
+            metric: "funding_mean",
+            params: { metric: "funding_mean", windowDays: 7 },
+            direction: "below",
+            value: 0,
+            mode: "cross",
+          },
+        });
+        // The same survivor treatment prediction_version already gets: it
+        // survives the trade but not bound to a prediction that ended with it.
+        yield* sql`
+        UPDATE trading_watches SET prediction_version = 3 WHERE watch_id = ${derived.id}
+      `;
+
+        // A position comes and goes beneath the watch.
+        yield* seedPosition(-0.2613);
+        yield* sql`UPDATE trading_position_snapshots SET size = 0 WHERE mission_id = 'mission_1'`;
+        const retired = yield* watches.supersedePositionWatches({ missionId: "mission_1" });
+
+        assert.deepStrictEqual([...retired], []);
+        const statuses = yield* sql<{
+          readonly watch_id: string;
+          readonly status: string;
+          readonly prediction_version: number | null;
+        }>`
+        SELECT watch_id, status, prediction_version FROM trading_watches
+        WHERE mission_id = 'mission_1'
+      `;
+        const row = statuses.find((candidate) => candidate.watch_id === derived.id);
+        assert.equal(row?.status, "active");
+        assert.equal(row?.prediction_version, null);
+      }),
+  );
+
+  it.effect("retires a derived watch that was armed while the position was open", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      const watches = yield* TradingWatchService;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* seedPosition(-0.2613);
+      const { watch: derived } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: {
+          type: "metric_derived",
+          market: "ETH",
+          metric: "oi_change_rate",
+          params: { metric: "oi_change_rate", windowMinutes: 60 },
+          direction: "above",
+          value: 0.05,
+          mode: "cross",
+        },
+      });
+
+      yield* sql`UPDATE trading_position_snapshots SET size = 0 WHERE mission_id = 'mission_1'`;
+      const retired = yield* watches.supersedePositionWatches({ missionId: "mission_1" });
+
+      assert.deepStrictEqual([...retired], [derived.id]);
+      const statuses = yield* sql<{ readonly status: string }>`
+        SELECT status FROM trading_watches WHERE watch_id = ${derived.id}
+      `;
+      assert.equal(statuses[0]?.status, "superseded");
     }),
   );
 

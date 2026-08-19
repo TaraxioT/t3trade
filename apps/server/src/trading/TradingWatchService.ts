@@ -213,6 +213,8 @@ interface WatchRow {
   readonly last_evaluated_at?: number | null;
   /** Optional for the same reason: rows and callers that predate migration 069. */
   readonly prediction_version?: number | null;
+  /** Optional for the same reason: rows and callers that predate migration 073. */
+  readonly next_evaluate_at?: number | null;
 }
 
 export const toPersistedWatch = (row: WatchRow): PersistedWatch => {
@@ -235,6 +237,9 @@ export const toPersistedWatch = (row: WatchRow): PersistedWatch => {
           lastObservedValue: row.last_observed_value,
           lastEvaluatedAt: row.last_evaluated_at,
         }),
+    // The derived-watch cadence (migration 073). Absent on null and on rows
+    // that predate the column — both read as "evaluate every sweep".
+    ...(row.next_evaluate_at == null ? {} : { nextEvaluateAt: row.next_evaluate_at }),
   };
 };
 
@@ -272,7 +277,7 @@ const makeTradingWatchService = Effect.gen(function* () {
       WHERE watch_id = ${watchId} AND mission_id = ${missionId} AND status = 'active'
       RETURNING watch_id, mission_id, watch_json, status, armed_reason,
                 created_at, updated_at, last_observed_value, last_evaluated_at,
-                prediction_version
+                prediction_version, next_evaluate_at
     `.pipe(Effect.map((rows) => (rows[0] ? toPersistedWatch(rows[0]) : null)));
 
   const registerWatch: TradingWatchServiceShape["registerWatch"] = (input) =>
@@ -392,7 +397,7 @@ const makeTradingWatchService = Effect.gen(function* () {
           AND status = 'active'
         RETURNING watch_id, mission_id, watch_json, status, armed_reason,
                 created_at, updated_at, last_observed_value, last_evaluated_at,
-                prediction_version
+                prediction_version, next_evaluate_at
       `.pipe(Effect.mapError(sqlFail("cancel:update")));
 
       return rows[0] ? toPersistedWatch(rows[0]) : null;
@@ -409,7 +414,7 @@ const makeTradingWatchService = Effect.gen(function* () {
         WHERE watch_id = ${watchId} AND status = 'active'
         RETURNING watch_id, mission_id, watch_json, status, armed_reason,
                   created_at, updated_at, last_observed_value, last_evaluated_at,
-                prediction_version
+                prediction_version, next_evaluate_at
       `.pipe(Effect.mapError(sqlFail("markTriggered:update")));
 
       return rows[0] ? toPersistedWatch(rows[0]) : null;
@@ -420,7 +425,7 @@ const makeTradingWatchService = Effect.gen(function* () {
       const rows = yield* sql<WatchRow>`
         SELECT watch_id, mission_id, watch_json, status, armed_reason,
                created_at, updated_at, last_observed_value, last_evaluated_at,
-                prediction_version
+                prediction_version, next_evaluate_at
         FROM trading_watches WHERE watch_id = ${watchId}
       `.pipe(Effect.mapError(sqlFail("getWatch")));
       return rows[0] ? toPersistedWatch(rows[0]) : null;
