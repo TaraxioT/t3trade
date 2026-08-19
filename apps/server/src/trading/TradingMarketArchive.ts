@@ -334,6 +334,9 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
         // One compact digest per archived coin, from the coin list the archive
         // config owns. Each half is best-effort: a coin the archive cannot
         // answer is marked on the coin, never by failing the whole key.
+        // There is deliberately no regime field: it is not derivable from the
+        // existing structure code at acceptable cost, and the plan says omit
+        // rather than invent.
         const coins = ARCHIVE_COINS.map((coin): ScanCoinDigest => {
           const entry: { coin: string } & Record<string, number | string> = { coin };
           const missing: Array<string> = [];
@@ -347,6 +350,9 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             // Rounded to the precision the digest publishes: the scan is a
             // context read, and full float precision is chars nothing acts on.
             const round2 = (value: number): number => Math.round(value * 100) / 100;
+            // Mark is the last archived 5m close — the scan is an archive-only
+            // key and makes no live exchange call, so it can trail the tape by
+            // up to one bar.
             entry["mark"] = round2(last.c);
             if (first.o > 0) {
               entry["change24hPct"] = round2(((last.c - first.o) / first.o) * 100);
