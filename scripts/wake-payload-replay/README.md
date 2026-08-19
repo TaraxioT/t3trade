@@ -55,6 +55,38 @@ The Claude CLI is often pointed at a third-party gateway via `ANTHROPIC_BASE_URL
 and the `ANTHROPIC_DEFAULT_*_MODEL` overrides. `replay.sh` clears them, so the
 replay cannot quietly run on a different model than it claims.
 
+## 3b. The fetch arm
+
+```bash
+python3 scripts/wake-payload-replay/fetch-arm.py 5c17c8c6 /tmp/scen
+```
+
+Writes `t<turn>.fetch.txt` next to the `full` scenarios: the identical prompt
+except the embedded `trading_look` result is re-packed into the shape the NEW
+fetch path (`readFetchedObservation` in
+`apps/server/src/mcp/toolkits/trading/handlers.ts`) would have returned for the
+equivalent call. Recorded scope arguments are translated per the handler's real
+scope-to-key mapping and the result sections are copied verbatim, plus the
+`fetched` echo and any `unavailable[]` entries. Sections the fetch path
+genuinely cannot reproduce (the flat-cap candles note,
+`previousStructureRead`, the mission half's authority/control/harness
+siblings) are dropped and recorded per turn in `fetch-manifest.json`.
+
+Replay it codex-only with the same flags `replay.sh` uses:
+
+```bash
+TURNS="$(seq 2 53)" ARMS="full fetch" scripts/wake-payload-replay/replay.sh /tmp/scen /tmp/runs
+```
+
+with `MODELS=codex` — or directly:
+
+```bash
+codex exec -m gpt-5.6-luna -c model_reasoning_effort=low --sandbox read-only --skip-git-repo-check - < t2.fetch.txt
+```
+
+The claude leg of the fetch-arm replay is pending until that CLI exists on the
+machine; the invocation in `replay.sh` is ready for it unchanged.
+
 ## Cost
 
 A full seven-turn, two-arm, two-model sweep is 28 calls. Prompts run 10k–34k
