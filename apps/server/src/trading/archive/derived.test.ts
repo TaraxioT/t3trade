@@ -507,6 +507,24 @@ describe("vwap_distance", () => {
     });
   });
 
+  it("serves the same signed distance in bps alongside the sigma value", () => {
+    withArchive((db) => {
+      upsertCandles(db, session);
+      const outcome = derivedMetricValue(
+        db,
+        "BTC",
+        { metric: "vwap_distance", interval: "5m" },
+        { now: NOW },
+      );
+      assert.strictEqual(outcome.status, "ok");
+      if (outcome.status !== "ok") return;
+      // Hand-checked off the same fixture: (103 − 102.3)/102.3 × 10,000 =
+      // 7,000/102.3 ≈ 68.4262, which the family's 2dp convention rounds to
+      // 68.43. Sign preserved: a close below VWAP would serve negative bps.
+      assert.strictEqual(outcome.bps, 68.43);
+    });
+  });
+
   it("anchors to the UTC day: a prior-day bar never enters the VWAP", () => {
     withArchive((db) => {
       // An extreme prior-day bar that would drag the VWAP to ~196 if the

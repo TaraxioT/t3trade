@@ -93,6 +93,11 @@ export type BookHistoryResult = BookHistoryOk | ArchiveUnavailable;
 export interface DerivedMetricOk {
   readonly status: "ok";
   readonly value: number;
+  /**
+   * The second-unit figure `vwap_distance` serves alongside its sigma value:
+   * the signed mark-to-VWAP distance in bps. Absent for every other metric.
+   */
+  readonly bps?: number;
 }
 
 /**
@@ -309,7 +314,11 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             ...(sinceMs === undefined ? {} : { sinceMs }),
           });
           return outcome.status === "ok"
-            ? { status: "ok", value: outcome.value }
+            ? {
+                status: "ok",
+                value: outcome.value,
+                ...(outcome.bps === undefined ? {} : { bps: outcome.bps }),
+              }
             : { status: "unavailable", kind: outcome.kind, reason: outcome.detail };
         }, `archive file not found at ${filePath}`),
         // A missing file or failed read falls out of `withHandle` as the plain

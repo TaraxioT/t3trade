@@ -1092,13 +1092,17 @@ const make = Effect.gen(function* () {
     const direction = watch.direction ?? "above";
     const threshold = watch.value ?? 0;
     const inRegion = direction === "above" ? value >= threshold : value <= threshold;
-    const summary = `${label} ${formatMetricValue(value)} (${direction} ${threshold})`;
+    // `vwap_distance` serves its distance twice: in sigma units (the value,
+    // and the threshold's frame) and in bps from the session VWAP.
+    const bpsSuffix = result.bps === undefined ? "" : ` (${result.bps} bps from vwap)`;
+    const summary = `${label} ${formatMetricValue(value)}${bpsSuffix} (${direction} ${threshold})`;
 
     if (watch.mode === "level") {
       if (!inRegion) return;
       yield* enqueueFire(tracked, `metric_derived:${tracked.watch.id}`, summary, {
         metric: watch.metric,
         value,
+        ...(result.bps === undefined ? {} : { bps: result.bps }),
         threshold,
         observedAt: now,
         watchId: tracked.watch.id,

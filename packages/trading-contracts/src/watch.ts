@@ -148,9 +148,11 @@ export const DerivedMetricParams = Schema.Union([
   /**
    * The mark's signed distance from the UTC-day session VWAP, in units of the
    * session's own sigma over the closes of `interval` bars. Session VWAP is
-   * Σ((h+l+c)/3·v)/Σv over the bars that opened inside the current UTC day —
-   * the read carries the same number in bps; the watch holds it in sigma
-   * units, the dimensionless frame every other sigma metric here uses.
+   * Σ((h+l+c)/3·v)/Σv over the bars that opened inside the current UTC day.
+   * The watch holds it in sigma units — the dimensionless frame every other
+   * sigma metric here uses, and the unit its threshold is parsed in — while
+   * the derived read's served payload and every firing carry the same signed
+   * distance in bps ((mark − vwap)/vwap × 10⁴) alongside the sigma value.
    */
   Schema.Struct({
     metric: Schema.Literal("vwap_distance"),

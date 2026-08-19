@@ -2789,7 +2789,8 @@ const handlers = {
             return refuseDerived(
               "derived_already_true",
               `${condition.metric} is already ${derived.direction} ${derived.value} ` +
-                `(observed ${result.value}) — a level watch true the moment it is written fires ` +
+                `(observed ${result.value}${result.bps === undefined ? "" : `, ${result.bps} bps from vwap`}) — ` +
+                `a level watch true the moment it is written fires ` +
                 `on the next sweep; use mode "cross" or move the threshold`,
             );
           }

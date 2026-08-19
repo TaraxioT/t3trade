@@ -30,7 +30,17 @@ import type { BarInterval, DerivedMetricParams } from "@t3tools/trading-contract
 export type DerivedMetricUnavailabilityKind = "archive" | "window" | "context";
 
 export type DerivedMetricOutcome =
-  | { readonly status: "ok"; readonly value: number }
+  | {
+      readonly status: "ok";
+      readonly value: number;
+      /**
+       * The figure a metric that serves a second unit carries alongside its
+       * value. Only `vwap_distance` sets it: the signed distance of the last
+       * close from the session VWAP in bps, rounded to 2dp like the scan
+       * digest's percent figures. Thresholds stay in the metric's own units.
+       */
+      readonly bps?: number;
+    }
   | {
       readonly status: "unavailable";
       readonly kind: DerivedMetricUnavailabilityKind;
@@ -565,7 +575,14 @@ export function derivedMetricValue(
         };
       }
       const last = bars[bars.length - 1] as CandleRow;
-      return { status: "ok", value: (last.c - weighted / volume) / sigma };
+      const vwap = weighted / volume;
+      return {
+        status: "ok",
+        value: (last.c - vwap) / sigma,
+        // The same distance in bps, sign preserved, at the digest's 2dp —
+        // served alongside the sigma figure, never instead of it.
+        bps: Math.round(((last.c - vwap) / vwap) * 10_000 * 100) / 100,
+      };
     }
   }
 }
