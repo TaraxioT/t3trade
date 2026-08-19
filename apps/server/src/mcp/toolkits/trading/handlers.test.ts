@@ -14,7 +14,7 @@ import {
 import { computeIndicator } from "@t3tools/trading-contracts/indicators";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics nodeBuiltinImport:off - temp dirs for the archive fixture.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -2653,7 +2653,7 @@ it.effect("pins trading_look scope results byte for byte (plan 38 §5.3)", () =>
           const response = yield* callTool(call.thread ?? BOUND_THREAD, "trading_look", call.args);
           assert.equal(response.result.isError, false, call.label);
           const text = response.result.content[0].text as string;
-          const digest = createHash("sha256").update(text).digest("hex");
+          const digest = NodeCrypto.createHash("sha256").update(text).digest("hex");
           const expected = GOLDEN_CALLS.find((golden) => golden.label === call.label)?.digest;
           if (expected === undefined || expected === "GOLDEN") {
             // Capture mode: print the digest so it can be pinned. A pinned run
