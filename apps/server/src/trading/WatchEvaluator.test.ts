@@ -306,6 +306,15 @@ const candleDelivery = (closeTime: number, closePrice: number): WsDelivery => ({
  * — so this proves the same fires-exactly-once invariant without racing a
  * forked fiber.
  */
+/** Mutable stand-in for the lease so one test can observe the stand-down. */
+let leaseHeld = true;
+const fakeLease = Layer.succeed(TradingRuntimeLease, {
+  get held() {
+    return leaseHeld;
+  },
+  lockPath: null,
+});
+
 const layer = it.layer(
   WatchEvaluatorLive.pipe(
     Layer.provideMerge(TradingMissionServiceLive),
@@ -319,8 +328,8 @@ const layer = it.layer(
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(stubEngine),
     // The evaluator stands its writers down when the lease is lost; tests
-    // here always hold it.
-    Layer.provideMerge(Layer.succeed(TradingRuntimeLease, { held: true, lockPath: null })),
+    // here hold it by default, and the stand-down test flips it.
+    Layer.provideMerge(fakeLease),
   ),
 );
 
@@ -470,6 +479,44 @@ layer("WatchEvaluator", (it) => {
       const inbox = yield* TradingEventInbox;
       assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
     }),
+  );
+
+  /**
+   * The periodic sweep is a lease-gated writer: when the runtime lease is
+   * lost the sweep must do nothing, and it must resume evaluating once the
+   * lease is held again (a fresh boot re-acquires).
+   */
+  it.effect("the sweep performs no evaluation while the lease is not held", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // Stub mark price is 3_100, so "mark above 3_000" would fire if run.
+      yield* seed({
+        type: "price_cross",
+        market: "ETH",
+        priceSource: "mark",
+        direction: "above",
+        price: 3_000,
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      // Not held: the sweep performs no evaluation — the watch stays armed.
+      leaseHeld = false;
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+      // Held again: the same sweep now fires the matching watch.
+      leaseHeld = true;
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 1);
+    }).pipe(
+      // Never leak a lost lease into the other tests, even on failure.
+      Effect.onExit(() => Effect.sync(() => (leaseHeld = true))),
+    ),
   );
 
   it.effect("fires a due scheduled reassessment as a timer event, but not an undue one", () =>

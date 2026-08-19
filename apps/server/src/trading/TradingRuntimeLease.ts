@@ -46,7 +46,18 @@
  * the file stops naming this process, the holder logs the thief, stops
  * refreshing, and stands down — `held` flips to false and the periodic
  * writers (the 2s watch sweep, the mission follow loop) skip their next
- * tick. Worst case after any race is a stood-down runtime, never two.
+ * tick. One extreme corner still escapes this: the heartbeat refresh is a
+ * truncate-write, so a holder suspended ≥ STALE_AFTER_MS (judged stale,
+ * lease broken and retaken) that resumes in the microseconds between its
+ * own ownership re-read and its truncate-write can clobber the new holder's
+ * fresh lock. For at most one heartbeat interval (~10s) both processes then
+ * believe they hold, resolved when the dispossessed holder's next tick
+ * detects the loss and stands down — so exclusivity is eventually
+ * preserved, with at most that one bounded transient dual-belief in this
+ * corner, and a stood-down process never becomes a writer again without a
+ * full re-acquire. Dually, a late racer renaming a fresh holder's lock away
+ * can make the holder's next tick briefly see the file missing and stand
+ * down — a liveness cost only, never a second writer.
  *
  * Clock sensitivity: heartbeat ages come from the wall clock
  * (`Clock.currentTimeMillis`), because the heartbeat must survive across
