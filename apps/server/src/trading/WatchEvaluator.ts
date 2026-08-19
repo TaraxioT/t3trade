@@ -901,6 +901,8 @@ const make = Effect.gen(function* () {
         return `bars_since ${params.interval}`;
       case "hold_bars":
         return `hold_bars ${params.interval}`;
+      case "vwap_distance":
+        return `vwap_distance ${params.interval}`;
     }
   };
 

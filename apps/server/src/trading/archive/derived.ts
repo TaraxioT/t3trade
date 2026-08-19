@@ -1,5 +1,5 @@
 /**
- * The twelve derived metrics of plan 38 §3.3 — pure functions over an open
+ * The thirteen derived metrics of plan 38 §3.3 — pure functions over an open
  * archive handle, in the same style as `read.ts`: no clock of their own, no
  * side effects, testable against a temp file with synthetic rows.
  *
@@ -525,6 +525,47 @@ export function derivedMetricValue(
         };
       }
       return { status: "ok", value: candlesClosedAfter(db, coin, params.interval, entryAt).length };
+    }
+
+    case "vwap_distance": {
+      // Signed distance of the last close from the UTC-day session VWAP
+      // (Σ typical·v / Σ v over the bars that opened inside the current UTC
+      // day), in population-σ units of the session's closes.
+      const dayStart = Math.floor(ctx.now / DAY_MS) * DAY_MS;
+      const gapRefusal = refuseOnGap(db, coin, params.interval, dayStart, ctx.now);
+      if (gapRefusal !== null) return gapRefusal;
+      const bars = candlesInRange(db, coin, params.interval, dayStart, ctx.now);
+      if (bars.length === 0) {
+        return {
+          status: "unavailable",
+          kind: "window",
+          detail: `no ${params.interval} bars in the current UTC day for ${coin}`,
+        };
+      }
+      let volume = 0;
+      let weighted = 0;
+      for (const bar of bars) {
+        const typical = (bar.h + bar.l + bar.c) / 3;
+        volume += bar.v;
+        weighted += typical * bar.v;
+      }
+      if (volume <= 0) {
+        return {
+          status: "unavailable",
+          kind: "context",
+          detail: "zero volume across the session's bars",
+        };
+      }
+      const sigma = populationStdev(bars.map((bar) => bar.c));
+      if (sigma <= 0) {
+        return {
+          status: "unavailable",
+          kind: "context",
+          detail: "zero variance in session closes",
+        };
+      }
+      const last = bars[bars.length - 1] as CandleRow;
+      return { status: "ok", value: (last.c - weighted / volume) / sigma };
     }
   }
 }

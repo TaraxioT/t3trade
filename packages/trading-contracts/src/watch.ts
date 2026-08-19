@@ -57,7 +57,7 @@ export const BarInterval = Schema.Literals(["1m", "5m", "15m", "1h", "4h", "1d"]
 export type BarInterval = typeof BarInterval.Type;
 
 /**
- * The twelve metrics the server can compute locally from the market archive,
+ * The thirteen metrics the server can compute locally from the market archive,
  * delivered as a trigger and never as a polled dump — plan 38 §3.3. Named here
  * so the condition schema, the persisted encoding, and the catalog below all
  * agree on one list.
@@ -75,6 +75,7 @@ export const DerivedMetricName = Schema.Literals([
   "depth_ratio",
   "bars_since",
   "hold_bars",
+  "vwap_distance",
 ]);
 export type DerivedMetricName = typeof DerivedMetricName.Type;
 
@@ -142,6 +143,17 @@ export const DerivedMetricParams = Schema.Union([
   }),
   Schema.Struct({
     metric: Schema.Literal("hold_bars"),
+    interval: BarInterval,
+  }),
+  /**
+   * The mark's signed distance from the UTC-day session VWAP, in units of the
+   * session's own sigma over the closes of `interval` bars. Session VWAP is
+   * Σ((h+l+c)/3·v)/Σv over the bars that opened inside the current UTC day —
+   * the read carries the same number in bps; the watch holds it in sigma
+   * units, the dimensionless frame every other sigma metric here uses.
+   */
+  Schema.Struct({
+    metric: Schema.Literal("vwap_distance"),
     interval: BarInterval,
   }),
 ]);
@@ -242,6 +254,13 @@ export const DERIVED_METRIC_CATALOG: ReadonlyArray<DerivedMetricCatalogEntry> = 
   },
   {
     metric: "hold_bars",
+    params: "interval",
+    source: "candles",
+    cadence: "bar close",
+    fireOnChange: false,
+  },
+  {
+    metric: "vwap_distance",
     params: "interval",
     source: "candles",
     cadence: "bar close",
@@ -596,6 +615,7 @@ const DERIVED_PARAM_RANGES: Readonly<
   depth_ratio: [{ field: "windowMinutes", min: 1, max: 1_440 }],
   bars_since: [],
   hold_bars: [],
+  vwap_distance: [],
 };
 
 /** The shortest and longest a derived cadence override may run. */

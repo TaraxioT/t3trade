@@ -414,6 +414,7 @@ describe("the derived condition kind (plan 38 §3)", () => {
         "depth_ratio",
         "bars_since",
         "hold_bars",
+        "vwap_distance",
       ].sort(),
     );
     for (const entry of DERIVED_METRIC_CATALOG) {

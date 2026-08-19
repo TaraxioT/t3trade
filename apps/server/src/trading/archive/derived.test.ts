@@ -464,3 +464,87 @@ describe("hold_bars", () => {
     });
   });
 });
+
+describe("vwap_distance", () => {
+  // Hand-checked fixture. NOW sits 80,000,000 ms (~22.2h) inside its UTC day,
+  // so the session holds the four bars below and anything earlier is prior
+  // day. Typical prices are integers so the VWAP arithmetic is exact:
+  // Σ tp·v = 101·10 + 104·30 + 99·20 + 103·40 = 10,230 over Σv = 100 →
+  // VWAP 102.3. Session closes [101, 104, 99, 103]: mean 101.75, population
+  // variance 14.75/4 = 3.6875, σ = √3.6875 ≈ 1.920286. Last close 103:
+  // (103 − 102.3)/σ ≈ 0.364527.
+  const DAY_START = Math.floor(NOW / DAY) * DAY;
+  const FIVE = 5 * MINUTE;
+  const vwapBar = (t: number, h: number, l: number, c: number, v: number): CandleRow => ({
+    coin: "BTC",
+    interval: "5m",
+    t,
+    tClose: t + FIVE - 1,
+    o: c,
+    h,
+    l,
+    c,
+    v,
+    n: 3,
+  });
+  const session = [
+    vwapBar(DAY_START, 102, 100, 101, 10),
+    vwapBar(DAY_START + FIVE, 106, 102, 104, 30),
+    vwapBar(DAY_START + 2 * FIVE, 101, 97, 99, 20),
+    vwapBar(DAY_START + 3 * FIVE, 105, 101, 103, 40),
+  ];
+
+  it("is the last close's signed distance from the session VWAP, in session sigmas", () => {
+    withArchive((db) => {
+      upsertCandles(db, session);
+      assert.closeTo(
+        ok(
+          derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+        ),
+        0.364527,
+        1e-5,
+      );
+    });
+  });
+
+  it("anchors to the UTC day: a prior-day bar never enters the VWAP", () => {
+    withArchive((db) => {
+      // An extreme prior-day bar that would drag the VWAP to ~196 if the
+      // anchor were wrong. The value must not move.
+      upsertCandles(db, [vwapBar(DAY_START - FIVE, 299, 100, 200, 1_000), ...session]);
+      assert.closeTo(
+        ok(
+          derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+        ),
+        0.364527,
+        1e-5,
+      );
+    });
+  });
+
+  it("refuses a session the archive holds no bars for", () => {
+    withArchive((db) => {
+      // Bars exist, but only before today's UTC boundary.
+      upsertCandles(db, [vwapBar(DAY_START - FIVE, 102, 100, 101, 10)]);
+      unavailable(
+        derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+        "window",
+        "no 5m bars in the current UTC day",
+      );
+    });
+  });
+
+  it("refuses a zero-volume session rather than dividing by zero", () => {
+    withArchive((db) => {
+      upsertCandles(
+        db,
+        session.map((bar) => ({ ...bar, v: 0 })),
+      );
+      unavailable(
+        derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+        "context",
+        "zero volume",
+      );
+    });
+  });
+});
