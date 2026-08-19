@@ -109,7 +109,8 @@ export function runtimeTimeframe(instruction: string): TradingTimeframe {
  * the mandate and {@link runtimeTimeframe} reads the mandate: a mission told
  * "scalp ETH on the 5m" gets 5m bars, a 5m paired higher read and a 30-minute
  * flat wake floor, and a note that said "work on 1m candles" was the one thing
- * in front of it pointing the other way. *
+ * in front of it pointing the other way.
+ *
  * It names no market and no direction: those belong to the mandate the user
  * writes, and a standing note that contradicted it would be the same drift
  * again in the other direction.
