@@ -2158,9 +2158,16 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  // Stand-down: like the follow loop above, this watchdog is a periodic
+  // exchange writer (protection, take-profit, working-order guards). When the
+  // lease is not held it skips the tick and stays down, mirroring how the
+  // follow loop stands down without logging every skipped tick.
+  const watchdogLease = yield* TradingRuntimeLease;
+
   yield* Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep("5 seconds");
+      if (!watchdogLease.held) continue;
       yield* settleFlatPosition().pipe(Effect.catchCause(() => Effect.void));
       yield* guardProtection().pipe(
         Effect.catchCause((cause) =>

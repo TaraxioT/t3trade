@@ -54,11 +54,20 @@ import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
-import { TradingLeaseTarget } from "./TradingRuntimeLease.ts";
+import { TradingLeaseTarget, TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
 const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
+
+/** Mutable stand-in for the lease so the watchdog stand-down test can flip it. */
+let watchdogLeaseHeld = true;
+const fakeWatchdogLease = Layer.succeed(TradingRuntimeLease, {
+  get held() {
+    return watchdogLeaseHeld;
+  },
+  lockPath: null,
+});
 
 // The reactor now runs the §17.2 write side (preview → submit → reconcile) and
 // the §18.2 startup reconcile, so its `make` depends on the execution services
@@ -1326,6 +1335,120 @@ it.live(
       `;
         assert.equal(events.length > 0, true, "the loss must be recorded where the harness reads");
       }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
+    }),
+  { timeout: 30_000 },
+);
+
+/**
+ * The watchdog loop is a lease-gated writer, exactly like the follow loop and
+ * the watch sweep: while the trading lease is not held its guard passes must
+ * do nothing (no protection, take-profit, or working-order writes), and they
+ * must resume once the lease is held again (a fresh boot re-acquires).
+ */
+it.live(
+  "the watchdog performs no guard passes while the lease is not held",
+  () =>
+    Effect.gen(function* () {
+      const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+        requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
+        requestUserMessageRun: () => Effect.succeed(false),
+      });
+
+      const protectionCalls: Array<{ readonly stopPrice: number }> = [];
+      const stubProtection = Layer.succeed(TradingProtectionService, {
+        reconcileProtection: (input: { readonly stopPrice: number }) =>
+          Effect.sync(() => {
+            protectionCalls.push({ stopPrice: input.stopPrice });
+            return {
+              status: "protected" as const,
+              positionSize: 0.5,
+              protectedSize: 0.5,
+              replacedCloids: [],
+            };
+          }),
+        replaceProtection: () => Effect.die("not used"),
+        cancelEntriesWithProtection: () => Effect.die("not used"),
+      } as unknown as TradingProtectionService["Service"]);
+
+      const StubbedLayer = TradingMissionReactorLive.pipe(
+        // The reactor's watchdog must read this lease, not the (always-held)
+        // in-memory one the trading layer derives from its lease target.
+        Layer.provide(fakeWatchdogLease),
+        Layer.provide(stubCoordinator),
+        Layer.provide(stubProtection),
+        Layer.provideMerge(
+          TradingLayerLive.pipe(
+            Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+          ),
+        ),
+        Layer.provideMerge(OrchestrationEngineLive),
+        Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provideMerge(OrchestrationProjectionPipelineLive),
+        Layer.provideMerge(OrchestrationEventStoreLive),
+        Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(makeProviderRegistryLayer()),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-watchdog-lease-" }),
+        ),
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provideMerge(ThreadPlanProgress.layer),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* started;
+        yield* seedTradingAccount;
+        yield* createMission;
+
+        // Walk the mission to `position_open`, the only status the watchdog
+        // acts in, and leave it naked with an approved stop on the record —
+        // the same setup the re-place test above uses to prove the watchdog
+        // writes when it is allowed to.
+        const missions = yield* TradingMissionService;
+        for (const to of ["waiting", "executing", "position_open"] as const) {
+          const expectedVersion = yield* missions.getMissionVersion(MISSION_ID);
+          yield* missions.transition({ missionId: MISSION_ID, to, expectedVersion });
+        }
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+        INSERT INTO trading_position_snapshots (
+          mission_id, market, size, entry_price, unrealised_pnl,
+          margin_used, protected_size, observed_at
+        ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0, 1000)
+      `;
+        yield* sql`
+        INSERT INTO trading_execution_records (
+          execution_id, mission_id, execution_sequence, action_type,
+          cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+          reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+          stop_price
+        ) VALUES (
+          'exec-watchdog-lease', ${MISSION_ID}, 1, 'open',
+          '0xcloid2', 'idem-watchdog-lease', 'ETH', 'buy', 0.5, 3001, 'ioc',
+          0, ${MASTER_ADDRESS}, 'filled', '[]', 1000, 1000, 2900
+        )
+      `;
+
+        // Not held: wait past a full 5s watchdog tick. The guards must not
+        // run — no protection write happens.
+        watchdogLeaseHeld = false;
+        yield* Effect.sleep("6 seconds");
+        assert.equal(protectionCalls.length, 0, "no guard pass while the lease is unheld");
+
+        // Held again: the same naked position is now re-protected.
+        watchdogLeaseHeld = true;
+        for (let attempt = 0; attempt < 200 && protectionCalls.length === 0; attempt++) {
+          yield* Effect.sleep("50 millis");
+        }
+        assert.equal(protectionCalls.length > 0, true, "the watchdog resumes once held");
+      }).pipe(
+        // Never leak a lost lease into the other tests, even on failure.
+        Effect.onExit(() => Effect.sync(() => (watchdogLeaseHeld = true))),
+        Effect.scoped,
+        Effect.provide(StubbedLayer),
+      );
     }),
   { timeout: 30_000 },
 );

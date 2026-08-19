@@ -27,8 +27,9 @@
  *
  * While the lease is refused the rest of the server boots normally; only the
  * destructive trading runtime — the orphan purge, the watch sweep, the
- * mission reactor — stays down. A refused process does not retry: bringing
- * the trading runtime up requires a restart once the holder is gone.
+ * mission reactor (follow loop and watchdog guards) — stays down. A refused
+ * process does not retry: bringing the trading runtime up requires a restart
+ * once the holder is gone.
  *
  * Takeover race: two processes judging the same already-stale lock cannot be
  * allowed to both end up holding it. A plain read-judge-unlink-retry leaves a
@@ -45,7 +46,8 @@
  * pid/host) the heartbeat re-verifies ownership on every tick: the moment
  * the file stops naming this process, the holder logs the thief, stops
  * refreshing, and stands down — `held` flips to false and the periodic
- * writers (the 2s watch sweep, the mission follow loop) skip their next
+ * writers (the 2s watch sweep, the mission follow loop, the reactor watchdog
+ * guards) skip their next
  * tick. One extreme corner still escapes this: the heartbeat refresh is a
  * truncate-write, so a holder suspended ≥ STALE_AFTER_MS (judged stale,
  * lease broken and retaken) that resumes in the microseconds between its
@@ -55,7 +57,16 @@
  * detects the loss and stands down — so exclusivity is eventually
  * preserved, with at most that one bounded transient dual-belief in this
  * corner, and a stood-down process never becomes a writer again without a
- * full re-acquire. Dually, a late racer renaming a fresh holder's lock away
+ * full re-acquire. The boot-side mirror of the same truncate-write: because
+ * the refresh opens the lock with "w" (truncate-then-write), a booting
+ * acquirer can momentarily observe the file empty or mid-write, judge it
+ * broken, and take it over while the live holder still believes it holds —
+ * so a second BELIEVER (and, if its loops are not lease-gated, a second
+ * writer) can exist for ≤ one heartbeat interval. Lease-gated loops bound
+ * that corner to dual belief, not dual writing. (Renaming over a temp file —
+ * atomic replace instead of truncate-write — would close both corners, but
+ * that write-path change is left as a possible follow-up.)
+ * Dually, a late racer renaming a fresh holder's lock away
  * can make the holder's next tick briefly see the file missing and stand
  * down — a liveness cost only, never a second writer.
  *
