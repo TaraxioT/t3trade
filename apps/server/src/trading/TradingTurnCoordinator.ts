@@ -492,7 +492,8 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * The timeframe the monitoring cadence is scaled off: the mandate's, or `1m`.
+   * The timeframe the monitoring cadence is scaled off: the mandate's, or the
+   * 5m base.
    *
    * It used to be the published `timeframes[0]`, which let a plan that named
    * 15m set its own re-wake floor at thirty minutes — the plan chose how often

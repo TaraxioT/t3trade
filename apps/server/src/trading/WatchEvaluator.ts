@@ -811,6 +811,9 @@ const make = Effect.gen(function* () {
       const watch = tracked.watch.watch;
       if (watch.type !== "metric_threshold" || watch.metric !== "volume_ratio") return;
       if (market !== watch.market) return;
+      // 1m only matches watches persisted before the 5m default landed; those
+      // rows keep evaluating on the frame they were armed under. New watches
+      // always carry an interval, so this fallback never fires for them.
       if ((watch.interval ?? "1m") !== interval) return;
       if (priorVolumes.length < VOLUME_RATIO_MIN_PRIOR_BARS) return;
 
@@ -870,6 +873,8 @@ const make = Effect.gen(function* () {
       case "depth_ratio":
         return DERIVED_SAMPLE_CADENCE_MS;
       default:
+        // Deliberately 1m: only pre-5m rows lack a derived interval, and they
+        // must keep evaluating on the frame they were armed under.
         return INTERVAL_MS[derivedInterval(watch.params) ?? "1m"];
     }
   };

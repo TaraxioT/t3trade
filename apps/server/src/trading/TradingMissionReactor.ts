@@ -194,8 +194,8 @@ const describeWatchPredicate = (watch: PersistedWatch["watch"]): string => {
 
 /**
  * The timeframe the mission's cadences measure on: the mandate's interval, or
- * `1m` — the same `runtimeTimeframe` rule the wakeup composer and the coverage
- * floor use.
+ * the 5m base — the same `runtimeTimeframe` rule the wakeup composer and the
+ * coverage floor use.
  *
  * This used to read the plan's published `timeframes[0]`; the plan no longer
  * names timeframes (plan 29 step 4.1), so the mission's own instruction is the
