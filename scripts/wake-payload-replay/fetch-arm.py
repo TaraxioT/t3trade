@@ -22,7 +22,6 @@ Run AFTER build-scenarios.py — it re-reads the database, not the files.
 import importlib.util
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -47,56 +46,7 @@ def indicator_spec(request):
     return kind + (str(period) if period is not None else "")
 
 
-def parse_pending_events(wake):
-    """The wake's `pendingEvents:` block as the fetch `events` section shape.
-
-    The `events` key peeks the same inbox the wake drains, so the wake's block
-    is the honest source for what the key would have served that turn.
-    """
-    events = []
-    lines = wake.splitlines()
-    i = 0
-    in_block = False
-    while i < len(lines):
-        line = lines[i]
-        if line == "pendingEvents:":
-            in_block = True
-            i += 1
-            continue
-        if in_block:
-            match = re.match(r"^  \[\d+\] (.*)$", line)
-            if match:
-                rest = match.group(1)
-                summary = ""
-                summary_at = rest.find("summary=")
-                if summary_at >= 0:
-                    summary = rest[summary_at + len("summary=") :]
-                    rest = rest[:summary_at].strip()
-                fields = {}
-                for token in rest.split():
-                    if "=" in token:
-                        key, value = token.split("=", 1)
-                        fields[key] = value
-                j = i + 1
-                while j < len(lines) and lines[j].startswith("    "):
-                    summary += " " + lines[j].strip()
-                    j += 1
-                events.append(
-                    {
-                        "category": fields.get("category", ""),
-                        "occurredAt": int(fields.get("occurredAt", "0")),
-                        "summary": summary.strip(),
-                    }
-                )
-                i = j
-                continue
-            if not line.startswith(" "):
-                in_block = False
-        i += 1
-    return events
-
-
-def translate(args, result, wake):
+def translate(args, result):
     """One recorded (args, result) pair -> (fetch keys, fetch result, notes)."""
     keys = []
     unavailable = []
@@ -154,11 +104,12 @@ def translate(args, result, wake):
         if "positionCosts" in result:
             add("position_costs")
 
-    # mission -> plan + watches (+events when the wake carried pending events).
+    # mission -> plan + watches. Strict content preservation: only sections
+    # the recorded scope call actually returned are named — `events` and any
+    # other catalog key the recording lacks is never added, or the arm stops
+    # testing decision equivalence and starts testing the translation.
     if "mission" in scopes:
         add("plan", "watches")
-        if parse_pending_events(wake):
-            add("events")
 
     if "retrospect" in scopes:
         add("plan_history", "calibration", "journal")
@@ -200,8 +151,6 @@ def translate(args, result, wake):
     copy("openOrders", "openOrders")
     if "position_costs" in keys:
         copy("positionCosts")
-    if "events" in keys:
-        out["events"] = parse_pending_events(wake)[:5]
     if "trades" in keys:
         copy("trades")
 
@@ -270,7 +219,7 @@ def main():
             continue
         call = after[0]
         result = json.loads(call["text"])
-        keys, fetch_result, notes = translate(call["args"] or {}, result, wake)
+        keys, fetch_result, notes = translate(call["args"] or {}, result)
         look = json.dumps(fetch_result, separators=(",", ":"))
         prompt = (
             "You are an autonomous perpetual-futures trading agent.\n\n"
