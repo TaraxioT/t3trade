@@ -61,6 +61,7 @@ import {
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingExecutionReceipts } from "./TradingExecutionReceipts.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingExecutionGuard } from "./TradingExecutionGuard.ts";
@@ -1794,6 +1795,10 @@ const make = Effect.gen(function* () {
     // subscriptions; the reconcile before it converges the new mission's tables
     // before anything reads them.
     const fillReconciler = yield* TradingFillReconciler;
+    // Stand-down: this loop is a periodic writer (reconciles, subscriptions).
+    // The lease flips `held` to false when its lock file stops naming this
+    // process, and the loop below then stops following and stays stopped.
+    const lease = yield* TradingRuntimeLease;
 
     // One pass: retarget `follow` if the active mission changed. Failures here
     // are logged and retried on the next tick — a transient read error must not
@@ -1823,7 +1828,11 @@ const make = Effect.gen(function* () {
     );
 
     while (true) {
-      yield* syncFollowedMission;
+      if (lease.held) {
+        yield* syncFollowedMission;
+      } else if (followed !== null) {
+        yield* stopFollowing;
+      }
       yield* Effect.sleep("5 seconds");
     }
   }).pipe(Effect.ensuring(stopFollowing), Effect.forkScoped);

@@ -30,6 +30,33 @@
  * mission reactor — stays down. A refused process does not retry: bringing
  * the trading runtime up requires a restart once the holder is gone.
  *
+ * Takeover race: two processes judging the same already-stale lock cannot be
+ * allowed to both end up holding it. A plain read-judge-unlink-retry leaves a
+ * window where process B unlinks the fresh lock process A just created, and
+ * both hold. Instead, a takeover never unlinks the lock path directly: it
+ * `rename`s the lock to a private temp path (atomic — whatever the file held
+ * at rename time is captured), then compares the captured contents against
+ * the stale record it judged. Only an exact match is deleted; a mismatch
+ * means the file changed hands between the read and the rename, so the
+ * capturer restores it with `link` (which refuses to clobber a lock since
+ * (re)created at the original path) and retries acquisition against the new
+ * contents. So a takeover can never delete a lock it did not judge stale,
+ * and after acquiring (`wx` + read-back verifying the file names this
+ * pid/host) the heartbeat re-verifies ownership on every tick: the moment
+ * the file stops naming this process, the holder logs the thief, stops
+ * refreshing, and stands down — `held` flips to false and the periodic
+ * writers (the 2s watch sweep, the mission follow loop) skip their next
+ * tick. Worst case after any race is a stood-down runtime, never two.
+ *
+ * Clock sensitivity: heartbeat ages come from the wall clock
+ * (`Clock.currentTimeMillis`), because the heartbeat must survive across
+ * processes — a monotonic in-process clock cannot judge another process's
+ * timestamp. A backwards clock step makes leases look fresher than they are
+ * (takeover is delayed); a forward step of ≥ STALE_AFTER_MS can get a live
+ * holder's lease judged stale and taken over. In that case the old holder's
+ * next heartbeat tick detects that the file no longer names it and stands
+ * down, so a clock step can cost liveness, not exclusivity.
+ *
  * @module TradingRuntimeLease
  */
 // @effect-diagnostics nodeBuiltinImport:off - the lock must be atomic at the
@@ -39,6 +66,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -118,6 +146,51 @@ const writeRecord = (lockPath: string, record: LeaseRecord, exclusive: boolean):
   }
 };
 
+/** Whether two records are the same lock, byte for byte in every field. */
+const sameRecord = (a: LeaseRecord, b: LeaseRecord): boolean =>
+  a.pid === b.pid && a.host === b.host && a.heartbeat === b.heartbeat;
+
+/**
+ * Atomically capture the lock before deleting it, so a takeover can never
+ * remove a lock whose contents it did not judge stale. `rename` is atomic:
+ * the captured file holds exactly what the lock path held at rename time.
+ * When the captured contents match the record this caller judged stale (or
+ * both are unreadable), the captured file is deleted and the lock path is
+ * free. When they differ, another process replaced the lock between the
+ * caller's read and the rename — the captured file is put back with `link`
+ * (which fails rather than clobber a lock since re-created at the original
+ * path) and the caller must re-judge. Exported for the takeover-race test.
+ */
+export const breakStaleLock = (
+  lockPath: string,
+  judgedStale: LeaseRecord | null,
+): "broken" | "replaced" | "gone" => {
+  const capturedPath = `${lockPath}.takeover-${NodeProcess.pid}-${NodeCrypto.randomUUID()}`;
+  try {
+    NodeFS.renameSync(lockPath, capturedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "gone";
+    throw error;
+  }
+  const captured = readRecord(capturedPath);
+  const isWhatWeJudged =
+    judgedStale === null
+      ? captured === null
+      : captured !== null && sameRecord(captured, judgedStale);
+  if (isWhatWeJudged) {
+    NodeFS.rmSync(capturedPath, { force: true });
+    return "broken";
+  }
+  try {
+    NodeFS.linkSync(capturedPath, lockPath);
+  } catch {
+    // EEXIST: a fresh lock already sits at the original path; ours was the
+    // stale copy. Drop it.
+  }
+  NodeFS.rmSync(capturedPath, { force: true });
+  return "replaced";
+};
+
 /** Signal-0 probe: true when a pid is alive. Only meaningful on our own host. */
 const pidIsAlive = (pid: number): boolean => {
   try {
@@ -137,7 +210,16 @@ type Acquisition =
     }
   | { readonly acquired: false; readonly holder: LeaseRecord; readonly ageMs: number };
 
-const acquire = (lockPath: string): Effect.Effect<Acquisition> =>
+/** Exported for the takeover-race test. */
+export const acquire = (
+  lockPath: string,
+  /**
+   * Test seam for the takeover race: invoked after a record has been judged
+   * stale but before the lock is broken, letting the test swap the file under
+   * the acquirer exactly as a racing process would.
+   */
+  afterJudge?: (judged: LeaseRecord | null) => void,
+): Effect.Effect<Acquisition> =>
   Effect.gen(function* () {
     const self: LeaseRecord = {
       pid: NodeProcess.pid,
@@ -147,13 +229,25 @@ const acquire = (lockPath: string): Effect.Effect<Acquisition> =>
     let tookOver: LeaseRecord | null = null;
     for (let attempt = 0; attempt < ACQUIRE_ATTEMPTS; attempt += 1) {
       if (yield* Effect.sync(() => writeRecord(lockPath, self, true))) {
-        return { acquired: true as const, record: self, tookOver };
+        // Post-acquisition verification: refuse to act as holder unless the
+        // file we just created still names this process. The rename-based
+        // takeover makes this near-impossible to hit, but the cost of being
+        // wrong is two writers, so it is checked anyway.
+        const verified = yield* Effect.sync(() => {
+          const current = readRecord(lockPath);
+          return current !== null && current.pid === self.pid && current.host === self.host;
+        });
+        if (verified) return { acquired: true as const, record: self, tookOver };
+        continue;
       }
       const holder = yield* Effect.sync(() => readRecord(lockPath));
-      // An unreadable file is stale (a half-written crash, wrong shape) — retry
-      // the exclusive create after removing it.
+      // An unreadable file is stale (a half-written crash, wrong shape) —
+      // break it via the atomic rename capture and retry the exclusive
+      // create. The capture never deletes a file whose contents changed
+      // since this read, so a racing acquirer's fresh lock survives.
       if (holder === null) {
-        yield* Effect.sync(() => NodeFS.rmSync(lockPath, { force: true }));
+        yield* Effect.sync(() => afterJudge?.(null));
+        yield* Effect.sync(() => breakStaleLock(lockPath, null));
         continue;
       }
       const ageMs = (yield* Clock.currentTimeMillis) - holder.heartbeat;
@@ -165,7 +259,8 @@ const acquire = (lockPath: string): Effect.Effect<Acquisition> =>
         ageMs < STALE_AFTER_MS && (holder.host !== HOST || pidIsAlive(holder.pid));
       if (holderIsLive) return { acquired: false as const, holder, ageMs };
       tookOver = holder;
-      yield* Effect.sync(() => NodeFS.rmSync(lockPath, { force: true }));
+      yield* Effect.sync(() => afterJudge?.(holder));
+      yield* Effect.sync(() => breakStaleLock(lockPath, holder));
     }
     // Lost the takeover race repeatedly; report whoever holds the file now.
     const holder: LeaseRecord =
@@ -178,18 +273,33 @@ const acquire = (lockPath: string): Effect.Effect<Acquisition> =>
     } satisfies { acquired: false; holder: LeaseRecord; ageMs: number };
   });
 
-/** Rewrite the heartbeat, but only while the file still names this process. */
-const heartbeatLoop = (lockPath: string, record: LeaseRecord) =>
+/**
+ * Rewrite the heartbeat, but only while the file still names this process.
+ * Every tick re-verifies ownership: a file that is gone or names another
+ * holder means the lease was taken over (or clobbered), so the loop logs
+ * the new holder, stands down via `onLoss`, and stops refreshing.
+ */
+const heartbeatLoop = (lockPath: string, record: LeaseRecord, onLoss: () => void) =>
   Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep(HEARTBEAT_INTERVAL_MS);
       const now = yield* Clock.currentTimeMillis;
-      yield* Effect.sync(() => {
+      // Undefined = still ours and refreshed; a LeaseRecord = the thief;
+      // null = the file is gone. Either non-undefined value is a loss.
+      const outcome = yield* Effect.sync((): LeaseRecord | null | undefined => {
         const current = readRecord(lockPath);
-        if (current !== null && current.pid === record.pid && current.host === record.host) {
-          writeRecord(lockPath, { ...current, heartbeat: now }, false);
-        }
+        if (current === null) return null;
+        if (current.pid !== record.pid || current.host !== record.host) return current;
+        writeRecord(lockPath, { ...current, heartbeat: now }, false);
+        return undefined;
       });
+      if (outcome === undefined) continue;
+      const thief = outcome ?? { pid: -1, host: "(missing)", heartbeat: now };
+      yield* Effect.logError(
+        `TradingRuntimeLease: lost the lease on ${lockPath} - the lock file now names pid ${thief.pid} on ${thief.host}; standing down the trading runtime`,
+      );
+      onLoss();
+      return;
     }
   });
 
@@ -224,12 +334,14 @@ const make = Effect.gen(function* () {
 
   // The heartbeat fiber and the release finalizer both live in the layer's
   // build scope, so closing the layer (server shutdown, test scope end)
-  // stops the heartbeat and removes the file we own.
+  // stops the heartbeat and removes the file we own. The heartbeat flips
+  // `leaseLost` the moment the file stops naming this process; `held` reads
+  // it, so the periodic writers stand down on their next tick.
+  let leaseLost = false;
   const scope = yield* Effect.scope;
-  yield* heartbeatLoop(lockPath, result.record).pipe(
-    Effect.forkScoped,
-    Effect.provideService(Scope.Scope, scope),
-  );
+  yield* heartbeatLoop(lockPath, result.record, () => {
+    leaseLost = true;
+  }).pipe(Effect.forkScoped, Effect.provideService(Scope.Scope, scope));
   yield* Scope.addFinalizer(
     scope,
     Effect.sync(() => {
@@ -244,7 +356,12 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  return { held: true, lockPath } satisfies TradingRuntimeLeaseShape;
+  return {
+    get held() {
+      return !leaseLost;
+    },
+    lockPath,
+  } satisfies TradingRuntimeLeaseShape;
 });
 
 export const TradingRuntimeLeaseLive = Layer.effect(TradingRuntimeLease, make);

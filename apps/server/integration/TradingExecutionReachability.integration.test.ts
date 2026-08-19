@@ -90,6 +90,7 @@ import {
   TradingMissionReactorLive,
 } from "../src/trading/TradingMissionReactor.ts";
 import { TradingMarketArchiveLive } from "../src/trading/TradingMarketArchive.ts";
+import { TradingRuntimeLease } from "../src/trading/TradingRuntimeLease.ts";
 import { WatchEvaluatorLive } from "../src/trading/WatchEvaluator.ts";
 import { TradingMissionProjection } from "../src/trading/TradingMissionProjection.ts";
 import { TradingMissionService } from "../src/trading/TradingMissionService.ts";
@@ -527,6 +528,9 @@ function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
     Layer.provideMerge(ThreadPlanProgress.layer),
     Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
     Layer.provideMerge(NodeServices.layer),
+    // The reactor and evaluator now stand down on lease loss, so they read
+    // the lease; this harness is the single runtime on its own temp db.
+    Layer.provideMerge(Layer.succeed(TradingRuntimeLease, { held: true, lockPath: null })),
   );
 }
 

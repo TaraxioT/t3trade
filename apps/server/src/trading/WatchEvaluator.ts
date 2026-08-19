@@ -52,6 +52,7 @@ import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
@@ -187,6 +188,9 @@ const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
   const sql = yield* SqlClient.SqlClient;
+  // Stand-down: the lease flips `held` to false the moment its lock file stops
+  // naming this process; the writers below check it before acting.
+  const lease = yield* TradingRuntimeLease;
 
   const announceFired = Effect.fn("WatchEvaluator.announceFired")(function* (input: {
     readonly missionId: TradingMissionId;
@@ -1134,6 +1138,9 @@ const make = Effect.gen(function* () {
 
   const evaluateDelivery: WatchEvaluatorShape["evaluateDelivery"] = (delivery) =>
     Effect.gen(function* () {
+      // A candle delivery is a writer too; once the lease is lost this
+      // process must stop firing watches in parallel with the new holder.
+      if (!lease.held) return;
       const interval = delivery.subscription.interval;
       if (interval === undefined) return;
       const candle = candleFromDelivery(delivery);
@@ -1211,6 +1218,9 @@ const make = Effect.gen(function* () {
   };
 
   const sweep: WatchEvaluatorShape["sweep"] = Effect.gen(function* () {
+    // The sweep is a periodic writer; it only acts while this process still
+    // holds the trading lease (the lease stands `held` down on takeover).
+    if (!lease.held) return;
     const tracked = yield* activeTrackedWatches();
     const observedAt = yield* nowMs;
     for (const t of tracked) {

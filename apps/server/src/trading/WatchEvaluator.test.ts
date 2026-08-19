@@ -28,6 +28,7 @@ import {
 } from "./TradingMarketArchive.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
+import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingWatchService, TradingWatchServiceLive } from "./TradingWatchService.ts";
 import { WatchEvaluator, WatchEvaluatorLive } from "./WatchEvaluator.ts";
@@ -317,6 +318,9 @@ const layer = it.layer(
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(stubEngine),
+    // The evaluator stands its writers down when the lease is lost; tests
+    // here always hold it.
+    Layer.provideMerge(Layer.succeed(TradingRuntimeLease, { held: true, lockPath: null })),
   ),
 );
 
