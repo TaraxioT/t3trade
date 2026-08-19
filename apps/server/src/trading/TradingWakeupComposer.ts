@@ -67,6 +67,7 @@ import {
   LEVEL_GROUP_TOLERANCE_ATR,
   readLevelHistory,
   readPreviousStructureRead,
+  toPreviousStructureRead,
 } from "./TradingLevelHistory.ts";
 import { readMarketSample, writeMarketSample } from "./TradingMarketSample.ts";
 
@@ -99,10 +100,6 @@ import { TradingWatchService } from "./TradingWatchService.ts";
  * deeper is one `trading_look` away.
  */
 const WAKEUP_RECENT_CANDLES = 5;
-
-/** Whether a stored structure-read interval is a timeframe the wakeup can echo. */
-const isTradingTimeframe = (value: string): value is TradingTimeframe =>
-  value === "1m" || value === "3m" || value === "5m" || value === "15m" || value === "1h";
 
 /**
  * The holding-period horizons the wakeup carries, rather than the default six.
@@ -1027,18 +1024,7 @@ const make = Effect.gen(function* () {
               Effect.map((rows) => (rows.length === 0 ? true : rows[0]?.setup_kind == null)),
               Effect.orElseSucceed(() => undefined),
             );
-      const previousStructureRead =
-        previousRead === null || !isTradingTimeframe(previousRead.interval)
-          ? undefined
-          : {
-              interval: previousRead.interval,
-              classification: previousRead.classification,
-              ...(previousRead.swing_high === null
-                ? {}
-                : { swingHighUsd: previousRead.swing_high }),
-              ...(previousRead.swing_low === null ? {} : { swingLowUsd: previousRead.swing_low }),
-              readAgeMillis: Math.max(0, occurredAt - previousRead.measured_at),
-            };
+      const previousStructureRead = toPreviousStructureRead(previousRead, occurredAt);
 
       // Every watch this mission has registered. A wake describes the active
       // ones with their distance from the mark; a `look` reports the whole

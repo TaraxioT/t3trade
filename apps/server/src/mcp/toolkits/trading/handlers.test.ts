@@ -2806,6 +2806,33 @@ it.effect("no fetch key implies another: candles is bars only", () => {
   );
 });
 
+// Plan 38 §4.2: nothing is deleted outright from the read. The scope path's
+// structure scope carries the mission's previous structure read; the fetch
+// `structure` key must carry it too, or its content is unreachable under fetch.
+it.effect("the fetch structure key carries the previous structure read", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        // Earlier tests in this file may have already recorded structure reads
+        // for this mission, so the first call's field is whatever memory
+        // exists — what matters is that the key can carry it at all.
+        yield* callTool(BOUND_THREAD, "trading_look", {
+          fetch: ["structure"],
+        });
+
+        // The read this call just took is remembered; the next one carries it.
+        const again = yield* callTool(BOUND_THREAD, "trading_look", {
+          fetch: ["structure"],
+        });
+        assert.isDefined(again.result.body.previousStructureRead);
+        assert.deepEqual(again.result.body.fetched, ["structure"]);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
 // -- plan 38 §6 phase 2 item 1: every catalog key within ±20% of its price ----
 //
 // The fixture is tuned to realistic magnitudes (real-decimal prices, a deep

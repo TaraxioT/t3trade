@@ -74,7 +74,11 @@ import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { TradingJournalService } from "../../../trading/TradingJournalService.ts";
 import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
 import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
-import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
+import {
+  readPreviousStructureRead,
+  recordStructureRead,
+  toPreviousStructureRead,
+} from "../../../trading/TradingLevelHistory.ts";
 import { recordExecutionRefusal } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
@@ -1283,6 +1287,7 @@ type FetchMarketSections = {
     | "higherTimeframeVolatility"
     | "structure"
     | "structureBrief"
+    | "previousStructureRead"
     | "levelHistory"
     | "cost"
     | "positionCosts"
@@ -1810,7 +1815,30 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
               facts?.primaryTimeframe ??
               (mission === null ? "1m" : runtimeTimeframe(mission.instruction)),
           );
-          if (wants("structure")) sections.structure = digested;
+          if (wants("structure")) {
+            sections.structure = digested;
+            // Plan 38 §4.2: nothing is deleted outright from the read. The
+            // scope path attaches the mission's previous structure read to its
+            // structure scope, so the fetch key carries it too — from the
+            // observed facts when a gather already happened, else read
+            // directly (one SQL row, no exchange gather).
+            const previous =
+              facts?.previousStructureRead ??
+              (mission === null
+                ? undefined
+                : toPreviousStructureRead(
+                    yield* readPreviousStructureRead({
+                      missionId: mission.id,
+                      market,
+                      preferredInterval:
+                        input.interval ??
+                        facts?.primaryTimeframe ??
+                        runtimeTimeframe(mission.instruction),
+                    }),
+                    input.observedAt,
+                  ));
+            if (previous !== undefined) sections.previousStructureRead = previous;
+          }
           if (wants("structure_brief")) {
             const top = [...(digested.candidates ?? [])].sort((a, b) => b.score - a.score)[0];
             sections.structureBrief = {

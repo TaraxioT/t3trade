@@ -11,9 +11,9 @@ the fetch response shape, including the `fetched` echo and any `unavailable[]`
 entries the handler would emit.
 
 Where the fetch path genuinely cannot reproduce a section (the flat-cap candle
-`note`, `previousStructureRead`, the mission half's authority/control/harness
-siblings) the difference is recorded in `fetch-manifest.json` — the arm tests
-the real new shape, not an idealized one.
+`note`, the mission half's authority/control/harness siblings) the difference
+is recorded in `fetch-manifest.json` — the arm tests the real new shape, not an
+idealized one.
 
     python3 scripts/wake-payload-replay/fetch-arm.py <mission-id-prefix> <scenario-dir>
 
@@ -190,11 +190,9 @@ def translate(args, result, wake):
     copy("higherTimeframeVolatility")
     copy("indicators")
     copy("structure")
-    if "previousStructureRead" in result:
-        notes.append(
-            "dropped previousStructureRead — no fetch key serves it; only the "
-            "scope path's structure read carries it"
-        )
+    # §4.2 scope parity: the structure fetch key carries the previous read too.
+    if "structure" in keys:
+        copy("previousStructureRead")
     if "levels" in keys:
         copy("levelHistory")
     copy("position")

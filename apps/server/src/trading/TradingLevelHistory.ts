@@ -20,7 +20,12 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import type { LevelEventKind, LevelHistoryEntry } from "@t3tools/trading-contracts/wakeup";
+import type {
+  LevelEventKind,
+  LevelHistoryEntry,
+  PreviousStructureRead,
+} from "@t3tools/trading-contracts/wakeup";
+import type { TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 
 /** Most levels a wakeup carries. The nearest ones to the mark win. */
 export const LEVEL_HISTORY_WAKEUP_LEVELS = 6;
@@ -221,3 +226,25 @@ export const readPreviousStructureRead = (input: {
     never,
     SqlClient.SqlClient
   >;
+
+/**
+ * A stored structure-read row as the observation echoes it. Undefined when
+ * there is no row, or when its interval is not one of the timeframes an echo
+ * can name — a read on an unknown interval is old memory, not a wrong one.
+ */
+export const toPreviousStructureRead = (
+  row: StructureReadRow | null,
+  occurredAt: number,
+): PreviousStructureRead | undefined =>
+  row === null || !isEchoableTimeframe(row.interval)
+    ? undefined
+    : {
+        interval: row.interval,
+        classification: row.classification,
+        ...(row.swing_high === null ? {} : { swingHighUsd: row.swing_high }),
+        ...(row.swing_low === null ? {} : { swingLowUsd: row.swing_low }),
+        readAgeMillis: Math.max(0, occurredAt - row.measured_at),
+      };
+
+const isEchoableTimeframe = (value: string): value is TradingTimeframe =>
+  value === "1m" || value === "3m" || value === "5m" || value === "15m" || value === "1h";
