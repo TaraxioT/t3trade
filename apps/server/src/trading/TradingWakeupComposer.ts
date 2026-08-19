@@ -54,7 +54,6 @@ import {
   type TradingCostEstimate,
 } from "@t3tools/trading-contracts/costs";
 import {
-  describeProjection,
   planPhase,
   runtimeTimeframe,
   type TradingTimeframe,
@@ -81,7 +80,6 @@ import {
   describePositionCostLine,
   describeTriggeringWatchLine,
   describeWorkingEntryLine,
-  findMisarmedEntryConditions,
   findUnarmedEntryConditions,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
@@ -328,24 +326,96 @@ const renderWakeupProjection = (projection: Record<string, unknown>): string => 
 };
 
 /**
- * The armed set as the wake renders it: one line per watch.
+ * The armed set as the wake renders it: one line per watch, newest first,
+ * capped.
  *
  * Every render path goes through here, so the schema keeps the whole
  * `WakeupArmedWatch` (the persisted wake and the UI still read it) and only
  * what the model is handed is compacted. See `describeArmedWatchLine`.
+ *
+ * Newest first because the watches at the top are the ones this turn most
+ * likely armed or moved; the full set is `fetch:["watches"]` (plan 38 §1.3).
  */
 const renderArmedWatches = (
   armed: ReadonlyArray<WakeupArmedWatch>,
-): ReadonlyArray<WakeupArmedWatchLine> => armed.map(describeArmedWatchLine);
+  cap: number,
+): ReadonlyArray<WakeupArmedWatchLine> =>
+  [...armed]
+    .sort((a, b) => b.watch.createdAt - a.watch.createdAt)
+    .slice(0, cap)
+    .map(describeArmedWatchLine);
 
 /**
- * The floor under every render path: what fired, what is held, and a pointer.
- *
- * Shared by the assessment ladder above and the lean ceiling below, so the two
- * cannot disagree about what the last resort keeps.
+ * The static half of the fetch pointer (plan 38 §1.5): the menu exists, here
+ * is how to name it. Last line of every render path.
  */
-const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string =>
-  renderWakeupProjection({
+const FETCH_POINTER =
+  "nothing here but the above — trading_look({fetch:[...]}) ; menu: trading_look({})";
+
+/**
+ * The one-line fold of what fired (plan 38 §1.4).
+ *
+ * `triggeringWatch` said `price=1916 confirm=close interval=5m`; only the
+ * pending event said the bar actually closed at 1914.6 against a threshold of
+ * 1915.53. The fold keeps the information and deletes the container: one
+ * line carrying the watch handle, the condition, the observed value, and the
+ * threshold it crossed — the event's `summary` appended after an em-dash.
+ *
+ * Absent when nothing fired and no event is pending. When there is no
+ * triggering watch but the mission is flat and waiting on unarmed entry
+ * conditions, the newest condition's description is the reason for the wake
+ * and renders here instead.
+ */
+const TRIGGERED_LINE_BUDGET = 190;
+
+const clampTriggeredLine = (line: string): string =>
+  line.length <= TRIGGERED_LINE_BUDGET ? line : line.slice(0, TRIGGERED_LINE_BUDGET);
+
+const renderTriggeredLine = (wakeup: TradingHarnessWakeup): string | undefined => {
+  const events = wakeup.pendingEvents;
+  if (wakeup.triggeringWatch !== undefined) {
+    const watch = wakeup.triggeringWatch;
+    const line = describeTriggeringWatchLine(watch);
+    // The event whose dedup key names the firing watch; the newest event when
+    // the id match fails. The summary is the human-readable fold and carries
+    // the observed value, so the watch's own `observed` (a bare number) is
+    // dropped in its favour when both exist.
+    const newest = events.length > 0 ? events[events.length - 1] : undefined;
+    const firing = events.find((event) => event.deduplicationKey.includes(watch.id)) ?? newest;
+    const body: Record<string, unknown> = { ...line };
+    if (firing !== undefined) delete body.observed;
+    const base = renderFlatRecord(
+      roundWakeupFloats(body) as Record<string, unknown>,
+      0,
+    ).trimStart();
+    return clampTriggeredLine(firing === undefined ? base : `${base} — ${firing.summary}`);
+  }
+  if (events.length > 0) {
+    const newest = events[events.length - 1];
+    if (newest !== undefined) return clampTriggeredLine(newest.summary);
+  }
+  // No watch and no event: the wake is either an operator message or a
+  // schedule tick. Flat and waiting, the newest unarmed entry condition is
+  // the reason the run is being asked to look.
+  if (
+    wakeup.position.size === 0 &&
+    planPhase(wakeup.position.size) === "waiting" &&
+    wakeup.unarmedEntryConditions !== undefined &&
+    wakeup.unarmedEntryConditions.length > 0
+  ) {
+    const newest = wakeup.unarmedEntryConditions[wakeup.unarmedEntryConditions.length - 1];
+    if (newest !== undefined) return clampTriggeredLine(newest.description);
+  }
+  return undefined;
+};
+
+/**
+ * The floor under every render path: identity, the mark, the position, the
+ * fold, the pointer, and the note that says the budget was exceeded.
+ */
+const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string => {
+  const triggered = renderTriggeredLine(wakeup);
+  return renderWakeupProjection({
     kind: wakeup.kind,
     missionId: wakeup.missionId,
     harnessRunId: wakeup.harnessRunId,
@@ -354,45 +424,42 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string =>
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
-    triggeringWatch:
-      wakeup.triggeringWatch === undefined
-        ? undefined
-        : describeTriggeringWatchLine(wakeup.triggeringWatch),
-    pendingEvents: wakeup.pendingEvents.slice(-1),
-    readFirst:
-      "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
+    ...(triggered === undefined ? {} : { triggered }),
+    fetch: FETCH_POINTER,
+    note: "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
   });
+};
 
-/** What a lean wake keeps of the two lists that can grow, and its fallback. */
-const LEAN_WAKE_CAPS = { armedWatches: 8, pendingEvents: 3 } as const;
-const LEAN_WAKE_TRIMMED_CAPS = { armedWatches: 4, pendingEvents: 1 } as const;
+/** What a lean wake keeps of the one list that can grow, per ladder rung. */
+const LEAN_WAKE_CAPS = { armedWatches: 4 } as const;
+const LEAN_WAKE_TRIMMED_CAPS = { armedWatches: 2 } as const;
 
 /**
- * Render a wake: what fired (or what the operator said), what the mission
- * holds, the plan's numbers on one line, the one review line, and pointers.
- * No candles, no volatility, no book — the model reads those with
- * `trading_look` when the wake warrants acting.
- *
- * This is THE render path. Every cause used to split between this and a full
- * market-snapshot assessment; the split is gone because the model called
- * `trading_look` on assessment turns anyway, so the snapshot rode the context
- * twice per turn.
+ * The hard trim trigger (plan 38 §1.2): above this the armed set halves; the
+ * 5,000 `MAX_WAKEUP_CHARS` ceiling stays the structural backstop.
+ */
+const LEAN_TRIM_TRIGGER_CHARS = 1_300;
+
+/**
+ * Render a wake: identity, the operator's words when it was the operator who
+ * spoke, the mark, the position, what is still working, THE fold, one cost
+ * line, the plan's numbers, the armed set newest first, and the fetch
+ * pointer. Nothing else — no candles, no volatility, no book, no reviews.
+ * The model reads all of that with `trading_look` when the wake warrants
+ * acting.
  */
 const renderLeanWakeup = (
   wakeup: TradingHarnessWakeup,
-  caps: { readonly armedWatches: number; readonly pendingEvents: number },
-): string =>
-  renderWakeupProjection({
+  caps: { readonly armedWatches: number },
+): string => {
+  const triggered = renderTriggeredLine(wakeup);
+  return renderWakeupProjection({
     kind: wakeup.kind,
     missionId: wakeup.missionId,
     harnessRunId: wakeup.harnessRunId,
     cause: wakeup.cause,
     occurredAt: wakeup.occurredAt,
-    triggeringWatch:
-      wakeup.triggeringWatch === undefined
-        ? undefined
-        : describeTriggeringWatchLine(wakeup.triggeringWatch),
-    wakeReason: wakeup.wakeReason,
+    // Operator content reads early: it is the instruction this turn executes.
     userMessage: wakeup.userMessage,
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
@@ -402,19 +469,16 @@ const renderLeanWakeup = (
     // that is 4% of it is the case this exists for.
     ...(wakeup.workingEntry === undefined
       ? {}
-      : { workingEntry: describeWorkingEntryLine(wakeup.workingEntry) }),
-    // One line, in the shape `costContext` already uses on the flat wakes.
-    // The full estimate is a `trading_look` away and was a thousand
-    // characters of every holding wake.
-    ...(wakeup.positionCosts === undefined
-      ? {}
-      : { positionCosts: describePositionCostLine(wakeup.positionCosts) }),
-    ...(wakeup.costContext === undefined ? {} : { costContext: wakeup.costContext }),
-    // The prediction the fired trigger belongs to, as one line. The trigger
-    // itself carries `predictionVersion`; without this the run would have to
-    // fetch the plan to learn what that number refers to, which is the round
-    // trip the lean wake exists to avoid.
-    ...(wakeup.prediction === undefined ? {} : { prediction: wakeup.prediction }),
+      : { workingOrders: describeWorkingEntryLine(wakeup.workingEntry) }),
+    ...(triggered === undefined ? {} : { triggered }),
+    // One cost line, either state (§1.2 row 5): the held position's round
+    // trip while holding, the flat reference line otherwise. Never both —
+    // compose only ever computes one.
+    ...(wakeup.positionCosts !== undefined
+      ? { cost: describePositionCostLine(wakeup.positionCosts) }
+      : wakeup.costContext === undefined
+        ? {}
+        : { cost: wakeup.costContext }),
     // The plan's numbers, flat so they fold onto one line: intent, phase, and
     // the stop/target levels. These are what let a reassessment conclude
     // "price is between my stop and my target and nothing fired — keep
@@ -439,44 +503,18 @@ const renderLeanWakeup = (
               : { targetProfitUsd: wakeup.activeStrategy.target.profitUsd }),
           },
         }),
-    ...(wakeup.strategyReview === undefined ? {} : { strategyReview: wakeup.strategyReview }),
-    ...(wakeup.positionReview === undefined ? {} : { positionReview: wakeup.positionReview }),
-    armedWatches: renderArmedWatches(wakeup.armedWatches.slice(0, caps.armedWatches)),
-    // The gaps between the plan and the armed set — a published entry level
-    // with no watch on it, or a watch that cannot evaluate its confirmation.
-    // Usually absent; when present they are exactly what the turn is for.
-    ...(wakeup.unarmedEntryConditions === undefined
-      ? {}
-      : { unarmedEntryConditions: wakeup.unarmedEntryConditions }),
-    // An advisory about how the ENTRY watches are armed, once the entry has
-    // happened, describes a condition that no longer decides anything — and it
-    // rode every holding wake of the mission that found it (plan 34 F8).
-    ...(wakeup.misarmedEntryConditions === undefined || wakeup.position.size !== 0
-      ? {}
-      : { misarmedEntryConditions: wakeup.misarmedEntryConditions }),
-    // Nothing pending is the ordinary case, and `pendingEvents: -` said so on
-    // most wakes of the mission this was measured from. An absent list is the
-    // same fact in no characters (plan 35 phase 3).
-    ...(wakeup.pendingEvents.length === 0
-      ? {}
-      : { pendingEvents: wakeup.pendingEvents.slice(-caps.pendingEvents) }),
-    // One pointer line, not two blocks. The `omitted` paragraph and the
-    // `mandate-and-authority` line under it were 208 identical characters on
-    // every wake, saying the same thing twice: read before you act.
-    readFirst:
-      "no candles, book, structure, account or mandate here — call trading_look before acting",
+    armedWatches: renderArmedWatches(wakeup.armedWatches, caps.armedWatches),
+    fetch: FETCH_POINTER,
   });
+};
 
 /**
- * The lean path's own ceiling.
+ * The lean wake's budget ladder (plan 38 §1.2).
  *
- * This was the one render path that never went through `renderBoundedWakeup`,
- * so a pathological review line or event tail had no cap at all — the lean
- * wake was structurally the unbounded one. The trim is the same doctrine as
- * the ladder above: cut whole fields, never a string mid-value.
- *
- * With the armed set now one line per watch it should never fire. It exists so
- * that "the lean wake is small" is a guarantee rather than an expectation.
+ * Rung 1 is the lean render above. Past 1,300 chars rung 2 halves the armed
+ * set; past the 5,000 ceiling rung 3 is the minimal projection. Cut whole
+ * fields, never a string mid-value. It should never fire — it exists so that
+ * "the lean wake is small" is a guarantee rather than an expectation.
  */
 const renderBoundedLeanWakeup = (
   wakeup: TradingHarnessWakeup,
@@ -487,10 +525,10 @@ const renderBoundedLeanWakeup = (
 } => {
   const text = renderLeanWakeup(wakeup, LEAN_WAKE_CAPS);
   const untrimmedChars = text.length;
-  if (text.length <= MAX_WAKEUP_CHARS) return { text, steps: [], untrimmedChars };
+  if (text.length <= LEAN_TRIM_TRIGGER_CHARS) return { text, steps: [], untrimmedChars };
 
   const trimmed = renderLeanWakeup(wakeup, LEAN_WAKE_TRIMMED_CAPS);
-  const steps = ["lean_events_and_watches"];
+  const steps = ["lean_watches_capped_2"];
   if (trimmed.length <= MAX_WAKEUP_CHARS) return { text: trimmed, steps, untrimmedChars };
 
   return {
@@ -499,6 +537,14 @@ const renderBoundedLeanWakeup = (
     untrimmedChars,
   };
 };
+
+/**
+ * The rung-1 lean render, exported for the corpus replay script
+ * (`scripts/wake-payload-replay/lean-replay.ts`) so it measures the REAL
+ * renderer against the recorded wakes rather than a re-implementation.
+ */
+export const renderLeanWakeForReplay = (wakeup: TradingHarnessWakeup): string =>
+  renderLeanWakeup(wakeup, LEAN_WAKE_CAPS);
 
 /**
  * Failure surface for the compose step. A gateway failure (snapshot read) or a
@@ -631,23 +677,6 @@ const make = Effect.gen(function* () {
   const costs = yield* TradingCostEstimator;
   // Level memory + prior-read echo (plan 27 B1/B2) are local table reads.
   const sql = yield* SqlClient.SqlClient;
-
-  /**
-   * The plan-history version in force — the id of the prediction the mission
-   * is running, and what a fired watch's `predictionVersion` is compared
-   * against.
-   *
-   * Falls back to 0 rather than failing the wake: a wake that cannot name its
-   * prediction's version is still a wake, and 0 matches no watch, which reads
-   * as "unknown" rather than as a false match.
-   */
-  const currentPlanVersion = (missionId: string) =>
-    sql<{ readonly version: number | null }>`
-      SELECT MAX(version) AS version FROM trading_plan_history WHERE mission_id = ${missionId}
-    `.pipe(
-      Effect.map((rows) => rows[0]?.version ?? 0),
-      Effect.orElseSucceed(() => 0),
-    );
 
   /**
    * Measure the higher timeframe, or return nothing.
@@ -1146,74 +1175,6 @@ const make = Effect.gen(function* () {
             })
           : [];
 
-      // Plan 29 step 4.6: an untriggered plan goes stale on its own. When the
-      // wake is past `reassess.afterMinutes` since the plan was written, the
-      // review says so ahead of anything else — the plan is no longer the
-      // incumbent view, it is the thing to reconsider.
-      const staleNote =
-        activeStrategy !== undefined &&
-        occurredAt > activeStrategy.updatedAt + activeStrategy.reassess.afterMinutes * 60_000
-          ? `STALE PLAN — this plan has gone stale (published ${Math.round(
-              (occurredAt - activeStrategy.updatedAt) / 60_000,
-            )} min ago against a ${activeStrategy.reassess.afterMinutes} min reassess window); reassess before acting on it. `
-          : "";
-
-      // Flat: every playbook is a candidate again this turn. See
-      // `strategyReview` on the wakeup schema for why this rides the payload
-      // rather than living only in the playbook the run may not call. A
-      // plan-less flat mission gets the decision prompt instead — the turn is
-      // the mission's read on the market, not an apology for a missing plan
-      // (plan 29 step 4.3).
-      // These two briefs repeat on EVERY wake for the life of the mission, so
-      // they are kept terse: the doctrine they compress lives in the playbooks
-      // and the first-turn contract, both one call away.
-      const flatReview =
-        activeStrategy === undefined
-          ? "FLAT, NO PLAN ACTIVE — decide this turn: read the market, publish via trading_plan (standing aside counts; a directional plan states a projection), and arm conditions around it on both sides."
-          : "FLAT — every playbook is a candidate again (momentum, range_reversion, opening_range, rsi_reversion). Take the one whose expected move beats the round trip (`costContext`), or none.";
-      // The projection is the one thing a DIRECTIONAL plan must never be
-      // without: an informed estimate of where price is heading. A stand-aside
-      // is exempt — the contract says it states none, because an invented
-      // prediction would be armed and drawn as if it were believed.
-      const projectionNote =
-        activeStrategy !== undefined &&
-        activeStrategy.projection === undefined &&
-        activeStrategy.intent !== "stand_aside"
-          ? "NO PROJECTION ON FILE — republish with projection {direction, price, byMinutes, invalidationPrice}; every directional plan states one, and it is what arms the horizon and invalidation wakes. "
-          : "";
-
-      // The prediction the mission is running, as one line and a version.
-      // A lean wake is a fired trigger and little else; the trigger's own
-      // `predictionVersion` means nothing unless the wake also says which
-      // prediction is current.
-      const prediction =
-        activeStrategy?.projection === undefined
-          ? undefined
-          : {
-              version: yield* currentPlanVersion(mission.id),
-              summary: describeProjection(activeStrategy.projection),
-            };
-      const strategyReview =
-        position.size === 0 ? `${projectionNote}${staleNote}${flatReview}` : undefined;
-
-      // Holding: the turn belongs to the position, not to the thesis. See
-      // `positionReview` on the wakeup schema. A stale plan still says so —
-      // holding does not make an expired thesis fresh.
-      const positionReview =
-        position.size === 0
-          ? undefined
-          : `${projectionNote}${staleNote}HOLDING — spend this turn on the position: bank-or-extend against positionCosts, check drawdownFromPeakUsd, trail the stop off the entry, keep a \`giveback\` armed while in profit.`;
-
-      // The other half of the same read: a level that IS armed, with a watch
-      // that cannot evaluate the confirmation the trigger declared.
-      const misarmedEntryConditions =
-        activeStrategy === undefined
-          ? []
-          : findMisarmedEntryConditions({
-              conditions: activeStrategy.entry.triggers,
-              watches: armed,
-            });
-
       const wakeup: TradingHarnessWakeup = {
         kind: "trading-harness-wakeup",
         missionId: mission.id,
@@ -1234,12 +1195,8 @@ const make = Effect.gen(function* () {
         ...(activeStrategy === undefined
           ? {}
           : { strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt) }),
-        ...(prediction === undefined ? {} : { prediction }),
         armedWatches,
         ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
-        ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),
-        ...(strategyReview === undefined ? {} : { strategyReview }),
-        ...(positionReview === undefined ? {} : { positionReview }),
         pendingEvents: [...pendingEvents],
       };
 

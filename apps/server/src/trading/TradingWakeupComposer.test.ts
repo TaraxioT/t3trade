@@ -31,6 +31,7 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import {
   MAX_WAKEUP_CHARS,
+  renderLeanWakeForReplay,
   TradingWakeupComposer,
   TradingWakeupComposerLive,
 } from "./TradingWakeupComposer.ts";
@@ -309,8 +310,13 @@ layer("TradingWakeupComposer", (it) => {
         activeStrategy: strategy,
       });
       // What fired, and where to get everything else.
-      assert.include(composed.text, "triggeringWatch");
-      assert.include(composed.text, "call trading_look before acting");
+      assert.include(composed.text, "triggered:");
+      // Plan 38 §1.5: the static fetch pointer replaces `readFirst`.
+      assert.include(
+        composed.text,
+        "nothing here but the above — trading_look({fetch:[...]}) ; menu: trading_look({})",
+      );
+      assert.notInclude(composed.text, "readFirst");
       // Plan 35: one pointer line. The `omitted` paragraph and the
       // `mandate-and-authority` line under it said the same thing twice.
       assert.notInclude(composed.text, "deliberately not attached");
@@ -339,7 +345,7 @@ layer("TradingWakeupComposer", (it) => {
       assert.notInclude(composed.text, "recentCandles");
       assert.notInclude(composed.text, "observedVolatility");
       assert.notInclude(composed.text, "accountSnapshot");
-      assert.include(composed.text, "call trading_look");
+      assert.include(composed.text, "trading_look({");
       assert.isBelow(composed.text.length, 2_000);
     }),
   );
@@ -393,16 +399,24 @@ layer("TradingWakeupComposer", (it) => {
   // was repetition: a `missionId` on every entry restating the one the wake
   // already carries, timestamps no decision reads, and a `watch` encoding
   // sitting beside the `condition` that says the same thing.
-  it.effect("renders one line per armed watch, and the fired one in full", () =>
+  // Plan 33 fix 3.1, tightened by plan 38 §1.3: the armed set is one line per
+  // watch, capped at 4, NEWEST FIRST — the full set is `fetch:["watches"]`.
+  it.effect("renders one line per armed watch, capped at 4, newest first", () =>
     Effect.gen(function* () {
-      armedOverride = Array.from({ length: 8 }, (_, i) =>
-        watch(`0000000${i}-4c1e-4d0f-9a3b-1f2e3d4c5b6a`, {
-          type: "price_cross",
-          market: "ETH",
-          priceSource: "mark",
-          direction: "above",
-          price: 4_000 + i,
-        }),
+      // Six watches, created oldest-first: `00000000` is the oldest,
+      // `00000005` the newest. The render keeps the newest four.
+      armedOverride = Array.from({ length: 6 }, (_, i) =>
+        watch(
+          `0000000${i}-4c1e-4d0f-9a3b-1f2e3d4c5b6a`,
+          {
+            type: "price_cross",
+            market: "ETH",
+            priceSource: "mark",
+            direction: "above",
+            price: 4_000 + i,
+          },
+          { createdAt: i * 1_000 },
+        ),
       );
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
@@ -418,30 +432,33 @@ layer("TradingWakeupComposer", (it) => {
 
       const section = composed.text.slice(
         composed.text.indexOf("armedWatches:"),
-        composed.text.indexOf("readFirst:"),
+        composed.text.indexOf("fetch:"),
       );
       const lines = section.split("\n").filter((line) => /^\s*\[\d+] id=/.test(line));
-      assert.equal(lines.length, 8);
-      // Every watch is addressable, by the eight-character handle
-      // `trading_watch` resolves — plan 35, where a model copying a 36-char
-      // UUID back spliced another watch's tail onto it and the cancel missed.
-      for (const id of armed.map((_, i) => `0000000${i}`)) {
-        assert.include(section, `id=${id} `);
-      }
+      assert.equal(lines.length, 4);
+      // Newest first, capped at 4: 5, 4, 3, 2. The two oldest are behind
+      // `fetch:["watches"]`, not on the wake.
+      assert.deepEqual(
+        lines.map((line) => line.match(/id=(\w+) /)?.[1]),
+        ["00000005", "00000004", "00000003", "00000002"],
+      );
+      assert.notInclude(section, "id=00000001 ");
+      assert.notInclude(section, "id=00000000 ");
       assert.notInclude(section, "-4c1e-4d0f-");
       // And the bulk that was riding beside each one is gone.
       assert.notInclude(section, "missionId");
       assert.notInclude(section, "createdAt");
       assert.notInclude(section, "updatedAt");
       // The compacting is render-side only: the schema still carries the whole
-      // watch, which is what the UI and the persisted wake read.
+      // set and watch, which is what the UI and the persisted wake read.
+      assert.equal(composed.wakeup.armedWatches.length, 6);
       assert.equal(composed.wakeup.armedWatches[0]?.watch.missionId, "mission_1");
 
-      // The watch that FIRED renders the same way (plan 34 step 2): which
-      // level, what it was reading, whether it is spent — and not the row's
-      // three UUIDs, its timestamps, and the predicate said twice.
-      const fired = composed.text.slice(composed.text.indexOf("triggeringWatch:"));
-      const firedLine = fired.slice(0, fired.indexOf("\nmarket:"));
+      // The watch that FIRED renders as the `triggered:` fold — which level,
+      // what it was reading, whether it is spent — and not the row's three
+      // UUIDs, its timestamps, and the predicate said twice.
+      const fired = composed.text.slice(composed.text.indexOf("triggered:"));
+      const firedLine = fired.slice(0, fired.indexOf("\n", fired.indexOf("\n") + 1));
       assert.include(firedLine, "id=00000000 ");
       assert.include(firedLine, "status=");
       assert.notInclude(firedLine, "missionId");
@@ -451,84 +468,222 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  // Plan 33 fix 3.2. The lean render was the one path that never went through
-  // `renderBoundedWakeup`, so nothing capped it structurally.
-  it.effect("bounds the lean wake too, by dropping whole fields", () =>
+  // THE observed-value pin (plan 38 §1.4, the plan-35 finding made a test):
+  // the watch line says `price=1916`, only the pending event says the bar
+  // closed at 1914.6 against a threshold of 1915.53. The fold keeps the
+  // event's summary on the `triggered:` line and drops the container.
+  it.effect("folds the firing event's observed value into the triggered line", () =>
     Effect.gen(function* () {
+      const watchId = "1202b80a-9b1d-4440-ae6a-12882c63f851";
+      armedOverride = [
+        watch(
+          watchId,
+          {
+            type: "candle_close",
+            market: "ETH",
+            interval: "5m",
+            direction: "below",
+            price: 1_916,
+          },
+          { status: "triggered", lastObservedValue: 1_914.6 },
+        ),
+      ];
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
         mission,
         harnessRunId: "run_1",
         cause: "market_watch_triggered",
         occurredAt: NOW,
-        triggeringWatchId: "watch_up",
-        // Three of these ride an untrimmed lean wake, and three do not fit.
-        pendingEvents: Array.from({ length: 5 }, (_, i) => ({
-          category: "market" as const,
-          deduplicationKey: `event_${i}`,
-          occurredAt: NOW - i,
-          summary: `e${i} ${"s".repeat(2_000)}`,
-        })),
+        triggeringWatchId: watchId,
+        pendingEvents: [
+          {
+            category: "market" as const,
+            deduplicationKey: `candle_close:${watchId}:1787103599999`,
+            occurredAt: NOW - 1_000,
+            summary: "5m candle closed 1914.6 (below 1915.53)",
+          },
+        ],
+        activeStrategy: strategy,
+      });
+      armedOverride = null;
+
+      const triggered = composed.text.slice(composed.text.indexOf("triggered:"));
+      const line = triggered.slice(0, triggered.indexOf("\n", triggered.indexOf("\n") + 1));
+      assert.include(line, "id=1202b80a");
+      assert.include(line, "1914.6");
+      assert.include(line, "1915.53");
+      // The watch's condition rides the fold, and the container does not:
+      // `pendingEvents:` no longer appears as a block key.
+      assert.include(line, "kind=price");
+      assert.notInclude(composed.text, "pendingEvents:");
+      // The event summary is the human-readable fold; the bare `observed`
+      // number does not repeat beside it.
+      assert.notInclude(line, "observed=");
+      // The budget the plan set for the fold.
+      assert.isAtMost(line.length, 190);
+    }),
+  );
+
+  // Plan 38 §1.2 budget ladder. Rung 1 is the lean render; past 1,300 chars
+  // rung 2 halves the armed set; past the 5,000 ceiling rung 3 is the minimal
+  // projection. The only field that can realistically push a wake past the
+  // trigger is a long operator message.
+  it.effect("trims to rung 2 past the 1,300-char trigger, and strictly smaller", () =>
+    Effect.gen(function* () {
+      armedOverride = Array.from({ length: 6 }, (_, i) =>
+        watch(
+          `0000000${i}-4c1e-4d0f-9a3b-1f2e3d4c5b6a`,
+          {
+            type: "price_cross",
+            market: "ETH",
+            priceSource: "mark",
+            direction: "above",
+            price: 4_000 + i,
+          },
+          { createdAt: i * 1_000 },
+        ),
+      );
+      const composer = yield* TradingWakeupComposer;
+      const longMessage = "m".repeat(1_500);
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "user_message",
+        occurredAt: NOW,
+        userMessage: longMessage,
+        pendingEvents: [],
+        activeStrategy: strategy,
+      });
+      armedOverride = null;
+
+      // Rung 2: the armed set halved to 2, the operator message intact.
+      const section = composed.text.slice(composed.text.indexOf("armedWatches:"));
+      const watchLines = section.split("\n").filter((line) => /^\s*\[\d+] id=/.test(line));
+      assert.equal(watchLines.length, 2);
+      assert.include(composed.text, longMessage);
+      // Strictly smaller than the rung-1 render of the same wake — the real
+      // renderer, via the replay export, not a re-implementation.
+      const rung1 = renderLeanWakeForReplay(composed.wakeup);
+      assert.isAbove(rung1.length, composed.text.length);
+      assert.isAbove(rung1.length, 1_300);
+      // And the pointer still rides the last line.
+      assert.include(composed.text, "menu: trading_look({})");
+    }),
+  );
+
+  it.effect("the 5,000-char guarantee holds under an extreme operator message", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "user_message",
+        occurredAt: NOW,
+        userMessage: "m".repeat(10_000),
+        pendingEvents: [],
         activeStrategy: strategy,
       });
 
       assert.isAtMost(composed.text.length, MAX_WAKEUP_CHARS);
-      // Structural, not a mid-field cut: the newest event survives whole, and
-      // the ones that did not fit are absent rather than clipped.
-      assert.include(composed.text, `e4 ${"s".repeat(2_000)}`);
-      assert.notInclude(composed.text, "e3 ");
-      assert.notInclude(composed.text, "…");
-      // And what fired is still the first thing the run reads.
-      assert.include(composed.text, "watch_up");
+      // Rung 3: the minimal projection — the operator message that did not
+      // fit is dropped whole, never clipped mid-value.
+      assert.notInclude(composed.text, "mmmm");
+      assert.include(composed.text, "budget");
+      // And what the run cannot re-derive still rides.
+      assert.include(composed.text, "markPrice");
+      assert.include(composed.text, "position:");
     }),
   );
 
-  // The projection is the one thing a directional plan must never be without —
-  // one that lacks it is told so on every wake until it republishes. A
-  // stand-aside is exempt: the contract says it states none, so nagging it
-  // would demand an invented prediction the runtime then arms and draws.
-  it.effect("nags for a projection when the plan has none, and only then", () =>
+  // Plan 38 §1.2: the typical budget. A realistic flat wake with the full
+  // fixture set (armed watches, cost context, plan numbers) fits in 950.
+  it.effect("a realistic flat wake composes under the 950-char budget", () =>
     Effect.gen(function* () {
-      // The fixture plan carries no projection: every wake says so.
-      const bare = yield* compose();
-      assert.include(bare.strategyReview ?? "", "NO PROJECTION ON FILE");
-
-      // The same plan with one on file wakes without the nag.
-      const projected = yield* composeFull({
-        activeStrategy: {
-          ...strategy,
-          projection: {
-            direction: "long",
-            price: MARK + 12,
-            byMinutes: 15,
-            invalidationPrice: MARK - 8,
+      armedOverride = Array.from({ length: 3 }, (_, i) =>
+        watch(
+          `0000000${i}-4c1e-4d0f-9a3b-1f2e3d4c5b6a`,
+          {
+            type: "price_cross",
+            market: "ETH",
+            priceSource: "mark",
+            direction: "above",
+            price: 4_000 + i,
           },
-        },
-      }).pipe(Effect.map((composed) => composed.wakeup));
-      assert.notInclude(projected.strategyReview ?? "", "NO PROJECTION ON FILE");
-
-      // A stand-aside with no projection is the contract being followed,
-      // not a gap to nag about.
-      const standAside = yield* composeFull({
-        activeStrategy: { ...strategy, intent: "stand_aside" },
-      }).pipe(Effect.map((composed) => composed.wakeup));
-      assert.notInclude(standAside.strategyReview ?? "", "NO PROJECTION ON FILE");
+          { createdAt: i * 1_000 },
+        ),
+      );
+      const { text } = yield* composeFull({});
+      armedOverride = null;
+      assert.include(text, "cost:");
+      assert.include(text, "plan:");
+      assert.isBelow(text.length, 950);
     }),
   );
 
-  // A lean wake is a fired trigger and little else. The trigger carries the
-  // prediction version it was armed for, which means nothing unless the wake
-  // also says which prediction is running — so the alert render carries it.
-  it.effect("puts the running prediction on the lean render, as one line", () =>
+  it.effect("a holding wake with working orders also fits the 950-char budget", () =>
     Effect.gen(function* () {
-      const composer = yield* TradingWakeupComposer;
-      const composed = yield* composer.compose({
-        mission,
-        harnessRunId: "run_1",
-        cause: "market_watch_triggered",
-        occurredAt: NOW,
-        triggeringWatchId: "watch_up",
-        pendingEvents: [],
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      yield* sql`
+        INSERT INTO trading_execution_records (
+          execution_id, mission_id, execution_sequence, action_type, cloid,
+          idempotency_key, market, side, size, limit_price, time_in_force,
+          reduce_only, signer_address, status, order_results_json,
+          created_at, updated_at
+        ) VALUES (
+          'exec_budget', 'mission_1', 0, 'open', '0xbudget', 'idem_budget',
+          'ETH', 'sell', 0.2613, 1913.3, 'alo', 0,
+          '0x0000000000000000000000000000000000000001', 'accepted', '[]',
+          1000, 1000
+        )
+      `;
+      yield* sql`
+        INSERT INTO trading_fills (
+          fill_id, mission_id, cloid, order_id, market, side, filled_size,
+          avg_fill_price, fee_usd, fee_token, traded_at, observed_at
+        ) VALUES (
+          'fill_budget', 'mission_1', '0xbudget', 1, 'ETH', 'sell', 0.0103,
+          1913.3, 0.002956, 'USDC', 1100, 1100
+        )
+      `;
+      armedOverride = Array.from({ length: 3 }, (_, i) =>
+        watch(
+          `0000000${i}-4c1e-4d0f-9a3b-1f2e3d4c5b6a`,
+          {
+            type: "price_cross",
+            market: "ETH",
+            priceSource: "mark",
+            direction: "above",
+            price: 4_000 + i,
+          },
+          { createdAt: i * 1_000 },
+        ),
+      );
+      positionSize = -0.474;
+      const composed = yield* composeFull({});
+      positionSize = 0;
+      armedOverride = null;
+      yield* sql`DELETE FROM trading_execution_records`;
+      yield* sql`DELETE FROM trading_fills`;
+
+      assert.include(composed.text, "workingOrders:");
+      assert.include(composed.text, "cost:");
+      // 1,085 measured. The 950 "typical" of plan 38 §1.2 assumes corpus-shaped
+      // armed lines; this fixture holds three full `price_cross` lines (~110
+      // chars each) beside the 154-char workingOrders line, so the honest pin
+      // for THIS shape is 1,100 — still under the 1,300 trim trigger.
+      assert.isBelow(composed.text.length, 1_100);
+    }),
+  );
+
+  // Plan 38 §1.3: the prose the model does not act on is off the wake and off
+  // the gather. The reviews, the prediction line, and the wake reason never
+  // render; the reviews and the prediction are no longer even computed. What
+  // they carried is `fetch:["plan"]`.
+  it.effect("renders none of the removed prose fields, flat or holding", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      const flat = yield* composeFull({
         activeStrategy: {
           ...strategy,
           projection: {
@@ -539,14 +694,34 @@ layer("TradingWakeupComposer", (it) => {
           },
         },
       });
+      assert.isUndefined(flat.wakeup.strategyReview);
+      assert.isUndefined(flat.wakeup.prediction);
 
-      assert.include(composed.text, "prediction");
-      assert.include(composed.text, `wrong below ${MARK - 8}`);
-      assert.include(composed.text, `within 15m`);
-      // Still lean: the line replaced a round trip, it did not reopen the
-      // snapshot.
-      assert.notInclude(composed.text, "recentCandles");
-      assert.isBelow(composed.text.length, 2_000);
+      positionSize = -1.25;
+      const holding = yield* composeFull({
+        activeStrategy: {
+          ...strategy,
+          projection: {
+            direction: "long",
+            price: MARK + 12,
+            byMinutes: 15,
+            invalidationPrice: MARK - 8,
+          },
+        },
+      });
+      positionSize = 0;
+      assert.isUndefined(holding.wakeup.positionReview);
+      assert.isUndefined(holding.wakeup.prediction);
+
+      for (const { text } of [flat, holding]) {
+        assert.notInclude(text, "strategyReview");
+        assert.notInclude(text, "positionReview");
+        assert.notInclude(text, "prediction");
+        assert.notInclude(text, "wakeReason");
+        assert.notInclude(text, "NO PROJECTION ON FILE");
+        assert.notInclude(text, "range_reversion");
+        assert.notInclude(text, "HOLDING —");
+      }
     }),
   );
 
@@ -628,7 +803,9 @@ layer("TradingWakeupComposer", (it) => {
         filledSize: 0.0103,
         limitPrice: 1913.3,
       });
-      // And it reaches the rendered text, where the model actually reads it.
+      // And it reaches the rendered text under `workingOrders:`, where the
+      // model actually reads it (plan 38 §1.2 renamed the key).
+      assert.include(composed.text, "workingOrders:");
       assert.include(composed.text, "filled 0.0103 of 0.2613");
 
       yield* sql`DELETE FROM trading_execution_records`;
@@ -686,65 +863,27 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  it.effect("re-opens the whole field on a flat wake, and only on a flat wake", () =>
+  // Plan 38 §4.3: `misarmedEntryConditions` is deleted outright. The advisory
+  // describes a condition that stopped deciding anything once entry happened,
+  // and while flat it duplicated `unarmedEntryConditions`.
+  it.effect("never renders or carries the misarmed advisory, flat or holding", () =>
     Effect.gen(function* () {
       positionSize = 0;
-      const flat = yield* compose();
-      assert.include(flat.strategyReview ?? "", "range_reversion");
+      const flat = yield* composeFull({ activeStrategy: misarmedStrategy });
+      assert.isUndefined(flat.wakeup.misarmedEntryConditions);
+      assert.notInclude(flat.text, "misarmedEntryConditions");
 
-      // Holding, the incumbent has seniority: a switch costs a round trip.
-      positionSize = -1.25;
-      const holding = yield* compose();
+      positionSize = -0.474;
+      const holding = yield* composeFull({ activeStrategy: misarmedStrategy });
       positionSize = 0;
-      assert.isUndefined(holding.strategyReview);
+      assert.isUndefined(holding.wakeup.misarmedEntryConditions);
+      assert.notInclude(holding.text, "misarmedEntryConditions");
     }),
   );
 
-  // Plan 29 step 4.6: an untriggered plan goes stale on its own. Past
-  // `reassess.afterMinutes` since `updatedAt`, the review says so ahead of
-  // anything else, flat or holding.
-  it.effect("marks an expired plan stale in the review", () =>
-    Effect.gen(function* () {
-      positionSize = 0;
-      // A 5 min window, published ~6.7 min before the wake.
-      const stale = {
-        ...strategy,
-        reassess: { afterMinutes: 5 },
-        updatedAt: NOW - 400_000,
-      } as TradingPlanState;
-      const { wakeup } = yield* composeFull({ activeStrategy: stale });
-
-      assert.include(wakeup.strategyReview ?? "", "has gone stale");
-      assert.include(wakeup.strategyReview ?? "", "reassess");
-    }),
-  );
-
-  it.effect("does not mark a fresh plan stale", () =>
-    Effect.gen(function* () {
-      positionSize = 0;
-      const wakeup = yield* compose();
-      assert.notInclude(wakeup.strategyReview ?? "", "gone stale");
-    }),
-  );
-
-  it.effect("marks a stale plan on a holding wake too", () =>
-    Effect.gen(function* () {
-      positionSize = -1.25;
-      const stale = {
-        ...strategy,
-        reassess: { afterMinutes: 5 },
-        updatedAt: NOW - 400_000,
-      } as TradingPlanState;
-      const { wakeup } = yield* composeFull({ activeStrategy: stale });
-      positionSize = 0;
-
-      assert.include(wakeup.positionReview ?? "", "has gone stale");
-    }),
-  );
-
-  // Plan 29 step 4.3: a plan-less mission wakes on the same market snapshot,
-  // with a decision prompt where the plan echo would be. No field that a plan
-  // would carry becomes required; the budget discipline is unchanged.
+  // Plan 29 step 4.3: a plan-less mission wakes on the same market snapshot.
+  // The decision prompt prose is gone with `strategyReview`; the numbers the
+  // run cannot re-derive still ride.
   it.effect("composes a coherent plan-less wakeup", () =>
     Effect.gen(function* () {
       positionSize = 0;
@@ -754,44 +893,13 @@ layer("TradingWakeupComposer", (it) => {
       assert.isUndefined(wakeup.activeStrategy);
       assert.isUndefined(wakeup.strategyAgeMillis);
       assert.isUndefined(wakeup.unarmedEntryConditions);
-      assert.isUndefined(wakeup.misarmedEntryConditions);
+      assert.isUndefined(wakeup.strategyReview);
       // The mark and the armed set still ride; the snapshot halves do not.
       assert.equal(wakeup.marketSnapshot.market, "ETH");
       assert.isArray(wakeup.armedWatches);
       assert.isUndefined(wakeup.recentCandles);
-      // The decision prompt says the mission has no plan and what to do.
-      assert.include(wakeup.strategyReview ?? "", "NO PLAN ACTIVE");
-      assert.include(wakeup.strategyReview ?? "", "trading_plan");
+      assert.notInclude(text, "plan:");
       assert.isBelow(text.length, 2_000);
-    }),
-  );
-
-  it.effect("a plan-less holding wake still gets the management brief", () =>
-    Effect.gen(function* () {
-      positionSize = -1.25;
-      const { wakeup } = yield* composeFull({ planless: true });
-      positionSize = 0;
-      assert.isUndefined(wakeup.activeStrategy);
-      assert.include(wakeup.positionReview ?? "", "HOLDING");
-      assert.isUndefined(wakeup.strategyReview);
-    }),
-  );
-
-  it.effect("hands a holding wake the management brief instead", () =>
-    Effect.gen(function* () {
-      positionSize = 0;
-      assert.isUndefined((yield* compose()).positionReview);
-
-      positionSize = -1.25;
-      const holding = yield* compose();
-      positionSize = 0;
-      const review = holding.positionReview ?? "";
-      // The three things a holding turn is for: what banking is worth, what
-      // has already been handed back, and moving the stop off the entry.
-      assert.include(review, "positionCosts");
-      assert.include(review, "drawdownFromPeakUsd");
-      // Plan 29 step 6.3: the brief names the condition the model can write.
-      assert.include(review, "giveback");
     }),
   );
 
@@ -832,6 +940,13 @@ layer("TradingWakeupComposer", (it) => {
       // 0.05 ETH twice (0.10): 0.30, which is 15 bps of the reference notional.
       assert.closeTo(context.roundTripUsd, 0.3, 1e-9);
       assert.closeTo(context.roundTripBps, 15, 1e-9);
+
+      // Flat renders the reference line under the single `cost:` key.
+      const { text } = yield* composeFull({});
+      assert.include(text, "cost:");
+      assert.include(text, "referenceNotionalUsd=200");
+      assert.notInclude(text, "positionCosts:");
+      assert.notInclude(text, "costContext:");
     }),
   );
 
@@ -937,6 +1052,36 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
+  // Plan 38 §1.3: an unarmed entry condition renders ONLY when it is the
+  // reason for the wake — flat, waiting, nothing fired, nothing pending —
+  // folded into the `triggered:` line as its description. Otherwise the list
+  // is behind `fetch:["plan"]` and never appears as a block key.
+  it.effect("folds the newest unarmed entry condition into triggered, and only then", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      const flat = yield* composeFull({ activeStrategy: waitingStrategy });
+      const fold = flat.text.slice(flat.text.indexOf("triggered:"));
+      assert.include(
+        fold.slice(0, fold.indexOf("\n", fold.indexOf("\n") + 1)),
+        "give up on a loss of 3,900",
+      );
+      assert.notInclude(flat.text, "unarmedEntryConditions:");
+
+      // A holding wake carries neither the fold nor the list.
+      positionSize = 1;
+      const holding = yield* composeFull({ activeStrategy: waitingStrategy });
+      positionSize = 0;
+      assert.notInclude(holding.text, "unarmedEntryConditions:");
+      // And with something else to say, the fold steps aside for the watch.
+      const fired = yield* composeFull({
+        triggeringWatchId: "watch_up",
+        activeStrategy: waitingStrategy,
+      });
+      assert.include(fired.text, "id=watch_up");
+      assert.notInclude(fired.text, "give up on a loss of 3,900");
+    }),
+  );
+
   // Plan 34 step 2. The snapshot halves came off in round 5 and the holding
   // wake did not shrink: `positionCosts` rendered the whole twenty-seven-line
   // cost record, the fired watch echoed its persisted row, and an advisory
@@ -951,12 +1096,16 @@ layer("TradingWakeupComposer", (it) => {
       positionSize = 0;
 
       assert.isBelow(composed.text.length, 2_000);
-      // The cost line is five numbers, in the shape the flat wakes use.
-      const costs = composed.text.slice(composed.text.indexOf("positionCosts:"));
+      // The cost line is five numbers, in the shape the flat wakes use, under
+      // the single `cost:` key (plan 38 §1.2 row 5: one line, either state).
+      const costs = composed.text.slice(composed.text.indexOf("cost:"));
       const costLine = costs.slice(0, costs.indexOf("\n", costs.indexOf("\n") + 1));
+      assert.include(costLine, "sizeEth=");
       assert.include(costLine, "roundTripUsd=");
       assert.include(costLine, "breakEvenMoveUsd=");
       assert.include(costLine, "preferredTargetUsd=");
+      assert.notInclude(composed.text, "positionCosts:");
+      assert.notInclude(composed.text, "costContext:");
       // The full record is a trading_look away; none of it rides the wake.
       assert.notInclude(composed.text, "takerFeeBpsPerSide");
       assert.notInclude(composed.text, "roundTripSlippageUsd");
@@ -969,21 +1118,6 @@ layer("TradingWakeupComposer", (it) => {
   // Plan 34 F8: the model entered on the same turn it published the trigger,
   // so the advisory described a condition that no longer mattered — and rode
   // six holding wakes anyway.
-  it.effect("drops the entry-watch advisory once the entry has happened", () =>
-    Effect.gen(function* () {
-      positionSize = 0;
-      const flat = yield* composeFull({ activeStrategy: misarmedStrategy });
-      assert.include(flat.text, "misarmedEntryConditions");
-
-      positionSize = -0.474;
-      const holding = yield* composeFull({ activeStrategy: misarmedStrategy });
-      positionSize = 0;
-      assert.notInclude(holding.text, "misarmedEntryConditions");
-      // Render-side only: the observation still reports the gap.
-      assert.notEqual(holding.wakeup.misarmedEntryConditions, undefined);
-    }),
-  );
-
   it.effect("renders an ordinary wakeup with no trim markers", () =>
     Effect.gen(function* () {
       const { text } = yield* composeFull();
