@@ -1,5 +1,5 @@
 /**
- * The twelve derived metrics of plan 38 §3.3, each pinned by one hand-checked
+ * The thirteen derived metrics of plan 38 §3.3, each pinned by one hand-checked
  * fixture: the expected value is written as a literal with the arithmetic that
  * produced it, so a regression is a readable diff rather than a floating-point
  * mystery. The refusal paths (window not covered, context missing, known gap)
