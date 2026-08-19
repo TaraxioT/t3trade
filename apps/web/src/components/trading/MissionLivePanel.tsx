@@ -1819,10 +1819,7 @@ function StateChip({
     <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2.5 py-0.5 font-mono text-[12px] text-armed">
       <Icon className="size-3" strokeWidth={2} aria-hidden />
       {state === "planning" ? (
-        <span
-          className="size-1.5 animate-pulse rounded-full bg-armed motion-reduce:animate-none"
-          aria-hidden
-        />
+        <span className="mission-analysing-dot size-1.5 rounded-full bg-armed" aria-hidden />
       ) : null}
       <span>{market}</span>
       <span className="text-armed/80">{label}</span>

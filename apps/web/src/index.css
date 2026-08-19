@@ -781,9 +781,41 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     animation: mission-card-flash 900ms ease-out 1;
   }
 
+  /*
+   * The Analysing chip's dot: two soft opacity beats, then it settles at
+   * full and stays still. Planning is transient, but nothing loops forever
+   * (the live-mark and armed-halo pulses went finite for the same reason).
+   */
+  @keyframes mission-analysing-dot {
+    0% {
+      opacity: 1;
+    }
+
+    25% {
+      opacity: 0.3;
+    }
+
+    50% {
+      opacity: 1;
+    }
+
+    75% {
+      opacity: 0.3;
+    }
+
+    100% {
+      opacity: 1;
+    }
+  }
+
+  .mission-analysing-dot {
+    animation: mission-analysing-dot 1600ms ease-in-out 1;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .mission-chip-arm,
-    .mission-card-flash {
+    .mission-card-flash,
+    .mission-analysing-dot {
       animation: none;
     }
 
