@@ -437,9 +437,15 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
         ) : isLoading && missions.length === 0 ? (
           <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">Loading missions…</p>
         ) : missions.length === 0 ? (
-          <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
-            No trading mission on this environment yet.
-          </p>
+          /* A composed "delegate something" state, not a bare sentence: a
+             short headline and one plain line, centered with air, in the
+             same token language as the cockpit. Still, no motion needed. */
+          <div className="flex flex-col items-center gap-1.5 px-3 py-10 text-center sm:px-4">
+            <p className="text-sm font-medium text-foreground">No mission here yet</p>
+            <p className="max-w-sm text-[13px] leading-snug text-muted-foreground">
+              Delegate a trading mission and this cockpit lights up as soon as it starts.
+            </p>
+          </div>
         ) : null}
       </SettingsSection>
 
