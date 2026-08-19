@@ -170,4 +170,32 @@ layer("TradingEventInbox", (it) => {
       assert.equal(found?.category, "system");
     }),
   );
+
+  // Plan 38 §2.2: `trading_look`'s `events` key reads the pending tail without
+  // consuming it — the wake those events queue for still has to fire.
+  it.effect("peeks the pending tail without claiming it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const inbox = yield* TradingEventInbox;
+
+      for (const [index, occurredAt] of [3_000, 1_000, 2_000].entries()) {
+        yield* inbox.persist({
+          ...baseEvent,
+          deduplicationKey: `peek:${occurredAt}`,
+          occurredAt,
+          summary: `event ${index}`,
+        });
+      }
+
+      const peeked = yield* inbox.peekPending("mission_1", 2);
+      // Oldest first, capped — and still pending afterwards.
+      assert.deepStrictEqual(
+        peeked.map((event) => event.summary),
+        ["event 1", "event 2"],
+      );
+      assert.strictEqual(yield* inbox.isPending("mission_1", "peek:3000"), true);
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 3);
+    }),
+  );
 });

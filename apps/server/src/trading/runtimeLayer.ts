@@ -54,6 +54,7 @@ import { TradingCalibrationServiceLive } from "./TradingCalibrationService.ts";
 import { TradingStopAdjustmentServiceLive } from "./TradingStopAdjustmentService.ts";
 import { TradingExitServiceLive } from "./TradingExitService.ts";
 import { TradingEntryServiceLive } from "./TradingEntryService.ts";
+import { TradingMarketArchiveLive } from "./TradingMarketArchive.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -177,6 +178,9 @@ const TradingExecutionLayerLive = Layer.mergeAll(
 ).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
 export const TradingLayerLive = Layer.mergeAll(
+  // `trading_look`'s archive-backed fetch keys (plan 38 §2.4). Read-only over
+  // the archiver's own file; a missing archive answers unavailable, not zero.
+  TradingMarketArchiveLive,
   TradingMissionServiceLive,
   // Housekeeping, once at boot: settled missions and missions whose thread is
   // gone are deleted rather than accumulated. See `TradingMissionSweep`.

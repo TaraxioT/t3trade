@@ -19,7 +19,11 @@ import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { TradingTradeHistory } from "./history.ts";
 import { IndicatorReading, IndicatorRequest } from "./indicators.ts";
 import { AgentMarketSnapshot, MarketCandleSeries, OrderBook, ResolvedMarket } from "./market.ts";
-import { ObservedMarketStructure } from "./marketStructure.ts";
+import {
+  ObservedMarketStructure,
+  StrategyCandidate,
+  TimeframeAlignment,
+} from "./marketStructure.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingTimeframe } from "./strategy.ts";
@@ -302,6 +306,10 @@ export type TradingLookFixedFetchBase = (typeof TRADING_LOOK_FIXED_FETCH_BASES)[
 export const TRADING_LOOK_MAX_ARCHIVE_ROWS = 200;
 /** The window bound on `funding_stats:<W>`, in days. */
 export const TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS = 30;
+/** The bound on `events:<n>` — the pending-event tail is short by nature. */
+export const TRADING_LOOK_MAX_EVENTS = 20;
+/** What a bare `events` key serves: the recent tail, uncapped by the caller. */
+export const TRADING_LOOK_DEFAULT_EVENTS = 5;
 
 const TRADING_LOOK_INTERVALS: ReadonlyArray<TradingTimeframe> = ["1m", "3m", "5m", "15m", "1h"];
 
@@ -348,7 +356,7 @@ export type TradingLookFetchParse =
   | { readonly base: "funding_series"; readonly n: number }
   | { readonly base: "oi_premium"; readonly n: number }
   | { readonly base: "book_history"; readonly n: number }
-  | { readonly base: "events"; readonly n: number }
+  | { readonly base: "events"; readonly n: number; readonly explicit: boolean }
   | { readonly base: TradingLookFixedFetchBase }
   | { readonly base: "invalid_params"; readonly key: string; readonly bound: string }
   | { readonly base: "unknown"; readonly key: string };
@@ -388,6 +396,15 @@ export function parseTradingLookFetchKey(key: string): TradingLookFetchParse {
       return { base: "invalid_params", key, bound: "spec is required" };
     }
     return { base: "indicators", spec: params[0] as string };
+  }
+  if (base === "events") {
+    if (params.length === 0)
+      return { base: "events", n: TRADING_LOOK_DEFAULT_EVENTS, explicit: false };
+    const rows = n();
+    if (!Number.isInteger(rows) || rows < 1 || rows > TRADING_LOOK_MAX_EVENTS) {
+      return { base: "invalid_params", key, bound: `n must be 1..${TRADING_LOOK_MAX_EVENTS}` };
+    }
+    return { base: "events", n: rows, explicit: true };
   }
   if (base === "funding_stats") {
     const days = Number(params[0]);
@@ -548,8 +565,14 @@ export const TradingObservation = Schema.Struct({
   /** This mission's completed orders, newest first, with their round trips. */
   trades: Schema.optional(TradingTradeHistory),
 
-  /** Mandate, authority, plan, watches, and pending executions. */
-  mission: TradingGetMissionResult,
+  /**
+   * Mandate, authority, plan, watches, and pending executions.
+   *
+   * Optional since plan 38's fetch path: a catalog call or a fetch that named
+   * no mission-side key carries no mission half, because the mission row is
+   * itself a priced bundle. The scope path always sets it.
+   */
+  mission: Schema.optional(TradingGetMissionResult),
 
   // -- the fetch path (plan 38 §2) ---------------------------------------------
   //
@@ -570,6 +593,83 @@ export const TradingObservation = Schema.Struct({
    */
   unavailable: Schema.optional(
     Schema.Array(Schema.Struct({ key: Schema.String, reason: Schema.String })),
+  ),
+
+  // -- the fetch-only sections (plan 38 §2.2) ----------------------------------
+  //
+  // Each is one catalog key's answer, in its own field so no key implies
+  // another (§2.3 rule 2) and so a size test can measure the section alone.
+  /**
+   * `book`: the two best levels with their sizes and the summed notional depth
+   * over five levels a side — the spread and the liquidity behind it, without
+   * the 898 characters of the full ten-level table.
+   */
+  book: Schema.optional(
+    Schema.Struct({
+      bid: Schema.Struct({ price: Schema.Number, size: Schema.Number }),
+      ask: Schema.Struct({ price: Schema.Number, size: Schema.Number }),
+      bidDepth5Usd: Schema.Number,
+      askDepth5Usd: Schema.Number,
+    }),
+  ),
+  /**
+   * `structure_brief`: the alignment verdict and the single top-scored
+   * candidate — the cheap option a reassessment turn currently lacks.
+   */
+  structureBrief: Schema.optional(
+    Schema.Struct({
+      alignment: TimeframeAlignment,
+      topCandidate: Schema.optional(StrategyCandidate),
+    }),
+  ),
+  /**
+   * `events`: the mission's pending-event tail, newest last, uncapped by the
+   * scope path. `deduplicationKey` is omitted — the summary and the moment are
+   * what a turn reads.
+   */
+  events: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ category: Schema.String, occurredAt: UnixMillis, summary: Schema.String }),
+    ),
+  ),
+  /** `funding_stats:<W>`: the trailing window's verdict, from the archive. */
+  fundingStats: Schema.optional(
+    Schema.Struct({
+      windowDays: Schema.Number,
+      mean: Schema.Number,
+      latestRate: Schema.Number,
+      latestTime: UnixMillis,
+      signFlips: Schema.Number,
+      sampleCount: Schema.Number,
+    }),
+  ),
+  /** `funding_series:<n>`: hourly funding rows, oldest first. */
+  fundingSeries: Schema.optional(
+    Schema.Array(Schema.Struct({ time: UnixMillis, fundingRate: Schema.Number })),
+  ),
+  /** `oi_premium:<n>`: asset-context samples, oldest first. */
+  oiPremium: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        ts: UnixMillis,
+        openInterest: Schema.Number,
+        premium: Schema.Number,
+        oraclePx: Schema.Number,
+        markPx: Schema.Number,
+      }),
+    ),
+  ),
+  /** `book_history:<n>`: book-summary rows, oldest first. */
+  bookHistory: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        ts: UnixMillis,
+        bidPx: Schema.Number,
+        askPx: Schema.Number,
+        bidDepth5: Schema.Number,
+        askDepth5: Schema.Number,
+      }),
+    ),
   ),
 });
 export type TradingObservation = typeof TradingObservation.Type;

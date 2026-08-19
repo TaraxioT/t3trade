@@ -34,9 +34,13 @@ import {
 } from "@t3tools/trading-contracts/journal";
 import {
   resolveLookScopes,
+  parseTradingLookFetchKey,
+  nearestTradingLookKey,
+  renderTradingLookMenu,
   TRADING_LOOK_BOOK_LEVELS,
   TRADING_LOOK_FLAT_BAR_CAP,
   echoedBarsForLook,
+  type TradingLookFetchParse,
   type TradingLookInput,
   type TradingLookScope,
   type TradingObservation,
@@ -110,6 +114,8 @@ import { readAccountMarginCapacityUsd } from "../../../trading/AccountMarginCapa
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";
 import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
+import { TradingEventInbox } from "../../../trading/TradingEventInbox.ts";
+import { TradingMarketArchive } from "../../../trading/TradingMarketArchive.ts";
 import { TradingToolkit } from "./tools.ts";
 
 interface BoundCall {
@@ -129,12 +135,22 @@ const rejectCall = (input: {
   readonly reason:
     | "capability_not_granted"
     | "thread_not_bound_to_mission"
-    | "mission_not_bound_to_thread";
+    | "mission_not_bound_to_thread"
+    | "scope_and_fetch_conflict"
+    | "unknown_fetch_key"
+    | "fetch_key_params_invalid";
   readonly threadId: string;
   readonly missionId: string | undefined;
+  /** What to do about it, when the reason alone does not say (fetch keys). */
+  readonly detail?: string | undefined;
 }) =>
   Effect.logInfo("trading tool call rejected", input).pipe(
-    Effect.andThen(new TradingToolRejectedError(input)),
+    Effect.andThen(
+      new TradingToolRejectedError({
+        ...input,
+        ...(input.detail === undefined ? {} : { detail: input.detail }),
+      }),
+    ),
   );
 
 /**
@@ -790,6 +806,37 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
   const mission = call.mission;
   const market = input.market ?? mission?.market ?? DEFAULT_TRADING_MARKET;
   const observedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+
+  // Plan 38 §2.1: `fetch[]` ships alongside `scope[]`, and one call names one
+  // of them. `scope` keeps the pre-phase behaviour byte for byte (the golden
+  // pins in handlers.test.ts are that guarantee); with neither, the call is
+  // the catalog call and gets the menu (§2.3 rule 3) — the old
+  // omit-scope-means-everything behaviour is what the menu replaces.
+  if (input.scope !== undefined && input.fetch !== undefined) {
+    return yield* rejectCall({
+      reason: "scope_and_fetch_conflict",
+      threadId: call.threadId,
+      missionId: input.missionId,
+      detail:
+        "pass scope or fetch, not both — scope[] is the legacy bundle, fetch[] names catalog keys",
+    });
+  }
+  if (input.scope === undefined) {
+    if ((input.fetch ?? []).length === 0) {
+      const menu = renderTradingLookMenu();
+      yield* Effect.logInfo("trading_look: menu call", { market, menuChars: menu.length });
+      return { observedAt, market, menu } satisfies TradingObservation;
+    }
+    return yield* readFetchedObservation({
+      threadId: call.threadId,
+      mission,
+      market,
+      observedAt,
+      keys: input.fetch ?? [],
+      ...(input.interval === undefined ? {} : { interval: input.interval }),
+    });
+  }
+
   const scopes = resolveLookScopes(input);
 
   // The mission half first, and never conditional on the exchange. A look that
@@ -866,7 +913,9 @@ const measurePartChars = (observation: TradingObservation): Record<string, numbe
     }
   };
   measure("", observation);
-  measure("mission.", observation.mission);
+  // The mission half is optional since the fetch path (plan 38 §2); a menu or
+  // market-only fetch carries none.
+  if (observation.mission !== undefined) measure("mission.", observation.mission);
   return chars;
 };
 
@@ -1194,6 +1243,669 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
       : {}),
   };
 });
+
+// -- the fetch path (plan 38 §2) -----------------------------------------------
+//
+// One key, one section, one published price. Nothing a call did not name rides
+// back (§2.3 rule 2) — the sections land in the same TradingObservation fields
+// the scope path uses wherever the shapes coincide, so the encoding stays
+// familiar, and every key that could not be served is named in `unavailable[]`
+// with a reason rather than degrading to a zero or an empty array (§2.4).
+
+/** The mission-side keys — served from mission state, refused without one. */
+const MISSION_FETCH_BASES: ReadonlySet<string> = new Set([
+  "plan",
+  "watches",
+  "events",
+  "journal",
+  "trades",
+  "calibration",
+  "plan_history",
+  "levels",
+  "position",
+  "position_costs",
+  "account",
+  "orders",
+]);
+
+/** The market-side fields a fetch key can populate, all optional by nature. */
+type FetchMarketSections = {
+  -readonly [K in keyof Pick<
+    TradingObservation,
+    | "resolvedMarket"
+    | "snapshot"
+    | "orderBook"
+    | "book"
+    | "microstructure"
+    | "candles"
+    | "indicators"
+    | "volatility"
+    | "higherTimeframeVolatility"
+    | "structure"
+    | "structureBrief"
+    | "levelHistory"
+    | "cost"
+    | "positionCosts"
+    | "account"
+    | "position"
+    | "openOrders"
+  >]?: TradingObservation[K];
+};
+
+/** The archive-backed fields a fetch key can populate (§2.4). */
+type FetchArchiveSections = {
+  -readonly [K in keyof Pick<
+    TradingObservation,
+    "fundingStats" | "fundingSeries" | "oiPremium" | "bookHistory"
+  >]?: TradingObservation[K];
+};
+
+/**
+ * The `book` key's summarizer: the two best levels and the summed notional
+ * depth over five levels a side. The spread and the liquidity behind it,
+ * without the 898 characters of the ten-level table.
+ */
+const TRADING_LOOK_BOOK_SUMMARY_LEVELS = 5;
+
+const summariseOrderBook = (
+  orderBook: OrderBook,
+): NonNullable<TradingObservation["book"]> | null => {
+  const bestBid = orderBook.bids[0];
+  const bestAsk = orderBook.asks[0];
+  if (bestBid === undefined || bestAsk === undefined) return null;
+  const depthUsd = (levels: ReadonlyArray<{ price: number; size: number }>) =>
+    levels
+      .slice(0, TRADING_LOOK_BOOK_SUMMARY_LEVELS)
+      .reduce((sum, level) => sum + level.price * level.size, 0);
+  return {
+    bid: { price: bestBid.price, size: bestBid.size },
+    ask: { price: bestAsk.price, size: bestAsk.size },
+    bidDepth5Usd: depthUsd(orderBook.bids),
+    askDepth5Usd: depthUsd(orderBook.asks),
+  };
+};
+
+/**
+ * The pairing `volatility_htf` measures on, when there is no mission to derive
+ * it from. Mirrors the composer's own map — four lines, not worth an export.
+ */
+const FETCH_HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe | null>> = {
+  "1m": "15m",
+  "3m": "15m",
+  "5m": "1h",
+  "15m": "1h",
+  "1h": null,
+};
+
+/** `indicators:<spec>` — `ema20`, `sma9`, `rsi14`, `vwap` (defaults apply). */
+const INDICATOR_SPEC_PATTERN = /^(ema|sma|rsi|vwap)([0-9]{1,3})?$/;
+
+const parseIndicatorSpec = (spec: string): IndicatorRequest | null => {
+  const match = spec.match(INDICATOR_SPEC_PATTERN);
+  if (match === null) return null;
+  const period = match[2] === undefined ? undefined : Number(match[2]);
+  if (period !== undefined && (period < 1 || period > 200)) return null;
+  return {
+    kind: match[1] as IndicatorRequest["kind"],
+    ...(period === undefined ? {} : { period }),
+  };
+};
+
+interface FetchedKey {
+  readonly key: string;
+  readonly parsed: TradingLookFetchParse;
+}
+
+/**
+ * The fetch path itself. Parsing and refusal happen first — a key that cannot
+ * be served as written refuses the whole call with the bound in the refusal,
+ * never a silent truncation (§2.3 rules 4–5).
+ */
+const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation")(
+  function* (input: {
+    readonly threadId: string;
+    readonly mission: TradingMission | null;
+    readonly market: TradingMarket;
+    readonly observedAt: number;
+    readonly keys: ReadonlyArray<string>;
+    readonly interval?: TradingTimeframe | undefined;
+  }) {
+    const { market, mission } = input;
+
+    // Parse every key, then deduplicate preserving first-occurrence order.
+    const fetched: Array<FetchedKey> = [];
+    const seen = new Set<string>();
+    for (const key of input.keys) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      fetched.push({ key, parsed: parseTradingLookFetchKey(key) });
+    }
+    for (const { key, parsed } of fetched) {
+      if (parsed.base === "unknown") {
+        return yield* rejectCall({
+          reason: "unknown_fetch_key",
+          threadId: input.threadId,
+          missionId: mission?.id,
+          detail:
+            `unknown fetch key "${key}" — nearest valid key is ` +
+            `"${nearestTradingLookKey(key)}"; the menu is trading_look({})`,
+        });
+      }
+      if (parsed.base === "invalid_params") {
+        return yield* rejectCall({
+          reason: "fetch_key_params_invalid",
+          threadId: input.threadId,
+          missionId: mission?.id,
+          detail: `fetch key "${key}" refused: ${parsed.bound} — refused, not truncated`,
+        });
+      }
+    }
+
+    const wants = (base: string): boolean => fetched.some((entry) => entry.parsed.base === base);
+    const keysFor = (base: string): ReadonlyArray<string> =>
+      fetched.filter((entry) => entry.parsed.base === base).map((entry) => entry.key);
+
+    const unavailable: Array<{ readonly key: string; readonly reason: string }> = [];
+    const refuseKeys = (keys: ReadonlyArray<string>, reason: string) => {
+      for (const key of keys) unavailable.push({ key, reason });
+    };
+
+    // The indicator specs this call named, parsed up front so a bad spec refuses
+    // the call before any read is taken.
+    const indicatorRequests: Array<IndicatorRequest> = [];
+    for (const { key, parsed } of fetched) {
+      if (parsed.base !== "indicators") continue;
+      const request = parseIndicatorSpec(parsed.spec);
+      if (request === null) {
+        return yield* rejectCall({
+          reason: "fetch_key_params_invalid",
+          threadId: input.threadId,
+          missionId: mission?.id,
+          detail: `fetch key "${key}" refused: spec must look like ema20, sma9, rsi14 or vwap`,
+        });
+      }
+      indicatorRequests.push(request);
+    }
+
+    // -- the mission half ---------------------------------------------------------
+    //
+    // Carried only when a mission-side key was named: the mission row is itself
+    // a priced bundle, and a fetch for `candles:5m:20` carries no mission half at
+    // all. The mission-side keys land in the same `mission.*` siblings the scope
+    // path uses, so the encoding is familiar.
+    const wantsMissionHalf =
+      wants("plan") ||
+      wants("watches") ||
+      wants("events") ||
+      wants("journal") ||
+      wants("trades") ||
+      wants("calibration") ||
+      wants("plan_history");
+
+    let missionResult: TradingObservation["mission"] = undefined;
+    let eventsSection: TradingObservation["events"] = undefined;
+    let tradesSection: TradingObservation["trades"] = undefined;
+
+    if (mission === null) {
+      // Market-side keys still answer below; mission state does not exist to be
+      // read, and a missing mission is a reason, never an empty read.
+      refuseKeys(
+        [...MISSION_FETCH_BASES].filter(wants).flatMap(keysFor),
+        "no mission bound to this thread",
+      );
+      // `cost` prices a hypothetical entry at the mission's fundable notional,
+      // so it needs the binding too.
+      refuseKeys(keysFor("cost"), "no mission bound to this thread");
+    } else {
+      if (wantsMissionHalf) {
+        const strategies = yield* TradingStrategyService;
+        const missions = yield* TradingMissionService;
+        const half: {
+          bound: true;
+          mission: TradingMission;
+          mode: ReturnType<typeof readMissionMode>;
+          missionVersion: number;
+          pendingExecutions: ReadonlyArray<unknown>;
+          strategy?: unknown;
+          watches?: ReadonlyArray<unknown>;
+          strategyHistory?: ReadonlyArray<unknown>;
+          journal?: ReadonlyArray<unknown>;
+          targetCalibration?: unknown;
+        } = {
+          bound: true,
+          mission: withMandatePointer(mission),
+          mode: readMissionMode(mission.instruction),
+          missionVersion: yield* missions.getMissionVersion(mission.id).pipe(Effect.orDie),
+          pendingExecutions: yield* missions.listPendingExecutions(mission.id).pipe(Effect.orDie),
+        };
+
+        if (wants("plan")) {
+          const strategy = yield* strategies.getCurrentStrategy(mission.id).pipe(Effect.orDie);
+          if (Option.isNone(strategy)) {
+            refuseKeys(keysFor("plan"), "no plan published yet");
+          } else {
+            half.strategy = strategy.value;
+          }
+        }
+        if (wants("watches")) {
+          // The armed set in full — the `retrospect` shape, because the key is
+          // the model asking to read its registry, not its hot path.
+          half.watches = (yield* strategies.listWatchesForRead(mission.id).pipe(Effect.orDie)).map(
+            (watch) => {
+              const row = toWatchRow(watch);
+              return { ...row, id: watchHandle(row.id) };
+            },
+          );
+        }
+        if (wants("plan_history")) {
+          const versions = yield* strategies.listStrategyVersions(mission.id).pipe(Effect.orDie);
+          if (versions.length === 0) {
+            refuseKeys(keysFor("plan_history"), "no prior plan revisions");
+          } else {
+            half.strategyHistory = versions;
+          }
+        }
+        if (wants("journal")) {
+          half.journal = yield* (yield* TradingJournalService)
+            .list({ missionId: mission.id, limit: TRADING_JOURNAL_TURN_READ_LIMIT })
+            .pipe(Effect.orDie);
+        }
+        if (wants("calibration")) {
+          const calibration = yield* (yield* TradingCalibrationService)
+            .read({ missionId: mission.id })
+            .pipe(Effect.orDie);
+          if (calibration.tradeCount === 0) {
+            refuseKeys(keysFor("calibration"), "no closed trades to grade yet");
+          } else {
+            half.targetCalibration = calibration;
+          }
+        }
+        missionResult = half as TradingObservation["mission"];
+      }
+
+      if (wants("events")) {
+        // The pending-event tail, peeked without claiming: the wake those events
+        // queue for still has to fire (plan 38 §2.2).
+        const entry = fetched.find((candidate) => candidate.parsed.base === "events");
+        const limit = entry !== undefined && entry.parsed.base === "events" ? entry.parsed.n : 5;
+        const inbox = yield* TradingEventInbox;
+        const peeked = yield* inbox.peekPending(mission.id, limit).pipe(Effect.orDie);
+        if (peeked.length === 0) {
+          refuseKeys(keysFor("events"), "no pending events");
+        } else {
+          eventsSection = peeked.map(({ category, occurredAt, summary }) => ({
+            category,
+            occurredAt,
+            summary,
+          }));
+        }
+      }
+
+      if (wants("trades")) {
+        tradesSection = yield* (yield* TradingTradeHistoryService)
+          .read({ missionId: mission.id })
+          .pipe(Effect.orDie);
+      }
+    }
+
+    // -- the market half ----------------------------------------------------------
+    //
+    // Best-effort, exactly like the scope path: an exchange that cannot be read
+    // costs the fields it would have filled and nothing else, while the mission
+    // half above still answers.
+    const marketHalf: FetchMarketSections | { readonly marketReadFailed: string } =
+      yield* Effect.gen(function* () {
+        const gateway = yield* HyperliquidGateway;
+        const sections: FetchMarketSections = {};
+
+        // A bound call reuses `composer.observe` — one gather, the same numbers a
+        // wake quotes — wherever any live-market key was named. The gather is
+        // all-or-nothing (that is the drift guarantee), so the saving versus the
+        // scope path is in the response, not the gather.
+        const needsObserve =
+          mission !== null &&
+          (wants("snapshot") ||
+            wants("book") ||
+            wants("book_full") ||
+            wants("microstructure") ||
+            wants("volatility") ||
+            wants("volatility_htf") ||
+            wants("levels") ||
+            wants("position") ||
+            wants("position_costs") ||
+            wants("account") ||
+            wants("cost") ||
+            indicatorRequests.length > 0);
+        const facts =
+          needsObserve && mission !== null
+            ? yield* Effect.gen(function* () {
+                const composer = yield* TradingWakeupComposer;
+                const strategies = yield* TradingStrategyService;
+                const plan = yield* strategies
+                  .getCurrentStrategy(mission.id)
+                  .pipe(Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())));
+                return yield* composer.observe({
+                  mission,
+                  occurredAt: input.observedAt,
+                  market,
+                  ...(Option.isNone(plan) ? {} : { activeStrategy: plan.value }),
+                });
+              })
+            : null;
+
+        // §4.2 folds the resolved-market line into `snapshot`: the key that answers
+        // "what am I looking at" answers "does it exist" too.
+        if (wants("snapshot")) {
+          const snapshot = facts?.marketSnapshot ?? (yield* gateway.getMarketSnapshot(market));
+          const resolvedMarket = yield* gateway
+            .resolveMarket(market)
+            .pipe(Effect.catchCause(() => Effect.succeed(null)));
+          sections.snapshot = snapshot;
+          if (resolvedMarket !== null) sections.resolvedMarket = resolvedMarket;
+        }
+        const orderBook =
+          facts?.orderBook ??
+          (wants("book") || wants("book_full") || wants("microstructure")
+            ? yield* gateway.getOrderBook(market)
+            : null);
+
+        if (wants("book")) {
+          const summary = orderBook === null ? null : summariseOrderBook(orderBook);
+          if (summary === null) {
+            refuseKeys(keysFor("book"), "the order book could not be read");
+          } else {
+            sections.book = summary;
+          }
+        }
+        if (wants("book_full")) {
+          if (orderBook === null) {
+            refuseKeys(keysFor("book_full"), "the order book could not be read");
+          } else {
+            sections.orderBook = boundOrderBook(orderBook);
+          }
+        }
+        if (wants("microstructure")) {
+          if (facts?.microstructure != null) {
+            sections.microstructure = facts.microstructure;
+          } else if (orderBook !== null) {
+            const snapshot = facts?.marketSnapshot ?? (yield* gateway.getMarketSnapshot(market));
+            const candles = yield* gateway.getMarketHistory({
+              market,
+              interval: input.interval ?? "1m",
+              maxBars: VOLATILITY_LOOKBACK_BARS,
+            });
+            Object.assign(sections, withMicrostructure(orderBook, candles.candles, snapshot));
+          } else {
+            refuseKeys(keysFor("microstructure"), "the order book could not be read");
+          }
+        }
+
+        // Volatility on the frame the mission works (bound) or the interval the
+        // call named, defaulting to 1m (unbound) — the unbound scope path's rule.
+        if (wants("volatility")) {
+          if (facts !== null) {
+            sections.volatility = facts.observedVolatility;
+          } else {
+            const interval = input.interval ?? "1m";
+            const history = yield* gateway.getMarketHistory({
+              market,
+              interval,
+              maxBars: VOLATILITY_LOOKBACK_BARS,
+            });
+            sections.volatility = roundObservedVolatility(
+              measureVolatility({
+                market,
+                interval,
+                candles: history.candles,
+                measuredAt: history.freshness.observedAt,
+              }),
+            );
+          }
+        }
+        if (wants("volatility_htf")) {
+          if (facts !== null) {
+            if (facts.higherTimeframeVolatility === null) {
+              refuseKeys(
+                keysFor("volatility_htf"),
+                "no paired higher timeframe for the runtime interval",
+              );
+            } else {
+              sections.higherTimeframeVolatility = facts.higherTimeframeVolatility;
+            }
+          } else {
+            const interval = input.interval ?? "1m";
+            const paired = FETCH_HIGHER_TIMEFRAME[interval];
+            if (paired === null) {
+              refuseKeys(keysFor("volatility_htf"), `no paired higher timeframe for ${interval}`);
+            } else {
+              const history = yield* gateway.getMarketHistory({
+                market,
+                interval: paired,
+                maxBars: VOLATILITY_LOOKBACK_BARS,
+              });
+              sections.higherTimeframeVolatility = roundObservedVolatility(
+                measureVolatility({
+                  market,
+                  interval: paired,
+                  candles: history.candles,
+                  measuredAt: history.freshness.observedAt,
+                }),
+              );
+            }
+          }
+        }
+
+        if (wants("levels")) {
+          const levelHistory = facts?.levelHistory ?? [];
+          if (levelHistory.length === 0) {
+            refuseKeys(keysFor("levels"), "no level history recorded near the mark");
+          } else {
+            sections.levelHistory = levelHistory;
+          }
+        }
+
+        if (wants("position") && facts !== null) sections.position = facts.position;
+        if (wants("account") && facts !== null) sections.account = facts.accountSnapshot;
+        if (wants("orders") && facts !== null) {
+          sections.openOrders = yield* gateway
+            .getOpenOrders(facts.address as `0x${string}`)
+            .pipe(Effect.catchCause(() => Effect.succeed([])));
+        }
+        if (wants("position_costs")) {
+          if (facts?.positionCosts == null) {
+            refuseKeys(keysFor("position_costs"), "no open position to price");
+          } else {
+            sections.positionCosts = facts.positionCosts;
+          }
+        }
+        if (wants("cost") && facts?.costContext != null) sections.cost = facts.costContext;
+
+        // The candles keys: ONE section, because TradingObservation has one
+        // `candles` field. Keys naming the same interval are served by the widest
+        // of them; a second interval is refused rather than silently dropped.
+        const candleKeys = fetched.filter((entry) => entry.parsed.base === "candles");
+        if (candleKeys.length > 0) {
+          const intervals = [
+            ...new Set(
+              candleKeys.map(
+                (entry) =>
+                  (
+                    entry.parsed as {
+                      readonly base: "candles";
+                      readonly interval: TradingTimeframe;
+                      readonly n: number;
+                    }
+                  ).interval,
+              ),
+            ),
+          ];
+          const interval = intervals[0] as TradingTimeframe;
+          for (const other of intervals.slice(1)) {
+            refuseKeys(
+              candleKeys
+                .filter(
+                  (entry) => (entry.parsed as { readonly interval: string }).interval === other,
+                )
+                .map((entry) => entry.key),
+              `only one candles interval per call (served ${interval})`,
+            );
+          }
+          const served = candleKeys.filter(
+            (entry) => (entry.parsed as { readonly interval: string }).interval === interval,
+          );
+          const bars = Math.max(
+            ...served.map((entry) => (entry.parsed as { readonly n: number }).n),
+          );
+          const history = yield* gateway.getMarketHistory({
+            market,
+            interval,
+            maxBars: Math.max(VOLATILITY_LOOKBACK_BARS, bars),
+          });
+          sections.candles = boundCandles(history, bars);
+        }
+
+        // The indicator readings: computed on the full window, deepened backwards
+        // when the window in hand is shorter than the reading needs — the same
+        // machinery the scope path's `indicators` parameter uses.
+        if (indicatorRequests.length > 0) {
+          const interval =
+            input.interval ??
+            facts?.primaryTimeframe ??
+            runtimeTimeframe(mission?.instruction ?? "");
+          const history = yield* gateway.getMarketHistory({
+            market,
+            interval,
+            maxBars: VOLATILITY_LOOKBACK_BARS,
+          });
+          const needed = indicatorLookbackBars(indicatorRequests);
+          const bars =
+            history.candles.length >= needed
+              ? history.candles
+              : extendHistoryBackwards(
+                  history,
+                  yield* gateway
+                    .getMarketHistory({ market, interval, maxBars: needed })
+                    .pipe(Effect.catchCause(() => Effect.succeed(null))),
+                );
+          sections.indicators = indicatorRequests.map((request) => computeIndicator(request, bars));
+        }
+
+        if (wants("structure") || wants("structure_brief")) {
+          const structure = yield* readMarketStructure({ market, mission });
+          const digested = digestMarketStructure(
+            structure,
+            input.interval ??
+              facts?.primaryTimeframe ??
+              (mission === null ? "1m" : runtimeTimeframe(mission.instruction)),
+          );
+          if (wants("structure")) sections.structure = digested;
+          if (wants("structure_brief")) {
+            const top = [...(digested.candidates ?? [])].sort((a, b) => b.score - a.score)[0];
+            sections.structureBrief = {
+              alignment: digested.alignment,
+              ...(top === undefined ? {} : { topCandidate: top }),
+            };
+          }
+        }
+
+        return sections;
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("trading_look: the fetch market half could not be read", {
+            market,
+            missionId: mission?.id,
+            cause,
+          }).pipe(Effect.as({ marketReadFailed: describeMarketReadFailure(market, cause) })),
+        ),
+      );
+
+    // -- the archive keys (§2.4) --------------------------------------------------
+    //
+    // Absence is an answer with a reason, never a zero.
+    const archive = yield* TradingMarketArchive;
+    const archiveSections: FetchArchiveSections = {};
+    for (const { key, parsed } of fetched) {
+      if (parsed.base === "funding_stats") {
+        const result = yield* archive.fundingStats({
+          coin: market,
+          windowDays: parsed.windowDays,
+          now: input.observedAt,
+        });
+        if (result.status === "unavailable") {
+          refuseKeys([key], result.reason);
+        } else {
+          archiveSections.fundingStats = {
+            windowDays: parsed.windowDays,
+            mean: result.mean,
+            latestRate: result.latestRate,
+            latestTime: result.latestTime,
+            signFlips: result.signFlips,
+            sampleCount: result.sampleCount,
+          };
+        }
+      }
+      if (parsed.base === "funding_series") {
+        const result = yield* archive.fundingSeries({ coin: market, n: parsed.n });
+        if (result.status === "unavailable") {
+          refuseKeys([key], result.reason);
+        } else {
+          archiveSections.fundingSeries = result.rows.map(({ time, fundingRate }) => ({
+            time,
+            fundingRate,
+          }));
+        }
+      }
+      if (parsed.base === "oi_premium") {
+        const result = yield* archive.oiPremium({ coin: market, n: parsed.n });
+        if (result.status === "unavailable") {
+          refuseKeys([key], result.reason);
+        } else {
+          archiveSections.oiPremium = result.rows.map((row) => ({
+            ts: row.ts,
+            openInterest: row.openInterest,
+            premium: row.premium,
+            oraclePx: row.oraclePx,
+            markPx: row.markPx,
+          }));
+        }
+      }
+      if (parsed.base === "book_history") {
+        const result = yield* archive.bookHistory({ coin: market, n: parsed.n });
+        if (result.status === "unavailable") {
+          refuseKeys([key], result.reason);
+        } else {
+          archiveSections.bookHistory = result.rows.map((row) => ({
+            ts: row.ts,
+            bidPx: row.bidPx,
+            askPx: row.askPx,
+            bidDepth5: row.bidDepth5,
+            askDepth5: row.askDepth5,
+          }));
+        }
+      }
+    }
+
+    const observation = {
+      observedAt: input.observedAt,
+      market,
+      ...marketHalf,
+      ...archiveSections,
+      ...(eventsSection === undefined ? {} : { events: eventsSection }),
+      ...(tradesSection === undefined ? {} : { trades: tradesSection }),
+      ...(missionResult === undefined ? {} : { mission: missionResult }),
+      fetched: fetched.map((entry) => entry.key),
+      ...(unavailable.length === 0 ? {} : { unavailable }),
+    } satisfies TradingObservation;
+
+    yield* Effect.logInfo("trading_look: response size", {
+      missionId: mission?.id,
+      fetched: fetched.map((entry) => entry.key),
+      ...measurePartChars(observation),
+    });
+
+    return observation;
+  },
+);
 
 /**
  * Move the stop on an open position, inside policy — plan 24 §5, now

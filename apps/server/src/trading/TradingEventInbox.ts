@@ -84,6 +84,19 @@ export interface TradingEventInboxShape {
   ) => Effect.Effect<boolean, PersistenceSqlError>;
 
   /**
+   * The pending events for `missionId`, oldest first, WITHOUT claiming them.
+   *
+   * A read-only peek for surfaces that report the queue rather than consume
+   * it (`trading_look`'s `events` fetch key, plan 38 §2.2): claiming is the
+   * turn coordinator's to do, and a tool that claimed would eat the wake the
+   * events are queueing for. Rows stay `pending` for whoever runs next.
+   */
+  readonly peekPending: (
+    missionId: string,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<TradingDomainEventSummary>, PersistenceSqlError>;
+
+  /**
    * Mark the events previously claimed (`included_in_run`) as `consumed`.
    *
    * Called when a run completes, closing the `pending → included_in_run →
@@ -194,6 +207,18 @@ const makeTradingEventInbox = Effect.gen(function* () {
       Effect.map((rows) => rows.length > 0),
     );
 
+  const peekPending: TradingEventInboxShape["peekPending"] = (missionId, limit) =>
+    sql<ClaimedRow>`
+      SELECT category, deduplication_key, occurred_at, summary
+      FROM trading_event_inbox
+      WHERE mission_id = ${missionId} AND status = 'pending'
+      ORDER BY occurred_at ASC, event_id ASC
+      LIMIT ${limit}
+    `.pipe(
+      Effect.mapError(sqlFail("peekPending")),
+      Effect.map((rows) => rows.map(toSummary)),
+    );
+
   const markIncludedConsumed: TradingEventInboxShape["markIncludedConsumed"] = (missionId) =>
     sql`
       UPDATE trading_event_inbox SET status = 'consumed'
@@ -220,6 +245,7 @@ const makeTradingEventInbox = Effect.gen(function* () {
     claimPending,
     findSummary,
     isPending,
+    peekPending,
     markIncludedConsumed,
     readQueuedUserMessages,
   } satisfies TradingEventInboxShape;

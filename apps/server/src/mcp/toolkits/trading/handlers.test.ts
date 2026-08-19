@@ -11,6 +11,10 @@ import { computeIndicator } from "@t3tools/trading-contracts/indicators";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
+// @effect-diagnostics nodeBuiltinImport:off - temp dirs for the archive fixture.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { assert, expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -55,6 +59,11 @@ import { TradingStrategyServiceLive } from "../../../trading/TradingStrategyServ
 import { TradingTradeHistoryServiceLive } from "../../../trading/TradingTradeHistoryService.ts";
 import { TradingWatchServiceLive } from "../../../trading/TradingWatchService.ts";
 import { TradingJournalServiceLive } from "../../../trading/TradingJournalService.ts";
+import { TradingEventInbox, TradingEventInboxLive } from "../../../trading/TradingEventInbox.ts";
+import {
+  makeTradingMarketArchive,
+  TradingMarketArchive,
+} from "../../../trading/TradingMarketArchive.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -408,11 +417,28 @@ const exchangeExecutionLayer = (fake: FakeExchange) =>
     submitReduceOnlyAlo: () => Effect.die("not used"),
   } as unknown as HyperliquidExecutionService["Service"]);
 
-const tradingLayerOverExchange = (fake: FakeExchange) =>
+/**
+ * The fake-exchange trading layer, over a temp archive path.
+ *
+ * The default path deliberately does not exist, which is the honest fixture for
+ * "the archiver has not been running": every archive-backed fetch key answers
+ * `unavailable` with a reason (plan 38 §2.4). Tests that want archive data seed
+ * a real file and pass its path.
+ */
+const tradingLayerOverExchange = (
+  fake: FakeExchange,
+  archivePath: string = NodePath.join(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-mcp-archive-")),
+    "market-archive.sqlite",
+  ),
+) =>
   Layer.mergeAll(
     // `trading_look` reaches the exchange directly, so the fake gateway is part
     // of what this layer offers rather than only an input to the services.
     exchangeGatewayLayer(fake),
+    // The fetch path's archive seam and inbox peek (plan 38 §2).
+    Layer.succeed(TradingMarketArchive, makeTradingMarketArchive(archivePath)),
+    TradingEventInboxLive,
     TradingMissionServiceLive,
     TradingStrategyServiceLive,
     TradingWatchServiceLive,
@@ -800,6 +826,7 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
         yield* seedTradingAccount();
         const initial = yield* callTool(BOUND_THREAD, "trading_look", {
           missionId: MISSION_ID,
+          scope: ["market", "position", "mission"],
         });
         assert.equal(initial.result.isError, false);
         // The result rides once. A `structuredContent` copy beside the text was
@@ -836,6 +863,7 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
 
         const after = yield* callTool(BOUND_THREAD, "trading_look", {
           missionId: MISSION_ID,
+          scope: ["mission"],
         });
         assert.equal(after.result.body.mission.missionVersion, 2);
         assert.equal(after.result.body.mission.strategy.because, "overnight range break");
@@ -880,6 +908,7 @@ it.effect("rejects a stale expectedMissionVersion over MCP and leaves the plan i
       // v1 survived the rejected publish untouched.
       const current = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
+        scope: ["mission"],
       });
       assert.equal(current.result.body.mission.missionVersion, 2);
       assert.equal(current.result.body.mission.strategy.because, "v1");
@@ -910,6 +939,7 @@ it.effect("keeps the prior version's active watches working across an accepted p
       // or replaces it.
       const current = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
+        scope: ["mission"],
       });
       const watches = current.result.body.mission.watches;
       assert.equal(watches.length, 1);
@@ -972,7 +1002,10 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
 
         // And the unscoped read is unchanged: the assessment turn still gets
         // everything, retrospect included.
-        const full = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
+        const full = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["market", "candles", "structure", "position", "mission", "retrospect", "trades"],
+        });
         const fullRead = full.result.body;
         assert.notEqual(fullRead.structure, undefined);
         assert.notEqual(fullRead.account, undefined);
@@ -1349,6 +1382,7 @@ it.effect("answers an unbound thread instead of failing every tool on it", () =>
       // mission ended rather than seeing every tool error.
       const unbound = yield* callTool(UNBOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
+        scope: ["mission"],
       });
       assert.notEqual(unbound.result.isError, true);
       assert.equal(unbound.result.body.mission.bound, false);
@@ -1434,7 +1468,10 @@ it.effect("registers a watch before the first plan is published", () =>
       assert.equal(registeredWatch.watch.type, "price_cross");
 
       // The registry rides the one read now (plan 29 step 6.5).
-      const listed = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", {
+        missionId: MISSION_ID,
+        scope: ["mission"],
+      });
       assert.equal(listed.result.isError, false);
       const watches = listed.result.body.mission.watches;
       assert.equal(watches.length, 1);
@@ -1484,7 +1521,7 @@ it.effect("reads a watch back in the vocabulary it can re-arm it with", () =>
         condition: { kind: "giveback", market: "ETH", drawdownUsd: 4 },
       });
 
-      const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["mission"] });
       const readBack = listed.result.body.mission.watches[0].condition;
       assert.deepStrictEqual(readBack, { kind: "giveback", market: "ETH", drawdownUsd: 4 });
 
@@ -1536,7 +1573,7 @@ it.effect("refuses a condition it cannot arm, and arms nothing", () =>
       }
 
       // Nothing was armed and nothing was announced, three refusals later.
-      const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["mission"] });
       assert.equal(listed.result.body.mission.watches.length, 0);
       assert.deepStrictEqual(dispatchedCommands, []);
     }),
@@ -1590,7 +1627,7 @@ it.effect("appends a note and reads it back in the words it was written in", () 
       // And the turn sees it without asking: the journal exists to survive a
       // plan revision, which it cannot do if the model has to spend a call to
       // remember it wrote something.
-      const look = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const look = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["retrospect"] });
       const onTheTurn: ReadonlyArray<string> = look.result.body.mission.journal.map(
         (entry: { note: string }) => entry.note,
       );
@@ -1913,7 +1950,7 @@ it.effect("serves the mission its own completed trades over MCP", () =>
       yield* seedFill({ fillId: "f1", orderId: 100, closedPnl: 12, feeUsd: 1 });
       yield* seedFill({ fillId: "f2", orderId: 200, closedPnl: -4, feeUsd: 1 });
 
-      const read = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const read = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["trades"] });
       assert.equal(read.result.isError, false);
       const history = read.result.body.trades;
 
@@ -1932,7 +1969,7 @@ it.effect("resolves an omitted missionId to the bound mission for a read tool", 
     Effect.gen(function* () {
       // Omitting `missionId` entirely: the call resolves to the one mission the
       // thread is bound to, exactly as naming it would.
-      const omitted = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const omitted = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["mission"] });
       assert.equal(omitted.result.isError, false);
       assert.equal(omitted.result.body.mission.mission.id, MISSION_ID);
     }),
@@ -1952,7 +1989,7 @@ it.effect("resolves an omitted missionId to the bound mission for a write tool",
       assert.equal(published.result.body.outcome, "accepted");
 
       // The bound mission now carries the published plan.
-      const after = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const after = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["mission"] });
       assert.equal(after.result.body.mission.strategy.because, "no missionId supplied");
     }),
   ),
@@ -2000,6 +2037,7 @@ it.effect("decodes a prose-string entry trigger and round-trips it as the object
 
       const after = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
+        scope: ["mission"],
       });
       const triggers = after.result.body.mission.strategy.entry.triggers;
       assert.equal(triggers.length, 1);
@@ -2275,7 +2313,10 @@ it.effect("refuses a target the round trip would eat, and writes nothing", () =>
       assert.isAbove(Number(floor), Number(roundTrip));
 
       // And the plan really was not written: the mission still has none.
-      const after = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
+      const after = yield* callTool(BOUND_THREAD, "trading_look", {
+        missionId: MISSION_ID,
+        scope: ["mission"],
+      });
       assert.equal(after.result.body.mission.missionVersion, 1);
       assert.equal(after.result.body.mission.strategy, undefined);
     }),
@@ -2533,7 +2574,7 @@ it.effect("pins trading_look scope results byte for byte (plan 38 §5.3)", () =>
           if (expected === undefined || expected === "GOLDEN") {
             // Capture mode: print the digest so it can be pinned. A pinned run
             // never takes this branch.
-            console.log(`GOLDEN ${call.label} ${digest} chars=${text.length}`);
+            process.stdout.write(`GOLDEN ${call.label} ${digest} chars=${text.length}\n`);
             continue;
           }
           assert.equal(digest, expected, call.label);

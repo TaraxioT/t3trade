@@ -89,6 +89,14 @@ export const TradingToolRejectionReason = Schema.Literals([
   /** A required exchange read failed. The tool has nothing to answer with, and
       saying so is better than the opaque crash a defect produces. */
   "market_data_unavailable",
+  /** `trading_look` was passed `scope` and `fetch` together (plan 38 §2.1). */
+  "scope_and_fetch_conflict",
+  /** A `fetch` key that is not in the catalog — the detail names the nearest
+      valid key (plan 38 §2.3 rule 4). */
+  "unknown_fetch_key",
+  /** A `fetch` key whose parameters are out of range — the detail names the
+      bound, so the caller can re-ask inside it (plan 38 §2.3 rule 5). */
+  "fetch_key_params_invalid",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
 
@@ -100,6 +108,13 @@ export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToo
     threadId: Schema.String,
     /** The mission the call named, when it named one. */
     missionId: Schema.optional(Schema.String),
+    /**
+     * What to do about it, when the reason alone does not say — the fetch-key
+     * refusals name the key and the nearest valid key or the bound (plan 38
+     * §2.3 rules 4–5), because a refusal the model cannot act on costs the
+     * same turn twice.
+     */
+    detail: Schema.optional(Schema.String),
   },
 ) {
   /**
@@ -110,7 +125,8 @@ export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToo
    */
   override get message(): string {
     const mission = this.missionId === undefined ? "" : `, mission=${this.missionId}`;
-    return `TradingToolRejectedError: ${this.reason} (thread=${this.threadId}${mission})`;
+    const detail = this.detail === undefined ? "" : `: ${this.detail}`;
+    return `TradingToolRejectedError: ${this.reason} (thread=${this.threadId}${mission})${detail}`;
   }
 }
 
@@ -203,7 +219,7 @@ export const TradingBoundMissionResult = Schema.Struct({
    * on the last read of that mission they were 46% of the registry, on the hot
    * path, every turn (plan 35 phase 2).
    */
-  watches: Schema.Array(TradingWatchRow),
+  watches: Schema.optional(Schema.Array(TradingWatchRow)),
   /** Executions written but not yet answered — what a lock rejection means. */
   pendingExecutions: Schema.Array(TradingPendingExecution),
   /**

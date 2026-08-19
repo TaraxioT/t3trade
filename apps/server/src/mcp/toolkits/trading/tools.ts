@@ -46,6 +46,8 @@ import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjust
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { TradingJournalService } from "../../../trading/TradingJournalService.ts";
 import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
+import { TradingEventInbox } from "../../../trading/TradingEventInbox.ts";
+import { TradingMarketArchive } from "../../../trading/TradingMarketArchive.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
 const dependencies = [
@@ -83,6 +85,12 @@ const dependencies = [
   // `trading_look` is the composer's gather step, returned rather than
   // rendered (plan 29 step 6.1).
   TradingWakeupComposer,
+  // `trading_look`'s `events` fetch key peeks the pending tail without
+  // claiming it (plan 38 §2.2).
+  TradingEventInbox,
+  // `trading_look`'s archive-backed fetch keys read funding, OI/premium and
+  // book history from the market archive (plan 38 §2.4).
+  TradingMarketArchive,
   // `trading_journal` appends to and reads back the mission's memory.
   TradingJournalService,
   SqlClient.SqlClient,
@@ -90,7 +98,7 @@ const dependencies = [
 
 export const TradingLookTool = Tool.make("trading_look", {
   description:
-    "The one read, scoped. `scope[]` picks parts — market (mark, book, `microstructure`, `cost`), candles (bars+volatility; `interval`/`bars`; `indicators[]` ema|sma|rsi|vwap), structure (multi-timeframe, scored `candidates[]`), position (flat is size 0, `account`, `openOrders`, costs), mission (mandate, plan, watches), retrospect (history, journal, calibration), trades. Omit `scope` to assess; else scope it. `cost` is context, never a gate. `mission.bound: false` with `lastMission` once ended.",
+    "The one read. `fetch[]` names catalog keys at published sizes — snapshot, book, microstructure, candles:tf:n, indicators:spec (ema20…), volatility(_htf), structure (scored `candidates[]`), structure_brief, levels, position (flat is size 0), position_costs, orders, account, plan, watches, events, journal, trades, calibration, plan_history, cost (context, never a gate), funding/oi/book archive keys. Menu: trading_look({}). `scope[]` unchanged. `mission.bound: false` with `lastMission` once ended.",
   parameters: TradingLookInput,
   success: TradingObservation,
   failure: TradingToolRejectedError,
