@@ -76,6 +76,22 @@ describe("classifyFailure", () => {
     assert.strictEqual(gone.retryable, false);
   });
 
+  // Plan 38 §3.2: of the four derived refusals, two are fixed by saying a
+  // different condition, and two are answered by looking — the level the
+  // market has already passed, and the archive that is not running.
+  it("routes the derived watch refusals by what fixes them", () => {
+    for (const reason of ["derived_window_unavailable", "derived_params_invalid"]) {
+      const refused = classifyFailure({ tag: "TradingWatchRefusal", reason });
+      assert.strictEqual(refused.action, "stand_down", reason);
+      assert.strictEqual(refused.reason, `watch_${reason}`);
+    }
+    for (const reason of ["derived_needs_archive", "derived_already_true"]) {
+      const refused = classifyFailure({ tag: "TradingWatchRefusal", reason });
+      assert.strictEqual(refused.action, "read_state", reason);
+      assert.strictEqual(refused.retryable, false);
+    }
+  });
+
   it("retries a nonce conflict, because the cloid is what the exchange dedupes on", () => {
     const conflict = classifyFailure({ tag: "HyperliquidNonceError" });
     assert.strictEqual(conflict.retryable, true);

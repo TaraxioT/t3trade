@@ -10,14 +10,17 @@ import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
 
 import {
+  DERIVED_METRIC_CATALOG,
+  DerivedMetricName,
   isWatchRefusal,
+  MarketWatch,
   toMarketWatch,
   toWatchCondition,
   WatchCondition,
-  type MarketWatch,
 } from "./watch.ts";
 
 const decode = Schema.decodeUnknownSync(WatchCondition);
+const decodeWatch = Schema.decodeUnknownSync(MarketWatch);
 
 /** One of every persisted predicate, so the inverse is exercised exhaustively. */
 const EVERY_WATCH: ReadonlyArray<MarketWatch> = [
@@ -195,5 +198,227 @@ describe("the condition the model writes", () => {
       type: "order_update",
       cloid: "0xabc",
     });
+  });
+});
+
+describe("the derived condition kind (plan 38 §3)", () => {
+  /** `assert.equal` on a refusal's code, in the shape the other tests use. */
+  const refusalCode = (result: ReturnType<typeof toMarketWatch>): string | undefined =>
+    isWatchRefusal(result) ? result.code : undefined;
+
+  it("round-trips a candle metric with confirm through the persisted encoding", () => {
+    const condition = decode({
+      kind: "derived",
+      market: "ETH",
+      metric: "sigma_distance",
+      params: { metric: "sigma_distance", interval: "5m", period: 20, basis: "mean" },
+      direction: "below",
+      value: -2.5,
+      mode: "cross",
+      confirm: "bar_close",
+    });
+    const armed = toMarketWatch(condition);
+    assert.isFalse(isWatchRefusal(armed));
+    assert.deepEqual(armed, {
+      type: "metric_derived",
+      market: "ETH",
+      metric: "sigma_distance",
+      params: { metric: "sigma_distance", interval: "5m", period: 20, basis: "mean" },
+      direction: "below",
+      value: -2.5,
+      mode: "cross",
+      confirm: "bar_close",
+    });
+    assert.doesNotThrow(() => decodeWatch(armed));
+    assert.deepEqual(toWatchCondition(armed as MarketWatch), condition);
+  });
+
+  it("round-trips a funding metric and fills the mode default as cross", () => {
+    const condition = decode({
+      kind: "derived",
+      market: "ETH",
+      metric: "funding_mean",
+      params: { metric: "funding_mean", windowDays: 7 },
+      direction: "below",
+      value: 0,
+    });
+    const armed = toMarketWatch(condition);
+    assert.isFalse(isWatchRefusal(armed));
+    assert.deepEqual(armed, {
+      type: "metric_derived",
+      market: "ETH",
+      metric: "funding_mean",
+      params: { metric: "funding_mean", windowDays: 7 },
+      direction: "below",
+      value: 0,
+      mode: "cross",
+    });
+    // Reading it back spells the default out, which is the same condition.
+    assert.deepEqual(toWatchCondition(armed as MarketWatch), {
+      kind: "derived",
+      market: "ETH",
+      metric: "funding_mean",
+      params: { metric: "funding_mean", windowDays: 7 },
+      direction: "below",
+      value: 0,
+      mode: "cross",
+    });
+  });
+
+  it("arms a flip metric with no direction or value", () => {
+    const armed = toMarketWatch(
+      decode({
+        kind: "derived",
+        market: "BTC",
+        metric: "funding_sign_flip",
+        params: { metric: "funding_sign_flip", windowDays: 1 },
+      }),
+    );
+    assert.isFalse(isWatchRefusal(armed));
+    assert.deepEqual(armed, {
+      type: "metric_derived",
+      market: "BTC",
+      metric: "funding_sign_flip",
+      params: { metric: "funding_sign_flip", windowDays: 1 },
+      mode: "cross",
+    });
+  });
+
+  // Each way `toMarketWatch` can refuse a derived condition without touching
+  // the archive — plan 38 §3.2's `derived_params_invalid`, one per rule.
+  it("refuses params that do not match the named metric", () => {
+    const refused = toMarketWatch(
+      decode({
+        kind: "derived",
+        market: "ETH",
+        metric: "funding_mean",
+        params: { metric: "sigma_return", interval: "1h", period: 72 },
+        direction: "below",
+        value: 0,
+      }),
+    );
+    assert.equal(refusalCode(refused), "derived_params_invalid");
+  });
+
+  it("refuses a funding_mean with no direction", () => {
+    const refused = toMarketWatch(
+      decode({
+        kind: "derived",
+        market: "ETH",
+        metric: "funding_mean",
+        params: { metric: "funding_mean", windowDays: 7 },
+        value: 0,
+      }),
+    );
+    assert.equal(refusalCode(refused), "derived_params_invalid");
+  });
+
+  it("refuses a direction or value on a flip metric", () => {
+    const refused = toMarketWatch(
+      decode({
+        kind: "derived",
+        market: "BTC",
+        metric: "funding_sign_flip",
+        params: { metric: "funding_sign_flip", windowDays: 1 },
+        direction: "below",
+        value: 0,
+      }),
+    );
+    assert.equal(refusalCode(refused), "derived_params_invalid");
+  });
+
+  it("refuses bar_close confirmation on a non-candle metric", () => {
+    const refused = toMarketWatch(
+      decode({
+        kind: "derived",
+        market: "ETH",
+        metric: "oi_change_rate",
+        params: { metric: "oi_change_rate", windowMinutes: 60 },
+        direction: "above",
+        value: 0.05,
+        confirm: "bar_close",
+      }),
+    );
+    assert.equal(refusalCode(refused), "derived_params_invalid");
+  });
+
+  it("refuses an out-of-range window", () => {
+    const refused = toMarketWatch(
+      decode({
+        kind: "derived",
+        market: "ETH",
+        metric: "funding_mean",
+        params: { metric: "funding_mean", windowDays: 31 },
+        direction: "below",
+        value: 0,
+      }),
+    );
+    assert.equal(refusalCode(refused), "derived_params_invalid");
+  });
+
+  it("refuses a sigma_ratio whose fast window is not the shorter one", () => {
+    const refused = toMarketWatch(
+      decode({
+        kind: "derived",
+        market: "ETH",
+        metric: "sigma_ratio",
+        params: { metric: "sigma_ratio", interval: "15m", fast: 20, slow: 20 },
+        direction: "above",
+        value: 1.5,
+      }),
+    );
+    assert.equal(refusalCode(refused), "derived_params_invalid");
+  });
+
+  it("refuses an evaluateEveryMs outside the clamp", () => {
+    for (const evaluateEveryMs of [59_999, 86_400_001]) {
+      const refused = toMarketWatch(
+        decode({
+          kind: "derived",
+          market: "ETH",
+          metric: "funding_mean",
+          params: { metric: "funding_mean", windowDays: 7 },
+          direction: "below",
+          value: 0,
+          evaluateEveryMs,
+        }),
+      );
+      assert.equal(refusalCode(refused), "derived_params_invalid", `${evaluateEveryMs}`);
+    }
+  });
+
+  // The additive guarantee: every row written before the ninth union member
+  // exists still decodes as-is.
+  it("still decodes a watch_json of every earlier kind unchanged", () => {
+    for (const watch of EVERY_WATCH) {
+      assert.doesNotThrow(() => decodeWatch(watch), `${watch.type} no longer decodes`);
+      assert.deepEqual(decodeWatch(watch), watch);
+    }
+  });
+
+  it("carries one catalog entry per metric, fireOnChange only on the flip", () => {
+    const names = Schema.decodeUnknownSync(DerivedMetricName);
+    const catalogued = DERIVED_METRIC_CATALOG.map((entry) => entry.metric);
+    assert.deepEqual(
+      catalogued.slice().sort(),
+      [
+        "funding_mean",
+        "funding_sign_flip",
+        "funding_cumulative",
+        "sigma_return",
+        "sigma_distance",
+        "sigma_ratio",
+        "ema_distance",
+        "oi_change_rate",
+        "premium_mean",
+        "depth_ratio",
+        "bars_since",
+        "hold_bars",
+      ].sort(),
+    );
+    for (const entry of DERIVED_METRIC_CATALOG) {
+      assert.doesNotThrow(() => names(entry.metric));
+      assert.equal(entry.fireOnChange, entry.metric === "funding_sign_flip");
+    }
   });
 });

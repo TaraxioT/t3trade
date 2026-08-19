@@ -1961,6 +1961,7 @@ const WATCH_TYPE_ICON: Record<WatchRowType, LucideIcon> = {
   pnl_below: Activity,
   pnl_giveback: Activity,
   metric_threshold: Gauge,
+  metric_derived: Gauge,
   order_update: Receipt,
   position_update: Receipt,
 };
@@ -1984,6 +1985,7 @@ function formatWatchFigure(watchType: WatchRowType, value: number): string {
     case "pnl_giveback":
       return formatUsd(value);
     case "metric_threshold":
+    case "metric_derived":
       return String(value);
     case "order_update":
     case "position_update":

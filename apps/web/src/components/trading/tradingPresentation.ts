@@ -108,6 +108,12 @@ export function describeWatch(watch: MarketWatch): string {
       return `${watch.market} unrealised PnL gives back $${watch.drawdownUsd} from its peak`;
     case "metric_threshold":
       return `${watch.market} ${humanizeLiteral(watch.metric)} crosses ${watch.direction} ${watch.value}`;
+    // A derived metric reads the same in prose as a snapshot one; a flip has
+    // no threshold to name.
+    case "metric_derived":
+      return watch.direction === undefined
+        ? `${watch.market} ${humanizeLiteral(watch.metric)} flips`
+        : `${watch.market} ${humanizeLiteral(watch.metric)} ${watch.mode === "level" ? "reaches" : "crosses"} ${watch.direction} ${watch.value}`;
   }
 }
 
@@ -1349,6 +1355,12 @@ function describeWatchCondition(watch: MarketWatch): string {
       // evaluator compares — a formatter that guessed units would lie about
       // at least one metric.
       return `${watch.market} ${humanizeLiteral(watch.metric)} ${watch.direction} ${watch.value}`;
+    case "metric_derived":
+      // Same rule as above: the metric in plain words, the threshold as the
+      // raw number the evaluator compares.
+      return watch.direction === undefined
+        ? `${watch.market} ${humanizeLiteral(watch.metric)} flips`
+        : `${watch.market} ${humanizeLiteral(watch.metric)} ${watch.direction} ${watch.value}`;
   }
 }
 
@@ -1382,6 +1394,10 @@ function readWatchThreshold(watch: MarketWatch): number | null {
       return watch.drawdownUsd;
     case "metric_threshold":
       return watch.value;
+    // A flip metric carries no threshold; everything else on the derived kind
+    // does.
+    case "metric_derived":
+      return watch.value ?? null;
     case "order_update":
     case "position_update":
     case "scheduled_reassessment":
@@ -1403,6 +1419,9 @@ function readWatchDirection(watch: MarketWatch): "above" | "below" | null {
     case "candle_close":
     case "metric_threshold":
       return watch.direction;
+    case "metric_derived":
+      // A flip fires on the change itself, so it waits on no side.
+      return watch.direction ?? null;
     case "pnl_above":
       return "above";
     case "pnl_below":
@@ -1424,7 +1443,9 @@ function readWatchDirection(watch: MarketWatch): "above" | "below" | null {
  */
 function readWatchQualifier(watch: MarketWatch): string | null {
   if (watch.type === "candle_close") return watch.interval;
-  if (watch.type === "metric_threshold") return humanizeLiteral(watch.metric);
+  if (watch.type === "metric_threshold" || watch.type === "metric_derived") {
+    return humanizeLiteral(watch.metric);
+  }
   return null;
 }
 

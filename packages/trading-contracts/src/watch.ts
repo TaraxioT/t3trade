@@ -42,6 +42,229 @@ export const WatchMetricName = Schema.Literals([
 ]);
 export type WatchMetricName = typeof WatchMetricName.Type;
 
+// ---------------------------------------------------------------------------
+// Derived metrics — plan 38 §3
+// ---------------------------------------------------------------------------
+
+/**
+ * The bar intervals a derived metric can be measured on. These are exactly the
+ * intervals the market archive records (see `ARCHIVE_INTERVALS`), which is a
+ * wider set than `TradingTimeframe`: the strategies plan 38 quotes work on
+ * `4h` and `1d` bars, and a watch on a bar the archive does not keep could
+ * never evaluate.
+ */
+export const BarInterval = Schema.Literals(["1m", "5m", "15m", "1h", "4h", "1d"]);
+export type BarInterval = typeof BarInterval.Type;
+
+/**
+ * The twelve metrics the server can compute locally from the market archive,
+ * delivered as a trigger and never as a polled dump — plan 38 §3.3. Named here
+ * so the condition schema, the persisted encoding, and the catalog below all
+ * agree on one list.
+ */
+export const DerivedMetricName = Schema.Literals([
+  "funding_mean",
+  "funding_sign_flip",
+  "funding_cumulative",
+  "sigma_return",
+  "sigma_distance",
+  "sigma_ratio",
+  "ema_distance",
+  "oi_change_rate",
+  "premium_mean",
+  "depth_ratio",
+  "bars_since",
+  "hold_bars",
+]);
+export type DerivedMetricName = typeof DerivedMetricName.Type;
+
+/**
+ * The params a derived condition carries — one struct per metric, each tagged
+ * with its own `metric` literal so the struct can be correlated against the
+ * condition's `metric` field. Never a free bag: a window is a window and a
+ * period is a period, and `toMarketWatch` refuses a mismatch (§3.2).
+ *
+ * Ranges are checked in `toMarketWatch` rather than here so an out-of-range
+ * param is a named refusal, not a schema failure the model cannot read.
+ */
+export const DerivedMetricParams = Schema.Union([
+  Schema.Struct({
+    metric: Schema.Literal("funding_mean"),
+    windowDays: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("funding_sign_flip"),
+    windowDays: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("funding_cumulative"),
+    /** Cumulative funding has no window: it starts where the position did. */
+    sinceEntry: Schema.Literal(true),
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("sigma_return"),
+    interval: BarInterval,
+    period: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("sigma_distance"),
+    interval: BarInterval,
+    period: Schema.Number,
+    basis: Schema.Literals(["mean", "ema"]),
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("sigma_ratio"),
+    interval: BarInterval,
+    fast: Schema.Number,
+    slow: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("ema_distance"),
+    interval: BarInterval,
+    period: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("oi_change_rate"),
+    windowMinutes: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("premium_mean"),
+    windowMinutes: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("depth_ratio"),
+    windowMinutes: Schema.Number,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("bars_since"),
+    interval: BarInterval,
+    sinceWatchId: TradingId,
+  }),
+  Schema.Struct({
+    metric: Schema.Literal("hold_bars"),
+    interval: BarInterval,
+  }),
+]);
+export type DerivedMetricParams = typeof DerivedMetricParams.Type;
+
+/** One entry of {@link DERIVED_METRIC_CATALOG}. */
+export interface DerivedMetricCatalogEntry {
+  readonly metric: DerivedMetricName;
+  /** The valid params, compact enough to render inside a refusal detail. */
+  readonly params: string;
+  readonly source: "funding" | "candles" | "asset_ctx" | "book_summary";
+  readonly cadence: "30m" | "1m" | "bar close";
+  /** Whether the watch fires on a change of the baseline rather than a level. */
+  readonly fireOnChange: boolean;
+}
+
+/**
+ * The derived-metric catalog — plan 38 §3.3. Runtime data for the menu and for
+ * refusal details; NOT the tool descriptions, which stay prose.
+ */
+export const DERIVED_METRIC_CATALOG: ReadonlyArray<DerivedMetricCatalogEntry> = [
+  {
+    metric: "funding_mean",
+    params: "windowDays 1-30",
+    source: "funding",
+    cadence: "30m",
+    fireOnChange: false,
+  },
+  {
+    metric: "funding_sign_flip",
+    params: "windowDays 1-30",
+    source: "funding",
+    cadence: "30m",
+    fireOnChange: true,
+  },
+  {
+    metric: "funding_cumulative",
+    params: "sinceEntry: true",
+    source: "funding",
+    cadence: "30m",
+    fireOnChange: false,
+  },
+  {
+    metric: "sigma_return",
+    params: "interval, period 2-500",
+    source: "candles",
+    cadence: "bar close",
+    fireOnChange: false,
+  },
+  {
+    metric: "sigma_distance",
+    params: "interval, period 2-500, basis mean|ema",
+    source: "candles",
+    cadence: "bar close",
+    fireOnChange: false,
+  },
+  {
+    metric: "sigma_ratio",
+    params: "interval, fast 2-500 < slow 3-1000",
+    source: "candles",
+    cadence: "bar close",
+    fireOnChange: false,
+  },
+  {
+    metric: "ema_distance",
+    params: "interval, period 2-500",
+    source: "candles",
+    cadence: "bar close",
+    fireOnChange: false,
+  },
+  {
+    metric: "oi_change_rate",
+    params: "windowMinutes 1-1440",
+    source: "asset_ctx",
+    cadence: "1m",
+    fireOnChange: false,
+  },
+  {
+    metric: "premium_mean",
+    params: "windowMinutes 1-1440",
+    source: "asset_ctx",
+    cadence: "1m",
+    fireOnChange: false,
+  },
+  {
+    metric: "depth_ratio",
+    params: "windowMinutes 1-1440",
+    source: "book_summary",
+    cadence: "1m",
+    fireOnChange: false,
+  },
+  {
+    metric: "bars_since",
+    params: "interval, sinceWatchId",
+    source: "candles",
+    cadence: "bar close",
+    fireOnChange: false,
+  },
+  {
+    metric: "hold_bars",
+    params: "interval",
+    source: "candles",
+    cadence: "bar close",
+    fireOnChange: false,
+  },
+];
+
+/** The catalog entry for one metric. */
+export function derivedMetricEntry(metric: DerivedMetricName): DerivedMetricCatalogEntry {
+  const entry = DERIVED_METRIC_CATALOG.find((candidate) => candidate.metric === metric);
+  if (entry === undefined) throw new Error(`no catalog entry for derived metric ${metric}`);
+  return entry;
+}
+
+/**
+ * The derived metrics sourced from candles — the only ones `confirm:
+ * "bar_close"` means anything on, because they are the only ones evaluated on
+ * a bar at all (§3.5).
+ */
+export function isDerivedCandleMetric(metric: DerivedMetricName): boolean {
+  return derivedMetricEntry(metric).source === "candles";
+}
+
 export const MarketWatch = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("price_cross"),
@@ -116,6 +339,27 @@ export const MarketWatch = Schema.Union([
     direction: WatchCrossDirection,
     value: Schema.Number,
     interval: Schema.optional(TradingTimeframe),
+  }),
+  /**
+   * Fires when a locally computed archive metric crosses `value` in
+   * `direction` — plan 38 §3.1.
+   *
+   * The ninth and most recent member of the union. Additive: rows of every
+   * earlier type decode unchanged, and no payload migration is involved
+   * (§5.1). `mode` is required here because `toMarketWatch` fills the
+   * `"cross"` default before persisting. `direction`/`value` are absent only
+   * on a `fireOnChange` metric (`funding_sign_flip`), which has no threshold.
+   */
+  Schema.Struct({
+    type: Schema.Literal("metric_derived"),
+    market: TradingMarket,
+    metric: DerivedMetricName,
+    params: DerivedMetricParams,
+    direction: Schema.optional(WatchCrossDirection),
+    value: Schema.optional(Schema.Number),
+    mode: Schema.Literals(["level", "cross"]),
+    confirm: Schema.optional(Schema.Literal("bar_close")),
+    evaluateEveryMs: Schema.optional(Schema.Number),
   }),
 ]);
 export type MarketWatch = typeof MarketWatch.Type;
@@ -214,6 +458,29 @@ export const WatchCondition = Schema.Union([
     value: Schema.Number,
     interval: Schema.optional(TradingTimeframe),
   }),
+  /**
+   * A locally computed archive metric crosses `value` in `direction` — plan
+   * 38 §3.2. The seventh kind, and the generalisation of `metric` beyond the
+   * five snapshot numbers the 2s sweep reads anyway.
+   *
+   * `params` is typed per metric (`DerivedMetricParams`), never a free bag.
+   * `direction`/`value` are required by every metric except the flip metrics
+   * (`funding_sign_flip`), where supplying them is a refusal — a flip has no
+   * threshold. `mode` defaults to `"cross"`; `confirm: "bar_close"` is legal
+   * only on candle-sourced metrics. `evaluateEveryMs` overrides the metric's
+   * natural cadence, clamped to [1 min, 1 day].
+   */
+  Schema.Struct({
+    kind: Schema.Literal("derived"),
+    market: TradingMarket,
+    metric: DerivedMetricName,
+    params: DerivedMetricParams,
+    direction: Schema.optional(WatchCrossDirection),
+    value: Schema.optional(Schema.Number),
+    mode: Schema.optional(Schema.Literals(["level", "cross"])),
+    confirm: Schema.optional(Schema.Literal("bar_close")),
+    evaluateEveryMs: Schema.optional(Schema.Number),
+  }),
 ]);
 export type WatchCondition = typeof WatchCondition.Type;
 
@@ -255,6 +522,32 @@ export const WatchRefusalCode = Schema.Literals([
    * indicators. Twelve of its thirteen market wakes were this.
    */
   "level_mirrors_active_watch",
+  /**
+   * The metric's data is not in the archive at all — the file is missing, or
+   * `known_gaps` covers the window. Start (or restart) the market archiver,
+   * or pick a metric that is not archive-sourced — plan 38 §3.2.
+   */
+  "derived_needs_archive",
+  /**
+   * The requested window exceeds what the archive holds for that series.
+   * Shorten the window; the refusal detail names what the archive has.
+   */
+  "derived_window_unavailable",
+  /**
+   * A derived condition whose params are structurally wrong: `params.metric`
+   * does not match `metric`, a numeric param is missing/non-integer/out of
+   * range, `sigma_ratio` has `fast >= slow`, `direction`/`value` are missing
+   * (or supplied on a flip metric), `confirm` is set on a non-candle metric,
+   * or `evaluateEveryMs` is outside [1 min, 1 day].
+   */
+  "derived_params_invalid",
+  /**
+   * `mode: "level"` and the metric is already beyond the threshold — the
+   * same guard `giveback` has (`giveback_below_current_drawdown`), for the
+   * same reason: a watch true the moment it is written fires on the next
+   * sweep. Use `mode: "cross"` or move the threshold.
+   */
+  "derived_already_true",
 ]);
 export type WatchRefusalCode = typeof WatchRefusalCode.Type;
 
@@ -277,6 +570,127 @@ export interface WatchRefusal {
  * A missing `interval` under `confirm: "close"` is NOT defaulted. Guessing a
  * timeframe there is how a 1h breakout becomes a 1m wick.
  */
+/**
+ * The integer ranges a derived metric's numeric params must sit inside —
+ * plan 38 §3.3. Checked here (not in the schemas) so a violation is a named
+ * refusal the model can read, not a decode failure.
+ */
+const DERIVED_PARAM_RANGES: Readonly<
+  Record<
+    DerivedMetricName,
+    ReadonlyArray<{ readonly field: string; readonly min: number; readonly max: number }>
+  >
+> = {
+  funding_mean: [{ field: "windowDays", min: 1, max: 30 }],
+  funding_sign_flip: [{ field: "windowDays", min: 1, max: 30 }],
+  funding_cumulative: [],
+  sigma_return: [{ field: "period", min: 2, max: 500 }],
+  sigma_distance: [{ field: "period", min: 2, max: 500 }],
+  sigma_ratio: [
+    { field: "fast", min: 2, max: 500 },
+    { field: "slow", min: 3, max: 1_000 },
+  ],
+  ema_distance: [{ field: "period", min: 2, max: 500 }],
+  oi_change_rate: [{ field: "windowMinutes", min: 1, max: 1_440 }],
+  premium_mean: [{ field: "windowMinutes", min: 1, max: 1_440 }],
+  depth_ratio: [{ field: "windowMinutes", min: 1, max: 1_440 }],
+  bars_since: [],
+  hold_bars: [],
+};
+
+/** The shortest and longest a derived cadence override may run. */
+const DERIVED_CADENCE_MIN_MILLIS = 60_000;
+const DERIVED_CADENCE_MAX_MILLIS = 86_400_000;
+
+/** The metrics with no threshold: they fire on a change, not a level. */
+const DERIVED_FLIP_METRICS: ReadonlySet<DerivedMetricName> = new Set(["funding_sign_flip"]);
+
+/**
+ * Validate a `derived` condition's params — pure, no archive access. The
+ * archive-dependent refusals (`derived_needs_archive`,
+ * `derived_window_unavailable`, `derived_already_true`) belong to the handler
+ * and the evaluator, not here.
+ */
+function validateDerivedCondition(
+  condition: Extract<WatchCondition, { kind: "derived" }>,
+): WatchRefusal | undefined {
+  const refuse = (detail: string): WatchRefusal => ({
+    code: "derived_params_invalid",
+    detail,
+  });
+  const entry = derivedMetricEntry(condition.metric);
+
+  // The outer metric and the param struct's own tag must name the same
+  // metric, or the params cannot be trusted to mean anything.
+  if (condition.params.metric !== condition.metric) {
+    return refuse(
+      `params are for ${condition.params.metric}, but the condition names ${condition.metric}; ` +
+        `${condition.metric} takes { ${entry.params} }`,
+    );
+  }
+
+  for (const range of DERIVED_PARAM_RANGES[condition.metric]) {
+    const value = (condition.params as Record<string, unknown>)[range.field as string];
+    if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < range.min ||
+      value > range.max
+    ) {
+      return refuse(
+        `${condition.metric}: ${String(range.field)} must be an integer in ` +
+          `[${range.min}, ${range.max}]; ${condition.metric} takes { ${entry.params} }`,
+      );
+    }
+  }
+
+  // A flip fires on the sign changing; it has no side to be on and no level
+  // to cross. Every other metric is a threshold and needs both.
+  const flip = DERIVED_FLIP_METRICS.has(condition.metric);
+  if (flip) {
+    if (condition.direction !== undefined || condition.value !== undefined) {
+      return refuse(
+        `${condition.metric} fires on the sign flipping, so it takes no direction or value; ` +
+          `it takes { ${entry.params} }`,
+      );
+    }
+  } else if (condition.direction === undefined || condition.value === undefined) {
+    return refuse(`${condition.metric} needs a direction and a value to hold the metric against`);
+  }
+
+  // `confirm: "bar_close"` reuses the candle-close evaluation path, so it only
+  // means something on a metric that is evaluated on a bar at all.
+  if (condition.confirm !== undefined && !isDerivedCandleMetric(condition.metric)) {
+    return refuse(
+      `${condition.metric} is sourced from ${entry.source}, not candles, so it has no bar to ` +
+        `close; confirm: "bar_close" is for the candle metrics`,
+    );
+  }
+
+  if (
+    condition.metric === "sigma_ratio" &&
+    (condition.params as { fast: number; slow: number }).fast >=
+      (condition.params as { fast: number; slow: number }).slow
+  ) {
+    return refuse(
+      `sigma_ratio's fast window must be shorter than its slow window; ` +
+        `${condition.metric} takes { ${entry.params} }`,
+    );
+  }
+
+  if (
+    condition.evaluateEveryMs !== undefined &&
+    (condition.evaluateEveryMs < DERIVED_CADENCE_MIN_MILLIS ||
+      condition.evaluateEveryMs > DERIVED_CADENCE_MAX_MILLIS)
+  ) {
+    return refuse(
+      `evaluateEveryMs must sit in [${DERIVED_CADENCE_MIN_MILLIS}, ${DERIVED_CADENCE_MAX_MILLIS}]`,
+    );
+  }
+
+  return undefined;
+}
+
 export function toMarketWatch(
   condition: WatchCondition,
   /**
@@ -367,6 +781,29 @@ export function toMarketWatch(
             ? {}
             : { interval: condition.interval }),
       };
+
+    case "derived": {
+      const invalid = validateDerivedCondition(condition);
+      if (invalid !== undefined) return invalid;
+      const flip = DERIVED_FLIP_METRICS.has(condition.metric);
+      return {
+        type: "metric_derived",
+        market: condition.market,
+        metric: condition.metric,
+        params: condition.params,
+        ...(flip
+          ? {}
+          : {
+              direction: condition.direction as WatchCrossDirection,
+              value: condition.value as number,
+            }),
+        mode: condition.mode ?? "cross",
+        ...(condition.confirm === undefined ? {} : { confirm: condition.confirm }),
+        ...(condition.evaluateEveryMs === undefined
+          ? {}
+          : { evaluateEveryMs: condition.evaluateEveryMs }),
+      };
+    }
   }
 }
 
@@ -422,6 +859,18 @@ export function toWatchCondition(watch: MarketWatch): WatchCondition {
         direction: watch.direction,
         value: watch.value,
         ...(watch.interval === undefined ? {} : { interval: watch.interval }),
+      };
+    case "metric_derived":
+      return {
+        kind: "derived",
+        market: watch.market,
+        metric: watch.metric,
+        params: watch.params,
+        ...(watch.direction === undefined ? {} : { direction: watch.direction }),
+        ...(watch.value === undefined ? {} : { value: watch.value }),
+        mode: watch.mode,
+        ...(watch.confirm === undefined ? {} : { confirm: watch.confirm }),
+        ...(watch.evaluateEveryMs === undefined ? {} : { evaluateEveryMs: watch.evaluateEveryMs }),
       };
   }
 }

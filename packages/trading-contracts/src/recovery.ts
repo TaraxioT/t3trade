@@ -143,17 +143,18 @@ export function classifyFailure(failure: ClassifiableFailure): FailureRecovery {
         ? permanent("re_quote", `preview_${failure.reason}`)
         : permanent("stand_down", `preview_${failure.reason ?? "rejected"}`);
 
-    // A condition `trading_watch` will not arm (plan 29 step 6.3). Three of the
-    // four are rules about the condition itself — the identical call gets the
-    // identical answer, so the fix is to say a different condition. The fourth
-    // is not about the condition at all: the mission ended underneath the call.
+    // A condition `trading_watch` will not arm (plan 29 step 6.3, plan 38
+    // §3.2). Most are rules about the condition itself — the identical call
+    // gets the identical answer, so the fix is to say a different condition.
+    // The rest are not about the condition being wrong as such: the mission
+    // ended underneath the call; the level is one the position or market has
+    // already passed, which is a fact that changes; or the archive the metric
+    // needs is not running, which the fix is to start — not to stand down on.
     case "TradingWatchRefusal":
-      // Two of these are not about the condition being wrong as such. The
-      // mission ended underneath the call; or the level is one the position
-      // has already passed, which is a fact about the position and changes as
-      // the position does. Both are answered by reading, not by giving up.
       return failure.reason === "mission_not_found" ||
-        failure.reason === "giveback_below_current_drawdown"
+        failure.reason === "giveback_below_current_drawdown" ||
+        failure.reason === "derived_already_true" ||
+        failure.reason === "derived_needs_archive"
         ? permanent("read_state", `watch_${failure.reason}`)
         : permanent("stand_down", `watch_${failure.reason ?? "refused"}`);
 
