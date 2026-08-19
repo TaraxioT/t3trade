@@ -18,12 +18,14 @@ import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
 import {
+  derivedMetricEntry,
   findMirroredLevel,
   isWatchRefusal,
   resolveWatchHandle,
   toMarketWatch,
   toWatchRow,
   watchHandle,
+  type WatchRefusalCode,
 } from "@t3tools/trading-contracts/watch";
 import {
   isJournalRefusal,
@@ -2622,6 +2624,137 @@ const handlers = {
               reason: "level_mirrors_active_watch",
             }),
           };
+        }
+      }
+
+      // -- the derived arm path (plan 38 §3.2) ----------------------------------
+      //
+      // `toMarketWatch` already refused the structural violations
+      // (`derived_params_invalid`); what remains needs live context — the
+      // archive, the position's own clock, the reference watch's firing — so
+      // it happens here as a compute-once-and-refuse, in the giveback guard's
+      // shape. Every derived refusal carries the metric's catalog line: the
+      // menu and the refusals are where the model meets the twelve metrics,
+      // never the tool description (§4.1).
+      if (input.condition.kind === "derived" && derived.type === "metric_derived") {
+        const condition = input.condition;
+        const entry = derivedMetricEntry(condition.metric);
+        const catalogLine = `${condition.metric} { ${entry.params} } · ${entry.source} · ${entry.cadence}`;
+        const refuseDerived = (reason: WatchRefusalCode, detail: string) => ({
+          outcome: "refused" as const,
+          reason,
+          detail: `${detail} — ${catalogLine}`,
+          recovery: classifyFailure({ tag: "TradingWatchRefusal", reason }),
+        });
+
+        // Arm-time context the archive cannot know: sinceEntry metrics are
+        // measured from the position's own `opened_at`, and `bars_since` from
+        // the moment its reference watch fired. The position read is the same
+        // snapshot the giveback guard's drawdown comes from.
+        let positionEntryAt: number | undefined;
+        if (
+          condition.params.metric === "funding_cumulative" ||
+          condition.params.metric === "hold_bars"
+        ) {
+          const sql = yield* SqlClient.SqlClient;
+          const rows = yield* sql<{
+            readonly size: number;
+            readonly opened_at: number | null;
+            readonly observed_at: number;
+          }>`
+            SELECT size, opened_at, observed_at FROM trading_position_snapshots
+            WHERE mission_id = ${mission.id} AND market = ${condition.market}
+          `.pipe(
+            Effect.catchCause(() =>
+              Effect.succeed(
+                [] as ReadonlyArray<{
+                  readonly size: number;
+                  readonly opened_at: number | null;
+                  readonly observed_at: number;
+                }>,
+              ),
+            ),
+          );
+          const row = rows[0];
+          if (row === undefined || row.size === 0) {
+            return refuseDerived(
+              "derived_params_invalid",
+              `${condition.params.metric} is measured since entry, and this mission holds no position on ${condition.market}`,
+            );
+          }
+          positionEntryAt = row.opened_at ?? row.observed_at;
+        }
+
+        let sinceMs: number | undefined;
+        if (condition.params.metric === "bars_since") {
+          const strategies = yield* TradingStrategyService;
+          const existing = yield* strategies
+            .listWatches(mission.id)
+            .pipe(Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<PersistedWatch>)));
+          const matches = resolveWatchHandle(
+            condition.params.sinceWatchId,
+            existing.map((watch) => watch.id),
+          );
+          const reference =
+            matches.length === 1 ? existing.find((watch) => watch.id === matches[0]) : undefined;
+          if (reference === undefined) {
+            return refuseDerived(
+              "derived_params_invalid",
+              `bars_since: no watch ${condition.params.sinceWatchId} in this mission's registry`,
+            );
+          }
+          if (reference.status !== "triggered") {
+            return refuseDerived(
+              "derived_params_invalid",
+              `bars_since: watch ${watchHandle(reference.id)} has not fired yet (status ${reference.status})`,
+            );
+          }
+          sinceMs = reference.updatedAt;
+        }
+
+        // Compute once, before anything is written. The seam's kinds map onto
+        // the refusal codes one to one; `context` is a params problem here
+        // (zero variance, a non-positive base) the model can fix at arm time.
+        const archive = yield* TradingMarketArchive;
+        const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+        const result = yield* archive.derivedMetric({
+          market: condition.market,
+          params: condition.params,
+          now,
+          ...(positionEntryAt === undefined ? {} : { positionEntryAt }),
+          ...(sinceMs === undefined ? {} : { sinceMs }),
+        });
+        if (result.status === "unavailable") {
+          if (result.kind === "archive") {
+            return refuseDerived("derived_needs_archive", result.reason);
+          }
+          if (result.kind === "window") {
+            return refuseDerived("derived_window_unavailable", result.reason);
+          }
+          return refuseDerived("derived_params_invalid", result.reason);
+        }
+
+        // The giveback guard, generalised (§3.2): a `mode: "level"` watch
+        // whose threshold is already satisfied fires on the next sweep and
+        // wakes the run to move the same number. `cross` and the flip metric
+        // never hit this — their first evaluation records a baseline instead.
+        if (
+          derived.mode === "level" &&
+          derived.direction !== undefined &&
+          derived.value !== undefined
+        ) {
+          const satisfied =
+            derived.direction === "above"
+              ? result.value >= derived.value
+              : result.value <= derived.value;
+          if (satisfied) {
+            return refuseDerived(
+              "derived_already_true",
+              `${condition.metric} is already ${derived.direction} ${derived.value} ` +
+                `(observed ${result.value}) — a level watch true the moment it is written fires ` +
+                `on the next sweep; use mode "cross" or move the threshold`,
+            );
+          }
         }
       }
 

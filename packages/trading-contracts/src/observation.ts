@@ -27,6 +27,7 @@ import {
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingTimeframe } from "./strategy.ts";
+import { DERIVED_METRIC_CATALOG } from "./watch.ts";
 import { LevelHistoryEntry, PreviousStructureRead } from "./wakeup.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingGetMissionResult } from "./tools.ts";
@@ -329,7 +330,18 @@ export function renderTradingLookMenu(): string {
     const star = entry.archive === true ? "*" : "";
     return `${entry.key}${suffix}=${entry.chars}${entry.parameterized === undefined ? "" : "/u"}${star}`;
   });
-  return `${entries.join(" ")} — *archive: unavailable+reason, not data; candles: indicators is cheaper`;
+  // The derived-metric catalog (plan 38 §3.3), one line per metric: name,
+  // params, source, cadence. This and the watch refusals are where the model
+  // meets the twelve metrics — the tool descriptions never enumerate them
+  // (§4.1). Rendered from `DERIVED_METRIC_CATALOG` so the menu and the
+  // refusal details quote one list.
+  const derived = DERIVED_METRIC_CATALOG.map(
+    (metric) => `derived:${metric.metric} ${metric.params} · ${metric.source} · ${metric.cadence}`,
+  );
+  return (
+    `${entries.join(" ")} — *archive: unavailable+reason, not data; candles: indicators is ` +
+    `cheaper; ${derived.join(" ")}`
+  );
 }
 
 /** The rendered form of a parameterized key's parameter part. */

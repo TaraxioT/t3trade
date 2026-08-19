@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
 
+import { DERIVED_METRIC_CATALOG } from "./watch.ts";
 import {
   echoedBarsForLook,
   nearestTradingLookKey,
@@ -109,8 +110,12 @@ describe("the fetch catalog", () => {
 describe("renderTradingLookMenu", () => {
   const menu = renderTradingLookMenu();
 
-  it("stays in the 360–540 band, targeted at ~450", () => {
-    assert.isTrue(menu.length >= 360 && menu.length <= 540, `menu is ${menu.length} chars`);
+  // Plan 38 phase 3: the menu grew the derived-metric catalog (§3.3), one
+  // line per metric rendered from `DERIVED_METRIC_CATALOG`. Measured 1,252
+  // chars — ~540 of priced keys plus ~710 of derived lines. The band keeps a
+  // deliberate ceiling so a twelfth-again of prose has to say so here.
+  it("stays in the 1,150–1,350 band, targeted at ~1,250", () => {
+    assert.isTrue(menu.length >= 1_150 && menu.length <= 1_350, `menu is ${menu.length} chars`);
   });
 
   it("prices every key and stars the archive keys", () => {
@@ -125,6 +130,12 @@ describe("renderTradingLookMenu", () => {
   it("names indicators as the cheaper alternative to candles", () => {
     assert.include(menu, "indicators");
     assert.include(menu, "cheaper");
+  });
+
+  it("lists every derived metric the watch kind can arm (plan 38 §3.3)", () => {
+    for (const metric of DERIVED_METRIC_CATALOG) {
+      assert.include(menu, `derived:${metric.metric} `);
+    }
   });
 });
 

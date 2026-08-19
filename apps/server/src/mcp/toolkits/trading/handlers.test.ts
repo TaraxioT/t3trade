@@ -11,6 +11,7 @@ import {
   TRADING_LOOK_CATALOG,
   TRADING_LOOK_FLAT_BAR_CAP,
 } from "@t3tools/trading-contracts/observation";
+import { DERIVED_METRIC_CATALOG } from "@t3tools/trading-contracts/watch";
 import { computeIndicator } from "@t3tools/trading-contracts/indicators";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -2542,6 +2543,220 @@ it.effect("serves the cost of the position it is holding", () => {
   );
 });
 
+// -- plan 38 phase 3: the derived arm path ---------------------------------------
+//
+// The handler's derived arm is a compute-once-and-refuse against the archive
+// (§3.2): every refusal code has a case here, and the ok path persists the
+// ninth member of the `MarketWatch` union. The archive fixture is the
+// read.test.ts convention — a temp file seeded through the writers, with
+// hand-known values inside. A flat 0.00001 hourly rate makes the trailing
+// 1-day mean exactly 0.00001.
+
+/** A temp archive seeded with 48 hourly funding rows at a flat 0.00001. */
+const seededFundingArchive = (): string => {
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-derived-arm-"));
+  const archivePath = NodePath.join(dir, "market-archive.sqlite");
+  const db = openArchiveDatabase(archivePath);
+  const HOUR = 3_600_000;
+  // @effect-diagnostics globalDate:off - the live-clock fixture seeds archive rows around a real epoch.
+  const now = Date.now();
+  upsertFunding(
+    db,
+    Array.from({ length: 48 }, (_, i) => ({
+      coin: "ETH",
+      time: now - (48 - i) * HOUR,
+      fundingRate: 0.00001,
+      premium: 0.0000125,
+    })),
+  );
+  db.close();
+  return archivePath;
+};
+
+it.live("arms a derived funding_mean from a seeded archive", () => {
+  const archivePath = seededFundingArchive();
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "derived",
+            market: "ETH",
+            metric: "funding_mean",
+            params: { metric: "funding_mean", windowDays: 1 },
+            direction: "below",
+            value: 0,
+            mode: "cross",
+          },
+        });
+        assert.equal(armed.result.isError, false);
+        assert.equal(armed.result.body.outcome, "armed");
+        // The persisted predicate is the ninth union member, with the
+        // condition's own vocabulary carried beside it for re-arm.
+        const watch = armed.result.body.watch.watch;
+        assert.equal(watch.type, "metric_derived");
+        assert.equal(watch.metric, "funding_mean");
+        assert.deepEqual(watch.params, { metric: "funding_mean", windowDays: 1 });
+        assert.equal(watch.direction, "below");
+        assert.equal(watch.value, 0);
+        assert.equal(watch.mode, "cross");
+      }),
+    tradingLayerOverExchange(makeFakeExchange(), archivePath),
+  );
+});
+
+it.live(
+  "refuses a level-mode derived watch that is already true, naming the observed value",
+  () => {
+    const archivePath = seededFundingArchive();
+    return withMcpServer(
+      ({ callTool }) =>
+        Effect.gen(function* () {
+          // The seeded mean is 0.00001, so "below 1" is true the moment it is
+          // written — the giveback guard's instant-refire bug, generalised.
+          const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+            missionId: MISSION_ID,
+            condition: {
+              kind: "derived",
+              market: "ETH",
+              metric: "funding_mean",
+              params: { metric: "funding_mean", windowDays: 1 },
+              direction: "below",
+              value: 1,
+              mode: "level",
+            },
+          });
+          assert.equal(refused.result.isError, false);
+          assert.equal(refused.result.body.outcome, "refused");
+          assert.equal(refused.result.body.reason, "derived_already_true");
+          assert.include(refused.result.body.detail, "already below 1");
+          assert.include(refused.result.body.detail, "observed 0.00001");
+          // Every derived refusal carries the metric's catalog line (§4.1).
+          assert.include(refused.result.body.detail, "funding_mean { windowDays 1-30 }");
+        }),
+      tradingLayerOverExchange(makeFakeExchange(), archivePath),
+    );
+  },
+);
+
+it.live("refuses a window the archive holdings do not cover", () => {
+  const archivePath = seededFundingArchive();
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        // 48 hours of holdings against a 30-day window: the refusal names
+        // what the archive actually holds, never a zero.
+        const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "derived",
+            market: "ETH",
+            metric: "funding_mean",
+            params: { metric: "funding_mean", windowDays: 30 },
+            direction: "below",
+            value: 0,
+            mode: "cross",
+          },
+        });
+        assert.equal(refused.result.isError, false);
+        assert.equal(refused.result.body.outcome, "refused");
+        assert.equal(refused.result.body.reason, "derived_window_unavailable");
+        assert.include(refused.result.body.detail, "funding holdings for ETH start at");
+      }),
+    tradingLayerOverExchange(makeFakeExchange(), archivePath),
+  );
+});
+
+it.effect("refuses a derived arm with derived_needs_archive when the archive is absent", () =>
+  withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        // The default tradingLayerOverExchange archive path is a temp dir with
+        // no file in it — the honest "the archiver has not been running"
+        // fixture, and the one state that must never degrade to a zero (§5.3).
+        const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "derived",
+            market: "ETH",
+            metric: "funding_mean",
+            params: { metric: "funding_mean", windowDays: 1 },
+            direction: "below",
+            value: 0,
+            mode: "cross",
+          },
+        });
+        assert.equal(refused.result.isError, false);
+        assert.equal(refused.result.body.outcome, "refused");
+        assert.equal(refused.result.body.reason, "derived_needs_archive");
+        assert.include(refused.result.body.detail, "archive file not found");
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);
+
+it.effect("refuses handler-level derived params violations by name", () =>
+  withMcpServer(
+    ({ callTool, seedActiveWatch }) =>
+      Effect.gen(function* () {
+        // A reference watch the mission holds but that has not fired.
+        yield* seedActiveWatch("watch_derived_ref_unfired");
+
+        const notFound = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "derived",
+            market: "ETH",
+            metric: "bars_since",
+            params: { metric: "bars_since", interval: "5m", sinceWatchId: "watch_nope" },
+            direction: "above",
+            value: 3,
+          },
+        });
+        assert.equal(notFound.result.body.outcome, "refused");
+        assert.equal(notFound.result.body.reason, "derived_params_invalid");
+        assert.include(notFound.result.body.detail, "no watch watch_nope");
+
+        const notFired = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "derived",
+            market: "ETH",
+            metric: "bars_since",
+            params: {
+              metric: "bars_since",
+              interval: "5m",
+              sinceWatchId: "watch_derived_ref_unfired",
+            },
+            direction: "above",
+            value: 3,
+          },
+        });
+        assert.equal(notFired.result.body.outcome, "refused");
+        assert.equal(notFired.result.body.reason, "derived_params_invalid");
+        assert.include(notFired.result.body.detail, "has not fired yet");
+
+        // A sinceEntry metric against a mission holding no position.
+        const flat = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "derived",
+            market: "ETH",
+            metric: "funding_cumulative",
+            params: { metric: "funding_cumulative", sinceEntry: true },
+            direction: "above",
+            value: 0.001,
+          },
+        });
+        assert.equal(flat.result.body.outcome, "refused");
+        assert.equal(flat.result.body.reason, "derived_params_invalid");
+        assert.include(flat.result.body.detail, "holds no position");
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);
+
 // -- plan 38 phase 2c: the scope[] compatibility pin ---------------------------
 //
 // `fetch[]` ships alongside `scope[]` (§5.3), and the compatibility guarantee is
@@ -2694,13 +2909,22 @@ it.effect("returns the menu when fetch is absent, and when it is empty", () =>
         // The menu is the whole answer: nothing else rides the catalog call.
         assert.equal(menu.result.body.mission, undefined);
         assert.equal(menu.result.body.snapshot, undefined);
+        // Plan 38 phase 3: the menu carries all twelve derived metrics, one
+        // line each — this and the watch refusals are where the model meets
+        // them, never the tool descriptions (§4.1).
+        for (const metric of DERIVED_METRIC_CATALOG) {
+          assert.include(menu.result.body.menu, `derived:${metric.metric} `);
+        }
+        assert.equal((menu.result.body.menu.match(/derived:/g) ?? []).length, 12);
       }
       // The actual measured size of the menu — the number the phase report
-      // carries, asserted so a catalog edit that grows it past the plan's
-      // ~450-char budget has to say so here.
+      // carries, asserted so a catalog edit that grows it past the documented
+      // budget has to say so here. Plan 38 phase 3 added the derived-metric
+      // catalog (§3.3): measured 1,254 (JSON-stringified), ~540 of priced
+      // keys plus ~710 of derived lines.
       const measured = sectionChars(renderTradingLookMenu());
       process.stdout.write(`MENU_CHARS ${measured}\n`);
-      assert.isAtMost(measured, 550);
+      assert.isAtMost(measured, 1_350);
     }),
   ),
 );
