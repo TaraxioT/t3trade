@@ -749,6 +749,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
 @keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
 .mission-level-flash { animation: mission-level-flash 1.4s ease-out 2 forwards; opacity: 0; }
+.mission-mark-pulse { animation: mission-mark-pulse 1.6s ease-in-out infinite; }
 .mission-marker-slide { transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1), right 500ms cubic-bezier(0.22, 1, 0.36, 1); }
 /* The line draws itself, left to right, once. A pathLength of 1 normalises
    every polyline to a unit length, so one keyframe serves each segment
@@ -768,7 +769,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
    timeline's business. */
 @keyframes mission-chip-fire { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-armed) 45%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
 .mission-chip-fire { animation: mission-chip-fire 700ms cubic-bezier(0, 0, 0.2, 1) 1; }
-@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } .mission-marker-slide { transition: none; } .mission-line-draw { stroke-dasharray: none; animation: none; } .mission-plot-settle { animation: none; } .mission-stub-draw { animation: none; } .mission-chip-fire { animation: none; } }`}</style>
+@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } .mission-mark-pulse { animation: none; } .mission-marker-slide { transition: none; } .mission-line-draw { stroke-dasharray: none; animation: none; } .mission-plot-settle { animation: none; } .mission-stub-draw { animation: none; } .mission-chip-fire { animation: none; } }`}</style>
       <svg
         viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${CHART_VIEWBOX_HEIGHT}`}
         preserveAspectRatio="none"
@@ -1228,10 +1229,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               // The translate lives in the keyframes, not in a class: the
               // animation drives `transform`, so a utility that also set it
               // would simply be overwritten on the first frame.
-              className="absolute left-1/2 top-1/2 size-[14px] rounded-full border"
+              className="absolute left-1/2 top-1/2 size-[14px] rounded-full border mission-mark-pulse"
               style={{
                 borderColor: segmentColor,
-                animation: "mission-mark-pulse 1.6s ease-in-out infinite",
               }}
             />
           ) : null}
