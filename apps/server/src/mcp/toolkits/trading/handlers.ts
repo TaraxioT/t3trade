@@ -2672,7 +2672,7 @@ const handlers = {
       // archive, the position's own clock, the reference watch's firing — so
       // it happens here as a compute-once-and-refuse, in the giveback guard's
       // shape. Every derived refusal carries the metric's catalog line: the
-      // menu and the refusals are where the model meets the twelve metrics,
+      // menu and the refusals are where the model meets the thirteen metrics,
       // never the tool description (§4.1).
       if (input.condition.kind === "derived" && derived.type === "metric_derived") {
         const condition = input.condition;
