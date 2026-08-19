@@ -713,6 +713,34 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     }
   }
 
+  /*
+   * The chart's level and time chips (phase 1): small glass pills docked in
+   * the price and axis gutters. Same material as the panel's own panes — the
+   * tint, the blur, the hairline, the lit top edge — at chip scale, so the
+   * cockpit reads as one instrument rather than cards plus widgets.
+   */
+  .mission-chip {
+    background: color-mix(in srgb, var(--card) 55%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%);
+  }
+
+  .dark .mission-chip {
+    background: color-mix(in srgb, var(--card) 62%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
+  }
+
+  /* Solid fallback: with transparency reduced, the blur and the tinted fill
+     both become an opaque surface. Legibility of the price is the point of
+     the chip, and neither frosted effect may stand in front of it. */
+  @media (prefers-reduced-transparency: reduce) {
+    .mission-chip,
+    .mission-panel-glass {
+      background: var(--card);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+
   .alert-glass {
     --alert-glass-tint: transparent;
 

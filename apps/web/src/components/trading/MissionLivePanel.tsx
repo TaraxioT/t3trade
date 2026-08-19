@@ -133,6 +133,16 @@ import { cn } from "~/lib/utils";
 import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
+import {
+  composeHeartbeatSentence,
+  type HeartbeatInput,
+  type HeartbeatWatch,
+} from "./missionHeartbeat";
+import {
+  isMomentSelected,
+  useMissionSelection,
+  type ChartEventSelection,
+} from "./missionSelectionStore";
 import { useMissionPlanRevision, type MissionPlanRevision } from "./useMissionPlanRevision";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -168,6 +178,7 @@ import {
   formatSignedUsd,
   formatSize,
   formatUsd,
+  humanizeLiteral,
   hyperliquidTradeUrl,
   isArmedRow,
   isMissionComplete,
@@ -567,6 +578,89 @@ export function MissionLivePanel({
   // claims placement is suspended — waits for a much older read.
   const delayedRead = describeDelayedRead(mission, nowMillis);
 
+  // --- The heartbeat sentence (phase 2). -------------------------------------
+  //
+  // Derived entirely from what the projection already pushes: the status, the
+  // plan, the armed watches and the position. The sentence itself is composed
+  // by the pure function; this block only decides which shape of input the
+  // mission is in and which armed watch speaks for it.
+  const heartbeatState: HeartbeatInput["state"] =
+    mission.status === "blocked"
+      ? "blocked"
+      : state === "planning"
+        ? "planning"
+        : position !== null
+          ? "holding"
+          : plan?.isStandAside === true
+            ? "stand_aside"
+            : "armed";
+  // The armed watch the sentence speaks for: the nearest price-level watch to
+  // the mark, preferring a candle-close (its interval is the promise's own
+  // wording) over a bare touch. That interval is read from the watch's data —
+  // the sentence says "a 5m candle" because the watch IS on 5m bars.
+  let heartbeatWatch: HeartbeatWatch | null = null;
+  let heartbeatWatchDistance = Number.POSITIVE_INFINITY;
+  let heartbeatWatchPreference = 2;
+  for (const persisted of mission.watches) {
+    if (persisted.status !== "active") continue;
+    const watch = persisted.watch;
+    if (watch.type !== "candle_close" && watch.type !== "price_cross") continue;
+    const preference = watch.type === "candle_close" ? 0 : 1;
+    const distance = markPrice === null ? 0 : Math.abs(watch.price - markPrice);
+    if (
+      preference < heartbeatWatchPreference ||
+      (preference === heartbeatWatchPreference && distance < heartbeatWatchDistance)
+    ) {
+      heartbeatWatchPreference = preference;
+      heartbeatWatchDistance = distance;
+      heartbeatWatch =
+        watch.type === "candle_close"
+          ? {
+              kind: "candle_close",
+              direction: watch.direction,
+              price: watch.price,
+              intervalLabel: watch.interval,
+            }
+          : {
+              kind: "price_cross",
+              direction: watch.direction,
+              price: watch.price,
+              intervalLabel: null,
+            };
+    }
+  }
+  const heartbeatSentence = composeHeartbeatSentence({
+    state: heartbeatState,
+    market: mission.market,
+    watch: heartbeatWatch,
+    nextCheckInAt: nextReassessmentAt,
+    position:
+      position === null
+        ? null
+        : {
+            size: position.size,
+            entryPrice: position.entryPrice ?? null,
+            unrealisedPnl: position.unrealisedPnl,
+            targetPrice,
+            stopPrice,
+          },
+    because: plan?.because ?? null,
+    blockedReason: mission.blockedReason === null ? null : humanizeLiteral(mission.blockedReason),
+    nowMillis,
+  });
+
+  // --- The shared selection (phase 3): one store, both directions. ----------
+  const selection = useMissionSelection((store) => store.selected);
+  const selectPanelEvent = useMissionSelection((store) => store.select);
+  const clearPanelEvent = useMissionSelection((store) => store.clear);
+  const hoverPanelEvent = (event: { id: string; atMillis: number } | null): void => {
+    if (event === null) {
+      clearPanelEvent("panel");
+      return;
+    }
+    selectPanelEvent({ eventId: event.id, atMillis: event.atMillis, source: "panel" });
+  };
+
   // --- complete: the result, one line. --------------------------------------
   // The full review — the post-mortem chart and the fee/PnL breakdown — is the
   // completion summary card in the timeline. Repeating it here would put two
@@ -634,11 +728,26 @@ export function MissionLivePanel({
         nowMillis={nowMillis}
         recentlyFired={recentlyFired}
         droppedConditions={droppedConditions}
+        selection={selection}
+        onHoverEvent={hoverPanelEvent}
       />
     );
 
   return (
     <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_SHELL_CLASS}>
+      {/* The heartbeat (phase 2): what the agent is doing, in one sentence,
+          above everything else. This strip is the single answer to "what is
+          the model doing" — composed by the pure function, times as clock
+          times, no field names. The plan's full narrative rides along as the
+          hover, so the sentence stays short and the reason stays one
+          pointer away. */}
+      <p
+        data-testid="mission-heartbeat"
+        title={plan?.because ?? undefined}
+        className="px-1 text-[13.5px] leading-snug text-foreground"
+      >
+        {heartbeatSentence}
+      </p>
       {/* Two cards with air between them, not two halves of one box. The chart
           is the picture and the readout is the instrument beside it; welding
           them into a single bordered surface made a candle chart and a column
@@ -677,6 +786,8 @@ export function MissionLivePanel({
             onLevelDragEnd={onLevelDragEnd}
             refusedStop={revision.refusedStop}
             positionSize={position?.size ?? null}
+            overflowCount={droppedConditions}
+            firedWatchIds={[...recentlyFired]}
           />
           <RiskRewardBar
             riskUsd={plan?.maxLossUsd ?? null}
@@ -745,7 +856,7 @@ export function MissionLivePanel({
                       pnlToneClass,
                     )}
                   >
-                    {formatSignedUsd(position.unrealisedPnl)}
+                    <AnimatedUsd value={position.unrealisedPnl} />
                   </span>
                 </span>
               )}
@@ -1676,6 +1787,8 @@ function ChartSlot(props: {
   readonly onLevelDragEnd: (kind: ChartLevelKind, price: number) => void;
   readonly refusedStop: { readonly planPrice: number; readonly detail: string } | null;
   readonly positionSize: number | null;
+  readonly overflowCount?: number | null;
+  readonly firedWatchIds?: ReadonlyArray<string>;
 }): ReactNode {
   const { data, isLoading, error } = props;
 
@@ -1739,6 +1852,8 @@ function ChartSlot(props: {
               }
         }
         positionSize={props.positionSize}
+        overflowCount={props.overflowCount ?? null}
+        firedWatchIds={props.firedWatchIds}
         className={CHART_HEIGHT_CLASS}
       />
     );
@@ -1820,13 +1935,47 @@ function WatchStream({
   nowMillis,
   recentlyFired,
   droppedConditions,
+  selection,
+  onHoverEvent,
 }: {
   readonly rows: ReadonlyArray<WatchStreamItem>;
   readonly nowMillis: number;
   readonly recentlyFired: ReadonlySet<string>;
   /** Armed levels the chart could not draw, reported once under the list. */
   readonly droppedConditions: number;
+  /** The shared chart/panel selection, for the two-way hover (phase 3). */
+  readonly selection: ChartEventSelection | null;
+  readonly onHoverEvent: (event: { id: string; atMillis: number } | null) => void;
 }): ReactNode {
+  // The scroll container, so a chart-side selection can scroll its card into
+  // view inside the stream's own scroller — never the window.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Whether a row is the selection's card: by id (a chip named this watch) or
+  // by moment (a chart tick named the time it settled).
+  const rowIsSelected = (item: WatchStreamItem): boolean => {
+    if (selection === null) return false;
+    if (selection.eventId === item.id) return true;
+    if (item.kind === "watch") return isMomentSelected(selection, item.atMillis);
+    return item.members.some((member) => isMomentSelected(selection, member.atMillis));
+  };
+
+  // A selection made on the CHART scrolls to its card here. One effect, keyed
+  // on the selection: no listeners, no loops.
+  useEffect(() => {
+    if (selection?.source !== "chart" || scrollRef.current === null) return;
+    const target = rows.find(
+      (item) =>
+        item.id === selection.eventId ||
+        (item.kind === "watch" && isMomentSelected(selection, item.atMillis)) ||
+        (item.kind === "group" &&
+          item.members.some((member) => isMomentSelected(selection, member.atMillis))),
+    );
+    if (target === undefined) return;
+    const element = scrollRef.current.querySelector(`[data-watch-row="${CSS.escape(target.id)}"]`);
+    element?.scrollIntoView({ block: "nearest", behavior: "instant" });
+  }, [selection, rows]);
+
   // A row that just fired is held among the armed rows for a beat: the dot
   // becomes a tick in place rather than the row jumping down the list.
   const held = (item: WatchStreamItem) => isArmedRow(item) || recentlyFired.has(item.id);
@@ -1841,7 +1990,7 @@ function WatchStream({
 
   return (
     <div data-testid="mission-watch-stream" className="border-t border-border/40 pt-2.5 pb-1">
-      <div className="max-h-[220px] overflow-y-auto overscroll-contain">
+      <div ref={scrollRef} className="max-h-[220px] overflow-y-auto overscroll-contain">
         {armed.length === 0 ? null : (
           // Sticky, on a surface that actually hides what slides under it. The
           // panel is a translucent card, so a translucent strip inside it let
@@ -1856,6 +2005,8 @@ function WatchStream({
                   item={item}
                   nowMillis={nowMillis}
                   justFired={recentlyFired.has(item.id)}
+                  isSelected={rowIsSelected(item)}
+                  onHoverEvent={onHoverEvent}
                 />
               ))}
             </div>
@@ -1869,7 +2020,14 @@ function WatchStream({
         )}
         <div className="divide-y divide-border/15">
           {settled.map((item) => (
-            <WatchStreamItemRow key={item.id} item={item} nowMillis={nowMillis} justFired={false} />
+            <WatchStreamItemRow
+              key={item.id}
+              item={item}
+              nowMillis={nowMillis}
+              justFired={false}
+              isSelected={rowIsSelected(item)}
+              onHoverEvent={onHoverEvent}
+            />
           ))}
         </div>
         {earlierSettled === 0 ? null : (
@@ -2016,10 +2174,18 @@ function WatchStreamEntry({
   row,
   nowMillis,
   justFired,
+  isSelected,
+  hoverProps,
 }: {
   readonly row: WatchStreamRow;
   readonly nowMillis: number;
   readonly justFired: boolean;
+  readonly isSelected: boolean;
+  readonly hoverProps?: {
+    readonly "data-watch-row": string;
+    readonly onMouseEnter: () => void;
+    readonly onMouseLeave: () => void;
+  };
 }): ReactNode {
   const armed = isArmedRow(row);
   const format = (value: number) => formatWatchFigure(row.watchType, value);
@@ -2094,11 +2260,15 @@ function WatchStreamEntry({
     </>
   );
 
-  const rowClass = cn(BAND_PAD_CLASS, "flex items-baseline gap-x-2 py-2 font-mono text-[11.5px]");
+  const rowClass = cn(
+    BAND_PAD_CLASS,
+    "flex items-baseline gap-x-2 py-2 font-mono text-[11.5px]",
+    isSelected && "bg-armed/10",
+  );
 
   if (!hasDetail) {
     return (
-      <div className={rowClass} aria-label={label}>
+      <div className={rowClass} aria-label={label} {...hoverProps}>
         {summary}
       </div>
     );
@@ -2112,6 +2282,7 @@ function WatchStreamEntry({
           rowClass,
           "cursor-pointer list-none select-none marker:hidden hover:bg-foreground/[0.02]",
         )}
+        {...hoverProps}
       >
         {summary}
       </summary>
@@ -2140,15 +2311,35 @@ function WatchStreamItemRow({
   item,
   nowMillis,
   justFired,
+  isSelected,
+  onHoverEvent,
 }: {
   readonly item: WatchStreamItem;
   readonly nowMillis: number;
   readonly justFired: boolean;
+  readonly isSelected: boolean;
+  readonly onHoverEvent: (event: { id: string; atMillis: number } | null) => void;
 }): ReactNode {
+  // Phase 3's two-way join: hovering a card claims the selection (its chip or
+  // tick lights on the chart), and the row carries the id the chart scrolls
+  // back to when the hover starts over there.
+  const hoverProps = {
+    "data-watch-row": item.id,
+    onMouseEnter: () => onHoverEvent({ id: item.id, atMillis: item.atMillis }),
+    onMouseLeave: () => onHoverEvent(null),
+  };
   if (item.kind === "group") {
-    return <WatchGroupEntry group={item} nowMillis={nowMillis} />;
+    return <WatchGroupEntry group={item} nowMillis={nowMillis} hoverProps={hoverProps} />;
   }
-  return <WatchStreamEntry row={item} nowMillis={nowMillis} justFired={justFired} />;
+  return (
+    <WatchStreamEntry
+      row={item}
+      nowMillis={nowMillis}
+      justFired={justFired}
+      isSelected={isSelected}
+      hoverProps={hoverProps}
+    />
+  );
 }
 
 /**
@@ -2161,9 +2352,15 @@ function WatchStreamItemRow({
 function WatchGroupEntry({
   group,
   nowMillis,
+  hoverProps,
 }: {
   readonly group: WatchStreamGroup;
   readonly nowMillis: number;
+  readonly hoverProps: {
+    readonly "data-watch-row": string;
+    readonly onMouseEnter: () => void;
+    readonly onMouseLeave: () => void;
+  };
 }): ReactNode {
   const age = formatAge(Math.max(0, nowMillis - group.atMillis));
   const summary = `${group.count} watches ${group.outcomeLabel}`;
@@ -2176,6 +2373,7 @@ function WatchGroupEntry({
           BAND_PAD_CLASS,
           "flex cursor-pointer list-none select-none items-baseline gap-x-2 py-2 font-mono text-[11.5px] text-muted-foreground marker:hidden hover:bg-foreground/[0.02]",
         )}
+        {...hoverProps}
       >
         <span className="w-3 flex-none text-center">
           <span
@@ -2190,7 +2388,13 @@ function WatchGroupEntry({
           group reads as the heading over them rather than a peer. */}
       <div className="divide-y divide-border/15 pl-[1.375rem]">
         {group.members.map((row) => (
-          <WatchStreamEntry key={row.id} row={row} nowMillis={nowMillis} justFired={false} />
+          <WatchStreamEntry
+            key={row.id}
+            row={row}
+            nowMillis={nowMillis}
+            justFired={false}
+            isSelected={false}
+          />
         ))}
       </div>
     </details>
@@ -2325,6 +2529,47 @@ function PlanField({
  * and painting the rule red through a drawdown said the plan itself had gone
  * wrong when only the mark had moved.
  */
+/**
+ * A signed dollar figure that counts to its value (phase 4).
+ *
+ * Money that just arrived — a banked profit, a fresh fill — springs from the
+ * old number to the new one over ~600ms so the change registers as a change
+ * and not as a repaint. One-shot, requestAnimationFrame-driven, and an instant
+ * snap under `prefers-reduced-motion`; nothing here loops.
+ */
+function AnimatedUsd({ value }: { readonly value: number }): ReactNode {
+  const [displayed, setDisplayed] = useState(value);
+  const fromRef = useRef(value);
+  const reduceMotion =
+    typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  useEffect(() => {
+    if (reduceMotion) {
+      fromRef.current = value;
+      setDisplayed(value);
+      return;
+    }
+    const from = fromRef.current;
+    if (from === value) return;
+    const startedAt = performance.now();
+    const durationMs = 600;
+    let frame = 0;
+    const tick = (now: number): void => {
+      const t = Math.min(1, (now - startedAt) / durationMs);
+      // Springy without a spring library: ease-out with a slight overshoot
+      // past 1, clamped so the last frame lands exactly on the value.
+      const eased = 1 - (1 - t) ** 3;
+      setDisplayed(from + (value - from) * eased);
+      if (t < 1) frame = requestAnimationFrame(tick);
+      else fromRef.current = value;
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [value, reduceMotion]);
+
+  return formatSignedUsd(displayed);
+}
+
 function ProgressToTarget({ percent }: { readonly percent: number }): ReactNode {
   return (
     <span
