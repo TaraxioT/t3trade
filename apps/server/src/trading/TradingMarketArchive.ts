@@ -25,7 +25,7 @@
 import { Context, Effect } from "effect";
 import * as Layer from "effect/Layer";
 
-import { archiveDatabasePath } from "./archive/config.ts";
+import { archiveDatabasePath, ARCHIVE_COINS } from "./archive/config.ts";
 import type { AssetCtxRow } from "./archive/assetCtx.ts";
 import type { BookSummaryRow } from "./archive/bookSummary.ts";
 import { openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./archive/db.ts";
@@ -34,7 +34,11 @@ import type { FundingRow } from "./archive/funding.ts";
 
 import type { DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import {
+  assetCtxAtOrBefore,
+  candlesInRange,
   fundingInRange,
+  latestAssetContext,
+  minFundingTime,
   recentAssetContext,
   recentBookSummary,
   recentFunding,
@@ -104,6 +108,35 @@ export interface DerivedMetricUnavailable {
 
 export type DerivedMetricResult = DerivedMetricOk | DerivedMetricUnavailable;
 
+/** One coin's half of the `scan` digest. Absent figures are absent, never zero. */
+export interface ScanCoinDigest {
+  readonly coin: string;
+  readonly mark?: number;
+  readonly change24hPct?: number;
+  readonly realizedVol24hPct?: number;
+  readonly fundingNow?: number;
+  readonly funding7dMean?: number;
+  readonly oiChange24hPct?: number;
+  /** What could not be answered and why — present exactly when a figure is absent. */
+  readonly unavailable?: string;
+}
+
+export type ScanResult =
+  | { readonly status: "ok"; readonly coins: ReadonlyArray<ScanCoinDigest> }
+  | ArchiveUnavailable;
+
+/** The UTC-day anchored session levels, from archived 5m candles with volume. */
+export interface SessionLevelsOk {
+  readonly status: "ok";
+  readonly priorUtcDay?: { readonly high: number; readonly low: number; readonly close: number };
+  readonly currentUtcDay?: { readonly open: number; readonly high: number; readonly low: number };
+  readonly vwap?: number;
+  /** Which halves are missing and why — absent when all three served. */
+  readonly unavailable?: string;
+}
+
+export type SessionLevelsResult = SessionLevelsOk | ArchiveUnavailable;
+
 export interface TradingMarketArchiveShape {
   readonly fundingStats: (input: {
     readonly coin: string;
@@ -129,6 +162,11 @@ export interface TradingMarketArchiveShape {
     readonly positionEntryAt?: number;
     readonly sinceMs?: number;
   }) => Effect.Effect<DerivedMetricResult>;
+  readonly scan: (input: { readonly now: number }) => Effect.Effect<ScanResult>;
+  readonly sessionLevels: (input: {
+    readonly coin: string;
+    readonly now: number;
+  }) => Effect.Effect<SessionLevelsResult>;
 }
 
 export class TradingMarketArchive extends Context.Service<
@@ -281,6 +319,135 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             ? result
             : { status: "unavailable", kind: "archive", reason: result.reason },
       ),
+
+    scan: ({ now }) =>
+      withHandle((db) => {
+        // One compact digest per archived coin, from the coin list the archive
+        // config owns. Each half is best-effort: a coin the archive cannot
+        // answer is marked on the coin, never by failing the whole key.
+        const coins = ARCHIVE_COINS.map((coin): ScanCoinDigest => {
+          const entry: { coin: string } & Record<string, number | string> = { coin };
+          const missing: Array<string> = [];
+
+          const bars = candlesInRange(db, coin, "5m", now - DAY_MS, now);
+          if (bars.length === 0) {
+            missing.push("no 5m candles in the trailing 24h");
+          } else {
+            const last = bars[bars.length - 1] as (typeof bars)[number];
+            const first = bars[0] as (typeof bars)[number];
+            // Rounded to the precision the digest publishes: the scan is a
+            // context read, and full float precision is chars nothing acts on.
+            const round2 = (value: number): number => Math.round(value * 100) / 100;
+            entry["mark"] = round2(last.c);
+            if (first.o > 0) {
+              entry["change24hPct"] = round2(((last.c - first.o) / first.o) * 100);
+            }
+            const returns: Array<number> = [];
+            for (let index = 1; index < bars.length; index += 1) {
+              const previous = (bars[index - 1] as (typeof bars)[number]).c;
+              returns.push(((bars[index] as (typeof bars)[number]).c - previous) / previous);
+            }
+            if (returns.length > 1) {
+              const mean = returns.reduce((total, value) => total + value, 0) / returns.length;
+              let squared = 0;
+              for (const value of returns) squared += (value - mean) * (value - mean);
+              // Daily-scaled percent: 288 five-minute bars a day.
+              entry["realizedVol24hPct"] =
+                Math.round(Math.sqrt(squared / returns.length) * Math.sqrt(288) * 100 * 10) / 10;
+            }
+          }
+
+          const week = fundingInRange(db, coin, now - 7 * DAY_MS, now);
+          if (week.length === 0) {
+            missing.push("no funding rows in the trailing 7d");
+          } else {
+            const latest = week[week.length - 1] as FundingRow;
+            entry["fundingNow"] = latest.fundingRate;
+            const earliest = minFundingTime(db, coin);
+            if (earliest !== null && earliest <= now - 7 * DAY_MS) {
+              const total = week.reduce((sum, row) => sum + row.fundingRate, 0);
+              entry["funding7dMean"] = total / week.length;
+            } else {
+              missing.push("funding holdings start inside the 7d window");
+            }
+          }
+
+          const latestCtx = latestAssetContext(db, coin);
+          const dayAgoCtx = assetCtxAtOrBefore(db, coin, now - DAY_MS);
+          if (latestCtx === null || dayAgoCtx === null || dayAgoCtx.ts < now - 2 * DAY_MS) {
+            missing.push("no asset_ctx coverage across the trailing 24h");
+          } else if (dayAgoCtx.openInterest > 0) {
+            entry["oiChange24hPct"] =
+              Math.round(
+                ((latestCtx.openInterest - dayAgoCtx.openInterest) / dayAgoCtx.openInterest) *
+                  100 *
+                  100,
+              ) / 100;
+          } else {
+            missing.push("oldest open-interest sample is not positive");
+          }
+
+          if (missing.length > 0) entry["unavailable"] = missing.join("; ");
+          return entry as ScanCoinDigest;
+        });
+        return { status: "ok", coins };
+      }, `archive file not found at ${filePath}`),
+
+    sessionLevels: ({ coin, now }) =>
+      withHandle((db) => {
+        const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
+        const prior = candlesInRange(db, coin, "5m", dayStart - DAY_MS, dayStart - 1);
+        const current = candlesInRange(db, coin, "5m", dayStart, now);
+        const missing: Array<string> = [];
+        if (prior.length === 0) {
+          missing.push("no 5m candles in the prior UTC day");
+        }
+        if (current.length === 0) {
+          missing.push("no 5m candles in the current UTC day");
+        }
+        if (prior.length === 0 && current.length === 0) {
+          return {
+            status: "unavailable",
+            reason: `no 5m candles recorded for ${coin} over the last two UTC days`,
+          } as const;
+        }
+        const priorLevels =
+          prior.length > 0
+            ? {
+                high: Math.max(...prior.map((bar) => bar.h)),
+                low: Math.min(...prior.map((bar) => bar.l)),
+                close: (prior[prior.length - 1] as (typeof prior)[number]).c,
+              }
+            : undefined;
+        let currentLevels: SessionLevelsOk["currentUtcDay"] = undefined;
+        let vwap: number | undefined;
+        if (current.length > 0) {
+          currentLevels = {
+            open: (current[0] as (typeof current)[number]).o,
+            high: Math.max(...current.map((bar) => bar.h)),
+            low: Math.min(...current.map((bar) => bar.l)),
+          };
+          let volume = 0;
+          let weighted = 0;
+          for (const bar of current) {
+            const typical = (bar.h + bar.l + bar.c) / 3;
+            volume += bar.v;
+            weighted += typical * bar.v;
+          }
+          if (volume > 0) {
+            vwap = Math.round((weighted / volume) * 100) / 100;
+          } else {
+            missing.push("zero volume in the current UTC day");
+          }
+        }
+        return {
+          status: "ok",
+          ...(priorLevels === undefined ? {} : { priorUtcDay: priorLevels }),
+          ...(currentLevels === undefined ? {} : { currentUtcDay: currentLevels }),
+          ...(vwap === undefined ? {} : { vwap }),
+          ...(missing.length > 0 ? { unavailable: missing.join("; ") } : {}),
+        };
+      }, `archive file not found at ${filePath}`),
   });
 };
 

@@ -73,6 +73,7 @@ import {
 import { openArchiveDatabase } from "../../../trading/archive/db.ts";
 import { upsertAssetContexts } from "../../../trading/archive/assetCtx.ts";
 import { upsertBookSummaries } from "../../../trading/archive/bookSummary.ts";
+import { upsertCandles, type CandleRow } from "../../../trading/archive/candles.ts";
 import { upsertFunding } from "../../../trading/archive/funding.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
@@ -2912,22 +2913,21 @@ it.effect("returns the menu when fetch is absent, and when it is empty", () =>
         // The menu is the whole answer: nothing else rides the catalog call.
         assert.equal(menu.result.body.mission, undefined);
         assert.equal(menu.result.body.snapshot, undefined);
-        // Plan 38 phase 3: the menu carries all twelve derived metrics, one
-        // line each — this and the watch refusals are where the model meets
-        // them, never the tool descriptions (§4.1).
+        // Plan 38 phase 3: the menu carries every derived metric, one line
+        // each — this and the watch refusals are where the model meets
+        // them, never the tool descriptions (§4.1). R3 made it thirteen.
         for (const metric of DERIVED_METRIC_CATALOG) {
           assert.include(menu.result.body.menu, `derived:${metric.metric} `);
         }
-        assert.equal((menu.result.body.menu.match(/derived:/g) ?? []).length, 12);
+        assert.equal((menu.result.body.menu.match(/derived:/g) ?? []).length, 13);
       }
       // The actual measured size of the menu — the number the phase report
       // carries, asserted so a catalog edit that grows it past the documented
-      // budget has to say so here. Plan 38 phase 3 added the derived-metric
-      // catalog (§3.3): measured 1,254 (JSON-stringified), ~540 of priced
-      // keys plus ~710 of derived lines.
+      // budget has to say so here. R3 added the scan key, its legend clause,
+      // and the thirteenth derived metric: measured 1,368.
       const measured = sectionChars(renderTradingLookMenu());
       process.stdout.write(`MENU_CHARS ${measured}\n`);
-      assert.isAtMost(measured, 1_350);
+      assert.isAtMost(measured, 1_500);
     }),
   ),
 );
@@ -3193,6 +3193,59 @@ it.live("serves every catalog key within ±20% of its published size", () => {
       askDepth5: 398.7,
     })),
   );
+  // R3's cross-market reads: every archived coin gets two UTC days of 5m
+  // candles (so `levels` serves its session half and `scan` its candle
+  // half), eight days of funding (so the 7d mean is covered), and 25 hours
+  // of asset_ctx (so the 24h OI change is covered). Realistic magnitudes:
+  // the sizes below are what the catalog's prices were taken against.
+  const FIVE_MIN = 5 * 60_000;
+  const DAY_MS = 24 * HOUR;
+  const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
+  const basePrice: Record<string, number> = { BTC: 61_234.5, ETH: 1_914.62, SOL: 141.37 };
+  for (const coin of ["BTC", "ETH", "SOL"]) {
+    const base = basePrice[coin] as number;
+    const round = (value: number): number => Number(value.toFixed(2));
+    const candles: Array<CandleRow> = [];
+    for (let index = 0; index < 576; index += 1) {
+      const t = dayStart - DAY_MS + index * FIVE_MIN;
+      const drift = base * (1 + Math.sin(index / 37) * 0.004 + index * 0.000_02);
+      candles.push({
+        coin,
+        interval: "5m",
+        t,
+        tClose: t + FIVE_MIN - 1,
+        o: round(drift - base * 0.000_4),
+        h: round(drift + base * 0.001_1),
+        l: round(drift - base * 0.001_2),
+        c: round(drift + base * 0.000_3),
+        v: Number((87.3 + (index % 13)).toFixed(1)),
+        n: 40 + (index % 5),
+      });
+    }
+    upsertCandles(db, candles);
+    upsertFunding(
+      db,
+      Array.from({ length: 192 }, (_, i) => ({
+        coin,
+        time: now - (192 - i) * HOUR,
+        fundingRate: (i % 16 < 8 ? 1 : -1) * (0.0000094 + (i % 7) * 0.0000006),
+        premium: 0.0000125,
+      })),
+    );
+    upsertAssetContexts(
+      db,
+      Array.from({ length: 25 }, (_, i) => ({
+        coin,
+        ts: now - (25 - i) * HOUR,
+        openInterest: coin === "BTC" ? 87_654 : coin === "ETH" ? 123_456 : 41_204,
+        premium: 0.000021,
+        oraclePx: base,
+        markPx: base,
+        dayNtlVolume: 812_345_678.9,
+        funding: 0.0000125,
+      })),
+    );
+  }
   db.close();
 
   return withMcpServer(
@@ -3353,8 +3406,14 @@ it.live("serves every catalog key within ±20% of its published size", () => {
                 return sectionChars(section("oiPremium")) / 24;
               case "book_history:24":
                 return sectionChars(section("bookHistory")) / 24;
+              case "scan":
+                return sectionChars(section("scan"));
               case "levels":
-                return sectionChars(section("levelHistory"));
+                // The key's two halves: the mission's level memory plus the
+                // UTC-day anchored session levels (R3).
+                return (
+                  sectionChars(section("levelHistory")) + sectionChars(section("sessionLevels"))
+                );
               case "position":
                 return sectionChars(section("position"));
               case "position_costs":
@@ -3405,6 +3464,7 @@ it.live("serves every catalog key within ±20% of its published size", () => {
           "funding_series:24",
           "oi_premium:24",
           "book_history:24",
+          "scan",
           "levels",
           "position",
           "position_costs",
@@ -3465,5 +3525,199 @@ it.live("serves every catalog key within ±20% of its published size", () => {
         assert.include(cost.result.body.unavailable?.[0]?.reason ?? "", "position_costs");
       }),
     tradingLayerOverExchange(sizedExchange, archivePath),
+  ).pipe(Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))));
+});
+
+// -- R3: the real-trader reads (scan, session levels, vwap_distance) -------------
+
+/** Five-minute bars with hand-known OHLCV, seeded around a real epoch. */
+const r3Bar = (coin: string, t: number, o: number, h: number, l: number, c: number, v: number) => ({
+  coin,
+  interval: "5m" as const,
+  t,
+  tClose: t + 5 * 60_000 - 1,
+  o,
+  h,
+  l,
+  c,
+  v,
+  n: 3,
+});
+
+it.effect("refuses the scan key with a reason when the archive is absent", () =>
+  withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const read = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["scan"] });
+        assert.equal(read.result.isError, false);
+        assert.equal(read.result.body.scan, undefined);
+        assert.equal(read.result.body.unavailable[0].key, "scan");
+        assert.include(read.result.body.unavailable[0].reason, "archive file not found");
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);
+
+it.live("marks per-coin unavailability on the scan, never a zero and never a failed key", () => {
+  // BTC is fully populated; ETH and SOL have no rows at all — the digest
+  // still serves, with each missing coin named on the coin itself.
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-scan-"));
+  const archivePath = NodePath.join(dir, "market-archive.sqlite");
+  const db = openArchiveDatabase(archivePath);
+  // @effect-diagnostics globalDate:off - the live-clock fixture seeds archive rows around a real epoch.
+  const now = Date.now();
+  const DAY = 24 * 3_600_000;
+  const HOUR = 3_600_000;
+  const dayStart = Math.floor(now / DAY) * DAY;
+  upsertCandles(
+    db,
+    Array.from({ length: 288 }, (_, i) =>
+      r3Bar(
+        "BTC",
+        dayStart - DAY + i * 5 * 60_000,
+        61_000 + i,
+        61_100 + i,
+        60_900 + i,
+        61_050 + i,
+        10,
+      ),
+    ),
+  );
+  upsertFunding(
+    db,
+    Array.from({ length: 192 }, (_, i) => ({
+      coin: "BTC",
+      time: now - (192 - i) * HOUR,
+      fundingRate: 0.00001,
+      premium: 0.0000125,
+    })),
+  );
+  upsertAssetContexts(
+    db,
+    Array.from({ length: 25 }, (_, i) => ({
+      coin: "BTC",
+      ts: now - (25 - i) * HOUR,
+      openInterest: 80_000 + i * 100,
+      premium: 0.000021,
+      oraclePx: 61_050,
+      markPx: 61_050,
+      dayNtlVolume: 500_000_000,
+      funding: 0.00001,
+    })),
+  );
+  db.close();
+
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const read = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["scan"] });
+        assert.equal(read.result.isError, false);
+        const coins = read.result.body.scan;
+        assert.deepEqual(
+          coins.map((entry: { coin: string }) => entry.coin),
+          ["BTC", "ETH", "SOL"],
+        );
+        // The archived coin answers in full.
+        const btc = coins[0];
+        assert.isAbove(btc.mark, 0);
+        assert.isDefined(btc.change24hPct);
+        assert.isDefined(btc.realizedVol24hPct);
+        assert.isDefined(btc.fundingNow);
+        assert.isDefined(btc.funding7dMean);
+        assert.isDefined(btc.oiChange24hPct);
+        assert.equal(btc.unavailable, undefined);
+        // The empty coins are marked per coin, with reasons — never zeros
+        // that read as a flat market, and never a failed key.
+        for (const empty of [coins[1], coins[2]]) {
+          assert.isDefined(empty.unavailable);
+          assert.include(empty.unavailable, "no 5m candles");
+          assert.isUndefined(empty.mark);
+          assert.isUndefined(empty.change24hPct);
+        }
+        assert.isUndefined(read.result.body.unavailable);
+      }),
+    tradingLayerOverExchange(makeFakeExchange(), archivePath),
+  ).pipe(Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))));
+});
+
+it.live("serves UTC-day anchored session levels from archived 5m candles", () => {
+  // Hand-checked. One prior-day bar and two current-day bars; the prior bar
+  // at dayStart − 5m is the boundary the anchor must exclude.
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-session-levels-"));
+  const archivePath = NodePath.join(dir, "market-archive.sqlite");
+  const db = openArchiveDatabase(archivePath);
+  // @effect-diagnostics globalDate:off - the live-clock fixture seeds archive rows around a real epoch.
+  const now = Date.now();
+  const DAY = 24 * 3_600_000;
+  const dayStart = Math.floor(now / DAY) * DAY;
+  upsertCandles(db, [
+    r3Bar("ETH", dayStart - 5 * 60_000, 100, 110, 90, 105, 1),
+    r3Bar("ETH", dayStart, 101, 107, 99, 103, 10),
+    r3Bar("ETH", dayStart + 5 * 60_000, 103, 105, 101, 103, 30),
+  ]);
+  db.close();
+
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const read = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["levels"] });
+        assert.equal(read.result.isError, false);
+        const session = read.result.body.sessionLevels;
+        assert.isDefined(session);
+        assert.equal(session.anchoredTo, "utc_day");
+        assert.equal(session.interval, "5m");
+        // Prior day from the prior bar alone.
+        assert.deepEqual(session.priorUtcDay, { high: 110, low: 90, close: 105 });
+        // Current day from the two in-day bars; the prior bar's 90 low and
+        // 100 open must not leak across the boundary.
+        assert.deepEqual(session.currentUtcDay, { open: 101, high: 107, low: 99 });
+        // VWAP over typical prices 103 and 103, volumes 10 and 30 → 103.
+        assert.equal(session.vwap, 103);
+        assert.isUndefined(session.unavailable);
+      }),
+    tradingLayerOverExchange(makeFakeExchange(), archivePath),
+  ).pipe(Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))));
+});
+
+it.live("arms a derived vwap_distance watch from a seeded archive", () => {
+  // The same hand-checked session as the derived.test.ts fixture: VWAP
+  // 102.3, session σ √3.6875, last close 103 → distance ≈ +0.3645.
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-vwap-arm-"));
+  const archivePath = NodePath.join(dir, "market-archive.sqlite");
+  const db = openArchiveDatabase(archivePath);
+  // @effect-diagnostics globalDate:off - the live-clock fixture seeds archive rows around a real epoch.
+  const now = Date.now();
+  const DAY = 24 * 3_600_000;
+  const dayStart = Math.floor(now / DAY) * DAY;
+  const FIVE = 5 * 60_000;
+  upsertCandles(db, [
+    r3Bar("ETH", dayStart, 101, 102, 100, 101, 10),
+    r3Bar("ETH", dayStart + FIVE, 104, 106, 102, 104, 30),
+    r3Bar("ETH", dayStart + 2 * FIVE, 99, 101, 97, 99, 20),
+    r3Bar("ETH", dayStart + 3 * FIVE, 103, 105, 101, 103, 40),
+  ]);
+  db.close();
+
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "derived",
+            market: "ETH",
+            metric: "vwap_distance",
+            params: { metric: "vwap_distance", interval: "5m" },
+            direction: "above",
+            value: 1,
+            mode: "cross",
+          },
+        });
+        assert.equal(armed.result.isError, false);
+        assert.equal(armed.result.body.outcome, "armed");
+        assert.equal(armed.result.body.watch.watch.type, "metric_derived");
+        assert.equal(armed.result.body.watch.watch.metric, "vwap_distance");
+      }),
+    tradingLayerOverExchange(makeFakeExchange(), archivePath),
   ).pipe(Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))));
 });

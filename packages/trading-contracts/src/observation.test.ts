@@ -62,7 +62,7 @@ describe("echoedBarsForLook", () => {
  * and the menu must stay a small blob.
  */
 describe("the fetch catalog", () => {
-  it("holds the 27 published keys, in order, at their published sizes", () => {
+  it("holds the 28 published keys, in order, at their published sizes", () => {
     assert.deepStrictEqual(
       TRADING_LOOK_CATALOG.map((entry) => [entry.key, entry.chars]),
       [
@@ -80,7 +80,8 @@ describe("the fetch catalog", () => {
         ["funding_series", 52],
         ["oi_premium", 100],
         ["book_history", 89],
-        ["levels", 886],
+        ["scan", 550],
+        ["levels", 1136],
         ["position", 180],
         ["position_costs", 900],
         ["orders", 46],
@@ -99,10 +100,10 @@ describe("the fetch catalog", () => {
     );
   });
 
-  it("marks exactly the four archive-backed keys", () => {
+  it("marks exactly the five archive-backed keys", () => {
     assert.deepStrictEqual(
       TRADING_LOOK_CATALOG.filter((entry) => entry.archive === true).map((entry) => entry.key),
-      ["funding_stats", "funding_series", "oi_premium", "book_history"],
+      ["funding_stats", "funding_series", "oi_premium", "book_history", "scan"],
     );
   });
 });
@@ -112,10 +113,15 @@ describe("renderTradingLookMenu", () => {
 
   // Plan 38 phase 3: the menu grew the derived-metric catalog (§3.3), one
   // line per metric rendered from `DERIVED_METRIC_CATALOG`. Measured 1,252
-  // chars — ~540 of priced keys plus ~710 of derived lines. The band keeps a
-  // deliberate ceiling so a twelfth-again of prose has to say so here.
-  it("stays in the 1,150–1,350 band, targeted at ~1,250", () => {
-    assert.isTrue(menu.length >= 1_150 && menu.length <= 1_350, `menu is ${menu.length} chars`);
+  // chars then; R3's scan key, its legend clause, and the thirteenth metric
+  // (`vwap_distance`) measure 1,368. The band keeps a deliberate ceiling so
+  // another key's worth of prose has to say so here.
+  it("stays in the 1,250–1,500 band, targeted at ~1,370", () => {
+    assert.isTrue(menu.length >= 1_250 && menu.length <= 1_500, `menu is ${menu.length} chars`);
+  });
+
+  it("presents scan as cross-market context, never market selection", () => {
+    assert.include(menu, "scan: cross-market context, never market selection");
   });
 
   it("prices every key and stars the archive keys", () => {

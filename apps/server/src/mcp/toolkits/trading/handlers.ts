@@ -1303,7 +1303,7 @@ type FetchMarketSections = {
 type FetchArchiveSections = {
   -readonly [K in keyof Pick<
     TradingObservation,
-    "fundingStats" | "fundingSeries" | "oiPremium" | "bookHistory"
+    "fundingStats" | "fundingSeries" | "oiPremium" | "bookHistory" | "scan" | "sessionLevels"
   >]?: TradingObservation[K];
 };
 
@@ -1704,12 +1704,13 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
         }
 
         if (wants("levels")) {
+          // The mission's own level memory, when there is any. The key's other
+          // half — the UTC-day anchored session levels — is archive-backed and
+          // served after the market half; refusal is decided once both halves
+          // are known, so an empty history alone no longer refuses a key the
+          // session levels can still answer.
           const levelHistory = facts?.levelHistory ?? [];
-          if (levelHistory.length === 0) {
-            refuseKeys(keysFor("levels"), "no level history recorded near the mark");
-          } else {
-            sections.levelHistory = levelHistory;
-          }
+          if (levelHistory.length > 0) sections.levelHistory = levelHistory;
         }
 
         if (wants("position") && facts !== null) sections.position = facts.position;
@@ -1924,6 +1925,43 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
             askDepth5: row.askDepth5,
           }));
         }
+      }
+      if (parsed.base === "scan") {
+        // Cross-market context for every archived coin — one digest, not a
+        // market picker: which coin the mission trades is settled elsewhere.
+        // Per-coin unavailability is marked on the coin, never here.
+        const result = yield* archive.scan({ now: input.observedAt });
+        if (result.status === "unavailable") {
+          refuseKeys([key], result.reason);
+        } else {
+          archiveSections.scan = result.coins;
+        }
+      }
+    }
+
+    // The `levels` key's archive half: prior and current UTC-day session
+    // levels plus the session VWAP, from archived 5m candles. Refusal is
+    // decided here, where both halves are known.
+    if (wants("levels")) {
+      const session = yield* archive.sessionLevels({ coin: market, now: input.observedAt });
+      const hasHistory =
+        marketHalf !== null &&
+        "levelHistory" in marketHalf &&
+        marketHalf.levelHistory !== undefined;
+      if (session.status === "ok") {
+        archiveSections.sessionLevels = {
+          anchoredTo: "utc_day",
+          interval: "5m",
+          ...(session.priorUtcDay === undefined ? {} : { priorUtcDay: session.priorUtcDay }),
+          ...(session.currentUtcDay === undefined ? {} : { currentUtcDay: session.currentUtcDay }),
+          ...(session.vwap === undefined ? {} : { vwap: session.vwap }),
+          ...(session.unavailable === undefined ? {} : { unavailable: session.unavailable }),
+        };
+      } else if (!hasHistory) {
+        refuseKeys(keysFor("levels"), session.reason);
+      } else {
+        // The history half served; the session half's absence is still named.
+        unavailable.push({ key: "levels", reason: `session levels: ${session.reason}` });
       }
     }
 

@@ -98,7 +98,7 @@ const dependencies = [
 
 export const TradingLookTool = Tool.make("trading_look", {
   description:
-    "The one read. `fetch[]` names catalog keys at published sizes — snapshot, book, microstructure, candles:tf:n, indicators:spec (ema20…), volatility(_htf), structure (scored `candidates[]`), structure_brief, levels, position (flat is size 0), position_costs, orders, account, plan, watches, events, journal, trades, calibration, plan_history, cost (context, never a gate), funding/oi/book archive keys. Menu: trading_look({}). `scope[]` unchanged. `mission.bound: false` with `lastMission` once ended.",
+    "The one read. `fetch[]` names catalog keys at published sizes — snapshot, book, microstructure, candles:tf:n, indicators:spec (ema20), volatility(_htf), structure (scored `candidates[]`), structure_brief, levels, position (flat is size 0), position_costs, orders, account, plan, watches, events, journal, trades, calibration, plan_history, cost (context, never a gate), funding/oi/book/scan archive keys. Menu: trading_look({}) `scope[]` unchanged `mission.bound: false` with lastMission once ended",
   parameters: TradingLookInput,
   success: TradingObservation,
   failure: TradingToolRejectedError,

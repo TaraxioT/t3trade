@@ -242,7 +242,9 @@ export function recentAssetContext(
     .toReversed();
 }
 
-/** The last `limit` book summaries for a coin, oldest first. */
+/**
+ * The last `limit` book summaries for a coin, oldest first.
+ */
 export function recentBookSummary(
   db: ArchiveDatabase,
   coin: string,
@@ -256,6 +258,30 @@ export function recentBookSummary(
     )
     .map(toBookSummary)
     .toReversed();
+}
+
+/** The earliest funding timestamp recorded for a coin, or `null` when none. */
+export function minFundingTime(db: ArchiveDatabase, coin: string): number | null {
+  const rows = db.all<{ earliest: number | null }>(
+    "SELECT MIN(time) AS earliest FROM funding WHERE coin = ?",
+    coin,
+  );
+  return rows[0]?.earliest ?? null;
+}
+
+/** The last derivatives-context sample at or before `ts`, or `null`. */
+export function assetCtxAtOrBefore(
+  db: ArchiveDatabase,
+  coin: string,
+  ts: number,
+): AssetCtxRow | null {
+  const rows = db.all<AssetCtxColumns>(
+    `SELECT ${ASSET_CTX_COLUMNS} FROM asset_ctx WHERE coin = ? AND ts <= ? ORDER BY ts DESC LIMIT 1`,
+    coin,
+    ts,
+  );
+  const row = rows[0];
+  return row === undefined ? null : toAssetCtx(row);
 }
 
 export interface KnownGap {

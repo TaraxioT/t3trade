@@ -267,7 +267,17 @@ export const TRADING_LOOK_CATALOG: ReadonlyArray<TradingLookCatalogEntry> = [
   { key: "funding_series", chars: 52, parameterized: "<n>", archive: true },
   { key: "oi_premium", chars: 100, parameterized: "<n>", archive: true },
   { key: "book_history", chars: 89, parameterized: "<n>", archive: true },
-  { key: "levels", chars: 886 },
+  {
+    key: "scan",
+    chars: 550,
+    archive: true,
+    note: "cross-market CONTEXT for every archived coin (BTC/ETH/SOL), not market selection",
+  },
+  {
+    key: "levels",
+    chars: 1136,
+    note: "886 of mission level history + ~250 of UTC-day anchored session levels (prior H/L/C, today O/H/L, VWAP) from archived 5m candles",
+  },
   { key: "position", chars: 180 },
   { key: "position_costs", chars: 900 },
   { key: "orders", chars: 46 },
@@ -292,6 +302,7 @@ const TRADING_LOOK_FIXED_FETCH_BASES = [
   "volatility_htf",
   "structure",
   "structure_brief",
+  "scan",
   "levels",
   "position",
   "position_costs",
@@ -332,7 +343,7 @@ export function renderTradingLookMenu(): string {
   });
   // The derived-metric catalog (plan 38 §3.3), one line per metric: name,
   // params, source, cadence. This and the watch refusals are where the model
-  // meets the twelve metrics — the tool descriptions never enumerate them
+  // meets the thirteen metrics — the tool descriptions never enumerate them
   // (§4.1). Rendered from `DERIVED_METRIC_CATALOG` so the menu and the
   // refusal details quote one list.
   const derived = DERIVED_METRIC_CATALOG.map(
@@ -340,7 +351,7 @@ export function renderTradingLookMenu(): string {
   );
   return (
     `${entries.join(" ")} — *archive: unavailable+reason, not data; candles: indicators is ` +
-    `cheaper; ${derived.join(" ")}`
+    `cheaper; scan: cross-market context, never market selection; ${derived.join(" ")}`
   );
 }
 
@@ -686,6 +697,52 @@ export const TradingObservation = Schema.Struct({
         askDepth5: Schema.Number,
       }),
     ),
+  ),
+  /**
+   * `scan`: one compact cross-market digest for every archived coin —
+   * mark, 24h change, realized vol off 5m candles, funding now and 7d mean,
+   * 24h OI change. Cross-market CONTEXT for the mission's own single market
+   * (an ETH trader watches BTC because BTC leads), never instrument
+   * selection: one asset per mission is settled elsewhere. A coin the
+   * archive cannot answer is marked per coin (`unavailable` with a reason,
+   * figures omitted), never by failing the whole key.
+   */
+  scan: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        coin: Schema.String,
+        mark: Schema.optional(Schema.Number),
+        change24hPct: Schema.optional(Schema.Number),
+        realizedVol24hPct: Schema.optional(Schema.Number),
+        fundingNow: Schema.optional(Schema.Number),
+        funding7dMean: Schema.optional(Schema.Number),
+        oiChange24hPct: Schema.optional(Schema.Number),
+        /** What could not be answered, and why — present exactly when a figure is absent. */
+        unavailable: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  /**
+   * The UTC-day anchored session levels, served under the `levels` key:
+   * prior UTC-day high/low/close and current UTC-day open/high/low from
+   * archived 5m candles, plus the session VWAP (Σ typical·v / Σ v over the
+   * current UTC day). Numbers the model arms ordinary `price` watches on —
+   * a missing half is absent with its reason on `unavailable`, never a zero.
+   */
+  sessionLevels: Schema.optional(
+    Schema.Struct({
+      anchoredTo: Schema.Literal("utc_day"),
+      interval: Schema.Literal("5m"),
+      priorUtcDay: Schema.optional(
+        Schema.Struct({ high: Schema.Number, low: Schema.Number, close: Schema.Number }),
+      ),
+      currentUtcDay: Schema.optional(
+        Schema.Struct({ open: Schema.Number, high: Schema.Number, low: Schema.Number }),
+      ),
+      vwap: Schema.optional(Schema.Number),
+      /** Which halves are missing, and why — absent when all three served. */
+      unavailable: Schema.optional(Schema.String),
+    }),
   ),
 });
 export type TradingObservation = typeof TradingObservation.Type;
