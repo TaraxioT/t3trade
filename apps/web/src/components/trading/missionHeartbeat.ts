@@ -17,6 +17,7 @@
 // armed, holding, stand-aside, blocked) can be sparsely populated in tests
 // exactly as sparse projections are in production.
 
+import { deEmDash } from "./missionTurnTimeline";
 import { formatPrice, formatSize } from "./tradingPresentation";
 
 /** The armed price watch the heartbeat speaks for: the plan's nearest trigger. */
@@ -79,7 +80,9 @@ function clockTime(atMillis: number): string {
  */
 export function firstClause(because: string | null): string | null {
   if (because === null) return null;
-  const clause = because.split(/[.;]/)[0]!.trim();
+  // Model-authored prose can arrive with em-dashes; the swap is idempotent,
+  // so the panel's own hover sanitize over the raw because stays safe.
+  const clause = deEmDash(because).split(/[.;]/)[0]!.trim();
   if (clause === "") return null;
   // Bounded so a single run-on sentence cannot fill the strip on its own; the
   // ellipsis says the plan says more, which is true and is the hover's job.

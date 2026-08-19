@@ -130,6 +130,17 @@ describe("composeHeartbeatSentence", () => {
     );
   });
 
+  it("stand-aside swaps the because's em-dashes rather than quoting them", () => {
+    const sentence = composeHeartbeatSentence({
+      ...base,
+      state: "stand_aside",
+      because:
+        "The 1m structure is a coin flip — the news cut both ways — so a close would re-rate it. Waiting.",
+    });
+    expect(sentence).not.toContain("—");
+    expect(sentence).toContain("The 1m structure is a coin flip · the news cut both ways");
+  });
+
   it("blocked states the reason and the way back", () => {
     expect(
       composeHeartbeatSentence({ ...base, state: "blocked", blockedReason: "risk limits" }),
