@@ -2051,6 +2051,12 @@ export interface DrawableCondition {
   readonly price: number;
   readonly direction: "above" | "below";
   readonly met: boolean;
+  /**
+   * The persisted watch id behind this level, when the row carried one.
+   * Carried for the chart's hover selection — a level chip and its watch-list
+   * row are the same object, and the id is the join.
+   */
+  readonly id?: string;
 }
 
 /**
@@ -2119,7 +2125,7 @@ export function deriveChartConditions(
     const met = persisted.status === "triggered";
 
     if (watch.type === "price_cross" || watch.type === "candle_close") {
-      drawable.push({ price: watch.price, direction: watch.direction, met });
+      drawable.push({ price: watch.price, direction: watch.direction, met, id: persisted.id });
       continue;
     }
 
@@ -2136,6 +2142,7 @@ export function deriveChartConditions(
         price,
         direction: wantsPnlUp === pnlRisesWithPrice ? "above" : "below",
         met,
+        id: persisted.id,
       });
     }
   }
@@ -2186,6 +2193,12 @@ export interface ChartFillMarker {
   readonly at: number;
   readonly price: number;
   readonly kind: ChartFillKind;
+  /**
+   * The tooltip line, composed from the fill's own figures: side, size, price
+   * and, for a close, the net it realised. Null when the projection row
+   * carried none of them — the marker then says only what its shape says.
+   */
+  readonly label?: string | null;
 }
 
 /**
@@ -2207,6 +2220,8 @@ export function deriveChartFillMarkers(mission: {
     readonly avgFillPrice: number;
     readonly closedPnl: number;
     readonly direction?: string | undefined;
+    readonly side?: string | undefined;
+    readonly filledSize?: number | undefined;
   }>;
 }): ReadonlyArray<ChartFillMarker> {
   const markers: ChartFillMarker[] = [];
@@ -2227,7 +2242,25 @@ export function deriveChartFillMarkers(mission: {
               ? "close_loss"
               : "close_flat";
 
-    markers.push({ key: `${fill.orderId}-${fill.tradedAt}`, at, price: fill.avgFillPrice, kind });
+    // The tooltip: side, size, price, and the net a close realised. Each piece
+    // is included only when the projection row carried it, so a sparse fill
+    // reads as a sparse fact rather than a row of em-dashes.
+    const labelParts: string[] = [];
+    if (fill.side !== undefined) labelParts.push(fill.side);
+    if (fill.filledSize !== undefined) labelParts.push(formatSize(fill.filledSize));
+    labelParts.push(formatPrice(fill.avgFillPrice));
+    if (kind !== "open" && kind !== "unknown" && fill.closedPnl !== 0) {
+      labelParts.push(`${formatSignedUsd(fill.closedPnl)} net`);
+    }
+    const label = labelParts.join(" · ");
+
+    markers.push({
+      key: `${fill.orderId}-${fill.tradedAt}`,
+      at,
+      price: fill.avgFillPrice,
+      kind,
+      label: label === "" ? null : label,
+    });
   }
 
   return markers;

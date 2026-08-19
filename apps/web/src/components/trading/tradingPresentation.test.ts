@@ -1712,7 +1712,7 @@ describe("deriveChartConditions", () => {
 
   it("draws watches that carry a price outright", () => {
     expect(deriveChartConditions({ watches: [priceCross] })).toEqual([
-      { price: 1_868.4, direction: "above", met: false },
+      { price: 1_868.4, direction: "above", met: false, id: "w-price" },
     ]);
   });
 
@@ -1729,8 +1729,8 @@ describe("deriveChartConditions", () => {
   it("resolves a long's PnL watches into prices above and below its entry", () => {
     const basis = { entryPrice: 1_900, size: 0.5 };
     expect(deriveChartConditions({ watches: [pnlAbove, pnlBelow] }, basis)).toEqual([
-      { price: 1_940, direction: "above", met: false },
-      { price: 1_880, direction: "below", met: false },
+      { price: 1_940, direction: "above", met: false, id: "w-pnl-up" },
+      { price: 1_880, direction: "below", met: false, id: "w-pnl-down" },
     ]);
   });
 
@@ -1740,8 +1740,8 @@ describe("deriveChartConditions", () => {
   it("inverts a short's PnL watches, because its profit is below its entry", () => {
     const basis = { entryPrice: 1_900, size: -0.5 };
     expect(deriveChartConditions({ watches: [pnlAbove, pnlBelow] }, basis)).toEqual([
-      { price: 1_860, direction: "below", met: false },
-      { price: 1_920, direction: "above", met: false },
+      { price: 1_860, direction: "below", met: false, id: "w-pnl-up" },
+      { price: 1_920, direction: "above", met: false, id: "w-pnl-down" },
     ]);
   });
 

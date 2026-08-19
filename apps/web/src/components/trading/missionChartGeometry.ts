@@ -171,6 +171,11 @@ export interface ChartLevel {
   /** Whether an armed condition's predicate is already satisfied. */
   readonly met?: boolean;
   /**
+   * The persisted watch id behind a condition level, carried for the
+   * renderer's hover selection. @see ChartCondition.id
+   */
+  readonly id?: string;
+  /**
    * How many armed watches this one condition level stands for.
    *
    * Above 1 the level is a cluster — see {@link CONDITION_CLUSTER_RANGE_RATIO}
@@ -212,6 +217,12 @@ export interface ChartCondition {
   readonly met: boolean;
   /** Set by clustering; how many watches this entry stands for. @see ChartLevel.count */
   readonly count?: number;
+  /**
+   * The persisted watch id this level was armed by, when the caller knows it.
+   * Purely carried: the geometry never reads it, but the renderer's hover
+   * selection joins a level chip back to its watch-stream row by id.
+   */
+  readonly id?: string;
 }
 
 /** One placed fill: where on the plot the mission traded, and what it was. */
@@ -221,6 +232,10 @@ export interface ChartFillPoint {
   readonly y: number;
   readonly price: number;
   readonly kind: ChartFillKind;
+  /** Epoch millis of the fill, for hover selection. */
+  readonly at: number;
+  /** The marker's tooltip line, carried from the projection row. */
+  readonly label: string | null;
 }
 
 /**
@@ -242,6 +257,8 @@ export interface GutterTag {
   readonly mergedPrice?: number;
   /** How many armed watches the tag's level stands for. @see ChartLevel.count */
   readonly count?: number;
+  /** The watch id behind a condition tag, carried for hover selection. */
+  readonly id?: string;
 }
 
 /**
@@ -820,6 +837,7 @@ function buildGutterTags(
     readonly met?: boolean;
     readonly mergedPrice?: number;
     readonly count?: number;
+    readonly id?: string;
     readonly priority: number;
   }> = [];
 
@@ -845,6 +863,7 @@ function buildGutterTags(
       offScale: level.offScale,
       ...(level.met === undefined ? {} : { met: level.met }),
       ...(level.count === undefined ? {} : { count: level.count }),
+      ...(level.id === undefined ? {} : { id: level.id }),
       priority: GUTTER_PRIORITY[level.kind],
     });
   });
@@ -904,7 +923,13 @@ function buildLevels(input: {
 }): ChartLevel[] {
   const levels: ChartLevel[] = [];
 
-  const pushLevel = (kind: ChartLevelKind, price: number, met?: boolean, count?: number): void => {
+  const pushLevel = (
+    kind: ChartLevelKind,
+    price: number,
+    met?: boolean,
+    count?: number,
+    id?: string,
+  ): void => {
     const offScale: "above" | "below" | null =
       price > input.domainMax ? "above" : price < input.domainMin ? "below" : null;
     const isTrigger = kind === "condition_above" || kind === "condition_below";
@@ -924,6 +949,7 @@ function buildLevels(input: {
       offScale,
       ...(met === undefined ? {} : { met }),
       ...(count === undefined || count <= 1 ? {} : { count }),
+      ...(id === undefined ? {} : { id }),
     });
   };
 
@@ -957,6 +983,7 @@ function buildLevels(input: {
       condition.price,
       condition.met,
       condition.count,
+      condition.id,
     );
   }
 
@@ -1299,6 +1326,8 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
       y: clamp(yForPrice(fill.price), 0, CHART_VIEWBOX_HEIGHT),
       price: fill.price,
       kind: fill.kind,
+      at: fill.at,
+      label: fill.label ?? null,
     });
   }
 

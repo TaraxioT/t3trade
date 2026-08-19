@@ -29,9 +29,11 @@
 // ellipsis and wrapping for free.
 
 import { useEffect, useId, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import type { TradingChartCandle } from "@t3tools/contracts";
 
+import { useMissionSelection } from "./missionSelectionStore";
 import { cn } from "~/lib/utils";
 
 import {
@@ -44,6 +46,7 @@ import {
   findLevelAtPrice,
   medianBarInterval,
   type ChartCondition,
+  type ChartLevel,
   type ChartLevelKind,
   type ChartPoint,
   type GutterTag,
@@ -161,6 +164,17 @@ interface MissionPriceChartProps {
    * operator could act on.
    */
   readonly positionSize?: number | null;
+  /**
+   * How many armed levels the geometry folded out of the gutter, for the
+   * "+N" overflow chip. Null (the chip is absent) when nothing was folded.
+   */
+  readonly overflowCount?: number | null;
+  /**
+   * Watch ids that fired in the last beat (phase 4). A chip whose level was
+   * armed by one of them plays its one-shot ripple — the fire is a state
+   * change, and the ripple is its announcement, never a loop.
+   */
+  readonly firedWatchIds?: ReadonlyArray<string> | undefined;
   readonly className?: string;
 }
 
@@ -176,6 +190,16 @@ const PAST_MARKER_TICK_HEIGHT = 6;
 const HYPOTHETICAL_STROKE_WIDTH = 0.75;
 const HYPOTHETICAL_DASH_ARRAY = "2 5";
 const HYPOTHETICAL_OPACITY = 0.75;
+
+/**
+ * How wide a live bracket's stub lines are, as a share of the plot width.
+ *
+ * The full-width rules are gone (phase 1); the only survivors are the stop and
+ * target stubs of an OPEN position, short enough to read as "the bracket is
+ * right here" without fencing the price line in. ~15%: a fifth of the frame's
+ * width at the right edge, beside the gutter chips that name them.
+ */
+const BRACKET_STUB_RATIO = 0.15;
 
 /**
  * The colour of a past-event tick, by what the event was — plan 24 §4.1.
@@ -229,58 +253,13 @@ function levelBaseColor(kind: ChartLevelKind | "mark"): string {
   }
 }
 
-/**
- * How strongly each level's *rule* is drawn, as a percentage of its colour.
- *
- * A rule spans the whole plot, so at full saturation it competes with the price
- * line for the eye — a stop drawn in solid loss-red was the loudest thing on a
- * chart whose subject is the price. These are deliberately low: the rule says
- * where, the gutter tag (drawn at `INK_MIX`) says what.
- */
-const RULE_MIX: Record<ChartLevelKind, number> = {
-  entry: 34,
-  stop: 28,
-  target: 34,
-  liquidation: 30,
-  // Quieter than the named levels: a condition is a price nothing has happened
-  // at yet, and there can be three of them.
-  condition_above: 22,
-  condition_below: 22,
-  // A resting order is about to become a position; it earns a little more.
-  pending_buy: 45,
-  pending_sell: 45,
-};
-
-/** Gutter tags are text and must stay legible, so they are near full strength. */
+/** Chip ink is text and must stay legible, so it is near full strength. */
 const INK_MIX = 85;
 
-/** The stroke a level's horizontal rule is drawn with. */
-function levelRuleColor(kind: ChartLevelKind): string {
-  return `color-mix(in oklab, ${levelBaseColor(kind)} ${RULE_MIX[kind]}%, transparent)`;
-}
-
-/** The colour a level's gutter tag is written in. */
+/** The colour a level's chip is written in. */
 function levelInkColor(kind: ChartLevelKind | "mark"): string {
   if (kind === "mark") return "var(--color-foreground)";
   return `color-mix(in oklab, ${levelBaseColor(kind)} ${INK_MIX}%, transparent)`;
-}
-
-/** The dash pattern that tells one level kind from another at a glance. */
-function levelDashArray(kind: ChartLevelKind): string | undefined {
-  switch (kind) {
-    case "entry":
-      // The reference every other figure is measured from: the one solid rule.
-      return undefined;
-    case "pending_buy":
-    case "pending_sell":
-      // Dotted: nothing has happened at this price yet.
-      return "1 4";
-    case "condition_above":
-    case "condition_below":
-      return "2 4";
-    default:
-      return "5 4";
-  }
 }
 
 /** The glyph that opens a gutter tag, or an empty string when it carries none. */
@@ -383,6 +362,68 @@ function pnlColor(sign: "profit" | "loss" | null): string {
   return "var(--color-muted-foreground)";
 }
 
+/**
+ * The plan wedge, or its dotted-path fallback.
+ *
+ * The wedge is a triangle: the live mark, the target at the projection's
+ * moment, and the stop at the same moment — filled with a horizontal gradient
+ * in the info ink that fades with distance from now. The far edge (stop →
+ * target at `endX`) is drawn as a solid short stroke: that is the
+ * invalidation, and it is the one part of the shape allowed to be crisp.
+ *
+ * When either bracket level is missing or off-frame the shape cannot close
+ * honestly, and the old dotted mark → projection path is drawn instead: a
+ * weaker statement, but a true one.
+ */
+function renderPlanWedge(input: {
+  readonly gradientId: string;
+  readonly projectionPoints: ReadonlyArray<ChartPoint>;
+  readonly levels: ReadonlyArray<ChartLevel>;
+  readonly endX: number;
+}): ReactNode {
+  const mark = input.projectionPoints[0]!;
+  const target = input.levels.find((level) => level.kind === "target") ?? null;
+  const stop = input.levels.find((level) => level.kind === "stop") ?? null;
+  if (target === null || stop === null || target.offScale !== null || stop.offScale !== null) {
+    return (
+      <polyline
+        data-testid="mission-chart-projection"
+        points={toPoints(input.projectionPoints)}
+        fill="none"
+        stroke="color-mix(in oklab, var(--color-info) 55%, transparent)"
+        strokeWidth={1.25}
+        strokeDasharray="1 5"
+        strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
+      />
+    );
+  }
+  // Endpoints clamped into the frame: a bold call still points the right way
+  // from inside the chart, the same courtesy the mark dot gets.
+  const clampY = (y: number): number => Math.min(CHART_VIEWBOX_HEIGHT - 2, Math.max(2, y));
+  const targetY = clampY(target.y);
+  const stopY = clampY(stop.y);
+  return (
+    <g data-testid="mission-chart-projection">
+      <polygon
+        points={`${mark.x},${mark.y} ${input.endX},${targetY} ${input.endX},${stopY}`}
+        fill={`url(#${input.gradientId}-wedge)`}
+        stroke="none"
+      />
+      {/* The hard edge: where the wedge ends is where the plan ends. */}
+      <line
+        x1={input.endX}
+        y1={targetY}
+        x2={input.endX}
+        y2={stopY}
+        stroke="color-mix(in oklab, var(--color-info) 70%, transparent)"
+        strokeWidth={1.5}
+        vectorEffect="non-scaling-stroke"
+      />
+    </g>
+  );
+}
+
 /** Turn a list of points into the `points` attribute of a `<polyline>`/`<polygon>`. */
 function toPoints(points: ReadonlyArray<ChartPoint>): string {
   return points.map((point) => `${point.x},${point.y}`).join(" ");
@@ -436,6 +477,8 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     onLevelDragEnd,
     refusedLevel,
     positionSize,
+    overflowCount,
+    firedWatchIds,
     className,
   } = props;
   const [drag, setDrag] = useState<{
@@ -460,6 +503,32 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     /** True when the sample is the live mark, not a candle close. */
     readonly isMark: boolean;
   } | null>(null);
+
+  // --- Chip hovers (phase 1/3). ----------------------------------------------
+  //
+  // A hovered chip extends a temporary hairline across the chart at its level
+  // (or its moment, for a time chip): the rule says where, the chip says what,
+  // and the rule exists only while the reader is asking. Keyboard focus counts
+  // as hover — the reveal is information, not decoration, so it is available to
+  // the tab order too.
+  const [hoveredTagKey, setHoveredTagKey] = useState<string | null>(null);
+  const [hoveredTimeKey, setHoveredTimeKey] = useState<string | null>(null);
+
+  // The shared selection: hovering a chip or marker tells the panel which
+  // event the reader is on, and the panel can do the same in reverse through
+  // `selection`. The store is mission-scoped by construction (one live panel
+  // per thread); a second mounted chart (a review) simply never writes.
+  const selection = useMissionSelection((state) => state.selected);
+  const selectEvent = useMissionSelection((state) => state.select);
+  const clearChartSelection = useMissionSelection((state) => state.clear);
+
+  const hoverChartEvent = (event: { id: string; atMillis: number } | null): void => {
+    if (event === null) {
+      clearChartSelection("chart");
+      return;
+    }
+    selectEvent({ eventId: event.id, atMillis: event.atMillis, source: "chart" });
+  };
 
   const geometry = computeChartGeometry({
     candles,
@@ -691,7 +760,15 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
    slide. */
 @keyframes mission-plot-settle { from { transform: translateX(-6px); opacity: 0.4; } to { transform: none; opacity: 1; } }
 .mission-plot-settle { animation: mission-plot-settle 1100ms cubic-bezier(0.33, 1, 0.68, 1) both; }
-@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } .mission-marker-slide { transition: none; } .mission-line-draw { stroke-dasharray: none; animation: none; } .mission-plot-settle { animation: none; } }`}</style>
+/* Phase 4 — the bracket stubs draw in when a position opens, once, from the
+   gutter edge outward: the bracket appearing IS the state change. */
+@keyframes mission-stub-draw { from { stroke-dashoffset: 220; } to { stroke-dashoffset: 0; } }
+.mission-stub-draw { animation: mission-stub-draw 550ms cubic-bezier(0.33, 1, 0.68, 1) both; }
+/* Phase 4 — a chip that just fired ripples once, then the chip is the
+   timeline's business. */
+@keyframes mission-chip-fire { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-armed) 45%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+.mission-chip-fire { animation: mission-chip-fire 700ms cubic-bezier(0, 0, 0.2, 1) 1; }
+@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } .mission-marker-slide { transition: none; } .mission-line-draw { stroke-dasharray: none; animation: none; } .mission-plot-settle { animation: none; } .mission-stub-draw { animation: none; } .mission-chip-fire { animation: none; } }`}</style>
       <svg
         viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${CHART_VIEWBOX_HEIGHT}`}
         preserveAspectRatio="none"
@@ -708,6 +785,13 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             <stop offset="0%" stopColor={lineColor} stopOpacity={0.22} />
             <stop offset="45%" stopColor={lineColor} stopOpacity={0.07} />
             <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
+          </linearGradient>
+          {/* The plan wedge's fade: strongest at now, softest at the far edge,
+              so distance reads as confidence without the shape ever fully
+              disappearing — the invalidation edge has to stay findable. */}
+          <linearGradient id={`${gradientId}-wedge`} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="var(--color-info)" stopOpacity={0.2} />
+            <stop offset="100%" stopColor="var(--color-info)" stopOpacity={0.06} />
           </linearGradient>
         </defs>
 
@@ -837,107 +921,126 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           ) : null}
         </g>
 
-        {/* The projection: where the model currently thinks price is going,
-            as a dotted path from the mark into the future gutter. The info
-            ink, not profit/loss — it is a read, not a result — and the
-            hypothetical dash, because everything right of now is a claim. */}
-        {geometry.projectionPoints.length === 2 ? (
-          <polyline
-            data-testid="mission-chart-projection"
-            points={toPoints(geometry.projectionPoints)}
-            fill="none"
-            // Muted deliberately: the projection is the model's read, not the
-            // record, and it is on screen at all times — at full ink it would
-            // compete with the one saturated shape, the price.
-            stroke="color-mix(in oklab, var(--color-info) 55%, transparent)"
-            strokeWidth={1.25}
-            strokeDasharray="1 5"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ) : null}
+        {/* The plan wedge (phase 3): ONE soft translucent shape from the live
+            mark toward the target zone over the plan's own byMinutes, fading
+            with distance. Its far edge is the invalidation — the hard vertical
+            line where the trade stops being the trade — so direction, size and
+            deadline read in one glance instead of as three separate lines.
+            Falls back to the old dotted path when the bracket levels are not
+            both on screen to close the shape against. */}
+        {geometry.projectionPoints.length === 2
+          ? renderPlanWedge({
+              gradientId,
+              projectionPoints: geometry.projectionPoints,
+              levels: geometry.levels,
+              endX: geometry.projectionPoints[1]!.x,
+            })
+          : null}
 
-        {/* Scheduled future events, standing in the gutter to the right of
-            now — where the plan says something will happen next.
-
-            Drawn at x=0 and translated, so the moment can be TRANSITIONED
-            rather than redrawn. A reassessment is a relative condition: every
-            wake re-arms it, and the moment it stands for jumps minutes further
-            out in a single projection update. Drawn as a new x each time, the
-            rule vanished from one place and appeared in another, which reads as
-            two rules rather than as one that reset. Eased, it slides right, and
-            the reset is the thing you see. */}
-        {geometry.timeMarkers.map((marker) => (
-          <line
-            key={`marker-${marker.key}`}
-            className="mission-marker-slide"
-            transform={`translate(${marker.x} 0)`}
-            x1={0}
-            y1={0}
-            x2={0}
-            y2={CHART_VIEWBOX_HEIGHT}
-            stroke={marker.tone === "auto" ? "var(--color-muted-foreground)" : "var(--color-armed)"}
-            strokeWidth={1}
-            // A floor rearming itself is a finer, sparser tick than a moment the
-            // plan chose to be woken for.
-            strokeDasharray={marker.tone === "auto" ? "1 5" : "3 4"}
-            opacity={marker.overdue ? 0.9 : marker.tone === "auto" ? 0.3 : 0.45}
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
+        {/* Future moments are TIME CHIPS in the bottom axis gutter (rendered
+            with the HTML overlay below); the full-height rules are gone. What
+            stays here is the temporary vertical hairline a hovered chip
+            extends, so the moment can be read against the price line while it
+            is being asked about — and stops existing the instant it is not. */}
+        {hoveredTimeKey === null
+          ? null
+          : geometry.timeMarkers
+              .filter((marker) => marker.key === hoveredTimeKey)
+              .map((marker) => (
+                <line
+                  key={`timehairline-${marker.key}`}
+                  data-testid="mission-chart-time-hairline"
+                  x1={marker.x}
+                  y1={0}
+                  x2={marker.x}
+                  y2={CHART_VIEWBOX_HEIGHT}
+                  stroke={
+                    marker.tone === "auto"
+                      ? "color-mix(in oklab, var(--color-muted-foreground) 40%, transparent)"
+                      : "color-mix(in oklab, var(--color-armed) 50%, transparent)"
+                  }
+                  strokeWidth={1}
+                  strokeDasharray="2 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
 
         {/* The mission's own turns, as a rug of ticks along the bottom edge.
             Full-height rules here would fence the price line in behind twenty
             verticals; a rug says "these are the moments" without competing with
-            the one saturated shape on screen. */}
-        {geometry.pastMarkers.map((marker) => (
-          <line
-            key={`past-${marker.key}`}
-            x1={marker.x}
-            y1={CHART_VIEWBOX_HEIGHT - PAST_MARKER_TICK_HEIGHT}
-            x2={marker.x}
-            y2={CHART_VIEWBOX_HEIGHT}
-            stroke={pastMarkerColor(marker)}
-            strokeWidth={1}
-            opacity={marker.failed === true ? 0.9 : 0.55}
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
+            the one saturated shape on screen.
 
-        {/* Horizontal price levels, in two registers. Up to `nowX` the rule is
-            the record — this price has been the stop, the target, the level
-            being watched. Past it the same rule is a projection, so it is
-            drawn thinner, dashed and at half strength, and a trigger's
-            projection stops at the reassessment that ends its plan rather than
-            running to the frame edge. The tags they belong to live in the HTML
-            gutter below, so nothing here is text. */}
-        {geometry.levels.map((level) => (
-          <g key={`${level.kind}-${level.price}`}>
+            While a selection is live (from either side), the matching tick
+            glows and the rest recede — one moment, one question. */}
+        {geometry.pastMarkers.map((marker) => {
+          const selected = selection !== null && Math.abs(selection.atMillis - marker.at) <= 2_000;
+          return (
             <line
-              x1={0}
-              y1={level.y}
-              x2={geometry.nowX}
-              y2={level.y}
-              stroke={levelRuleColor(level.kind)}
-              strokeWidth={1}
-              strokeDasharray={levelDashArray(level.kind)}
+              key={`past-${marker.key}`}
+              data-testid={`mission-past-tick-${marker.key}`}
+              x1={marker.x}
+              y1={CHART_VIEWBOX_HEIGHT - (selected ? 10 : PAST_MARKER_TICK_HEIGHT)}
+              x2={marker.x}
+              y2={CHART_VIEWBOX_HEIGHT}
+              stroke={pastMarkerColor(marker)}
+              strokeWidth={selected ? 2 : 1}
+              opacity={
+                selected ? 1 : selection === null ? (marker.failed === true ? 0.9 : 0.55) : 0.2
+              }
               vectorEffect="non-scaling-stroke"
             />
-            {level.futureEndX > geometry.nowX ? (
-              <line
-                x1={geometry.nowX}
-                y1={level.y}
-                x2={level.futureEndX}
-                y2={level.y}
-                stroke={levelRuleColor(level.kind)}
-                strokeWidth={HYPOTHETICAL_STROKE_WIDTH}
-                strokeDasharray={HYPOTHETICAL_DASH_ARRAY}
-                opacity={HYPOTHETICAL_OPACITY}
-                vectorEffect="non-scaling-stroke"
-              />
-            ) : null}
-          </g>
-        ))}
+          );
+        })}
+
+        {/* The bracket stubs (phase 1): while a position is open, its stop and
+            target keep a SHORT rule at the right edge of the plot — just wide
+            enough that the bracket reads as a bracket next to the chips that
+            name it, and no wider. Every other level's full-width rule is gone:
+            the levels live in the gutter chips, and a rule spans the plot only
+            while its chip is hovered (the hairline below). */}
+        {pnlSign === null
+          ? null
+          : geometry.levels
+              .filter((level) => level.kind === "stop" || level.kind === "target")
+              .map((level) => (
+                <line
+                  key={`stub-${level.kind}`}
+                  data-testid={`mission-chart-stub-${level.kind}`}
+                  className="mission-stub-draw"
+                  x1={PLOT_WIDTH * (1 - BRACKET_STUB_RATIO)}
+                  y1={level.y}
+                  x2={PLOT_WIDTH}
+                  y2={level.y}
+                  stroke={levelInkColor(level.kind)}
+                  strokeWidth={1.5}
+                  strokeDasharray="5 4"
+                  opacity={0.85}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+
+        {/* The hovered chip's temporary hairline. Exists only while the chip
+            is hovered or focused — the rule says where, the chip says what,
+            and both disappear together the moment the reader stops asking. */}
+        {hoveredTagKey === null
+          ? null
+          : geometry.gutterTags
+              .filter((tag) => tag.key === hoveredTagKey && tag.kind !== "mark")
+              .map((tag) => (
+                <line
+                  key={`hairline-${tag.key}`}
+                  data-testid="mission-chart-hairline"
+                  x1={0}
+                  y1={tag.y}
+                  x2={geometry.nowX}
+                  y2={tag.y}
+                  stroke={levelInkColor(tag.kind)}
+                  strokeWidth={1}
+                  strokeDasharray="2 4"
+                  opacity={0.5}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
 
         {/* The flashed level: the same rule, drawn once more in its own ink and
             keyed by the click that asked for it, so the animation restarts on
@@ -960,16 +1063,17 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         )}
 
         {/* The refused level's plan price, in the hypothetical register. The
-            rule above stays where the stop actually rests; this is what the
-            plan now says, drawn as the claim it is. */}
+            rule stays where the stop actually rests; this is what the plan now
+            says, drawn as the claim it is — stub-width, like the bracket, not
+            a full-width line. */}
         {refusedY === null || refusedLevel === null || refusedLevel === undefined ? null : (
           <line
             data-testid="mission-chart-refused-plan"
-            x1={0}
+            x1={PLOT_WIDTH * (1 - BRACKET_STUB_RATIO)}
             y1={refusedY}
             x2={PLOT_WIDTH}
             y2={refusedY}
-            stroke={levelRuleColor(refusedLevel.kind)}
+            stroke={levelInkColor(refusedLevel.kind)}
             strokeWidth={HYPOTHETICAL_STROKE_WIDTH}
             strokeDasharray={HYPOTHETICAL_DASH_ARRAY}
             opacity={HYPOTHETICAL_OPACITY}
@@ -992,22 +1096,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           />
         )}
 
-        {/* Leader lines: a tag nudged off its own level still points at it. */}
-        {geometry.gutterTags
-          .filter((tag) => Math.abs(tag.labelY - tag.y) > 0.5)
-          .map((tag) => (
-            <line
-              key={`leader-${tag.key}`}
-              x1={PLOT_WIDTH}
-              y1={tag.y}
-              x2={PLOT_WIDTH + 6}
-              y2={tag.labelY}
-              stroke={tag.kind === "mark" ? segmentColor : levelRuleColor(tag.kind)}
-              strokeWidth={1}
-              vectorEffect="non-scaling-stroke"
-              opacity={0.6}
-            />
-          ))}
+        {/* Leader lines retired with the rules: nothing persistent left on the
+            plot for a nudged chip to point at — the hover hairline appears at
+            the chip's own level, wherever its label was laid out. */}
       </svg>
 
       {/* The grab strips. HTML rather than SVG because a stretched plot makes
@@ -1065,20 +1156,61 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           they stay in register with the plot at any size and stay round. */}
       {geometry.fillPoints.map((fill) => {
         const style = fillMarkerStyle(fill.kind);
+        const selected =
+          selection !== null &&
+          (selection.eventId === fill.key || Math.abs(selection.atMillis - fill.at) <= 2_000);
         return (
           <span
             key={`fill-${fill.key}`}
-            className="pointer-events-none absolute size-[7px] -translate-x-1/2 -translate-y-1/2 rounded-full border-[1.5px]"
+            data-testid={`mission-fill-${fill.key}`}
+            // A fill is the one thing on the price path worth reading whole:
+            // side, size, price, net, as a native tooltip on the marker itself.
+            title={fill.label ?? fill.kind.replaceAll("_", " ")}
+            className="group/fill absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full outline-none"
             style={{
               left: `${(fill.x / CHART_VIEWBOX_WIDTH) * 100}%`,
               top: `${(fill.y / CHART_VIEWBOX_HEIGHT) * 100}%`,
-              borderColor: style.color,
-              backgroundColor: style.filled ? style.color : "transparent",
             }}
-            aria-hidden="true"
-          />
+            tabIndex={0}
+            aria-label={fill.label ?? undefined}
+            onFocus={() => hoverChartEvent({ id: fill.key, atMillis: fill.at })}
+            onBlur={() => hoverChartEvent(null)}
+            onMouseEnter={() => hoverChartEvent({ id: fill.key, atMillis: fill.at })}
+            onMouseLeave={() => hoverChartEvent(null)}
+          >
+            <span
+              className={cn(
+                "block size-[7px] rounded-full border-[1.5px] transition-transform duration-150 group-hover/fill:scale-[1.6] motion-reduce:transition-none motion-reduce:group-hover/fill:scale-100",
+                selected && "scale-[1.6] motion-reduce:scale-100",
+              )}
+              style={{
+                borderColor: style.color,
+                backgroundColor: style.filled ? style.color : "transparent",
+              }}
+            />
+          </span>
         );
       })}
+
+      {/* The past markers' hover targets: one invisible strip per tick, wide
+          enough to hit, through which a hover (or focus) claims the moment for
+          the shared selection — the tick glows and the panel finds its card. */}
+      {geometry.pastMarkers.map((marker) => (
+        <span
+          key={`pasthit-${marker.key}`}
+          className="absolute h-4 w-3 -translate-x-1/2 translate-y-[-100%] rounded-sm outline-none"
+          style={{
+            left: `${(marker.x / CHART_VIEWBOX_WIDTH) * 100}%`,
+            bottom: 0,
+          }}
+          tabIndex={0}
+          aria-label={`${marker.kind} at ${new Date(marker.at).toLocaleTimeString()}`}
+          onFocus={() => hoverChartEvent({ id: marker.key, atMillis: marker.at })}
+          onBlur={() => hoverChartEvent(null)}
+          onMouseEnter={() => hoverChartEvent({ id: marker.key, atMillis: marker.at })}
+          onMouseLeave={() => hoverChartEvent(null)}
+        />
+      ))}
 
       {/* The mark: a solid dot inside a pulsing ring. The ring is what carries
           the motion, so the dot itself stays a crisp, readable point. */}
@@ -1110,41 +1242,49 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         </span>
       ) : null}
 
-      {/* The projection's endpoint: a hollow ring in the info ink, where the
-          read expects price to be. Hollow, because nothing has happened there
-          — the solid dot on this chart is reserved for the mark. */}
-      {geometry.projectionPoints.length === 2 ? (
-        <span
-          data-testid="mission-chart-projection-end"
-          className="pointer-events-none absolute size-[7px] -translate-x-1/2 -translate-y-1/2 rounded-full border-[1.5px]"
-          style={{
-            left: `${((geometry.projectionPoints[1]?.x ?? 0) / CHART_VIEWBOX_WIDTH) * 100}%`,
-            top: `${((geometry.projectionPoints[1]?.y ?? 0) / CHART_VIEWBOX_HEIGHT) * 100}%`,
-            borderColor: "var(--color-info)",
-            backgroundColor: "transparent",
-          }}
-          aria-hidden="true"
-        />
-      ) : null}
+      {/* The projection's endpoint ring retired with the dotted path: the
+          wedge carries the same read as one shape, and a ring floating at the
+          far edge of a faded wedge is chrome the shape already implies. */}
 
-      {/* Marker captions. HTML for the same reason the gutter is, and anchored
-          by their RIGHT edge to the rule so they grow leftward into the plot
-          and can never overflow the frame. */}
-      {geometry.timeMarkers.map((marker) =>
-        marker.label === "" ? null : (
-          <span
-            key={`marker-label-${marker.key}`}
-            className={cn(
-              "mission-marker-slide pointer-events-none absolute top-1 whitespace-nowrap pr-1.5 text-[10.5px] leading-none",
-              marker.tone === "auto" ? "text-muted-foreground" : "text-armed",
-            )}
-            style={{ right: `${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}%` }}
-            aria-hidden="true"
-          >
-            {marker.label}
+      {/* Time chips (phase 1): every future moment — reassessments, the plan
+          horizon — is a small glass chip docked in the BOTTOM axis gutter, in
+          the future zone right of the last candle. Unlabelled queue members
+          state their clock time; the nearest one keeps its word. Hovering or
+          focusing a chip extends its temporary vertical hairline (above), and
+          slides when its moment is re-armed, the way the rule it replaced
+          did. Anchored by their RIGHT edge so they grow leftward into the
+          plot and can never overflow the frame. */}
+      {geometry.timeMarkers.map((marker) => (
+        <span
+          key={`timechip-${marker.key}`}
+          data-testid={`mission-time-chip-${marker.key}`}
+          className={cn(
+            "mission-marker-slide absolute bottom-0.5 flex max-w-[9rem] cursor-default items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-[1px] font-mono text-[10px] leading-none outline-none backdrop-blur-sm transition-colors",
+            marker.tone === "auto"
+              ? "border-border/50 bg-background/70 text-muted-foreground"
+              : "border-armed/40 bg-background/70 text-armed",
+            hoveredTimeKey === marker.key && "border-armed/70",
+          )}
+          style={{ right: `${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}%` }}
+          tabIndex={0}
+          aria-label={`${marker.label === "" ? "check-in" : marker.label} at ${new Date(
+            marker.at,
+          ).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+          onMouseEnter={() => setHoveredTimeKey(marker.key)}
+          onMouseLeave={() => setHoveredTimeKey(null)}
+          onFocus={() => setHoveredTimeKey(marker.key)}
+          onBlur={() => setHoveredTimeKey(null)}
+        >
+          <span className="text-[9px]" aria-hidden>
+            ◷
           </span>
-        ),
-      )}
+          <span className="truncate">
+            {marker.label === ""
+              ? new Date(marker.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              : marker.label}
+          </span>
+        </span>
+      ))}
 
       {/* The EMA legend went with the lines it named. A legend for a series
           that is not drawn is two more prices to read in the corner of a chart
@@ -1212,53 +1352,99 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         </>
       )}
 
-      {/* The gutter: HTML, so the glyphs are never stretched by the plot's
-          aspect ratio and a long caption can ellipsis instead of overflowing. */}
+      {/* The gutter (phase 1): every level is a CHIP — a small glass pill
+          docked at its price, color-coded by kind within the panel's one
+          accent family. HTML so the glyphs are never stretched by the plot's
+          aspect ratio; interactive, because the chip's hover (or focus) is
+          what extends its temporary hairline across the chart and claims the
+          shared selection for the watch stream's matching row. */}
       <div
-        className="pointer-events-none absolute inset-y-0 right-0 text-[11.5px] leading-none tabular-nums"
-        // Step 8.7. The gutter was a flat 15% of the frame, which is ~56px on a
-        // 375px phone — narrower than "○ ▲ 1,873.5" — so every tag clipped to
-        // "1,8" and the panel stopped answering what is protecting you and at
-        // what price. A floor in real pixels is what makes the tag legible at
-        // any width; it eats into the right end of the plot, which is the
-        // future gutter and is empty by construction.
+        className="absolute inset-y-0 right-0 flex flex-col items-end justify-center gap-[3px] text-[11px] leading-none tabular-nums"
         style={{ width: `max(${gutterPercent}%, 4.5rem)` }}
-        aria-hidden="true"
       >
         {geometry.gutterTags.map((tag) => {
           const caption = tagCaption(tag);
           const glyph = tagGlyph(tag);
+          const ink = tag.kind === "mark" ? segmentColor : levelInkColor(tag.kind);
+          const hovered = hoveredTagKey === tag.key;
+          const selected =
+            tag.id !== undefined && selection !== null && selection.eventId === tag.id;
           return (
-            // Price and caption stack rather than sharing a line. On a narrow
-            // panel the gutter is ~70px, and "3421.50 close above" on one line
-            // truncated to "3421.50 clo…" — the half of the tag that says WHAT
-            // the level is was the half being hidden.
             <span
               key={tag.key}
-              className="absolute left-1.5 right-0.5 flex -translate-y-1/2 flex-col leading-[1.15]"
+              data-testid={`mission-level-chip-${tag.kind}`}
+              className={cn(
+                "mission-chip flex max-w-full cursor-default items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-[1.5px] font-mono text-[10.5px] outline-none backdrop-blur-sm transition-[box-shadow,border-color] duration-150",
+                hovered || selected ? "border-current/60" : "border-border/50",
+                tag.id !== undefined &&
+                  firedWatchIds !== undefined &&
+                  firedWatchIds.includes(tag.id) &&
+                  "mission-chip-fire",
+              )}
               style={{
+                color: ink,
                 top: `${(tag.labelY / CHART_VIEWBOX_HEIGHT) * 100}%`,
-                color: tag.kind === "mark" ? segmentColor : levelInkColor(tag.kind),
-                fontWeight: tag.kind === "mark" ? 600 : 400,
+                position: "absolute",
+                right: 2,
+                ...(selected
+                  ? { boxShadow: `0 0 0 1px color-mix(in oklab, ${ink} 45%, transparent)` }
+                  : {}),
+              }}
+              tabIndex={0}
+              role="note"
+              aria-label={`${caption === "" ? tag.kind.replaceAll("_", " ") : caption} at ${formatPrice(tag.price)}`}
+              onMouseEnter={() => {
+                setHoveredTagKey(tag.key);
+                if (tag.id !== undefined) hoverChartEvent({ id: tag.id, atMillis: 0 });
+              }}
+              onMouseLeave={() => {
+                setHoveredTagKey(null);
+                hoverChartEvent(null);
+              }}
+              onFocus={() => {
+                setHoveredTagKey(tag.key);
+                if (tag.id !== undefined) hoverChartEvent({ id: tag.id, atMillis: 0 });
+              }}
+              onBlur={() => {
+                setHoveredTagKey(null);
+                hoverChartEvent(null);
               }}
             >
-              <span className="flex items-baseline gap-1 whitespace-nowrap">
-                {glyph === "" ? null : <span>{glyph}</span>}
-                <span>{formatPrice(tag.price)}</span>
-                {tag.offScale === null ? null : <span>{tag.offScale === "above" ? "↑" : "↓"}</span>}
-              </span>
+              {glyph === "" ? null : (
+                <span className="text-[9px]" aria-hidden>
+                  {glyph}
+                </span>
+              )}
+              <span>{formatPrice(tag.price)}</span>
+              {tag.offScale === null ? null : (
+                <span aria-hidden>{tag.offScale === "above" ? "↑" : "↓"}</span>
+              )}
               {caption === "" ? null : (
-                <span className="truncate text-[10px] opacity-80">
+                <span className="truncate text-[9.5px] opacity-70">
                   {tag.kind === "mark" ? `(${caption})` : caption}
-                  {/* A cluster says how many watches it stands for, so folding
-                      three near-identical levels into one rule hides no armed
-                      condition — it only stops drawing three of them. */}
                   {tag.count === undefined ? "" : ` ×${tag.count}`}
                 </span>
               )}
             </span>
           );
         })}
+        {/* The overflow chip: levels the gutter folded away are not silently
+            dropped — they are counted here, and hovering the count claims the
+            selection so the panel's watch list answers with the full set. */}
+        {overflowCount !== null && overflowCount !== undefined && overflowCount > 0 ? (
+          <span
+            data-testid="mission-chip-overflow"
+            className="mission-chip absolute bottom-0.5 right-2 flex cursor-default items-center gap-1 rounded-full border border-border/50 bg-background/70 px-1.5 py-[1.5px] font-mono text-[10.5px] text-muted-foreground outline-none backdrop-blur-sm"
+            tabIndex={0}
+            aria-label={`${overflowCount} more armed levels, listed in the watch panel`}
+            onMouseEnter={() => hoverChartEvent({ id: "chip-overflow", atMillis: 0 })}
+            onMouseLeave={() => hoverChartEvent(null)}
+            onFocus={() => hoverChartEvent({ id: "chip-overflow", atMillis: 0 })}
+            onBlur={() => hoverChartEvent(null)}
+          >
+            +{overflowCount}
+          </span>
+        ) : null}
       </div>
     </div>
   );
