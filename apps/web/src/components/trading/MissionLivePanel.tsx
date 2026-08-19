@@ -143,6 +143,7 @@ import {
   useMissionSelection,
   type ChartEventSelection,
 } from "./missionSelectionStore";
+import { deriveTurnTimeline, type TurnTimelineCard } from "./missionTurnTimeline";
 import { useMissionPlanRevision, type MissionPlanRevision } from "./useMissionPlanRevision";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -559,6 +560,15 @@ export function MissionLivePanel({
   // headed by a condition the mission never chose reads as a plan when there
   // is not one.
   const watchStream = state === "planning" ? [] : deriveWatchLifecycle(mission).stream;
+  // The turn timeline (phase 3): one card per wake plus revision, note and
+  // trade cards, newest first. Everything it states is already pushed — the
+  // timeline's composed prose and the fill receipts — so this is a reformat,
+  // not a new projection.
+  const turnTimeline = deriveTurnTimeline({
+    market: mission.market,
+    missionTimeline: mission.missionTimeline,
+    recentFills: mission.recentFills,
+  });
   // A row that just fired holds its place at the top for a beat while the live
   // dot becomes a tick, so the operator sees the moment happen instead of a row
   // sliding down between polls.
@@ -937,6 +947,12 @@ export function MissionLivePanel({
             readout leaves collects ABOVE it rather than in the middle of the
             list — which is exactly where the reference leaves its own air. */}
           {checklist}
+          <TurnTimeline
+            cards={turnTimeline.cards}
+            earlierCount={turnTimeline.earlierCount}
+            selection={selection}
+            onHoverEvent={hoverPanelEvent}
+          />
           <RevisionNote revision={revision} />
 
           {/* The plan disclosure that used to close this card is now the popup
@@ -2046,6 +2062,157 @@ function WatchStream({
           +{droppedConditions} more level{droppedConditions === 1 ? "" : "s"} armed, off the chart
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The turn timeline (phase 3): the session as one card per turn.
+ *
+ * The watch stream says what the mission is waiting for; this says what it
+ * DID — why it woke, what it decided, what it traded — in the plan's plain
+ * register, newest first in its own scroller so a new card arriving never
+ * jumps the one being read.
+ *
+ * The two-way join goes through the same selection store as everything else:
+ * hovering a card claims its moment (the chart's rug tick glows, the rest
+ * dim), and hovering a chart tick, chip or fill scrolls to and highlights the
+ * matching card here.
+ */
+function TurnTimeline({
+  cards,
+  earlierCount,
+  selection,
+  onHoverEvent,
+}: {
+  readonly cards: ReadonlyArray<TurnTimelineCard>;
+  /** Turns past the cap, stated as a count the way the watch stream does. */
+  readonly earlierCount: number;
+  readonly selection: ChartEventSelection | null;
+  readonly onHoverEvent: (event: { id: string; atMillis: number } | null) => void;
+}): ReactNode {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // A chart-side selection scrolls to its card here — the same one-effect,
+  // no-listener pattern the watch stream uses. The join is by id first (a
+  // fill's key, a chip's watch id) and by moment second: the chart's past
+  // ticks carry index-derived keys, and a wake's moment is the honest join.
+  useEffect(() => {
+    if (selection?.source !== "chart" || scrollRef.current === null) return;
+    if (selection.eventId === "chip-overflow") return;
+    const target = cards.find(
+      (card) => card.id === selection.eventId || isMomentSelected(selection, card.atMillis),
+    );
+    if (target === undefined) return;
+    const element = scrollRef.current.querySelector(
+      `[data-timeline-card="${CSS.escape(target.id)}"]`,
+    );
+    element?.scrollIntoView({ block: "nearest", behavior: "instant" });
+  }, [selection, cards]);
+
+  if (cards.length === 0) return null;
+
+  return (
+    <div data-testid="mission-turn-timeline" className="border-t border-border/40 pt-2.5 pb-1">
+      <p className={cn(BAND_PAD_CLASS, BAND_LEGEND_CLASS, "pb-1.5")}>turns</p>
+      <div ref={scrollRef} className="max-h-[220px] overflow-y-auto overscroll-contain">
+        <div className="divide-y divide-border/15">
+          {cards.map((card) => (
+            <TurnTimelineCardRow
+              key={card.id}
+              card={card}
+              isSelected={
+                selection !== null &&
+                (selection.eventId === card.id || isMomentSelected(selection, card.atMillis))
+              }
+              onHoverEvent={onHoverEvent}
+            />
+          ))}
+        </div>
+        {earlierCount === 0 ? null : (
+          <p
+            className={cn(
+              BAND_PAD_CLASS,
+              "py-2 font-mono text-[11px] tabular-nums text-muted-foreground/60",
+            )}
+          >
+            {earlierCount} earlier turn{earlierCount === 1 ? "" : "s"} not shown
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The icon and label word that name a card's kind. */
+function turnCardIdentity(kind: TurnTimelineCard["kind"]): { Icon: typeof Box; word: string } {
+  switch (kind) {
+    case "wake":
+      return { Icon: Radar, word: "woke" };
+    case "revision":
+      return { Icon: FileText, word: "plan" };
+    case "note":
+      return { Icon: FileText, word: "note" };
+    case "trade":
+      return { Icon: Receipt, word: "trade" };
+  }
+}
+
+/**
+ * One card of the timeline: the kind's glyph and clock time, the main line in
+ * prose, and the figures in mono. Numbers never appear in the prose face and
+ * prose never appears in mono — the same split the rest of the panel keeps.
+ */
+function TurnTimelineCardRow({
+  card,
+  isSelected,
+  onHoverEvent,
+}: {
+  readonly card: TurnTimelineCard;
+  readonly isSelected: boolean;
+  readonly onHoverEvent: (event: { id: string; atMillis: number } | null) => void;
+}): ReactNode {
+  const { Icon, word } = turnCardIdentity(card.kind);
+  const toneClass =
+    card.tone === "loss" ? "text-loss" : card.tone === "profit" ? "text-profit" : undefined;
+  return (
+    <div
+      data-timeline-card={card.id}
+      data-timeline-kind={card.kind}
+      onMouseEnter={() => onHoverEvent({ id: card.id, atMillis: card.atMillis })}
+      onMouseLeave={() => onHoverEvent(null)}
+      className={cn(
+        BAND_PAD_CLASS,
+        "flex items-baseline gap-x-2 py-2 text-[12px] leading-snug",
+        isSelected && "bg-armed/10",
+      )}
+    >
+      <Icon
+        className={cn("size-[11px] flex-none self-center", toneClass ?? "text-muted-foreground/60")}
+        strokeWidth={2}
+        aria-hidden
+      />
+      <span className="sr-only">{word}: </span>
+      <span className={cn("min-w-0 flex-1", toneClass ?? "text-foreground/90")}>
+        {card.triggerLabel}
+        {card.decisionLabel === null ? null : (
+          <span className="text-muted-foreground"> · {card.decisionLabel}</span>
+        )}
+        {card.detailLabel === null ? null : (
+          <span className="block text-[11px] text-muted-foreground">{card.detailLabel}</span>
+        )}
+      </span>
+      {/* The moment the card happened at, as a clock time — the same figure
+          the chart's rug tick stands for. */}
+      <span className="flex-none font-mono text-[10.5px] tabular-nums text-muted-foreground/60">
+        {new Date(card.atMillis).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+        {card.priceLevel === null ? null : (
+          <span className="ml-1.5 hidden sm:inline">{formatPrice(card.priceLevel)}</span>
+        )}
+      </span>
     </div>
   );
 }

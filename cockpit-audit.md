@@ -82,9 +82,15 @@ armed predicates incl. `candle_close.interval`. No new events needed.
   one pure function mission-state → sentence; strip rendered above the chart
   card; candle interval rendered from the watch's own `interval` data.
 - **Phase 3** (new `missionSelectionStore.ts` (zustand, repo standard),
-  `MissionLivePanel.tsx`, `MissionPriceChart.tsx`): shared hover/selection
-  between chart chips/markers and WatchStream/ledger rows; plan wedge from
-  mark toward target over `byMinutes`, invalidation as hard edge.
+  `MissionLivePanel.tsx`, `MissionPriceChart.tsx`, new `missionTurnTimeline.ts`
+  - tests) — AS BUILT: shared hover/selection between chart chips/markers and
+    WatchStream/ledger rows; plan wedge from mark toward target over
+    `byMinutes`, invalidation as hard edge; and the TURN TIMELINE — one card per
+    wake (why it woke, what it decided that turn) plus plan revision, journal
+    note, and trade cards, newest first, derived purely from the already-pushed
+    `missionTimeline` prose and `recentFills` (no projection fields added). Card
+    hover claims the moment on the chart (rug tick glow, others dim); chart
+    chip/tick/fill hover scrolls to and highlights the matching card.
 - **Phase 4** (`index.css`, `MissionLivePanel.tsx`, `MissionPriceChart.tsx`):
   arm-pulse / fire-ripple / fade chip lifecycle, bracket draw-in, PnL
   count-up — all one-shot, all reduced-motion safe. Glass per skill rules.
