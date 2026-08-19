@@ -591,6 +591,17 @@ const withMcpServer = <A, E>(
       readonly closedPnl: number;
       readonly feeUsd: number;
     }) => Effect.Effect<void, never, never>;
+    /** Record one closed trade, as the reconciler would when a position exits. */
+    readonly seedClosedTrade: (input: {
+      readonly tradeId: string;
+      readonly closedAt: number;
+      readonly strategyVersion: number;
+      readonly targetProfitUsd: number;
+      readonly peak: number;
+      readonly trough: number;
+      readonly netPnl: number;
+      readonly stopNoiseFloorMultiple?: number | undefined;
+    }) => Effect.Effect<void, never, never>;
     /** Give the mission's account a master wallet, as bootstrap would. */
     readonly seedTradingAccount: () => Effect.Effect<void, never, never>;
     /** Record an open position, as the reconciler would. */
@@ -656,6 +667,29 @@ const withMcpServer = <A, E>(
           ) VALUES (
             ${input.fillId}, ${MISSION_ID}, NULL, NULL, ${input.orderId}, 'ETH', 'sell',
             1, 3000, ${input.feeUsd}, 'USDC', ${input.closedPnl}, 1, 1
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
+      const seedClosedTrade = (input: {
+        readonly tradeId: string;
+        readonly closedAt: number;
+        readonly strategyVersion: number;
+        readonly targetProfitUsd: number;
+        readonly peak: number;
+        readonly trough: number;
+        readonly netPnl: number;
+        readonly stopNoiseFloorMultiple?: number | undefined;
+      }) =>
+        sql`
+          INSERT INTO trading_closed_trades (
+            mission_id, market, opened_at, closed_at, hold_millis, direction, size,
+            entry_price, exit_price, realized_pnl, fees_paid, net_pnl,
+            peak_unrealised_pnl, trough_unrealised_pnl, giveback_from_peak,
+            fill_count, strategy_version, target_profit_usd, stop_noise_floor_multiple
+          ) VALUES (
+            ${MISSION_ID}, 'ETH', ${input.closedAt - 60_000}, ${input.closedAt}, 60000, 'long', 1,
+            1900, 1905, ${input.netPnl + 1}, 1, ${input.netPnl},
+            ${input.peak}, ${input.trough}, 0, 2, ${input.strategyVersion},
+            ${input.targetProfitUsd}, ${input.stopNoiseFloorMultiple ?? null}
           )
         `.pipe(Effect.asVoid, Effect.orDie);
       const seedTradingAccount = () =>
@@ -855,6 +889,7 @@ const withMcpServer = <A, E>(
         missions,
         seedActiveWatch,
         seedFill,
+        seedClosedTrade,
         seedTradingAccount,
         seedPosition,
         seedPlan,
@@ -2912,6 +2947,7 @@ it.live("serves every catalog key within ±20% of its published size", () => {
       seedTradingAccount,
       seedActiveWatch,
       seedFill,
+      seedClosedTrade,
       seedLevelEvent,
       seedInboxEvent,
       seedPosition,
@@ -2963,6 +2999,36 @@ it.live("serves every catalog key within ±20% of its published size", () => {
         yield* seedFill({ fillId: "sz_f2", orderId: 911, closedPnl: -4.2, feeUsd: 1.08 });
         yield* seedFill({ fillId: "sz_f3", orderId: 912, closedPnl: 18.4, feeUsd: 1.31 });
         yield* seedFill({ fillId: "sz_f4", orderId: 913, closedPnl: 6.7, feeUsd: 0.94 });
+        // Fourteen closed trades, as a mission with a held target's history
+        // would carry: eight under the plan now in force (v31, $20 target),
+        // six under the revision before it (v30, $18). Two-thirds of them
+        // touched the target, one in three banked it; stops sat 1.4 noise
+        // floors out. That is the record `calibration` grades — and its
+        // section lands near the catalog's measured 1,047 chars.
+        for (let index = 0; index < 8; index += 1) {
+          yield* seedClosedTrade({
+            tradeId: `sz_t31_${index}`,
+            closedAt: 600_000 - index * 10_000,
+            strategyVersion: 31,
+            targetProfitUsd: 20,
+            peak: index % 3 === 0 ? 24 : 12,
+            trough: -8,
+            netPnl: index % 3 === 0 ? 14 : -6,
+            stopNoiseFloorMultiple: 1.4,
+          });
+        }
+        for (let index = 0; index < 6; index += 1) {
+          yield* seedClosedTrade({
+            tradeId: `sz_t30_${index}`,
+            closedAt: 500_000 - index * 10_000,
+            strategyVersion: 30,
+            targetProfitUsd: 18,
+            peak: index % 3 === 0 ? 21.6 : 10.8,
+            trough: -7.2,
+            netPnl: index % 3 === 0 ? 12.6 : -5.4,
+            stopNoiseFloorMultiple: 1.4,
+          });
+        }
         const sizedLevels = [1_914.6, 1_918, 1_921.4, 1_909.8, 1_926.7, 1_905.2];
         for (const [index, level] of sizedLevels.entries()) {
           yield* seedLevelEvent({
@@ -3121,11 +3187,10 @@ it.live("serves every catalog key within ±20% of its published size", () => {
         };
 
         for (const key of keys) {
-          // `calibration` reads trading_closed_trades, which no seed helper in
-          // this harness writes; and `cost` prices a hypothetical entry only
-          // while flat — this mission holds. Both are asserted as unavailable
-          // with reasons below, not as sizes.
-          if (key === "calibration" || key === "cost") continue;
+          // `cost` prices a hypothetical entry only while flat — this mission
+          // holds — so it is asserted as unavailable with a reason below,
+          // not as a size.
+          if (key === "cost") continue;
           const expected = FIXTURE_DEVIATIONS[key] ?? CATALOG_CHARS(key.split(":")[0] ?? key);
           const actual = measured[key] ?? 0;
           assert.isAtLeast(
@@ -3140,15 +3205,8 @@ it.live("serves every catalog key within ±20% of its published size", () => {
           );
         }
 
-        // The two keys the holding fixture answers with a reason instead of
+        // The one key the holding fixture answers with a reason instead of
         // data — the never-a-zero rule, exercised.
-        const calibration = yield* callTool(BOUND_THREAD, "trading_look", {
-          fetch: ["calibration"],
-        });
-        assert.include(
-          calibration.result.body.unavailable?.[0]?.reason ?? "",
-          "no closed trades to grade",
-        );
         const cost = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["cost"] });
         assert.include(cost.result.body.unavailable?.[0]?.reason ?? "", "position_costs");
       }),
