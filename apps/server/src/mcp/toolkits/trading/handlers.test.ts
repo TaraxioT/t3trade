@@ -10,6 +10,8 @@ import { TRADING_LOOK_FLAT_BAR_CAP } from "@t3tools/trading-contracts/observatio
 import { computeIndicator } from "@t3tools/trading-contracts/indicators";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { createHash } from "node:crypto";
+
 import { assert, expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -2410,6 +2412,132 @@ it.effect("serves the cost of the position it is holding", () => {
         assert.equal(held.result.isError, false);
         assert.equal(held.result.body.position.size, -0.474);
         assert.isDefined(held.result.body.positionCosts);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+// -- plan 38 phase 2c: the scope[] compatibility pin ---------------------------
+//
+// `fetch[]` ships alongside `scope[]` (§5.3), and the compatibility guarantee is
+// byte identity: a call naming `scope` gets the pre-phase behaviour exactly.
+// These goldens were captured against the pre-fetch build and are the
+// regression oracle for every change to the read path. A changed digest here
+// means the legacy path moved, whatever the intent was.
+//
+// sha256 of `result.content[0].text` — the exact JSON the model receives. The
+// fixtures are fixed-timestamp throughout (freshness at 1_000_000, TestClock
+// observedAt), so the digests are stable across runs; a digest rather than the
+// full ~4k strings keeps the oracle reviewable as one line per call.
+const GOLDEN_CALLS: ReadonlyArray<{ readonly label: string; readonly digest: string }> = [
+  {
+    label: "scope:market",
+    digest: "72fcd3c985c19ed4b8f6d5ebc0e1bf00c171c8797dd9570896c0eeb140d9db85",
+  },
+  {
+    label: "scope:candles",
+    digest: "32ce5d278d0c516c68d27c6caa1f90225761da7391d35a3df38b0d1d116977dd",
+  },
+  {
+    label: "scope:structure",
+    digest: "90b6f494127d3839b07ab902b27d2e4fad91da094b3732477c7874b4137c8ad5",
+  },
+  {
+    label: "scope:position",
+    digest: "5e696f39165900b9900570b8cd8d62ff379534fe17d135ce8f3bdfdd9100071a",
+  },
+  {
+    label: "scope:mission",
+    digest: "a071eb3afa4a55b96238d8376d657fa80f8b0c9396f4f7541eed465425e38b3f",
+  },
+  {
+    label: "scope:retrospect",
+    digest: "90a262b49601757a7f9d2912aa0d9f89868b48a6e3f8ca5fa4ce6b5f35949645",
+  },
+  {
+    label: "scope:trades",
+    digest: "702e8827b6be9ee1bdd0ac6ccd82c104b5c7c5245c617f3bfd4923a1762752d1",
+  },
+  {
+    // Identical to scope:market by design: the mission half is always answered,
+    // so naming it changes nothing the call returns.
+    label: "scope:market+mission",
+    digest: "72fcd3c985c19ed4b8f6d5ebc0e1bf00c171c8797dd9570896c0eeb140d9db85",
+  },
+  {
+    label: "scope:candles interval/bars/indicators",
+    digest: "a35294d6ae5c2a42ef9b8d196c8bf97d81ca2e08a98fe890ef6e3b651b884c6f",
+  },
+  {
+    label: "unbound scope:market+candles",
+    digest: "2d2dd2c26c6894fbc09f3602137dc6935114b4f01b96104176b615589cc4d4d9",
+  },
+];
+
+const GOLDEN_SETUP: ReadonlyArray<{
+  readonly label: string;
+  readonly args: unknown;
+  readonly thread?: ThreadId;
+}> = [
+  { label: "scope:market", args: { missionId: MISSION_ID, scope: ["market"] } },
+  { label: "scope:candles", args: { missionId: MISSION_ID, scope: ["candles"] } },
+  { label: "scope:structure", args: { missionId: MISSION_ID, scope: ["structure"] } },
+  { label: "scope:position", args: { missionId: MISSION_ID, scope: ["position"] } },
+  { label: "scope:mission", args: { missionId: MISSION_ID, scope: ["mission"] } },
+  { label: "scope:retrospect", args: { missionId: MISSION_ID, scope: ["retrospect"] } },
+  { label: "scope:trades", args: { missionId: MISSION_ID, scope: ["trades"] } },
+  {
+    label: "scope:market+mission",
+    args: { missionId: MISSION_ID, scope: ["market", "mission"] },
+  },
+  {
+    label: "scope:candles interval/bars/indicators",
+    args: {
+      missionId: MISSION_ID,
+      scope: ["candles"],
+      interval: "1m",
+      bars: 6,
+      indicators: [{ kind: "ema", period: 20 }],
+    },
+  },
+  {
+    label: "unbound scope:market+candles",
+    args: { scope: ["market", "candles"] },
+    thread: UNBOUND_THREAD,
+  },
+];
+
+it.effect("pins trading_look scope results byte for byte (plan 38 §5.3)", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedActiveWatch, seedFill }) =>
+      Effect.gen(function* () {
+        // One deterministic mission state: a published plan, one armed watch,
+        // two completed fills. The digests below are of THAT state.
+        yield* seedTradingAccount();
+        yield* callTool(BOUND_THREAD, "trading_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 1,
+          strategy: strategyBody("golden pin v1"),
+        });
+        yield* seedActiveWatch("watch_golden_pin");
+        yield* seedFill({ fillId: "golden_f1", orderId: 900, closedPnl: 12, feeUsd: 1 });
+        yield* seedFill({ fillId: "golden_f2", orderId: 901, closedPnl: -4, feeUsd: 1 });
+
+        for (const call of GOLDEN_SETUP) {
+          const response = yield* callTool(call.thread ?? BOUND_THREAD, "trading_look", call.args);
+          assert.equal(response.result.isError, false, call.label);
+          const text = response.result.content[0].text as string;
+          const digest = createHash("sha256").update(text).digest("hex");
+          const expected = GOLDEN_CALLS.find((golden) => golden.label === call.label)?.digest;
+          if (expected === undefined || expected === "GOLDEN") {
+            // Capture mode: print the digest so it can be pinned. A pinned run
+            // never takes this branch.
+            console.log(`GOLDEN ${call.label} ${digest} chars=${text.length}`);
+            continue;
+          }
+          assert.equal(digest, expected, call.label);
+        }
       }),
     tradingLayerOverExchange(fake),
   );
