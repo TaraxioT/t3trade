@@ -366,7 +366,7 @@ export const TradingHarnessWakeup = Schema.Struct({
   position: AgentNetPosition,
   /**
    * The last few bars of the runtime timeframe (the interval the mandate
-   * names, else `1m` — see `runtimeTimeframe` in `./strategy.ts`).
+   * names, else `5m` — see `runtimeTimeframe` in `./strategy.ts`).
    *
    * Optional since every wake became an alert: a wake says what fired and what
    * is held, and price action is one `trading_look` away. The field remains for

@@ -447,8 +447,8 @@ export const WatchCondition = Schema.Union([
    * volume"). This is how a plan waits on evidence that is not a price:
    * "remind me when volume picks up", "wake me if funding flips negative".
    *
-   * `interval` names the bar series for `volume_ratio` and defaults to `1m`;
-   * the snapshot metrics ignore it.
+   * `interval` names the bar series for `volume_ratio` and defaults to the
+   * mission's own timeframe; the snapshot metrics ignore it.
    */
   Schema.Struct({
     kind: Schema.Literal("metric"),

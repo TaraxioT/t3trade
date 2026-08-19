@@ -846,7 +846,7 @@ const make = Effect.gen(function* () {
       // history ride the same batch so a woken run starts already knowing what
       // it holds and what price just did, without boilerplate tool calls. A
       // history-read failure fails compose the same way a snapshot failure does.
-      // The mandate's interval, or 1m — see `runtimeTimeframe`. The plan no
+      // The mandate's interval, or 5m — see `runtimeTimeframe`. The plan no
       // longer names a timeframe of its own (plan 29 step 4.1).
       const primaryTimeframe = runtimeTimeframe(mission.instruction);
       const [marketSnapshot, accountSnapshot, position, history] = yield* Effect.all(

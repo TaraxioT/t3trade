@@ -26,16 +26,21 @@ export type TradingTimeframe = typeof TradingTimeframe.Type;
  * The timeframe a mission works on unless its instruction says otherwise.
  *
  * Every interval in `TradingTimeframe` is subscribed and readable, so the
- * harness has always been free to pick. Left with no stated preference it
- * reached for 5m and 15m, which put ten to fifteen minutes between a decision
- * and the candle that could confirm it. `1m` is the shortest direct interval
- * (§13 forbids synthesising one from a smaller one), so it is the fastest the
- * mission loop can honestly turn.
+ * harness has always been free to pick. The default is 5m because the
+ * strategies this loop targets pay out over 1-3 hour holds, and on 5m that
+ * window is 12-36 bars — the same span the structure read measures its
+ * horizons over, so the entry, the target, and the exit all turn on one
+ * frame. On 1m, noise and whipsaws dominate lagging indicators: a 1-3 hour
+ * hold is 60-180 bars of a series whose individual bars are mostly noise,
+ * and the indicators smooth exactly the detail a faster frame would need
+ * to time an entry on.
  *
  * This is a default, not a constraint: it is published to the harness in every
- * wakeup and nothing rejects a strategy that names another timeframe.
+ * wakeup and nothing rejects a strategy that names another timeframe — a user
+ * who names 1m still gets 1m, the shortest direct interval (§13 forbids
+ * synthesising one from a smaller one).
  */
-export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
+export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "5m";
 
 /** Longest first, so "15m" is never matched as "5m" inside a mandate. */
 const TIMEFRAMES_LONGEST_FIRST: ReadonlyArray<TradingTimeframe> = ["15m", "1h", "5m", "3m", "1m"];
@@ -60,20 +65,20 @@ export function mandatedTimeframe(instruction: string): TradingTimeframe | undef
 }
 
 /**
- * The timeframe the runtime works a mission on: the mandate's, or `1m`.
+ * The timeframe the runtime works a mission on: the mandate's, or `5m`.
  *
  * Deliberately NOT the plan's own `timeframes[0]`. The wakeup's candles, its
  * volatility measurement, and the staleness floor that decides how often a flat
  * mission is re-woken all key off this one value, so a plan that named 15m as
  * its thesis timeframe had the runtime feeding it 15m bars and re-waking it
- * every thirty minutes — the 1m structure that the entry actually turns on was
+ * every thirty minutes — the 5m structure that the entry actually turns on was
  * never in front of it, and it could not have seen a setup form and expire
  * between two wakes. The published `timeframes[0]` still says what the plan is
  * reasoning on, and rides the wakeup as the paired higher timeframe when it is
  * longer than this one.
  *
  * A user who names an interval in the mandate gets it; nobody else has stated a
- * preference, so they get the fastest interval the exchange serves directly.
+ * preference, so they get the base frame the strategies are built around.
  */
 export function runtimeTimeframe(instruction: string): TradingTimeframe {
   return mandatedTimeframe(instruction) ?? POC_DEFAULT_TIMEFRAME;
@@ -104,14 +109,13 @@ export function runtimeTimeframe(instruction: string): TradingTimeframe {
  * the mandate and {@link runtimeTimeframe} reads the mandate: a mission told
  * "scalp ETH on the 5m" gets 5m bars, a 5m paired higher read and a 30-minute
  * flat wake floor, and a note that said "work on 1m candles" was the one thing
- * in front of it pointing the other way.
- *
+ * in front of it pointing the other way. *
  * It names no market and no direction: those belong to the mandate the user
  * writes, and a standing note that contradicted it would be the same drift
  * again in the other direction.
  */
 export const POC_STANDING_INSTRUCTION =
-  "Work the interval your mandate names, else 1m candles, and arm each watch on THAT interval so a run wakes on its cadence — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth — priced at the execution you intend? An entry resting at a level you armed (`urgency: patient`) pays the maker legs of the cost line, not the crossing ones. If the move cannot pay even that, stand down and say so in one line. The reading that answers it is `microstructure.volatilityRatio`: the recent pace against the whole window's, so 0.4 means the last twenty minutes have moved at 40% of the two-hour pace and the move you need is probably not there. Time the entry with `bookImbalance` (positive is bid-heavy, over the same levels a side) and `aggressorFlow` (the share of volume closing near bar highs, over `bars` that actually traded), and read both against `liquidity` — a lopsided ratio across a thin book is where a crossing order walks.";
+  "Work the interval your mandate names, else 5m candles, and arm each watch on THAT interval so a run wakes on its cadence — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth — priced at the execution you intend? An entry resting at a level you armed (`urgency: patient`) pays the maker legs of the cost line, not the crossing ones. If the move cannot pay even that, stand down and say so in one line. The reading that answers it is `microstructure.volatilityRatio`: the recent pace against the whole window's, so 0.4 means the last twenty minutes have moved at 40% of the two-hour pace and the move you need is probably not there. Time the entry with `bookImbalance` (positive is bid-heavy, over the same levels a side) and `aggressorFlow` (the share of volume closing near bar highs, over `bars` that actually traded), and read both against `liquidity` — a lopsided ratio across a thin book is where a crossing order walks.";
 
 /**
  * Prose the harness may leave out, decoded as an empty string.
