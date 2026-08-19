@@ -4,14 +4,20 @@
  *
  * Deliberately not `SqlClient`, not a migration chain, not Effect. This is a
  * standalone recorder whose whole job is "open a file, upsert rows, never
- * lose them", and a plain `node:sqlite` handle behind four methods is the
+ * lose them", and a plain `node:sqlite` handle behind three methods is the
  * smallest thing that does it. The app's `state.sqlite` and its migrations
  * (067-072 and counting) are untouched and unaware.
  *
  * Versioning is one row in `meta`. When the schema changes, bump
- * `ARCHIVE_SCHEMA_VERSION` and add the `ALTER`/`CREATE` to `applySchema` —
- * every statement there is `IF NOT EXISTS`, so applying it to an existing
+ * `ARCHIVE_SCHEMA_VERSION` and add the statement to `SCHEMA_STATEMENTS` —
+ * every one of them is `IF NOT EXISTS`, so applying the list to an existing
  * file is a no-op and applying it to a new one builds it whole.
+ *
+ * Everything goes through prepared statements, including the DDL. That is
+ * partly for the statement cache and partly because `ProviderBoundary.test.ts`
+ * scans this tree for process-spawning calls by name, and sqlite's
+ * multi-statement method shares one of those names. A false positive is
+ * better avoided than carved into a guard that exists to stay strict.
  *
  * @module trading/archive/db
  */
@@ -25,13 +31,11 @@ import * as NodeSqlite from "node:sqlite";
 export type SqlValue = string | number | null;
 
 /**
- * The archive handle. Four methods wide on purpose: every statement lives in
+ * The archive handle. Three methods wide on purpose: every statement lives in
  * the module that owns the table, so nothing here has to know the schema.
  */
 export interface ArchiveDatabase {
-  /** Run one or more statements with no parameters and no result. */
-  readonly exec: (sql: string) => void;
-  /** Run one parameterised statement. */
+  /** Run one statement, with or without parameters, discarding any result. */
   readonly run: (sql: string, ...params: ReadonlyArray<SqlValue>) => void;
   /** Run `fn` inside a transaction, rolling back if it throws. */
   readonly transaction: <A>(fn: () => A) => A;
@@ -40,84 +44,86 @@ export interface ArchiveDatabase {
   readonly close: () => void;
 }
 
-/** Bumped whenever `applySchema` gains a table or column. */
+/** Bumped whenever `SCHEMA_STATEMENTS` gains a table or column. */
 export const ARCHIVE_SCHEMA_VERSION = 1;
 
 /**
- * The whole schema.
+ * The whole schema, one statement per entry.
  *
  * Prices and sizes are stored as REAL rather than the exchange's decimal
  * strings: everything downstream does arithmetic on them, and a float is
  * exact enough for analysis of a market that quotes four significant figures.
  *
  * The candle close time is `t_close`, not `T` as the wire calls it — SQLite
- * identifiers are case-insensitive, so `t` and `T` are the same column name.
+ * identifiers are case-insensitive, so `t` and `T` would be one column.
  */
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-) WITHOUT ROWID;
+const SCHEMA_STATEMENTS: ReadonlyArray<string> = [
+  `CREATE TABLE IF NOT EXISTS meta (
+     key   TEXT PRIMARY KEY,
+     value TEXT NOT NULL
+   ) WITHOUT ROWID`,
 
-CREATE TABLE IF NOT EXISTS candles (
-  coin     TEXT    NOT NULL,
-  interval TEXT    NOT NULL,
-  t        INTEGER NOT NULL,
-  t_close  INTEGER NOT NULL,
-  o        REAL    NOT NULL,
-  h        REAL    NOT NULL,
-  l        REAL    NOT NULL,
-  c        REAL    NOT NULL,
-  v        REAL    NOT NULL,
-  n        INTEGER NOT NULL,
-  PRIMARY KEY (coin, interval, t)
-) WITHOUT ROWID;
+  `CREATE TABLE IF NOT EXISTS candles (
+     coin     TEXT    NOT NULL,
+     interval TEXT    NOT NULL,
+     t        INTEGER NOT NULL,
+     t_close  INTEGER NOT NULL,
+     o        REAL    NOT NULL,
+     h        REAL    NOT NULL,
+     l        REAL    NOT NULL,
+     c        REAL    NOT NULL,
+     v        REAL    NOT NULL,
+     n        INTEGER NOT NULL,
+     PRIMARY KEY (coin, interval, t)
+   ) WITHOUT ROWID`,
 
-CREATE TABLE IF NOT EXISTS funding (
-  coin         TEXT    NOT NULL,
-  time         INTEGER NOT NULL,
-  funding_rate REAL    NOT NULL,
-  premium      REAL    NOT NULL,
-  PRIMARY KEY (coin, time)
-) WITHOUT ROWID;
+  `CREATE TABLE IF NOT EXISTS funding (
+     coin         TEXT    NOT NULL,
+     time         INTEGER NOT NULL,
+     funding_rate REAL    NOT NULL,
+     premium      REAL    NOT NULL,
+     PRIMARY KEY (coin, time)
+   ) WITHOUT ROWID`,
 
-CREATE TABLE IF NOT EXISTS asset_ctx (
-  coin           TEXT    NOT NULL,
-  ts             INTEGER NOT NULL,
-  open_interest  REAL    NOT NULL,
-  premium        REAL    NOT NULL,
-  oracle_px      REAL    NOT NULL,
-  mark_px        REAL    NOT NULL,
-  day_ntl_volume REAL    NOT NULL,
-  funding        REAL    NOT NULL,
-  PRIMARY KEY (coin, ts)
-) WITHOUT ROWID;
+  `CREATE TABLE IF NOT EXISTS asset_ctx (
+     coin           TEXT    NOT NULL,
+     ts             INTEGER NOT NULL,
+     open_interest  REAL    NOT NULL,
+     premium        REAL    NOT NULL,
+     oracle_px      REAL    NOT NULL,
+     mark_px        REAL    NOT NULL,
+     day_ntl_volume REAL    NOT NULL,
+     funding        REAL    NOT NULL,
+     PRIMARY KEY (coin, ts)
+   ) WITHOUT ROWID`,
 
-CREATE TABLE IF NOT EXISTS book_summary (
-  coin       TEXT    NOT NULL,
-  ts         INTEGER NOT NULL,
-  bid_px     REAL    NOT NULL,
-  bid_sz     REAL    NOT NULL,
-  ask_px     REAL    NOT NULL,
-  ask_sz     REAL    NOT NULL,
-  bid_depth5 REAL    NOT NULL,
-  ask_depth5 REAL    NOT NULL,
-  PRIMARY KEY (coin, ts)
-) WITHOUT ROWID;
+  `CREATE TABLE IF NOT EXISTS book_summary (
+     coin       TEXT    NOT NULL,
+     ts         INTEGER NOT NULL,
+     bid_px     REAL    NOT NULL,
+     bid_sz     REAL    NOT NULL,
+     ask_px     REAL    NOT NULL,
+     ask_sz     REAL    NOT NULL,
+     bid_depth5 REAL    NOT NULL,
+     ask_depth5 REAL    NOT NULL,
+     PRIMARY KEY (coin, ts)
+   ) WITHOUT ROWID`,
 
-CREATE TABLE IF NOT EXISTS known_gaps (
-  coin        TEXT    NOT NULL,
-  interval    TEXT    NOT NULL,
-  from_t      INTEGER NOT NULL,
-  to_t        INTEGER NOT NULL,
-  recorded_at INTEGER NOT NULL,
-  PRIMARY KEY (coin, interval, from_t, to_t)
-) WITHOUT ROWID;
-`;
+  `CREATE TABLE IF NOT EXISTS known_gaps (
+     coin        TEXT    NOT NULL,
+     interval    TEXT    NOT NULL,
+     from_t      INTEGER NOT NULL,
+     to_t        INTEGER NOT NULL,
+     recorded_at INTEGER NOT NULL,
+     PRIMARY KEY (coin, interval, from_t, to_t)
+   ) WITHOUT ROWID`,
+];
 
 /** Create every table and stamp the schema version. Safe to run on each boot. */
 export function applySchema(db: ArchiveDatabase): void {
-  db.exec(SCHEMA_SQL);
+  for (const statement of SCHEMA_STATEMENTS) {
+    db.run(statement);
+  }
   db.run(
     "INSERT INTO meta (key, value) VALUES ('schema_version', ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -149,18 +155,17 @@ export function openArchiveDatabase(filePath: string): ArchiveDatabase {
   };
 
   const db: ArchiveDatabase = {
-    exec: (sql) => database.exec(sql),
     run: (sql, ...params) => {
       prepare(sql).run(...params);
     },
     transaction: (fn) => {
-      database.exec("BEGIN");
+      prepare("BEGIN").run();
       try {
         const result = fn();
-        database.exec("COMMIT");
+        prepare("COMMIT").run();
         return result;
       } catch (error) {
-        database.exec("ROLLBACK");
+        prepare("ROLLBACK").run();
         throw error;
       }
     },
@@ -174,8 +179,9 @@ export function openArchiveDatabase(filePath: string): ArchiveDatabase {
     },
   };
 
-  database.exec("PRAGMA journal_mode = WAL");
-  database.exec("PRAGMA synchronous = NORMAL");
+  // PRAGMAs answer with a row, so they are read rather than run.
+  db.all("PRAGMA journal_mode = WAL");
+  db.all("PRAGMA synchronous = NORMAL");
   applySchema(db);
   return db;
 }
