@@ -134,6 +134,70 @@ you provide. The presence of this key enables order execution:
 This alpha uses one key and one configuration path. Expanded key management is
 not yet available.
 
+## The market archive
+
+The Hyperliquid Info API is a window, not a history: every candle interval is
+capped at roughly the most recent 5000 bars, so a 1m series reaches back about
+three and a half days and nothing older is ever served again. Open interest and
+premium have no historical endpoint at all. The archiver is a standalone
+process that writes all of it down as it goes by, so the lab owns the history
+the exchange will not hand over.
+
+**Its value compounds with uptime.** There is no catching up later: a day not
+recorded is a day gone. It should simply always be running.
+
+```bash
+bun run --cwd apps/server archive
+```
+
+The command runs on Node like the rest of the repo — `bun run` invokes the
+package script, which is what makes `bun:sqlite` unnecessary and keeps the
+archiver's code path identical under test.
+
+It reads mainnet public data only (`POST https://api.hyperliquid.xyz/info`),
+never authenticates, and never touches an order endpoint or an account read.
+
+### Where it lives
+
+`~/.t3/userdata/market-archive.sqlite` — its own file, its own tiny schema, its
+own version row in a `meta` table. It shares nothing with `state.sqlite` and is
+not part of the application's migration chain.
+
+### What it records
+
+For BTC, ETH, and SOL:
+
+| Table          | Cadence      | What it holds                                                         |
+| -------------- | ------------ | --------------------------------------------------------------------- |
+| `candles`      | every 60s    | OHLCV at 1m, 5m, 15m, 1h, 4h, 1d (`t` open, `t_close` close)          |
+| `funding`      | every 30 min | Realised funding rate and premium per hour, back to 2023-05-12        |
+| `asset_ctx`    | every 60s    | Open interest, premium, oracle, mark, 24h volume, predicted funding   |
+| `book_summary` | every 60s    | Best bid/ask with sizes, and summed size over the top five levels     |
+| `known_gaps`   | on startup   | Stretches that fell out of the API window while nothing was recording |
+
+Startup always begins with a backfill of the full servable window for every
+series, so killing the process and starting it again is a supported way to
+operate it rather than an incident: every write is an idempotent upsert, and
+the bar that was in progress when it died is overwritten with its final values.
+A gap older than the API window can never be repaired, so it is recorded in
+`known_gaps` instead of retried forever. A heartbeat line once a minute reports
+rows written per table and how far behind each interval's newest bar is.
+
+### Adding a coin
+
+Add it to `ARCHIVE_COINS` in
+[`apps/server/src/trading/archive/config.ts`](./apps/server/src/trading/archive/config.ts)
+and restart. The schema needs no change, and the next startup backfills that
+coin's full window.
+
+### Reading it back
+
+[`apps/server/src/trading/archive/read.ts`](./apps/server/src/trading/archive/read.ts)
+holds pure read helpers — latest candle, candles in a range, trailing mean
+funding, latest open interest and book. Nothing in the application imports them
+yet; they exist so the toolkit has one place to ask. The file is in WAL mode,
+so reading it while the archiver writes is safe.
+
 ## Safety model
 
 - **Testnet only.** No mainnet configuration exists.
@@ -150,6 +214,7 @@ not yet available.
 | `packages/trading-contracts`             | Schemas and rules for order previews, protection, and risk |
 | `packages/hyperliquid`                   | The exchange client: signing, info reads, WebSocket        |
 | `apps/server/src/trading`                | Mission state machine, execution, reconciliation, controls |
+| `apps/server/src/trading/archive`        | The standing mainnet market-data archiver                  |
 | `apps/web/src/components/trading`        | Mission workspace and risk controls                        |
 | `apps/marketing`                         | The T3 Trade site                                          |
 | `docs/architecture/trading-execution.md` | Design notes for the execution path                        |
