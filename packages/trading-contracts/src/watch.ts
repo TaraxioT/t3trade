@@ -1188,9 +1188,12 @@ export function timeframeBarMillis(timeframe: TradingTimeframe): number {
 }
 
 /**
- * The floor for a flat mission on the 1m default timeframe. Kept as a named
- * constant because the contract's tests assert against it directly. Reads the
- * policy in force so an I2 cadence change lands here without a second edit.
+ * The floor for a flat mission, in milliseconds. Deliberately computed on the
+ * 1m bar basis by policy (pinned by watch.test.ts) even though the default
+ * timeframe is now 5m, so the floor stays expressed in the finest grain the
+ * runtime can be mandated to. Kept as a named constant because the contract's
+ * tests assert against it directly. Reads the policy in force so an I2 cadence
+ * change lands here without a second edit.
  */
 export const WATCH_COVERAGE_FLOOR_MILLIS =
   ACTIVE_TRADING_POLICY.reassessment.flatFloorBars * BAR_MILLIS["1m"];

@@ -96,8 +96,9 @@ import { TradingWatchService } from "./TradingWatchService.ts";
  *
  * Five, down from eight: the wakeup rides a conversation that grows by one
  * wake per turn, and each embedded bar is a line repeated for the life of the
- * thread. Five 1m bars still answer "what did price just do?"; anything
- * deeper is one `trading_look` away.
+ * thread. Five bars of the mission's primary timeframe (5m by default) still
+ * answer "what did price just do?"; anything deeper is one `trading_look`
+ * away.
  */
 const WAKEUP_RECENT_CANDLES = 5;
 
@@ -867,8 +868,8 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
 
       // §12.2 bounds `recentCandles` at 20 bars; the measurement reads the whole
-      // window. A target derived from 20 one-minute bars is a target derived
-      // from twenty minutes of noise.
+      // window. A target derived from 20 bars of the primary timeframe is a
+      // target derived from one frame of noise, not of structure.
       const recentCandles = {
         ...history,
         candles: history.candles.slice(-WAKEUP_RECENT_CANDLES),

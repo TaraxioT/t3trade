@@ -121,7 +121,7 @@ export const NEAR_TOUCH_BPS = 10;
  * price going somewhere on no new money. The reading would be manufactured by
  * the act of looking.
  *
- * Thirty seconds, against a 1m primary timeframe: short enough that a genuine
+ * Thirty seconds, against the 5m base timeframe: short enough that a genuine
  * wake-to-wake delta always clears it, long enough that a second look inside
  * one turn does not. Below it the current levels are still reported; only the
  * change is withheld, because "too soon to say" and "unchanged" are different

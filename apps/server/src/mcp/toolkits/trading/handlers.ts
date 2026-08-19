@@ -13,7 +13,7 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import type { TradingOrderIntent, TradingOrderResult } from "@t3tools/trading-contracts/execution";
 import type { TradingTimeframe, TradingUrgency } from "@t3tools/trading-contracts/strategy";
-import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
+import { POC_DEFAULT_TIMEFRAME, runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
@@ -1091,7 +1091,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   if (mission === null) {
     // No mission means no position and no history, so the market scopes are
     // the only ones with anything to answer here.
-    const interval = input.interval ?? "1m";
+    const interval = input.interval ?? POC_DEFAULT_TIMEFRAME;
     const needsBars = wantsCandles || wantsMarket;
     const [resolvedMarket, snapshot, orderBook, candles, structure] = yield* Effect.all(
       [
@@ -1128,7 +1128,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
         ? {}
         : withMicrostructure(orderBook, candles.candles, snapshot)),
       // No mandate to read a thesis timeframe from, so the interval this call
-      // named (or the 1m default above) is the frame it is about.
+      // named (or the 5m base default above) is the frame it is about.
       ...(structure === null ? {} : { structure: digestMarketStructure(structure, interval) }),
     };
   }
@@ -1639,7 +1639,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
             const snapshot = facts?.marketSnapshot ?? (yield* gateway.getMarketSnapshot(market));
             const candles = yield* gateway.getMarketHistory({
               market,
-              interval: input.interval ?? "1m",
+              interval: input.interval ?? POC_DEFAULT_TIMEFRAME,
               maxBars: VOLATILITY_LOOKBACK_BARS,
             });
             Object.assign(sections, withMicrostructure(orderBook, candles.candles, snapshot));
@@ -1649,12 +1649,12 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
         }
 
         // Volatility on the frame the mission works (bound) or the interval the
-        // call named, defaulting to 1m (unbound) — the unbound scope path's rule.
+        // call named, defaulting to the 5m base (unbound) — the unbound scope path's rule.
         if (wants("volatility")) {
           if (facts !== null) {
             sections.volatility = facts.observedVolatility;
           } else {
-            const interval = input.interval ?? "1m";
+            const interval = input.interval ?? POC_DEFAULT_TIMEFRAME;
             const history = yield* gateway.getMarketHistory({
               market,
               interval,
@@ -1681,7 +1681,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
               sections.higherTimeframeVolatility = facts.higherTimeframeVolatility;
             }
           } else {
-            const interval = input.interval ?? "1m";
+            const interval = input.interval ?? POC_DEFAULT_TIMEFRAME;
             const paired = FETCH_HIGHER_TIMEFRAME[interval];
             if (paired === null) {
               refuseKeys(keysFor("volatility_htf"), `no paired higher timeframe for ${interval}`);
@@ -1816,7 +1816,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
             structure,
             input.interval ??
               facts?.primaryTimeframe ??
-              (mission === null ? "1m" : runtimeTimeframe(mission.instruction)),
+              (mission === null ? POC_DEFAULT_TIMEFRAME : runtimeTimeframe(mission.instruction)),
           );
           if (wants("structure")) {
             sections.structure = digested;
