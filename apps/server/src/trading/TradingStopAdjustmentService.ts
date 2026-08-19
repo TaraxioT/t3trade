@@ -132,9 +132,9 @@ const make = Effect.gen(function* () {
         );
       }
 
-      // The mission's runtime timeframe — the interval the mandate names, else
-      // 1m. The plan stopped publishing its own `timeframes[0]` (plan 29 step
-      // 4.1), so the mission is the source, same as the wakeup composer.
+      // The mission's runtime timeframe: the interval the mandate names, else
+      // the 5m base. The plan stopped publishing its own `timeframes[0]` (plan
+      // 29 step 4.1), so the mission is the source, same as the wakeup composer.
       const timeframe = runtimeTimeframe(mission.instruction);
 
       // Exchange reads refuse rather than die: a transient gateway failure is
