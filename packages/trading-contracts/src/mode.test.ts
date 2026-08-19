@@ -110,13 +110,19 @@ describe("readMissionMode", () => {
   it("still reads the mandates an operator writes to mean the procedure", () => {
     const rows: ReadonlyArray<readonly [string, string]> = [
       ["Execute the momentum playbook", "momentum"],
-      ["run the ema cross strategy", "ema_cross"],
       ["Follow opening range on the 5m", "opening_range"],
     ];
     for (const [mandate, strategy] of rows) {
       const mode = readMissionMode(mandate);
       assert.equal(mode.kind === "execute_strategy" ? mode.strategy : null, strategy, mandate);
     }
+  });
+
+  it("falls back to discretionary for the retired ema_cross playbook", () => {
+    // ema_cross is retired (V3, `ema-cross-frequency-audit.md` and
+    // `ema-cross-decision-brief.md`): it is out of `EXECUTABLE_STRATEGIES`, so
+    // a mandate naming it reads the same as any other unrecognised name.
+    assert.deepEqual(readMissionMode("run the ema cross strategy"), { kind: "discretionary" });
   });
 
   it("stays discretionary for the ordinary mandates", () => {

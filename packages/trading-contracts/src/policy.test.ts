@@ -11,8 +11,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { PROFIT_TARGET_COST_MULTIPLE } from "./costs.ts";
-import { DEFAULT_INDICATOR_PERIODS } from "./indicators.ts";
-import { DIRECTION_SCORE_THRESHOLD, EMA_FAST_PERIOD, EMA_SLOW_PERIOD } from "./marketStructure.ts";
+import { DIRECTION_SCORE_THRESHOLD } from "./marketStructure.ts";
+import { EXECUTABLE_STRATEGIES } from "./mode.ts";
 import { PLAYBOOKS } from "./playbook.ts";
 import {
   ACTIVE_TRADING_POLICY,
@@ -22,6 +22,7 @@ import {
   MIN_ENRICHMENT_SAMPLE_RUNS,
   TRADING_POLICY_V1,
   TRADING_POLICY_V2,
+  TRADING_POLICY_V3,
 } from "./policy.ts";
 
 const playbook = (name: string) => {
@@ -50,9 +51,27 @@ describe("the policy in force", () => {
     expect(TRADING_POLICY_V1.reassessment.flatFloorClampMinutes).toEqual([5, 30]);
   });
 
-  it("runs v2, which floors unmandated size and nothing else", () => {
-    expect(ACTIVE_TRADING_POLICY).toBe(TRADING_POLICY_V2);
+  it("still carries v2's floor, unmandated size, frozen for replay", () => {
+    expect(TRADING_POLICY_V2.session.entrySizeFloorFractionOfCeiling).toBe(0.5);
+    expect(TRADING_POLICY_V2.emaCross.enabled).toBe(true);
+  });
+
+  it("runs v3, which retires ema_cross and nothing else", () => {
+    expect(ACTIVE_TRADING_POLICY).toBe(TRADING_POLICY_V3);
+    expect(ACTIVE_TRADING_POLICY.emaCross.enabled).toBe(false);
     expect(ACTIVE_TRADING_POLICY.session.entrySizeFloorFractionOfCeiling).toBe(0.5);
+
+    // The retirement is one boolean. Every number ema_cross measured against —
+    // and every other policy dimension — carries over from v2 untouched.
+    expect(ACTIVE_TRADING_POLICY.emaCross.maxCrossAgeBars).toBe(
+      TRADING_POLICY_V1.emaCross.maxCrossAgeBars,
+    );
+    expect(ACTIVE_TRADING_POLICY.emaCross.minSpreadAtrRatio).toBe(
+      TRADING_POLICY_V1.emaCross.minSpreadAtrRatio,
+    );
+    expect(ACTIVE_TRADING_POLICY.emaCross.targetAtrMultiple).toBe(
+      TRADING_POLICY_V1.emaCross.targetAtrMultiple,
+    );
 
     // The rungs a trade aims at, the direction call, the range criteria, the
     // session budget and the reassessment cadence are all v1's, unchanged.
@@ -68,6 +87,11 @@ describe("the policy in force", () => {
       TRADING_POLICY_V1.rangeReversion.heightCostMultiple,
     );
     expect(ACTIVE_TRADING_POLICY.reassessment).toEqual(TRADING_POLICY_V1.reassessment);
+  });
+
+  it("stops serving and stops accepting ema_cross now that it is retired", () => {
+    expect(PLAYBOOKS.find((entry) => entry.name === "ema_cross")).toBeUndefined();
+    expect(EXECUTABLE_STRATEGIES).not.toContain("ema_cross");
   });
 
   it("is where the arithmetic gets its numbers", () => {
@@ -103,21 +127,6 @@ describe("the policy in force", () => {
     // it refuses rather than warns — a model told "in band, never blocking"
     // and then refused has been lied to by its own reference.
     expect(standing).toContain("`trading_plan` REFUSES a `target.profitUsd`");
-  });
-
-  it("points the ema doctrine at the pair the structure read actually serves", () => {
-    // The doctrine gates on `ema.direction`, `separationAtr` and
-    // `barsSinceCross`, and every one of those is computed at
-    // EMA_FAST_PERIOD/EMA_SLOW_PERIOD. Prose naming any other pair sends the
-    // model to a reading no gate here is written for — which is what the
-    // `indicators[]` default (20) would be if the playbook did not say so.
-    const crossPlaybook = PLAYBOOKS.find((entry) => entry.name === "ema_cross")!;
-    const ema = crossPlaybook.whenItApplies + playbook("ema_cross");
-    expect(ema).toContain(`${EMA_FAST_PERIOD}-period EMA crossing the ${EMA_SLOW_PERIOD}-period`);
-    expect(ema).toContain("defaults to period 20");
-    expect(ema).not.toContain("ema(20)");
-    expect(ema).not.toContain("ema(50)");
-    expect(DEFAULT_INDICATOR_PERIODS.ema).not.toBe(EMA_FAST_PERIOD);
   });
 });
 
