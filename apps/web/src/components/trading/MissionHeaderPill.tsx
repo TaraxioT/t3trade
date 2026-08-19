@@ -294,7 +294,7 @@ export function MissionHeaderPill({
                 label="Liquidation"
                 value={
                   position.liquidationPrice === undefined
-                    ? "—"
+                    ? "-"
                     : formatPrice(position.liquidationPrice)
                 }
               />

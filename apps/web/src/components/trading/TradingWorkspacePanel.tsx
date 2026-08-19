@@ -158,7 +158,7 @@ function Strategy({ mission }: { mission: OrchestrationTradingMission }) {
   const lead = plan.isStandAside
     ? plan.because === null
       ? "Standing aside."
-      : `Standing aside — ${plan.because}`
+      : `Standing aside: ${plan.because}`
     : plan.because === null
       ? null
       : `Because: ${plan.because}`;
@@ -227,8 +227,8 @@ function PausedCard({ mission }: { mission: OrchestrationTradingMission }) {
   return (
     <SettingsSection title="Paused">
       <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
-        New entries, scale-ins, and re-entry are blocked. Any protective stop stays live on-exchange
-        — pausing does not stand it down.
+        New entries, scale-ins, and re-entry are blocked. Any protective stop stays live
+        on-exchange; pausing does not stand it down.
       </p>
       {/* And this is what the stop is still standing over. The sentence above
           says pausing changed nothing about the exposure; these are the

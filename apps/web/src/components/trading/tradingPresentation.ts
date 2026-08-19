@@ -687,7 +687,7 @@ export function derivePausedExposure(
     exposureLabel: `${position.size > 0 ? "Long" : "Short"} ${formatSize(Math.abs(position.size))}`,
     unrealisedUsd: position.unrealisedPnl,
     liquidationLabel:
-      position.liquidationPrice === undefined ? "—" : formatPrice(position.liquidationPrice),
+      position.liquidationPrice === undefined ? "-" : formatPrice(position.liquidationPrice),
   };
 }
 

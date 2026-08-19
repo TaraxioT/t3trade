@@ -459,19 +459,19 @@ function CompletionSummaryCard({ mission }: { mission: OrchestrationTradingMissi
           label="Traded duration"
           value={
             summary.tradedDurationMillis === null
-              ? "—"
+              ? "-"
               : formatDuration(summary.tradedDurationMillis)
           }
         />
         <Field
           label="Planned risk"
-          value={summary.plannedLossUsd === null ? "—" : formatUsd(summary.plannedLossUsd)}
+          value={summary.plannedLossUsd === null ? "-" : formatUsd(summary.plannedLossUsd)}
         />
         <Field
           label="Versus plan"
           value={
             summary.deviationFromPlanUsd === null
-              ? "—"
+              ? "-"
               : formatSignedUsd(summary.deviationFromPlanUsd)
           }
           tone={

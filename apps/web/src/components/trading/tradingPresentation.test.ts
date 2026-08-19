@@ -857,7 +857,7 @@ describe("derivePausedExposure", () => {
   });
 
   it("leaves the liquidation slot empty rather than guessing at one", () => {
-    expect(derivePausedExposure({ size: 0.5, unrealisedPnl: 3 })?.liquidationLabel).toBe("—");
+    expect(derivePausedExposure({ size: 0.5, unrealisedPnl: 3 })?.liquidationLabel).toBe("-");
   });
 
   it("says nothing when the mission holds nothing", () => {

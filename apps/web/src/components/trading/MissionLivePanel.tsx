@@ -144,7 +144,7 @@ import {
   useMissionSelection,
   type ChartEventSelection,
 } from "./missionSelectionStore";
-import { deriveTurnTimeline, type TurnTimelineCard } from "./missionTurnTimeline";
+import { deEmDash, deriveTurnTimeline, type TurnTimelineCard } from "./missionTurnTimeline";
 import { useMissionPlanRevision, type MissionPlanRevision } from "./useMissionPlanRevision";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -800,7 +800,7 @@ export function MissionLivePanel({
           pointer away. */}
       <p
         data-testid="mission-heartbeat"
-        title={plan?.because ?? undefined}
+        title={plan?.because == null ? undefined : deEmDash(plan.because)}
         className="px-1 text-[13.5px] leading-snug text-foreground"
       >
         {/* Every number the sentence states is set in the mono face with
@@ -1142,7 +1142,7 @@ function ChartPriceHeader({
             data-testid="mission-chart-mark"
             className="font-mono text-[26px] leading-none tracking-[-0.02em] tabular-nums text-foreground"
           >
-            {markPrice === null ? "—" : formatPrice(markPrice)}
+            {markPrice === null ? "-" : formatPrice(markPrice)}
           </span>
           {changePercent === null ? null : (
             <span className={cn("font-mono text-[13px] tabular-nums", changeTone)}>
@@ -1428,7 +1428,7 @@ function PositionSkeleton({ market }: { readonly market: string }): ReactNode {
                 mission is flat and waiting for a fill. A shimmering bar in
                 this cell read as a request stuck forever. */}
               <span className="font-mono text-[11px] text-muted-foreground/40" aria-hidden>
-                —
+                -
               </span>
             </span>
           );
@@ -1456,7 +1456,7 @@ function PositionSkeleton({ market }: { readonly market: string }): ReactNode {
  * Every row is the same five columns, always, on one grid rather than one grid
  * per row: the band is read down a column as often as across a row. Figures are
  * fixed at three decimals, which is what lets the price column right-align and
- * have its arrows line up too. Missing figures render as "—" rather than
+ * have its arrows line up too. Missing figures render as "-" rather than
  * collapsing a column.
  *
  * The open row is told apart by the only honest difference there is: its exit
@@ -1489,7 +1489,7 @@ function PositionLedger({
     <div data-testid="mission-position-history" className={cn(BAND_PAD_CLASS, "pb-3")}>
       <p className={cn(BAND_LEGEND_CLASS, "pb-1.5")}>positions</p>
       {/* One grid for the whole band, each row a subgrid of it: the columns are
-          measured once, so a row with a "—" entry price rules up with a row
+          measured once, so a row with a "-" entry price rules up with a row
           that has both prices. Per-row grids would each size their own `auto`
           columns and the band would drift line by line. */}
       {/* Identity and time take what they need; the four figure columns share
@@ -1597,12 +1597,12 @@ function LedgerDetail({
       {row.isActive || row.closedAtMillis === null ? null : (
         <LedgerDetailRow
           label=""
-          value={`${new Date(row.closedAtMillis).toLocaleTimeString()} · order ${row.orderRef ?? "—"}`}
+          value={`${new Date(row.closedAtMillis).toLocaleTimeString()} · order ${row.orderRef ?? "-"}`}
         />
       )}
       <LedgerDetailRow
         label="Notional"
-        value={row.notionalUsd === null ? "—" : `${formatUsd(row.notionalUsd)} at entry`}
+        value={row.notionalUsd === null ? "-" : `${formatUsd(row.notionalUsd)} at entry`}
       />
       {row.marginUsd === null ? null : (
         <LedgerDetailRow label="Margin" value={formatUsd(row.marginUsd)} />
@@ -1715,7 +1715,7 @@ function LedgerRow({
             {row.isActive
               ? "active"
               : row.closedAtMillis === null
-                ? "—"
+                ? "-"
                 : new Date(row.closedAtMillis).toLocaleTimeString(undefined, {
                     hour: "2-digit",
                     minute: "2-digit",
@@ -1729,16 +1729,16 @@ function LedgerRow({
           {/* What the position committed, which is the figure that says whether
               a $2 result came off a small position or a large one. */}
           <span className="whitespace-nowrap text-right text-muted-foreground/70">
-            {row.notionalUsd === null ? "—" : formatUsd(row.notionalUsd)}
+            {row.notionalUsd === null ? "-" : formatUsd(row.notionalUsd)}
           </span>
           {/* Always the pair, so the column reads as one shape. The open row's
               second figure is the live mark, in foreground ink because it is
               the only figure here still moving. */}
           <span className="whitespace-nowrap text-right text-muted-foreground/70">
-            {row.entryPrice === null ? "—" : formatFixed3(row.entryPrice)}{" "}
+            {row.entryPrice === null ? "-" : formatFixed3(row.entryPrice)}{" "}
             <span className="text-muted-foreground/50">→</span>{" "}
             <span className={row.isActive ? "text-foreground/90" : undefined}>
-              {row.exitPrice === null ? "—" : formatFixed3(row.exitPrice)}
+              {row.exitPrice === null ? "-" : formatFixed3(row.exitPrice)}
             </span>
           </span>
           <span className={cn("text-right", row.netUsd >= 0 ? "text-profit" : "text-loss")}>
@@ -2812,7 +2812,7 @@ function PlanBody({ plan }: { readonly plan: StrategyPlan }): ReactNode {
           // trade, and reading an intent row before learning that would put
           // the conclusion last.
           <p className="whitespace-pre-wrap text-foreground">
-            {plan.because === null ? "Standing aside." : `Standing aside — ${plan.because}`}
+            {plan.because === null ? "Standing aside." : `Standing aside: ${plan.because}`}
           </p>
         ) : (
           <>
