@@ -3558,6 +3558,25 @@ it.effect("refuses the scan key with a reason when the archive is absent", () =>
   ),
 );
 
+it.effect("refuses the levels key with a reason when the archive is absent", () =>
+  // Plan 38 §2: an absent archive is unavailable with a reason — never the
+  // zeros a flat session would read as.
+  withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const read = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["levels"] });
+        assert.equal(read.result.isError, false);
+        assert.equal(read.result.body.sessionLevels, undefined);
+        const refused = read.result.body.unavailable.find(
+          (entry: { key: string }) => entry.key === "levels",
+        );
+        assert.isDefined(refused);
+        assert.include(refused.reason, "archive file not found");
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);
+
 it.live("marks per-coin unavailability on the scan, never a zero and never a failed key", () => {
   // BTC is fully populated; ETH and SOL have no rows at all — the digest
   // still serves, with each missing coin named on the coin itself.

@@ -363,6 +363,12 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
               // Daily-scaled percent: 288 five-minute bars a day.
               entry["realizedVol24hPct"] =
                 Math.round(Math.sqrt(squared / returns.length) * Math.sqrt(288) * 100 * 10) / 10;
+            } else {
+              // Two bars give at most one return — no variance to scale. The
+              // absence is named per coin, never silenced (plan 38 §2).
+              missing.push(
+                `only ${bars.length} 5m bar${bars.length === 1 ? "" : "s"} in the trailing 24h — realized volatility not computable`,
+              );
             }
           }
 
