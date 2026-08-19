@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>T3 Trade — Fork Review Report</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 2rem 1rem 4rem;
+        font:
+          16px/1.6 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+        color: #1c2330;
+        background: #f7f8fa;
+      }
+      main {
+        max-width: 46rem;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.7rem;
+        line-height: 1.25;
+        margin: 0 0 0.25rem;
+      }
+      h2 {
+        font-size: 1.25rem;
+        margin: 2.5rem 0 0.75rem;
+        border-bottom: 2px solid #d8dde6;
+        padding-bottom: 0.35rem;
+      }
+      h3 {
+        font-size: 1.05rem;
+        margin: 1.75rem 0 0.5rem;
+      }
+      p {
+        margin: 0.6rem 0;
+      }
+      ul,
+      ol {
+        margin: 0.5rem 0;
+        padding-left: 1.4rem;
+      }
+      li {
+        margin: 0.3rem 0;
+      }
+      code {
+        font:
+          0.875em/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        background: #eceff4;
+        padding: 0.1em 0.35em;
+        border-radius: 4px;
+      }
+      .meta {
+        color: #5a6474;
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+      }
+      .context {
+        background: #fff7e0;
+        border: 1px solid #e8d48a;
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        margin: 1.25rem 0;
+      }
+      .context strong {
+        display: block;
+        margin-bottom: 0.25rem;
+      }
+      .summary-cards {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin: 1.25rem 0;
+      }
+      .card {
+        flex: 1 1 8rem;
+        background: #fff;
+        border: 1px solid #d8dde6;
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        text-align: center;
+      }
+      .card .n {
+        font-size: 1.8rem;
+        font-weight: 700;
+        display: block;
+      }
+      .card .l {
+        font-size: 0.8rem;
+        color: #5a6474;
+      }
+      .sev {
+        display: inline-block;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        border-radius: 4px;
+        padding: 0.1em 0.5em;
+        vertical-align: middle;
+      }
+      .sev.p3 {
+        background: #d9ecff;
+        color: #0b4a8f;
+      }
+      .sev.rec {
+        background: #e6e2f8;
+        color: #443489;
+      }
+      .sev.note {
+        background: #e2e8f0;
+        color: #3b4a5f;
+      }
+      .finding {
+        background: #fff;
+        border: 1px solid #d8dde6;
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        margin: 1rem 0;
+      }
+      .finding h3 {
+        margin-top: 0;
+      }
+      .finding .ref {
+        font-size: 0.85rem;
+        color: #5a6474;
+        margin-top: 0.5rem;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 1rem 0;
+        font-size: 0.92rem;
+        background: #fff;
+      }
+      th,
+      td {
+        border: 1px solid #d8dde6;
+        padding: 0.5rem 0.7rem;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: #eceff4;
+      }
+      .toc {
+        background: #fff;
+        border: 1px solid #d8dde6;
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+      }
+      .toc a {
+        color: #0b4a8f;
+      }
+      footer {
+        margin-top: 3rem;
+        font-size: 0.85rem;
+        color: #5a6474;
+        border-top: 1px solid #d8dde6;
+        padding-top: 1rem;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          color: #dfe4ec;
+          background: #14181f;
+        }
+        h2 {
+          border-color: #333c4a;
+        }
+        code {
+          background: #232a35;
+        }
+        .context {
+          background: #3a3220;
+          border-color: #6e6142;
+        }
+        .card,
+        .finding,
+        .toc,
+        table {
+          background: #1c222c;
+          border-color: #333c4a;
+        }
+        th {
+          background: #232a35;
+        }
+        th,
+        td {
+          border-color: #333c4a;
+        }
+        .sev.p3 {
+          background: #14344f;
+          color: #9cc7f0;
+        }
+        .sev.rec {
+          background: #2c2650;
+          color: #c3b8f0;
+        }
+        .sev.note {
+          background: #2a3340;
+          color: #b3c0d0;
+        }
+        .toc a {
+          color: #9cc7f0;
+        }
+        .meta,
+        .finding .ref,
+        footer {
+          color: #97a2b2;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>T3 Trade — Fork Review Report</h1>
+      <p class="meta">
+        Repository: <code>~/Workspace/t3trade</code> (fork of <code>pingdotgg/t3code</code>) ·
+        Reviewed at commit <code>117ce350a4df</code> · Report assembled 2026-08-20
+      </p>
+
+      <div class="context">
+        <strong>Read this first: review context</strong>
+        T3 Trade is <strong>alpha, pre-release software running on testnet</strong>. All severity
+        ratings in this report assume that context, not production readiness. During the review,
+        every finding was re-checked against this lens: anything weighted purely on release or
+        compliance assumptions was downgraded or dismissed. What remains are correctness, hygiene,
+        and documentation issues that matter regardless of release stage.
+      </div>
+
+      <nav class="toc" aria-label="Table of contents">
+        <strong>Contents</strong>
+        <ol>
+          <li><a href="#headline">Headline</a></li>
+          <li><a href="#what-was-reviewed">What was reviewed</a></li>
+          <li><a href="#findings">Findings (7 × P3)</a></li>
+          <li><a href="#recommendations">Recommendations &amp; context notes</a></li>
+          <li><a href="#what-checked-clean">What checked clean</a></li>
+          <li><a href="#limitations">Limitations</a></li>
+          <li><a href="#how-verified">How this was verified</a></li>
+        </ol>
+      </nav>
+
+      <h2 id="headline">1. Headline</h2>
+      <div class="summary-cards">
+        <div class="card"><span class="n">0</span><span class="l">Critical (P0)</span></div>
+        <div class="card"><span class="n">0</span><span class="l">High (P1)</span></div>
+        <div class="card"><span class="n">0</span><span class="l">Medium (P2)</span></div>
+        <div class="card"><span class="n">7</span><span class="l">Minor (P3)</span></div>
+      </div>
+      <p>
+        No critical, high, or medium findings. The review found seven minor issues (P3), one
+        recommendation, and a few context notes. The fork adds an autonomous Hyperliquid trading
+        system on top of the t3code agent platform; the trading logic matches the strategy documents
+        on all eight checkable claims, and secrets handling is clean — the trading private key never
+        touches the repository.
+      </p>
+
+      <h2 id="what-was-reviewed">2. What was reviewed</h2>
+      <p>
+        The review covers only what the fork adds on top of upstream, at commit
+        <code>117ce350</code>: <strong>743 files changed, 2,752 commits ahead</strong> of upstream
+        (and 253 behind — worth noting for future upstream merges).
+      </p>
+      <table>
+        <tr>
+          <th>Area</th>
+          <th>Size</th>
+          <th>What it is</th>
+        </tr>
+        <tr>
+          <td><code>apps/server/src/trading</code></td>
+          <td>133 files, ~60,700 lines added</td>
+          <td>
+            The trading runtime: mission state machine, order handling, watch evaluation, exchange
+            reconciliation, wake payloads, execution, telemetry, and an offline market-data archive.
+          </td>
+        </tr>
+        <tr>
+          <td><code>packages/trading-contracts</code></td>
+          <td>64 files, ~22,500 lines</td>
+          <td>New package: shared schemas for markets, watches, execution, and policy.</td>
+        </tr>
+        <tr>
+          <td><code>packages/hyperliquid</code></td>
+          <td>44 files, ~15,000 lines</td>
+          <td>
+            New package: Hyperliquid SDK — API gateway, signing, WebSocket client, order mapping.
+          </td>
+        </tr>
+        <tr>
+          <td><code>apps/web</code></td>
+          <td>62 files, ~18,000 lines</td>
+          <td>Trading cockpit UI (live mission panel, price chart, presentation helpers).</td>
+        </tr>
+        <tr>
+          <td><code>apps/marketing</code></td>
+          <td>53 files</td>
+          <td>Rebrand of the marketing site (t3code → t3trade).</td>
+        </tr>
+        <tr>
+          <td><code>apps/server/src/persistence</code></td>
+          <td>56 files</td>
+          <td>
+            Trading database migrations 035–073 (inclusive), with adjacent tests where applicable.
+          </td>
+        </tr>
+        <tr>
+          <td><code>scripts</code>, <code>.github</code>, tooling</td>
+          <td>29 scripts + CI changes</td>
+          <td>Offline replay harness, live soak/monitor tooling, release workflow.</td>
+        </tr>
+      </table>
+      <p>
+        Four review packages covered this work: the fork delta map (WP1), platform and secrets
+        (WP2), UI (WP3), and trading logic (WP4), each independently verified before inclusion here.
+      </p>
+
+      <h2 id="findings">3. Findings — 7 minor issues (P3)</h2>
+      <p>
+        Every finding below was reproduced independently at commit <code>117ce350</code> before
+        inclusion.
+      </p>
+
+      <div class="finding">
+        <h3>3.1 Metrics trust the data archive blindly <span class="sev p3">P3</span></h3>
+        <p><strong>Owner:</strong> Trading logic review (WP4)</p>
+        <p>
+          If the market-data archiver goes down mid-session (or starts mid-day) without logging a
+          gap, calculations like session VWAP and the 24h change figure silently compute over
+          whatever bars exist — a 3-bar "session VWAP" would be served at full confidence. The
+          module's own rule is "absence is an answer, never a number," but the guard only rejects
+          holes the archiver itself recorded.
+        </p>
+        <p class="ref">
+          Reference: <code>apps/server/src/trading/archive/derived.ts</code> lines 17–21 (header
+          contract), 231–250 (<code>refuseOnGap</code>), 540–588 (<code>vwap_distance</code>);
+          digest in <code>TradingMarketArchive.ts</code>.
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>3.2 Unnamed market data is assumed to be ETH <span class="sev p3">P3</span></h3>
+        <p><strong>Owner:</strong> Trading logic review (WP4)</p>
+        <p>
+          A data delivery that does not name which coin it is for gets evaluated as ETH. This is
+          documented and safe today (all current subscriptions name their coin), but if a coin-less
+          subscription is ever added, Bitcoin bars would silently evaluate ETH watches.
+        </p>
+        <p class="ref">
+          Reference: <code>apps/server/src/trading/WatchEvaluator.ts</code> lines 60, 1160
+          (<code>DEFAULT_MARKET="ETH"</code>).
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>3.3 Derived watches can run one bar behind <span class="sev p3">P3</span></h3>
+        <p><strong>Owner:</strong> Trading logic review (WP4)</p>
+        <p>
+          The archiver lags the live WebSocket feed by up to about 60 seconds, so a watch computed
+          from closed bars may exclude the most recently closed bar. This is documented and accepted
+          behavior — named here so it is on record, not treated as a defect.
+        </p>
+        <p class="ref">
+          Reference: <code>apps/server/src/trading/WatchEvaluator.ts</code> lines 1092–1098
+          (<code>evaluateDerivedDelivery</code>); plan 38 §3.5 comment.
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>
+          3.4 Price freshness rests on the gateway, not a local check <span class="sev p3">P3</span>
+        </h3>
+        <p><strong>Owner:</strong> Trading logic review (WP4)</p>
+        <p>
+          When deciding whether a price reading is fresh enough to act on, the evaluator relies on
+          the data gateway's freshness windows and a 2-second sweep rather than checking a timestamp
+          itself. A correctness question worth one look someday, not urgent at alpha.
+        </p>
+        <p class="ref">
+          Reference: <code>apps/server/src/trading/WatchEvaluator.ts</code> lines 381, 459–477.
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>3.5 Compiled Python bytecode is committed <span class="sev p3">P3</span></h3>
+        <p><strong>Owner:</strong> Platform review (WP2)</p>
+        <p>
+          A <code>.pyc</code> file is tracked in git alongside its source; it will silently drift
+          out of sync the next time the source is edited. Fix is a one-liner:
+          <code>git rm --cached</code> plus a <code>__pycache__/</code> ignore rule.
+        </p>
+        <p class="ref">
+          Reference:
+          <code>scripts/wake-payload-replay/__pycache__/attribute.cpython-314.pyc</code> (10,967
+          bytes, tracked — confirmed via <code>git ls-files</code>).
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>
+          3.6 Chart drag-strips announce the wrong interaction model <span class="sev p3">P3</span>
+        </h3>
+        <p><strong>Owner:</strong> UI review (WP3)</p>
+        <p>
+          The grab-strips for dragging a stop or target level on the price chart are marked with
+          <code>role="slider"</code> but cannot be focused with a keyboard and have no
+          minimum/maximum values or arrow-key handling — the only way to adjust a level is pointer
+          drag. Either drop the role and expose the drag another way, or implement the keyboard
+          behavior the role promises.
+        </p>
+        <p class="ref">
+          Reference: <code>MissionPriceChart.tsx</code> lines 1176–1180 (<code>role="slider"</code>,
+          <code>tabIndex={-1}</code>, no <code>aria-valuemin/max</code>, pointer handlers only).
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>
+          3.7 A code comment understates when the chart is live <span class="sev p3">P3</span>
+        </h3>
+        <p><strong>Owner:</strong> UI review (WP3)</p>
+        <p>
+          A library comment says the chart is only enabled while a position is open ("a flat mission
+          puts nothing on the wire"), but the panel intentionally enables it during planning too
+          ("Planning draws candles too"). The panel behavior is correct and intentional; the comment
+          is stale and should be corrected. No code change needed.
+        </p>
+        <p class="ref">
+          Reference: <code>lib/tradingMarketChartState.ts</code> lines 113–114 vs
+          <code>MissionLivePanel.tsx</code> lines 460, 466, 479–481.
+        </p>
+      </div>
+
+      <h2 id="recommendations">4. Recommendations &amp; context notes</h2>
+      <p>Items that are not findings, recorded so readers have the full picture.</p>
+
+      <div class="finding">
+        <h3>
+          4.1 Generated reports are committed to git <span class="sev rec">Recommendation</span>
+        </h3>
+        <p><strong>Owner:</strong> Platform review (WP2)</p>
+        <p>
+          <code>artifacts/reports</code> holds 26 generated HTML analysis files (+27,206 lines, ~1.3
+          MB) in version control. Harmless at alpha scale, but it adds merge noise to every upstream
+          sync. Consider moving to artifact storage or a docs folder with a retention rule.
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>4.2 Mac app is ad-hoc signed, not notarized <span class="sev note">Context</span></h3>
+        <p><strong>Owner:</strong> Platform review (WP2)</p>
+        <p>
+          Intentional alpha state: the desktop builds are ad-hoc signed and the install script
+          removes macOS's quarantine flag so they open. Notarization is pending a paid Developer ID.
+          Well documented in the scripts themselves; not a code bug.
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>4.3 Nightly releases are disabled on the fork <span class="sev note">Context</span></h3>
+        <p><strong>Owner:</strong> Platform review (WP2)</p>
+        <p>
+          The release workflow disables nightlies because signing and publishing secrets are absent.
+          Intentional — noted so nobody chases a "broken" nightly later.
+        </p>
+      </div>
+
+      <div class="finding">
+        <h3>4.4 Marketing legal pages were deleted <span class="sev note">Context</span></h3>
+        <p><strong>Owner:</strong> UI review (WP3)</p>
+        <p>
+          Privacy-policy, terms-of-service, security-policy, and legal pages were removed with no
+          replacement or redirect, so those URLs return 404. Confirmed as intentional pre-release
+          state by the owner — recorded as context, not a finding. Reinstate before any public
+          release.
+        </p>
+      </div>
+
+      <h2 id="what-checked-clean">5. What checked clean</h2>
+      <ul>
+        <li>
+          <strong>Secrets handling:</strong> the Hyperliquid signer key loads only from an
+          environment variable or a file under <code>~/.t3trade/secrets/</code>; with no key
+          configured, every signable action is refused. A grep across all fork-added files found
+          nothing committed. CI workflows reference secrets only through the proper mechanism.
+        </li>
+        <li>
+          <strong>Trading logic vs strategy docs:</strong> all eight checkable claims in the
+          strategy documents were confirmed in code, including the retirement of the ema_cross
+          strategy (disabled in the active policy, filtered from the playbook, not accepted by the
+          mode layer, EMA parameters preserved).
+        </li>
+        <li>
+          <strong>Database migrations:</strong> fork migrations run 035–073 inclusive, sequential,
+          with adjacent tests where applicable; the archive process shuts down cleanly and restarts
+          safely.
+        </li>
+        <li>
+          <strong>UI discipline:</strong> presentation logic split into tested modules, decorative
+          icons hidden from screen readers, reduced-motion variants, and a build-time regression
+          guard.
+        </li>
+        <li>
+          <strong>Fork etiquette:</strong> consistent T3 Trade rebrand with visible upstream credit
+          ("Built on T3 Code" footer).
+        </li>
+      </ul>
+
+      <h2 id="limitations">6. Limitations</h2>
+      <ul>
+        <li>
+          Not all 29 new scripts were reviewed line-by-line; the Python replay harness was skimmed
+          with no network or secret handling found. The live soak/monitor scripts are developer
+          tooling, not on any deploy path.
+        </li>
+        <li>CI workflow changes were reviewed at diff-summary level, not line-by-line.</li>
+        <li>
+          Two large trading modules (<code>HyperliquidReconciler</code>,
+          <code>TradingMissionReactor</code>) were not fully line-reviewed.
+        </li>
+        <li>
+          The fork is 253 commits behind upstream; merge planning is out of scope for this review.
+        </li>
+        <li>
+          The repository's working tree has moved past the reviewed commit; all findings were
+          verified specifically at <code>117ce350</code>.
+        </li>
+      </ul>
+
+      <h2 id="how-verified">7. How this was verified</h2>
+      <p>
+        Each review package was delivered with file-and-line evidence, then independently re-checked
+        at commit <code>117ce350</code> by a separate verifier before being recorded as verified.
+        Two corrections from verification are incorporated here: the migration range is 035–073
+        inclusive (not two bands), and the committed generated reports count is 26 files. All
+        severities were then re-weighted against the alpha/testnet context before this report was
+        assembled.
+      </p>
+
+      <footer>
+        This report is self-contained: no external assets, fonts, or scripts; it opens offline.
+        Review team: delta map and trading logic — Sage Sourcewell; platform and secrets — Drew
+        Deploy; UI — Paige Pixley; independent verification — Vera Verify; orchestration — Miles
+        Stonefield.
+      </footer>
+    </main>
+  </body>
+</html>
