@@ -118,6 +118,17 @@ it.effect("serves seeded series and hand-checked funding statistics", () =>
     if (book.status !== "ok") return;
     assert.strictEqual(book.count, 1);
     assert.strictEqual(book.rows[0]?.bidDepth5, 15);
+
+    // The derived seam sees the same rows: the 7d funding mean over the four
+    // in-window rates (holdings reach back to the 10d row) = 0.055.
+    const derived = yield* archive.derivedMetric({
+      market: "BTC",
+      params: { metric: "funding_mean", windowDays: 7 },
+      now: NOW,
+    });
+    assert.strictEqual(derived.status, "ok");
+    if (derived.status !== "ok") return;
+    assert.closeTo(derived.value, (0.1 + 0.2 - 0.12 + 0.04) / 4, 1e-12);
   }),
 );
 
@@ -159,6 +170,18 @@ it.effect("a missing file makes every method unavailable, never a zero", () =>
       if (result.status !== "unavailable") return;
       assert.include(result.reason, "archive file not found");
     }
+
+    // A derived metric over a missing archive refuses with the archive kind,
+    // which the evaluator maps onto `derived_needs_archive`.
+    const derived = yield* archive.derivedMetric({
+      market: "ETH",
+      params: { metric: "funding_mean", windowDays: 7 },
+      now: NOW,
+    });
+    assert.strictEqual(derived.status, "unavailable");
+    if (derived.status !== "unavailable") return;
+    assert.strictEqual(derived.kind, "archive");
+    assert.include(derived.reason, "archive file not found");
     // And the failed lookups created nothing.
     assert.strictEqual(NodeFS.existsSync(missing), false);
   }),

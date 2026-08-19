@@ -29,7 +29,10 @@ import { archiveDatabasePath } from "./archive/config.ts";
 import type { AssetCtxRow } from "./archive/assetCtx.ts";
 import type { BookSummaryRow } from "./archive/bookSummary.ts";
 import { openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./archive/db.ts";
+import { derivedMetricValue, type DerivedMetricUnavailabilityKind } from "./archive/derived.ts";
 import type { FundingRow } from "./archive/funding.ts";
+
+import type { DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import {
   fundingInRange,
   recentAssetContext,
@@ -83,6 +86,24 @@ export interface BookHistoryOk {
 
 export type BookHistoryResult = BookHistoryOk | ArchiveUnavailable;
 
+export interface DerivedMetricOk {
+  readonly status: "ok";
+  readonly value: number;
+}
+
+/**
+ * A derived metric the archive could not serve. `kind` is the refusal the
+ * evaluator maps onto: `archive` → derived_needs_archive, `window` →
+ * derived_window_unavailable, `context` → an evaluation-time skip.
+ */
+export interface DerivedMetricUnavailable {
+  readonly status: "unavailable";
+  readonly kind: DerivedMetricUnavailabilityKind;
+  readonly reason: string;
+}
+
+export type DerivedMetricResult = DerivedMetricOk | DerivedMetricUnavailable;
+
 export interface TradingMarketArchiveShape {
   readonly fundingStats: (input: {
     readonly coin: string;
@@ -101,6 +122,13 @@ export interface TradingMarketArchiveShape {
     readonly coin: string;
     readonly n: number;
   }) => Effect.Effect<BookHistoryResult>;
+  readonly derivedMetric: (input: {
+    readonly market: string;
+    readonly params: DerivedMetricParams;
+    readonly now: number;
+    readonly positionEntryAt?: number;
+    readonly sinceMs?: number;
+  }) => Effect.Effect<DerivedMetricResult>;
 }
 
 export class TradingMarketArchive extends Context.Service<
@@ -233,6 +261,26 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
         return { status: "ok", rows, count: rows.length };
       }, `archive file not found at ${filePath}`);
     },
+
+    derivedMetric: ({ market, params, now, positionEntryAt, sinceMs }) =>
+      Effect.map(
+        withHandle((db): DerivedMetricResult => {
+          const outcome = derivedMetricValue(db, market, params, {
+            now,
+            ...(positionEntryAt === undefined ? {} : { positionEntryAt }),
+            ...(sinceMs === undefined ? {} : { sinceMs }),
+          });
+          return outcome.status === "ok"
+            ? { status: "ok", value: outcome.value }
+            : { status: "unavailable", kind: outcome.kind, reason: outcome.detail };
+        }, `archive file not found at ${filePath}`),
+        // A missing file or failed read falls out of `withHandle` as the plain
+        // unavailable shape; a metric-level refusal already carries its kind.
+        (result): DerivedMetricResult =>
+          "kind" in result || result.status === "ok"
+            ? result
+            : { status: "unavailable", kind: "archive", reason: result.reason },
+      ),
   });
 };
 
