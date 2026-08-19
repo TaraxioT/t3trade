@@ -65,6 +65,21 @@ design, so a killed run resumes cleanly.
 Narrow first. Proving one cut on three turns is 12 calls and answers the
 question that matters.
 
+## 4. Lean-wake corpus replay
+
+```bash
+bun scripts/wake-payload-replay/lean-replay.ts
+```
+
+TypeScript rather than Python so it can import the REAL renderer
+(`renderLeanWakeForReplay` from `TradingWakeupComposer`) instead of
+re-implementing it. Reads `~/.t3/userdata/state.sqlite` read-only, re-renders
+every recorded harness wake through the lean renderer, and asserts two
+properties: mean lean length ≤ 1,000 chars, and no observed value from a
+firing event is lost in the `triggered:` fold (the plan-35 finding). Prints
+mean, max, count, and the failure list; exits non-zero on failure. Like the
+other scripts here it runs by hand, never in CI.
+
 ## Coverage, and what it does not cover
 
 A scenario is one turn, replayed once, with the tool result pre-supplied. That
