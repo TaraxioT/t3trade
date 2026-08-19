@@ -5,11 +5,14 @@
 // The turn timeline's pure half: mission projection → timeline cards, newest
 // first. The panel renders; this module decides what a card IS.
 //
-// One card per WAKE (why it woke, and what it decided that turn), plus plan
-// revision cards, journal note cards, and trade cards as their own kinds.
-// Everything here is already pushed: `missionTimeline` carries the server's
-// composed prose for every wake, publish, stop move and note, and
-// `recentFills` carries every trade. No projection field was added for this.
+// One card per WAKE (why it woke, what it read that turn, and what it
+// decided), plus plan revision cards, journal note cards, and trade cards as
+// their own kinds. Everything here is already pushed: `missionTimeline`
+// carries the server's composed prose for every wake, publish, stop move and
+// note, the wake entries also carry the run's recorded tool list, and
+// `recentFills` carries every trade. One optional projection field was added
+// for the reads line (the tool list), projected from data the run funnel
+// already records.
 //
 // Wording rules (the plan's own register): plain language, no field names, no
 // jargon, no em-dashes, times as clock times at render. Prose the server
@@ -46,6 +49,8 @@ export interface TurnTimelineCard {
   readonly atMillis: number;
   /** The wake's trigger line: why the mission woke, in plain words. */
   readonly triggerLabel: string | null;
+  /** The wake's read line: what the agent read and did that turn, in order. */
+  readonly readLabel: string | null;
   /** The wake's decision line: the first thing the turn produced. */
   readonly decisionLabel: string | null;
   /** The secondary line: a justification, a note's body, a trade's net. */
@@ -87,6 +92,47 @@ export function describeWakeTrigger(cause: string | undefined): string {
     default:
       return cause === undefined ? "It woke" : deEmDash(humanizeLiteral(cause));
   }
+}
+
+/**
+ * What a wake's turn read and did, in the plan's plain register.
+ *
+ * The server pushes the run's recorded tool names verbatim (the same funnel
+ * list the decision report reads); a name is a literal the harness wrote for
+ * itself, so the client translates, like the trigger. Unknown names are
+ * humanized rather than hidden: a new tool reads as itself. Repeats collapse,
+ * because the recorded list is one row per call.
+ */
+export function describeWakeReads(toolsCalled: ReadonlyArray<string>): string | null {
+  const phrases = new Set<string>();
+  for (const tool of toolsCalled) {
+    switch (tool) {
+      case "trading_look":
+        phrases.add("looked at the market");
+        break;
+      case "trading_strategy":
+        phrases.add("read a strategy sheet");
+        break;
+      case "trading_plan":
+        phrases.add("revised the plan");
+        break;
+      case "trading_watch":
+        phrases.add("changed a level it was watching");
+        break;
+      case "trading_enter":
+        phrases.add("bought in");
+        break;
+      case "trading_exit":
+        phrases.add("got out or adjusted");
+        break;
+      case "trading_journal":
+        phrases.add("wrote a note");
+        break;
+      default:
+        phrases.add(deEmDash(humanizeLiteral(tool)));
+    }
+  }
+  return phrases.size === 0 ? null : [...phrases].join(" · ");
 }
 
 /** A decision entry's one line, or null when the entry is not a decision. */
@@ -149,6 +195,7 @@ export interface TurnTimelineInput {
     readonly kind: string;
     readonly label: string;
     readonly cause?: string | undefined;
+    readonly toolsCalled?: ReadonlyArray<string> | undefined;
     readonly author?: string | undefined;
     readonly priceLevel?: number | undefined;
   }>;
@@ -183,6 +230,7 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
       kind: entry.kind,
       label: entry.label,
       cause: entry.cause,
+      toolsCalled: entry.toolsCalled,
       author: entry.author,
       priceLevel: entry.priceLevel,
       at: Date.parse(entry.at),
@@ -210,6 +258,7 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
         id: `wake-${index}-${entry.at}`,
         atMillis: entry.at,
         triggerLabel: `${describeWakeTrigger(entry.cause)}${failed ? ", and the turn failed" : ""}`,
+        readLabel: describeWakeReads(entry.toolsCalled ?? []),
         decisionLabel: decision === undefined ? null : describeDecision(decision),
         detailLabel: decision?.kind === "journal" ? deEmDash(decision.label) : null,
         priceLevel: null,
@@ -223,6 +272,7 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
         id: `rev-${index}-${entry.at}`,
         atMillis: entry.at,
         triggerLabel: `Plan revised (${entry.label})`,
+        readLabel: null,
         decisionLabel: null,
         detailLabel: null,
         priceLevel: null,
@@ -236,6 +286,7 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
         id: `stop-${index}-${entry.at}`,
         atMillis: entry.at,
         triggerLabel: "Stop moved",
+        readLabel: null,
         decisionLabel: null,
         detailLabel: deEmDash(entry.label),
         priceLevel: entry.priceLevel ?? null,
@@ -249,6 +300,7 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
       id: `note-${index}-${entry.at}`,
       atMillis: entry.at,
       triggerLabel: entry.author === "user" ? "You noted" : "It noted",
+      readLabel: null,
       decisionLabel: null,
       detailLabel: deEmDash(entry.label),
       priceLevel: null,
@@ -267,6 +319,7 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
       id: `${fill.orderId}-${fill.tradedAt}`,
       atMillis: at,
       triggerLabel: described.line,
+      readLabel: null,
       decisionLabel: null,
       detailLabel: described.detail,
       priceLevel: fill.avgFillPrice,

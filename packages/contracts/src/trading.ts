@@ -218,6 +218,14 @@ export const TradingMissionTimelineEntry = Schema.Struct({
    */
   cause: Schema.optional(TrimmedNonEmptyString),
   /**
+   * The tool names the wake's run called, verbatim and in call order — the
+   * already-recorded per-run list from `trading_harness_runs.tools_called_json`
+   * (migration 051). What the agent read and did during the wake, as the run's
+   * own funnel saw it. Absent when the run called nothing or on every other
+   * kind; a literal the client translates, like `cause`.
+   */
+  toolsCalled: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /**
    * Who wrote a journal note (plan 29 step 8.4). Absent on every other kind.
    *
    * The timeline is where the session is read back, so it is where the

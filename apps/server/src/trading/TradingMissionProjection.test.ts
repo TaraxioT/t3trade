@@ -411,12 +411,17 @@ describe("buildMissionTimeline", () => {
     readonly status?: string;
     readonly startedAt?: number | null;
     readonly createdAt: number;
+    readonly toolsCalled?: ReadonlyArray<string> | null;
   }) => ({
     run_id: over.runId,
     cause: over.cause,
     status: over.status ?? "completed",
     started_at: over.startedAt === undefined ? over.createdAt : over.startedAt,
     created_at: over.createdAt,
+    tools_called_json:
+      over.toolsCalled === undefined || over.toolsCalled === null
+        ? null
+        : JSON.stringify(over.toolsCalled),
   });
 
   it("merges the three sources newest-first", () => {
@@ -451,6 +456,40 @@ describe("buildMissionTimeline", () => {
 
     assert.equal(timeline[0]?.label, "market_watch_triggered (failed)");
     assert.equal(timeline[0]?.cause, "market_watch_triggered");
+  });
+
+  // The run's recorded tool list is the one account of what the agent read
+  // during the wake; it rides the wake entry verbatim for the client to
+  // translate, and stays absent rather than empty when the run called nothing.
+  it("carries a wake's recorded tool calls, verbatim and in order", () => {
+    const timeline = buildMissionTimeline({
+      wakes: [
+        wake({
+          runId: "r1",
+          cause: "scheduled_reassessment",
+          createdAt: 1_000,
+          toolsCalled: ["trading_look", "trading_plan", "trading_look"],
+        }),
+        wake({ runId: "r2", cause: "user_message", createdAt: 2_000, toolsCalled: null }),
+      ],
+      stopAdjustments: [],
+      publishes: [],
+    });
+
+    assert.deepEqual(timeline[0]?.toolsCalled, undefined);
+    assert.deepEqual(timeline[1]?.toolsCalled, ["trading_look", "trading_plan", "trading_look"]);
+    // An unparseable list degrades to absent, not to a thrown projection.
+    const broken = buildMissionTimeline({
+      wakes: [
+        {
+          ...wake({ runId: "r3", cause: "user_message", createdAt: 3_000 }),
+          tools_called_json: "not json",
+        },
+      ],
+      stopAdjustments: [],
+      publishes: [],
+    });
+    assert.deepEqual(broken[0]?.toolsCalled, undefined);
   });
 
   // "When was the mission woken" is the question the axis answers, so a run

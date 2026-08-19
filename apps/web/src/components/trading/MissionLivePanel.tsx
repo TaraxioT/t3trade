@@ -2400,6 +2400,9 @@ function TurnTimelineCardRow({
       <span className="sr-only">{word}: </span>
       <span className={cn("min-w-0 flex-1", toneClass ?? "text-foreground/90")}>
         {card.triggerLabel}
+        {card.readLabel === null ? null : (
+          <span className="text-muted-foreground/80"> · it {card.readLabel}</span>
+        )}
         {card.decisionLabel === null ? null : (
           <span className="text-muted-foreground"> · {card.decisionLabel}</span>
         )}

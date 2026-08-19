@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deEmDash,
   describeFill,
+  describeWakeReads,
   describeWakeTrigger,
   deriveTurnTimeline,
   MAX_TURN_CARDS,
@@ -18,6 +19,33 @@ const baseFill = {
 };
 
 describe("deriveTurnTimeline", () => {
+  it("carries what the wake's turn read and did, in plain words", () => {
+    const { cards } = deriveTurnTimeline({
+      market: "ETH",
+      missionTimeline: [
+        {
+          at: iso("14:30"),
+          kind: "wake",
+          label: "market_watch_triggered",
+          toolsCalled: ["trading_look", "trading_journal", "trading_look"],
+        },
+      ],
+      recentFills: [],
+    });
+    const wake = cards.find((card) => card.kind === "wake");
+    // Repeats collapse and the wording is the plan's register: no tool names.
+    expect(wake?.readLabel).toBe("looked at the market · wrote a note");
+  });
+
+  it("leaves the read line off when the run called nothing", () => {
+    const { cards } = deriveTurnTimeline({
+      market: "ETH",
+      missionTimeline: [{ at: iso("14:30"), kind: "wake", label: "user_message" }],
+      recentFills: [],
+    });
+    expect(cards.find((card) => card.kind === "wake")?.readLabel).toBeNull();
+  });
+
   it("makes one wake card per wake, with its trigger and its decision", () => {
     const { cards } = deriveTurnTimeline({
       market: "ETH",
@@ -209,6 +237,33 @@ describe("describeWakeTrigger", () => {
 
   it("an unknown cause is humanized, not invented around", () => {
     expect(describeWakeTrigger("new_cause")).toBe("new cause");
+  });
+});
+
+describe("describeWakeReads", () => {
+  it("translates every tool the harness can call during a wake", () => {
+    expect(
+      describeWakeReads([
+        "trading_look",
+        "trading_strategy",
+        "trading_plan",
+        "trading_watch",
+        "trading_enter",
+        "trading_exit",
+        "trading_journal",
+      ]),
+    ).toBe(
+      "looked at the market · read a strategy sheet · revised the plan · " +
+        "changed a level it was watching · bought in · got out or adjusted · wrote a note",
+    );
+  });
+
+  it("an unknown tool is humanized, not hidden and not invented around", () => {
+    expect(describeWakeReads(["trading_new_thing"])).toBe("trading new thing");
+  });
+
+  it("returns null for an empty list", () => {
+    expect(describeWakeReads([])).toBeNull();
   });
 });
 

@@ -246,7 +246,22 @@ interface HarnessRunRow {
   readonly status: string;
   readonly started_at: number | null;
   readonly created_at: number;
+  /** The run's funnel list of tool names (migration 051); null before it. */
+  readonly tools_called_json: string | null;
 }
+
+/** Decode a run's recorded tool list, degrading to none when unparseable. */
+const parseToolsCalled = (json: string | null): ReadonlyArray<string> => {
+  if (json === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed)
+      ? parsed.filter((name): name is string => typeof name === "string")
+      : [];
+  } catch {
+    return [];
+  }
+};
 
 /** A confirmed stop move (migration 050). */
 interface StopAdjustmentRow {
@@ -290,6 +305,7 @@ export function buildMissionTimeline(input: {
     // question the axis answers is when the mission was woken, not when a
     // provider got round to it.
     const atMillis = wake.started_at ?? wake.created_at;
+    const toolsCalled = parseToolsCalled(wake.tools_called_json);
     entries.push({
       atMillis,
       at: toIso(atMillis),
@@ -298,6 +314,10 @@ export function buildMissionTimeline(input: {
       // mission was owed and did not get.
       label: wake.status === "failed" ? `${wake.cause} (failed)` : wake.cause,
       cause: wake.cause,
+      // What the run called, verbatim — the one recorded account of what the
+      // agent read during the wake. Absent rather than empty when the run
+      // called nothing, matching every other optional field here.
+      ...(toolsCalled.length === 0 ? {} : { toolsCalled }),
     });
   }
 
@@ -693,7 +713,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
   ): Effect.Effect<ReadonlyArray<TradingMissionTimelineEntry>, PersistenceSqlError> =>
     Effect.gen(function* () {
       const wakes = yield* sql<HarnessRunRow>`
-        SELECT run_id, cause, status, started_at, created_at
+        SELECT run_id, cause, status, started_at, created_at, tools_called_json
         FROM trading_harness_runs WHERE mission_id = ${missionId}
         ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
       `.pipe(Effect.mapError(sqlFail("timeline:wakes")));

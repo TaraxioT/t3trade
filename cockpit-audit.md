@@ -86,9 +86,17 @@ armed predicates incl. `candle_close.interval`. No new events needed.
   - tests) — AS BUILT: shared hover/selection between chart chips/markers and
     WatchStream/ledger rows; plan wedge from mark toward target over
     `byMinutes`, invalidation as hard edge; and the TURN TIMELINE — one card per
-    wake (why it woke, what it decided that turn) plus plan revision, journal
-    note, and trade cards, newest first, derived purely from the already-pushed
-    `missionTimeline` prose and `recentFills` (no projection fields added). Card
+    wake (why it woke, what it read that turn, what it decided) plus plan
+    revision, journal note, and trade cards, newest first, derived from the
+    already-pushed `missionTimeline` prose and `recentFills`. The read line is
+    the one addition after the fact: wake timeline entries now also carry the
+    run's already-recorded tool-call list (`tools_called_json`, migration 051),
+    projected read-only as an optional `toolsCalled` field on the wake entry;
+    the client translates the tool names into plain words. What it does NOT
+    show is the finer detail the plan's example gestured at ("structure ·
+    levels · scan" style fetch keys): the fetch keys a `trading_look` call
+    named are not recorded anywhere, so they cannot be projected without new
+    recording, which would touch trading behavior. Card
     hover claims the moment on the chart (rug tick glow, others dim); chart
     chip/tick/fill hover scrolls to and highlights the matching card.
 - **Phase 4** (`index.css`, `MissionLivePanel.tsx`, `MissionPriceChart.tsx`) —
