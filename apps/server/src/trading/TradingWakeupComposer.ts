@@ -1170,7 +1170,7 @@ const make = Effect.gen(function* () {
       const flatReview =
         activeStrategy === undefined
           ? "FLAT, NO PLAN ACTIVE — decide this turn: read the market, publish via trading_plan (standing aside counts; a directional plan states a projection), and arm conditions around it on both sides."
-          : "FLAT — every playbook is a candidate again (momentum, range_reversion, opening_range, rsi_reversion; ema_cross unscored — read `ema`). Take the one whose expected move beats the round trip (`costContext`), or none.";
+          : "FLAT — every playbook is a candidate again (momentum, range_reversion, opening_range, rsi_reversion). Take the one whose expected move beats the round trip (`costContext`), or none.";
       // The projection is the one thing a DIRECTIONAL plan must never be
       // without: an informed estimate of where price is heading. A stand-aside
       // is exempt — the contract says it states none, because an invented

@@ -17,6 +17,7 @@
  */
 import * as Schema from "effect/Schema";
 
+import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { TradingPlaybookName } from "./playbook.ts";
 import { TradingText } from "./primitives.ts";
 
@@ -25,13 +26,16 @@ import { TradingText } from "./primitives.ts";
  *
  * `classify` and `standing_rules` are deliberately absent: the first is how to
  * read the regime and the second is what is true in every mode, so neither is
- * a procedure a mission could be pointed at as its whole job.
+ * a procedure a mission could be pointed at as its whole job. `ema_cross` is
+ * absent when the active policy has it disabled (V3, retired 2026-08-19) — a
+ * mandate naming it falls back to discretionary the same way an unrecognised
+ * name always has.
  */
 export const EXECUTABLE_STRATEGIES: ReadonlyArray<TradingPlaybookName> = [
   "momentum",
   "range_reversion",
   "opening_range",
-  "ema_cross",
+  ...(ACTIVE_TRADING_POLICY.emaCross.enabled ? (["ema_cross"] as const) : []),
   "rsi_reversion",
 ];
 

@@ -91,7 +91,15 @@ export type Playbook = typeof Playbook.Type;
  * `POC_DEFAULT_INSTRUCTION`, redistributed into the playbook each piece belongs
  * to.
  */
-export const PLAYBOOKS: ReadonlyArray<Playbook> = [
+/**
+ * Every playbook the doctrine could serve, ema_cross included.
+ *
+ * `PLAYBOOKS` below is this list filtered by `policy.emaCross.enabled` — kept
+ * as a separate constant rather than deleted so the retired prose is still one
+ * diff away if a future policy version re-enables it, without hand-retyping
+ * the procedure.
+ */
+const ALL_PLAYBOOKS: ReadonlyArray<Playbook> = [
   {
     name: "classify",
     whenItApplies:
@@ -279,3 +287,12 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     standDownIf: [],
   },
 ];
+
+/**
+ * The playbooks actually served — `ALL_PLAYBOOKS` minus ema_cross when the
+ * policy in force has it disabled (V3, retired 2026-08-19: see
+ * `ema-cross-frequency-audit.md` and `ema-cross-decision-brief.md`).
+ */
+export const PLAYBOOKS: ReadonlyArray<Playbook> = ALL_PLAYBOOKS.filter(
+  (entry) => entry.name !== "ema_cross" || policy.emaCross.enabled,
+);
