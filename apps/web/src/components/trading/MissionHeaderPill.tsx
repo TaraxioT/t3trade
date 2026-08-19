@@ -171,19 +171,11 @@ export function MissionHeaderPill({
             />
           }
         >
-          {/* The tone dot. Pulsing only while exposed keeps the animation tied to
-            the one state where latency is expensive, rather than animating at
-            rest. */}
-          <span
-            className={cn(
-              "size-2 rounded-full",
-              TONE_DOT[strip.tone],
-              // Guarded, unlike bare `animate-pulse`: the workspace's other
-              // pulses stop under reduced motion and this one has to as well.
-              exposed && "animate-pulse motion-reduce:animate-none",
-            )}
-            aria-hidden
-          />
+          {/* The tone dot. Steady, not pulsing: exposure persists for the
+            whole life of a position, so a pulse here would idle-loop for
+            minutes during normal operation. The colour alone carries the
+            tone. */}
+          <span className={cn("size-2 rounded-full", TONE_DOT[strip.tone])} aria-hidden />
           {/* The market is the capsule's anchor word: it never drops, at any
             width, because a state without its market names nothing. */}
           <span className="whitespace-nowrap font-medium">{strip.marketLabel}</span>

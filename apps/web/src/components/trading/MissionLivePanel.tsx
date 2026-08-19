@@ -2446,10 +2446,9 @@ function WatchDot({
   if (state === "armed") {
     return (
       <span className="relative inline-flex size-2" aria-label="armed">
-        {/* The evaluator really is sweeping this predicate every couple of
-            seconds, so the dot breathes. `watch-dot-pulse` rather than
-            Tailwind's `animate-ping`, which carries no reduced-motion guard —
-            see index.css. */}
+        {/* The halo is steady, not breathing: armed rows can sit armed for
+            minutes, so a loop here would idle. `watch-dot-pulse` in index.css
+            holds the halo at a low opacity instead of animating. */}
         <span className="watch-dot-pulse absolute inline-flex size-full rounded-full bg-armed/50" />
         <span className="relative inline-flex size-2 rounded-full bg-armed/70" />
       </span>

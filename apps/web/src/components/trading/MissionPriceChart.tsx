@@ -809,7 +809,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
 @keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
 .mission-level-flash { animation: mission-level-flash 1.4s ease-out 2 forwards; opacity: 0; }
-.mission-mark-pulse { animation: mission-mark-pulse 1.6s ease-in-out infinite; }
+.mission-mark-pulse { animation: mission-mark-pulse 1.6s ease-in-out 2; }
 .mission-marker-slide { transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1), right 500ms cubic-bezier(0.22, 1, 0.36, 1); }
 /* The line draws itself, left to right, once. A pathLength of 1 normalises
    every polyline to a unit length, so one keyframe serves each segment
@@ -1286,6 +1286,11 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         >
           {markMotion === "live" ? (
             <span
+              // The pulse is finite (two beats in the CSS below) and marks
+              // "the mark just moved": the key derived from the price remounts
+              // the ring on every change so the pair of beats replays once per
+              // move, and between moves the ring sits still.
+              key={markPrice ?? "mark"}
               // The translate lives in the keyframes, not in a class: the
               // animation drives `transform`, so a utility that also set it
               // would simply be overwritten on the first frame.

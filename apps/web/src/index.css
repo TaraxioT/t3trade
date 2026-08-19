@@ -682,34 +682,21 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   /*
-   * The armed dot's breath, on the halo behind it.
+   * The armed dot's halo, behind it.
    *
-   * Tailwind's `animate-ping` carries no reduced-motion guard of its own, and
-   * this one runs forever on every armed row — the exact shape of animation
-   * someone turns reduced motion on to be rid of. Under the preference the
-   * halo simply holds still at a low opacity, so an armed row still reads as
-   * distinct from a settled one without anything moving.
+   * Steady, not breathing: an armed row can sit armed for minutes during
+   * normal live operation, and the arm moment itself already plays a one-shot
+   * pulse in the phase-4 chip motion. The halo holds still at a low opacity,
+   * so an armed row still reads as distinct from a settled one without
+   * anything moving.
    */
   .watch-dot-pulse {
-    animation: watch-dot-pulse 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
-  }
-
-  @keyframes watch-dot-pulse {
-    75%,
-    100% {
-      transform: scale(2);
-      opacity: 0;
-    }
+    opacity: 0.35;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .watch-tick-in {
       animation: none;
-    }
-
-    .watch-dot-pulse {
-      animation: none;
-      opacity: 0.35;
     }
   }
 
