@@ -15,13 +15,27 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { alignToMinute, runArchiver } from "./archiver.ts";
+import { alignToMinute, emptyCounters, formatHeartbeat, runArchiver } from "./archiver.ts";
 import { ARCHIVE_COINS, ARCHIVE_INTERVALS, CANDLE_WINDOW_BARS, INTERVAL_MS } from "./config.ts";
 import { openArchiveDatabase, type ArchiveDatabase } from "./db.ts";
 import type { InfoClient } from "./info.ts";
 import { upsertCandles } from "./candles.ts";
 
 const MINUTE = 60_000;
+
+/** One stored bar for a given interval; the caller sets `t`. */
+const bar = (interval: string) => ({
+  coin: "BTC",
+  interval,
+  t: 0,
+  tClose: 1,
+  o: 1,
+  h: 1,
+  l: 1,
+  c: 1,
+  v: 1,
+  n: 1,
+});
 
 const withArchivePath = <A>(use: (path: string) => A): A => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "market-archive-loop-"));
@@ -115,6 +129,31 @@ async function runTicks(db: ArchiveDatabase, info: InfoClient, ticks: number): P
     },
   });
 }
+
+describe("formatHeartbeat", () => {
+  it("marks only the intervals that have actually missed a bar", () => {
+    withArchivePath((path) => {
+      const db = openArchiveDatabase(path);
+      const now = 10_000 * MINUTE;
+      // A 1m bar one minute old is healthy; a 4h bar four hours old is too,
+      // because the newest 4h bar is the one still in progress. Only the 5m
+      // series here has genuinely fallen behind.
+      upsertCandles(db, [
+        { ...bar("1m"), t: now - MINUTE },
+        { ...bar("5m"), t: now - 60 * MINUTE },
+        { ...bar("4h"), t: now - 4 * 60 * MINUTE },
+      ]);
+
+      const line = formatHeartbeat(db, emptyCounters(), fakeInfo(), now, now - 5 * MINUTE);
+      assert.match(line, /1m=60s /);
+      assert.match(line, /5m=3600s!/);
+      assert.match(line, /4h=14400s /);
+      // Intervals with nothing recorded are called out rather than omitted.
+      assert.match(line, /1d=none!/);
+      db.close();
+    });
+  });
+});
 
 describe("runArchiver", () => {
   it("backfills every tracked series before its first tick", async () => {

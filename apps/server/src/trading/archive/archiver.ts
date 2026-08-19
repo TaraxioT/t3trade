@@ -214,8 +214,16 @@ export async function pollBookSummaries(
   }
 }
 
-/** Newest stored bar per interval, across every coin. */
-function candleLagMs(db: ArchiveDatabase, now: number): ReadonlyArray<string> {
+/**
+ * How far behind the newest stored bar of each interval is.
+ *
+ * Reported in seconds, and marked `!` when a bar has actually been missed.
+ * Seconds alone do not show health on the slow intervals — the newest 4h bar
+ * is up to four hours old the moment it opens, so a healthy 4h series always
+ * reads in the thousands. The marker is what makes the line glanceable: any
+ * `!` means that interval actually missed a bar.
+ */
+function candleLag(db: ArchiveDatabase, now: number): ReadonlyArray<string> {
   const rows = db.all<{ interval: string; latest: number }>(
     "SELECT interval, MAX(t) AS latest FROM candles GROUP BY interval",
   );
@@ -223,9 +231,13 @@ function candleLagMs(db: ArchiveDatabase, now: number): ReadonlyArray<string> {
   return ARCHIVE_INTERVALS.map((interval: ArchiveInterval) => {
     const latest = latestByInterval.get(interval);
     if (latest === undefined) {
-      return `${interval}=none`;
+      return `${interval}=none!`;
     }
-    return `${interval}=${Math.round((now - latest) / 1_000)}s`;
+    const behind = now - latest;
+    // Two bars of slack: the newest bar is the one in progress, so its open
+    // time is already up to one bar old the instant it is written.
+    const marker = behind >= 3 * INTERVAL_MS[interval] ? "!" : "";
+    return `${interval}=${Math.round(behind / 1_000)}s${marker}`;
   });
 }
 
@@ -246,7 +258,7 @@ export function formatHeartbeat(
     `heartbeat: up ${uptimeMinutes}m | ` +
     `candles=${counters.candles} funding=${counters.funding} ` +
     `asset_ctx=${counters.assetCtx} book=${counters.bookSummary} gaps=${counters.gaps} | ` +
-    `lag ${candleLagMs(db, now).join(" ")} | ` +
+    `lag ${candleLag(db, now).join(" ")} | ` +
     `req=${info.stats.requests} retry=${info.stats.retries} fail=${info.stats.failures} ` +
     `pace=${Math.round(info.stats.paceMs)}ms`
   );
