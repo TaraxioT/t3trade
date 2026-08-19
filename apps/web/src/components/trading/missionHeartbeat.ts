@@ -160,3 +160,40 @@ export function composeHeartbeatSentence(input: HeartbeatInput): string {
     ...(checkIn === null ? [] : [checkIn]),
   ].join(" · ");
 }
+
+// ---------------------------------------------------------------------------
+// The strip's presentational split
+// ---------------------------------------------------------------------------
+//
+// The sentence stays ONE pure string (that is the module's contract and its
+// tests assert against strings); the strip renders it with every numeric run
+// — prices, sizes, percents, clock times — in the mono face. The split is a
+// pure function too, so it is tested the same way.
+
+/** One run of the sentence: prose, or a number the panel sets in mono. */
+export interface HeartbeatPart {
+  readonly text: string;
+  /** Numbers (and the separators inside them) render in font-mono. */
+  readonly mono: boolean;
+}
+
+/**
+ * A numeric run: digits plus the separators that stay inside a number —
+ * `4,251.50`, `14:32`. A unit that follows (`5m`, `%`) is prose: it is a word
+ * about the number, not part of it.
+ */
+const NUMERIC_RUN = /\d+(?:[.,:]\d+)*/g;
+
+/** Split a heartbeat sentence into prose and numeric runs, losing nothing. */
+export function splitNumericRuns(sentence: string): ReadonlyArray<HeartbeatPart> {
+  const parts: HeartbeatPart[] = [];
+  let lastIndex = 0;
+  for (const match of sentence.matchAll(NUMERIC_RUN)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) parts.push({ text: sentence.slice(lastIndex, index), mono: false });
+    parts.push({ text: match[0], mono: true });
+    lastIndex = index + match[0].length;
+  }
+  if (lastIndex < sentence.length) parts.push({ text: sentence.slice(lastIndex), mono: false });
+  return parts;
+}

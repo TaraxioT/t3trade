@@ -135,6 +135,7 @@ import { Skeleton } from "../ui/skeleton";
 import { MissionPriceChart } from "./MissionPriceChart";
 import {
   composeHeartbeatSentence,
+  splitNumericRuns,
   type HeartbeatInput,
   type HeartbeatWatch,
 } from "./missionHeartbeat";
@@ -802,7 +803,19 @@ export function MissionLivePanel({
         title={plan?.because ?? undefined}
         className="px-1 text-[13.5px] leading-snug text-foreground"
       >
-        {heartbeatSentence}
+        {/* Every number the sentence states is set in the mono face with
+            tabular figures — the same rule the rest of the panel keeps — via
+            a pure splitter over the composed string. The sentence itself
+            stays one string; only its rendering splits. */}
+        {splitNumericRuns(heartbeatSentence).map((part, index) =>
+          part.mono ? (
+            <span key={index} className="font-mono tabular-nums">
+              {part.text}
+            </span>
+          ) : (
+            part.text
+          ),
+        )}
       </p>
       {/* Two cards with air between them, not two halves of one box. The chart
           is the picture and the readout is the instrument beside it; welding

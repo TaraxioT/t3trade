@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { composeHeartbeatSentence, firstClause, type HeartbeatInput } from "./missionHeartbeat";
+import {
+  composeHeartbeatSentence,
+  firstClause,
+  splitNumericRuns,
+  type HeartbeatInput,
+} from "./missionHeartbeat";
 
 // A fixed clock, so the clock-time clauses assert against stable strings.
 // 14:32 in the test runner's locale is computed, not assumed: toLocaleTimeString
@@ -188,5 +193,51 @@ describe("firstClause", () => {
   it("returns null for blank input", () => {
     expect(firstClause(null)).toBeNull();
     expect(firstClause("   ")).toBeNull();
+  });
+});
+
+describe("splitNumericRuns", () => {
+  it("wraps prices, sizes and percents in mono runs", () => {
+    expect(splitNumericRuns("Long 0.12 ETH from 4,251 · up $8.40")).toEqual([
+      { text: "Long ", mono: false },
+      { text: "0.12", mono: true },
+      { text: " ETH from ", mono: false },
+      { text: "4,251", mono: true },
+      { text: " · up $", mono: false },
+      { text: "8.40", mono: true },
+    ]);
+  });
+
+  it("keeps clock times whole, colon included", () => {
+    expect(splitNumericRuns("next check-in 14:32")).toEqual([
+      { text: "next check-in ", mono: false },
+      { text: "14:32", mono: true },
+    ]);
+  });
+
+  it("leaves a following unit in prose", () => {
+    expect(splitNumericRuns("a 5m candle")).toEqual([
+      { text: "a ", mono: false },
+      { text: "5", mono: true },
+      { text: "m candle", mono: false },
+    ]);
+  });
+
+  it("loses nothing: the parts rejoin into the sentence", () => {
+    for (const sentence of [
+      "Watching ETH · will act if a 15m candle closes below 4,105.5",
+      "Standing down: paused by the operator · nothing trades until it is resumed",
+      "Reading ETH · first plan pending",
+    ]) {
+      expect(
+        splitNumericRuns(sentence)
+          .map((part) => part.text)
+          .join(""),
+      ).toBe(sentence);
+    }
+  });
+
+  it("a sentence with no numbers is one prose part", () => {
+    expect(splitNumericRuns("Standing aside")).toEqual([{ text: "Standing aside", mono: false }]);
   });
 });
