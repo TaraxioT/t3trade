@@ -118,14 +118,14 @@ describe("the condition the model writes", () => {
       value: 2,
       interval: "5m",
     });
-    // A mandate naming no interval still gets 1m, which is what it always was.
+    // A mandate naming no interval still gets the documented default (5m).
     assert.deepEqual(toMarketWatch(condition), {
       type: "metric_threshold",
       market: "ETH",
       metric: "volume_ratio",
       direction: "above",
       value: 2,
-      interval: "1m",
+      interval: "5m",
     });
     // And a condition that names its own interval keeps it.
     const named = decode({

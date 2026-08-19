@@ -856,14 +856,14 @@ describe("the timeframe the runtime works a mission on", () => {
     expect(runtimeTimeframe(instruction)).toBe("5m");
     expect(POC_STANDING_INSTRUCTION).not.toContain("Work on 1m candles");
     // A mandate that names nothing still lands on the documented default.
-    expect(runtimeTimeframe(`scalp ETH\n\n${POC_STANDING_INSTRUCTION}`)).toBe("1m");
+    expect(runtimeTimeframe(`scalp ETH\n\n${POC_STANDING_INSTRUCTION}`)).toBe("5m");
   });
 
-  it("falls back to 1m rather than to whatever the plan published", () => {
+  it("falls back to 5m rather than to whatever the plan published", () => {
     // The 2026-08-14 failure: plans published `timeframes: ["15m"]` and the
     // runtime followed them, so a flat mission was re-woken every 30 minutes
-    // on 15m bars and never saw the 1m structure it was trading.
-    expect(runtimeTimeframe("trade BTC, momentum only")).toBe("1m");
+    // on 15m bars and never saw the base-timeframe structure it was trading.
+    expect(runtimeTimeframe("trade BTC, momentum only")).toBe("5m");
     expect(runtimeTimeframe("work the 1h")).toBe("1h");
   });
 });

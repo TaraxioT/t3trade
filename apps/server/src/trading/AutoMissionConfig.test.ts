@@ -75,7 +75,7 @@ describe("resolveAutoMission", () => {
   // same drift this rename exists to close, pointing the other way.
   it("keeps the default note free of any market or direction", () => {
     expect(POC_STANDING_INSTRUCTION).not.toMatch(/\bETH\b|\bBTC\b|\blong\b|\bshort\b/);
-    expect(POC_STANDING_INSTRUCTION).toContain("1m");
+    expect(POC_STANDING_INSTRUCTION).toContain("5m");
   });
 
   it("treats a whitespace-only workspace root as no narrowing", () => {

@@ -30,6 +30,7 @@ import {
   PLAN_REASSESS_FLOOR_MILLIS,
   watchCoverageFloorMillis,
 } from "@t3tools/trading-contracts/watch";
+import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -315,14 +316,14 @@ layer("run settlement: the armed-coverage floor", (it) => {
       assert.equal(watch.type, "scheduled_reassessment");
       if (watch.type !== "scheduled_reassessment") return;
       // Due inside the scaled floor — the whole point is that it is soon. No
-      // strategy is published here, so the primary timeframe is the 1m default
-      // and holding a position scales the floor to 3 bars (3 minutes).
+      // strategy is published here, so the primary timeframe is the default
+      // and holding a position scales the floor to 3 bars.
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      const holdingFloor1m = watchCoverageFloorMillis({
-        timeframe: "1m",
+      const holdingFloor = watchCoverageFloorMillis({
+        timeframe: POC_DEFAULT_TIMEFRAME,
         holdingPosition: true,
       });
-      assert.isAtMost(watch.runAt, now + holdingFloor1m + 1_000);
+      assert.isAtMost(watch.runAt, now + holdingFloor + 1_000);
     }),
   );
 
@@ -371,7 +372,10 @@ layer("run settlement: the armed-coverage floor", (it) => {
       assert.isDefined(reassessment);
       if (reassessment?.watch.type !== "scheduled_reassessment") return;
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      const holdingFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true });
+      const holdingFloor = watchCoverageFloorMillis({
+        timeframe: POC_DEFAULT_TIMEFRAME,
+        holdingPosition: true,
+      });
       assert.isAtMost(reassessment.watch.runAt, now + holdingFloor + 1_000);
     }),
   );
@@ -400,7 +404,9 @@ layer("run settlement: the armed-coverage floor", (it) => {
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       assert.isAtMost(
         scheduled.runAt,
-        now + watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true }) + 1_000,
+        now +
+          watchCoverageFloorMillis({ timeframe: POC_DEFAULT_TIMEFRAME, holdingPosition: true }) +
+          1_000,
       );
     }),
   );
@@ -451,7 +457,10 @@ layer("run settlement: the armed-coverage floor", (it) => {
       assert.equal(active[0]!.armedReason, "staleness_floor");
       if (watch.type !== "scheduled_reassessment") return;
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
+      const flatFloor = watchCoverageFloorMillis({
+        timeframe: POC_DEFAULT_TIMEFRAME,
+        holdingPosition: false,
+      });
       assert.isAtMost(watch.runAt, now + flatFloor + 1_000);
     }),
   );
@@ -472,7 +481,10 @@ layer("run settlement: the armed-coverage floor", (it) => {
       assert.ok(watch !== undefined, "expected a scheduled reassessment");
       if (watch?.watch.type !== "scheduled_reassessment") return;
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
+      const flatFloor = watchCoverageFloorMillis({
+        timeframe: POC_DEFAULT_TIMEFRAME,
+        holdingPosition: false,
+      });
       assert.isAbove(watch.watch.runAt, now);
       assert.isAtMost(watch.watch.runAt, now + PLAN_REASSESS_FLOOR_MILLIS + 1_000);
       assert.isBelow(watch.watch.runAt - now, flatFloor);
@@ -590,7 +602,10 @@ layer("run settlement: the armed-coverage floor", (it) => {
       assert.equal(watch.type, "scheduled_reassessment");
       if (watch.type !== "scheduled_reassessment") return;
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
+      const flatFloor = watchCoverageFloorMillis({
+        timeframe: POC_DEFAULT_TIMEFRAME,
+        holdingPosition: false,
+      });
       assert.isAbove(watch.runAt, now + flatFloor);
       assert.isAtMost(watch.runAt, now + NO_OP_BACKOFF_CAP_MILLIS + 1_000);
     }),
