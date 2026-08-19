@@ -76,6 +76,18 @@ export interface OpeningRangePolicy {
  */
 export interface EmaCrossPolicy {
   /**
+   * Whether the ema_cross playbook is served to missions at all.
+   *
+   * Retired at V3: `ema-cross-frequency-audit.md` measured the gate-passing
+   * signal at +0.44 bps gross mean (t = 0.24, n = 153) with no exit structure
+   * or regime filter rescuing it, and `ema-cross-decision-brief.md` records
+   * the decision. The numbers below survive disabled — they are what the
+   * audit measured against and what a future re-spec would start from — but
+   * `playbook.ts` and `mode.ts` stop serving or accepting the strategy while
+   * this is false.
+   */
+  readonly enabled: boolean;
+  /**
    * Oldest a cross may be, in bars, and still be the reason for the entry.
    *
    * A cross twenty bars back is not a signal, it is a description of where
@@ -198,6 +210,7 @@ export const TRADING_POLICY_V1: TradingPolicy = {
   // against V2 compares the same rules moving rather than a strategy appearing
   // out of nowhere with looser ones.
   emaCross: {
+    enabled: true,
     maxCrossAgeBars: 5,
     minSpreadAtrRatio: 0.15,
     targetAtrMultiple: 3,
@@ -245,13 +258,35 @@ export const TRADING_POLICY_V2: TradingPolicy = {
 };
 
 /**
+ * ema_cross retired: three independent measurements — the unconditional
+ * signal, a twelve-cell exit sweep, and a fourteen-cell regime-filter sweep,
+ * all in `ema-cross-frequency-audit.md` — agree the gate-passing cross carries
+ * no edge, and the live ledger (`ema-cross-decision-brief.md`) reproduces the
+ * same flat result independently. `TRADING_POLICY_V1` and the ema_cross
+ * numbers stay in code to the digit — nothing here is a V2-labelled version
+ * because that name was already taken by the entry-size floor; this is V3,
+ * and it changes exactly one thing V2 did not: `emaCross.enabled` flips to
+ * false, which `playbook.ts` and `mode.ts` both read to stop serving and
+ * stop accepting the strategy.
+ */
+export const TRADING_POLICY_V3: TradingPolicy = {
+  ...TRADING_POLICY_V2,
+  version: 3,
+  label: "ema_cross retired — audit found no edge under any exit or filter (2026-08-19)",
+  emaCross: {
+    ...TRADING_POLICY_V2.emaCross,
+    enabled: false,
+  },
+};
+
+/**
  * The policy in force.
  *
  * Every threshold in the arithmetic and every number in the playbook prose
  * reads through this binding, so a candidate version takes effect in the rules
  * and in the doctrine at once, and the two cannot disagree.
  */
-export const ACTIVE_TRADING_POLICY: TradingPolicy = TRADING_POLICY_V2;
+export const ACTIVE_TRADING_POLICY: TradingPolicy = TRADING_POLICY_V3;
 
 /**
  * Whether the market data the harness reads is what is limiting its decisions.
