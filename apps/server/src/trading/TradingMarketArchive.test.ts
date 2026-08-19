@@ -20,6 +20,7 @@ import * as NodePath from "node:path";
 
 import { upsertAssetContexts } from "./archive/assetCtx.ts";
 import { upsertBookSummaries } from "./archive/bookSummary.ts";
+import { upsertCandles, type CandleRow } from "./archive/candles.ts";
 import { openArchiveDatabase } from "./archive/db.ts";
 import { upsertFunding } from "./archive/funding.ts";
 import {
@@ -215,6 +216,46 @@ it.effect("empty tables are unavailable with the not-running reason", () =>
     assert.strictEqual(book.status, "unavailable");
     if (book.status !== "unavailable") return;
     assert.include(book.reason, "no book_summary rows recorded for ETH");
+  }),
+);
+
+it.effect("a thin 24h candle window names its reason per coin, and the key still serves", () =>
+  Effect.gen(function* () {
+    const dir = tempDir("market-archive-thin-");
+    const path = NodePath.join(dir, "archive.sqlite");
+    const writer = openArchiveDatabase(path);
+    // Two 5m bars inside the trailing 24h: at most one return, so realized
+    // volatility has no variance to scale — the absence must be named on the
+    // coin, never by zeroing the figure or failing the whole scan.
+    const FIVE = 5 * MINUTE;
+    const bar = (t: number): CandleRow => ({
+      coin: "SOL",
+      interval: "5m",
+      t,
+      tClose: t + FIVE - 1,
+      o: 141,
+      h: 142,
+      l: 140,
+      c: 141,
+      v: 12.5,
+      n: 30,
+    });
+    upsertCandles(writer, [bar(NOW - 2 * FIVE), bar(NOW - FIVE)]);
+    writer.close();
+
+    const archive = makeTradingMarketArchive(path);
+    const scan = yield* archive.scan({ now: NOW });
+    assert.strictEqual(scan.status, "ok");
+    if (scan.status !== "ok") return;
+    const sol = scan.coins.find((coin) => coin.coin === "SOL");
+    assert.ok(sol !== undefined);
+    // The exact production reason (TradingMarketArchive.ts thin-window
+    // branch), joined with the coin's other absences by "; ".
+    assert.include(
+      sol.unavailable,
+      "only 2 5m bars in the trailing 24h — realized volatility not computable",
+    );
+    assert.equal(sol.realizedVol24hPct, undefined);
   }),
 );
 

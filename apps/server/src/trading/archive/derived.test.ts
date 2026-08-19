@@ -525,6 +525,33 @@ describe("vwap_distance", () => {
     });
   });
 
+  it("keeps the sign when the last close sits below the session VWAP", () => {
+    withArchive((db) => {
+      // Hand-checked negative-side fixture: the first three bars are the same
+      // session's; the fourth keeps typical price 99 ((104+94+99)/3) but with
+      // close 99, dropping the last close below the VWAP its own volume helps
+      // set. Σ tp·v = 101·10 + 104·30 + 99·20 + 99·40 = 10,070 over
+      // Σv = 100 → VWAP 100.7. Session closes [101, 104, 99, 99]: mean 100.75,
+      // population variance 16.75/4 = 4.1875, σ = √4.1875 ≈ 2.046338.
+      // Sigma: (99 − 100.7)/σ ≈ −0.830752 (negative).
+      // Bps: (99 − 100.7)/100.7 × 10,000 = −1,700/100.7 ≈ −168.8183,
+      // which the 2dp convention (Math.round(x·100)/100) rounds to −168.82.
+      const belowSession = [...session.slice(0, 3), vwapBar(DAY_START + 3 * FIVE, 104, 94, 99, 40)];
+      upsertCandles(db, belowSession);
+      const outcome = derivedMetricValue(
+        db,
+        "BTC",
+        { metric: "vwap_distance", interval: "5m" },
+        { now: NOW },
+      );
+      assert.strictEqual(outcome.status, "ok");
+      if (outcome.status !== "ok") return;
+      assert.ok(outcome.value < 0);
+      assert.closeTo(outcome.value, -0.830752, 1e-5);
+      assert.strictEqual(outcome.bps, -168.82);
+    });
+  });
+
   it("anchors to the UTC day: a prior-day bar never enters the VWAP", () => {
     withArchive((db) => {
       // An extreme prior-day bar that would drag the VWAP to ~196 if the
