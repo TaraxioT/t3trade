@@ -271,7 +271,7 @@ export const TRADING_LOOK_CATALOG: ReadonlyArray<TradingLookCatalogEntry> = [
     key: "scan",
     chars: 550,
     archive: true,
-    note: "cross-market CONTEXT for every archived coin (BTC/ETH/SOL), not market selection",
+    note: "cross-market CONTEXT for every archived coin, not market selection",
   },
   {
     key: "levels",
