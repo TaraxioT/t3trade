@@ -5,5 +5,10 @@
     "types": ["node"],
     "lib": ["ESNext", "esnext.disposable"]
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts"],
+  // Hand-run operational drivers, not part of any build. They import server
+  // internals directly (`apps/server/src/...`), which this project does not
+  // list, and they run under bun. Typechecking them here reports only that
+  // mismatch; the modules they import are checked by the server project.
+  "exclude": ["live-derived-*.ts", "wake-payload-replay/**"]
 }
