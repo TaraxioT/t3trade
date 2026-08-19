@@ -729,6 +729,85 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
   }
 
+  /*
+   * The chip lifecycle (phase 4), one shot each:
+   *
+   * ARM — a level that was just armed pulses once, softly, then settles. The
+   * class is applied by the chart only on the watch's own armed identity, so
+   * a resize or a re-render cannot replay it.
+   *
+   * RETIRE — a chip whose watch settled fades out once, slightly toward the
+   * gutter edge, and then is gone. The ghost element is removed on animation
+   * end; `forwards` only holds the tail of the one fade.
+   *
+   * CARD FLASH — the timeline card a fired chip flew to, highlighted briefly
+   * so the flight has a destination the eye can confirm.
+   */
+  @keyframes mission-chip-arm {
+    0% {
+      transform: scale(0.88);
+      opacity: 0.35;
+    }
+
+    55% {
+      transform: scale(1.06);
+      opacity: 1;
+    }
+
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  .mission-chip-arm {
+    animation: mission-chip-arm 520ms cubic-bezier(0.33, 1, 0.68, 1) 1;
+  }
+
+  @keyframes mission-chip-retire {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+
+    to {
+      opacity: 0;
+      transform: translateX(6px) scale(0.9);
+    }
+  }
+
+  .mission-chip-retire {
+    animation: mission-chip-retire 480ms ease-out forwards;
+  }
+
+  @keyframes mission-card-flash {
+    from {
+      background-color: color-mix(in srgb, var(--color-armed) 14%, transparent);
+    }
+
+    to {
+      background-color: transparent;
+    }
+  }
+
+  .mission-card-flash {
+    animation: mission-card-flash 900ms ease-out 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mission-chip-arm,
+    .mission-card-flash {
+      animation: none;
+    }
+
+    /* The retire ghost is never mounted under the preference (the chart
+       gates it in JS as well); this guard is the belt to those suspenders. */
+    .mission-chip-retire {
+      animation: none;
+      display: none;
+    }
+  }
+
   /* Solid fallback: with transparency reduced, the blur and the tinted fill
      both become an opaque surface. Legibility of the price is the point of
      the chip, and neither frosted effect may stand in front of it. */

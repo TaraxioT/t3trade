@@ -91,9 +91,15 @@ armed predicates incl. `candle_close.interval`. No new events needed.
     `missionTimeline` prose and `recentFills` (no projection fields added). Card
     hover claims the moment on the chart (rug tick glow, others dim); chart
     chip/tick/fill hover scrolls to and highlights the matching card.
-- **Phase 4** (`index.css`, `MissionLivePanel.tsx`, `MissionPriceChart.tsx`):
-  arm-pulse / fire-ripple / fade chip lifecycle, bracket draw-in, PnL
-  count-up — all one-shot, all reduced-motion safe. Glass per skill rules.
+- **Phase 4** (`index.css`, `MissionLivePanel.tsx`, `MissionPriceChart.tsx`) —
+  AS BUILT: the full chip lifecycle (arm = one soft pulse keyed off the
+  watch's armed identity, never a remount; fire = the existing ripple, then a
+  single ghost element flies from the gutter chip to the turn timeline card
+  over ~520ms and is removed, the card flashing briefly, skipped gracefully
+  when the card is absent; retire = one fade-out ghost at the chip's last
+  dock, then gone), plus the earlier bracket draw-in and PnL count-up. All
+  one-shot transform/opacity, all collapsed to instant (or not mounted) under
+  `prefers-reduced-motion`. Glass per skill rules.
 - **Phase 5**: `test-t3-app` skill, isolated state dir, seeded fixture states,
   screenshots dark/light × desktop/1100px.
 

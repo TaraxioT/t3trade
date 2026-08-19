@@ -181,6 +181,15 @@ interface MissionPriceChartProps {
 /** How tall a past-event tick stands off the bottom edge, in viewBox units. */
 const PAST_MARKER_TICK_HEIGHT = 6;
 
+/** A drawn chip, frozen at its last placement: what a retire fades out from. */
+interface ChipSnapshot {
+  readonly id: string;
+  /** The chip's dock, as a percentage of the frame height. */
+  readonly topPercent: number;
+  readonly ink: string;
+  readonly text: string;
+}
+
 // The hypothetical register — how anything drawn to the right of `now` is
 // distinguished from the record to its left. Thinner than the rule it
 // continues, dashed whatever the rule's own pattern was (a solid entry line
@@ -514,6 +523,22 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   const [hoveredTagKey, setHoveredTagKey] = useState<string | null>(null);
   const [hoveredTimeKey, setHoveredTimeKey] = useState<string | null>(null);
 
+  // --- The chip lifecycle (phase 4): arm pulses once, retire fades once. ---
+  //
+  // Both key off the watch's own id, never the element: a re-render or a
+  // resize re-runs this component constantly, and an animation keyed on
+  // mounting would replay on every layout shift. The ids seen armed live in
+  // a ref written during render (idempotently, the same pattern the panel's
+  // `useRecentlyFiredWatches` uses); the pulse class is applied once, on the
+  // render the id first appears in after the first.
+  const reduceMotion =
+    typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const chipPrimedRef = useRef(false);
+  const pulsedIdsRef = useRef<Set<string>>(new Set());
+  /** The last snapshot of each drawn chip, so a retire has a ghost to fade. */
+  const chipSnapshotRef = useRef<Map<string, ChipSnapshot>>(new Map());
+  const [retireGhosts, setRetireGhosts] = useState<ReadonlyArray<ChipSnapshot>>([]);
+
   // The shared selection: hovering a chip or marker tells the panel which
   // event the reader is on, and the panel can do the same in reverse through
   // `selection`. The store is mission-scoped by construction (one live panel
@@ -550,6 +575,41 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
 
   // Too few candles → the parent renders a skeleton / "chart unavailable".
   if (geometry === null) return null;
+
+  // --- Chip lifecycle bookkeeping (see the refs above). ----------------------
+  //
+  // The first render that draws chips primes the pulse set with everything
+  // already armed: a chip the panel opened with has no arrival to announce.
+  if (!chipPrimedRef.current) {
+    for (const tag of geometry.gutterTags) {
+      if (tag.id !== undefined) pulsedIdsRef.current.add(tag.id);
+    }
+    chipPrimedRef.current = geometry.gutterTags.length > 0;
+  }
+
+  // A watch whose chip left the gutter this render gets one fading ghost at
+  // its last dock, then is gone. Detected by comparing the snapshot the
+  // previous render wrote against the ids on screen now; the state update is
+  // React's own render-phase adjustment (conditional, so it converges), and
+  // under reduced motion no ghost is ever made — the chip simply leaves.
+  const drawnIds = new Set<string>();
+  for (const tag of geometry.gutterTags) {
+    if (tag.id !== undefined) drawnIds.add(tag.id);
+  }
+  const newlyRetired: ChipSnapshot[] = [];
+  for (const [id, snapshot] of chipSnapshotRef.current) {
+    if (drawnIds.has(id)) continue;
+    chipSnapshotRef.current.delete(id);
+    if (!reduceMotion && newlyRetired.length + retireGhosts.length < 8) {
+      newlyRetired.push(snapshot);
+    }
+  }
+  if (newlyRetired.length > 0) {
+    setRetireGhosts((prev) => [...prev, ...newlyRetired]);
+  }
+  const retireGhost = (id: string): void => {
+    setRetireGhosts((prev) => prev.filter((ghost) => ghost.id !== id));
+  };
 
   // Unique per mounted chart: two of these on one screen (the live panel and a
   // review) would otherwise share one `<linearGradient id>` and the second
@@ -1369,10 +1429,33 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           const hovered = hoveredTagKey === tag.key;
           const selected =
             tag.id !== undefined && selection !== null && selection.eventId === tag.id;
+          // The arm pulse: only on the render a watch's chip first appears in
+          // after the first, keyed by the watch's own id. Written to the ref
+          // here, idempotently, so a re-render of a chip already seen never
+          // pulses again.
+          const isNewlyArmed =
+            tag.id !== undefined && chipPrimedRef.current && !pulsedIdsRef.current.has(tag.id);
+          if (isNewlyArmed && tag.id !== undefined) pulsedIdsRef.current.add(tag.id);
+          const topPercent = (tag.labelY / CHART_VIEWBOX_HEIGHT) * 100;
+          if (tag.id !== undefined) {
+            chipSnapshotRef.current.set(tag.id, {
+              id: tag.id,
+              topPercent,
+              ink,
+              text:
+                `${glyph === "" ? "" : `${glyph} `}${formatPrice(tag.price)}` +
+                (caption === "" ? "" : ` ${caption}`),
+            });
+          }
           return (
             <span
-              key={tag.key}
+              // Keyed by the watch id where there is one, so the element
+              // survives index shifts in the level list — an index-keyed chip
+              // remounts when a neighbour appears, and a remount replays the
+              // arm pulse about a level that did not just arm.
+              key={tag.id ?? tag.key}
               data-testid={`mission-level-chip-${tag.kind}`}
+              data-watch-chip={tag.id}
               className={cn(
                 "mission-chip flex max-w-full cursor-default items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-[1.5px] font-mono text-[10.5px] outline-none backdrop-blur-sm transition-[box-shadow,border-color] duration-150",
                 hovered || selected ? "border-current/60" : "border-border/50",
@@ -1380,6 +1463,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
                   firedWatchIds !== undefined &&
                   firedWatchIds.includes(tag.id) &&
                   "mission-chip-fire",
+                isNewlyArmed && "mission-chip-arm",
               )}
               style={{
                 color: ink,
@@ -1428,6 +1512,21 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             </span>
           );
         })}
+        {/* The retire ghosts (phase 4): a chip whose watch settled fades out
+            once at its last dock, then is removed. One element per retire,
+            transform/opacity only, gone when the fade ends. */}
+        {retireGhosts.map((ghost) => (
+          <span
+            key={`retiring-${ghost.id}`}
+            data-testid="mission-chip-retiring"
+            className="mission-chip mission-chip-retire pointer-events-none absolute flex items-center gap-1 whitespace-nowrap rounded-full border border-border/50 px-1.5 py-[1.5px] font-mono text-[10.5px]"
+            style={{ color: ghost.ink, top: `${ghost.topPercent}%`, right: 2 }}
+            aria-hidden
+            onAnimationEnd={() => retireGhost(ghost.id)}
+          >
+            {ghost.text}
+          </span>
+        ))}
         {/* The overflow chip: levels the gutter folded away are not silently
             dropped — they are counted here, and hovering the count claims the
             selection so the panel's watch list answers with the full set. */}

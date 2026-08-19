@@ -674,6 +674,48 @@ export function MissionLivePanel({
     selectPanelEvent({ eventId: event.id, atMillis: event.atMillis, source: "panel" });
   };
 
+  // --- The fire flight (phase 4): the chip ripples, then flies to its card.
+  //
+  // A watch that just fired already ripples in the gutter; this walks a ghost
+  // of its chip from there to the timeline card of the turn it caused, so the
+  // level and the decision read as one event. The card arrives a poll after
+  // the firing, so the flight waits for it (and gives up quietly — the
+  // ripple alone already announced the fire — if it never comes).
+  const flownFiredRef = useRef<Set<string>>(new Set());
+  const pendingFlightsRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    for (const id of recentlyFired) {
+      if (flownFiredRef.current.has(id)) continue;
+      const row = watchStream.find(
+        (item): item is WatchStreamRow => item.kind === "watch" && item.id === id,
+      );
+      if (row === undefined) continue;
+      flownFiredRef.current.add(id);
+      pendingFlightsRef.current.set(id, row.atMillis);
+    }
+  }, [recentlyFired, watchStream]);
+  useEffect(() => {
+    if (pendingFlightsRef.current.size === 0) return;
+    for (const [id, watchAt] of [...pendingFlightsRef.current]) {
+      const card = turnTimeline.cards.find(
+        (candidate) =>
+          candidate.kind === "wake" && Math.abs(candidate.atMillis - watchAt) <= 20_000,
+      );
+      const chip = document.querySelector(`[data-watch-chip="${CSS.escape(id)}"]`);
+      const cardEl =
+        card === undefined
+          ? null
+          : document.querySelector(`[data-timeline-card="${CSS.escape(card.id)}"]`);
+      if (chip instanceof HTMLElement && cardEl instanceof HTMLElement) {
+        pendingFlightsRef.current.delete(id);
+        flyChipToCard(chip, cardEl);
+      } else if (Date.now() - watchAt > 6_000) {
+        // The card (or the chip) never arrived: the ripple alone stands.
+        pendingFlightsRef.current.delete(id);
+      }
+    }
+  }, [turnTimeline.cards, nowMillis]);
+
   // --- complete: the result, one line. --------------------------------------
   // The full review — the post-mortem chart and the fee/PnL breakdown — is the
   // completion summary card in the timeline. Repeating it here would put two
@@ -3005,6 +3047,58 @@ function CollapsedRow({
  * the one control here that leaves the app, and it was competing with the P&L
  * for the top-right corner.
  */
+/**
+ * Fly a fired level's chip to the timeline card of the turn it caused.
+ *
+ * The chip has already played its ripple; ~400ms in, a single ghost element
+ * (a copy of the chip) travels from the gutter to the card over ~520ms on
+ * transform and opacity alone, and is removed when it lands. The card keeps a
+ * brief highlight so the flight has a visible destination. Instant-off under
+ * `prefers-reduced-motion`: no ghost is made at all.
+ */
+function flyChipToCard(chipEl: HTMLElement, cardEl: HTMLElement): void {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  // The source rect is captured now: the chip itself is retiring and may be
+  // gone by the time the flight starts.
+  const from = chipEl.getBoundingClientRect();
+  cardEl.scrollIntoView({ block: "nearest", behavior: "instant" });
+  const chipClass = chipEl.className;
+  const chipText = chipEl.textContent ?? "";
+  const launch = window.setTimeout(() => {
+    const to = cardEl.getBoundingClientRect();
+    if (from.width === 0 || to.width === 0) return;
+    const ghost = document.createElement("span");
+    ghost.textContent = chipText;
+    ghost.className = chipClass;
+    ghost.style.position = "fixed";
+    ghost.style.left = `${from.left}px`;
+    ghost.style.top = `${from.top}px`;
+    ghost.style.margin = "0";
+    ghost.style.zIndex = "50";
+    ghost.style.pointerEvents = "none";
+    document.body.appendChild(ghost);
+    const flight = ghost.animate(
+      [
+        { transform: "translate(0, 0) scale(1)", opacity: 1 },
+        {
+          transform: `translate(${to.left + to.width / 2 - (from.left + from.width / 2)}px, ${
+            to.top + to.height / 2 - (from.top + from.height / 2)
+          }px) scale(0.7)`,
+          opacity: 0.3,
+        },
+      ],
+      { duration: 520, easing: "cubic-bezier(0.33, 1, 0.68, 1)" },
+    );
+    void flight.finished.then(() => ghost.remove()).catch(() => ghost.remove());
+    cardEl.classList.add("mission-card-flash");
+    window.setTimeout(() => cardEl.classList.remove("mission-card-flash"), 950);
+  }, 400);
+  // If the panel unmounts mid-flight there is nothing to clean that the
+  // reader can still see: the ghost removes itself, and a detached card
+  // element holding a class harms nothing.
+  void launch;
+}
+
 /**
  * The newest thing the harness did, for the status bar's activity segment.
  *
