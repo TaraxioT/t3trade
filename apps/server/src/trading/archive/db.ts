@@ -185,3 +185,66 @@ export function openArchiveDatabase(filePath: string): ArchiveDatabase {
   applySchema(db);
   return db;
 }
+
+/**
+ * Open an existing archive file for reading only, or `null` when it is absent.
+ *
+ * This is the seam the trading toolkit reads through. It must never create the
+ * file, its parent directory, or any table: an archive that does not exist is
+ * the archiver-not-running state, and a reader that silently materialised an
+ * empty file would turn "no data" into "a database with zeros in it". Verified
+ * against Node's `node:sqlite`: `DatabaseSync(path, { readOnly: true })` throws
+ * `unable to open database file` on a missing path and never creates it, and a
+ * write through such a handle fails with `attempt to write a readonly
+ * database`.
+ *
+ * Absence returns `null` rather than throwing because the callers above this
+ * layer treat "no archive" as a first-class answer with a reason, not an
+ * exceptional control flow. The file being present but not a database (or
+ * empty) is left to surface at query time, where the reader's own error
+ * handling turns it into an explained refusal.
+ *
+ * The statement cache is shared with the writer's shape so reads are cheap on
+ * a hot path; `run` and `transaction` are carried only to satisfy the
+ * `ArchiveDatabase` interface and throw if anything ever calls them.
+ */
+export function openArchiveDatabaseReadOnly(filePath: string): ArchiveDatabase | null {
+  if (!NodeFS.existsSync(filePath)) {
+    return null;
+  }
+
+  let database: NodeSqlite.DatabaseSync;
+  try {
+    database = new NodeSqlite.DatabaseSync(filePath, { readOnly: true });
+  } catch {
+    // Exists but cannot be opened (a directory, a permissions failure, a file
+    // mid-copy). Indistinguishable from absent for a reader's purposes.
+    return null;
+  }
+
+  const statements = new Map<string, ReturnType<NodeSqlite.DatabaseSync["prepare"]>>();
+  const prepare = (sql: string) => {
+    const cached = statements.get(sql);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const statement = database.prepare(sql);
+    statements.set(sql, statement);
+    return statement;
+  };
+
+  return {
+    run: () => {
+      throw new Error("archive handle is read-only");
+    },
+    transaction: () => {
+      throw new Error("archive handle is read-only");
+    },
+    all: <Row>(sql: string, ...params: ReadonlyArray<SqlValue>) =>
+      prepare(sql).all(...params) as unknown as ReadonlyArray<Row>,
+    close: () => {
+      statements.clear();
+      database.close();
+    },
+  };
+}

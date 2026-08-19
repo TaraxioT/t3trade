@@ -18,7 +18,7 @@ import * as NodePath from "node:path";
 import { parseAssetContexts, upsertAssetContexts } from "./assetCtx.ts";
 import { summariseBook, upsertBookSummaries } from "./bookSummary.ts";
 import { recordKnownGap, upsertCandles, type CandleRow } from "./candles.ts";
-import { openArchiveDatabase, type ArchiveDatabase } from "./db.ts";
+import { openArchiveDatabase, openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./db.ts";
 import { parseFunding, upsertFunding } from "./funding.ts";
 import {
   candlesInRange,
@@ -26,6 +26,10 @@ import {
   latestAssetContext,
   latestBookSummary,
   latestCandle,
+  recentAssetContext,
+  recentBookSummary,
+  recentFunding,
+  fundingInRange,
   trailingMeanFunding,
 } from "./read.ts";
 
@@ -265,6 +269,159 @@ describe("knownGaps", () => {
         [1_000, 5_000],
       );
       assert.deepStrictEqual(knownGaps(db, "SOL", "1m"), []);
+    });
+  });
+});
+
+describe("openArchiveDatabaseReadOnly", () => {
+  it("reads a seeded archive, blocks writes, and never creates the file", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "market-archive-ro-"));
+    const path = NodePath.join(dir, "archive.sqlite");
+    try {
+      const writer = openArchiveDatabase(path);
+      upsertFunding(writer, [{ coin: "BTC", time: NOW, fundingRate: 0.01, premium: 0 }]);
+      writer.close();
+
+      const reader = openArchiveDatabaseReadOnly(path);
+      assert.notStrictEqual(reader, null);
+      if (reader === null) return;
+      assert.strictEqual(recentFunding(reader, "BTC", 5).length, 1);
+      assert.throws(() => reader.run("INSERT INTO funding VALUES ('ETH', 1, 0, 0)"));
+      reader.close();
+
+      const absent = openArchiveDatabaseReadOnly(NodePath.join(dir, "not-there.sqlite"));
+      assert.strictEqual(absent, null);
+      assert.strictEqual(
+        NodeFS.existsSync(NodePath.join(dir, "not-there.sqlite")),
+        false,
+        "a read-only open must not create the file",
+      );
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("recentFunding", () => {
+  it("returns the newest n rows oldest first, per coin", () => {
+    withArchive((db) => {
+      upsertFunding(
+        db,
+        [1, 2, 3, 4].map((hour) => ({
+          coin: hour === 2 ? "ETH" : "BTC",
+          time: hour * MINUTE,
+          fundingRate: hour / 100,
+          premium: 0,
+        })),
+      );
+      const rows = recentFunding(db, "BTC", 2);
+      assert.deepStrictEqual(
+        rows.map((row) => row.time),
+        [3 * MINUTE, 4 * MINUTE],
+      );
+      assert.strictEqual(rows[1]?.fundingRate, 0.04);
+    });
+  });
+
+  it("returns fewer rows than asked for when fewer exist", () => {
+    withArchive((db) => {
+      upsertFunding(db, [{ coin: "BTC", time: MINUTE, fundingRate: 0.01, premium: 0 }]);
+      assert.strictEqual(recentFunding(db, "BTC", 50).length, 1);
+    });
+  });
+
+  it("returns nothing for a coin with no rows", () => {
+    withArchive((db) => {
+      assert.deepStrictEqual(recentFunding(db, "SOL", 10), []);
+    });
+  });
+});
+
+describe("fundingInRange", () => {
+  it("returns the inclusive window, oldest first", () => {
+    withArchive((db) => {
+      upsertFunding(
+        db,
+        [1, 2, 3, 4, 5].map((hour) => ({
+          coin: "BTC",
+          time: hour * MINUTE,
+          fundingRate: hour / 100,
+          premium: 0,
+        })),
+      );
+      const rows = fundingInRange(db, "BTC", 2 * MINUTE, 4 * MINUTE);
+      assert.deepStrictEqual(
+        rows.map((row) => row.time),
+        [2 * MINUTE, 3 * MINUTE, 4 * MINUTE],
+      );
+    });
+  });
+
+  it("returns nothing when the window holds no rows", () => {
+    withArchive((db) => {
+      assert.deepStrictEqual(fundingInRange(db, "BTC", 0, MINUTE), []);
+    });
+  });
+});
+
+describe("recentAssetContext", () => {
+  it("returns the newest n samples oldest first, per coin", () => {
+    withArchive((db) => {
+      const sample = (ts: number, oi: number) => ({
+        coin: "BTC",
+        ts,
+        openInterest: oi,
+        premium: -0.0004,
+        oraclePx: 64_328.2,
+        markPx: 64_299,
+        dayNtlVolume: 1_436_314_655.92,
+        funding: 0.0000125,
+      });
+      upsertAssetContexts(db, [sample(3 * MINUTE, 30), sample(MINUTE, 10), sample(2 * MINUTE, 20)]);
+      const rows = recentAssetContext(db, "BTC", 2);
+      assert.deepStrictEqual(
+        rows.map((row) => row.ts),
+        [2 * MINUTE, 3 * MINUTE],
+      );
+      assert.strictEqual(rows[1]?.openInterest, 30);
+      assert.strictEqual(rows[0]?.premium, -0.0004);
+    });
+  });
+
+  it("returns nothing for a coin with no rows", () => {
+    withArchive((db) => {
+      assert.deepStrictEqual(recentAssetContext(db, "ETH", 10), []);
+    });
+  });
+});
+
+describe("recentBookSummary", () => {
+  it("returns the newest n rows oldest first, per coin", () => {
+    withArchive((db) => {
+      const row = (ts: number, bidPx: number) => ({
+        coin: "BTC",
+        ts,
+        bidPx,
+        bidSz: 1,
+        askPx: bidPx + 1,
+        askSz: 0.5,
+        bidDepth5: 15,
+        askDepth5: 1,
+      });
+      upsertBookSummaries(db, [row(3 * MINUTE, 103), row(MINUTE, 101), row(2 * MINUTE, 102)]);
+      const rows = recentBookSummary(db, "BTC", 2);
+      assert.deepStrictEqual(
+        rows.map((r) => r.ts),
+        [2 * MINUTE, 3 * MINUTE],
+      );
+      assert.strictEqual(rows[1]?.bidPx, 103);
+      assert.strictEqual(rows[0]?.askDepth5, 1);
+    });
+  });
+
+  it("returns nothing for a coin with no rows", () => {
+    withArchive((db) => {
+      assert.deepStrictEqual(recentBookSummary(db, "SOL", 10), []);
     });
   });
 });

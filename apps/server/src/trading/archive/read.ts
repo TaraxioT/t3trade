@@ -16,6 +16,7 @@ import type { AssetCtxRow } from "./assetCtx.ts";
 import type { BookSummaryRow } from "./bookSummary.ts";
 import type { CandleRow } from "./candles.ts";
 import type { ArchiveDatabase } from "./db.ts";
+import type { FundingRow } from "./funding.ts";
 
 interface CandleColumns {
   readonly coin: string;
@@ -113,26 +114,28 @@ interface AssetCtxColumns {
   readonly funding: number;
 }
 
+const toAssetCtx = (row: AssetCtxColumns): AssetCtxRow => ({
+  coin: row.coin,
+  ts: row.ts,
+  openInterest: row.open_interest,
+  premium: row.premium,
+  oraclePx: row.oracle_px,
+  markPx: row.mark_px,
+  dayNtlVolume: row.day_ntl_volume,
+  funding: row.funding,
+});
+
+const ASSET_CTX_COLUMNS =
+  "coin, ts, open_interest, premium, oracle_px, mark_px, day_ntl_volume, funding";
+
 /** The most recent open-interest/premium sample for a coin. */
 export function latestAssetContext(db: ArchiveDatabase, coin: string): AssetCtxRow | null {
   const rows = db.all<AssetCtxColumns>(
-    "SELECT coin, ts, open_interest, premium, oracle_px, mark_px, day_ntl_volume, funding " +
-      "FROM asset_ctx WHERE coin = ? ORDER BY ts DESC LIMIT 1",
+    `SELECT ${ASSET_CTX_COLUMNS} FROM asset_ctx WHERE coin = ? ORDER BY ts DESC LIMIT 1`,
     coin,
   );
   const row = rows[0];
-  return row === undefined
-    ? null
-    : {
-        coin: row.coin,
-        ts: row.ts,
-        openInterest: row.open_interest,
-        premium: row.premium,
-        oraclePx: row.oracle_px,
-        markPx: row.mark_px,
-        dayNtlVolume: row.day_ntl_volume,
-        funding: row.funding,
-      };
+  return row === undefined ? null : toAssetCtx(row);
 }
 
 interface BookSummaryColumns {
@@ -146,26 +149,113 @@ interface BookSummaryColumns {
   readonly ask_depth5: number;
 }
 
+const toBookSummary = (row: BookSummaryColumns): BookSummaryRow => ({
+  coin: row.coin,
+  ts: row.ts,
+  bidPx: row.bid_px,
+  bidSz: row.bid_sz,
+  askPx: row.ask_px,
+  askSz: row.ask_sz,
+  bidDepth5: row.bid_depth5,
+  askDepth5: row.ask_depth5,
+});
+
+const BOOK_SUMMARY_COLUMNS = "coin, ts, bid_px, bid_sz, ask_px, ask_sz, bid_depth5, ask_depth5";
+
 /** The most recent book summary for a coin. */
 export function latestBookSummary(db: ArchiveDatabase, coin: string): BookSummaryRow | null {
   const rows = db.all<BookSummaryColumns>(
-    "SELECT coin, ts, bid_px, bid_sz, ask_px, ask_sz, bid_depth5, ask_depth5 " +
-      "FROM book_summary WHERE coin = ? ORDER BY ts DESC LIMIT 1",
+    `SELECT ${BOOK_SUMMARY_COLUMNS} FROM book_summary WHERE coin = ? ORDER BY ts DESC LIMIT 1`,
     coin,
   );
   const row = rows[0];
-  return row === undefined
-    ? null
-    : {
-        coin: row.coin,
-        ts: row.ts,
-        bidPx: row.bid_px,
-        bidSz: row.bid_sz,
-        askPx: row.ask_px,
-        askSz: row.ask_sz,
-        bidDepth5: row.bid_depth5,
-        askDepth5: row.ask_depth5,
-      };
+  return row === undefined ? null : toBookSummary(row);
+}
+
+/**
+ * Funding rows whose timestamp falls in `[fromT, toT]`, oldest first — the
+ * funding counterpart of `candlesInRange`, so a windowed statistic never has
+ * to load the coin's whole history.
+ */
+export function fundingInRange(
+  db: ArchiveDatabase,
+  coin: string,
+  fromT: number,
+  toT: number,
+): ReadonlyArray<FundingRow> {
+  return db
+    .all<{ coin: string; time: number; funding_rate: number; premium: number }>(
+      "SELECT coin, time, funding_rate, premium FROM funding " +
+        "WHERE coin = ? AND time >= ? AND time <= ? ORDER BY time ASC",
+      coin,
+      fromT,
+      toT,
+    )
+    .map((row) => ({
+      coin: row.coin,
+      time: row.time,
+      fundingRate: row.funding_rate,
+      premium: row.premium,
+    }));
+}
+
+/**
+ * The last `limit` funding rows for a coin, oldest first — the same
+ * chronological order as `candlesInRange`, so a caller can walk any series in
+ * one direction. Asking for more rows than exist returns what there is; the
+ * empty array means the coin has nothing recorded.
+ */
+export function recentFunding(
+  db: ArchiveDatabase,
+  coin: string,
+  limit: number,
+): ReadonlyArray<FundingRow> {
+  return db
+    .all<{ coin: string; time: number; funding_rate: number; premium: number }>(
+      "SELECT coin, time, funding_rate, premium FROM funding " +
+        "WHERE coin = ? ORDER BY time DESC LIMIT ?",
+      coin,
+      limit,
+    )
+    .map((row) => ({
+      coin: row.coin,
+      time: row.time,
+      fundingRate: row.funding_rate,
+      premium: row.premium,
+    }))
+    .toReversed();
+}
+
+/** The last `limit` derivatives-context samples for a coin, oldest first. */
+export function recentAssetContext(
+  db: ArchiveDatabase,
+  coin: string,
+  limit: number,
+): ReadonlyArray<AssetCtxRow> {
+  return db
+    .all<AssetCtxColumns>(
+      `SELECT ${ASSET_CTX_COLUMNS} FROM asset_ctx WHERE coin = ? ORDER BY ts DESC LIMIT ?`,
+      coin,
+      limit,
+    )
+    .map(toAssetCtx)
+    .toReversed();
+}
+
+/** The last `limit` book summaries for a coin, oldest first. */
+export function recentBookSummary(
+  db: ArchiveDatabase,
+  coin: string,
+  limit: number,
+): ReadonlyArray<BookSummaryRow> {
+  return db
+    .all<BookSummaryColumns>(
+      `SELECT ${BOOK_SUMMARY_COLUMNS} FROM book_summary WHERE coin = ? ORDER BY ts DESC LIMIT ?`,
+      coin,
+      limit,
+    )
+    .map(toBookSummary)
+    .toReversed();
 }
 
 export interface KnownGap {
