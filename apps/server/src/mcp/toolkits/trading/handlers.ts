@@ -1574,6 +1574,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
             wants("position") ||
             wants("position_costs") ||
             wants("account") ||
+            wants("orders") ||
             wants("cost") ||
             indicatorRequests.length > 0);
         const facts =
@@ -1718,7 +1719,18 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
             sections.positionCosts = facts.positionCosts;
           }
         }
-        if (wants("cost") && facts?.costContext != null) sections.cost = facts.costContext;
+        if (wants("cost")) {
+          if (facts?.costContext != null) {
+            sections.cost = facts.costContext;
+          } else if (facts !== null) {
+            // The composer prices a hypothetical entry only while flat; holding,
+            // the position's own round trip is the number that matters.
+            refuseKeys(
+              keysFor("cost"),
+              "holding a position — cost prices a hypothetical entry; ask position_costs",
+            );
+          }
+        }
 
         // The candles keys: ONE section, because TradingObservation has one
         // `candles` field. Keys naming the same interval are served by the widest
