@@ -4,12 +4,15 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Scope from "effect/Scope";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { it as itEffect } from "@effect/vitest";
+import { assert } from "@effect/vitest";
 
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
+import { TradingRuntimeLease } from "../../trading/TradingRuntimeLease.ts";
 import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
@@ -93,6 +96,7 @@ describe("OrchestrationReactor", () => {
             },
           }),
         ),
+        Layer.provideMerge(Layer.succeed(TradingRuntimeLease, { held: true, lockPath: null })),
       ),
     );
 
@@ -111,4 +115,74 @@ describe("OrchestrationReactor", () => {
 
     await Effect.runPromise(Scope.close(scope, Exit.void));
   });
+
+  itEffect.effect("keeps the trading reactors down when the trading lease is not held", () =>
+    Effect.gen(function* () {
+      const started: string[] = [];
+
+      yield* Effect.gen(function* () {
+        const reactor = yield* OrchestrationReactor;
+        yield* reactor.start();
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
+            Layer.provideMerge(
+              Layer.succeed(ProviderRuntimeIngestionService, {
+                start: () => Effect.void,
+                drain: Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(ProviderCommandReactor, {
+                start: () => Effect.void,
+                drain: Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(CheckpointReactor, { start: () => Effect.void, drain: Effect.void }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(ThreadDeletionReactor, {
+                start: () => Effect.void,
+                drain: Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(TradingMissionReactor, {
+                start: () => {
+                  started.push("trading-mission-reactor");
+                  return Effect.void;
+                },
+                drain: Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(WatchEvaluator, {
+                start: () => {
+                  started.push("watch-evaluator");
+                  return Effect.void;
+                },
+                drain: Effect.void,
+                evaluateDelivery: () => Effect.void,
+                sweep: Effect.void,
+                forgetDeliveredCandles: Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(AgentAwarenessRelay.AgentAwarenessRelay, {
+                publishThread: () => Effect.void,
+                start: () => Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(TradingRuntimeLease, { held: false, lockPath: "/tmp/x" }),
+            ),
+          ),
+        ),
+      );
+
+      assert.deepEqual(started, []);
+    }),
+  );
 });

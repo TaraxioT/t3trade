@@ -41,6 +41,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { TradingLayerLive } from "./trading/runtimeLayer.ts";
+import { TradingLeaseTarget } from "./trading/TradingRuntimeLease.ts";
 import { TradingMissionReactorLive } from "./trading/TradingMissionReactor.ts";
 import { WatchEvaluatorLive } from "./trading/WatchEvaluator.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
@@ -237,6 +238,16 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
+// The trading lease is scoped to the state database the server was pointed
+// at, so the lock file sits beside the real sqlite file (or is skipped for
+// memory databases) without the trading layer needing ServerConfig itself.
+const TradingLeaseTargetLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const { dbPath } = yield* ServerConfig.ServerConfig;
+    return Layer.succeed(TradingLeaseTarget, { dbPath });
+  }),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
@@ -250,7 +261,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   // Merged rather than provided, so the WS command surface can reach the turn
   // coordinator: a user message on a mission thread is routed through the
   // trading wake path instead of starting a bare turn.
-  Layer.provideMerge(TradingLayerLive),
+  Layer.provideMerge(TradingLayerLive.pipe(Layer.provide(TradingLeaseTargetLive))),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
@@ -458,7 +469,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(McpSessionRegistry.layer),
-    Layer.provide(TradingLayerLive),
+    Layer.provide(TradingLayerLive.pipe(Layer.provide(TradingLeaseTargetLive))),
   ),
 ).pipe(
   Layer.provide(PreviewAutomationBroker.layer),

@@ -35,6 +35,7 @@ import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingAutoMissionLive } from "./TradingAutoMission.ts";
 import { TradingMissionSweepLive } from "./TradingMissionSweep.ts";
+import { TradingRuntimeLeaseLive } from "./TradingRuntimeLease.ts";
 import { TradingPreviewServiceLive } from "./TradingPreviewService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
@@ -182,9 +183,18 @@ export const TradingLayerLive = Layer.mergeAll(
   // the archiver's own file; a missing archive answers unavailable, not zero.
   TradingMarketArchiveLive,
   TradingMissionServiceLive,
+  // The single-writer lease for this database. Merged here so every consumer
+  // of the trading layer — the sweep below, the reactors above — sees the
+  // same acquisition, and so a refused boot leaves the layer built but the
+  // destructive runtime down. See `TradingRuntimeLease`.
+  TradingRuntimeLeaseLive,
   // Housekeeping, once at boot: settled missions and missions whose thread is
-  // gone are deleted rather than accumulated. See `TradingMissionSweep`.
-  TradingMissionSweepLive.pipe(Layer.provide(TradingMissionServiceLive)),
+  // gone are deleted rather than accumulated. Runs only while the lease is
+  // held. See `TradingMissionSweep`.
+  TradingMissionSweepLive.pipe(
+    Layer.provide(TradingMissionServiceLive),
+    Layer.provide(TradingRuntimeLeaseLive),
+  ),
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
   // `trading_journal` appends to and reads back the mission's memory.

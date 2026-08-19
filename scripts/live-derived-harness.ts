@@ -26,6 +26,7 @@ import { runMigrations } from "../apps/server/src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "../apps/server/src/persistence/NodeSqliteClient.ts";
 import { OrchestrationEngineService } from "../apps/server/src/orchestration/Services/OrchestrationEngine.ts";
 import { TradingLayerLive } from "../apps/server/src/trading/runtimeLayer.ts";
+import { TradingLeaseTarget } from "../apps/server/src/trading/TradingRuntimeLease.ts";
 import { TradingEventInbox } from "../apps/server/src/trading/TradingEventInbox.ts";
 import { TradingMissionService } from "../apps/server/src/trading/TradingMissionService.ts";
 import { TradingWakeupComposer } from "../apps/server/src/trading/TradingWakeupComposer.ts";
@@ -33,6 +34,11 @@ import { TradingWatchService } from "../apps/server/src/trading/TradingWatchServ
 import { WatchEvaluator, WatchEvaluatorLive } from "../apps/server/src/trading/WatchEvaluator.ts";
 
 const REPORT = "/Users/george/Workspace/t3trade/live-derived-soak.md";
+// The state database this harness shares with the server. The trading layer
+// takes the single-writer lease scoped to this path, so a harness boot and a
+// server boot can never both run trading housekeeping against it silently:
+// whoever boots second refuses and says so.
+const STATE_DB = "/Users/george/Workspace/t3trade/.t3/userdata/state.sqlite";
 const THREAD_ID = globalThis.crypto.randomUUID();
 const HARNESS = {
   provider: "codex",
@@ -92,7 +98,7 @@ const engineStubLayer = Layer.succeed(OrchestrationEngineService, {
 } as never);
 
 const sqlLayer = NodeSqliteClient.layer({
-  filename: "/Users/george/Workspace/t3trade/.t3/userdata/state.sqlite",
+  filename: STATE_DB,
 });
 
 // Mirrors runtimeLayer.ts's provisioning: mergeAll members do not see each
@@ -103,6 +109,7 @@ const mainLayer = Layer.empty
   .pipe(Layer.provideMerge(WatchEvaluatorLive))
   .pipe(Layer.provideMerge(engineStubLayer))
   .pipe(Layer.provideMerge(TradingLayerLive))
+  .pipe(Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: STATE_DB })))
   .pipe(Layer.provide(sqlLayer))
   .pipe(Layer.provide(NodeServices.layer))
   .pipe(Layer.provide(engineStubLayer));

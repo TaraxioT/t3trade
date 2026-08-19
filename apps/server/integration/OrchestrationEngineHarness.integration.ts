@@ -57,6 +57,7 @@ import { OrchestrationReactorLive } from "../src/orchestration/Layers/Orchestrat
 import { TradingMissionReactor } from "../src/trading/TradingMissionReactor.ts";
 import { WatchEvaluator } from "../src/trading/WatchEvaluator.ts";
 import { TradingLayerLive } from "../src/trading/runtimeLayer.ts";
+import { TradingLeaseTarget } from "../src/trading/TradingRuntimeLease.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { CheckpointReactor } from "../src/orchestration/Services/CheckpointReactor.ts";
@@ -419,6 +420,9 @@ export const makeOrchestrationIntegrationHarness = (
           Layer.provide(projectionSnapshotQueryLayer),
           Layer.provide(ThreadBackgroundLiveness.layer),
           Layer.provide(ThreadPlanProgress.layer),
+          // The trading lease is scoped to the same state database the
+          // persistence layer below opens; the lock file sits beside it.
+          Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath })),
         ),
       ),
       Layer.provideMerge(providerRegistryLayer),

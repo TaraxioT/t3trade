@@ -54,6 +54,7 @@ import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
+import { TradingLeaseTarget } from "./TradingRuntimeLease.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
@@ -64,7 +65,9 @@ const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
 // (guard, execution, reconciler, budget reader, signer). Provide the full
 // trading layer rather than just the core mission layer.
 const TestLayer = TradingMissionReactorLive.pipe(
-  Layer.provideMerge(TradingLayerLive),
+  Layer.provideMerge(
+    TradingLayerLive.pipe(Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" }))),
+  ),
   Layer.provideMerge(OrchestrationEngineLive),
   Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
   Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -824,7 +827,11 @@ it.live("asks the coordinator for a run when a watch fires", () =>
 
     const StubbedLayer = TradingMissionReactorLive.pipe(
       Layer.provide(stubCoordinator),
-      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+        ),
+      ),
       Layer.provideMerge(OrchestrationEngineLive),
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -909,7 +916,11 @@ it.live("reconciles before resuming a paused mission", () =>
 
     const StubbedLayer = TradingMissionReactorLive.pipe(
       Layer.provide(stubReconciler),
-      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+        ),
+      ),
       Layer.provideMerge(OrchestrationEngineLive),
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -1007,7 +1018,11 @@ it.live("sizes a mission with no stated capital from the live account value", ()
 
     const StubbedLayer = TradingMissionReactorLive.pipe(
       Layer.provide(stubGateway),
-      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+        ),
+      ),
       Layer.provideMerge(OrchestrationEngineLive),
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -1089,7 +1104,11 @@ it.live("retires the position's watches when the harness closes the position", (
 
     const StubbedLayer = TradingMissionReactorLive.pipe(
       Layer.provide(stubCoordinator),
-      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+        ),
+      ),
       Layer.provideMerge(OrchestrationEngineLive),
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -1231,7 +1250,11 @@ it.live(
       const StubbedLayer = TradingMissionReactorLive.pipe(
         Layer.provide(stubCoordinator),
         Layer.provide(stubProtection),
-        Layer.provideMerge(TradingLayerLive),
+        Layer.provideMerge(
+          TradingLayerLive.pipe(
+            Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+          ),
+        ),
         Layer.provideMerge(OrchestrationEngineLive),
         Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
         Layer.provideMerge(OrchestrationProjectionPipelineLive),

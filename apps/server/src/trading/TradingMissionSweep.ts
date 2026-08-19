@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 
 /**
  * Whether the mission still has exposure on the exchange, per the reconciled
@@ -36,6 +37,16 @@ const holdsPosition = (missionId: string) =>
   });
 
 export const purgeFinishedMissions = Effect.gen(function* () {
+  // The purge only runs while this process holds the trading lease: a second
+  // runtime against the same database would otherwise delete the same
+  // mission rows the live holder still believes in.
+  const lease = yield* TradingRuntimeLease;
+  if (!lease.held) {
+    yield* Effect.logWarning(
+      "TradingMissionSweep: trading lease not held - skipping the boot purge",
+    );
+    return;
+  }
   const missions = yield* TradingMissionService;
   const candidates = yield* missions.listDeletableMissions();
   if (candidates.length === 0) return;
@@ -64,7 +75,7 @@ export const purgeFinishedMissions = Effect.gen(function* () {
 export const TradingMissionSweepLive: Layer.Layer<
   never,
   never,
-  SqlClient.SqlClient | TradingMissionService
+  SqlClient.SqlClient | TradingMissionService | TradingRuntimeLease
 > = Layer.effectDiscard(
   purgeFinishedMissions.pipe(
     Effect.catchCause((cause) =>

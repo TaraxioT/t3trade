@@ -53,6 +53,7 @@ import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingLayerLive } from "../../../trading/runtimeLayer.ts";
+import { TradingLeaseTarget } from "../../../trading/TradingRuntimeLease.ts";
 import {
   TradingMissionService,
   TradingMissionServiceLive,
@@ -546,6 +547,8 @@ const mcpLayerOver = (tradingLayer: TradingLayerInput) =>
     Layer.provideMerge(McpSessionRegistry.layer),
     Layer.provideMerge(tradingLayer),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
+    // Memory database: the trading lease trivially holds, no lock file.
+    Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
     Layer.provide(recordingEngine),
     Layer.provide(PreviewAutomationBroker.layer),
     Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),

@@ -11,6 +11,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
+import { TradingRuntimeLease } from "../../trading/TradingRuntimeLease.ts";
 import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
@@ -21,6 +22,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const tradingMissionReactor = yield* TradingMissionReactor;
   const watchEvaluator = yield* WatchEvaluator;
+  const tradingLease = yield* TradingRuntimeLease;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
@@ -28,8 +30,18 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* checkpointReactor.start();
     yield* threadDeletionReactor.start();
     yield* agentAwarenessRelay.start();
-    yield* tradingMissionReactor.start();
-    yield* watchEvaluator.start();
+    // The trading runtime only runs while this process holds the trading
+    // lease: a second server (or the live-derived harness) against the same
+    // state database must not sweep watches or run mission housekeeping in
+    // parallel with the live holder. Everything else starts regardless.
+    if (tradingLease.held) {
+      yield* tradingMissionReactor.start();
+      yield* watchEvaluator.start();
+    } else {
+      yield* Effect.logWarning(
+        "OrchestrationReactor: trading lease not held - mission reactor and watch evaluator stay down",
+      );
+    }
   });
 
   return {
