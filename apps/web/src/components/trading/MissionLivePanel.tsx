@@ -2633,7 +2633,7 @@ function LogRow({
   Icon,
   srWord,
   prose,
-  title,
+  detail,
   figure,
   timeLabel,
   isSelected,
@@ -2645,7 +2645,8 @@ function LogRow({
   /** The row's kind, read back to screen readers before the prose. */
   readonly srWord: string;
   readonly prose: ReactNode;
-  readonly title?: string | undefined;
+  /** The sentence behind the row, when it has more to say than the prose. */
+  readonly detail?: string | undefined;
   readonly figure: string | null;
   readonly timeLabel: string;
   readonly isSelected: boolean;
@@ -2658,17 +2659,13 @@ function LogRow({
     | undefined;
 }): ReactNode {
   const tones = LOG_TONES[tone] ?? LOG_TONES["muted"]!;
-  return (
-    <div
-      {...dataAttrs}
-      {...hoverProps}
-      {...(title === undefined ? {} : { title })}
-      className={cn(
-        BAND_PAD_CLASS,
-        "mission-log-enter relative flex items-center gap-x-2 py-2 text-[12px] leading-snug",
-        isSelected && "bg-armed/10",
-      )}
-    >
+  const rowClass = cn(
+    BAND_PAD_CLASS,
+    "mission-log-enter relative flex w-full items-center gap-x-2 py-2 text-[12px] leading-snug",
+    isSelected && "bg-armed/10",
+  );
+  const body = (
+    <>
       <span
         className={cn(
           "mission-log-rail absolute inset-y-1.5 left-1.5 w-[2px] rounded-full",
@@ -2694,7 +2691,46 @@ function LogRow({
       <span className="flex-none font-mono text-[10.5px] tabular-nums text-muted-foreground">
         {timeLabel}
       </span>
-    </div>
+    </>
+  );
+
+  if (detail === undefined) {
+    return (
+      <div {...dataAttrs} {...hoverProps} className={rowClass}>
+        {body}
+      </div>
+    );
+  }
+
+  // The detail is the row's second line — a watch's last read, a turn's
+  // journal note. A native `title` only ever showed it to a mouse; the same
+  // `openOnHover` popover the order legs use keeps the hover and gives touch
+  // and keyboard the press. Rows with nothing more to say stay a plain div
+  // rather than becoming an empty tab stop.
+  return (
+    <Popover>
+      <PopoverTrigger
+        openOnHover
+        delay={150}
+        closeDelay={0}
+        render={
+          <button
+            type="button"
+            {...dataAttrs}
+            {...hoverProps}
+            className={cn(
+              rowClass,
+              "text-left outline-none hover:bg-foreground/[0.02] focus-visible:ring-2 focus-visible:ring-ring",
+            )}
+          />
+        }
+      >
+        {body}
+      </PopoverTrigger>
+      <PopoverPopup side="left" tooltipStyle className="max-w-[280px] whitespace-normal text-left">
+        {detail}
+      </PopoverPopup>
+    </Popover>
   );
 }
 
@@ -2872,13 +2908,17 @@ function AgentLog({
       row.thresholdValue === null ? null : formatWatchFigure(row.watchType, row.thresholdValue);
     const observed =
       row.observedValue === null ? null : formatWatchFigure(row.watchType, row.observedValue);
-    const titleParts = [
-      row.description,
+    // Only what the row's own prose does not already say earns the detail —
+    // a description repeated back to itself would be a tab stop that reads
+    // out nothing new.
+    const beyondProse = [
       observed === null || threshold === null
         ? null
         : `last read ${observed}, against ${threshold}`,
       row.actionLabel === null ? null : `then: ${row.actionLabel}`,
     ].filter((part): part is string => part !== null);
+    const detail =
+      beyondProse.length === 0 ? undefined : [row.description, ...beyondProse].join(" — ");
     return (
       <LogRow
         key={row.id}
@@ -2898,7 +2938,7 @@ function AgentLog({
             )}
           </>
         }
-        title={titleParts.join(" — ")}
+        detail={detail}
         figure={threshold}
         timeLabel={live ? formatAge(Math.max(0, nowMillis - row.atMillis)) : logClock(row.atMillis)}
         isSelected={rowIsSelected(row)}
@@ -2962,7 +3002,7 @@ function AgentLog({
             )}
           </>
         }
-        title={card.detailLabel ?? undefined}
+        detail={card.detailLabel ?? undefined}
         figure={card.priceLevel === null ? null : formatPrice(card.priceLevel)}
         timeLabel={logClock(card.atMillis)}
         isSelected={
