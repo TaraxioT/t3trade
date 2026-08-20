@@ -2733,7 +2733,12 @@ export function deriveOrderLedger(input: {
                 ? "rejected"
                 : "closed";
 
-    const sizeUnits = filled ? order.filledSize : order.size;
+    // What the row is sized on: the units an open leg still holds (a reduce
+    // may have taken part of it back, and the card states live exposure, not
+    // what the leg once filled), the fill for a settled or partial leg, the
+    // request until anything has filled.
+    const heldUnits = openLegUnits.get(order.executionId) ?? 0;
+    const sizeUnits = state === "open" ? heldUnits : filled ? order.filledSize : order.size;
     // The one price this leg executed at — the limit while working, the
     // size-weighted fill once anything has filled.
     const price =
@@ -2748,8 +2753,7 @@ export function deriveOrderLedger(input: {
     // An open leg carries its share of the position's unrealised P&L, split by
     // the units it still holds, so a scaled-in position reads as several live
     // legs that sum to the header figure, not one leg holding all of it.
-    const openShare =
-      openUnitsTotal > 0 ? (openLegUnits.get(order.executionId) ?? 0) / openUnitsTotal : 1;
+    const openShare = openUnitsTotal > 0 ? heldUnits / openUnitsTotal : 1;
     const valueUsd =
       state === "open" && position !== null
         ? position.unrealisedPnl * openShare - order.feeUsd

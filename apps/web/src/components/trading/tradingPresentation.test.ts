@@ -2769,6 +2769,20 @@ describe("deriveOrderLedger", () => {
     expect(rows[1]?.valueUsd).toBeCloseTo(3.4, 9);
   });
 
+  it("sizes a part-reduced open leg on what it still holds", () => {
+    // Three units filled, two still held: the card states live exposure, not
+    // what the leg once filled.
+    const rows = deriveOrderLedger({
+      orders: [order({ executionId: "o", size: 3, filledSize: 3, avgFillPrice: 1_900 })],
+      position: { size: 2, unrealisedPnl: 8 },
+      markPrice: 1_905,
+      plannedEntry: null,
+    });
+    expect(rows[0]?.state).toBe("open");
+    expect(rows[0]?.sizeUnits).toBeCloseTo(2, 9);
+    expect(rows[0]?.sizeUsd).toBeCloseTo(3_800, 9);
+  });
+
   it("reads an abandoned order as rejected, not as a settled zero", () => {
     const rows = deriveOrderLedger({
       orders: [order({ executionId: "f", status: "failed", filledSize: 0, avgFillPrice: null })],
