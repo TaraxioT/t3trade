@@ -49,7 +49,10 @@ import {
   TradingWorkingOrderService,
 } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingCalibrationServiceLive } from "../../../trading/TradingCalibrationService.ts";
-import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
+import {
+  TradingCostEstimator,
+  TradingCostEstimatorLive,
+} from "../../../trading/TradingCostEstimator.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingLayerLive } from "../../../trading/runtimeLayer.ts";
@@ -432,6 +435,19 @@ const fakeCostEstimator = Layer.succeed(TradingCostEstimator, {
     }),
 } as unknown as TradingCostEstimator["Service"]);
 
+/**
+ * The REAL cost estimator, priced over the fake book.
+ *
+ * `fakeCostEstimator` above serves fixed numbers so reads stay byte-identical;
+ * the two floor tests need the arithmetic itself under test, and the only
+ * honest way to get it is the production estimator over a book that does not
+ * move. The fake quotes 3,009.5 / 3,010.5 with ten ETH a side, so a $1,000
+ * notional crosses a $1.00 spread and walks no depth at all: every figure
+ * below is a constant, not a sample of whatever the testnet looked like.
+ */
+const measuredCostEstimator = (fake: FakeExchange) =>
+  TradingCostEstimatorLive.pipe(Layer.provide(exchangeGatewayLayer(fake)));
+
 const exchangeExecutionLayer = (fake: FakeExchange) =>
   Layer.succeed(HyperliquidExecutionService, {
     submitCancel: (input: { readonly cloid: string }) =>
@@ -460,6 +476,7 @@ const tradingLayerOverExchange = (
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-mcp-archive-")),
     "market-archive.sqlite",
   ),
+  costEstimator: Layer.Layer<TradingCostEstimator> = fakeCostEstimator,
 ) =>
   Layer.mergeAll(
     // `trading_look` reaches the exchange directly, so the fake gateway is part
@@ -493,9 +510,10 @@ const tradingLayerOverExchange = (
     Layer.succeed(TradingPlanProtectionService, {
       reconcilePlan: () => Effect.succeed(null),
     } as unknown as TradingPlanProtectionService["Service"]),
-    // `trading_look` prices its one cost line through this. A fixed estimate
-    // keeps the read deterministic; nothing under test grades the number.
-    fakeCostEstimator,
+    // `trading_look` prices its one cost line through this. The default is a
+    // fixed estimate, which keeps the read deterministic and byte-identical;
+    // the tests that grade the number pass `measuredCostEstimator` instead.
+    costEstimator,
     // The one read IS the composer's gather step (plan 29 step 6.1), so the
     // toolkit needs it wherever `trading_look` is exercised.
     TradingWakeupComposerLive.pipe(
@@ -503,7 +521,7 @@ const tradingLayerOverExchange = (
       Layer.provide(TradingMissionServiceLive),
       Layer.provide(TradingWatchServiceLive),
       Layer.provide(TradingStrategyServiceLive),
-      Layer.provide(fakeCostEstimator),
+      Layer.provide(costEstimator),
     ),
     // The exit path stops at the reactor, which this layer does not run. These
     // two stand in for it so the handler's own AFTERMATH — the resting entry
@@ -2374,96 +2392,111 @@ it.effect("reads the entry's approved stop, which was written before the positio
   );
 });
 
+/**
+ * The layer the two cost-floor tests run on: the fake book, priced by the real
+ * estimator. A fresh fake per test, because a fake is mutable state.
+ */
+const costFloorLayer = () => {
+  const fake = makeFakeExchange();
+  return tradingLayerOverExchange(fake, undefined, measuredCostEstimator(fake));
+};
+
 it.effect("refuses a target the round trip would eat, and writes nothing", () =>
-  withMcpServer(({ callTool, seedTradingAccount }) =>
-    Effect.gen(function* () {
-      // The cost read needs the master wallet the account carries.
-      yield* seedTradingAccount();
+  withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        // The cost read needs the master wallet the account carries.
+        yield* seedTradingAccount();
 
-      // Over the fake book the crossing round trip is ~$1.23 on $1,000, so the
-      // rung is ~$2.46 and the floor under it ~$1.85. A $0.40 target is the
-      // shape the measured session published twice after acknowledging the
-      // warning both times — it wakes the mission to bank a move that did not
-      // pay for itself, and now it does not publish at all.
-      const refused = yield* callTool(BOUND_THREAD, "trading_plan", {
-        missionId: MISSION_ID,
-        expectedMissionVersion: 1,
-        strategy: {
-          ...strategyBody("a target under the floor"),
-          target: { profitUsd: 0.4 },
-        },
-      });
+        // Over the fake book the crossing round trip is ~$1.23 on $1,000 (two
+        // taker legs at 4.5bps = $0.90, plus the $1.00 spread on a $3,010 mid =
+        // $0.33), so the rung is ~$2.46 and the floor under it ~$1.85. A $0.40 target is the
+        // shape the measured session published twice after acknowledging the
+        // warning both times — it wakes the mission to bank a move that did not
+        // pay for itself, and now it does not publish at all.
+        const refused = yield* callTool(BOUND_THREAD, "trading_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 1,
+          strategy: {
+            ...strategyBody("a target under the floor"),
+            target: { profitUsd: 0.4 },
+          },
+        });
 
-      assert.equal(refused.result.isError, false);
-      assert.equal(refused.result.body.outcome, "rejected");
-      assert.equal(refused.result.body.reason, "target_below_cost_floor");
-      // Nothing moved, so the version the harness retries against is the one
-      // it already held.
-      assert.equal(refused.result.body.currentVersion, 1);
+        assert.equal(refused.result.isError, false);
+        assert.equal(refused.result.body.outcome, "rejected");
+        assert.equal(refused.result.body.reason, "target_below_cost_floor");
+        // Nothing moved, so the version the harness retries against is the one
+        // it already held.
+        assert.equal(refused.result.body.currentVersion, 1);
 
-      // The refusal names the field to raise and the number to raise it to —
-      // a refusal the model cannot act on costs the same turn twice.
-      const detail = refused.result.body.detail as string;
-      assert.include(detail, "target.profitUsd 0.40 USD does not clear");
-      assert.include(detail, "Nothing was published.");
-      const [, roundTrip, floor, rung, raiseTo] =
-        /round trip of ([\d.]+) USD.*floor is ([\d.]+) USD and the rung to aim at is ([\d.]+) USD\. Raise target\.profitUsd to at least ([\d.]+)/.exec(
-          detail,
-        ) ?? [];
-      assert.isDefined(rung, detail);
-      assert.equal(raiseTo, rung);
-      assert.isAbove(Number(rung), Number(floor));
-      assert.isAbove(Number(floor), Number(roundTrip));
+        // The refusal names the field to raise and the number to raise it to —
+        // a refusal the model cannot act on costs the same turn twice.
+        const detail = refused.result.body.detail as string;
+        assert.include(detail, "target.profitUsd 0.40 USD does not clear");
+        assert.include(detail, "Nothing was published.");
+        const [, roundTrip, floor, rung, raiseTo] =
+          /round trip of ([\d.]+) USD.*floor is ([\d.]+) USD and the rung to aim at is ([\d.]+) USD\. Raise target\.profitUsd to at least ([\d.]+)/.exec(
+            detail,
+          ) ?? [];
+        assert.isDefined(rung, detail);
+        assert.equal(raiseTo, rung);
+        assert.isAbove(Number(rung), Number(floor));
+        assert.isAbove(Number(floor), Number(roundTrip));
 
-      // And the plan really was not written: the mission still has none.
-      const after = yield* callTool(BOUND_THREAD, "trading_look", {
-        missionId: MISSION_ID,
-        scope: ["mission"],
-      });
-      assert.equal(after.result.body.mission.missionVersion, 1);
-      assert.equal(after.result.body.mission.strategy, undefined);
-    }),
+        // And the plan really was not written: the mission still has none.
+        const after = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["mission"],
+        });
+        assert.equal(after.result.body.mission.missionVersion, 1);
+        assert.equal(after.result.body.mission.strategy, undefined);
+      }),
+    costFloorLayer(),
   ),
 );
 
 it.effect("holds a patient plan to the round trip its own execution buys", () =>
-  withMcpServer(({ callTool, seedTradingAccount }) =>
-    Effect.gen(function* () {
-      yield* seedTradingAccount();
+  withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
 
-      // Over the same book the taker/maker round trip is ~$0.77, so a resting
-      // entry answers to a ~$1.15 floor rather than the crossing ~$1.85. A
-      // $1.30 target pays for a patient trade and does not pay for a crossing
-      // one, which is the whole reason the floor is priced at the execution
-      // the plan named rather than at the rung.
-      const patient = yield* callTool(BOUND_THREAD, "trading_plan", {
-        missionId: MISSION_ID,
-        expectedMissionVersion: 1,
-        strategy: {
-          ...strategyBody("resting at the level, so the maker leg is what it pays"),
-          entry: { triggers: [{ description: "price returns to 3,000" }], urgency: "patient" },
-          target: { profitUsd: 1.3 },
-        },
-      });
-      assert.equal(patient.result.body.outcome, "accepted");
-      // Accepted, and still told what the rung was — the warning the floor
-      // sits underneath, not a replacement for it.
-      const warning = (patient.result.body.warnings as string[]).find((line: string) =>
-        line.includes("this trade should clear"),
-      );
-      assert.isDefined(warning, "expected the sub-rung warning to survive the floor");
+        // Over the same book the taker/maker round trip is ~$0.77 (one maker leg
+        // at 1.5bps, one taker at 4.5, and the spread crossed once on the way
+        // out), so a resting entry answers to a ~$1.15 floor rather than the
+        // crossing ~$1.85. A $1.30 target pays for a patient trade and does not
+        // pay for a crossing one, which is the whole reason the floor is priced
+        // at the execution the plan named rather than at the rung.
+        const patient = yield* callTool(BOUND_THREAD, "trading_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 1,
+          strategy: {
+            ...strategyBody("resting at the level, so the maker leg is what it pays"),
+            entry: { triggers: [{ description: "price returns to 3,000" }], urgency: "patient" },
+            target: { profitUsd: 1.3 },
+          },
+        });
+        assert.equal(patient.result.body.outcome, "accepted");
+        // Accepted, and still told what the rung was — the warning the floor
+        // sits underneath, not a replacement for it.
+        const warning = (patient.result.body.warnings as string[]).find((line: string) =>
+          line.includes("this trade should clear"),
+        );
+        assert.isDefined(warning, "expected the sub-rung warning to survive the floor");
 
-      const crossing = yield* callTool(BOUND_THREAD, "trading_plan", {
-        missionId: MISSION_ID,
-        expectedMissionVersion: 2,
-        strategy: {
-          ...strategyBody("the same target, chasing"),
-          target: { profitUsd: 1.3 },
-        },
-      });
-      assert.equal(crossing.result.body.outcome, "rejected");
-      assert.equal(crossing.result.body.reason, "target_below_cost_floor");
-    }),
+        const crossing = yield* callTool(BOUND_THREAD, "trading_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 2,
+          strategy: {
+            ...strategyBody("the same target, chasing"),
+            target: { profitUsd: 1.3 },
+          },
+        });
+        assert.equal(crossing.result.body.outcome, "rejected");
+        assert.equal(crossing.result.body.reason, "target_below_cost_floor");
+      }),
+    costFloorLayer(),
   ),
 );
 
