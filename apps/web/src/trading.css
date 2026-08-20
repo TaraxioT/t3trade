@@ -32,11 +32,7 @@
   --long: oklch(0.6 0.16 152);
   --short: oklch(0.58 0.21 27);
   --armed: var(--color-amber-600);
-}
 
-/* Bare `.dark`, matching every other dark rule in this file: it keeps the
-   stylesheet independent of where `@custom-variant dark` is declared. */
-.dark {
   /* Lifted clear of the dark surface, but no longer lifted for candle bodies:
      the chart draws one polyline and an area fill, not 3px bars, so the old
      0.79/0.71 pair was paying for a shape that no longer exists — and every
@@ -48,14 +44,16 @@
      dark read as cluttered when nothing has been added to it. These values
      close it — matched in lightness, separated by hue, and still a clear
      stroke on a near-black ground. */
-  --profit: oklch(0.72 0.15 152);
-  --loss: oklch(0.66 0.18 27);
-  --long: oklch(0.72 0.15 152);
-  --short: oklch(0.66 0.18 27);
-  /* Amber-400 was the brightest ink on the panel and it is worn by the most
-     objects — armed rails, working/partial state tokens, the staleness word,
-     every chart level chip. One step down in lightness and chroma. */
-  --armed: oklch(0.78 0.125 78);
+  @variant dark {
+    --profit: oklch(0.72 0.15 152);
+    --loss: oklch(0.66 0.18 27);
+    --long: oklch(0.72 0.15 152);
+    --short: oklch(0.66 0.18 27);
+    /* Amber-400 was the brightest ink on the panel and it is worn by the most
+       objects — armed rails, working/partial state tokens, the staleness word,
+       every chart level chip. One step down in lightness and chroma. */
+    --armed: oklch(0.78 0.125 78);
+  }
 }
 
 @layer components {
@@ -99,28 +97,30 @@
    * edges at all. The surface now sits ~9% above the page and the outline is
    * strong enough to trace a corner, which is the whole job of these edges.
    */
-  .dark .mission-panel-glass {
-    /* The card token straight, with nothing mixed into it. Lifting it toward
-       white was what turned these panes grey: the app's dark theme sets
-       `--card` to black on purpose, and the pill the operator picked out is
-       that black seen through blur. The edge does the separating, not a
-       lighter fill. */
-    --mission-panel-surface: var(--card);
-    /* Not `--border`. The shared token is white/6%, which traces nothing on a
-       near-black page — and dark loses the other half of the separation too,
-       because a black drop shadow under a black card is invisible while the
-       light theme gets both. So the edge has to carry the whole job alone, and
-       at 6% it was not carrying it: the three panes read as one dark field with
-       figures floating in it, which is most of what "cluttered" meant. Still a
-       hairline, just one you can actually follow around a corner. */
-    --mission-panel-outline: rgb(255 255 255 / 12%);
-    --mission-panel-opacity: 58%;
-    /* The lit top edge, doing the work the missing shadow cannot. */
-    --mission-panel-bevel: rgb(255 255 255 / 9%);
+  .mission-panel-glass {
+    @variant dark {
+      /* The card token straight, with nothing mixed into it. Lifting it toward
+         white was what turned these panes grey: the app's dark theme sets
+         `--card` to black on purpose, and the pill the operator picked out is
+         that black seen through blur. The edge does the separating, not a
+         lighter fill. */
+      --mission-panel-surface: var(--card);
+      /* Not `--border`. The shared token is white/6%, which traces nothing on a
+         near-black page — and dark loses the other half of the separation too,
+         because a black drop shadow under a black card is invisible while the
+         light theme gets both. So the edge has to carry the whole job alone, and
+         at 6% it was not carrying it: the three panes read as one dark field
+         with figures floating in it, which is most of what "cluttered" meant.
+         Still a hairline, just one you can actually follow around a corner. */
+      --mission-panel-outline: rgb(255 255 255 / 12%);
+      --mission-panel-opacity: 58%;
+      /* The lit top edge, doing the work the missing shadow cannot. */
+      --mission-panel-bevel: rgb(255 255 255 / 9%);
 
-    box-shadow:
-      inset 0 1px 0 var(--mission-panel-bevel),
-      0 16px 36px -24px rgb(0 0 0 / 80%);
+      box-shadow:
+        inset 0 1px 0 var(--mission-panel-bevel),
+        0 16px 36px -24px rgb(0 0 0 / 80%);
+    }
   }
 
   /*
@@ -135,21 +135,23 @@
     --mission-chart-wash-mid: 0.07;
     --mission-chart-wedge-near: 0.2;
     --mission-chart-wedge-far: 0.06;
-  }
 
-  .dark {
-    --mission-chart-wash-top: 0.13;
-    --mission-chart-wash-mid: 0.04;
-    --mission-chart-wedge-near: 0.13;
-    --mission-chart-wedge-far: 0.04;
+    @variant dark {
+      --mission-chart-wash-top: 0.13;
+      --mission-chart-wash-mid: 0.04;
+      --mission-chart-wedge-near: 0.13;
+      --mission-chart-wedge-far: 0.04;
+    }
   }
 
   /*
    * The risk/reward slab. Two 15% fills across the full width of the chart
    * card: soft pink and mint on white, two lit bars on black.
    */
-  .dark .mission-rr-segment {
-    opacity: 0.68;
+  .mission-rr-segment {
+    @variant dark {
+      opacity: 0.68;
+    }
   }
 
   /*
@@ -174,13 +176,21 @@
    * as calmer as well as legible: four competing greys were part of why dark
    * felt busy.
    */
-  .dark .mission-panel {
-    /* Foreground only. Pulling `--muted-foreground` down as well looked calmer
-       and measured at 3.85:1 against the card — under the 4.5 floor for the
-       10.5px labels that wear it. The muted token is already sitting close to
-       that floor in both themes, which is exactly why nothing in this panel may
-       attenuate it further (see the ramp note above). */
-    --foreground: var(--color-neutral-200);
+  .mission-panel {
+    @variant dark {
+      /* Foreground only. Pulling `--muted-foreground` down as well looked calmer
+         and measured at 3.85:1 against the card — under the 4.5 floor for the
+         10.5px labels that wear it. The muted token is already sitting close to
+         that floor in both themes, which is exactly why nothing in this panel may
+         attenuate it further (see the ramp note above).
+
+         Derived from `--card-foreground` rather than pinned to neutral-200, so
+         a custom theme still drives the panel's ink: the mix lands on the same
+         step the measurement asked for against the stock dark palette (where
+         `--card-foreground` is neutral-100), and follows the palette elsewhere.
+         It cannot read `--foreground` for this — that would be a cycle. */
+      --foreground: color-mix(in oklch, var(--card-foreground) 94%, var(--card));
+    }
   }
 
   /*
@@ -191,12 +201,16 @@
    * these. They are meant to be a silhouette the eye catches, not a light
    * source, so in dark they give back what the darker ground already gave them.
    */
-  .dark .mission-log-rail {
-    opacity: 0.62;
+  .mission-log-rail {
+    @variant dark {
+      opacity: 0.62;
+    }
   }
 
-  .dark .mission-log-token {
-    opacity: 0.88;
+  .mission-log-token {
+    @variant dark {
+      opacity: 0.88;
+    }
   }
 
   /*
@@ -252,11 +266,11 @@
   .mission-chip {
     background: color-mix(in srgb, var(--card) 55%, transparent);
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%);
-  }
 
-  .dark .mission-chip {
-    background: color-mix(in srgb, var(--card) 62%, transparent);
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
+    @variant dark {
+      background: color-mix(in srgb, var(--card) 62%, transparent);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
+    }
   }
 
   /*

@@ -1,13 +1,15 @@
 @import "tailwindcss";
 
-/* Every rule T3 Trade adds to the web app. Fork-owned, so an upstream
-   rewrite of this file never has to reconcile it. */
-@import "./trading.css";
-
 @custom-variant dark (&:is(.dark, .dark *));
 @custom-variant light (&:not(.dark, .dark *));
 /* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
+
+/* Every rule T3 Trade adds to the web app. Fork-owned, so an upstream
+   rewrite of this file never has to reconcile it. Imported after the custom
+   variants so `@variant dark` resolves there too; the at-rules above emit no
+   CSS, so this move does not change what the cascade sees. */
+@import "./trading.css";
 
 /* On mobile, morph the expanded hero composer into the compact docked
    composer while it moves; the rest of the app remains visually stationary. */
