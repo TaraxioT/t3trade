@@ -402,23 +402,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: macOS arm64
-            # macOS/Windows release builds need their native OS runners;
-            # Blacksmith charges these against paid credits, and this workflow
-            # is trigger-disabled anyway (no signing secrets configured).
-            runner: macos-26
-            platform: mac
-            target: dmg
-            arch: arm64
-            rust_target: aarch64-apple-darwin
-            resource_key: darwin-arm64
-          - label: macOS x64
-            runner: macos-26
-            platform: mac
-            target: dmg
-            arch: x64
-            rust_target: x86_64-apple-darwin
-            resource_key: darwin-x64
+          # Disabled: macOS/Windows release builds need their native OS
+          # runners; Blacksmith charges these against paid credits, and this
+          # workflow is trigger-disabled anyway (no signing secrets
+          # configured). Re-enable when native-OS builds are needed again.
+          #   - label: macOS arm64
+          #     runner: macos-26
+          #     platform: mac
+          #     target: dmg
+          #     arch: arm64
+          #     rust_target: aarch64-apple-darwin
+          #     resource_key: darwin-arm64
+          #   - label: macOS x64
+          #     runner: macos-26
+          #     platform: mac
+          #     target: dmg
+          #     arch: x64
+          #     rust_target: x86_64-apple-darwin
+          #     resource_key: darwin-x64
           - label: Linux x64
             runner: blacksmith-2vcpu-ubuntu-2404
             platform: linux
@@ -426,13 +427,13 @@ jobs:
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
             resource_key: linux-x64
-          - label: Windows x64
-            runner: windows-2025
-            platform: win
-            target: nsis
-            arch: x64
-            rust_target: x86_64-pc-windows-msvc
-            resource_key: win32-x64
+          #   - label: Windows x64
+          #     runner: windows-2025
+          #     platform: win
+          #     target: nsis
+          #     arch: x64
+          #     rust_target: x86_64-pc-windows-msvc
+          #     resource_key: win32-x64
           # - label: Windows arm64
           #   runner: windows-11-arm
           #   platform: win
