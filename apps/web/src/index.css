@@ -827,17 +827,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     }
   }
 
-  /* Solid fallback: with transparency reduced, the blur and the tinted fill
-     both become an opaque surface. Legibility of the price is the point of
-     the chip, and neither frosted effect may stand in front of it. */
-  @media (prefers-reduced-transparency: reduce) {
-    .mission-chip,
-    .mission-panel-glass {
-      background: var(--card);
-      -webkit-backdrop-filter: none;
-      backdrop-filter: none;
-    }
-  }
+  /* The solid fallback for reduced transparency is NOT here: it has to sit
+     outside every layer to beat the chips' own `backdrop-blur-sm` utility.
+     See the end of this file. */
 
   .alert-glass {
     --alert-glass-tint: transparent;
@@ -2377,4 +2369,24 @@ label:has(> select#reasoning-effort) select {
   background-color: Highlight;
   opacity: 0.3;
   pointer-events: none;
+}
+
+/* Solid fallback: with transparency reduced, the blur and the tinted fill both
+   become an opaque surface. Legibility of the price is the point of the chip,
+   and neither frosted effect may stand in front of it.
+
+   Deliberately UNLAYERED. The same rule inside `@layer components` lost to the
+   chips' own `backdrop-blur-sm`, because Tailwind's utilities layer is declared
+   after components and layer order decides before specificity does. Measured
+   under an emulated `prefers-reduced-transparency: reduce`, a level chip still
+   computed `backdrop-filter: blur(8px)` over a 0.62-alpha fill while the panel
+   behind it had already gone solid. Unlayered styles outrank every layered
+   one, so the fallback holds without reaching for `!important`. */
+@media (prefers-reduced-transparency: reduce) {
+  .mission-chip,
+  .mission-panel-glass {
+    background: var(--card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
