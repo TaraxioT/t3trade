@@ -45,6 +45,7 @@ import {
   formatLeverage,
   formatSignedPercent,
   hyperliquidTradeUrl,
+  plannedReassessmentAt,
   POSITION_DELAYED_AFTER_MILLIS,
   POSITION_STALE_AFTER_MILLIS,
   readPositionFreshness,
@@ -1822,6 +1823,31 @@ describe("deriveNextReassessmentAt", () => {
   });
 });
 
+describe("plannedReassessmentAt", () => {
+  // A reassessment armed at runtime is written straight to the watch table
+  // without an orchestration event, so the mission projection can carry an
+  // empty `watches` while one really is armed. The plan names the same moment.
+  const plan = (afterMinutes: number, updatedAt: number) => ({
+    reassess: { afterMinutes },
+    updatedAt,
+  });
+
+  it("reads the moment the plan states, measured from its publish", () => {
+    expect(plannedReassessmentAt(plan(15, 1_700_000_000_000), 1_700_000_060_000)).toBe(
+      1_700_000_900_000,
+    );
+  });
+
+  it("drops a moment that has already passed, rather than promising a stale time", () => {
+    expect(plannedReassessmentAt(plan(15, 1_700_000_000_000), 1_700_001_000_000)).toBeNull();
+  });
+
+  it("returns null when there is no plan yet", () => {
+    expect(plannedReassessmentAt(null, 1_700_000_000_000)).toBeNull();
+    expect(plannedReassessmentAt(undefined, 1_700_000_000_000)).toBeNull();
+  });
+});
+
 describe("deriveChartTimeMarkers", () => {
   const reassessment = (
     id: string,
@@ -1857,6 +1883,23 @@ describe("deriveChartTimeMarkers", () => {
     });
     expect(markers[0]).toMatchObject({ label: "reassess (auto)", tone: "auto" });
     expect(markers[1]).toMatchObject({ label: "", tone: "planned" });
+  });
+
+  it("falls back to the plan's own moment when no reassessment watch is projected", () => {
+    // The projection can lag the watch table; the axis still marks the moment
+    // the plan states rather than showing an empty future.
+    const markers = deriveChartTimeMarkers({ watches: [] }, 1_700_000_900_000);
+    expect(markers).toEqual([
+      { key: "reassess-0", label: "reassess", at: 1_700_000_900_000, tone: "planned" },
+    ]);
+  });
+
+  it("prefers a projected watch over the plan's fallback", () => {
+    const markers = deriveChartTimeMarkers(
+      { watches: [reassessment("a", 1_700_000_120_000)] },
+      1_700_000_900_000,
+    );
+    expect(markers.map((marker) => marker.at)).toEqual([1_700_000_120_000]);
   });
 
   it("keys a marker by its rank, so a re-arm is the same marker moving", () => {

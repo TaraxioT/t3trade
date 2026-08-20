@@ -184,6 +184,7 @@ import {
   hyperliquidTradeUrl,
   isArmedRow,
   isMissionComplete,
+  plannedReassessmentAt,
   type ChartFillMarker,
   type ChartPastMarkerInput,
   type ChartTimeMarkerInput,
@@ -541,7 +542,11 @@ export function MissionLivePanel({
   // The next reassessment, as a mark on the axis rather than only as a
   // countdown in the header — "3m from now" is a moment, and the chart has an
   // axis of moments.
-  const nextReassessmentAt = deriveNextReassessmentAt(mission);
+  // The plan's own reassessment moment, used when the projection carries no
+  // watch row for it (a runtime-armed reassessment lands in the database
+  // without an event, so `watches` can read empty while one is armed).
+  const plannedReassessment = plannedReassessmentAt(mission.strategy, nowMillis);
+  const nextReassessmentAt = deriveNextReassessmentAt(mission) ?? plannedReassessment;
 
   // How far the armed entry triggers are drawn into the future gutter: to the
   // plan's own reassessment horizon, and no further. A trigger rule running to
@@ -550,7 +555,7 @@ export function MissionLivePanel({
 
   // Every armed reassessment, not only the nearest: the header's countdown is
   // one appointment, the axis is the whole queue.
-  const timeMarkers = deriveChartTimeMarkers(mission);
+  const timeMarkers = deriveChartTimeMarkers(mission, plannedReassessment);
 
   // What has already happened, as a rug of ticks along the axis: the mission's
   // own wakes, publishes and stop moves, which no amount of current state can

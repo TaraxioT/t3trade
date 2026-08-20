@@ -2598,6 +2598,38 @@ export function deriveNextReassessmentAt(mission: {
   return next;
 }
 
+/**
+ * The reassessment moment the PLAN states, in epoch millis, or null when the
+ * plan states none that is still ahead.
+ *
+ * The armed watch row is the better source and stays the first one asked. But a
+ * `scheduled_reassessment` armed at runtime (the staleness floor, the
+ * prediction roll-forward) is written straight to `trading_watches` without an
+ * orchestration event, and the mission projection is rebuilt only on events, so
+ * `watches` can read empty for minutes while a reassessment really is armed.
+ * The plan is projected throughout and names the same moment: the reassessment
+ * is measured from the publish that set `updatedAt`. Recomputing it here keeps
+ * the heartbeat sentence and the time axis speaking in that window rather than
+ * going silent, using only fields the projection already carries.
+ *
+ * Past moments are dropped. A plan whose reassessment has come and gone says
+ * nothing about the next one, and a stale clock time reads as a live promise.
+ */
+export function plannedReassessmentAt(
+  strategy:
+    | {
+        readonly reassess: { readonly afterMinutes: number };
+        readonly updatedAt: number;
+      }
+    | null
+    | undefined,
+  nowMillis: number,
+): number | null {
+  if (strategy === null || strategy === undefined) return null;
+  const at = strategy.updatedAt + strategy.reassess.afterMinutes * 60_000;
+  return at > nowMillis ? at : null;
+}
+
 /** One past event, ready to hand to the chart's `pastMarkers` input. */
 export interface ChartPastMarkerInput {
   readonly key: string;
@@ -2681,9 +2713,17 @@ export interface ChartTimeMarkerInput {
  * `+N` tick standing at the furthest moment, so the axis still says how far the
  * schedule reaches without drawing a picket fence.
  */
-export function deriveChartTimeMarkers(mission: {
-  readonly watches: ReadonlyArray<PersistedWatch>;
-}): ReadonlyArray<ChartTimeMarkerInput> {
+export function deriveChartTimeMarkers(
+  mission: {
+    readonly watches: ReadonlyArray<PersistedWatch>;
+  },
+  /**
+   * The plan's own reassessment moment, from {@link plannedReassessmentAt},
+   * used only when no reassessment watch is projected. Null (the default)
+   * reads the watch rows alone.
+   */
+  plannedAt: number | null = null,
+): ReadonlyArray<ChartTimeMarkerInput> {
   const scheduled: ChartTimeMarkerInput[] = [];
   for (const persisted of mission.watches) {
     if (persisted.status !== "active") continue;
@@ -2697,7 +2737,12 @@ export function deriveChartTimeMarkers(mission: {
       tone: persisted.armedReason === "staleness_floor" ? "auto" : "planned",
     });
   }
-  if (scheduled.length === 0) return [];
+  if (scheduled.length === 0) {
+    // No watch row reached the projection. The plan still names the moment, so
+    // the axis marks it rather than showing an empty future.
+    if (plannedAt === null) return [];
+    return [{ key: "reassess-0", label: "reassess", at: plannedAt, tone: "planned" }];
+  }
 
   scheduled.sort((a, b) => a.at - b.at);
 
