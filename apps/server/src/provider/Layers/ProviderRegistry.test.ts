@@ -1634,7 +1634,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // executable. This verifies the public settings-to-probe behavior
             // without depending on timestamps assigned by TestClock.
             const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 60; attempts += 1) {
+              // The settings-watcher → reconcile → re-probe chain crosses real
+              // async boundaries (child-process spawn callbacks), which need
+              // real event-loop turns this loop cannot inject via TestClock.
+              // Slow CI runners need many more poll iterations than a laptop.
+              for (let attempts = 0; attempts < 300; attempts += 1) {
                 const providers = yield* registry.getProviders;
                 const codex = providers.find((provider) => provider.instanceId === "codex");
                 if (
@@ -1645,6 +1649,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   return providers;
                 }
                 yield* TestClock.adjust("50 millis");
+                yield* Effect.yieldNow;
                 yield* Effect.yieldNow;
               }
               return yield* registry.getProviders;
