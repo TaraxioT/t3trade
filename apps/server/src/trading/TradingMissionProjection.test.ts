@@ -490,6 +490,21 @@ describe("buildMissionTimeline", () => {
       publishes: [],
     });
     assert.deepEqual(broken[0]?.toolsCalled, undefined);
+
+    // Blanks and non-strings are dropped rather than passed on: the contract
+    // types these as trimmed non-empty, so one "" would fail the whole
+    // timeline's encode over a decorative field.
+    const blanks = buildMissionTimeline({
+      wakes: [
+        {
+          ...wake({ runId: "r4", cause: "user_message", createdAt: 4_000 }),
+          tools_called_json: JSON.stringify(["", "  ", " trading_look ", 7, null]),
+        },
+      ],
+      stopAdjustments: [],
+      publishes: [],
+    });
+    assert.deepEqual(blanks[0]?.toolsCalled, ["trading_look"]);
   });
 
   // "When was the mission woken" is the question the axis answers, so a run

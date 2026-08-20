@@ -250,13 +250,23 @@ interface HarnessRunRow {
   readonly tools_called_json: string | null;
 }
 
-/** Decode a run's recorded tool list, degrading to none when unparseable. */
+/**
+ * Decode a run's recorded tool list, degrading to none when unparseable.
+ *
+ * Names are trimmed and blanks dropped: the contract types `toolsCalled` as
+ * `TrimmedNonEmptyString`, so one empty string in the recorded JSON would
+ * fail the whole timeline's encode and freeze the panel over a datum that is
+ * decoration.
+ */
 const parseToolsCalled = (json: string | null): ReadonlyArray<string> => {
   if (json === null) return [];
   try {
     const parsed: unknown = JSON.parse(json);
     return Array.isArray(parsed)
-      ? parsed.filter((name): name is string => typeof name === "string")
+      ? parsed
+          .filter((name): name is string => typeof name === "string")
+          .map((name) => name.trim())
+          .filter((name) => name !== "")
       : [];
   } catch {
     return [];
