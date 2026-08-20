@@ -144,7 +144,12 @@ import {
   useMissionSelection,
   type ChartEventSelection,
 } from "./missionSelectionStore";
-import { deEmDash, deriveTurnTimeline, type TurnTimelineCard } from "./missionTurnTimeline";
+import {
+  deEmDash,
+  deriveTurnTimeline,
+  describeWakeTrigger,
+  type TurnTimelineCard,
+} from "./missionTurnTimeline";
 import { useMissionPlanRevision, type MissionPlanRevision } from "./useMissionPlanRevision";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -3124,15 +3129,26 @@ function flyChipToCard(chipEl: HTMLElement, cardEl: HTMLElement): void {
  * just what the mission is doing but what the model last did about it.
  */
 function deriveLastActivity(
-  timeline: ReadonlyArray<{ readonly at: string; readonly label: string }>,
+  timeline: ReadonlyArray<{
+    readonly at: string;
+    readonly label: string;
+    readonly kind?: string | undefined;
+    readonly cause?: string | undefined;
+  }>,
   nowMillis: number,
 ): { readonly label: string; readonly ageLabel: string } | null {
   const newest = timeline[0];
   if (newest === undefined) return null;
   const at = Date.parse(newest.at);
   if (Number.isNaN(at)) return null;
+  // A wake's label is the run cause verbatim, a literal the harness writes for
+  // itself: the bar was printing `market_watch_triggered` at the reader. The
+  // timeline cards already say it in words, and this is the same event, so it
+  // gets the same sentence. Every other kind is already composed prose.
+  const label =
+    newest.kind === "wake" ? describeWakeTrigger(newest.cause ?? newest.label) : newest.label;
   return {
-    label: newest.label,
+    label,
     ageLabel: formatDuration(Math.max(0, nowMillis - at)),
   };
 }
