@@ -78,7 +78,7 @@ it("maps current Codex model capability fields", () => {
           isDefault: true,
         },
       ],
-      currentValue: "flex",
+      currentValue: "default",
     },
   ]);
 });
@@ -162,4 +162,52 @@ it("ignores custom models that shadow a preferred slug", () => {
   ]);
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
+});
+
+it("defaults the service tier to Standard even when the catalog prefers priority", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "low",
+    description: "Test model",
+    displayName: "GPT Test",
+    hidden: false,
+    id: "gpt-5.6-luna",
+    isDefault: true,
+    model: "gpt-5.6-luna",
+    defaultServiceTier: "priority",
+    serviceTiers: [
+      {
+        id: "priority",
+        name: "Fast",
+        description: "Lower latency responses.",
+      },
+    ],
+    supportedReasoningEfforts: [
+      {
+        description: "Low reasoning",
+        reasoningEffort: "low",
+      },
+    ],
+  });
+
+  const serviceTierDescriptor = capabilities.optionDescriptors?.find(
+    (descriptor) => descriptor.id === "serviceTier",
+  );
+  assert.deepStrictEqual(serviceTierDescriptor, {
+    id: "serviceTier",
+    label: "Service Tier",
+    type: "select",
+    options: [
+      { id: "default", label: "Standard" },
+      {
+        id: "priority",
+        label: "Fast",
+        description: "Lower latency responses.",
+        isDefault: true,
+      },
+    ],
+    // The catalog default ("priority"/Fast) is badged but never selected by
+    // default — fresh composers must start on Standard.
+    currentValue: "default",
+  });
 });

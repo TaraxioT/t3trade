@@ -171,7 +171,12 @@ export function mapCodexModelCapabilities(
           ...(defaultServiceTier === tier.id ? { isDefault: true } : {}),
         })),
       ],
-      currentValue: defaultServiceTier,
+      // The catalog's own default tier (e.g. "priority" for gpt-5.6-luna)
+      // must not become the effective default: clients treat it as the
+      // selected value when no stored selection carries a tier, which reads
+      // as Fast mode and burns credits. Surface Standard as the starting
+      // value; the catalog default stays visible via the isDefault badge.
+      currentValue: DEFAULT_SERVICE_TIER_ID,
     });
   }
 
