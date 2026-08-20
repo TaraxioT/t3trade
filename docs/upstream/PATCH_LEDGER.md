@@ -436,3 +436,16 @@ Upstream rewrites the surrounding text often; the delta is mechanical.
 | Seam     | File(s)          | Change                                                                                                                                     |
 | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | Lockfile | `pnpm-lock.yaml` | Take either side during the merge, then run `pnpm install` once every `package.json` conflict is settled, and commit the regenerated file. |
+
+## Standing seam policy (2026-08-20)
+
+`apps/web/src/trading.css` is fork-owned and upstream has no file by that name,
+so it can never conflict. Every new trading rule goes there; `index.css` is
+upstream's. The same rule holds for `apps/web/src/components/trading/**`,
+`apps/server/src/trading/**` and `packages/trading-contracts/**` — see
+"Where the fork's own code lives" in `SYNC_RUNBOOK.md`.
+
+Drift is measured, not remembered: `scripts/upstream-drift.sh` reports the
+commit count and the `merge-tree` conflict forecast, and
+`.github/workflows/upstream-drift.yml` runs it weekly and opens one
+`upstream-sync` issue when either threshold is crossed.

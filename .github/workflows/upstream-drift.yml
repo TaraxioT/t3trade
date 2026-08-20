@@ -1,0 +1,116 @@
+name: Upstream Drift
+
+# Measures how far the fork has drifted from its pinned upstream baseline and
+# opens (or updates) one tracking issue when the drift crosses a threshold.
+# The point is that a sync gets scheduled by measurement rather than by
+# whoever last remembered — a 259-commit range cost 28 conflicts, and conflict
+# cost grows faster than range size.
+
+on:
+  schedule:
+    # Mondays, 08:00 UTC. Weekly is the cadence SYNC_RUNBOOK.md sets.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-drift
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: Measure drift against upstream
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # merge-base and merge-tree both need real history, not a shallow
+          # clone: the whole measurement is the shape of the two branches.
+          fetch-depth: 0
+
+      - name: Add the upstream remote
+        run: |
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git remote set-url --push upstream DISABLE
+
+      - name: Measure
+        id: drift
+        run: |
+          set +e
+          report=$(scripts/upstream-drift.sh)
+          status=$?
+          set -e
+          echo "$report"
+          {
+            echo "report<<REPORT_EOF"
+            echo "$report"
+            echo "REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "json=$(scripts/upstream-drift.sh --json)" >> "$GITHUB_OUTPUT"
+          echo "over=$([ $status -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize
+        run: |
+          {
+            echo '## Upstream drift'
+            echo
+            echo '```'
+            echo "${{ steps.drift.outputs.report }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the sync tracking issue
+        if: steps.drift.outputs.over == 'true'
+        uses: actions/github-script@v8
+        env:
+          REPORT: ${{ steps.drift.outputs.report }}
+          DRIFT_JSON: ${{ steps.drift.outputs.json }}
+        with:
+          script: |
+            const drift = JSON.parse(process.env.DRIFT_JSON);
+            const title = "Upstream sync due";
+            const body = [
+              `Drift crossed a threshold set in \`docs/upstream/SYNC_RUNBOOK.md\`.`,
+              "",
+              "```",
+              process.env.REPORT,
+              "```",
+              "",
+              `Candidate baseline: \`${drift.upstreamHead}\``,
+              "",
+              "Run the sync per `docs/upstream/SYNC_RUNBOOK.md`. Merge the sync PR",
+              "with a **merge commit** — never a squash.",
+            ].join("\n");
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "upstream-sync",
+            });
+            const open = existing.data.find((issue) => issue.title === title);
+
+            if (open) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: open.number,
+                body,
+              });
+              core.notice(`Updated #${open.number}`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["upstream-sync"],
+            });
+            core.notice(`Opened #${created.data.number}`);
