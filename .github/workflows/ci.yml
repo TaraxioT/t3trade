@@ -106,8 +106,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr diff ${{ github.event.pull_request.number }} --name-only \
-            --repo ${{ github.repository }} > "${{ runner.temp }}/changed-files.txt"
+          # An upstream sync PR carries hundreds of files and the API refuses
+          # to diff it ("the diff exceeded the maximum number of files").
+          # An empty list is exactly what test-scope.ts reads as "run
+          # everything", which is the right answer for a PR that large, so the
+          # failure must not abort the step.
+          if ! gh pr diff ${{ github.event.pull_request.number }} --name-only \
+            --repo ${{ github.repository }} > "${{ runner.temp }}/changed-files.txt"; then
+            echo "test-scope: could not list changed files; running the full suite." >&2
+            : > "${{ runner.temp }}/changed-files.txt"
+          fi
           node scripts/test-scope.ts "${{ runner.temp }}/changed-files.txt" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust

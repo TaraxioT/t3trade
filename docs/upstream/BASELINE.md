@@ -7,6 +7,24 @@ acceptance criteria were checked against.
 
 ## Current baseline
 
+| Field                       | Value                                                          |
+| --------------------------- | -------------------------------------------------------------- |
+| Upstream repository         | `https://github.com/pingdotgg/t3code.git`                      |
+| Upstream branch             | `main`                                                         |
+| Pinned commit (full SHA)    | `beab6886f45bf42906d0bd01aefe5dfe9e66a867`                     |
+| Pinned commit (short SHA)   | `beab6886f`                                                    |
+| Upstream commit date        | 2026-08-20                                                     |
+| Upstream release tag at pin | `v0.0.34-nightly.20260820.1142` (no stable v0.0.34 exists yet) |
+| Accepted-baseline tag       | `upstream-base/2026-08-20-beab6886f`                           |
+| Fork repository             | `https://github.com/TaraxioT/t3trade.git`                      |
+| Fork product line           | `origin/main`                                                  |
+| Pinned by                   | Plan 40 · Upstream sync to v0.0.34-nightly                     |
+| Pinned on                   | 2026-08-20                                                     |
+| Sync PR                     | https://github.com/TaraxioT/t3trade/pull/7                     |
+| Accepted range              | `3b72d17cb..beab6886f` (259 upstream commits, one batch)       |
+
+## Superseded baseline (Plan 26 · v0.0.33)
+
 | Field                       | Value                                                               |
 | --------------------------- | ------------------------------------------------------------------- |
 | Upstream repository         | `https://github.com/pingdotgg/t3code.git`                           |
