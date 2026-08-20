@@ -3709,8 +3709,10 @@ it.live("marks per-coin unavailability on the scan, never a zero and never a fai
         assert.isAbove(btc.mark, 0);
         assert.isDefined(btc.change24hPct);
         assert.isDefined(btc.realizedVol24hPct);
-        assert.isDefined(btc.fundingNow);
-        assert.isDefined(btc.funding7dMean);
+        // Seeded hourly rows at 0.00001 → the digest serves 8h-equivalents
+        // (x 8): the boundary conversion, proven end-to-end.
+        assert.closeTo(btc.fundingNowPer8h, 0.00001 * 8, 1e-12);
+        assert.closeTo(btc.funding7dMeanPer8h, 0.00001 * 8, 1e-12);
         assert.isDefined(btc.oiChange24hPct);
         assert.equal(btc.unavailable, undefined);
         // The empty coins are marked per coin, with reasons — never zeros

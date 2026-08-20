@@ -52,9 +52,15 @@ export interface ArchiveUnavailable {
 
 export interface FundingStatsOk {
   readonly status: "ok";
-  /** Unweighted mean of the hourly rates inside the window (per-hour rate). */
-  readonly mean: number;
-  readonly latestRate: number;
+  /**
+   * Mean of the hourly payments inside the window, expressed as an
+   * 8h-equivalent rate (hourly archive rate mean x 8), matching the snapshot's
+   * `fundingRate8h`. Storage stays per-hour; the conversion happens here, at
+   * the served boundary.
+   */
+  readonly meanPer8h: number;
+  /** Latest hourly archive rate x 8, same 8h-equivalent unit as `meanPer8h`. */
+  readonly latestRatePer8h: number;
   readonly latestTime: number;
   /** Adjacent samples in the window whose signs differ, `sign(0)` its own class. */
   readonly signFlips: number;
@@ -119,8 +125,10 @@ export interface ScanCoinDigest {
   readonly mark?: number;
   readonly change24hPct?: number;
   readonly realizedVol24hPct?: number;
-  readonly fundingNow?: number;
-  readonly funding7dMean?: number;
+  /** Latest hourly archive rate x 8 (8h-equivalent). */
+  readonly fundingNowPer8h?: number;
+  /** Mean of the 7d hourly payments, expressed as an 8h-equivalent rate (x 8). */
+  readonly funding7dMeanPer8h?: number;
   readonly oiChange24hPct?: number;
   /** What could not be answered and why — present exactly when a figure is absent. */
   readonly unavailable?: string;
@@ -246,8 +254,11 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
         }
         return {
           status: "ok",
-          mean,
-          latestRate: latest.fundingRate,
+          // 8h-equivalent (x 8): the archive stores per-HOUR rates, but the
+          // agent reads these next to the snapshot's per-8h `fundingRate8h`,
+          // so the unit must agree (and live in the field name).
+          meanPer8h: mean * 8,
+          latestRatePer8h: latest.fundingRate * 8,
           latestTime: latest.time,
           signFlips,
           sampleCount: rows.length,
@@ -387,11 +398,11 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             missing.push("no funding rows in the trailing 7d");
           } else {
             const latest = week[week.length - 1] as FundingRow;
-            entry["fundingNow"] = latest.fundingRate;
+            entry["fundingNowPer8h"] = latest.fundingRate * 8;
             const earliest = minFundingTime(db, coin);
             if (earliest !== null && earliest <= now - 7 * DAY_MS) {
               const total = week.reduce((sum, row) => sum + row.fundingRate, 0);
-              entry["funding7dMean"] = total / week.length;
+              entry["funding7dMeanPer8h"] = (total / week.length) * 8;
             } else {
               missing.push("funding holdings start inside the 7d window");
             }

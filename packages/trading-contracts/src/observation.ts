@@ -659,18 +659,28 @@ export const TradingObservation = Schema.Struct({
       Schema.Struct({ category: Schema.String, occurredAt: UnixMillis, summary: Schema.String }),
     ),
   ),
-  /** `funding_stats:<W>`: the trailing window's verdict, from the archive. */
+  /**
+   * `funding_stats:<W>`: the trailing window's verdict, from the archive.
+   * `meanPer8h` and `latestRatePer8h` are 8h-equivalent rates (hourly archive
+   * rate x 8) — the same unit as the snapshot's `fundingRate8h`.
+   */
   fundingStats: Schema.optional(
     Schema.Struct({
       windowDays: Schema.Number,
-      mean: Schema.Number,
-      latestRate: Schema.Number,
+      /** Mean of the hourly payments in the window, as an 8h-equivalent rate (x 8). */
+      meanPer8h: Schema.Number,
+      /** Latest hourly archive rate, as an 8h-equivalent rate (x 8). */
+      latestRatePer8h: Schema.Number,
       latestTime: UnixMillis,
       signFlips: Schema.Number,
       sampleCount: Schema.Number,
     }),
   ),
-  /** `funding_series:<n>`: hourly funding rows, oldest first. */
+  /**
+   * `funding_series:<n>`: hourly funding rows, oldest first. `fundingRate` is
+   * the raw per-hour rate the archive stores — a payment series, deliberately
+   * NOT scaled to 8h (unlike `fundingStats`).
+   */
   fundingSeries: Schema.optional(
     Schema.Array(Schema.Struct({ time: UnixMillis, fundingRate: Schema.Number })),
   ),
@@ -700,8 +710,9 @@ export const TradingObservation = Schema.Struct({
   ),
   /**
    * `scan`: one compact cross-market digest for every archived coin —
-   * mark, 24h change, realized vol off 5m candles, funding now and 7d mean,
-   * 24h OI change. Cross-market CONTEXT for the mission's own single market
+   * mark, 24h change, realized vol off 5m candles, funding now and 7d mean
+   * (both 8h-equivalent rates: hourly archive rate x 8), 24h OI change.
+   * Cross-market CONTEXT for the mission's own single market
    * (an ETH trader watches BTC because BTC leads), never instrument
    * selection: one asset per mission is settled elsewhere. A coin the
    * archive cannot answer is marked per coin (`unavailable` with a reason,
@@ -714,8 +725,10 @@ export const TradingObservation = Schema.Struct({
         mark: Schema.optional(Schema.Number),
         change24hPct: Schema.optional(Schema.Number),
         realizedVol24hPct: Schema.optional(Schema.Number),
-        fundingNow: Schema.optional(Schema.Number),
-        funding7dMean: Schema.optional(Schema.Number),
+        /** Latest hourly archive rate x 8 (8h-equivalent). */
+        fundingNowPer8h: Schema.optional(Schema.Number),
+        /** Mean of the 7d hourly payments, as an 8h-equivalent rate (x 8). */
+        funding7dMeanPer8h: Schema.optional(Schema.Number),
         oiChange24hPct: Schema.optional(Schema.Number),
         /** What could not be answered, and why — present exactly when a figure is absent. */
         unavailable: Schema.optional(Schema.String),

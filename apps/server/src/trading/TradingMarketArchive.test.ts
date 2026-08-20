@@ -92,8 +92,11 @@ it.effect("serves seeded series and hand-checked funding statistics", () =>
     assert.strictEqual(stats.status, "ok");
     if (stats.status !== "ok") return;
     assert.strictEqual(stats.sampleCount, 4);
-    assert.closeTo(stats.mean, (0.1 + 0.2 - 0.12 + 0.04) / 4, 1e-12);
-    assert.strictEqual(stats.latestRate, 0.04);
+    // Served as 8h-equivalent rates: the archive stores per-hour rows, the
+    // boundary multiplies by 8 (seeded hourly mean 0.055 -> 0.44, latest
+    // hourly 0.04 -> 0.32).
+    assert.closeTo(stats.meanPer8h, ((0.1 + 0.2 - 0.12 + 0.04) / 4) * 8, 1e-12);
+    assert.strictEqual(stats.latestRatePer8h, 0.04 * 8);
     assert.strictEqual(stats.latestTime, NOW - 1 * DAY);
     assert.strictEqual(stats.signFlips, 2);
 

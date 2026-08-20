@@ -63,6 +63,9 @@ export type BarInterval = typeof BarInterval.Type;
  * agree on one list.
  */
 export const DerivedMetricName = Schema.Literals([
+  // `funding_mean` is a PER-HOUR rate (mean of the archive's hourly rows) and
+  // `funding_cumulative` is a SUM of hourly payments since entry — neither is
+  // an 8h-equivalent rate; stored watch thresholds assume these magnitudes.
   "funding_mean",
   "funding_sign_flip",
   "funding_cumulative",

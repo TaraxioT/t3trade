@@ -83,9 +83,9 @@ export function candlesInRange(
 
 /**
  * Mean funding rate over the last `days`, or `null` when the window holds no
- * rows. The rate is per 8-hour period as the exchange publishes it; the mean
- * is unweighted because Hyperliquid pays hourly on a fixed schedule, so every
- * row in the window covers the same span.
+ * rows. The rate is PER-HOUR — the archive stores the hourly eighth of the
+ * 8h rate Hyperliquid computes; the mean is unweighted because every row in
+ * the window covers the same span on the fixed hourly payment schedule.
  */
 export function trailingMeanFunding(
   db: ArchiveDatabase,

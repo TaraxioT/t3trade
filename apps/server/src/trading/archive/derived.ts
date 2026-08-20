@@ -323,6 +323,10 @@ export function derivedMetricValue(
     case "funding_sign_flip": {
       // Unweighted mean of the hourly funding rates inside the trailing
       // window; the flip/fire-on-change logic is the evaluator's, not ours.
+      // `funding_mean` is deliberately a PER-HOUR rate: it is a legal watch
+      // metric (watch.ts), so stored thresholds assume this magnitude — do
+      // NOT scale it to an 8h equivalent here. Agents that need the 8h unit
+      // read `funding_stats` (meanPer8h) or the snapshot's `fundingRate8h`.
       const from = ctx.now - params.windowDays * DAY_MS;
       const rows = fundingInRange(db, coin, from, ctx.now);
       const earliest = earliestFundingTime(db, coin);
@@ -347,7 +351,8 @@ export function derivedMetricValue(
     }
 
     case "funding_cumulative": {
-      // Sum of the funding rates paid since the position was opened.
+      // Sum of the hourly funding payments since the position was opened —
+      // a payment total, deliberately NOT a rate and NOT scaled by 8.
       const entryAt = ctx.positionEntryAt;
       if (entryAt === undefined) {
         return {

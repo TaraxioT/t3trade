@@ -1879,8 +1879,8 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
         } else {
           archiveSections.fundingStats = {
             windowDays: parsed.windowDays,
-            mean: result.mean,
-            latestRate: result.latestRate,
+            meanPer8h: result.meanPer8h,
+            latestRatePer8h: result.latestRatePer8h,
             latestTime: result.latestTime,
             signFlips: result.signFlips,
             sampleCount: result.sampleCount,
