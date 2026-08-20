@@ -393,7 +393,14 @@ function renderPlanWedge(input: {
   const mark = input.projectionPoints[0]!;
   const target = input.levels.find((level) => level.kind === "target") ?? null;
   const stop = input.levels.find((level) => level.kind === "stop") ?? null;
-  if (target === null || stop === null || target.offScale !== null || stop.offScale !== null) {
+  // Off-scale is NOT a reason to fall back. The geometry already hands back a
+  // `y` clamped into the frame for a level that sits outside it, and the wedge
+  // clamps again below, so an off-screen target still closes a shape that
+  // points the right way. Rejecting it here resurrected the dotted projection
+  // line this wedge replaced, and it did so in the ordinary case: a target a
+  // little below the visible range is a normal plan, not a broken one. Only a
+  // missing bracket leaves nothing to close the shape against.
+  if (target === null || stop === null) {
     return (
       <polyline
         data-testid="mission-chart-projection"
