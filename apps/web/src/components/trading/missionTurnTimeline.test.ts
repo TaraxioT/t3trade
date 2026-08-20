@@ -51,7 +51,14 @@ describe("deriveTurnTimeline", () => {
       market: "ETH",
       missionTimeline: [
         { at: iso("14:31"), kind: "strategy_published", label: "v3" },
-        { at: iso("14:30"), kind: "wake", label: "market_watch_triggered" },
+        // A wake carries its raw cause alongside the label, the way the
+        // projection writes it — the trigger line is translated from `cause`.
+        {
+          at: iso("14:30"),
+          kind: "wake",
+          label: "market_watch_triggered",
+          cause: "market_watch_triggered",
+        },
       ],
       recentFills: [],
     });
