@@ -12,7 +12,8 @@
 #   scripts/upstream-drift.sh --json     # one JSON object, for CI
 #
 # Exits 0 when drift is under both thresholds, 1 when either is exceeded, and
-# 2 when the repository is not set up for a sync at all.
+# 2 when the drift cannot be measured at all — no upstream remote, or a
+# `git merge-tree` that failed outright rather than reporting conflicts.
 
 set -euo pipefail
 
@@ -23,7 +24,7 @@ COMMIT_THRESHOLD=150
 CONFLICT_THRESHOLD=15
 
 json_output=false
-if [[ "${1:-}" == "--json" ]]; then
+if [[ $# -eq 1 && "$1" == "--json" ]]; then
   json_output=true
 elif [[ $# -gt 0 ]]; then
   echo "usage: $0 [--json]" >&2
@@ -47,12 +48,20 @@ else
 fi
 
 # `git merge-tree` writes the conflicted paths to stdout ahead of its
-# human-readable log, and exits non-zero when there are conflicts at all — so
-# the exit status is information, not a failure.
+# human-readable log, and exits 1 when there are conflicts at all — so status 1
+# is information, not a failure. Anything above that is a real failure, and its
+# output says nothing about drift.
+#
+# `core.quotePath=true` is git's default, but a repo- or user-level override
+# would let a non-UTF-8 path through verbatim and make `--json` unparseable.
 merge_status=0
 conflicts=""
 if [[ "$behind" -gt 0 ]]; then
-  merge_output=$(git merge-tree --write-tree --name-only main upstream/main) || merge_status=$?
+  merge_output=$(git -c core.quotePath=true merge-tree --write-tree --name-only main upstream/main) || merge_status=$?
+  if [[ "$merge_status" -gt 1 ]]; then
+    echo "git merge-tree failed (status $merge_status); drift not measured." >&2
+    exit 2
+  fi
   # First line is the tree oid; the paths follow until the first blank line.
   conflicts=$(printf '%s\n' "$merge_output" | tail -n +2 | sed -n '/^$/q;p')
 fi

@@ -43,7 +43,10 @@ jobs:
         run: |
           set +e
           report=$(scripts/upstream-drift.sh)
-          status=$?
+          json=$(scripts/upstream-drift.sh --json)
+          # The JSON run measures independently, so its status is the one that
+          # matches the report the issue step parses.
+          json_status=$?
           set -e
           echo "$report"
           {
@@ -51,8 +54,8 @@ jobs:
             echo "$report"
             echo "REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
-          echo "json=$(scripts/upstream-drift.sh --json)" >> "$GITHUB_OUTPUT"
-          echo "over=$([ $status -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "json=$json" >> "$GITHUB_OUTPUT"
+          echo "over=$([ $json_status -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Summarize
         env:
@@ -92,15 +95,18 @@ jobs:
               "with a **merge commit** — never a squash.",
             ].join("\n");
 
-            const existing = await github.rest.issues.listForRepo({
+            // Paginated: with the label carried by more than one page of open
+            // issues, a first-page-only search would reopen a duplicate.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: "open",
               labels: "upstream-sync",
+              per_page: 100,
             });
             // listForRepo returns pull requests too; updating one would
             // overwrite a sync PR's body with the drift report.
-            const open = existing.data.find(
+            const open = existing.find(
               (issue) => !issue.pull_request && issue.title === title,
             );
 
