@@ -2838,13 +2838,14 @@ const GOLDEN_CALLS: ReadonlyArray<{ readonly label: string; readonly digest: str
     digest: "a35294d6ae5c2a42ef9b8d196c8bf97d81ca2e08a98fe890ef6e3b651b884c6f",
   },
   {
-    // NOT PINNED. R2 moved the unbound default timeframe 1m -> 5m, so the bytes
-    // this golden used to pin are stale, and the correct new digest cannot be
-    // written down without executing the call once. Until someone runs the
-    // suite and pastes the printed digest here, the unbound scope[] path has no
-    // byte-identity oracle - the one gap in plan 38 §5.3's coverage.
+    // The unbound path, pinned on the 5m default R2 moved it to. A call that
+    // names no timeframe answers from the base the doctrine now runs on, so
+    // this digest is the oracle for that default as much as for the bytes: a
+    // change here means either the read path moved or the unbound default did.
+    // Captured by running the suite and pasting the printed digest, which is
+    // the only way this one is obtainable - see UNPINNED above.
     label: "unbound scope:market+candles",
-    digest: UNPINNED,
+    digest: "3e1152357dfa518d15b879d3e36484c9a5c0132e7fe62951c0c5d6b56bb0e34b",
   },
 ];
 
