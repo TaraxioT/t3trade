@@ -26,6 +26,14 @@ const ALLOWED_FILES = new Set([
   "apps/server/package.json",
   // Doc comment linking to an upstream GitHub issue for context.
   "apps/server/src/provider/Layers/ClaudeAdapter.ts",
+  // Doc comment recording where a `gh pr list --json` cost was measured.
+  "apps/server/src/pullRequest/gitHubPullRequestJson.ts",
+  // `t3 triage`'s playbook, arrived with the v0.0.34 sync. It sends the user's
+  // agent to upstream for the newer playbook, the source clone, prior issues,
+  // and the issue it files. Repointing it is a product decision about where a
+  // fork user's bug reports belong, not a rename; deferred in PATCH_LEDGER.md.
+  // Edit `.github/triage/PLAYBOOK.md` in lockstep — a test asserts they match.
+  "apps/server/src/cli/triagePrompt.ts",
   // Marketing site links to upstream's GitHub repo/releases rather than the
   // fork's own; a real (not just cosmetic) gap, deferred in PATCH_LEDGER.md
   // pending a marketing rebrand pass.
