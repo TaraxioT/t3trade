@@ -33,7 +33,7 @@ import type { ReactNode } from "react";
 
 import type { TradingChartCandle } from "@t3tools/contracts";
 
-import { useMissionSelection } from "./missionSelectionStore";
+import { isMomentSelected, useMissionSelection } from "./missionSelectionStore";
 import { cn } from "~/lib/utils";
 
 import {
@@ -1034,7 +1034,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             While a selection is live (from either side), the matching tick
             glows and the rest recede — one moment, one question. */}
         {geometry.pastMarkers.map((marker) => {
-          const selected = selection !== null && Math.abs(selection.atMillis - marker.at) <= 2_000;
+          const selected = isMomentSelected(selection, marker.at);
           return (
             <line
               key={`past-${marker.key}`}
@@ -1217,9 +1217,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           they stay in register with the plot at any size and stay round. */}
       {geometry.fillPoints.map((fill) => {
         const style = fillMarkerStyle(fill.kind);
-        const selected =
-          selection !== null &&
-          (selection.eventId === fill.key || Math.abs(selection.atMillis - fill.at) <= 2_000);
+        const selected = selection?.eventId === fill.key || isMomentSelected(selection, fill.at);
         return (
           <span
             key={`fill-${fill.key}`}

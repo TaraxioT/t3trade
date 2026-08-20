@@ -1,9 +1,13 @@
 # Cockpit audit — R6 overhaul, Phase 0
 
-Scope: `apps/web/src/components/trading/*`. No server files are in scope; every
-datum the redesign needs is already on the mission projection
-(`OrchestrationTradingMission`) or the chart feed. **No server-side projection
-fields are required.**
+Scope: `apps/web/src/components/trading/*`. Almost every datum the redesign
+needs is already on the mission projection (`OrchestrationTradingMission`) or
+the chart feed. **One read-only projection field was added after this audit
+was first written** — `toolsCalled` on a wake timeline entry, reading the
+already-recorded `trading_harness_runs.tools_called_json` (migration 051), so
+a wake card can say what the agent read that turn. It is additive, renames no
+event, and changes no trading behavior; the Phase 3 note below carries the
+justification. Nothing else on the server moved.
 
 ## Current structure
 
