@@ -1,4 +1,4 @@
-const REPO = "0xgeorgemathew/t3trade";
+const REPO = "TaraxioT/t3trade";
 
 export const RELEASES_URL = `https://github.com/${REPO}/releases`;
 

@@ -12,12 +12,12 @@
 # instructions ask the user to do by hand. It installs nothing else, needs no
 # password, and touches no system settings.
 #
-#   curl -fsSL https://raw.githubusercontent.com/0xgeorgemathew/t3trade/main/scripts/install-macos.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/TaraxioT/t3trade/main/scripts/install-macos.sh | bash
 #
 # Read it before running it — that goes for any script piped into a shell.
 set -euo pipefail
 
-REPO="0xgeorgemathew/t3trade"
+REPO="TaraxioT/t3trade"
 APP_NAME="T3 Trade (Alpha).app"
 INSTALL_DIR="/Applications"
 

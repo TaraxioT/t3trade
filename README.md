@@ -7,10 +7,10 @@ futures markets with a defined strategy, loss budget, and deterministic controls
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e?style=flat-square)](./LICENSE)
 [![Network: Hyperliquid testnet](https://img.shields.io/badge/network-hyperliquid%20testnet-10b981?style=flat-square)](https://app.hyperliquid-testnet.xyz)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-eab308?style=flat-square)](https://github.com/0xgeorgemathew/t3trade/releases)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-eab308?style=flat-square)](https://github.com/TaraxioT/t3trade/releases)
 [![Platform: macOS + web](https://img.shields.io/badge/platform-macOS%20%2B%20web-52525b?style=flat-square)](#running-it)
 
-**[t3trade.pages.dev](https://t3trade.pages.dev)** · [Releases](https://github.com/0xgeorgemathew/t3trade/releases) · [Docs](./docs/user/install.md)
+**[t3trade.pages.dev](https://t3trade.pages.dev)** · [Releases](https://github.com/TaraxioT/t3trade/releases) · [Docs](./docs/user/install.md)
 
 <img src="docs/media/t3trade-mission.png" alt="T3 Trade showing an ETH mission: the agent's reasoning, its fills, an open position with entry, stop and target, and three armed market watches" width="920" />
 
@@ -98,7 +98,7 @@ pnpm dev
 
 `pnpm dev` starts the server and web app locally. A packaged macOS
 (Apple Silicon) desktop build is available from
-[GitHub Releases](https://github.com/0xgeorgemathew/t3trade/releases); other
+[GitHub Releases](https://github.com/TaraxioT/t3trade/releases); other
 platforms run from source.
 
 Supported agent providers (install and log in to at least one):

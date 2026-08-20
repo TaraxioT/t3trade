@@ -16,7 +16,7 @@ acceptance criteria were checked against.
 | Upstream commit date        | 2026-08-10                                                          |
 | Upstream release tag at pin | `v0.0.33`                                                           |
 | Accepted-baseline tag       | `upstream-base/2026-08-10-3b72d17cb`                                |
-| Fork repository             | `https://github.com/0xgeorgemathew/t3trade.git`                     |
+| Fork repository             | `https://github.com/TaraxioT/t3trade.git`                           |
 | Fork product line           | `origin/main`                                                       |
 | Pinned by                   | Plan 26 · Upstream sync to v0.0.33                                  |
 | Pinned on                   | 2026-08-13                                                          |
@@ -33,7 +33,7 @@ acceptance criteria were checked against.
 | Upstream commit date            | 2026-07-29                                                                           |
 | Upstream package version at pin | `0.0.31`                                                                             |
 | Accepted-baseline tag           | `upstream-base/2026-07-29-a8e05cbb`                                                  |
-| Fork repository                 | `https://github.com/0xgeorgemathew/t3trade.git`                                      |
+| Fork repository                 | `https://github.com/TaraxioT/t3trade.git`                                            |
 | Fork product line               | `origin/main`                                                                        |
 | Fork version at baseline        | `0.0.31` (unchanged from upstream; fork versioning splits at the first fork release) |
 | Pinned by                       | PROMPT-00 · Fork and integration baseline                                            |
@@ -44,7 +44,7 @@ acceptance criteria were checked against.
 1. Cloned `https://github.com/pingdotgg/t3code.git` with
    `--single-branch --branch main`.
 2. Renamed the cloned remote to `upstream` and disabled its push URL.
-3. Added the writable fork `https://github.com/0xgeorgemathew/t3trade.git`
+3. Added the writable fork `https://github.com/TaraxioT/t3trade.git`
    as `origin`.
 4. Configured `upstream` to fetch only `main`
    (`+refs/heads/main:refs/remotes/upstream/main`).
