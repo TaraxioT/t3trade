@@ -55,6 +55,7 @@ import {
   visibleMissions,
   type WatchStreamItem,
   type WatchStreamRow,
+  deriveOrderLedger,
 } from "./tradingPresentation";
 
 /** The single-watch rows of a stream, for assertions about a row's own fields. */
@@ -2429,7 +2430,7 @@ describe("deriveUpNextItems", () => {
     expect(deriveUpNextItems(flatMission, NOW)).toEqual([]);
   });
 
-  it("orders the classes: working order, stop, levels, then the clock", () => {
+  it("orders the classes: stop, levels, then the clock — no order pill (plan 39)", () => {
     const items = deriveUpNextItems(
       {
         ...flatMission,
@@ -2453,14 +2454,16 @@ describe("deriveUpNextItems", () => {
       },
       NOW,
     );
-    expect(items.map((item) => item.kind)).toEqual(["order", "stop", "price", "time"]);
-    expect(items[1]?.label).toBe("stop 1,890");
+    // The "order working" pill retired with plan 39 phase 2: a working order
+    // is a row of the positions card now.
+    expect(items.map((item) => item.kind)).toEqual(["stop", "price", "time"]);
+    expect(items[0]?.label).toBe("stop 1,890");
     // 10 points of adverse move on one unit of size.
-    expect(items[1]?.detail).toBe("$10.00 risk");
-    expect(items[2]?.label).toBe("wake @ 1,899 ↓");
-    expect(items[2]?.detail).toBe("1 away");
-    expect(items[3]?.label).toBe("reassess in 2m 40s");
-    expect(items[3]?.chip).toBe("auto");
+    expect(items[0]?.detail).toBe("$10.00 risk");
+    expect(items[1]?.label).toBe("wake @ 1,899 ↓");
+    expect(items[1]?.detail).toBe("1 away");
+    expect(items[2]?.label).toBe("reassess in 2m 40s");
+    expect(items[2]?.chip).toBe("auto");
   });
 
   it("ranks price and pnl levels by how near they are", () => {
@@ -2651,5 +2654,107 @@ describe("deriveTriggerExpiryMillis", () => {
 
   it("is null before a plan is published", () => {
     expect(deriveTriggerExpiryMillis({ position: null, strategy: null })).toBeNull();
+  });
+});
+
+describe("deriveOrderLedger", () => {
+  const order = (over: Partial<Parameters<typeof deriveOrderLedger>[0]["orders"][number]>) => ({
+    executionId: "e1",
+    actionType: "open",
+    side: "buy" as const,
+    size: 1,
+    limitPrice: 1_900,
+    reduceOnly: false,
+    status: "filled",
+    filledSize: 1,
+    avgFillPrice: 1_899.5,
+    feeUsd: 0.4,
+    closedPnl: 0,
+    updatedAt: "2026-08-20T10:00:00.000Z",
+    ...over,
+  });
+
+  it("maps each status to its row state", () => {
+    const rows = deriveOrderLedger({
+      orders: [
+        order({ executionId: "q", status: "reserved", filledSize: 0, avgFillPrice: null }),
+        order({ executionId: "w", status: "accepted", filledSize: 0, avgFillPrice: null }),
+        order({ executionId: "c", status: "cancelled", filledSize: 0, avgFillPrice: null }),
+        order({ executionId: "r", status: "rejected", filledSize: 0, avgFillPrice: null }),
+        order({
+          executionId: "x",
+          actionType: "close",
+          side: "sell",
+          status: "filled",
+          closedPnl: 2.5,
+          feeUsd: 0.5,
+        }),
+      ],
+      position: null,
+      markPrice: 1_900,
+      plannedEntry: null,
+    });
+    expect(rows.map((row) => row.state)).toEqual([
+      "queued",
+      "working",
+      "cancelled",
+      "rejected",
+      "closed",
+    ]);
+    // The closed closing leg's value is realised net of fees, frozen.
+    expect(rows[4]?.valueUsd).toBeCloseTo(2.0, 9);
+    expect(rows[4]?.isClose).toBe(true);
+    expect(rows[4]?.direction).toBe("long");
+    // A queued order states no price yet; a working one shows its limit.
+    expect(rows[0]?.price).toBeNull();
+    expect(rows[1]?.price).toBe(1_900);
+  });
+
+  it("reports a partial fill with its track fraction", () => {
+    const rows = deriveOrderLedger({
+      orders: [order({ executionId: "p", status: "accepted", size: 2, filledSize: 0.5 })],
+      position: null,
+      markPrice: 1_900,
+      plannedEntry: null,
+    });
+    expect(rows[0]?.state).toBe("partial");
+    expect(rows[0]?.filledFraction).toBeCloseTo(0.25, 9);
+    expect(rows[0]?.isLive).toBe(true);
+  });
+
+  it("marks the filled opening leg of the live position open, with live net", () => {
+    const rows = deriveOrderLedger({
+      orders: [order({ executionId: "o", status: "filled", feeUsd: 0.3 })],
+      position: { size: 1, unrealisedPnl: 5 },
+      markPrice: 1_905,
+      plannedEntry: null,
+    });
+    expect(rows[0]?.state).toBe("open");
+    // Live unrealised minus the fees the leg has paid.
+    expect(rows[0]?.valueUsd).toBeCloseTo(4.7, 9);
+    expect(rows[0]?.isLive).toBe(true);
+    expect(rows[0]?.price).toBeCloseTo(1_899.5, 9);
+  });
+
+  it("draws the planned ghost only while no live order covers the plan", () => {
+    const planned = { sizeUsd: 950, price: null, direction: "short" as const };
+    const empty = deriveOrderLedger({
+      orders: [],
+      position: null,
+      markPrice: 1_900,
+      plannedEntry: planned,
+    });
+    expect(empty[0]?.state).toBe("planned");
+    expect(empty[0]?.direction).toBe("short");
+    expect(empty[0]?.sizeUsd).toBe(950);
+    expect(empty[0]?.sizeUnits).toBeCloseTo(0.5, 9);
+
+    const withWorking = deriveOrderLedger({
+      orders: [order({ executionId: "w", status: "submitted", filledSize: 0 })],
+      position: null,
+      markPrice: 1_900,
+      plannedEntry: planned,
+    });
+    expect(withWorking.some((row) => row.state === "planned")).toBe(false);
   });
 });

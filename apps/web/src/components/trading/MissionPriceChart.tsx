@@ -849,17 +849,38 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               light under the line rather than as a filled region, which is
               why it can be bright at the top without competing with the
               stroke. */}
+          {/* The wash is theme-scaled. The same 0.22 that reads as pale mint
+              under the line on white reads as a lit green mass on near-black —
+              it is the single largest coloured region on the panel, and it was
+              most of why dark felt crowded. The tokens live in index.css so the
+              two themes can disagree about a number the SVG cannot branch on. */}
           <linearGradient id={`${gradientId}-under`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={lineColor} stopOpacity={0.22} />
-            <stop offset="45%" stopColor={lineColor} stopOpacity={0.07} />
+            <stop
+              offset="0%"
+              stopColor={lineColor}
+              style={{ stopOpacity: "var(--mission-chart-wash-top)" }}
+            />
+            <stop
+              offset="45%"
+              stopColor={lineColor}
+              style={{ stopOpacity: "var(--mission-chart-wash-mid)" }}
+            />
             <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
           </linearGradient>
           {/* The plan wedge's fade: strongest at now, softest at the far edge,
               so distance reads as confidence without the shape ever fully
               disappearing — the invalidation edge has to stay findable. */}
           <linearGradient id={`${gradientId}-wedge`} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="var(--color-info)" stopOpacity={0.2} />
-            <stop offset="100%" stopColor="var(--color-info)" stopOpacity={0.06} />
+            <stop
+              offset="0%"
+              stopColor="var(--color-info)"
+              style={{ stopOpacity: "var(--mission-chart-wedge-near)" }}
+            />
+            <stop
+              offset="100%"
+              stopColor="var(--color-info)"
+              style={{ stopOpacity: "var(--mission-chart-wedge-far)" }}
+            />
           </linearGradient>
         </defs>
 
@@ -1378,7 +1399,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       {gridPrices.map((price) => (
         <span
           key={`grid-label-${price}`}
-          className="pointer-events-none absolute left-1.5 -translate-y-full pb-0.5 font-mono text-[10px] leading-none tabular-nums text-muted-foreground/60"
+          className="pointer-events-none absolute left-1.5 -translate-y-full pb-0.5 font-mono text-[10px] leading-none tabular-nums text-muted-foreground"
           style={{ top: `${(geometry.yForPrice(price) / CHART_VIEWBOX_HEIGHT) * 100}%` }}
           aria-hidden="true"
         >

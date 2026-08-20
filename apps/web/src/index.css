@@ -647,13 +647,97 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
        that black seen through blur. The edge does the separating, not a
        lighter fill. */
     --mission-panel-surface: var(--card);
-    --mission-panel-outline: var(--border);
+    /* Not `--border`. The shared token is white/6%, which traces nothing on a
+       near-black page — and dark loses the other half of the separation too,
+       because a black drop shadow under a black card is invisible while the
+       light theme gets both. So the edge has to carry the whole job alone, and
+       at 6% it was not carrying it: the three panes read as one dark field with
+       figures floating in it, which is most of what "cluttered" meant. Still a
+       hairline, just one you can actually follow around a corner. */
+    --mission-panel-outline: rgb(255 255 255 / 12%);
     --mission-panel-opacity: 58%;
-    --mission-panel-bevel: rgb(255 255 255 / 5%);
+    /* The lit top edge, doing the work the missing shadow cannot. */
+    --mission-panel-bevel: rgb(255 255 255 / 9%);
 
     box-shadow:
       inset 0 1px 0 var(--mission-panel-bevel),
       0 16px 36px -24px rgb(0 0 0 / 80%);
+  }
+
+  /*
+   * How heavily the chart pours its wash under the price line, per theme.
+   *
+   * The area fill is the largest single region of colour on the panel, and an
+   * opacity that reads as pale mint on white reads as a lit mass on near-black.
+   * Same shape, same hue, less of it.
+   */
+  :root {
+    --mission-chart-wash-top: 0.22;
+    --mission-chart-wash-mid: 0.07;
+    --mission-chart-wedge-near: 0.2;
+    --mission-chart-wedge-far: 0.06;
+  }
+
+  .dark {
+    --mission-chart-wash-top: 0.13;
+    --mission-chart-wash-mid: 0.04;
+    --mission-chart-wedge-near: 0.13;
+    --mission-chart-wedge-far: 0.04;
+  }
+
+  /*
+   * The risk/reward slab. Two 15% fills across the full width of the chart
+   * card: soft pink and mint on white, two lit bars on black.
+   */
+  .dark .mission-rr-segment {
+    opacity: 0.68;
+  }
+
+  /*
+   * The panel's own dark ramp.
+   *
+   * An opacity ramp does not buy the same recession in the two themes. In
+   * light, `--foreground` is zinc-800 on a white card: 0.65 of OKLab L apart,
+   * and the muted step lands 0.40 away. In dark the same markup put
+   * neutral-100 on a near-black card — 0.77 apart, with muted at 0.48. Every
+   * step of the ramp is ~20% louder, so nothing recedes and all of it competes
+   * at once. That is the whole of "dark feels cluttered even though it is not".
+   *
+   * Scoped to the panel rather than the theme: this is a density problem on one
+   * dense surface, and the rest of the app is prose at comfortable sizes.
+   *
+   * One rule falls out of measuring it: `--muted-foreground` is the quietest
+   * ink this panel has, and there is nothing quieter. It lands at 4.88:1 on the
+   * light card and 4.69:1 on the dark one, so ANY alpha on top of it drops
+   * below the 4.5 floor — /85 measures 3.63 and 3.73, /50 measures 1.98 and
+   * 2.09, and every label wearing them is 10.5-12px. The panel used to carry 25
+   * such steps across four levels; they now collapse to this one, which reads
+   * as calmer as well as legible: four competing greys were part of why dark
+   * felt busy.
+   */
+  .dark .mission-panel {
+    /* Foreground only. Pulling `--muted-foreground` down as well looked calmer
+       and measured at 3.85:1 against the card — under the 4.5 floor for the
+       10.5px labels that wear it. The muted token is already sitting close to
+       that floor in both themes, which is exactly why nothing in this panel may
+       attenuate it further (see the ramp note above). */
+    --foreground: var(--color-neutral-200);
+  }
+
+  /*
+   * The agent log's tone rails and icon tokens.
+   *
+   * A 2px full-chroma bar per row is quiet on white and glows on black — the
+   * measured jump from 1.41% to 1.85% of the frame carrying colour is mostly
+   * these. They are meant to be a silhouette the eye catches, not a light
+   * source, so in dark they give back what the darker ground already gave them.
+   */
+  .dark .mission-log-rail {
+    opacity: 0.62;
+  }
+
+  .dark .mission-log-token {
+    opacity: 0.88;
   }
 
   /*
@@ -812,10 +896,123 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     animation: mission-analysing-dot 1600ms ease-in-out 1;
   }
 
+  /*
+   * The positions card and agent log transitions (plan 39 phase 4). All
+   * one-shot, all identity-keyed by the panel (each animates on mount or on an
+   * observed state transition only, so the 3s poll cannot replay them), and
+   * all switched off under reduced motion below.
+   *
+   * ENTER — a new order row arrives on the spring curve.
+   * SETTLE — the state token cross-fades in place; the row does not move.
+   * FILLED RING — one ring pulse as a leg becomes open (info) or a closing
+   *   leg settles (profit/loss).
+   * EXIT — a cancel or reject leaves in the retire grammar.
+   * LOG ENTER — a new log row fades up.
+   * SIZE CROSSFADE — the size column's unit toggle; figure only, no reflow.
+   */
+  @keyframes mission-order-enter {
+    from {
+      transform: translateY(6px) scale(0.97);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+
+  .mission-order-enter {
+    animation: mission-order-enter 380ms cubic-bezier(0.34, 1.56, 0.64, 1) 1;
+  }
+
+  @keyframes mission-order-settle {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .mission-order-settle {
+    animation: mission-order-settle 320ms ease-out 1;
+  }
+
+  @keyframes mission-order-filled-ring {
+    0% {
+      box-shadow: 0 0 0 0 var(--mission-ring-color);
+    }
+    100% {
+      box-shadow: 0 0 0 7px transparent;
+    }
+  }
+
+  .mission-order-filled-ring-info {
+    --mission-ring-color: color-mix(in srgb, var(--info) 55%, transparent);
+    animation: mission-order-filled-ring 620ms ease-out 1;
+  }
+
+  .mission-order-filled-ring-profit {
+    --mission-ring-color: color-mix(in srgb, var(--color-profit) 55%, transparent);
+    animation: mission-order-filled-ring 620ms ease-out 1;
+  }
+
+  .mission-order-filled-ring-loss {
+    --mission-ring-color: color-mix(in srgb, var(--color-loss) 55%, transparent);
+    animation: mission-order-filled-ring 620ms ease-out 1;
+  }
+
+  @keyframes mission-order-exit {
+    to {
+      opacity: 0;
+      transform: translateX(6px);
+    }
+  }
+
+  .mission-order-exit {
+    animation: mission-order-exit 420ms ease-out forwards;
+  }
+
+  @keyframes mission-log-enter {
+    from {
+      transform: translateY(4px);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+
+  .mission-log-enter {
+    animation: mission-log-enter 260ms ease-out 1;
+  }
+
+  @keyframes mission-size-crossfade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .mission-size-crossfade {
+    animation: mission-size-crossfade 180ms ease-out 1;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .mission-chip-arm,
     .mission-card-flash,
-    .mission-analysing-dot {
+    .mission-analysing-dot,
+    .mission-order-enter,
+    .mission-order-settle,
+    .mission-order-filled-ring-info,
+    .mission-order-filled-ring-profit,
+    .mission-order-filled-ring-loss,
+    .mission-order-exit,
+    .mission-log-enter,
+    .mission-size-crossfade {
       animation: none;
     }
 
@@ -1223,15 +1420,25 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     --success-foreground: var(--color-emerald-400);
     --warning: var(--color-amber-500);
     --warning-foreground: var(--color-amber-400);
-    /* Lifted well clear of the dark surface: on the chart these are the fill of
-       a 3px-wide candle body, and the 400-ramp pair sat close enough to the
-       background that a down bar read as a smudge. Same matched-pair rule as
-       the light theme above. */
-    --profit: oklch(0.79 0.18 152);
-    --loss: oklch(0.71 0.2 27);
-    --long: oklch(0.79 0.18 152);
-    --short: oklch(0.71 0.2 27);
-    --armed: var(--color-amber-400);
+    /* Lifted clear of the dark surface, but no longer lifted for candle bodies:
+       the chart draws one polyline and an area fill, not 3px bars, so the old
+       0.79/0.71 pair was paying for a shape that no longer exists — and every
+       figure, pill, rail and chip on the panel was paying with it.
+
+       Measured on one frame of the live panel, dark against light: ink sat
+       0.52 of OKLab L from its surface where light sat 0.39, chroma peaked 16%
+       higher, and 31% more of the frame carried colour. That gap is what makes
+       dark read as cluttered when nothing has been added to it. These values
+       close it — matched in lightness, separated by hue, and still a clear
+       stroke on a near-black ground. */
+    --profit: oklch(0.72 0.15 152);
+    --loss: oklch(0.66 0.18 27);
+    --long: oklch(0.72 0.15 152);
+    --short: oklch(0.66 0.18 27);
+    /* Amber-400 was the brightest ink on the panel and it is worn by the most
+       objects — armed rails, working/partial state tokens, the staleness word,
+       every chart level chip. One step down in lightness and chroma. */
+    --armed: oklch(0.78 0.125 78);
     --warning-surface: color-mix(in srgb, var(--warning) 16%, transparent);
     --update: var(--primary);
     --update-foreground: var(--color-blue-400);
