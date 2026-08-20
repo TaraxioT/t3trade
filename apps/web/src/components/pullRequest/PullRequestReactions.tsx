@@ -11,6 +11,7 @@ import { cn } from "~/lib/utils";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -22,8 +23,12 @@ import {
   pullRequestReactionTooltip,
 } from "./pullRequestReactions.logic";
 
+/**
+ * The pill's own shape, since a round-count chip is not one of `Button`'s sizes. It still owes the
+ * primitive's interaction contract: a hand on hover, and a disabled state that reads as disabled.
+ */
 const PILL_CLASS =
-  "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full border px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-64";
 
 const EMPTY_PENDING: ReadonlyMap<PullRequestReactionContent, boolean> = new Map();
 
@@ -113,7 +118,7 @@ export function PullRequestReactionBar({
                   reaction.viewerHasReacted
                     ? "border-primary/60 bg-primary/10 text-foreground"
                     : "border-border/70 bg-muted/40 text-muted-foreground",
-                  canReact ? "hover:border-primary/60" : "cursor-default",
+                  canReact && "hover:border-primary/60",
                 )}
                 onClick={() => void toggle(reaction.content, !reaction.viewerHasReacted)}
               />
@@ -151,22 +156,20 @@ export function PullRequestReactionBar({
                 const reacted =
                   shown.find((reaction) => reaction.content === content)?.viewerHasReacted ?? false;
                 return (
-                  <button
+                  <Button
                     key={content}
-                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
                     aria-pressed={reacted}
                     aria-label={pullRequestReactionName(content)}
-                    className={cn(
-                      "flex size-7 items-center justify-center rounded-md text-base outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
-                      reacted && "bg-primary/10",
-                    )}
+                    className={cn("text-base sm:text-base", reacted && "bg-primary/10")}
                     onClick={() => {
                       setPickerOpen(false);
                       void toggle(content, !reacted);
                     }}
                   >
                     <span aria-hidden>{pullRequestReactionEmoji(content)}</span>
-                  </button>
+                  </Button>
                 );
               })}
             </div>
