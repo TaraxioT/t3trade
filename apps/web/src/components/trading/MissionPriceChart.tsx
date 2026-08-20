@@ -810,7 +810,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
 @keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
 .mission-level-flash { animation: mission-level-flash 1.4s ease-out 2 forwards; opacity: 0; }
 .mission-mark-pulse { animation: mission-mark-pulse 1.6s ease-in-out 2; }
-.mission-marker-slide { transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1), right 500ms cubic-bezier(0.22, 1, 0.36, 1); }
+.mission-marker-slide { transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1), left 500ms cubic-bezier(0.22, 1, 0.36, 1); }
 /* The line draws itself, left to right, once. A pathLength of 1 normalises
    every polyline to a unit length, so one keyframe serves each segment
    whatever its real length. */
@@ -1315,8 +1315,15 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           state their clock time; the nearest one keeps its word. Hovering or
           focusing a chip extends its temporary vertical hairline (above), and
           slides when its moment is re-armed, the way the rule it replaced
-          did. Anchored by their RIGHT edge so they grow leftward into the
-          plot and can never overflow the frame. */}
+          did.
+
+          Anchored by their LEFT edge, at the moment itself, so the chip lies
+          in the future zone the moment belongs to. Right-anchoring them read
+          well only for a moment far out: a reassessment three minutes away
+          sits just past `now`, and a right-anchored chip then hangs backwards
+          across the divider and labels the record with a time that has not
+          happened. The frame is still safe because the chip may not grow past
+          the remaining width, and its text truncates rather than overflowing. */}
       {geometry.timeMarkers.map((marker) => (
         <span
           key={`timechip-${marker.key}`}
@@ -1328,7 +1335,10 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               : "border-armed/40 bg-background/70 text-armed",
             hoveredTimeKey === marker.key && "border-armed/70",
           )}
-          style={{ right: `${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}%` }}
+          style={{
+            left: `${(marker.x / CHART_VIEWBOX_WIDTH) * 100}%`,
+            maxWidth: `calc(${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}% - 4px)`,
+          }}
           tabIndex={0}
           aria-label={`${marker.label === "" ? "check-in" : marker.label} at ${new Date(
             marker.at,
