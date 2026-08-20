@@ -71,6 +71,42 @@ export const TradingExecutionView = Schema.Struct({
 export type TradingExecutionView = typeof TradingExecutionView.Type;
 
 /**
+ * One order across its whole lifecycle, for the positions ledger — plan 39
+ * phase 0. `TradingExecutionView` carries only the single in-flight record;
+ * this view carries every order the mission has placed, joined to its fill
+ * aggregate, so the UI can draw queued / working / partial / filled /
+ * cancelled / rejected rows from one array.
+ *
+ * Status vocabulary, verbatim from the execution records:
+ * `reserved → submitted → accepted → filled | cancelled | rejected`.
+ */
+export const TradingOrderView = Schema.Struct({
+  executionId: Schema.String,
+  cloid: Schema.String,
+  actionType: Schema.String,
+  side: Schema.Literals(["buy", "sell"]),
+  market: Schema.String,
+  size: Schema.Number,
+  limitPrice: Schema.Number,
+  timeInForce: TradingOrderTimeInForce,
+  reduceOnly: Schema.Boolean,
+  status: Schema.String,
+  /** How much of `size` has filled so far, summed across partial fills. */
+  filledSize: Schema.Number,
+  /** Size-weighted average fill price; null until the first fill lands. */
+  avgFillPrice: Schema.NullOr(Schema.Number),
+  /** Fees paid across this order's fills so far. */
+  feeUsd: Schema.Number,
+  /** Realised PnL the exchange attributed to this order's fills. */
+  closedPnl: Schema.Number,
+  /** Exchange order id, from the reconciled open-order table or fills. */
+  orderId: Schema.optional(Schema.Number),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type TradingOrderView = typeof TradingOrderView.Type;
+
+/**
  * A fill receipt: one reconciled fill the UI shows per execution (timestamp,
  * order id/cloid, average fill, fees).
  */
@@ -276,6 +312,13 @@ export const OrchestrationTradingMission = Schema.Struct({
   inFlightExecution: Schema.NullOr(TradingExecutionView),
   /** Recent fill receipts (§10), newest first. */
   recentFills: Schema.Array(TradingFillView),
+  /**
+   * Every order the mission has placed, newest first and capped — plan 39
+   * phase 0. The positions ledger draws one row per order from this; it is
+   * additive beside `inFlightExecution` and `recentFills`, which older
+   * surfaces still read.
+   */
+  orders: Schema.Array(TradingOrderView),
   /** The live position card from reconciled projections (§10). Null when flat. */
   position: Schema.NullOr(TradingPositionView),
   /**

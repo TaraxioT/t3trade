@@ -186,6 +186,35 @@ interface FillRow {
 }
 
 /**
+ * Row shape for one order in the ledger — every execution record that placed
+ * an order, joined to its fill aggregate (plan 39 phase 0). `modify_stop` and
+ * `cancel` records are filtered out in SQL: a stop move is an agent-log row
+ * and a cancel surfaces as its target order's `cancelled` status.
+ */
+interface OrderRow {
+  readonly execution_id: string;
+  readonly cloid: string;
+  readonly action_type: string;
+  readonly side: string;
+  readonly market: string;
+  readonly size: number;
+  readonly limit_price: number;
+  readonly time_in_force: string;
+  readonly reduce_only: number;
+  readonly status: string;
+  readonly created_at: number;
+  readonly updated_at: number;
+  readonly fill_size: number | null;
+  readonly avg_fill_price: number | null;
+  readonly fee_usd: number | null;
+  readonly closed_pnl: number | null;
+  readonly fill_order_id: number | null;
+  /** From the reconciled open-order table; null when no row exists. */
+  readonly open_order_id: number | null;
+  readonly remaining_size: number | null;
+}
+
+/**
  * The mission's realised result, aggregated across every fill.
  *
  * Separate from `recentFills` because that list is capped at all: a completion
@@ -223,6 +252,8 @@ interface ExecutionSurfaces {
   readonly inFlightExecution: ExecutionRecordRow | null;
   /** Recent fills, newest first (caller limits the count). */
   readonly recentFills: ReadonlyArray<FillRow>;
+  /** Every order the mission placed, newest first (plan 39 phase 0). */
+  readonly orders: ReadonlyArray<OrderRow>;
   /** The latest position snapshot, or null when flat/absent. */
   readonly position: PositionSnapshotRow | null;
   /** Realised result across every fill. */
@@ -382,6 +413,7 @@ const EMPTY_RESULT: MissionResultRow = {
 const EMPTY_SURFACES: ExecutionSurfaces = {
   inFlightExecution: null,
   recentFills: [],
+  orders: [],
   position: null,
   result: EMPTY_RESULT,
 };
@@ -444,6 +476,33 @@ const toMission = (
       direction: f.direction ?? undefined,
       tradedAt: toIso(f.traded_at),
     })),
+    orders: exec.orders.map((o) => {
+      // Partial progress: the reconciled open-order row is authoritative when
+      // it exists (the reconciler holds it current even when fill rows lag);
+      // the fill sum is the fallback.
+      const filledSize =
+        o.remaining_size === null ? (o.fill_size ?? 0) : Math.max(0, o.size - o.remaining_size);
+      const orderId = o.open_order_id ?? o.fill_order_id;
+      return {
+        executionId: o.execution_id,
+        cloid: o.cloid,
+        actionType: o.action_type,
+        side: o.side as "buy" | "sell",
+        market: o.market,
+        size: o.size,
+        limitPrice: o.limit_price,
+        timeInForce: o.time_in_force as TradingOrderTimeInForce,
+        reduceOnly: o.reduce_only !== 0,
+        status: o.status,
+        filledSize,
+        avgFillPrice: o.avg_fill_price,
+        feeUsd: o.fee_usd ?? 0,
+        closedPnl: o.closed_pnl ?? 0,
+        ...(orderId === null ? {} : { orderId }),
+        createdAt: toIso(o.created_at),
+        updatedAt: toIso(o.updated_at),
+      };
+    }),
     result: {
       realizedPnlUsd: exec.result.realized_pnl ?? 0,
       feesPaidUsd: exec.result.fees_paid ?? 0,
@@ -663,6 +722,42 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         ORDER BY MAX(traded_at) DESC LIMIT 50
       `.pipe(Effect.mapError(sqlFail("fills")));
 
+      // Every order the mission placed, newest first — plan 39 phase 0. The
+      // limit mirrors the fill list's: a payload guard on a 3s poll, not a
+      // display choice, far above any real mission's order count.
+      //
+      // Fills are aggregated by COALESCE(cloid, execution_id) and joined on
+      // both keys: `trading_fills.cloid` is nullable (an exchange-reconciled
+      // fill can arrive without one), so keying on cloid alone would silently
+      // drop such fills off their order. The reconciled open-order table
+      // supplies `order_id` and `remaining_size` where its row exists — the
+      // reconciler holds it current even when fill rows lag.
+      const orders = yield* sql<OrderRow>`
+        SELECT
+          e.execution_id, e.cloid, e.action_type, e.side, e.market, e.size,
+          e.limit_price, e.time_in_force, e.reduce_only, e.status,
+          e.created_at, e.updated_at,
+          f.fill_size, f.avg_fill_price, f.fee_usd, f.closed_pnl, f.fill_order_id,
+          o.order_id AS open_order_id, o.remaining_size
+        FROM trading_execution_records e
+        LEFT JOIN (
+          SELECT
+            COALESCE(cloid, execution_id) AS fill_key,
+            SUM(filled_size) AS fill_size,
+            SUM(filled_size * avg_fill_price) / SUM(filled_size) AS avg_fill_price,
+            SUM(fee_usd) AS fee_usd,
+            SUM(closed_pnl) AS closed_pnl,
+            MAX(order_id) AS fill_order_id
+          FROM trading_fills WHERE mission_id = ${missionId}
+          GROUP BY COALESCE(cloid, execution_id)
+        ) f ON f.fill_key = e.cloid OR f.fill_key = e.execution_id
+        LEFT JOIN trading_orders o
+          ON o.mission_id = e.mission_id AND o.cloid = e.cloid
+        WHERE e.mission_id = ${missionId}
+          AND e.action_type IN ('open', 'scale_in', 'close', 'reduce', 'reduce_only_exit')
+        ORDER BY e.updated_at DESC LIMIT 50
+      `.pipe(Effect.mapError(sqlFail("orders")));
+
       // The realised result across EVERY fill, for the completion summary.
       const resultRows = yield* sql<Omit<MissionResultRow, "planned_loss_at_stop">>`
         SELECT
@@ -709,7 +804,13 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("position")));
       const position = positionRows[0] ?? null;
 
-      return { inFlightExecution, recentFills, position, result } satisfies ExecutionSurfaces;
+      return {
+        inFlightExecution,
+        recentFills,
+        orders,
+        position,
+        result,
+      } satisfies ExecutionSurfaces;
     });
 
   /**

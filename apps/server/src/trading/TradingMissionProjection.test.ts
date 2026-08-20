@@ -398,6 +398,268 @@ layer("TradingMissionProjection fill receipts", (it) => {
 });
 
 // ---------------------------------------------------------------------------
+// Plan 39 phase 0 — the order ledger: one row per order the mission placed
+// ---------------------------------------------------------------------------
+
+/** One execution record, as the execution service writes it before signing. */
+const seedExecutionRecord = (record: {
+  readonly executionId: string;
+  readonly cloid: string;
+  readonly actionType: string;
+  readonly side: "buy" | "sell";
+  readonly size: number;
+  readonly limitPrice: number;
+  readonly status: string;
+  readonly sequence: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_execution_records (
+        execution_id, mission_id, execution_sequence,
+        action_type, cloid, idempotency_key, market, side, size, limit_price,
+        time_in_force, reduce_only, signer_address, status, order_results_json,
+        created_at, updated_at
+      ) VALUES (
+        ${record.executionId}, ${MISSION_ID}, ${record.sequence},
+        ${record.actionType}, ${record.cloid}, ${`idem-${record.executionId}`}, 'ETH',
+        ${record.side}, ${record.size}, ${record.limitPrice},
+        'Ioc', 0, '0xsigner', ${record.status}, '[]',
+        ${record.createdAt}, ${record.updatedAt}
+      )
+    `;
+  });
+
+const readOrders = Effect.gen(function* () {
+  const projection = yield* TradingMissionProjection;
+  const mission = yield* projection.getByThreadId(THREAD_ID);
+  assert.isTrue(Option.isSome(mission));
+  return Option.getOrThrow(mission).orders;
+});
+
+layer("TradingMissionProjection order ledger", (it) => {
+  it.effect("serves one row per order across the terminal statuses", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_execution_records`;
+      yield* seedExecutionRecord({
+        executionId: "e1",
+        cloid: "0xc1",
+        actionType: "open",
+        side: "buy",
+        size: 1,
+        limitPrice: 1880,
+        status: "filled",
+        sequence: 1,
+        createdAt: 1_000,
+        updatedAt: 1_500,
+      });
+      yield* seedFill({
+        fillId: "of1",
+        orderId: 900,
+        side: "buy",
+        size: 1,
+        price: 1879.5,
+        fee: 0.4,
+        closedPnl: 0,
+        tradedAt: 1_400,
+      });
+      // seedFill derives cloid from orderId; point it at e1's cloid.
+      yield* sql`UPDATE trading_fills SET cloid = '0xc1' WHERE fill_id = 'of1'`;
+      yield* seedExecutionRecord({
+        executionId: "e2",
+        cloid: "0xc2",
+        actionType: "close",
+        side: "sell",
+        size: 1,
+        limitPrice: 1890,
+        status: "cancelled",
+        sequence: 2,
+        createdAt: 2_000,
+        updatedAt: 2_500,
+      });
+      yield* seedExecutionRecord({
+        executionId: "e3",
+        cloid: "0xc3",
+        actionType: "close",
+        side: "sell",
+        size: 1,
+        limitPrice: 1890,
+        status: "rejected",
+        sequence: 3,
+        createdAt: 3_000,
+        updatedAt: 3_500,
+      });
+
+      const orders = yield* readOrders;
+
+      assert.equal(orders.length, 3);
+      // Newest first, by updated_at.
+      assert.equal(orders[0]?.executionId, "e3");
+      assert.equal(orders[0]?.status, "rejected");
+      assert.equal(orders[0]?.filledSize, 0);
+      assert.equal(orders[0]?.avgFillPrice, null);
+      assert.equal(orders[1]?.executionId, "e2");
+      assert.equal(orders[1]?.status, "cancelled");
+      const filled = orders[2]!;
+      assert.equal(filled.executionId, "e1");
+      assert.equal(filled.status, "filled");
+      assert.equal(filled.filledSize, 1);
+      assert.closeTo(filled.avgFillPrice ?? 0, 1879.5, 1e-9);
+      assert.closeTo(filled.feeUsd, 0.4, 1e-9);
+      assert.equal(filled.orderId, 900);
+    }),
+  );
+
+  it.effect("reports a partial fill and prefers the reconciled open-order row", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_execution_records`;
+      yield* sql`DELETE FROM trading_orders`;
+      yield* seedExecutionRecord({
+        executionId: "e1",
+        cloid: "0xc1",
+        actionType: "open",
+        side: "buy",
+        size: 2,
+        limitPrice: 1880,
+        status: "accepted",
+        sequence: 1,
+        createdAt: 1_000,
+        updatedAt: 1_500,
+      });
+      // One fill slice recorded so far…
+      yield* seedFill({
+        fillId: "pf1",
+        orderId: 901,
+        side: "buy",
+        size: 0.5,
+        price: 1879.9,
+        fee: 0.2,
+        closedPnl: 0,
+        tradedAt: 1_400,
+      });
+      yield* sql`UPDATE trading_fills SET cloid = '0xc1' WHERE fill_id = 'pf1'`;
+      // …but the reconciler already knows 1.2 of 2 has filled.
+      yield* sql`
+        INSERT INTO trading_orders (
+          mission_id, cloid, order_id, market, side, limit_price,
+          remaining_size, reduce_only, observed_at
+        ) VALUES (${MISSION_ID}, '0xc1', 901, 'ETH', 'buy', 1880, 0.8, 0, 1_450)
+      `;
+
+      const orders = yield* readOrders;
+
+      assert.equal(orders.length, 1);
+      const row = orders[0]!;
+      assert.equal(row.status, "accepted");
+      assert.closeTo(row.filledSize, 1.2, 1e-9);
+      assert.equal(row.orderId, 901);
+    }),
+  );
+
+  it.effect("keeps a fill without a cloid attached to its order via execution_id", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_execution_records`;
+      yield* sql`DELETE FROM trading_orders`;
+      yield* seedExecutionRecord({
+        executionId: "e1",
+        cloid: "0xc1",
+        actionType: "open",
+        side: "buy",
+        size: 1,
+        limitPrice: 1880,
+        status: "filled",
+        sequence: 1,
+        createdAt: 1_000,
+        updatedAt: 1_500,
+      });
+      yield* seedFill({
+        fillId: "nf1",
+        orderId: 902,
+        side: "buy",
+        size: 1,
+        price: 1879,
+        fee: 0.3,
+        closedPnl: 0,
+        tradedAt: 1_400,
+      });
+      // An exchange-reconciled fill with no cloid, keyed by execution_id.
+      yield* sql`
+        UPDATE trading_fills SET cloid = NULL, execution_id = 'e1' WHERE fill_id = 'nf1'
+      `;
+
+      const orders = yield* readOrders;
+
+      assert.equal(orders.length, 1);
+      assert.closeTo(orders[0]!.filledSize, 1, 1e-9);
+      assert.closeTo(orders[0]!.avgFillPrice ?? 0, 1879, 1e-9);
+    }),
+  );
+
+  it.effect("draws an order with no fills at all, and hides non-order actions", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_execution_records`;
+      yield* seedExecutionRecord({
+        executionId: "e1",
+        cloid: "0xc1",
+        actionType: "open",
+        side: "buy",
+        size: 1,
+        limitPrice: 1880,
+        status: "submitted",
+        sequence: 1,
+        createdAt: 1_000,
+        updatedAt: 1_500,
+      });
+      // A stop move and a cancel action are not orders and must not be rows.
+      yield* seedExecutionRecord({
+        executionId: "e2",
+        cloid: "0xc2",
+        actionType: "modify_stop",
+        side: "sell",
+        size: 1,
+        limitPrice: 1860,
+        status: "filled",
+        sequence: 2,
+        createdAt: 2_000,
+        updatedAt: 2_500,
+      });
+      yield* seedExecutionRecord({
+        executionId: "e3",
+        cloid: "0xc3",
+        actionType: "cancel",
+        side: "sell",
+        size: 0,
+        limitPrice: 0,
+        status: "filled",
+        sequence: 3,
+        createdAt: 3_000,
+        updatedAt: 3_500,
+      });
+
+      const orders = yield* readOrders;
+
+      assert.equal(orders.length, 1);
+      const row = orders[0]!;
+      assert.equal(row.executionId, "e1");
+      assert.equal(row.filledSize, 0);
+      assert.equal(row.avgFillPrice, null);
+      assert.equal(row.feeUsd, 0);
+      assert.equal(row.orderId, undefined);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Plan 24 §4.2 — the bounded history the read model carries
 // ---------------------------------------------------------------------------
 
