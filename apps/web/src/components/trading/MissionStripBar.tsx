@@ -109,6 +109,7 @@ export function MissionStripBar({
         <span
           className="min-w-0 shrink truncate text-destructive"
           data-testid="mission-strip-error"
+          // oxlint-disable-next-line t3code/no-native-title-tooltip -- Upstream's new rule wants the styled Tooltip here. Converting the mission panel's hover copy is a UI change with its own live verification, not part of an upstream sync.
           title={controls.error}
         >
           {controls.error}

@@ -1939,6 +1939,7 @@ function MissionStatusBar({
         <span
           data-testid="mission-next-reassessment"
           className="flex flex-none items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground"
+          // oxlint-disable-next-line t3code/no-native-title-tooltip -- Upstream's new rule wants the styled Tooltip here. Converting the mission panel's hover copy is a UI change with its own live verification, not part of an upstream sync.
           title="When the mission next reconsiders its plan. The chart's future gutter draws the same appointment as a rule: that says where on the axis, this says how long."
         >
           <Clock className="size-3" strokeWidth={2} aria-hidden />
@@ -1949,6 +1950,7 @@ function MissionStatusBar({
         <span
           data-testid="mission-projection"
           className="flex flex-none items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground"
+          // oxlint-disable-next-line t3code/no-native-title-tooltip -- Upstream's new rule wants the styled Tooltip here. Converting the mission panel's hover copy is a UI change with its own live verification, not part of an upstream sync.
           title="The plan's own price prediction; the dotted line on the chart is this object."
         >
           {projection.direction === "long" ? (
@@ -1974,6 +1976,7 @@ function MissionStatusBar({
         <span
           data-testid="mission-last-activity"
           className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground"
+          // oxlint-disable-next-line t3code/no-native-title-tooltip -- Upstream's new rule wants the styled Tooltip here. Converting the mission panel's hover copy is a UI change with its own live verification, not part of an upstream sync.
           title={lastActivity.label}
         >
           {lastActivity.label}
@@ -2001,6 +2004,7 @@ function MissionStatusBar({
           <span
             data-testid="mission-mode"
             className="whitespace-nowrap uppercase tracking-[0.12em]"
+            // oxlint-disable-next-line t3code/no-native-title-tooltip -- Upstream's new rule wants the styled Tooltip here. Converting the mission panel's hover copy is a UI change with its own live verification, not part of an upstream sync.
             title="This mission executes a named playbook rather than deciding for itself. It is read from the mandate."
           >
             execute · {modeLabel}
@@ -2461,6 +2465,7 @@ function PositionsCard({
         {staleLabel === null ? null : (
           <span
             className="flex min-w-0 items-center gap-1 truncate font-mono text-[11px] uppercase tracking-[0.1em] text-armed"
+            // oxlint-disable-next-line t3code/no-native-title-tooltip -- Upstream's new rule wants the styled Tooltip here. Converting the mission panel's hover copy is a UI change with its own live verification, not part of an upstream sync.
             title="The position read is behind. Placement is only suspended once it stops landing altogether."
           >
             <Clock className="size-3" strokeWidth={2} aria-hidden />

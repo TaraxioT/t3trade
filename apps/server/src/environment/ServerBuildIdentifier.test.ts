@@ -20,6 +20,8 @@ const output = (stdout: string, code = 0): ProcessRunner.ProcessRunOutput => ({
   timedOut: false,
   stdoutTruncated: false,
   stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
 });
 
 /** Answer `rev-parse` and `status` independently, the way git would. */

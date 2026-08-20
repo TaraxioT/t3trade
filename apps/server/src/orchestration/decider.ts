@@ -504,30 +504,47 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: alreadySettled ? thread.updatedAt : occurredAt,
         },
       };
-      // Settling is "I'm done with this": it clears a pin the same way it
-      // parks the thread. Without this, settling a pinned thread would only
-      // stamp invisible state — the pin would hold the card in place until
-      // a separate unpin.
-      const unpinEvent: Omit<OrchestrationEvent, "sequence"> = {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        })),
-        type: "thread.unpinned",
-        payload: {
-          threadId: command.threadId,
-          updatedAt: occurredAt,
-        },
-      };
-      // Stop first, then settle, then unpin: the stop request has to reach the
-      // provider reactor before the thread is parked, and the pin is chrome
-      // that outlives neither.
+      // Settling is "I'm done with this": clear states that would keep the
+      // row pinned or snoozed instead of showing the new settled state.
+      const companionEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (thread.pinnedAt != null) {
+        companionEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unpinned" as const,
+          payload: {
+            threadId: command.threadId,
+            updatedAt: occurredAt,
+          },
+        });
+      }
+      if (thread.snoozedUntil != null) {
+        companionEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsnoozed",
+          payload: {
+            threadId: command.threadId,
+            reason: "user",
+            updatedAt: occurredAt,
+          },
+        });
+      }
+      // Stop first, then settle, then the companions: the stop request has to
+      // reach the provider reactor before the thread is parked, and the pin
+      // and the snooze are chrome that outlive neither.
       const settleEvents: Array<Omit<OrchestrationEvent, "sequence">> = [
         ...(stopsRunningSession ? [sessionStopEvent] : []),
         settledEvent,
-        ...(thread.pinnedAt == null ? [] : [unpinEvent]),
+        ...companionEvents,
       ];
       return settleEvents.length === 1 ? settledEvent : settleEvents;
     }
