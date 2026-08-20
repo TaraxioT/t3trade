@@ -42,6 +42,16 @@ node_modules/
 .plans/
 artifacts/reports/
 artifacts/t3-trade-report/
+# Plan documents and investigation evidence live at the repo root while they
+# are being worked. They are notes, not product, and a `git add -A` during a
+# sync swept a dozen of them into a merge commit before CI's formatter caught
+# it. Ignored so that cannot happen again; `git add -f` still works when one
+# of them is genuinely worth keeping.
+/plan-*.md
+/plan-*-prompts/
+/Executables.md
+/live-derived-soak.md
+artifacts/investigations/
 
 # T3 Trade themed assets & backups
 assets/themed-t3trade/
