@@ -1252,6 +1252,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             data-testid={`mission-fill-${fill.key}`}
             // A fill is the one thing on the price path worth reading whole:
             // side, size, price, net, as a native tooltip on the marker itself.
+            // oxlint-disable-next-line t3code/no-native-title-tooltip -- Upstream's new rule wants the styled Tooltip here. Converting the mission panel's hover copy is a UI change with its own live verification, not part of an upstream sync.
             title={fill.label ?? fill.kind.replaceAll("_", " ")}
             className="group/fill absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full outline-none"
             style={{

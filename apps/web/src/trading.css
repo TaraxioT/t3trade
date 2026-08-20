@@ -1,0 +1,509 @@
+/*
+ * T3 Trade's own styles: the mission panel, its chips, its order and log
+ * animations, and the trading colour tokens they read.
+ *
+ * This file exists because upstream rewrites `index.css` wholesale — 1600
+ * lines of it in v0.0.34's `9885a845c` alone — and every rewrite conflicted
+ * with a block that had nothing to do with it. Upstream never writes here, so
+ * nothing here can conflict. New trading CSS goes in this file, not in
+ * `index.css`.
+ */
+
+@theme inline {
+  --color-profit: var(--profit);
+  --color-loss: var(--loss);
+  --color-long: var(--long);
+  --color-short: var(--short);
+  --color-armed: var(--armed);
+}
+
+:root {
+  /* Trading semantics. P&L sign and position side are different questions — a
+     short is not a loss — so they get separate tokens even where the hue
+     currently agrees. `--armed` is the "committed but not yet exposed" tone.
+     Written as explicit oklch rather than borrowed from the emerald/red ramps:
+     those two are neighbours in lightness but not in chroma, so a green candle
+     and a red one printed at the same size did not read as the same weight of
+     ink. Here the pair is matched on lightness and chroma and separated only by
+     hue — a green pulled off emerald's blue lean, and a red pushed toward
+     coral so it stays distinct from `--destructive`. */
+  --profit: oklch(0.6 0.16 152);
+  --loss: oklch(0.58 0.21 27);
+  --long: oklch(0.6 0.16 152);
+  --short: oklch(0.58 0.21 27);
+  --armed: var(--color-amber-600);
+}
+
+/* Bare `.dark`, matching every other dark rule in this file: it keeps the
+   stylesheet independent of where `@custom-variant dark` is declared. */
+.dark {
+  /* Lifted clear of the dark surface, but no longer lifted for candle bodies:
+     the chart draws one polyline and an area fill, not 3px bars, so the old
+     0.79/0.71 pair was paying for a shape that no longer exists — and every
+     figure, pill, rail and chip on the panel was paying with it.
+
+     Measured on one frame of the live panel, dark against light: ink sat
+     0.52 of OKLab L from its surface where light sat 0.39, chroma peaked 16%
+     higher, and 31% more of the frame carried colour. That gap is what makes
+     dark read as cluttered when nothing has been added to it. These values
+     close it — matched in lightness, separated by hue, and still a clear
+     stroke on a near-black ground. */
+  --profit: oklch(0.72 0.15 152);
+  --loss: oklch(0.66 0.18 27);
+  --long: oklch(0.72 0.15 152);
+  --short: oklch(0.66 0.18 27);
+  /* Amber-400 was the brightest ink on the panel and it is worn by the most
+     objects — armed rails, working/partial state tokens, the staleness word,
+     every chart level chip. One step down in lightness and chroma. */
+  --armed: oklch(0.78 0.125 78);
+}
+
+@layer components {
+  /*
+   * The mission live panel sits directly on top of the composer, so it is the
+   * same pane of glass: the same surface tint, the same blur and saturation,
+   * and the same hairline outline. An opaque card there read as a second,
+   * heavier object stacked on a light one.
+   */
+  .mission-panel-glass {
+    --mission-panel-surface: var(--card);
+    --mission-panel-outline: var(--border);
+    /* 40%, the fill receipt's own `bg-card/40`. That pill is the surface the
+       operator picked out of the thread as the one that looked right, so the
+       panel is built from its material rather than from a heavier one: the
+       thread reads through the card, which is what makes it frost rather than
+       paint. */
+    --mission-panel-opacity: 40%;
+    /* The lit top edge. Every card on the panel carries it, which is what
+       makes three separate panes read as three panes rather than three
+       rectangles painted on the page. */
+    --mission-panel-bevel: rgb(255 255 255 / 55%);
+
+    border-color: var(--mission-panel-outline);
+    background: color-mix(
+      in srgb,
+      var(--mission-panel-surface) var(--mission-panel-opacity),
+      transparent
+    );
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    box-shadow:
+      inset 0 1px 0 var(--mission-panel-bevel),
+      0 14px 34px -20px rgb(0 0 0 / 45%);
+  }
+
+  /*
+   * Dark needs a real lift, not a hairline. At 4% over a near-black page the
+   * card fill and the page were the same colour to the eye and the 5% outline
+   * was invisible, so the panel read as text floating on the thread with no
+   * edges at all. The surface now sits ~9% above the page and the outline is
+   * strong enough to trace a corner, which is the whole job of these edges.
+   */
+  .dark .mission-panel-glass {
+    /* The card token straight, with nothing mixed into it. Lifting it toward
+       white was what turned these panes grey: the app's dark theme sets
+       `--card` to black on purpose, and the pill the operator picked out is
+       that black seen through blur. The edge does the separating, not a
+       lighter fill. */
+    --mission-panel-surface: var(--card);
+    /* Not `--border`. The shared token is white/6%, which traces nothing on a
+       near-black page — and dark loses the other half of the separation too,
+       because a black drop shadow under a black card is invisible while the
+       light theme gets both. So the edge has to carry the whole job alone, and
+       at 6% it was not carrying it: the three panes read as one dark field with
+       figures floating in it, which is most of what "cluttered" meant. Still a
+       hairline, just one you can actually follow around a corner. */
+    --mission-panel-outline: rgb(255 255 255 / 12%);
+    --mission-panel-opacity: 58%;
+    /* The lit top edge, doing the work the missing shadow cannot. */
+    --mission-panel-bevel: rgb(255 255 255 / 9%);
+
+    box-shadow:
+      inset 0 1px 0 var(--mission-panel-bevel),
+      0 16px 36px -24px rgb(0 0 0 / 80%);
+  }
+
+  /*
+   * How heavily the chart pours its wash under the price line, per theme.
+   *
+   * The area fill is the largest single region of colour on the panel, and an
+   * opacity that reads as pale mint on white reads as a lit mass on near-black.
+   * Same shape, same hue, less of it.
+   */
+  :root {
+    --mission-chart-wash-top: 0.22;
+    --mission-chart-wash-mid: 0.07;
+    --mission-chart-wedge-near: 0.2;
+    --mission-chart-wedge-far: 0.06;
+  }
+
+  .dark {
+    --mission-chart-wash-top: 0.13;
+    --mission-chart-wash-mid: 0.04;
+    --mission-chart-wedge-near: 0.13;
+    --mission-chart-wedge-far: 0.04;
+  }
+
+  /*
+   * The risk/reward slab. Two 15% fills across the full width of the chart
+   * card: soft pink and mint on white, two lit bars on black.
+   */
+  .dark .mission-rr-segment {
+    opacity: 0.68;
+  }
+
+  /*
+   * The panel's own dark ramp.
+   *
+   * An opacity ramp does not buy the same recession in the two themes. In
+   * light, `--foreground` is zinc-800 on a white card: 0.65 of OKLab L apart,
+   * and the muted step lands 0.40 away. In dark the same markup put
+   * neutral-100 on a near-black card — 0.77 apart, with muted at 0.48. Every
+   * step of the ramp is ~20% louder, so nothing recedes and all of it competes
+   * at once. That is the whole of "dark feels cluttered even though it is not".
+   *
+   * Scoped to the panel rather than the theme: this is a density problem on one
+   * dense surface, and the rest of the app is prose at comfortable sizes.
+   *
+   * One rule falls out of measuring it: `--muted-foreground` is the quietest
+   * ink this panel has, and there is nothing quieter. It lands at 4.88:1 on the
+   * light card and 4.69:1 on the dark one, so ANY alpha on top of it drops
+   * below the 4.5 floor — /85 measures 3.63 and 3.73, /50 measures 1.98 and
+   * 2.09, and every label wearing them is 10.5-12px. The panel used to carry 25
+   * such steps across four levels; they now collapse to this one, which reads
+   * as calmer as well as legible: four competing greys were part of why dark
+   * felt busy.
+   */
+  .dark .mission-panel {
+    /* Foreground only. Pulling `--muted-foreground` down as well looked calmer
+       and measured at 3.85:1 against the card — under the 4.5 floor for the
+       10.5px labels that wear it. The muted token is already sitting close to
+       that floor in both themes, which is exactly why nothing in this panel may
+       attenuate it further (see the ramp note above). */
+    --foreground: var(--color-neutral-200);
+  }
+
+  /*
+   * The agent log's tone rails and icon tokens.
+   *
+   * A 2px full-chroma bar per row is quiet on white and glows on black — the
+   * measured jump from 1.41% to 1.85% of the frame carrying colour is mostly
+   * these. They are meant to be a silhouette the eye catches, not a light
+   * source, so in dark they give back what the darker ground already gave them.
+   */
+  .dark .mission-log-rail {
+    opacity: 0.62;
+  }
+
+  .dark .mission-log-token {
+    opacity: 0.88;
+  }
+
+  /*
+   * The moment an armed watch fires: the live dot becomes the tick in place.
+   * A short overshoot scale-in, so the change is seen rather than found. The
+   * row itself is held on the checklist for a beat by the panel before it
+   * drops into the alert history.
+   */
+  @keyframes watch-tick-in {
+    0% {
+      transform: scale(0.3);
+      opacity: 0;
+    }
+    60% {
+      transform: scale(1.25);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  .watch-tick-in {
+    animation: watch-tick-in 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+
+  /*
+   * The armed dot's halo, behind it.
+   *
+   * Steady, not breathing: an armed row can sit armed for minutes during
+   * normal live operation, and the arm moment itself already plays a one-shot
+   * pulse in the phase-4 chip motion. The halo holds still at a low opacity,
+   * so an armed row still reads as distinct from a settled one without
+   * anything moving.
+   */
+  .watch-dot-pulse {
+    opacity: 0.35;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .watch-tick-in {
+      animation: none;
+    }
+  }
+
+  /*
+   * The chart's level and time chips (phase 1): small glass pills docked in
+   * the price and axis gutters. Same material as the panel's own panes — the
+   * tint, the blur, the hairline, the lit top edge — at chip scale, so the
+   * cockpit reads as one instrument rather than cards plus widgets.
+   */
+  .mission-chip {
+    background: color-mix(in srgb, var(--card) 55%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%);
+  }
+
+  .dark .mission-chip {
+    background: color-mix(in srgb, var(--card) 62%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
+  }
+
+  /*
+   * The chip lifecycle (phase 4), one shot each:
+   *
+   * ARM — a level that was just armed pulses once, softly, then settles. The
+   * class is applied by the chart only on the watch's own armed identity, so
+   * a resize or a re-render cannot replay it.
+   *
+   * RETIRE — a chip whose watch settled fades out once, slightly toward the
+   * gutter edge, and then is gone. The ghost element is removed on animation
+   * end; `forwards` only holds the tail of the one fade.
+   *
+   * CARD FLASH — the timeline card a fired chip flew to, highlighted briefly
+   * so the flight has a destination the eye can confirm.
+   */
+  @keyframes mission-chip-arm {
+    0% {
+      transform: scale(0.88);
+      opacity: 0.35;
+    }
+
+    55% {
+      transform: scale(1.06);
+      opacity: 1;
+    }
+
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  .mission-chip-arm {
+    animation: mission-chip-arm 520ms cubic-bezier(0.33, 1, 0.68, 1) 1;
+  }
+
+  @keyframes mission-chip-retire {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+
+    to {
+      opacity: 0;
+      transform: translateX(6px) scale(0.9);
+    }
+  }
+
+  .mission-chip-retire {
+    animation: mission-chip-retire 480ms ease-out forwards;
+  }
+
+  @keyframes mission-card-flash {
+    from {
+      background-color: color-mix(in srgb, var(--color-armed) 14%, transparent);
+    }
+
+    to {
+      background-color: transparent;
+    }
+  }
+
+  .mission-card-flash {
+    animation: mission-card-flash 900ms ease-out 1;
+  }
+
+  /*
+   * The Analysing chip's dot: two soft opacity beats, then it settles at
+   * full and stays still. Planning is transient, but nothing loops forever
+   * (the live-mark and armed-halo pulses went finite for the same reason).
+   */
+  @keyframes mission-analysing-dot {
+    0% {
+      opacity: 1;
+    }
+
+    25% {
+      opacity: 0.3;
+    }
+
+    50% {
+      opacity: 1;
+    }
+
+    75% {
+      opacity: 0.3;
+    }
+
+    100% {
+      opacity: 1;
+    }
+  }
+
+  .mission-analysing-dot {
+    animation: mission-analysing-dot 1600ms ease-in-out 1;
+  }
+
+  /*
+   * The positions card and agent log transitions (plan 39 phase 4). All
+   * one-shot, all identity-keyed by the panel (each animates on mount or on an
+   * observed state transition only, so the 3s poll cannot replay them), and
+   * all switched off under reduced motion below.
+   *
+   * ENTER — a new order row arrives on the spring curve.
+   * SETTLE — the state token cross-fades in place; the row does not move.
+   * FILLED RING — one ring pulse as a leg becomes open (info) or a closing
+   *   leg settles (profit/loss).
+   * EXIT — a cancel or reject leaves in the retire grammar.
+   * LOG ENTER — a new log row fades up.
+   * SIZE CROSSFADE — the size column's unit toggle; figure only, no reflow.
+   */
+  @keyframes mission-order-enter {
+    from {
+      transform: translateY(6px) scale(0.97);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+
+  .mission-order-enter {
+    animation: mission-order-enter 380ms cubic-bezier(0.34, 1.56, 0.64, 1) 1;
+  }
+
+  @keyframes mission-order-settle {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .mission-order-settle {
+    animation: mission-order-settle 320ms ease-out 1;
+  }
+
+  @keyframes mission-order-filled-ring {
+    0% {
+      box-shadow: 0 0 0 0 var(--mission-ring-color);
+    }
+    100% {
+      box-shadow: 0 0 0 7px transparent;
+    }
+  }
+
+  .mission-order-filled-ring-info {
+    --mission-ring-color: color-mix(in srgb, var(--info) 55%, transparent);
+    animation: mission-order-filled-ring 620ms ease-out 1;
+  }
+
+  .mission-order-filled-ring-profit {
+    --mission-ring-color: color-mix(in srgb, var(--color-profit) 55%, transparent);
+    animation: mission-order-filled-ring 620ms ease-out 1;
+  }
+
+  .mission-order-filled-ring-loss {
+    --mission-ring-color: color-mix(in srgb, var(--color-loss) 55%, transparent);
+    animation: mission-order-filled-ring 620ms ease-out 1;
+  }
+
+  @keyframes mission-order-exit {
+    to {
+      opacity: 0;
+      transform: translateX(6px);
+    }
+  }
+
+  .mission-order-exit {
+    animation: mission-order-exit 420ms ease-out forwards;
+  }
+
+  @keyframes mission-log-enter {
+    from {
+      transform: translateY(4px);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+
+  .mission-log-enter {
+    animation: mission-log-enter 260ms ease-out 1;
+  }
+
+  @keyframes mission-size-crossfade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .mission-size-crossfade {
+    animation: mission-size-crossfade 180ms ease-out 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mission-chip-arm,
+    .mission-card-flash,
+    .mission-analysing-dot,
+    .mission-order-enter,
+    .mission-order-settle,
+    .mission-order-filled-ring-info,
+    .mission-order-filled-ring-profit,
+    .mission-order-filled-ring-loss,
+    .mission-order-exit,
+    .mission-log-enter,
+    .mission-size-crossfade {
+      animation: none;
+    }
+
+    /* The retire ghost is never mounted under the preference (the chart
+       gates it in JS as well); this guard is the belt to those suspenders. */
+    .mission-chip-retire {
+      animation: none;
+      display: none;
+    }
+  }
+
+  /* The solid fallback for reduced transparency is NOT here: it has to sit
+     outside every layer to beat the chips' own `backdrop-blur-sm` utility.
+     See the end of this file. */
+}
+
+/* Solid fallback: with transparency reduced, the blur and the tinted fill both
+   become an opaque surface. Legibility of the price is the point of the chip,
+   and neither frosted effect may stand in front of it.
+
+   Deliberately UNLAYERED. The same rule inside `@layer components` lost to the
+   chips' own `backdrop-blur-sm`, because Tailwind's utilities layer is declared
+   after components and layer order decides before specificity does. Measured
+   under an emulated `prefers-reduced-transparency: reduce`, a level chip still
+   computed `backdrop-filter: blur(8px)` over a 0.62-alpha fill while the panel
+   behind it had already gone solid. Unlayered styles outrank every layered
+   one, so the fallback holds without reaching for `!important`. */
+@media (prefers-reduced-transparency: reduce) {
+  .mission-chip,
+  .mission-panel-glass {
+    background: var(--card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

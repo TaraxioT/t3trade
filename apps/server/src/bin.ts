@@ -17,6 +17,7 @@ import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 import { serviceCommand } from "./cli/service.ts";
 import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 import { sessionReportCommand } from "./cli/sessionReport.ts";
+import { triageCommand } from "./cli/triage.ts";
 import { CLI_PACKAGE_NAME } from "./cli/invocation.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
@@ -58,6 +59,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       serviceCommand,
       servicePreflightCommand,
       sessionReportCommand,
+      triageCommand,
       cloudEnabled ? connectCommand : connectUnavailableCommand,
     ]),
   );
