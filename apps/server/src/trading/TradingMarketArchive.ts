@@ -356,6 +356,10 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             entry["mark"] = round2(last.c);
             if (first.o > 0) {
               entry["change24hPct"] = round2(((last.c - first.o) / first.o) * 100);
+            } else {
+              // No positive base to measure the change against. Named like
+              // every other absence here rather than dropped in silence.
+              missing.push("oldest 24h bar has no positive open");
             }
             const returns: Array<number> = [];
             for (let index = 1; index < bars.length; index += 1) {
