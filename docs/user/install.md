@@ -20,8 +20,10 @@ This starts the T3 Code server on your machine and opens the local web app. Use
 ## Desktop App
 
 Download the latest release from
-[GitHub Releases](https://github.com/pingdotgg/t3code/releases), or install from a package
-registry.
+[GitHub Releases](https://github.com/TaraxioT/t3trade/releases).
+
+Package registries (winget, Homebrew, AUR) distribute the upstream
+[T3 Code](https://github.com/pingdotgg/t3code) app, not this fork. If you want upstream T3 Code:
 
 Windows:
 
@@ -40,6 +42,8 @@ Arch Linux:
 ```bash
 yay -S t3code-bin
 ```
+
+For the fork, use the GitHub Releases link above.
 
 ## Providers
 
