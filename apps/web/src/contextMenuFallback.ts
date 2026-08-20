@@ -275,8 +275,12 @@ export function showContextMenuFallback<T extends string>(
       closeMenusFromLevel(level);
 
       const menu = document.createElement("div");
+      // The elevation shadow lives on the popup, not on `dropdown-glass` — the
+      // same pair every Base UI popup carries. It stays a class rather than
+      // joining `cssText` below, because an inline value would outrank the
+      // dark variant and flatten the menu in dark mode.
       menu.className =
-        "dropdown-glass fixed z-[10000] min-w-32 max-w-sm overflow-hidden rounded-lg bg-clip-padding text-popover-foreground outline-none";
+        "dropdown-glass fixed z-[10000] min-w-32 max-w-sm overflow-hidden rounded-lg bg-clip-padding text-popover-foreground shadow-[0_16px_40px_-18px_rgb(0_0_0/55%)] outline-none dark:shadow-[0_18px_44px_-18px_rgb(0_0_0/80%)]";
       menu.style.cssText =
         "position:fixed;z-index:10000;min-width:8rem;max-width:24rem;overflow:hidden;border-radius:var(--radius-lg);background-clip:padding-box;color:var(--popover-foreground);outline:none;pointer-events:auto;";
       menu.style.left = `${preferredLeft}px`;
