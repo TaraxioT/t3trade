@@ -408,8 +408,19 @@ describe("deriveTargetPrice", () => {
     expect(deriveTargetPrice(100, 200, -4)).toBeCloseTo(50, 6);
   });
 
-  it("returns the entry unchanged for a zero size (no division by zero)", () => {
-    expect(deriveTargetPrice(100, 50, 0)).toBe(100);
+  it("names no target for a zero size (no division by zero)", () => {
+    expect(deriveTargetPrice(100, 50, 0)).toBeNull();
+  });
+
+  it("names no target when the size is too small to reach the planned profit", () => {
+    // A short scaled down to dust: 8 / 0.0001 is an 80,000 offset, which puts
+    // the "target" at -77,661.33. A price below zero is not a price, and the
+    // panel offered to bank the trade there.
+    expect(deriveTargetPrice(2338.67, 8, -0.0001)).toBeNull();
+  });
+
+  it("still names a target for a small but workable size", () => {
+    expect(deriveTargetPrice(2338.67, 8, -1)).toBeCloseTo(2330.67, 6);
   });
 });
 

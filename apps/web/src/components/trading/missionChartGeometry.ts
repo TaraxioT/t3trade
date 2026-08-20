@@ -533,18 +533,28 @@ export interface ComputeChartGeometryInput {
  * Short (size < 0): target sits BELOW entry — entry - profit/|size|.
  * The sign of `size` decides direction; `targetProfitUsd` is always a
  * magnitude.
+ *
+ * Null when the size cannot name a real price. A zero size divides by zero,
+ * and a size winding down toward zero is worse than that: the offset diverges
+ * smoothly, so the number stays finite and plausible right up until it is
+ * absurd. Seen live on a mission whose agent had scaled a short down to
+ * 0.0001 ETH against a planned $8 — the panel and the heartbeat both offered
+ * to bank the trade at -77,661.33.
+ *
+ * A price below zero is not a price, so the caller is told there is no target
+ * rather than given a fabricated one, and the sentence drops its clause the
+ * way it drops any other missing number.
  */
 export function deriveTargetPrice(
   entryPrice: number,
   targetProfitUsd: number,
   size: number,
-): number {
+): number | null {
   const magnitude = Math.abs(size);
-  // A zero size has no target to point at; return the entry as a no-op rather
-  // than dividing by zero.
-  if (magnitude === 0) return entryPrice;
+  if (magnitude === 0) return null;
   const offset = targetProfitUsd / magnitude;
-  return size > 0 ? entryPrice + offset : entryPrice - offset;
+  const target = size > 0 ? entryPrice + offset : entryPrice - offset;
+  return Number.isFinite(target) && target > 0 ? target : null;
 }
 
 /**
