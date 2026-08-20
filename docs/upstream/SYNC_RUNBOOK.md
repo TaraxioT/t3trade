@@ -20,7 +20,8 @@ that trail.
 
    ```sh
    git fetch --tags upstream
-   git tag --list --sort=-creatordate --merged upstream/main 'v*' | head
+   git tag --list --sort=-creatordate 'v*' \
+     --no-merged <current-baseline-SHA> --merged upstream/main | head
    git log --oneline <current-baseline-SHA>..<newBaselineTag>
    ```
 
@@ -29,6 +30,12 @@ that trail.
    `upstream/main` itself: its tip is usually untagged, and `BASELINE.md`
    has to record the upstream release/nightly tag at the pin. Picking a tag
    is also how you take a smaller/safer batch than the full range.
+
+   The two ref filters matter: `--merged upstream/main` keeps the tag on the
+   line being synced, and `--no-merged <current-baseline-SHA>` drops the
+   current baseline's own tag and everything before it. Without the second
+   one the list offers tags that merge to a no-op while step 7 happily
+   retags an old commit as the new baseline.
 
    `<newBaselineTag>` is the _new_ candidate baseline; `<newBaselineSHA>` is
    the commit it resolves to (`git rev-parse <newBaselineTag>^{commit}`).

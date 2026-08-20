@@ -98,7 +98,11 @@ jobs:
               state: "open",
               labels: "upstream-sync",
             });
-            const open = existing.data.find((issue) => issue.title === title);
+            // listForRepo returns pull requests too; updating one would
+            // overwrite a sync PR's body with the drift report.
+            const open = existing.data.find(
+              (issue) => !issue.pull_request && issue.title === title,
+            );
 
             if (open) {
               await github.rest.issues.update({
