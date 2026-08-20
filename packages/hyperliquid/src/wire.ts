@@ -61,7 +61,11 @@ export const WireAssetContext = Schema.Struct({
   midPx: Schema.NullOr(Schema.String),
   /** Oracle price. */
   oraclePx: Schema.String,
-  /** 8-hour funding rate; may be negative. */
+  /**
+   * Hourly funding rate; may be negative. Hyperliquid computes an 8-hour rate
+   * and pays one eighth of it each hour — this field is the hourly eighth, not
+   * the 8h rate. The gateway multiplies by 8 to serve `fundingRate8h`.
+   */
   funding: Schema.String,
   /** Open interest in base units. */
   openInterest: Schema.String,
