@@ -139,6 +139,13 @@ export const DEFAULT_MODEL = "gpt-5.6-luna";
 export const DEFAULT_REASONING_EFFORT = "low";
 
 /**
+ * Service tier pinned into auto-bootstrapped selections. "default" is the
+ * Standard tier; without the pin, Codex's own catalog default applies (for
+ * gpt-5.6-luna that is "priority", which burns credits faster).
+ */
+export const DEFAULT_SERVICE_TIER = "default";
+
+/**
  * Codex default-model preference, most preferred first. The provider snapshot
  * marks the first of these present in the live `model/list` response as
  * default; when none are available, Codex's own `isDefault` flag wins.

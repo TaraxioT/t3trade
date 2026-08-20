@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DEFAULT_MODEL,
   DEFAULT_REASONING_EFFORT,
+  DEFAULT_SERVICE_TIER,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -26,7 +27,10 @@ it("uses the canonical Codex default for auto-bootstrapped model selection", () 
   assert.deepStrictEqual(ServerRuntimeStartup.getAutoBootstrapDefaultModelSelection(), {
     instanceId: ProviderInstanceId.make("codex"),
     model: DEFAULT_MODEL,
-    options: [{ id: "reasoningEffort", value: DEFAULT_REASONING_EFFORT }],
+    options: [
+      { id: "reasoningEffort", value: DEFAULT_REASONING_EFFORT },
+      { id: "serviceTier", value: DEFAULT_SERVICE_TIER },
+    ],
   });
 });
 
