@@ -11,6 +11,21 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # `vp install` builds node-pty from source: it ships no linux-x64 prebuild for
+  # the Node this repo pins, so node-gyp fetches the headers tarball and then
+  # SHASUMS256.txt from nodejs.org. On the Blacksmith runners that second fetch
+  # intermittently dies with `AggregateError [ETIMEDOUT]` thrown from
+  # `internalConnectMultiple` about half a second in — the signature of Node's
+  # Happy Eyeballs trying an AAAA route that is advertised but not reachable and
+  # burning two 250ms attempts before giving up. The tree is unchanged; the same
+  # commit passes on a re-run, which is the worst kind of red.
+  #
+  # Resolving A records first skips the dead route entirely. Scoped to CI rather
+  # than the repo, because it is the runners' network that is dual-stack-broken,
+  # not anything about this project.
+  NODE_OPTIONS: --dns-result-order=ipv4first
+
 jobs:
   check:
     name: Check
