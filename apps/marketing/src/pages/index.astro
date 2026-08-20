@@ -88,26 +88,21 @@ const candles = missionSeries();
 
 /* The domain reaches the target, so the whole arc fits in one frame: a tight
    range along the bottom, the break out of it, and a run that climbs most of
-   the height. The recorded candles hold the left of the plot and the plan
-   that follows them holds the right. */
+   the height. The app's chart draws one price line over an area wash, so the
+   recorded walk holds the left of the plot and the plan holds the right, one
+   line across both. */
 const CHART_W = 900;
-const CHART_H = 520;
+const CHART_H = 330;
 const P_MIN = 1873.4;
 const P_MAX = 1909.6;
-const GUTTER = 104; // right-hand room for the level labels
+const GUTTER = 70; // right-hand room for the docked level chips
 const PLOT_W = CHART_W - GUTTER;
 /* The record takes a little under three fifths of the plot, which leaves the
-   plan enough room to print at the same candle width the record uses. One
-   grid across the whole chart, no seam. */
+   plan enough room to walk at the same horizontal pace. */
 const CANDLE_W = PLOT_W * 0.58;
 const SLOT = CANDLE_W / CANDLE_COUNT;
 const yOf = (price: number) => CHART_H - ((price - P_MIN) / (P_MAX - P_MIN)) * CHART_H;
 const xOf = (index: number) => index * SLOT + SLOT / 2;
-
-const runPath = candles
-  .slice(BREAK_INDEX)
-  .map((candle, index) => `${index === 0 ? "M" : "L"}${xOf(BREAK_INDEX + index).toFixed(1)} ${yOf(candle.close).toFixed(1)}`)
-  .join(" ");
 
 /* Where the record stops and the plan starts. The mark is the last price the
    exchange actually reported; everything to its right is what the target and
@@ -136,80 +131,116 @@ const PLAN: [number, number][] = [
 ];
 const planX = (t: number) => CANDLE_W + (PLOT_W - CANDLE_W) * t;
 
-/* One stroke per leg rather than one line for the whole plan, because the
-   direction it is heading is the story. A single accent stroke made a fall
-   look the same as a climb. */
-const PLAN_RUNS = PLAN.slice(0, -1).map(([t0, p0], index) => {
-  const [t1, p1] = PLAN[index + 1];
-  return {
-    d: `M${planX(t0).toFixed(1)} ${yOf(p0).toFixed(1)} L${planX(t1).toFixed(1)} ${yOf(p1).toFixed(1)}`,
-    up: p1 >= p0,
-  };
-});
-
 const DIP_X = planX(0.5);
 const TARGET_X = planX(1);
 
-/* The record stops at the mark, but the chart should not. The plan prints as
-   candles too, so the right half reads the same way the left half does and
-   each one takes the colour of the direction it closed. They are hollow
-   because none of them has happened yet. */
-/* The plan sits on the record's own grid: same slot, same width, continuing
-   from the last recorded index. One chart, not two charts side by side. */
-const PROJ_COUNT = Math.floor((PLOT_W - CANDLE_W) / SLOT);
-const tAtX = (x: number) =>
-  Math.min(1, Math.max(0, (x - CANDLE_W) / (PLOT_W - CANDLE_W)));
+/* ── The price line, the way the app draws it ─────────────────────────────
+   One polyline from the recorded closes into the plan's walk, an area wash
+   under it, and a live dot riding the end of the stroke. The line draws
+   itself along the pinned scroll: the keyframes below are generated from the
+   path's own measured length, so each story beat lands on the exact fraction
+   of ink it owns. */
+const linePts: [number, number][] = [
+  ...candles.map((candle, index) => [xOf(index), yOf(candle.close)] as [number, number]),
+  ...PLAN.slice(1).map(([t, p]) => [planX(t), yOf(p)] as [number, number]),
+];
 
-const planPriceAt = (t: number) => {
-  for (let index = 0; index < PLAN.length - 1; index += 1) {
-    const [t0, p0] = PLAN[index];
-    const [t1, p1] = PLAN[index + 1];
-    if (t <= t1) return p0 + ((p1 - p0) * (t - t0)) / (t1 - t0);
-  }
-  return PLAN[PLAN.length - 1][1];
+const pricePath = linePts
+  .map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`)
+  .join(" ");
+
+const washPath = `${pricePath} L${linePts[linePts.length - 1][0].toFixed(1)} ${CHART_H} L${linePts[0][0].toFixed(1)} ${CHART_H} Z`;
+
+const cumulative: number[] = [0];
+for (let index = 1; index < linePts.length; index += 1) {
+  const [x0, y0] = linePts[index - 1];
+  const [x1, y1] = linePts[index];
+  cumulative.push(cumulative[index - 1] + Math.hypot(x1 - x0, y1 - y0));
+}
+const pathTotal = cumulative[cumulative.length - 1];
+const fracAt = (index: number) => cumulative[index] / pathTotal;
+const DIP_INDEX = CANDLE_COUNT + PLAN.findIndex(([t]) => t === 0.5) - 1;
+
+/* Length fractions for the stroke and the dot, x fractions for the wash. */
+const F = {
+  range: fracAt(BREAK_INDEX),
+  brk: fracAt(BREAK_INDEX + 2),
+  mark: fracAt(CANDLE_COUNT - 1),
+  dip: fracAt(DIP_INDEX),
 };
+const xInset = (index: number) => 100 - (linePts[index][0] / CHART_W) * 100;
+const XI = {
+  range: xInset(BREAK_INDEX),
+  brk: xInset(BREAK_INDEX + 2),
+  mark: xInset(CANDLE_COUNT - 1),
+  dip: xInset(DIP_INDEX),
+};
+const pctOf = (value: number) => (value * 100).toFixed(2);
 
-/* The same seeded walk the record uses, down to the jitter and wick figures.
-   Interpolating the plan on its own gave every candle in a leg the same body,
-   and a wider jitter made the plan half look like a rougher market than the
-   half it continues. */
-const projected = (() => {
-  let seed = 20260816;
-  const rand = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
+/* Beats: the range prints through the wait (2-18), holds while the thread
+   sleeps, jumps on the break (32), climbs to the mark while the order is
+   worked (40-66), falls into the drawdown (76), and runs out to the target
+   (92). One set of stops, three properties. */
+const chartKeyframes = `
+@keyframes price-draw {
+  0%, 2% { stroke-dashoffset: 1; }
+  18% { stroke-dashoffset: ${(1 - F.range).toFixed(4)}; }
+  32% { stroke-dashoffset: ${(1 - F.range).toFixed(4)}; }
+  34% { stroke-dashoffset: ${(1 - F.brk).toFixed(4)}; }
+  40% { stroke-dashoffset: ${(1 - F.brk).toFixed(4)}; }
+  66% { stroke-dashoffset: ${(1 - F.mark).toFixed(4)}; }
+  76% { stroke-dashoffset: ${(1 - F.dip).toFixed(4)}; }
+  92%, 100% { stroke-dashoffset: 0; }
+}
+@keyframes price-ride {
+  0%, 2% { offset-distance: 0%; }
+  18% { offset-distance: ${pctOf(F.range)}%; }
+  32% { offset-distance: ${pctOf(F.range)}%; }
+  34% { offset-distance: ${pctOf(F.brk)}%; }
+  40% { offset-distance: ${pctOf(F.brk)}%; }
+  66% { offset-distance: ${pctOf(F.mark)}%; }
+  76% { offset-distance: ${pctOf(F.dip)}%; }
+  92%, 100% { offset-distance: 100%; }
+}
+@keyframes price-wash {
+  0%, 2% { clip-path: inset(0 100% 0 0); }
+  18% { clip-path: inset(0 ${XI.range.toFixed(2)}% 0 0); }
+  32% { clip-path: inset(0 ${XI.range.toFixed(2)}% 0 0); }
+  34% { clip-path: inset(0 ${XI.brk.toFixed(2)}% 0 0); }
+  40% { clip-path: inset(0 ${XI.brk.toFixed(2)}% 0 0); }
+  66% { clip-path: inset(0 ${XI.mark.toFixed(2)}% 0 0); }
+  76% { clip-path: inset(0 ${XI.dip.toFixed(2)}% 0 0); }
+  92%, 100% { clip-path: inset(0 ${((GUTTER / CHART_W) * 100).toFixed(2)}% 0 0); }
+}`;
 
-  return Array.from({ length: PROJ_COUNT }, (_, index) => {
-    const x = xOf(CANDLE_COUNT + index);
-    const openPrice = planPriceAt(tAtX(x - SLOT / 2)) + (rand() - 0.5) * 0.5;
-    const closePrice = planPriceAt(tAtX(x + SLOT / 2)) + (rand() - 0.5) * 0.5;
-    return {
-      x,
-      high: Math.max(openPrice, closePrice) + rand() * 0.55,
-      low: Math.min(openPrice, closePrice) - rand() * 0.55,
-      top: yOf(Math.max(openPrice, closePrice)),
-      bottom: yOf(Math.min(openPrice, closePrice)),
-      up: closePrice >= openPrice,
-    };
-  });
-})();
+/* The chips docked in the chart's right gutter, the way the app docks its
+   level chips: each at its price row, each arriving on its own beat. */
+const chipTop = (price: number) => `top: ${((yOf(price) / CHART_H) * 100).toFixed(1)}%`;
 
-/* The agent log, told the way the app's own log panel prints it: a timestamp,
-   a tone rail, and one line per event. Each row owns the same slice of the
-   pinned scroll that its chart annotation owns, so the feed and the chart
-   never disagree about what has happened yet. */
-type LogTone = "info" | "armed" | "profit" | "loss" | "plan";
-const LOG: { at: number; time: string; tone: LogTone; text: string; sub?: string }[] = [
-  { at: 3, time: "14:02", tone: "info", text: "Mission created for ETH-PERP", sub: "long only · 20x ceiling, $50 loss budget" },
-  { at: 9, time: "14:03", tone: "plan", text: "Plan published: long the range break", sub: `entry ${px(MISSION.entry)}, stop ${px(MISSION.stop)}, target ${px(MISSION.target)}` },
-  { at: 18, time: "14:04", tone: "armed", text: `Watch armed · mark crosses ${px(MISSION.trigger)}`, sub: "the thread sleeps, spending nothing" },
-  { at: 32, time: "15:41", tone: "armed", text: "Watch fired. Thread woken", sub: "fresh account, book, and budget data" },
-  { at: 39, time: "15:41", tone: "info", text: "17/17 preview checks passed", sub: "order signed locally" },
-  { at: 47, time: "15:41", tone: "profit", text: `Filled ${MISSION.size} ETH at ${px(MISSION.entry)}` },
-  { at: 53, time: "15:42", tone: "loss", text: `Reduce-only stop resting at ${px(MISSION.stop)}`, sub: `risks ${usd(-risk)}, on the exchange itself` },
-  { at: 76, time: "16:58", tone: "loss", text: `Drawdown to ${px(DIP_PRICE)}, ${usd(dipPnl)} unrealised`, sub: "the stop holds. Nothing is sold" },
-  { at: 91, time: "17:24", tone: "profit", text: `Target ${px(MISSION.target)} printed. Position closed`, sub: `${usd(reward)} banked · ${rr.toFixed(1)}:1 as planned` },
+/* The wedge the app projects ahead of a live position: from the mark out to
+   the frame edge, opening between the target above and the stop below. */
+const MARK_X = xOf(CANDLE_COUNT - 1);
+const wedgePoints = [
+  `${MARK_X.toFixed(1)},${yOf(MISSION.mark).toFixed(1)}`,
+  `${PLOT_W},${yOf(MISSION.target).toFixed(1)}`,
+  `${PLOT_W},${yOf(MISSION.stop).toFixed(1)}`,
+].join(" ");
+
+/* The agent log, in the app's own row grammar: a tone glyph, a rail, the
+   sentence, and a right-aligned figure with its time. Each row owns the same
+   slice of the pinned scroll that its chart annotation owns, so the feed and
+   the chart never disagree about what has happened yet. */
+type LogTone = "info" | "armed" | "fired" | "buy" | "stop" | "loss" | "check" | "win";
+const LOG: { at: number; time: string; tone: LogTone; glyph: string; text: string; value: string; valueTone?: "up" | "down" }[] = [
+  { at: 3, time: "14:02", tone: "info", glyph: "◈", text: "Mission created · long only, 20x ceiling", value: "$50 budget" },
+  { at: 9, time: "14:03", tone: "info", glyph: "▤", text: "Plan published: long the range break", value: `→ ${px(MISSION.target)}` },
+  { at: 18, time: "14:04", tone: "armed", glyph: "▲", text: "Watch armed · mark crosses above", value: px(MISSION.trigger) },
+  { at: 32, time: "15:41", tone: "fired", glyph: "◉", text: "Watch fired · thread woken with fresh data", value: "1,882.9" },
+  { at: 39, time: "15:41", tone: "check", glyph: "✓", text: "Preview passed · order signed locally", value: "17/17" },
+  { at: 47, time: "15:41", tone: "buy", glyph: "B", text: `Bought to open ${MISSION.size} ETH`, value: px(MISSION.entry) },
+  { at: 53, time: "15:42", tone: "stop", glyph: "S", text: "Reduce-only stop resting on-exchange", value: px(MISSION.stop) },
+  { at: 76, time: "16:58", tone: "loss", glyph: "▼", text: "Drawdown held · stop untouched, nothing sold", value: usd(dipPnl), valueTone: "down" },
+  { at: 91, time: "17:24", tone: "win", glyph: "S", text: `Sold to close ${MISSION.size} ETH at ${px(MISSION.target)}`, value: usd(reward), valueTone: "up" },
 ];
 
 /* The sidebar the way the app draws it: this mission's thread lit, two older
@@ -218,15 +249,6 @@ const LOG: { at: number; time: string; tone: LogTone; text: string; sub?: string
 const SIDE_THREADS = [
   { title: "Short SOL into funding flip", meta: "settled · 2d" },
   { title: "BTC range scalp, 15m", meta: "settled · 4d" },
-];
-
-/* The phase strip across the top of the thread, the app's own breadcrumb.
-   Each phase lights on the beat the mission enters it. */
-const PHASES = [
-  { label: "Planning", at: 3 },
-  { label: "Armed", at: 18 },
-  { label: "Live", at: 47 },
-  { label: "Settled", at: 91 },
 ];
 
 /* Beats carry their slice as two custom properties. The pinned desktop
@@ -241,10 +263,11 @@ const span = (from: number, to: number) => `--from:${from}%;--to:${to}%`;
 const ramp = (from: number, to: number, steps: number) =>
   Array.from({ length: steps }, (_, step) => from + ((to - from) * (step + 1)) / steps);
 
+/* 10 + 8 + 14 = 32 steps, the figure the pnl-count keyframes and every
+   reel's resting transform are written against. */
 const RUN_STEPS = 10;
 const DIP_STEPS = 8;
 const TARGET_STEPS = 14;
-const PNL_STEPS = RUN_STEPS + DIP_STEPS + TARGET_STEPS; // 32
 
 const pnlArc = [
   0,
@@ -268,44 +291,24 @@ const roiArc = pnlArc.map(
    that disagree. Step zero is the fill and the last step is the target. */
 const markArc = pnlArc.map((value) => px(MISSION.entry + value / MISSION.size));
 
+/* The 24h change the chart header prints next to the price, computed from the
+   same reel so the two figures can never disagree. */
+const DAY_OPEN = 1869.9;
+const chgArc = pnlArc.map((value) => {
+  const change = ((MISSION.entry + value / MISSION.size - DAY_OPEN) / DAY_OPEN) * 100;
+  return `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`;
+});
+
 /* The reel's two phase boundaries, RUN_STEPS/PNL_STEPS and
    (RUN_STEPS + DIP_STEPS)/PNL_STEPS, land at 31.25% and 56.25%. The
    progress-arc keyframes below bend at those same stops, so retiming the reel
    means retiming that keyframe too. */
 
-/* Each watch is armed on the beat the agent registers it and met on the beat
-   the market satisfies it. The second one never fires, which is the point:
-   the drawdown bottoms out above it and nothing wakes the thread. */
-/* `reads` is the reel that supplies the row's observed value, the way the app
-   prints the live reading a condition is measured against. A candle close has
-   no continuous reading, so that row shows an em dash, exactly as the app
-   does when a condition has nothing to observe yet. */
-const armedWatches = [
-  { label: `ETH mark crosses above ${px(MISSION.trigger)}`, armedAt: 21, metAt: 32, reads: "mark" },
-  { label: `ETH 15m candle closes below ${px(MISSION.wake)}`, armedAt: 59, metAt: null, reads: null },
-  { label: `ETH unrealised PnL reaches ${usd(reward)}`, armedAt: 60, metAt: 92, reads: "pnl" },
-];
-
-/* The schedule strip the app draws under the chart: what can happen next, in
-   the order it can arrive. Every figure here is one of the mission's own
-   levels — nothing is a distance that would have to move with the mark. */
-const upNext = [
-  { label: `stop ${px(MISSION.stop)}`, detail: `$${risk.toFixed(2)} risk`, at: 52 },
-  { label: `wake @ ${px(MISSION.wake)}`, detail: null, at: 59 },
-  { label: `bank at ${usd(reward)}`, detail: null, at: 60 },
-];
-
-/* What the position is, at the foot of the panel: one wrapping line of
-   `label value` pairs. The stop is not among them — it belongs to the
-   schedule above, and a figure appears exactly once. */
-const heldStats = [
-  { term: "Size", value: MISSION.size.toFixed(4), at: 46 },
-  { term: "Entry", value: px(MISSION.entry), at: 46 },
-  { term: "Mark", value: null, at: 63 },
-  { term: "Liq", value: px(MISSION.liquidation), at: 55 },
-  { term: "Protected", value: "Full", at: 53 },
-  { term: "Margin", value: `$${MISSION.margin}`, at: 48 },
-];
+/* The positions card's rows, in the app's own column grammar: the side pill,
+   the state token, entry, notional, unrealised, and age. The open leg's state
+   crosses from OPEN to CLOSED on the beat the target prints. */
+const notional = (price: number) =>
+  `$${Math.round(price * MISSION.size).toLocaleString("en-US")}`;
 
 /* Six of the seventeen, named the way the preview tool names them. */
 const previewChecks = [
@@ -334,6 +337,11 @@ const harnesses = [
 ---
 
 <Layout>
+  <!-- The chart's generated keyframes: story beats mapped onto the measured
+       length of the price path. Injected raw so the numbers computed in the
+       frontmatter can drive keyframe stops, which custom properties cannot. -->
+  <Fragment set:html={`<style>${chartKeyframes}</style>`} />
+
   <!-- ── Hero ──────────────────────────────────────────────────── -->
   <section class="hero">
     <div class="hero-grid" aria-hidden="true"></div>
@@ -362,6 +370,32 @@ const harnesses = [
         </a>
       </div>
 
+    </div>
+  </section>
+
+  <!-- ── Live testnet band ─────────────────────────────────────── -->
+  <section class="sec-tape" aria-label="Hyperliquid testnet markets">
+    <div class="tape" id="tape" data-state="loading">
+      <div class="tape-track">
+        {[0, 1].map((copy) => (
+          <div class="tape-run" aria-hidden={copy === 1 ? "true" : undefined}>
+            {tapeMarkets.map((symbol) => (
+              <span class="tape-item" data-symbol={symbol} data-copy={copy}>
+                <span class="tape-sym">{symbol}</span>
+                <span class="tape-px">- - - -</span>
+                <span class="tape-chg">·</span>
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <div class="container tape-note">
+      <p>
+        Live mid prices from Hyperliquid testnet, the only network this alpha talks to.
+        Testnet funds have no real-world value and there is no mainnet configuration.
+      </p>
     </div>
   </section>
 
@@ -397,22 +431,43 @@ const harnesses = [
               <span class="tl-net">hyperliquid testnet</span>
             </div>
 
+            <!-- The thread header, the app's own breadcrumb row with the
+                 mission capsule on the right. -->
+            <div class="appwin-crumb" aria-hidden="true">
+              <span class="crumb-path">
+                <span class="crumb-project">t3-trade-test</span>
+                <span class="crumb-sep">/</span>
+                <span class="crumb-title">Trade ETH on the 5m, long the range break</span>
+              </span>
+              <span class="crumb-capsule">
+                <span class="status-window"><span class="status-reel">
+                  <span class="status-step"><i class="status-dot status-dot--wait"></i>ETH · Waiting</span>
+                  <span class="status-step status-step--armed"><i class="status-dot status-dot--armed"></i>ETH · Armed</span>
+                  <span class="status-step status-step--long"><i class="status-dot status-dot--long"></i>ETH · Long 20x</span>
+                  <span class="status-step status-step--won"><i class="status-dot status-dot--long"></i>ETH · Completed {usd(reward)}</span>
+                </span></span>
+              </span>
+            </div>
+
             <div class="appwin-body">
               <!-- The sidebar, the way the app draws it: this mission's thread
                    lit and walking through its states, older threads at rest. -->
               <aside class="appwin-side" aria-hidden="true">
-                <div class="side-legend">Threads</div>
+                <div class="side-brand"><span class="side-brand-mark">T3</span><span>Trade</span></div>
+                <div class="side-search">Search</div>
+                <div class="side-legend">Active</div>
                 <div class="side-thread side-thread--live">
                   <span class="side-thread-title">Trade ETH on the 5m, long the range break</span>
                   <span class="side-status">
                     <span class="status-window"><span class="status-reel">
                       <span class="status-step"><i class="status-dot status-dot--wait"></i>waiting</span>
                       <span class="status-step status-step--armed"><i class="status-dot status-dot--armed"></i>armed</span>
-                      <span class="status-step status-step--long"><i class="status-dot status-dot--long"></i>ETH · long 20x</span>
+                      <span class="status-step status-step--long"><i class="status-dot status-dot--long"></i>long 20x</span>
                       <span class="status-step status-step--won"><i class="status-dot status-dot--long"></i>{usd(reward)} · settled</span>
                     </span></span>
                   </span>
                 </div>
+                <div class="side-legend">Settled</div>
                 {SIDE_THREADS.map((thread) => (
                   <div class="side-thread">
                     <span class="side-thread-title">{thread.title}</span>
@@ -421,180 +476,89 @@ const harnesses = [
                 ))}
               </aside>
 
-              <!-- The thread column: phase strip, the agent log filling row by
-                   row, and the composer holding the mandate that started it. -->
-              <div class="appwin-thread">
-                <div class="thread-phases" aria-hidden="true">
-                  {PHASES.map((phase, index) => (
-                    <>
-                      {index === 0 ? null : <span class="phase-sep">›</span>}
-                      <span class="phase-word" style={`${span(phase.at, phase.at + 4)}`}>{phase.label}</span>
-                    </>
-                  ))}
-                </div>
-
-                <div class="log-feed">
-                  <div class="log-mandate">
-                    <span class="log-mandate-label">you</span>
-                    <p>
-                      Trade ETH on the 5m. Long only, 20x ceiling, $50 max loss. Wait for the
-                      range break, protect every entry, and bank the target.
-                    </p>
-                  </div>
-
-                  {LOG.map((row) => (
-                    <div class={`log-row log-row--${row.tone}`} style={`${span(row.at, row.at + 5)}`}>
-                      <span class="log-time">{row.time}</span>
-                      <span class="log-rail" aria-hidden="true"></span>
-                      <span class="log-text">
-                        {row.text}
-                        {row.sub && <span class="log-sub">{row.sub}</span>}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                <div class="composer" aria-hidden="true">
-                  <span class="composer-line">Reply to the mission thread<span class="composer-caret"></span></span>
-                  <span class="composer-meta">
-                    <span>Codex · high</span>
-                    <span class="composer-chip">ETH</span>
-                  </span>
-                </div>
-              </div>
-
-              <!-- The market column: the chart card and the live position
-                   panel, stacked the way the cockpit stacks them. -->
-              <div class="appwin-market">
+              <!-- The main column holds the live panel the way the thread
+                   does: chart and positions on the left, the agent log on the
+                   right, the status bar and the composer beneath. -->
+              <div class="appwin-main">
+                <div class="panel-row">
+                  <div class="chart-col">
             <figure class="console-chart">
               <div class="chart-head">
                 <span class="chart-market">
-                  <span class="chart-legend">ETH-PERP</span>
+                  <span class="chart-legend">ETH · USD</span>
                   <span class="chart-price">
                     <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
                       {markArc.map((value) => <span class="pnl-step">{value}</span>)}
                     </span></span>
                   </span>
+                  <span class="chart-chg">
+                    <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
+                      {chgArc.map((value) => <span class="pnl-step">{value}</span>)}
+                    </span></span>
+                  </span>
                 </span>
                 <span class="chart-interval">5m</span>
               </div>
+              <div class="chart-plot">
               <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} class="chart-svg" role="img"
                 aria-label={`Price chart of the ETH mission: a range, a break above ${px(MISSION.trigger)}, an entry at ${px(MISSION.entry)}, a stop at ${px(MISSION.stop)}, and a target at ${px(MISSION.target)}.`}>
+                <defs>
+                  <linearGradient id="washGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="var(--ok)" stop-opacity="0.16" />
+                    <stop offset="0.65" stop-color="var(--ok)" stop-opacity="0.04" />
+                    <stop offset="1" stop-color="var(--ok)" stop-opacity="0" />
+                  </linearGradient>
+                  <linearGradient id="wedgeGrad" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stop-color="var(--chart-blue)" stop-opacity="0.02" />
+                    <stop offset="1" stop-color="var(--chart-blue)" stop-opacity="0.13" />
+                  </linearGradient>
+                </defs>
 
-                <!-- A price grid, so the room above the range reads as
-                     distance rather than empty canvas. -->
+                <!-- A price grid with the axis on the left, the way the app
+                     rules its frame. -->
                 {[1880, 1890, 1900].map((price, index) => (
                   <g class="grid" style={`${span(1 + index, 6 + index)}`}>
                     <line x1="0" x2={CHART_W} y1={yOf(price)} y2={yOf(price)} />
-                    <text x={CHART_W - 6} text-anchor="end" y={yOf(price) - 5}>{price}</text>
+                    <text x="6" y={yOf(price) - 5}>{price.toLocaleString("en-US")}</text>
                   </g>
                 ))}
 
-                <!-- The target is part of the mandate, so it is on the chart
-                     from the first beat. Everything between it and the range
-                     is the distance this mission exists to cover. -->
-                <g class="level level--target" style={`${span(4, 10)}`}>
-                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.target)} y2={yOf(MISSION.target)} />
-                  <text x="8" y={yOf(MISSION.target) - 9}>target {px(MISSION.target)}</text>
+                <!-- The plan's levels: the target from the beat the plan
+                     names it, the trigger while the watch is armed, then the
+                     entry, the stop, and the wake as the position earns them. -->
+                <g class="level level--target" style={`${span(9, 15)}`}>
+                  <line x1="0" x2={PLOT_W} y1={yOf(MISSION.target)} y2={yOf(MISSION.target)} />
+                </g>
+                <g class="level level--trigger" style={`${span(18, 24)}`}>
+                  <line x1="0" x2={PLOT_W} y1={yOf(MISSION.trigger)} y2={yOf(MISSION.trigger)} />
+                </g>
+                <g class="level level--entry" style={`${span(47, 52)}`}>
+                  <line x1="0" x2={PLOT_W} y1={yOf(MISSION.entry)} y2={yOf(MISSION.entry)} />
+                </g>
+                <g class="level level--stop" style={`${span(53, 58)}`}>
+                  <line x1="0" x2={PLOT_W} y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} />
+                </g>
+                <g class="level level--wake" style={`${span(59, 64)}`}>
+                  <line x1="0" x2={PLOT_W} y1={yOf(MISSION.wake)} y2={yOf(MISSION.wake)} />
                 </g>
 
-                <!-- The two bands the order is signed between, each drawn on
-                     the beat that commits to it. Below the entry is the money
-                     the stop is defending; above it is what the target pays. -->
-                <rect class="zone zone--risk" x="0" width={CHART_W}
-                  y={yOf(MISSION.entry)} height={yOf(MISSION.stop) - yOf(MISSION.entry)}
-                  style={`${span(53, 60)}`} />
-                <rect class="zone zone--reward" x="0" width={CHART_W}
-                  y={yOf(MISSION.target)} height={yOf(MISSION.entry) - yOf(MISSION.target)}
-                  style={`${span(58, 66)}`} />
+                <!-- The projection wedge the app opens ahead of a live
+                     position: from the mark out to the frame edge, between
+                     the target and the stop. -->
+                <polygon class="wedge" points={wedgePoints} style={`${span(66, 73)}`} />
 
-                {candles.map((candle, index) => {
-                  const x = xOf(index);
-                  const top = yOf(Math.max(candle.open, candle.close));
-                  const bottom = yOf(Math.min(candle.open, candle.close));
-                  /* Three phases, so the chart never shows a candle before the
-                     story has reached it: the range prints through the wait,
-                     the break candle prints alone on the beat the watch fires,
-                     and the rest hold until the order is signed and protected.
-                     The pause between them is the agent working. */
-                  const from = index < BREAK_INDEX
-                    ? 2 + index * 0.5
-                    : index === BREAK_INDEX
-                      ? 32
-                      : 56 + (index - BREAK_INDEX - 1) * 0.9;
-                  return (
-                    <g class={`candle ${candle.up ? "candle--up" : "candle--down"}`}
-                      style={`${span(from, from + 5)}; transform-origin: ${x.toFixed(1)}px ${bottom.toFixed(1)}px`}>
-                      <line class="candle-wick" x1={x} x2={x} y1={yOf(candle.high)} y2={yOf(candle.low)} />
-                      <rect class="candle-body" x={x - SLOT * 0.32} width={SLOT * 0.64}
-                        y={top} height={Math.max(1.4, bottom - top)} />
-                    </g>
-                  );
-                })}
+                <!-- The price itself: the wash, the stroke, and the live dot
+                     riding the end of the ink. All three walk the same
+                     generated keyframes, so they can never disagree. -->
+                <path class="price-wash" d={washPath} />
+                <path class="price-line" d={pricePath} pathLength="1" />
+                <circle class="price-dot" r="5" style={`offset-path: path("${pricePath}")`} />
 
-                <!-- Levels, each drawn on the beat that creates it. -->
-                <g class="level level--trigger" style={`${span(21, 28)}`}>
-                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.trigger)} y2={yOf(MISSION.trigger)} />
-                  <text x="8" y={yOf(MISSION.trigger) - 8}>watch · mark crosses {px(MISSION.trigger)}</text>
-                </g>
-
-                <g class="level level--entry" style={`${span(45, 52)}`}>
-                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.entry)} y2={yOf(MISSION.entry)} />
-                  <text x={CHART_W - 8} text-anchor="end" y={yOf(MISSION.entry) - 8}>entry {px(MISSION.entry)}</text>
-                </g>
-
-                <g class="level level--stop" style={`${span(52, 59)}`}>
-                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} />
-                  <text x="8" y={yOf(MISSION.stop) + 18}>stop {px(MISSION.stop)} · risks {usd(-risk)}</text>
-                </g>
-
-                <!-- Once the size is signed the target has a dollar value, so
-                     it gets one. -->
-                <text class="target-pays" x="8" y={yOf(MISSION.target) + 17}
-                  style={`${span(58, 65)}`}>pays {usd(reward)} at this size</text>
-
-                <!-- The second watch is only armed once there is a position
-                     to defend, so it draws after the stop. -->
-                <g class="level level--wake" style={`${span(59, 66)}`}>
-                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.wake)} y2={yOf(MISSION.wake)} />
-                  <text x={CHART_W - 8} text-anchor="end" y={yOf(MISSION.wake) + 16}>wake @ {px(MISSION.wake)}</text>
-                </g>
-
-                <!-- The break candle pulses on the beat the watch fires. -->
+                <!-- The watch firing on the break. -->
                 <circle class="fire-ping" cx={xOf(BREAK_INDEX)} cy={yOf(MISSION.trigger)} r="7"
                   style={`${span(32, 40)}`} />
                 <circle class="fire-dot" cx={xOf(BREAK_INDEX)} cy={yOf(MISSION.trigger)} r="3.5"
                   style={`${span(32, 38)}`} />
-
-                <path class="chart-run" d={runPath} pathLength="1" style={`${span(57, 70)}`} />
-
-                <circle class="mark-dot" r="4.5" cx={xOf(CANDLE_COUNT - 1)} cy={yOf(MISSION.mark)}
-                  style={`${span(66, 70)}`} />
-
-                <!-- Everything right of the mark is the plan, not the record.
-                     It is dashed for that reason, and it is revealed rather
-                     than drawn so the dashes survive. -->
-                <g class="plan" style={`${span(68, 92)}`}>
-                  {PLAN_RUNS.map((run) => (
-                    <path class={`plan-path ${run.up ? "plan-path--up" : "plan-path--down"}`} d={run.d} />
-                  ))}
-                </g>
-
-                <!-- The plan as candles. Each one prints in step with the wipe
-                     above it and carries the colour of its own direction, so
-                     the drawdown turns the chart red as it happens. -->
-                {projected.map((candle, index) => {
-                  const from = 68 + (index * 24) / PROJ_COUNT;
-                  return (
-                    <g class={`proj-candle ${candle.up ? "candle--up" : "candle--down"}`}
-                      style={`${span(from, from + 2.6)}; transform-origin: ${candle.x.toFixed(1)}px ${candle.bottom.toFixed(1)}px`}>
-                      <line class="proj-wick" x1={candle.x} x2={candle.x}
-                        y1={yOf(candle.high)} y2={yOf(candle.low)} />
-                      <rect class="proj-body" x={candle.x - SLOT * 0.32} width={SLOT * 0.64}
-                        y={candle.top} height={Math.max(1.6, candle.bottom - candle.top)} />
-                    </g>
-                  );
-                })}
 
                 <!-- The drawdown. The position goes under water, comes within
                      six dollars of the stop, and the stop is never touched. -->
@@ -609,26 +573,46 @@ const harnesses = [
 
                 <!-- The stop flares at the low, because that is the moment it
                      is the only thing between the position and the budget. -->
-                <line class="stop-hold" x1="0" x2={CHART_W}
+                <line class="stop-hold" x1="0" x2={PLOT_W}
                   y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} style={`${span(77, 84)}`} />
-                <text class="stop-hold-label" x={DIP_X + 10} y={yOf(MISSION.stop) - 9}
+                <text class="stop-hold-label" x="8" y={yOf(MISSION.stop) - 8}
                   style={`${span(78, 83)}`}>stop holds</text>
 
                 <!-- The target prints. -->
                 <g class="target-hit" style={`${span(91, 96)}`}>
-                  <circle class="target-ping" cx={TARGET_X} cy={yOf(MISSION.target)} r="20" />
-                  <circle class="target-dot" cx={TARGET_X} cy={yOf(MISSION.target)} r="18" />
+                  <circle class="target-ping" cx={TARGET_X} cy={yOf(MISSION.target)} r="16" />
+                  <circle class="target-dot" cx={TARGET_X} cy={yOf(MISSION.target)} r="13" />
                   <g class="target-check" style={`${span(92, 96)}`}
-                    transform={`translate(${(TARGET_X - 18).toFixed(1)} ${(yOf(MISSION.target) - 18).toFixed(1)}) scale(2.25)`}>
+                    transform={`translate(${(TARGET_X - 13).toFixed(1)} ${(yOf(MISSION.target) - 13).toFixed(1)}) scale(1.65)`}>
                     <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
                   </g>
                 </g>
 
                 <!-- What the whole run was for, at the size the page has been
                      quoting all along. It lands after the tick draws. -->
-                <text class="payoff" x="256" y="196" text-anchor="middle"
+                <text class="payoff" x="240" y="104" text-anchor="middle"
                   style={`${span(92, 98)}`}>{usd(reward)}</text>
               </svg>
+
+              <!-- The level chips docked in the right gutter, the way the app
+                   docks them: glass pills at their price rows. The armed chip
+                   flashes green when its watch fires, then retires to make
+                   room for the entry. -->
+              <div class="chart-chips" aria-hidden="true">
+                <span class="chip chip--target" style={`${chipTop(MISSION.target)}; ${span(9, 14)}`}>{px(MISSION.target)} target</span>
+                <span class="chip chip--armed" style={`${chipTop(MISSION.trigger)}; ${span(18, 32)}`}>▲ {px(MISSION.trigger)}</span>
+                <span class="chip chip--met" style={`${chipTop(MISSION.trigger)}; ${span(32, 46)}`}>✓ {px(MISSION.trigger)}</span>
+                <span class="chip chip--mark" style={`${chipTop(MISSION.mark)}; ${span(63, 88)}`}>
+                  <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
+                    {markArc.map((value) => <span class="pnl-step">{value}</span>)}
+                  </span></span>
+                </span>
+                <span class="chip chip--entry" style={`${chipTop(MISSION.entry)}; ${span(47, 52)}`}>{px(MISSION.entry)} entry</span>
+                <span class="chip chip--stop" style={`${chipTop(MISSION.stop)}; ${span(53, 58)}`}>{px(MISSION.stop)} stop</span>
+                <span class="chip chip--wake" style={`${chipTop(MISSION.wake)}; ${span(59, 64)}`}>{px(MISSION.wake)} wake</span>
+                <span class="chip chip--reassess" style={`${span(18, 32)}`}>⊙ reassess</span>
+              </div>
+              </div>
 
               <!-- What the two levels are actually worth, to scale. Both bars
                    are measured outward from the entry, in the order the run
@@ -655,126 +639,133 @@ const harnesses = [
               </figcaption>
             </figure>
 
-            <!-- The position readout, drawn as the app's live panel draws it:
-                 the header figures, then the schedule, then the armed
-                 checklist, then what is held. Same bands, same order, same
-                 rule that a number appears exactly once — the P&L, the ROI and
-                 the progress live in the header, so the foot never repeats
-                 them, and the stop is a schedule pill rather than a held
-                 field because it is what happens next, not what is owned. -->
-            <div class="console-readout">
-              <div class="readout-head">
-                <span class="side-chip">
-                  <span>{MISSION.market}</span>
-                  <span class="side-chip-lev">{MISSION.leverage}</span>
-                  <span>{MISSION.side}</span>
+            <!-- The positions card, in the app's own column grammar. -->
+            <div class="pos-card">
+              <div class="pos-head">
+                <span class="card-legend">Positions</span>
+                <span class="pos-unreal" style={`${span(90, 96)}`}>
+                  <span class="card-legend">Unrealised</span>
+                  <span class="pnl-window"><span class="roi-reel" style={`${span(63, 92)}`}>
+                    {roiArc.map((value) => (
+                      <span class={value.startsWith("-") ? "pnl-step pnl-step--down" : "pnl-step"}>{value}</span>
+                    ))}
+                  </span></span>
+                  <span class="pnl-window pos-usd"><span class="pnl-reel" style={`${span(63, 92)}`}>
+                    {pnlArc.map((value) => (
+                      <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{usd(value)}</span>
+                    ))}
+                  </span></span>
                 </span>
-                <!-- One reel walks the whole arc, and the container flashes
-                     on the step that lands the target. -->
-                <span class="readout-pnl" style={`${span(90, 96)}`}>
+              </div>
+              <div class="pos-cols" aria-hidden="true">
+                <span>State</span><span>Entry / Exit</span><span>Size · $</span>
+                <span class="ta-r">USD</span><span class="ta-r">Time</span>
+              </div>
+              <div class="pos-row" style={`${span(47, 52)}`}>
+                <span class="pos-state">
+                  <span class="pos-pill">ETH <b>20x</b> Long</span>
+                  <span class="armed-swap">
+                    <span class="armed-state armed-state--wait pos-token pos-token--open"
+                      style={`${span(91, 95)}`}>● Open</span>
+                    <span class="armed-state armed-state--met pos-token pos-token--won"
+                      style={`${span(91, 95)}`}>● Closed</span>
+                  </span>
+                </span>
+                <span>{px(MISSION.entry)}</span>
+                <span>{notional(MISSION.entry)}</span>
+                <span class="ta-r">
                   <span class="pnl-window"><span class="pnl-reel" style={`${span(63, 92)}`}>
                     {pnlArc.map((value) => (
                       <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{usd(value)}</span>
                     ))}
                   </span></span>
                 </span>
-                <span class="readout-roi">
-                  <span class="pnl-window"><span class="roi-reel" style={`${span(63, 92)}`}>
-                    {roiArc.map((value) => (
-                      <span class={value.startsWith("-") ? "pnl-step pnl-step--down" : "pnl-step"}>{value}</span>
-                    ))}
-                  </span></span>
-                </span>
-
-                <span class="readout-progress" style={`${span(61, 66)}`}>
-                  <span class="progress-track"><span class="progress-fill" style={`${span(63, 92)}`}></span></span>
-                  <span class="progress-label">
-                    <span class="pnl-window"><span class="pct-reel" style={`${span(63, 92)}`}>
-                      {pctArc.map((value) => <span class="pnl-step">{value}%</span>)}
-                    </span></span>
-                    <span>to target</span>
+                <span class="ta-r pos-time">15:41</span>
+              </div>
+              <div class="pos-row" style={`${span(53, 58)}`}>
+                <span class="pos-state">
+                  <span class="pos-pill">ETH <b>20x</b> Long</span>
+                  <span class="armed-swap">
+                    <span class="armed-state armed-state--wait pos-token pos-token--working"
+                      style={`${span(91, 95)}`}>○ Working</span>
+                    <span class="armed-state armed-state--met pos-token pos-token--done"
+                      style={`${span(91, 95)}`}>○ Done</span>
                   </span>
                 </span>
+                <span>{px(MISSION.stop)}</span>
+                <span>{notional(MISSION.stop)}</span>
+                <span class="ta-r pos-none">-</span>
+                <span class="ta-r pos-time">15:42</span>
               </div>
+            </div>
+                  </div>
 
-              <!-- The schedule. Left-aligned under its own label, the way
-                   every other band on the panel starts at the same rule. -->
-              <div class="readout-next">
-                <span class="readout-legend">Next</span>
-                {upNext.map((item) => (
-                  <span class="next-pill" style={`${span(item.at, item.at + 6)}`}>
-                    <span class="next-pill-label">{item.label}</span>
-                    {item.detail && <span>{item.detail}</span>}
-                  </span>
-                ))}
-              </div>
-
-              <div class="readout-armed">
-                <span class="readout-legend">Armed</span>
-                {armedWatches.map((watch) => (
-                  <div class="armed-row" style={`${span(watch.armedAt, watch.armedAt + 6)}`}>
-                    {/* Glyph, description, the reading, the state — the app's
-                        checklist row. Its threshold column is not repeated
-                        here: the description already names the level, and this
-                        panel is a third of the width the app gives the row. */}
-                    {watch.metAt ? (
-                      <span class="armed-swap armed-glyph">
-                        <span class="armed-state armed-state--wait"
-                          style={`${span(watch.metAt, watch.metAt + 4)}`}>○</span>
-                        <span class="armed-state armed-state--met"
-                          style={`${span(watch.metAt, watch.metAt + 5)}`}>✓</span>
-                      </span>
-                    ) : (
-                      <span class="armed-glyph armed-state">○</span>
-                    )}
-                    <span class="armed-label">{watch.label}</span>
-                    <span class="armed-read">
-                      {watch.reads === null ? (
-                        <span class="armed-read-none">-</span>
-                      ) : watch.reads === "pnl" ? (
+                  <!-- The agent log card: the story, in the app's own rows. -->
+                  <div class="log-card">
+                    <div class="log-head">
+                      <span class="card-legend">Agent log</span>
+                      <span class="log-pnl" style={`${span(90, 96)}`}>
+                        <span class="pnl-window"><span class="roi-reel" style={`${span(63, 92)}`}>
+                          {roiArc.map((value) => (
+                            <span class={value.startsWith("-") ? "pnl-step pnl-step--down" : "pnl-step"}>{value}</span>
+                          ))}
+                        </span></span>
                         <span class="pnl-window"><span class="pnl-reel" style={`${span(63, 92)}`}>
                           {pnlArc.map((value) => (
                             <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{usd(value)}</span>
                           ))}
                         </span></span>
-                      ) : (
-                        <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
-                          {markArc.map((value) => <span class="pnl-step">{value}</span>)}
-                        </span></span>
-                      )}
-                    </span>
-                    {/* A watch reads `waiting` until the market satisfies it,
-                        then the two states cross over on that beat. */}
-                    {watch.metAt ? (
-                      <span class="armed-swap armed-tail">
-                        <span class="armed-state armed-state--wait"
-                          style={`${span(watch.metAt, watch.metAt + 4)}`}>waiting</span>
-                        <span class="armed-state armed-state--met"
-                          style={`${span(watch.metAt, watch.metAt + 5)}`}>met</span>
                       </span>
-                    ) : (
-                      <span class="armed-state armed-tail">waiting</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div class="readout-held">
-                <span class="readout-legend">Held</span>
-                {heldStats.map((stat) => (
-                  <span class="held-stat" style={`${span(stat.at, stat.at + 8)}`}>
-                    {stat.term}
-                    <b>
-                      {stat.value ?? (
-                        <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
-                          {markArc.map((value) => <span class="pnl-step">{value}</span>)}
+                    </div>
+                    <div class="log-progress" aria-hidden="true">
+                      <span class="progress-track"><span class="progress-fill" style={`${span(63, 92)}`}></span></span>
+                      <span class="progress-label">
+                        <span class="pnl-window"><span class="pct-reel" style={`${span(63, 92)}`}>
+                          {pctArc.map((value) => <span class="pnl-step">{value}%</span>)}
                         </span></span>
-                      )}
-                    </b>
+                        <span>to target</span>
+                      </span>
+                    </div>
+                    <div class="log-feed">
+                      {LOG.map((row) => (
+                        <div class={`log-row log-row--${row.tone}`} style={`${span(row.at, row.at + 5)}`}>
+                          <span class="log-rail" aria-hidden="true"></span>
+                          <span class="log-glyph" aria-hidden="true">{row.glyph}</span>
+                          <span class="log-text">{row.text}</span>
+                          <span class={`log-value ${row.valueTone === "down" ? "log-value--down" : row.valueTone === "up" ? "log-value--up" : ""}`}>{row.value}</span>
+                          <span class="log-time">{row.time}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- The status bar, the strip the app closes the panel with. -->
+                <div class="statusbar" aria-hidden="true">
+                  <span class="status-main">
+                    <span class="status-window"><span class="status-reel">
+                      <span class="status-step"><i class="status-dot status-dot--wait"></i>Planning</span>
+                      <span class="status-step status-step--armed"><i class="status-dot status-dot--armed"></i>Waiting on trigger</span>
+                      <span class="status-step status-step--long"><i class="status-dot status-dot--long"></i>Holding long</span>
+                      <span class="status-step status-step--won"><i class="status-dot status-dot--long"></i>Mission complete</span>
+                    </span></span>
                   </span>
-                ))}
-              </div>
-            </div>
+                  <span class="sb-chip">Plan</span>
+                  <span class="sb-pred" style={`${span(9, 14)}`}>↗ {px(MISSION.target)} by 17:24</span>
+                  <span class="sb-right">Funding 0.0013%/8h</span>
+                </div>
+
+                <!-- The composer, resting under the panel the way it does in
+                     the thread. -->
+                <div class="composer" aria-hidden="true">
+                  <span class="composer-line">Ask for changes, send follow-ups, or attach images<span class="composer-caret"></span></span>
+                  <span class="composer-meta">
+                    <span class="composer-chip">GPT-5.6-Luna</span>
+                    <span class="composer-chip">Low</span>
+                    <span class="composer-chip">Full access</span>
+                    <span class="composer-send">↑</span>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -836,32 +827,6 @@ const harnesses = [
           the position the exchange reports. It survives the app closing.
         </p>
       </div>
-    </div>
-  </section>
-
-  <!-- ── Live testnet band ─────────────────────────────────────── -->
-  <section class="sec-tape" aria-label="Hyperliquid testnet markets">
-    <div class="tape" id="tape" data-state="loading">
-      <div class="tape-track">
-        {[0, 1].map((copy) => (
-          <div class="tape-run" aria-hidden={copy === 1 ? "true" : undefined}>
-            {tapeMarkets.map((symbol) => (
-              <span class="tape-item" data-symbol={symbol} data-copy={copy}>
-                <span class="tape-sym">{symbol}</span>
-                <span class="tape-px">- - - -</span>
-                <span class="tape-chg">·</span>
-              </span>
-            ))}
-          </div>
-        ))}
-      </div>
-    </div>
-
-    <div class="container tape-note">
-      <p>
-        Live mid prices from Hyperliquid testnet, the only network this alpha talks to.
-        Testnet funds have no real-world value and there is no mainnet configuration.
-      </p>
     </div>
   </section>
 
@@ -1307,6 +1272,7 @@ const harnesses = [
     margin: 20px auto 22px;
     max-width: 22ch;
     text-wrap: balance;
+    color: #fff;
   }
 
   .hero-sub {
@@ -1373,7 +1339,7 @@ const harnesses = [
 
   /* ── Live tape ────────────────────────────────────────────── */
   .sec-tape {
-    padding: 0 0 96px;
+    padding: 30px 0 0;
     border-top: 0;
   }
 
@@ -1550,9 +1516,48 @@ const harnesses = [
 
   .appwin-body {
     display: grid;
-    grid-template-columns: 176px minmax(0, 0.95fr) minmax(0, 1.35fr);
+    grid-template-columns: 172px minmax(0, 1fr);
     align-items: stretch;
     min-height: 0;
+  }
+
+  /* ── Thread header row ────────────────────────────────────── */
+  .appwin-crumb {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .crumb-path {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .crumb-project { color: var(--fg-dim); flex: none; }
+  .crumb-sep { color: var(--fg-faint); flex: none; }
+
+  .crumb-title {
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The mission capsule, the header pill the app centres over a thread. */
+  .crumb-capsule {
+    margin-left: auto;
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.03);
   }
 
   /* ── Sidebar ──────────────────────────────────────────────── */
@@ -1560,10 +1565,43 @@ const harnesses = [
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 12px 8px;
+    padding: 10px 8px;
     border-right: 1px solid var(--border);
     background: rgba(0, 0, 0, 0.28);
     min-width: 0;
+  }
+
+  .side-brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 2px 8px 8px;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--fg);
+  }
+
+  .side-brand-mark {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #4c7dd8, #3557a8);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .side-search {
+    margin: 0 6px 8px;
+    padding: 5px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.02);
+    font-size: 11px;
+    color: var(--fg-faint);
   }
 
   .side-legend {
@@ -1572,7 +1610,7 @@ const harnesses = [
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--fg-faint);
-    padding: 0 8px 6px;
+    padding: 4px 8px 4px;
   }
 
   .side-thread {
@@ -1651,29 +1689,84 @@ const harnesses = [
 
   .status-dot--wait { background: var(--fg-faint); }
 
-  /* ── Thread column ────────────────────────────────────────── */
-  .appwin-thread {
+  /* ── Main column and the panel row ────────────────────────── */
+  .appwin-main {
     display: flex;
     flex-direction: column;
+    gap: 10px;
     min-width: 0;
     min-height: 0;
-    border-right: 1px solid var(--border);
+    padding: 10px 12px 12px;
   }
 
-  .thread-phases {
+  .panel-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    gap: 10px;
+    align-items: stretch;
+    min-height: 0;
+  }
+
+  .chart-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  /* The panel's cards: the app's own card material at window scale. */
+  .console-chart,
+  .pos-card,
+  .log-card {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.022);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    min-width: 0;
+  }
+
+  .card-legend {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+
+  /* ── Agent log card ───────────────────────────────────────── */
+  .log-card {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .log-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px 6px;
+  }
+
+  .log-pnl {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ok);
+    transform-origin: 100% 50%;
+  }
+
+  .log-progress {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 9px 16px;
+    padding: 0 12px 9px;
     border-bottom: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
   }
-
-  .phase-word { color: var(--fg); }
-  .phase-sep { color: var(--fg-faint); }
 
   .log-feed {
     flex: 1;
@@ -1681,94 +1774,138 @@ const harnesses = [
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: 12px 14px;
-  }
-
-  /* The mandate, as the sent message that opened the thread. */
-  .log-mandate {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    margin-bottom: 8px;
-    padding: 9px 11px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .log-mandate-label {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
-
-  .log-mandate p {
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--fg-muted);
+    padding: 6px 8px;
   }
 
   .log-row {
     display: flex;
-    align-items: flex-start;
-    gap: 9px;
-    padding: 5px 2px;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 5px;
+    border-radius: 6px;
   }
 
-  .log-time {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--fg-faint);
-    flex: none;
-    padding-top: 2px;
-    font-variant-numeric: tabular-nums;
+  .log-row + .log-row {
+    border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
   }
 
-  /* The tone rail the app hangs on every log row. */
+  /* The tone rail and glyph the app hangs on every log row. */
   .log-rail {
     flex: none;
     width: 2px;
+    height: 14px;
     border-radius: 2px;
-    align-self: stretch;
     background: var(--fg-faint);
     opacity: 0.62;
   }
 
-  .log-row--armed .log-rail { background: var(--warn); }
-  .log-row--profit .log-rail { background: var(--ok); }
-  .log-row--loss .log-rail { background: var(--loss); }
-  .log-row--plan .log-rail { background: var(--accent); }
-
-  .log-text {
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--fg);
-    letter-spacing: -0.005em;
-    min-width: 0;
+  .log-glyph {
+    flex: none;
+    width: 15px;
+    height: 15px;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    font-size: 9px;
+    font-family: var(--font-mono);
+    color: var(--fg-dim);
+    background: rgba(255, 255, 255, 0.05);
   }
 
-  .log-sub {
-    display: block;
+  .log-row--armed .log-rail { background: var(--warn); }
+  .log-row--armed .log-glyph { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .log-row--fired .log-rail { background: var(--chart-blue); }
+  .log-row--fired .log-glyph { color: var(--chart-blue); background: color-mix(in srgb, var(--chart-blue) 16%, transparent); }
+  .log-row--check .log-rail { background: var(--ok); }
+  .log-row--check .log-glyph { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .log-row--buy .log-rail { background: var(--chart-blue); }
+  .log-row--buy .log-glyph { color: #fff; background: color-mix(in srgb, var(--chart-blue) 65%, transparent); }
+  .log-row--stop .log-rail { background: var(--loss); }
+  .log-row--stop .log-glyph { color: #fff; background: color-mix(in srgb, var(--loss) 60%, transparent); }
+  .log-row--loss .log-rail { background: var(--loss); }
+  .log-row--loss .log-glyph { color: var(--loss); background: color-mix(in srgb, var(--loss) 14%, transparent); }
+  .log-row--win .log-rail { background: var(--ok); }
+  .log-row--win .log-glyph { color: #04120b; background: var(--ok); }
+
+  .log-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--fg-muted);
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .log-value {
+    flex: none;
     font-family: var(--font-mono);
     font-size: 10.5px;
-    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+
+  .log-value--up { color: var(--ok); }
+  .log-value--down { color: var(--loss); }
+
+  .log-time {
+    flex: none;
+    width: 34px;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Status bar ───────────────────────────────────────────── */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.022);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+
+  .status-main { min-width: 148px; }
+
+  .sb-chip {
+    padding: 2px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 10px;
     color: var(--fg-dim);
+  }
+
+  .sb-pred {
+    font-size: 10.5px;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sb-right {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
 
   /* ── Composer ─────────────────────────────────────────────── */
   .composer {
-    margin: 0 12px 12px;
     padding: 9px 12px 8px;
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
     background: rgba(0, 0, 0, 0.3);
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: 8px;
   }
 
   .composer-line {
@@ -1789,7 +1926,7 @@ const harnesses = [
   .composer-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     font-family: var(--font-mono);
     font-size: 9.5px;
     color: var(--fg-faint);
@@ -1802,19 +1939,31 @@ const harnesses = [
     color: var(--fg-dim);
   }
 
-  /* ── Market column ────────────────────────────────────────── */
-  .appwin-market {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
+  .composer-send {
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #04120b;
+    font-size: 12px;
+    font-weight: 600;
   }
 
+  /* ── Chart card ───────────────────────────────────────────── */
   .console-chart {
     position: relative;
-    padding: 0 14px 10px;
+    display: flex;
+    flex-direction: column;
+    padding: 0 12px 10px;
     overflow: hidden;
-    border-bottom: 1px solid var(--border);
+  }
+
+  .chart-plot {
+    position: relative;
+    min-width: 0;
   }
 
   .chart-head {
@@ -1868,38 +2017,39 @@ const harnesses = [
   .chart-svg {
     width: 100%;
     height: auto;
-    aspect-ratio: 900 / 520;
+    aspect-ratio: 900 / 330;
     display: block;
   }
 
-  .zone { opacity: 1; }
-  .zone--risk { fill: color-mix(in srgb, var(--loss) 7%, transparent); }
-  .zone--reward { fill: color-mix(in srgb, var(--accent) 5%, transparent); }
-
-  /* ── The plan, right of the mark ──────────────────────────── */
-  /* Dashed, because none of it has printed yet. It is revealed by a wipe
-     rather than drawn by a dash offset, which would eat the dashes. */
-  .plan {
-    clip-path: inset(0);
-  }
-
-  /* The trend line is one line across the whole chart. The half over the
-     record and the half over the plan carry the same weight, the same ends,
-     and the same two colours the candles use. */
-  .plan-path {
+  /* ── The price line, its wash, and the dot riding it ──────── */
+  .price-line {
     fill: none;
-    stroke-width: 2.25;
+    stroke: var(--ok);
+    stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
   }
 
-  .plan-path--up { stroke: var(--ok); }
-  .plan-path--down { stroke: var(--loss); }
+  .price-wash {
+    fill: url(#washGrad);
+    stroke: none;
+    /* Rests uncovered to the plot's edge for browsers without timelines. */
+    clip-path: inset(0 7.78% 0 0);
+  }
 
-  /* Solid, like the record. The dashed line running under them is what marks
-     this half as the plan. */
-  .proj-body { fill: currentColor; }
-  .proj-wick { stroke: currentColor; stroke-width: 1.1; }
+  .price-dot {
+    fill: var(--ok);
+    stroke: #0a0a0c;
+    stroke-width: 2;
+    offset-rotate: 0deg;
+    offset-distance: 100%;
+  }
+
+  .wedge {
+    fill: url(#wedgeGrad);
+  }
 
   .dip-dot { fill: var(--loss); }
 
@@ -2083,25 +2233,9 @@ const harnesses = [
 
   .rr-note .tick { margin-top: 2px; }
 
-  .candle-body { fill: currentColor; }
-  .candle-wick { stroke: currentColor; stroke-width: 1.1; }
-  .candle--up { color: var(--ok); }
-  .candle--down { color: var(--loss); }
-
   .level line {
     stroke-width: 1;
     stroke-dasharray: 4 4;
-  }
-
-  .level text {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    fill: currentColor;
-    /* The labels cross candles, so each one carries its own dark halo. */
-    stroke: #0a0a0c;
-    stroke-width: 3.5;
-    paint-order: stroke fill;
   }
 
   .grid line {
@@ -2111,110 +2245,171 @@ const harnesses = [
 
   .grid text {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     fill: var(--fg-faint);
-    opacity: 0.55;
+    opacity: 0.7;
   }
 
-  .target-pays {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    fill: var(--accent);
-    stroke: #0a0a0c;
-    stroke-width: 3.5;
-    paint-order: stroke fill;
-  }
-
-  .level--entry { color: var(--fg-muted); }
   .level--entry line { stroke: var(--fg-faint); }
-  .level--stop { color: var(--loss); }
   .level--stop line { stroke: var(--loss); }
-  .level--target { color: var(--accent); }
-  .level--target line { stroke: var(--accent); }
-  .level--trigger { color: var(--warn); }
+  .level--target line { stroke: var(--ok); }
   .level--trigger line { stroke: var(--warn); }
-  .level--wake { color: var(--warn); }
   .level--wake line { stroke: var(--warn); opacity: 0.55; }
-
-  .chart-run {
-    fill: none;
-    /* The same green the up candles and the up legs of the plan use, not the
-       brand accent a shade off it. */
-    stroke: var(--ok);
-    stroke-width: 2.25;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-dasharray: 1;
-    stroke-dashoffset: 0;
-  }
 
   .fire-dot { fill: var(--warn); }
   .fire-ping { fill: none; stroke: var(--warn); stroke-width: 1.5; opacity: 0; }
-  .mark-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
 
-  /* ── Position readout ─────────────────────────────────────────
-     Banded like the app's live panel: each band owns its padding and a
-     hairline above it, and the two context strips — the schedule and the
-     held line — carry the same faint ground they carry in the app. */
-  .console-readout {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+  /* ── The docked level chips ───────────────────────────────── */
+  .chart-chips {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
   }
 
-  .readout-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 5px 9px;
-    padding: 11px 14px;
-  }
-
-  /* One chip for the exposure, tinted by its direction, with the leverage
-     set on its own ground inside it. */
-  .side-chip {
+  .chip {
+    position: absolute;
+    right: 4px;
+    transform: translateY(-50%);
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    flex: none;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--border-strong);
+    background: color-mix(in srgb, #101113 76%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
     font-family: var(--font-mono);
-    font-size: 11px;
-    padding: 2px 8px;
+    font-size: 9.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .chip--target { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  .chip--armed { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+  .chip--met { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 16%, #101113); }
+  .chip--stop { color: var(--loss); border-color: color-mix(in srgb, var(--loss) 42%, transparent); }
+  .chip--wake { color: var(--warn); }
+
+  .chip--mark {
+    color: #0b0f0d;
+    background: var(--ok);
+    border-color: var(--ok);
+    font-weight: 600;
+  }
+
+  .chip--mark .pnl-window { height: 1.3em; }
+  .chip--mark .pnl-step { color: inherit; text-align: left; }
+
+  .chip--reassess {
+    top: auto;
+    bottom: 8px;
+    right: 12%;
+    transform: none;
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 38%, transparent);
     border-radius: 999px;
+  }
+
+  /* ── Positions card ───────────────────────────────────────── */
+  .pos-card {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pos-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px 6px;
+  }
+
+  .pos-unreal {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--ok);
+    transform-origin: 100% 50%;
+  }
+
+  .pos-usd { font-size: 12.5px; }
+
+  .pos-cols,
+  .pos-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.8fr) 44px;
+    gap: 10px;
+    align-items: center;
+    padding: 5px 12px;
+  }
+
+  .pos-cols {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pos-row {
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+
+  .pos-row + .pos-row {
+    border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  }
+
+  .ta-r { text-align: right; }
+  .ta-r .pnl-window { margin-left: auto; width: max-content; }
+  .pos-time { color: var(--fg-faint); font-size: 10px; }
+  .pos-none { color: var(--fg-faint); }
+
+  .pos-state {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .pos-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10px;
     color: var(--ok);
     border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
-    background: color-mix(in srgb, var(--ok) 10%, transparent);
+    background: color-mix(in srgb, var(--ok) 9%, transparent);
+    white-space: nowrap;
   }
 
-  .side-chip-lev {
-    padding: 0 4px;
+  .pos-pill b {
+    font-weight: 500;
+    padding: 0 3px;
     border-radius: 3px;
     background: color-mix(in srgb, currentColor 16%, transparent);
-    font-variant-numeric: tabular-nums;
   }
 
-  .readout-pnl {
-    display: flex;
-    align-items: center;
-    font-family: var(--font-mono);
-    font-size: 16px;
-    font-variant-numeric: tabular-nums;
-    color: var(--ok);
-    letter-spacing: -0.01em;
-    transform-origin: 0 50%;
+  .pos-token {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
 
-  /* Return on the margin the position ties up, next to the dollars it is
-     the same number as. */
-  .readout-roi {
-    display: flex;
-    align-items: center;
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    color: var(--ok);
-  }
+  .pos-token--open { color: var(--chart-blue); }
+  .pos-token--working { color: var(--warn); }
+  .pos-token--won { color: var(--ok); }
+
+  /* The stop's row once the close makes it moot: settled, not alarming.
+     Wins over the swap machinery's green met state. */
+  .pos-token--done.armed-state--met { color: var(--fg-faint); }
 
   .pnl-window {
     display: block;
@@ -2245,20 +2440,12 @@ const harnesses = [
      the drawdown without a second animation. */
   .pnl-step--down { color: var(--loss); }
 
-  /* The rule and the figure it stands for, on the header line rather than in
-     a band of its own — the same trade the app makes. */
-  .readout-progress {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-  }
-
+  /* The app's blue progress rule toward the target, under the log header. */
   .progress-track {
-    width: 28px;
-    flex: none;
+    flex: 1;
     height: 3px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.07);
+    background: rgba(255, 255, 255, 0.08);
     overflow: hidden;
   }
 
@@ -2267,16 +2454,17 @@ const harnesses = [
     height: 100%;
     width: 100%;
     border-radius: 999px;
-    background: var(--accent);
+    background: var(--chart-blue);
     transform-origin: 0 50%;
   }
 
   .progress-label {
+    flex: none;
     display: flex;
     align-items: baseline;
     gap: 4px;
     font-family: var(--font-mono);
-    font-size: 10.5px;
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
     color: var(--fg-dim);
     white-space: nowrap;
@@ -2285,115 +2473,8 @@ const harnesses = [
   .progress-label .pnl-window { height: 1.3em; }
   .progress-label .pnl-step { color: inherit; }
 
-  /* ── The schedule ─────────────────────────────────────────── */
-  .readout-next {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--border);
-    background: rgba(255, 255, 255, 0.018);
-  }
-
-  .next-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 8px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.03);
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-variant-numeric: tabular-nums;
-    color: var(--fg-dim);
-  }
-
-  .next-pill-label { color: var(--fg); }
-
-  .readout-legend {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
-
-  /* ── The checklist ────────────────────────────────────────── */
-  /* The checklist takes the slack between the two context strips, and sits
-     centred in it: the readout is stretched to the chart's height, and
-     leaving the whole surplus under the last row read as a hole. */
-  .readout-armed {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    flex: 1;
-    padding: 9px 0;
-    border-top: 1px solid var(--border);
-  }
-
-  .readout-armed .readout-legend {
-    padding: 0 14px 3px;
-  }
-
-  .armed-row {
-    display: flex;
-    align-items: baseline;
-    gap: 9px;
-    padding: 6px 14px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .armed-row + .armed-row {
-    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-  }
-
-  .armed-glyph {
-    width: 11px;
-    flex: none;
-    justify-content: center;
-  }
-
-  .armed-label {
-    flex: 1;
-    min-width: 0;
-    color: var(--fg-muted);
-    line-height: 1.35;
-  }
-
-  /* The reading the condition is measured against, right-aligned so the rows
-     are read down the list against each other. */
-  .armed-read {
-    width: 68px;
-    flex: none;
-    text-align: right;
-    color: var(--fg);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .armed-read .pnl-window { height: 1.3em; }
-  .armed-read .pnl-step { text-align: right; }
-  .armed-read .mark-reel .pnl-step { color: inherit; }
-  .armed-read-none { color: var(--fg-faint); }
-
-  .armed-tail {
-    width: 44px;
-    flex: none;
-  }
-
-  .armed-state {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    justify-content: flex-end;
-    color: var(--fg-faint);
-    flex-shrink: 0;
-  }
-
-  /* The two states occupy the same cell so the row never reflows when one
-     replaces the other. */
+  /* Two states occupying one cell, so a row never reflows when its state
+     crosses over. Resting on the met state for browsers without timelines. */
   .armed-swap {
     position: relative;
     display: grid;
@@ -2402,48 +2483,10 @@ const harnesses = [
 
   .armed-swap .armed-state {
     grid-area: 1 / 1;
-    justify-content: flex-end;
   }
 
-  .armed-glyph.armed-swap .armed-state {
-    justify-content: center;
-  }
-
-  /* Resting on the met state, so a browser without scroll timelines shows
-     the outcome rather than a wait that never resolves. */
   .armed-state--met { color: var(--ok); }
   .armed-state--wait { opacity: 0; }
-
-  /* ── What is held ─────────────────────────────────────────────
-     One wrapping line of `label value` pairs at the foot of the panel, the
-     way the app closes it out. */
-  .readout-held {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 2px 12px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--border);
-    background: rgba(255, 255, 255, 0.018);
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-variant-numeric: tabular-nums;
-    color: var(--fg-faint);
-  }
-
-  .held-stat b {
-    margin-left: 4px;
-    font-weight: 400;
-    color: var(--fg);
-  }
-
-  .held-stat .pnl-window {
-    display: inline-block;
-    height: 1.3em;
-    vertical-align: -0.26em;
-  }
-
-  .held-stat .pnl-step { color: inherit; text-align: left; }
 
   /* ── The run came out clean ───────────────────────────────── */
   .console-success {
@@ -3033,18 +3076,13 @@ const harnesses = [
         view-timeline-axis: block;
       }
 
-      .candle,
-      .proj-candle,
       .payoff,
-      .zone,
       .grid,
       .level,
-      .target-pays,
       .fire-dot,
       .fire-ping,
-      .mark-dot,
-      .chart-run,
-      .plan,
+      .wedge,
+      .chip,
       .dip,
       .stop-hold,
       .stop-hold-label,
@@ -3055,42 +3093,91 @@ const harnesses = [
       .pct-reel,
       .mark-reel,
       .roi-reel,
-      .readout-pnl,
+      .pos-unreal,
+      .log-pnl,
       .progress-fill,
-      .next-pill,
-      .held-stat,
-      .readout-progress,
-      .armed-row,
-      .armed-state,
+      .pos-row,
+      .sb-pred,
       .armed-state--met,
       .armed-state--wait,
       .rr-seg,
       .console-success,
       .log-row,
-      .phase-word,
       .mission-sticky .tick path {
         animation-timeline: --mission;
         animation-range: contain var(--from) contain var(--to);
       }
 
-      /* The log fills the way the checks list does: each row rises from a
-         ghost of itself on its own beat. */
-      .log-row {
+      /* The log and the positions card fill the way the checks list does:
+         each row rises from a ghost of itself on its own beat. */
+      .log-row,
+      .pos-row,
+      .sb-pred {
         animation-name: check-in;
         animation-timing-function: linear;
         animation-fill-mode: both;
       }
 
-      /* Phases light as the mission enters them and stay lit. */
-      .phase-word {
-        animation-name: phase-lit;
+      /* The price line, its wash, and the dot riding it own the whole pinned
+         range; their choreography lives in the generated keyframes, measured
+         from the path itself. */
+      .price-line,
+      .price-wash,
+      .price-dot {
+        animation-timeline: --mission;
+        animation-range: contain 0% contain 100%;
+        animation-fill-mode: both;
+        animation-timing-function: linear;
+      }
+
+      .price-line { animation-name: price-draw; }
+      .price-wash { animation-name: price-wash; }
+      .price-dot { animation-name: price-ride; }
+
+      /* Chips slide in from the gutter. The armed, met, and mark chips flash
+         through instead: they retire once the story has moved past them. */
+      .chip {
+        animation-name: chip-in;
         animation-timing-function: linear;
         animation-fill-mode: both;
       }
 
-      @keyframes phase-lit {
-        from { color: var(--fg-faint); }
-        to { color: var(--fg); }
+      @keyframes chip-in {
+        from { opacity: 0; transform: translateY(-50%) translateX(10px); }
+        to { opacity: 1; transform: translateY(-50%); }
+      }
+
+      .chip--armed,
+      .chip--met,
+      .chip--mark {
+        animation-name: chip-flash;
+      }
+
+      @keyframes chip-flash {
+        0% { opacity: 0; transform: translateY(-50%) translateX(10px); }
+        10% { opacity: 1; transform: translateY(-50%); }
+        84% { opacity: 1; transform: translateY(-50%); }
+        100% { opacity: 0; transform: translateY(-50%); }
+      }
+
+      /* The reassess pill sits in the future gutter, not on a price row. It
+         retires when the watch fires: the wake that follows makes its own
+         appointment. */
+      .chip--reassess {
+        animation-name: reassess-flash;
+      }
+
+      @keyframes reassess-flash {
+        0% { opacity: 0; }
+        14% { opacity: 1; }
+        86% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+
+      .wedge {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
       }
 
       /* The full-length tracks: the room dims while the story plays, the
@@ -3153,18 +3240,6 @@ const harnesses = [
         91%, 100% { transform: translateY(-4.5em); }
       }
 
-      .candle,
-      .proj-candle {
-        animation-name: candle-print;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-      }
-
-      @keyframes candle-print {
-        from { opacity: 0; transform: scaleY(0.04); }
-        to { opacity: 1; transform: scaleY(1); }
-      }
-
       /* The number lands, overshoots, and settles into the glow it keeps. */
       .payoff {
         animation-name: payoff-land;
@@ -3189,12 +3264,6 @@ const harnesses = [
           transform: scale(1);
           filter: drop-shadow(0 0 14px color-mix(in srgb, var(--ok) 42%, transparent));
         }
-      }
-
-      .zone {
-        animation-name: zone-in;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
       }
 
       @keyframes zone-in {
@@ -3236,28 +3305,6 @@ const harnesses = [
         100% { opacity: 0; transform: scale(3.4); }
       }
 
-      .mark-dot {
-        animation-name: zone-in;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-      }
-
-      .chart-run {
-        stroke-dashoffset: 1;
-        animation-name: scrub-draw;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-      }
-
-      .next-pill,
-      .held-stat,
-      .readout-progress,
-      .armed-row {
-        animation-name: check-in;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-      }
-
       /* One reel, three phases, stepped so the digits land rather than
          slide: up to the open figure, down through the drawdown, out to
          the target. */
@@ -3277,7 +3324,8 @@ const harnesses = [
 
       /* The flash on the step that lands the target. It overshoots, then
          settles into a soft glow it keeps. */
-      .readout-pnl {
+      .pos-unreal,
+      .log-pnl {
         animation-name: pnl-flash;
         animation-timing-function: linear;
         animation-fill-mode: both;
@@ -3298,18 +3346,10 @@ const harnesses = [
         }
       }
 
-      /* ── The plan and its drama ─────────────────────────────
-         The plan is wiped in left to right, the drawdown arrives at the low,
-         and the stop flares at exactly the moment it is the only thing
-         holding the position. */
-      .plan {
-        animation-name: measure-up;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-      }
-
+      /* ── The drawdown and its drama ─────────────────────────
+         The dip arrives at the low, and the stop flares at exactly the
+         moment it is the only thing holding the position. */
       .grid,
-      .target-pays,
       .dip,
       .target-hit {
         animation-name: zone-in;
@@ -3528,25 +3568,23 @@ const harnesses = [
     .mission-dim { display: none; }
     .appwin { animation: none; }
 
-    /* The status reel keeps stepping, but on the compressed cover pass. */
-    .status-reel {
+    /* The full-range tracks keep stepping, on the compressed cover pass. */
+    .status-reel,
+    .price-line,
+    .price-wash,
+    .price-dot {
       animation-range:
         cover var(--pass-base)
         cover calc(var(--pass-base) + 100% * var(--pass));
     }
 
-    .candle,
-    .proj-candle,
     .payoff,
-    .zone,
     .grid,
     .level,
-    .target-pays,
     .fire-dot,
     .fire-ping,
-    .mark-dot,
-    .chart-run,
-    .plan,
+    .wedge,
+    .chip,
     .dip,
     .stop-hold,
     .stop-hold-label,
@@ -3557,19 +3595,16 @@ const harnesses = [
     .pct-reel,
     .mark-reel,
     .roi-reel,
-    .readout-pnl,
+    .pos-unreal,
+    .log-pnl,
     .progress-fill,
-    .next-pill,
-    .held-stat,
-    .readout-progress,
-    .armed-row,
-    .armed-state,
+    .pos-row,
+    .sb-pred,
     .armed-state--met,
     .armed-state--wait,
     .rr-seg,
     .console-success,
     .log-row,
-    .phase-word,
     .mission-sticky .tick path {
       /* The window is taller than the viewport it is no longer pinned to, so
          a full `cover` pass finishes the story long after the chart has left
@@ -3596,22 +3631,19 @@ const harnesses = [
       gap: 44px;
     }
 
-    /* One column: the chart leads, the log follows, the sidebar folds away.
-       The story still plays on the compressed cover pass. */
+    /* One column: the chart leads, the positions follow, the log closes, and
+       the sidebar folds away. The story still plays on the cover pass. */
     .appwin-body {
       grid-template-columns: 1fr;
     }
 
     .appwin-side { display: none; }
 
-    .appwin-market {
-      order: -1;
-      border-bottom: 1px solid var(--border);
+    .panel-row {
+      grid-template-columns: 1fr;
     }
 
-    .appwin-thread {
-      border-right: 0;
-    }
+    .statusbar { flex-wrap: wrap; row-gap: 4px; }
 
     .mission-notes {
       grid-template-columns: 1fr;
@@ -3728,10 +3760,25 @@ const harnesses = [
     }
 
     .log-feed {
-      padding: 10px 12px;
+      padding: 6px 6px;
     }
 
     .composer { display: none; }
+
+    /* The thread title has no room at phone width; the capsule carries the
+       state and the sidebar is gone, so the project name suffices. */
+    .crumb-title,
+    .crumb-sep { display: none; }
+
+    /* Five columns cannot breathe at 335px; the age column goes. */
+    .pos-cols,
+    .pos-row {
+      grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.9fr);
+      gap: 8px;
+    }
+
+    .pos-time,
+    .pos-cols span:nth-child(5) { display: none; }
   }
 
   @media (prefers-reduced-motion: reduce) {
