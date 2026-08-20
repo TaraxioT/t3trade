@@ -11,6 +11,11 @@
 #   scripts/upstream-drift.sh            # human-readable report
 #   scripts/upstream-drift.sh --json     # one JSON object, for CI
 #
+# Set UPSTREAM_DRIFT_JSON_PATH to also write the JSON object to that file. A
+# consumer that wants both the prose and the machine object gets them from one
+# measurement that way, rather than from two runs that can straddle an upstream
+# push and disagree about the head they measured.
+#
 # Exits 0 when drift is under both thresholds, 1 when either is exceeded, and
 # 2 when the drift cannot be measured at all — no upstream remote, or a
 # `git merge-tree` that failed outright rather than reporting conflicts.
@@ -89,14 +94,20 @@ if [[ "$behind" -gt "$COMMIT_THRESHOLD" || "$conflict_count" -gt "$CONFLICT_THRE
   over_threshold=true
 fi
 
+# Git C-quotes paths with unusual bytes, which still leaves backslashes and
+# double quotes in the line — escape both before wrapping, or one odd path
+# makes the whole report unparseable.
+files_json=$(printf '%s\n' "$conflicts" | sed '/^$/d' |
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/.*/"&"/' | paste -sd, -)
+json_report=$(printf '{"baseline":"%s","upstreamHead":"%s","commitsBehind":%s,"forecastConflicts":%s,"overThreshold":%s,"conflictFiles":[%s]}' \
+  "$baseline" "$upstream_head" "$behind" "$conflict_count" "$over_threshold" "$files_json")
+
+if [[ -n "${UPSTREAM_DRIFT_JSON_PATH:-}" ]]; then
+  printf '%s\n' "$json_report" > "$UPSTREAM_DRIFT_JSON_PATH"
+fi
+
 if [[ "$json_output" == true ]]; then
-  # Git C-quotes paths with unusual bytes, which still leaves backslashes and
-  # double quotes in the line — escape both before wrapping, or one odd path
-  # makes the whole report unparseable.
-  files_json=$(printf '%s\n' "$conflicts" | sed '/^$/d' |
-    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/.*/"&"/' | paste -sd, -)
-  printf '{"baseline":"%s","upstreamHead":"%s","commitsBehind":%s,"forecastConflicts":%s,"overThreshold":%s,"conflictFiles":[%s]}\n' \
-    "$baseline" "$upstream_head" "$behind" "$conflict_count" "$over_threshold" "$files_json"
+  printf '%s\n' "$json_report"
 else
   echo "Baseline:      ${baseline:0:9}"
   echo "upstream/main: ${upstream_head:0:9}"

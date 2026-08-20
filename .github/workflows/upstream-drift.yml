@@ -49,31 +49,32 @@ jobs:
       - name: Measure
         id: drift
         run: |
+          # One run, both representations: a second invocation could straddle
+          # an upstream push and leave the issue quoting a report and a JSON
+          # head that never existed together.
           set +e
-          report=$(scripts/upstream-drift.sh)
-          json=$(scripts/upstream-drift.sh --json)
-          # The JSON run measures independently, so its status is the one that
-          # matches the report the issue step parses.
-          json_status=$?
+          report=$(UPSTREAM_DRIFT_JSON_PATH="$RUNNER_TEMP/drift.json" scripts/upstream-drift.sh)
+          status=$?
           set -e
+          # Only 0 and 1 are measurements. Anything else means the drift was
+          # never measured, and reporting that as under-threshold would let the
+          # weekly run go quiet exactly when it has nothing to say.
+          case "$status" in
+            0) over=false ;;
+            1) over=true ;;
+            *)
+              echo "Drift measurement failed (status $status)." >&2
+              exit "$status"
+              ;;
+          esac
           echo "$report"
           {
             echo "report<<REPORT_EOF"
             echo "$report"
             echo "REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
-          echo "json=$json" >> "$GITHUB_OUTPUT"
-          # Only 0 and 1 are measurements. Anything else means the drift was
-          # never measured, and reporting that as under-threshold would let the
-          # weekly run go quiet exactly when it has nothing to say.
-          case "$json_status" in
-            0) echo "over=false" >> "$GITHUB_OUTPUT" ;;
-            1) echo "over=true" >> "$GITHUB_OUTPUT" ;;
-            *)
-              echo "Drift measurement failed (status $json_status)." >&2
-              exit "$json_status"
-              ;;
-          esac
+          echo "json=$(cat "$RUNNER_TEMP/drift.json")" >> "$GITHUB_OUTPUT"
+          echo "over=$over" >> "$GITHUB_OUTPUT"
 
       - name: Summarize
         env:
