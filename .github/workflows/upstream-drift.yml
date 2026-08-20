@@ -33,6 +33,14 @@ jobs:
           # clone: the whole measurement is the shape of the two branches.
           fetch-depth: 0
 
+      - name: Pin the local baseline branch
+        # The script measures `main`, but a dispatch from a topic branch checks
+        # that branch out and leaves `main` as a remote-tracking ref only. Point
+        # a local `main` at it so the run measures the fork's baseline while
+        # still using the dispatched ref's tooling.
+        run: |
+          git rev-parse --verify --quiet main >/dev/null || git branch main origin/main
+
       - name: Add the upstream remote
         run: |
           git remote add upstream https://github.com/pingdotgg/t3code.git

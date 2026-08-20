@@ -41,7 +41,12 @@ if ! git fetch --quiet upstream main; then
   exit 2
 fi
 
-baseline=$(git merge-base main upstream/main)
+if ! baseline=$(git merge-base main upstream/main); then
+  # Unrelated histories: there is no range to measure, and treating that as
+  # zero drift would be a lie the weekly run repeats forever.
+  echo "No common ancestor between main and upstream/main; drift not measured." >&2
+  exit 2
+fi
 upstream_head=$(git rev-parse upstream/main)
 
 if [[ "$baseline" == "$upstream_head" ]]; then
