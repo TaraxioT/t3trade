@@ -107,6 +107,10 @@ export const ApiLive = Api.make(
         flags: ["nodejs_compat"],
       },
       domain: relayPublicDomain,
+      // The connect path runs several sequential queries against an origin in
+      // Ashburn; running the Worker beside it collapses those origin round
+      // trips into one client round trip.
+      placement: { mode: "smart" as const },
     })),
     Effect.orDie,
   ),
