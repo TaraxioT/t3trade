@@ -2710,6 +2710,20 @@ describe("deriveOrderLedger", () => {
     expect(rows[1]?.price).toBe(1_900);
   });
 
+  it("keeps every pre-submission status in the live band", () => {
+    const rows = deriveOrderLedger({
+      orders: [
+        order({ executionId: "p", status: "previewed", filledSize: 0, avgFillPrice: null }),
+        order({ executionId: "s", status: "signed", filledSize: 0, avgFillPrice: null }),
+      ],
+      position: null,
+      markPrice: 1_900,
+      plannedEntry: null,
+    });
+    expect(rows.map((row) => row.state)).toEqual(["queued", "queued"]);
+    expect(rows.every((row) => row.isLive)).toBe(true);
+  });
+
   it("reports a partial fill with its track fraction", () => {
     const rows = deriveOrderLedger({
       orders: [order({ executionId: "p", status: "accepted", size: 2, filledSize: 0.5 })],
@@ -2751,6 +2765,34 @@ describe("deriveOrderLedger", () => {
     expect(rows.map((row) => row.state)).toEqual(["open", "open"]);
     expect(rows[0]?.valueUsd).toBeCloseTo(8 * 0.25 - 0.2, 9);
     expect(rows[1]?.valueUsd).toBeCloseTo(8 * 0.75 - 0.6, 9);
+  });
+
+  it("gives a resting partial fill its share of the live unrealised", () => {
+    // Half of the working order has filled and those units are in the
+    // position: the row states their P&L rather than a dash.
+    const rows = deriveOrderLedger({
+      orders: [
+        order({ executionId: "p", status: "accepted", size: 2, filledSize: 1, feeUsd: 0.2 }),
+        order({ executionId: "o", status: "filled", size: 3, filledSize: 3, feeUsd: 0.6 }),
+      ],
+      position: { size: 4, unrealisedPnl: 8 },
+      markPrice: 1_905,
+      plannedEntry: null,
+    });
+    expect(rows.map((row) => row.state)).toEqual(["partial", "open"]);
+    expect(rows[0]?.valueUsd).toBeCloseTo(8 * 0.25 - 0.2, 9);
+    expect(rows[1]?.valueUsd).toBeCloseTo(8 * 0.75 - 0.6, 9);
+  });
+
+  it("leaves a partial fill valueless while nothing is open", () => {
+    const rows = deriveOrderLedger({
+      orders: [order({ executionId: "p", status: "accepted", size: 2, filledSize: 0.5 })],
+      position: null,
+      markPrice: 1_900,
+      plannedEntry: null,
+    });
+    expect(rows[0]?.state).toBe("partial");
+    expect(rows[0]?.valueUsd).toBeNull();
   });
 
   it("settles the legs a reduce has already closed out", () => {

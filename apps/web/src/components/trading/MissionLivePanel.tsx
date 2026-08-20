@@ -144,7 +144,6 @@ import {
 } from "./missionTurnTimeline";
 import { useMissionPlanRevision, type MissionPlanRevision } from "./useMissionPlanRevision";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   dedupeConditions,
   deriveEntryFillAtMillis,
@@ -2264,12 +2263,21 @@ function OrderRowView({
     row.price === null ? "no price yet" : `at ${formatPrice(row.price)}`,
     row.valueUsd === null ? "no value yet" : `worth ${formatSignedUsd(row.valueUsd)} net of fees`,
     `as of ${timeLabel}`,
-    "press to switch the size column between dollars and units",
+    "press for the leg's full detail, and to switch the size column between dollars and units",
   ].join(", ");
 
   return (
-    <Tooltip>
-      <TooltipTrigger
+    // A popover, not a tooltip: the detail carries the leg's stop, liquidation
+    // and margin, and Base UI (correctly) never opens a tooltip for touch, so
+    // on a phone those risk figures had no way in at all. `openOnHover` keeps
+    // the pointer behaviour a hover exactly as it was, and gives touch and
+    // keyboard the press they already expect. The press still flips the size
+    // unit; the two are the row's read and its toggle, not one action.
+    <Popover>
+      <PopoverTrigger
+        openOnHover
+        delay={150}
+        closeDelay={0}
         render={
           <button
             type="button"
@@ -2326,8 +2334,8 @@ function OrderRowView({
           {row.valueUsd === null ? "-" : formatSignedUsd(row.valueUsd)}
         </span>
         <span className="whitespace-nowrap text-right text-muted-foreground">{timeLabel}</span>
-      </TooltipTrigger>
-      <TooltipPopup side="left" variant="glass" className="max-w-none">
+      </PopoverTrigger>
+      <PopoverPopup side="left" tooltipStyle className="max-w-none">
         <OrderDetail
           row={row}
           market={market}
@@ -2335,8 +2343,8 @@ function OrderRowView({
           markPrice={markPrice}
           stopPrice={stopPrice}
         />
-      </TooltipPopup>
-    </Tooltip>
+      </PopoverPopup>
+    </Popover>
   );
 }
 
@@ -2561,9 +2569,14 @@ function PositionsCard({
             {/* The live band — planned / queued / working / partial and the
                 open leg — pinned under the headings, above the settled
                 scrollback: the same shape the agent log keeps for its armed
-                rows. */}
+                rows. Bounded to four rows, because pinned it covers the top of
+                the scroller for the whole scroll: a long live band (scaled in
+                several times, with working orders alongside) would otherwise
+                sit over the settled legs and put their history out of reach.
+                Past the cap the band scrolls on its own and the scrollback
+                below it stays reachable. */}
             {live.length === 0 ? null : (
-              <div className="sticky top-[19px] z-10 col-span-full grid grid-cols-subgrid gap-y-1.5 bg-card pb-0.5">
+              <div className="sticky top-[19px] z-10 col-span-full grid max-h-[8.5rem] grid-cols-subgrid gap-y-1.5 overflow-y-auto overscroll-contain bg-card pb-0.5">
                 {live.map(renderRow)}
                 {settled.length === 0 ? null : (
                   <div className="col-span-full h-px bg-border" aria-hidden />

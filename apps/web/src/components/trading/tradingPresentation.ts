@@ -2677,7 +2677,9 @@ export function deriveOrderLedger(input: {
 }): ReadonlyArray<OrderLedgerRow> {
   const position = input.position !== null && input.position.size !== 0 ? input.position : null;
 
-  // Which filled opening legs the live position is still made of. A scaled-in
+  // Which opening legs the live position is still made of, completed or still
+  // filling: the units an order has filled sit in the position whether or not
+  // the rest of it has landed yet. A scaled-in
   // position is several of them, so walk newest-first taking each leg's filled
   // size until they cover the position: anything older than that has already
   // been closed out by a reduce leg and is genuinely settled. The units taken
@@ -2688,8 +2690,16 @@ export function deriveOrderLedger(input: {
     let uncovered = Math.abs(position.size);
     for (const order of input.orders) {
       if (uncovered <= ORDER_FILL_DUST) break;
+      // A leg that has filled part of its size and still rests on the book has
+      // those units in the position exactly like a completed leg does, so it
+      // holds live exposure and carries its share of the unrealised P&L. Only
+      // its own fills count, never the size it is still waiting on.
+      const holdsUnits =
+        order.status === "filled" ||
+        ((order.status === "accepted" || order.status === "submitted") &&
+          order.filledSize > ORDER_FILL_DUST);
       if (
-        order.status !== "filled" ||
+        !holdsUnits ||
         order.reduceOnly ||
         CLOSING_ACTIONS.has(order.actionType) ||
         (order.side === "buy") !== position.size > 0
@@ -2717,7 +2727,11 @@ export function deriveOrderLedger(input: {
     const atMillis = Date.parse(order.updatedAt);
 
     const state: OrderLedgerState =
-      order.status === "reserved"
+      // Everything before the exchange has been asked is queued: `previewed`
+      // and `signed` are pending statuses on the way to `submitted`, and
+      // reading them as settled would drop them out of the live band before
+      // they have done anything.
+      order.status === "reserved" || order.status === "previewed" || order.status === "signed"
         ? "queued"
         : order.status === "submitted" || order.status === "accepted"
           ? filled
@@ -2755,7 +2769,7 @@ export function deriveOrderLedger(input: {
     // legs that sum to the header figure, not one leg holding all of it.
     const openShare = openUnitsTotal > 0 ? heldUnits / openUnitsTotal : 1;
     const valueUsd =
-      state === "open" && position !== null
+      (state === "open" || state === "partial") && position !== null && heldUnits > 0
         ? position.unrealisedPnl * openShare - order.feeUsd
         : state === "closed"
           ? order.closedPnl - order.feeUsd
