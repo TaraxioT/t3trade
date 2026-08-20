@@ -55,12 +55,17 @@ jobs:
           echo "over=$([ $status -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Summarize
+        env:
+          # The report carries upstream-controlled path names. Interpolating it
+          # into the script body would run `$(...)` in a filename with this
+          # job's `issues: write` token.
+          REPORT: ${{ steps.drift.outputs.report }}
         run: |
           {
             echo '## Upstream drift'
             echo
             echo '```'
-            echo "${{ steps.drift.outputs.report }}"
+            echo "$REPORT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

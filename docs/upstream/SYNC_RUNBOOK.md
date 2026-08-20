@@ -16,16 +16,22 @@ that trail.
 
 ## Steps
 
-1. **Fetch and pick the range.**
+1. **Fetch and pick the tag to sync to.**
 
    ```sh
-   git fetch upstream
-   git log --oneline <current-baseline-SHA>..upstream/main
+   git fetch --tags upstream
+   git tag --list --sort=-creatordate --merged upstream/main 'v*' | head
+   git log --oneline <current-baseline-SHA>..<newBaselineTag>
    ```
 
-   Decide how much of that range to accept as one batch — the whole range,
-   or a prefix of it if you want a smaller/safer batch. The batch's upper
-   bound is the _new_ candidate baseline SHA.
+   The upper bound of a batch is always an upstream tag — a release tag, or
+   a nightly tag when no release exists in the range (rule 2 below). Never
+   `upstream/main` itself: its tip is usually untagged, and `BASELINE.md`
+   has to record the upstream release/nightly tag at the pin. Picking a tag
+   is also how you take a smaller/safer batch than the full range.
+
+   `<newBaselineTag>` is the _new_ candidate baseline; `<newBaselineSHA>` is
+   the commit it resolves to (`git rev-parse <newBaselineTag>^{commit}`).
 
 2. **Create the review branch.**
 
@@ -39,10 +45,12 @@ that trail.
 3. **Merge the batch.**
 
    ```sh
-   git merge --no-ff upstream/main
-   # or, for a partial batch:
-   git merge --no-ff <newBaselineSHA>
+   git merge --no-ff <newBaselineTag>
    ```
+
+   Merge the tag, not `upstream/main` — merging the branch accepts whatever
+   its tip happens to be, which is how an untagged commit becomes a baseline
+   that `BASELINE.md` cannot describe.
 
    `--no-ff` is required: it produces a real merge commit even when the
    range is a linear fast-forward, so the sync is a visible, revertable
@@ -85,9 +93,10 @@ that trail.
    git push origin upstream-base/YYYY-MM-DD-<newShortSHA>
    ```
 
-   Update `docs/upstream/BASELINE.md` with the new SHA, tag, date, and a
-   link to the sync PR, in the same PR or an immediate follow-up commit on
-   `main`.
+   Update `docs/upstream/BASELINE.md` with the new SHA, the upstream
+   release/nightly tag from step 1, the accepted-baseline tag created here,
+   the date, and a link to the sync PR — in the same PR or an immediate
+   follow-up commit on `main`.
 
 ## Cadence: when to sync
 
@@ -122,8 +131,10 @@ scripts/upstream-drift.sh --json   # for tooling; exits 1 when over threshold
    stitch merge. A squash discards the second parent, which makes the next
    sync's `git merge-base` wrong and turns the following sync into a
    re-resolution of every seam already resolved.
-2. **Sync to a tag, always.** A nightly tag is fine when no stable release
-   exists — v0.0.34 had none. Record the tag name in `BASELINE.md`.
+2. **Sync to an upstream tag, always.** A nightly tag is fine when no stable
+   release exists — v0.0.34 had none. Record that tag in `BASELINE.md`; the
+   `upstream-base/...` tag step 7 creates is fork-local and does not stand in
+   for it.
 3. **Never sync with a dirty tree.** Checkpoint or branch the WIP first. A
    conflict resolution that has to be told apart from unrelated local edits is
    a resolution you cannot review.

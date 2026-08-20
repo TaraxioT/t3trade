@@ -49,9 +49,10 @@ fi
 # `git merge-tree` writes the conflicted paths to stdout ahead of its
 # human-readable log, and exits non-zero when there are conflicts at all — so
 # the exit status is information, not a failure.
+merge_status=0
 conflicts=""
 if [[ "$behind" -gt 0 ]]; then
-  merge_output=$(git merge-tree --write-tree --name-only main upstream/main || true)
+  merge_output=$(git merge-tree --write-tree --name-only main upstream/main) || merge_status=$?
   # First line is the tree oid; the paths follow until the first blank line.
   conflicts=$(printf '%s\n' "$merge_output" | tail -n +2 | sed -n '/^$/q;p')
 fi
@@ -59,6 +60,11 @@ fi
 conflict_count=0
 if [[ -n "$conflicts" ]]; then
   conflict_count=$(printf '%s\n' "$conflicts" | wc -l | tr -d ' ')
+elif [[ "$merge_status" -ne 0 ]]; then
+  # Some conflict classes (a binary/submodule clash, an unresolvable rename)
+  # set the exit status without naming a path. Counting them as zero would
+  # report a clean forecast for a merge that will not apply.
+  conflict_count=1
 fi
 
 over_threshold=false
@@ -67,7 +73,11 @@ if [[ "$behind" -gt "$COMMIT_THRESHOLD" || "$conflict_count" -gt "$CONFLICT_THRE
 fi
 
 if [[ "$json_output" == true ]]; then
-  files_json=$(printf '%s\n' "$conflicts" | sed '/^$/d' | sed 's/.*/"&"/' | paste -sd, -)
+  # Git C-quotes paths with unusual bytes, which still leaves backslashes and
+  # double quotes in the line — escape both before wrapping, or one odd path
+  # makes the whole report unparseable.
+  files_json=$(printf '%s\n' "$conflicts" | sed '/^$/d' |
+    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/.*/"&"/' | paste -sd, -)
   printf '{"baseline":"%s","upstreamHead":"%s","commitsBehind":%s,"forecastConflicts":%s,"overThreshold":%s,"conflictFiles":[%s]}\n' \
     "$baseline" "$upstream_head" "$behind" "$conflict_count" "$over_threshold" "$files_json"
 else
