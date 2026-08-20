@@ -240,3 +240,5 @@ T3 Trade tracks `pingdotgg/t3code` at the commit listed in
 remote is fetch-only. For non-trading features, use T3 Code's README, install
 instructions, and support channels. This fork does not accept contributions
 that belong in the upstream project.
+
+<!-- ci push-trigger probe -->
