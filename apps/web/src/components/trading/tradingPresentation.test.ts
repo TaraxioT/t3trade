@@ -2736,6 +2736,50 @@ describe("deriveOrderLedger", () => {
     expect(rows[0]?.price).toBeCloseTo(1_899.5, 9);
   });
 
+  it("holds every filled leg the live position is still made of open", () => {
+    // Scaled in twice, nothing reduced: both entry legs are still exposure,
+    // and the aggregate unrealised splits across them by the units each holds.
+    const rows = deriveOrderLedger({
+      orders: [
+        order({ executionId: "second", size: 1, filledSize: 1, feeUsd: 0.2 }),
+        order({ executionId: "first", size: 3, filledSize: 3, feeUsd: 0.6 }),
+      ],
+      position: { size: 4, unrealisedPnl: 8 },
+      markPrice: 1_905,
+      plannedEntry: null,
+    });
+    expect(rows.map((row) => row.state)).toEqual(["open", "open"]);
+    expect(rows[0]?.valueUsd).toBeCloseTo(8 * 0.25 - 0.2, 9);
+    expect(rows[1]?.valueUsd).toBeCloseTo(8 * 0.75 - 0.6, 9);
+  });
+
+  it("settles the legs a reduce has already closed out", () => {
+    // The position is one unit, so only the newest entry leg still holds it.
+    const rows = deriveOrderLedger({
+      orders: [
+        order({ executionId: "second", size: 1, filledSize: 1, feeUsd: 0.2 }),
+        order({ executionId: "first", size: 3, filledSize: 3, closedPnl: 4, feeUsd: 0.6 }),
+      ],
+      position: { size: 1, unrealisedPnl: 8 },
+      markPrice: 1_905,
+      plannedEntry: null,
+    });
+    expect(rows.map((row) => row.state)).toEqual(["open", "closed"]);
+    expect(rows[0]?.valueUsd).toBeCloseTo(7.8, 9);
+    expect(rows[1]?.valueUsd).toBeCloseTo(3.4, 9);
+  });
+
+  it("reads an abandoned order as rejected, not as a settled zero", () => {
+    const rows = deriveOrderLedger({
+      orders: [order({ executionId: "f", status: "failed", filledSize: 0, avgFillPrice: null })],
+      position: null,
+      markPrice: 1_900,
+      plannedEntry: null,
+    });
+    expect(rows[0]?.state).toBe("rejected");
+    expect(rows[0]?.valueUsd).toBeNull();
+  });
+
   it("draws the planned ghost only while no live order covers the plan", () => {
     const planned = { sizeUsd: 950, price: null, direction: "short" as const };
     const empty = deriveOrderLedger({

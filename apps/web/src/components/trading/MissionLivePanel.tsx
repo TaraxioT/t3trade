@@ -1125,9 +1125,17 @@ function RiskRewardBar({
  * looking at the chart.
  */
 function RevisionNote({ revision }: { readonly revision: MissionPlanRevision }): ReactNode {
+  // A refused stop and an unconfirmed target are two separate live facts, and
+  // both can land from one drag. Say both: hearing only the stop refusal
+  // leaves the operator believing the new target is resting when it is not.
+  const details = [revision.refusedStop?.detail, revision.unconfirmedTarget?.detail].filter(
+    (detail): detail is string => typeof detail === "string" && detail.length > 0,
+  );
   const message = revision.lockLost
     ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
-    : (revision.refusedStop?.detail ?? revision.unconfirmedTarget?.detail ?? revision.error);
+    : details.length > 0
+      ? details.join(" ")
+      : revision.error;
   if (message === null || message === undefined) return null;
   return (
     <button
@@ -2374,6 +2382,11 @@ function PositionsCard({
   const sizeUnit = useMissionSizeUnit((store) => store.unit);
   const toggleUnit = useMissionSizeUnit((store) => store.toggle);
 
+  // Past the cap the older settled legs are collapsed, not dropped: the
+  // scrollback stays short by default and the count expands into the full
+  // order history, which is the only record of what the mission did.
+  const [showAllSettled, setShowAllSettled] = useState(false);
+
   // One-shot filled-ring bookkeeping: a leg that just became `open`, or a
   // closing leg that just settled, pulses once. Keyed on the state transition
   // the panel itself observed, so the 3s poll cannot replay it.
@@ -2408,7 +2421,7 @@ function PositionsCard({
 
   const live = rows.filter((row) => row.isLive);
   const settledAll = rows.filter((row) => !row.isLive);
-  const settled = settledAll.slice(0, MAX_ORDER_ROWS);
+  const settled = showAllSettled ? settledAll : settledAll.slice(0, MAX_ORDER_ROWS);
   const earlier = settledAll.length - settled.length;
 
   const renderRow = (row: OrderLedgerRow): ReactNode => (
@@ -2558,10 +2571,15 @@ function PositionsCard({
               </div>
             )}
             {settled.map(renderRow)}
-            {earlier === 0 ? null : (
-              <span className="col-span-full font-mono text-[11px] tabular-nums text-muted-foreground">
-                +{earlier} earlier
-              </span>
+            {settledAll.length <= MAX_ORDER_ROWS ? null : (
+              <button
+                type="button"
+                onClick={() => setShowAllSettled((open) => !open)}
+                data-testid="mission-positions-earlier"
+                className="col-span-full rounded text-left font-mono text-[11px] tabular-nums text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+              >
+                {showAllSettled ? "fewer" : `+${earlier} earlier`}
+              </button>
             )}
           </div>
         </div>
@@ -2680,9 +2698,12 @@ function turnCardLogIdentity(card: TurnTimelineCard): {
   word: string;
 } {
   if (card.kind === "trade") {
+    // An opening fill is `neutral`: it has realised nothing yet, so painting
+    // it with the profit rail would claim a gain that does not exist. Only a
+    // closing fill's realised sign earns the profit/loss tones.
     return {
       Icon: Receipt,
-      tone: card.tone === "loss" ? "loss" : "profit",
+      tone: card.tone === "loss" ? "loss" : card.tone === "profit" ? "profit" : "info",
       word: "trade",
     };
   }

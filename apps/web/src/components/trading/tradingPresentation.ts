@@ -2677,18 +2677,32 @@ export function deriveOrderLedger(input: {
 }): ReadonlyArray<OrderLedgerRow> {
   const position = input.position !== null && input.position.size !== 0 ? input.position : null;
 
-  // The newest filled opening order is the leg the live position came from —
-  // its row carries the live figures. Orders arrive newest first.
-  const openLegKey =
-    position === null
-      ? null
-      : (input.orders.find(
-          (order) =>
-            order.status === "filled" &&
-            !order.reduceOnly &&
-            !CLOSING_ACTIONS.has(order.actionType) &&
-            (order.side === "buy") === position.size > 0,
-        )?.executionId ?? null);
+  // Which filled opening legs the live position is still made of. A scaled-in
+  // position is several of them, so walk newest-first taking each leg's filled
+  // size until they cover the position: anything older than that has already
+  // been closed out by a reduce leg and is genuinely settled. The units taken
+  // from each leg are what still sits in the position, and are how the
+  // aggregate unrealised P&L is split across the rows below.
+  const openLegUnits = new Map<string, number>();
+  if (position !== null) {
+    let uncovered = Math.abs(position.size);
+    for (const order of input.orders) {
+      if (uncovered <= ORDER_FILL_DUST) break;
+      if (
+        order.status !== "filled" ||
+        order.reduceOnly ||
+        CLOSING_ACTIONS.has(order.actionType) ||
+        (order.side === "buy") !== position.size > 0
+      ) {
+        continue;
+      }
+      const held = Math.min(order.filledSize, uncovered);
+      if (held <= ORDER_FILL_DUST) continue;
+      openLegUnits.set(order.executionId, held);
+      uncovered -= held;
+    }
+  }
+  const openUnitsTotal = [...openLegUnits.values()].reduce((sum, units) => sum + units, 0);
 
   const rows: OrderLedgerRow[] = input.orders.map((order) => {
     const isClose = order.reduceOnly || CLOSING_ACTIONS.has(order.actionType);
@@ -2710,12 +2724,12 @@ export function deriveOrderLedger(input: {
             ? "partial"
             : "working"
           : order.status === "filled"
-            ? order.executionId === openLegKey
+            ? openLegUnits.has(order.executionId)
               ? "open"
               : "closed"
             : order.status === "cancelled"
               ? "cancelled"
-              : order.status === "rejected"
+              : order.status === "rejected" || order.status === "failed"
                 ? "rejected"
                 : "closed";
 
@@ -2731,9 +2745,14 @@ export function deriveOrderLedger(input: {
     const priceForNotional = price ?? input.markPrice;
     const sizeUsd = priceForNotional === null ? null : sizeUnits * priceForNotional;
 
+    // An open leg carries its share of the position's unrealised P&L, split by
+    // the units it still holds, so a scaled-in position reads as several live
+    // legs that sum to the header figure, not one leg holding all of it.
+    const openShare =
+      openUnitsTotal > 0 ? (openLegUnits.get(order.executionId) ?? 0) / openUnitsTotal : 1;
     const valueUsd =
       state === "open" && position !== null
-        ? position.unrealisedPnl - order.feeUsd
+        ? position.unrealisedPnl * openShare - order.feeUsd
         : state === "closed"
           ? order.closedPnl - order.feeUsd
           : null;
