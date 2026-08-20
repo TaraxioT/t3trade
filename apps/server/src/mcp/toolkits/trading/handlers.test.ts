@@ -2787,6 +2787,17 @@ it.effect("refuses handler-level derived params violations by name", () =>
 // fixtures are fixed-timestamp throughout (freshness at 1_000_000, TestClock
 // observedAt), so the digests are stable across runs; a digest rather than the
 // full ~4k strings keeps the oracle reviewable as one line per call.
+/**
+ * The digest of a golden whose bytes are not pinned yet.
+ *
+ * A golden set to this is NOT under test: the loop below prints its digest and
+ * moves on, so the suite stays green while that one call has no oracle. The
+ * sentinel is spelled out rather than reusing the word "GOLDEN" so `grep
+ * UNPINNED` finds every hole in one pass — a hole that greps like the rest of
+ * the file is a hole nobody finds.
+ */
+const UNPINNED = "UNPINNED";
+
 const GOLDEN_CALLS: ReadonlyArray<{ readonly label: string; readonly digest: string }> = [
   {
     label: "scope:market",
@@ -2827,11 +2838,13 @@ const GOLDEN_CALLS: ReadonlyArray<{ readonly label: string; readonly digest: str
     digest: "a35294d6ae5c2a42ef9b8d196c8bf97d81ca2e08a98fe890ef6e3b651b884c6f",
   },
   {
-    // Re-capture pending: the unbound default timeframe moved 1m -> 5m, and
-    // this golden pins the unbound path's bytes. Set to "GOLDEN" so the next
-    // run prints the digest of the new output; pin what it prints.
+    // NOT PINNED. R2 moved the unbound default timeframe 1m -> 5m, so the bytes
+    // this golden used to pin are stale, and the correct new digest cannot be
+    // written down without executing the call once. Until someone runs the
+    // suite and pastes the printed digest here, the unbound scope[] path has no
+    // byte-identity oracle - the one gap in plan 38 §5.3's coverage.
     label: "unbound scope:market+candles",
-    digest: "GOLDEN",
+    digest: UNPINNED,
   },
 ];
 
@@ -2891,10 +2904,14 @@ it.effect("pins trading_look scope results byte for byte (plan 38 §5.3)", () =>
           const text = response.result.content[0].text as string;
           const digest = NodeCrypto.createHash("sha256").update(text).digest("hex");
           const expected = GOLDEN_CALLS.find((golden) => golden.label === call.label)?.digest;
-          if (expected === undefined || expected === "GOLDEN") {
-            // Capture mode: print the digest so it can be pinned. A pinned run
-            // never takes this branch.
-            process.stdout.write(`GOLDEN ${call.label} ${digest} chars=${text.length}\n`);
+          if (expected === undefined || expected === UNPINNED) {
+            // Capture mode: this call has no oracle. Print the digest loudly
+            // enough that a reader of a green run can see the gap, and paste it
+            // into GOLDEN_CALLS to close it.
+            process.stdout.write(
+              `UNPINNED GOLDEN ${call.label} ${digest} chars=${text.length} ` +
+                `(not under test - paste this digest into GOLDEN_CALLS)\n`,
+            );
             continue;
           }
           assert.equal(digest, expected, call.label);
