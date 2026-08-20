@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -1546,6 +1547,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const firstMissing = `t3code_codex_first_`;
           const secondMissing = `t3code_codex_second_`;
           const spawnedCommands: Array<string> = [];
+          // Resolved when the re-probe's spawn command settles, giving the
+          // test a deterministic completion signal to await instead of a
+          // budgeted poll (the spawn crosses real child-process async
+          // boundaries that a tight poll loop can starve on slow runners).
+          const reprobeSpawnSettled = yield* Deferred.make<void>();
           const serverSettings = yield* makeMutableServerSettingsService(
             decodeServerSettings(
               deepMerge(encodedDefaultServerSettings, {
@@ -1581,8 +1587,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
             Layer.updateService(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
               ChildProcessSpawner.make((command) => {
-                spawnedCommands.push((command as { readonly command: string }).command);
-                return spawner.spawn(command);
+                const commandString = (command as { readonly command: string }).command;
+                spawnedCommands.push(commandString);
+                if (commandString !== secondMissing) {
+                  return spawner.spawn(command);
+                }
+                return spawner
+                  .spawn(command)
+                  .pipe(Effect.onExit(() => Deferred.succeed(reprobeSpawnSettled, void 0)));
               }),
             ),
             Layer.provideMerge(NodeServices.layer),
@@ -1630,26 +1642,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               },
             });
 
-            // Poll until the injected process boundary observes the new
-            // executable. This verifies the public settings-to-probe behavior
-            // without depending on timestamps assigned by TestClock.
+            // Await the re-probe's spawn completion directly. Parking the
+            // test fiber on the deferred frees the runtime (and the real
+            // event loop) to run the settings-watcher → reconcile → re-probe
+            // chain, so slow CI runners cannot starve it the way a budgeted
+            // poll loop did. This verifies the public settings-to-probe
+            // behavior without depending on timestamps assigned by TestClock.
+            yield* Deferred.await(reprobeSpawnSettled);
+
+            // The spawn has settled; the remaining snapshot → aggregator
+            // propagation is fiber-internal (plus TestClock sleeps), so a few
+            // clock ticks deterministically flush the error snapshot into
+            // `getProviders`.
             const refreshed = yield* Effect.gen(function* () {
-              // The settings-watcher → reconcile → re-probe chain crosses real
-              // async boundaries (child-process spawn callbacks), which need
-              // real event-loop turns this loop cannot inject via TestClock.
-              // Slow CI runners need many more poll iterations than a laptop.
-              for (let attempts = 0; attempts < 300; attempts += 1) {
+              for (let attempts = 0; attempts < 50; attempts += 1) {
                 const providers = yield* registry.getProviders;
                 const codex = providers.find((provider) => provider.instanceId === "codex");
-                if (
-                  codex !== undefined &&
-                  codex.status === "error" &&
-                  spawnedCommands.includes(secondMissing)
-                ) {
+                if (codex !== undefined && codex.status === "error") {
                   return providers;
                 }
-                yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
+                yield* TestClock.adjust("10 millis");
                 yield* Effect.yieldNow;
               }
               return yield* registry.getProviders;
