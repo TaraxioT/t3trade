@@ -133,7 +133,10 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
-export const DEFAULT_MODEL = "gpt-5.6-sol";
+export const DEFAULT_MODEL = "gpt-5.6-luna";
+
+/** Reasoning effort paired with DEFAULT_MODEL for auto-bootstrapped selections. */
+export const DEFAULT_REASONING_EFFORT = "low";
 
 /**
  * Codex default-model preference, most preferred first. The provider snapshot
@@ -141,6 +144,7 @@ export const DEFAULT_MODEL = "gpt-5.6-sol";
  * default; when none are available, Codex's own `isDefault` flag wins.
  */
 export const PREFERRED_DEFAULT_CODEX_MODELS: ReadonlyArray<string> = [
+  "gpt-5.6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
 ];
