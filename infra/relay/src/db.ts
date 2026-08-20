@@ -74,5 +74,18 @@ export const RelayHyperdrive = Effect.gen(function* () {
       disabled: true,
     },
     originConnectionLimit: 20,
+    // Alchemy evaluates the dev origin while planning, not only in dev mode, and
+    // refuses an Access-fronted origin without one. Local development reaches
+    // the same database through its own tunnel session:
+    //   cloudflared access tcp --hostname $RELAY_DB_HOST --url 127.0.0.1:5432
+    dev: {
+      scheme: "postgres",
+      host: "127.0.0.1",
+      port: 5432,
+      user,
+      password,
+      database: relayDatabaseName(stage),
+      sslmode: "require",
+    },
   });
 });
