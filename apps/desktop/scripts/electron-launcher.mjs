@@ -19,7 +19,7 @@ export const APP_DISPLAY_NAME = isDevelopment ? "T3 Trade (Dev)" : "T3 Trade (Al
 export const APP_BUNDLE_ID = isDevelopment
   ? `com.t3trades.app.dev.${devBundleIdSuffix || "local"}`
   : "com.t3trades.app";
-const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3code-dev"] : ["t3code"];
+const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3trade-dev"] : ["t3trade"];
 const LAUNCHER_VERSION = 15;
 const developmentMacIconPngPath = NodePath.join(
   repoRoot,

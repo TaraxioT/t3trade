@@ -2090,7 +2090,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       protocols: [
         {
           name: "T3 Trade",
-          schemes: ["t3code", "t3code-dev"],
+          schemes: ["t3trade", "t3trade-dev"],
         },
       ],
       // An unsigned build is ad-hoc signed by the `afterPack` hook below.
@@ -2142,11 +2142,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       category: "Development",
       // electron-builder turns these into MimeType=x-scheme-handler/<scheme>;
       // in the .desktop entry (Exec already gets %U), so browsers can hand
-      // t3code:// OAuth callbacks to the app.
+      // t3trade:// OAuth callbacks to the app.
       protocols: [
         {
           name: "T3 Trade",
-          schemes: ["t3code", "t3code-dev"],
+          schemes: ["t3trade", "t3trade-dev"],
         },
       ],
       desktop: {
