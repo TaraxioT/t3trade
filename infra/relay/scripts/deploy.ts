@@ -30,6 +30,7 @@ import { Command, Flag, Prompt } from "effect/unstable/cli";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 import RelayStack from "../alchemy.run.ts";
+import { migrate } from "./migrate.ts";
 
 const relayDeployOutputFields = [
   "url",
@@ -89,6 +90,7 @@ export interface RelayDeployOptions {
   readonly githubOutput: boolean;
   readonly githubEnvFile: Option.Option<string>;
   readonly readState: boolean;
+  readonly skipMigrations: boolean;
 }
 
 export interface RelayPublicConfig {
@@ -431,6 +433,11 @@ export const deploy = Effect.fn("relay.deploy")(function* (options: RelayDeployO
     Effect.provide(ConfigProvider.layer(configProvider)),
   );
   const stage = Option.getOrElse(options.stage, () => configuredStage);
+  // The Worker must never boot against a database missing a table it queries,
+  // so migrations run before the plan is applied and abort the deploy on failure.
+  if (!options.readState && !options.dryRun && !options.skipMigrations) {
+    yield* migrate({ stage: Option.some(stage) });
+  }
   const outcome = options.readState
     ? yield* readRelayPublicConfig(stage).pipe(Effect.provide(Cloudflare.state()))
     : yield* runRelayDeploy(options, configProvider, stage);
@@ -483,6 +490,12 @@ export const relayDeployCommand = Command.make(
         "Write relay client tracing variables to a file suitable for GITHUB_ENV.",
       ),
       Flag.optional,
+    ),
+    skipMigrations: Flag.boolean("skip-migrations").pipe(
+      Flag.withDescription(
+        "Deploy the Worker without applying migrations. Only for Worker-only changes when the database origin is unreachable.",
+      ),
+      Flag.withDefault(false),
     ),
     readState: Flag.boolean("read-state").pipe(
       Flag.withDescription("Read the deployed stack output without planning or applying changes."),
