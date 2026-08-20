@@ -13,7 +13,7 @@ concurrency:
 jobs:
   check:
     name: Check
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -62,7 +62,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -168,7 +168,7 @@ jobs:
 
   release_smoke:
     name: Release Smoke
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Checkout
