@@ -807,11 +807,19 @@ export function MissionLivePanel({
           the model doing" — composed by the pure function, times as clock
           times, no field names. The plan's full narrative rides along as the
           hover, so the sentence stays short and the reason stays one
-          pointer away. */}
+          pointer away.
+
+          It carries the panel's own glass because it needs a surface, not
+          because it wants a card: the panel is an overlay above the composer
+          and the thread scrolls UNDER it, so a transparent strip put this
+          sentence directly on top of the transcript's prose. At 1100px the
+          two collided outright, one line of text over another. The cards
+          never showed it because they already had glass. Sized to its
+          sentence (`w-fit`) so the air above the cards survives. */}
       <p
         data-testid="mission-heartbeat"
         title={plan?.because == null ? undefined : deEmDash(plan.because)}
-        className="px-1 text-[13.5px] leading-snug text-foreground"
+        className="mission-panel-glass w-fit max-w-full rounded-lg px-2.5 py-1 text-[13.5px] leading-snug text-foreground"
       >
         {/* Every number the sentence states is set in the mono face with
             tabular figures — the same rule the rest of the panel keeps — via
