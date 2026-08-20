@@ -103,7 +103,12 @@ json_report=$(printf '{"baseline":"%s","upstreamHead":"%s","commitsBehind":%s,"f
   "$baseline" "$upstream_head" "$behind" "$conflict_count" "$over_threshold" "$files_json")
 
 if [[ -n "${UPSTREAM_DRIFT_JSON_PATH:-}" ]]; then
-  printf '%s\n' "$json_report" > "$UPSTREAM_DRIFT_JSON_PATH"
+  # An unwritable path is a delivery failure, not a threshold: letting `set -e`
+  # abort here would exit 1, which every caller reads as "sync due".
+  if ! printf '%s\n' "$json_report" > "$UPSTREAM_DRIFT_JSON_PATH"; then
+    echo "Failed to write JSON to '$UPSTREAM_DRIFT_JSON_PATH'; drift not reported." >&2
+    exit 2
+  fi
 fi
 
 if [[ "$json_output" == true ]]; then
