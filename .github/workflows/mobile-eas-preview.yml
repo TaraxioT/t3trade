@@ -1,8 +1,12 @@
 name: Mobile EAS Preview
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, labeled]
+  # Disabled: this fork does not build mobile EAS previews (no EXPO_TOKEN
+  # configured), so every qualifying PR would just fail. Re-enable once
+  # mobile preview credentials are in place.
+  # pull_request:
+  #   types: [opened, reopened, synchronize, labeled]
+  workflow_dispatch:
 
 jobs:
   preview:

@@ -1,15 +1,19 @@
 name: Release
 
 on:
-  push:
-    tags:
-      # Upstream's convention, and this fork's. `t3trade-v0.0.32` matched
-      # neither pattern before, so tagging a release ran NOTHING — which is how
-      # 0.0.32 came to be built by hand on a laptop and shipped unsigned.
-      - "v*.*.*"
-      - "t3trade-v*.*.*"
-      - "!v*-nightly.*"
-      - "!t3trade-v*-nightly.*"
+  # Tag-triggered releases are disabled: signing/publishing secrets (Apple,
+  # Azure Trusted Signing, Vercel, Discord) are not configured, so a tag push
+  # would run the whole matrix and fail. Re-enable the `push: tags` trigger
+  # below once release credentials are in place.
+  # push:
+  #   tags:
+  #     # Upstream's convention, and this fork's. `t3trade-v0.0.32` matched
+  #     # neither pattern before, so tagging a release ran NOTHING — which is how
+  #     # 0.0.32 came to be built by hand on a laptop and shipped unsigned.
+  #     - "v*.*.*"
+  #     - "t3trade-v*.*.*"
+  #     - "!v*-nightly.*"
+  #     - "!t3trade-v*-nightly.*"
   # Nightly releases are disabled on this fork: signing/publishing secrets
   # (Apple, Azure Trusted Signing, Vercel, Discord) are not configured, so every
   # scheduled run would fail. Re-enable once release credentials are in place.

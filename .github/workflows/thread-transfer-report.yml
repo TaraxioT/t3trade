@@ -1,9 +1,14 @@
 name: Thread Transfer Report
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  # Disabled: posts an upstream test-suite artifact report as a PR comment
+  # after every CI run. Not useful on this solo fork right now, and it burns
+  # a runner per CI completion. Re-enable if the transfer budget report
+  # becomes relevant again.
+  # workflow_run:
+  #   workflows: [CI]
+  #   types: [completed]
+  workflow_dispatch:
 
 permissions:
   actions: read

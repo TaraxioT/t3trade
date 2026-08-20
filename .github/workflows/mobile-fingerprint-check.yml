@@ -12,18 +12,22 @@ name: Mobile Fingerprint Check
 # fingerprints are computed in this one job (same OS, same corepack-pinned
 # pnpm), so the comparison is self-consistent; no EXPO_TOKEN needed.
 on:
-  pull_request:
-    paths:
-      - apps/mobile/**
-      - packages/client-runtime/**
-      - packages/contracts/**
-      - packages/shared/**
-      - assets/**
-      - scripts/**
-      - patches/**
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - .github/workflows/mobile-fingerprint-check.yml
+  # Disabled: this fork does not ship OTA mobile builds, so the
+  # native-fingerprint drift signal has no consumer right now. Re-enable
+  # when mobile store submissions return.
+  # pull_request:
+  #   paths:
+  #     - apps/mobile/**
+  #     - packages/client-runtime/**
+  #     - packages/contracts/**
+  #     - packages/shared/**
+  #     - assets/**
+  #     - scripts/**
+  #     - patches/**
+  #     - pnpm-lock.yaml
+  #     - pnpm-workspace.yaml
+  #     - .github/workflows/mobile-fingerprint-check.yml
+  workflow_dispatch:
 
 concurrency:
   group: mobile-fingerprint-check-${{ github.event.pull_request.number }}

@@ -16,8 +16,12 @@ name: Web Preview
 # self-identify as the hosted app.
 
 on:
-  pull_request:
-    types: [labeled, synchronize, reopened]
+  # Disabled: no Vercel project/secrets are configured for this fork, so a
+  # `preview:web` label would fail the deploy. Re-enable once Vercel
+  # credentials are in place.
+  # pull_request:
+  #   types: [labeled, synchronize, reopened]
+  workflow_dispatch:
 
 permissions:
   contents: read
