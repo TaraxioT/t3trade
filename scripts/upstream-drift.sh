@@ -36,7 +36,10 @@ if ! git remote get-url upstream >/dev/null 2>&1; then
   exit 2
 fi
 
-git fetch --quiet upstream main
+if ! git fetch --quiet upstream main; then
+  echo "Failed to fetch upstream/main; drift not measured." >&2
+  exit 2
+fi
 
 baseline=$(git merge-base main upstream/main)
 upstream_head=$(git rev-parse upstream/main)

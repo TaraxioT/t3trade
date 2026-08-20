@@ -55,7 +55,17 @@ jobs:
             echo "REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
           echo "json=$json" >> "$GITHUB_OUTPUT"
-          echo "over=$([ $json_status -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Only 0 and 1 are measurements. Anything else means the drift was
+          # never measured, and reporting that as under-threshold would let the
+          # weekly run go quiet exactly when it has nothing to say.
+          case "$json_status" in
+            0) echo "over=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "over=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Drift measurement failed (status $json_status)." >&2
+              exit "$json_status"
+              ;;
+          esac
 
       - name: Summarize
         env:
