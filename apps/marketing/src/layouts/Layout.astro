@@ -21,6 +21,12 @@ const {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
+    <meta name="theme-color" content="#09090b" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:site_name" content="T3 Trade" />
+    <meta name="twitter:card" content="summary" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -89,17 +95,21 @@ const {
     --bg-elev: #0c0c0e;
     --bg-card: #111113;
     --fg: #fafafa;
-    --fg-muted: #a1a1aa;
-    --fg-dim: #71717a;
-    --fg-faint: #52525b;
-    --border: rgba(255, 255, 255, 0.08);
-    --border-strong: rgba(255, 255, 255, 0.14);
+    --fg-muted: #b1b1b9;
+    --fg-dim: #7e7e88;
+    --fg-faint: #55555e;
+    --border: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.17);
     --accent-h: 160;
-    --accent: oklch(0.72 0.14 var(--accent-h));
-    --accent-dim: oklch(0.72 0.14 var(--accent-h) / 0.14);
-    --ok: oklch(0.72 0.16 150);
-    --warn: oklch(0.76 0.15 75);
-    --loss: oklch(0.66 0.19 25);
+    --accent: oklch(0.75 0.15 var(--accent-h));
+    --accent-dim: oklch(0.75 0.15 var(--accent-h) / 0.16);
+    /* The app's own dark-theme trading inks (see apps/web/src/trading.css):
+       profit and loss matched on lightness and chroma, separated by hue, and
+       the armed amber one step down from amber-400. The site quotes the
+       product, so it wears the product's colours. */
+    --ok: oklch(0.72 0.15 152);
+    --warn: oklch(0.78 0.125 78);
+    --loss: oklch(0.66 0.18 27);
     --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     --radius: 12px;
@@ -197,15 +207,23 @@ const {
     white-space: nowrap;
   }
 
+  /* The primary action wears the product's profit green: it is the one
+     saturated surface on the page, so it reads as the destination. */
   .btn-primary {
-    background: var(--fg);
-    color: #09090b;
+    background: linear-gradient(180deg, oklch(0.8 0.15 160), oklch(0.7 0.15 160));
+    color: #04120b;
     font-weight: 600;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.32),
+      0 10px 28px -12px color-mix(in srgb, var(--accent) 55%, transparent);
   }
 
   .btn-primary:hover {
     transform: translateY(-1px);
-    background: #fff;
+    background: linear-gradient(180deg, oklch(0.83 0.15 160), oklch(0.73 0.15 160));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.36),
+      0 14px 34px -12px color-mix(in srgb, var(--accent) 65%, transparent);
   }
 
   .btn-primary:active {

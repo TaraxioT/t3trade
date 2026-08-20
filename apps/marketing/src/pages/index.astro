@@ -34,7 +34,6 @@ const MISSION = {
 const risk = (MISSION.entry - MISSION.stop) * MISSION.size; // 18.72
 const reward = (MISSION.target - MISSION.entry) * MISSION.size; // 51.06
 const open = (MISSION.mark - MISSION.entry) * MISSION.size; // 11.45
-const toTarget = ((MISSION.mark - MISSION.entry) / (MISSION.target - MISSION.entry)) * 100;
 
 const usd = (value: number) => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 const px = (value: number) =>
@@ -196,19 +195,38 @@ const projected = (() => {
   });
 })();
 
-/* Seven beats share one timeline. Each owns a slice of the pinned scroll, and
-   the chart annotation, the console row, and the rail step that belong to a
-   beat all animate over the same slice. */
-const BEATS = [
-  { at: 2, label: "Mandate", note: "Trade ETH. Long only, 20x ceiling, capped loss in USD." },
-  { at: 11, label: "Waiting", note: "Price coils inside the range. The agent takes no entry." },
-  { at: 21, label: "Watch armed", note: `Sleep until the ETH mark crosses ${px(MISSION.trigger)}.` },
-  { at: 32, label: "Watch fires", note: "The thread wakes with fresh account, book, and budget data." },
-  { at: 42, label: "17 checks", note: "Every check passes, so T3 Trade signs the order locally." },
-  { at: 52, label: "Protected", note: `A reduce-only stop rests at ${px(MISSION.stop)} before the fill counts.` },
-  { at: 63, label: "Running", note: `Filled at ${px(MISSION.entry)}. The mark reaches ${px(MISSION.mark)}, ${usd(open)} open.` },
-  { at: 76, label: "Drawdown", note: `Price falls to ${px(DIP_PRICE)}, ${usd(dipPnl)}. The stop holds and nothing is sold.` },
-  { at: 86, label: "Target", note: `${px(MISSION.target)} prints. The plan closes the position at ${usd(reward)}.` },
+/* The agent log, told the way the app's own log panel prints it: a timestamp,
+   a tone rail, and one line per event. Each row owns the same slice of the
+   pinned scroll that its chart annotation owns, so the feed and the chart
+   never disagree about what has happened yet. */
+type LogTone = "info" | "armed" | "profit" | "loss" | "plan";
+const LOG: { at: number; time: string; tone: LogTone; text: string; sub?: string }[] = [
+  { at: 3, time: "14:02", tone: "info", text: "Mission created for ETH-PERP", sub: "long only · 20x ceiling, $50 loss budget" },
+  { at: 9, time: "14:03", tone: "plan", text: "Plan published: long the range break", sub: `entry ${px(MISSION.entry)}, stop ${px(MISSION.stop)}, target ${px(MISSION.target)}` },
+  { at: 18, time: "14:04", tone: "armed", text: `Watch armed · mark crosses ${px(MISSION.trigger)}`, sub: "the thread sleeps, spending nothing" },
+  { at: 32, time: "15:41", tone: "armed", text: "Watch fired. Thread woken", sub: "fresh account, book, and budget data" },
+  { at: 39, time: "15:41", tone: "info", text: "17/17 preview checks passed", sub: "order signed locally" },
+  { at: 47, time: "15:41", tone: "profit", text: `Filled ${MISSION.size} ETH at ${px(MISSION.entry)}` },
+  { at: 53, time: "15:42", tone: "loss", text: `Reduce-only stop resting at ${px(MISSION.stop)}`, sub: `risks ${usd(-risk)}, on the exchange itself` },
+  { at: 76, time: "16:58", tone: "loss", text: `Drawdown to ${px(DIP_PRICE)}, ${usd(dipPnl)} unrealised`, sub: "the stop holds. Nothing is sold" },
+  { at: 91, time: "17:24", tone: "profit", text: `Target ${px(MISSION.target)} printed. Position closed`, sub: `${usd(reward)} banked · ${rr.toFixed(1)}:1 as planned` },
+];
+
+/* The sidebar the way the app draws it: this mission's thread lit, two older
+   ones resting below it. The live row's status walks the same timeline the
+   log does. */
+const SIDE_THREADS = [
+  { title: "Short SOL into funding flip", meta: "settled · 2d" },
+  { title: "BTC range scalp, 15m", meta: "settled · 4d" },
+];
+
+/* The phase strip across the top of the thread, the app's own breadcrumb.
+   Each phase lights on the beat the mission enters it. */
+const PHASES = [
+  { label: "Planning", at: 3 },
+  { label: "Armed", at: 18 },
+  { label: "Live", at: 47 },
+  { label: "Settled", at: 91 },
 ];
 
 /* Beats carry their slice as two custom properties. The pinned desktop
@@ -250,10 +268,10 @@ const roiArc = pnlArc.map(
    that disagree. Step zero is the fill and the last step is the target. */
 const markArc = pnlArc.map((value) => px(MISSION.entry + value / MISSION.size));
 
-/* The three phase boundaries as a share of the reel, so the bar underneath
-   can bend at the same places the number does. */
-const RUN_MARK = ((RUN_STEPS / PNL_STEPS) * 100).toFixed(2);
-const DIP_MARK = (((RUN_STEPS + DIP_STEPS) / PNL_STEPS) * 100).toFixed(2);
+/* The reel's two phase boundaries, RUN_STEPS/PNL_STEPS and
+   (RUN_STEPS + DIP_STEPS)/PNL_STEPS, land at 31.25% and 56.25%. The
+   progress-arc keyframes below bend at those same stops, so retiming the reel
+   means retiming that keyframe too. */
 
 /* Each watch is armed on the beat the agent registers it and met on the beat
    the market satisfies it. The second one never fires, which is the point:
@@ -319,14 +337,7 @@ const harnesses = [
   <!-- ── Hero ──────────────────────────────────────────────────── -->
   <section class="hero">
     <div class="hero-grid" aria-hidden="true"></div>
-
-    <div class="hero-float" aria-hidden="true">
-      <span class="hero-float-mark hf-claude"><img src="/harnesses/claude-ai-icon.svg" alt="" /></span>
-      <span class="hero-float-mark hf-codex"><img src="/harnesses/openai_dark.svg" alt="" /></span>
-      <span class="hero-float-mark hf-opencode"><img src="/harnesses/opencode-dark.svg" alt="" /></span>
-      <span class="hero-float-mark hf-cursor"><img src="/harnesses/cursor_light.svg" alt="" /></span>
-      <span class="hero-float-mark hf-grok"><img src="/harnesses/grok-dark.svg" alt="" /></span>
-    </div>
+    <div class="hero-glow" aria-hidden="true"></div>
 
     <div class="container hero-inner">
       <p class="eyebrow hero-eyebrow">Open source · alpha · Hyperliquid testnet</p>
@@ -351,49 +362,6 @@ const harnesses = [
         </a>
       </div>
 
-      <div class="hero-preview">
-        <figure class="hero-screenshot-frame">
-          <img
-            src="/t3trade-screenshot.webp"
-            alt="T3 Trade showing an ETH mission: the agent's reasoning, its fills, an open position with entry, stop and target, and three armed market watches"
-            width="2400"
-            height="1535"
-            loading="eager"
-            decoding="async"
-            fetchpriority="high"
-          />
-        </figure>
-        <figcaption class="hero-preview-caption">
-          One ETH mission in the desktop app: the agent's reasoning, its fills, the open
-          position with its stop and target, and the watches that will wake it.
-        </figcaption>
-      </div>
-    </div>
-  </section>
-
-  <!-- ── Live testnet band ─────────────────────────────────────── -->
-  <section class="sec-tape" aria-label="Hyperliquid testnet markets">
-    <div class="tape" id="tape" data-state="loading">
-      <div class="tape-track">
-        {[0, 1].map((copy) => (
-          <div class="tape-run" aria-hidden={copy === 1 ? "true" : undefined}>
-            {tapeMarkets.map((symbol) => (
-              <span class="tape-item" data-symbol={symbol} data-copy={copy}>
-                <span class="tape-sym">{symbol}</span>
-                <span class="tape-px">- - - -</span>
-                <span class="tape-chg">·</span>
-              </span>
-            ))}
-          </div>
-        ))}
-      </div>
-    </div>
-
-    <div class="container tape-note">
-      <p>
-        Live mid prices from Hyperliquid testnet, the only network this alpha talks to.
-        Testnet funds have no real-world value and there is no mainnet configuration.
-      </p>
     </div>
   </section>
 
@@ -408,20 +376,108 @@ const harnesses = [
         ))}
       </h2>
       <p class="section-lede scrub">
-        A mission binds one agent thread to one market. Scroll to step through the ETH run
-        from the screenshot above: the wait, the watch that woke the agent, the checks, the
-        stop that had to exist before the fill, and the position it left behind.
+        A mission binds one agent thread to one market. This is the cockpit itself, replaying
+        a testnet ETH run: keep scrolling and the log fills, the watch fires, the checks
+        pass, and the chart earns its target.
       </p>
     </div>
 
-    <!-- The console pins for the length of the story. Each beat owns a slice
-         of this timeline, and the chart, the readout, and the rail all move
-         together on it. -->
+    <!-- The window pins for the length of the story. Each beat owns a slice
+         of this timeline, and the log, the chart, and the readout all move
+         together on it. The dim layer behind the window is what makes the
+         page recede while the app plays. -->
     <div class="mission-scroller">
       <div class="mission-sticky">
-        <div class="container">
-          <div class="console">
+        <div class="mission-dim" aria-hidden="true"></div>
+        <div class="container stage-container">
+          <div class="appwin">
+            <div class="appwin-titlebar">
+              <span class="tl-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="tl-title">T3 Trade</span>
+              <span class="tl-net">hyperliquid testnet</span>
+            </div>
+
+            <div class="appwin-body">
+              <!-- The sidebar, the way the app draws it: this mission's thread
+                   lit and walking through its states, older threads at rest. -->
+              <aside class="appwin-side" aria-hidden="true">
+                <div class="side-legend">Threads</div>
+                <div class="side-thread side-thread--live">
+                  <span class="side-thread-title">Trade ETH on the 5m, long the range break</span>
+                  <span class="side-status">
+                    <span class="status-window"><span class="status-reel">
+                      <span class="status-step"><i class="status-dot status-dot--wait"></i>waiting</span>
+                      <span class="status-step status-step--armed"><i class="status-dot status-dot--armed"></i>armed</span>
+                      <span class="status-step status-step--long"><i class="status-dot status-dot--long"></i>ETH · long 20x</span>
+                      <span class="status-step status-step--won"><i class="status-dot status-dot--long"></i>{usd(reward)} · settled</span>
+                    </span></span>
+                  </span>
+                </div>
+                {SIDE_THREADS.map((thread) => (
+                  <div class="side-thread">
+                    <span class="side-thread-title">{thread.title}</span>
+                    <span class="side-thread-meta">{thread.meta}</span>
+                  </div>
+                ))}
+              </aside>
+
+              <!-- The thread column: phase strip, the agent log filling row by
+                   row, and the composer holding the mandate that started it. -->
+              <div class="appwin-thread">
+                <div class="thread-phases" aria-hidden="true">
+                  {PHASES.map((phase, index) => (
+                    <>
+                      {index === 0 ? null : <span class="phase-sep">›</span>}
+                      <span class="phase-word" style={`${span(phase.at, phase.at + 4)}`}>{phase.label}</span>
+                    </>
+                  ))}
+                </div>
+
+                <div class="log-feed">
+                  <div class="log-mandate">
+                    <span class="log-mandate-label">you</span>
+                    <p>
+                      Trade ETH on the 5m. Long only, 20x ceiling, $50 max loss. Wait for the
+                      range break, protect every entry, and bank the target.
+                    </p>
+                  </div>
+
+                  {LOG.map((row) => (
+                    <div class={`log-row log-row--${row.tone}`} style={`${span(row.at, row.at + 5)}`}>
+                      <span class="log-time">{row.time}</span>
+                      <span class="log-rail" aria-hidden="true"></span>
+                      <span class="log-text">
+                        {row.text}
+                        {row.sub && <span class="log-sub">{row.sub}</span>}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div class="composer" aria-hidden="true">
+                  <span class="composer-line">Reply to the mission thread<span class="composer-caret"></span></span>
+                  <span class="composer-meta">
+                    <span>Codex · high</span>
+                    <span class="composer-chip">ETH</span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- The market column: the chart card and the live position
+                   panel, stacked the way the cockpit stacks them. -->
+              <div class="appwin-market">
             <figure class="console-chart">
+              <div class="chart-head">
+                <span class="chart-market">
+                  <span class="chart-legend">ETH-PERP</span>
+                  <span class="chart-price">
+                    <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
+                      {markArc.map((value) => <span class="pnl-step">{value}</span>)}
+                    </span></span>
+                  </span>
+                </span>
+                <span class="chart-interval">5m</span>
+              </div>
               <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} class="chart-svg" role="img"
                 aria-label={`Price chart of the ETH mission: a range, a break above ${px(MISSION.trigger)}, an entry at ${px(MISSION.entry)}, a stop at ${px(MISSION.stop)}, and a target at ${px(MISSION.target)}.`}>
 
@@ -674,7 +730,7 @@ const harnesses = [
                     <span class="armed-label">{watch.label}</span>
                     <span class="armed-read">
                       {watch.reads === null ? (
-                        <span class="armed-read-none">—</span>
+                        <span class="armed-read-none">-</span>
                       ) : watch.reads === "pnl" ? (
                         <span class="pnl-window"><span class="pnl-reel" style={`${span(63, 92)}`}>
                           {pnlArc.map((value) => (
@@ -719,6 +775,8 @@ const harnesses = [
                 ))}
               </div>
             </div>
+              </div>
+            </div>
           </div>
 
           <!-- The payoff. Every rule the page has been describing held, so it
@@ -735,21 +793,6 @@ const harnesses = [
             </span>
           </div>
 
-          <!-- The rail names the beat the chart is currently on, and keeps a
-               tick on every beat already behind you. -->
-          <ol class="beat-rail">
-            {BEATS.map((beat) => (
-              <li class="beat" style={`${span(beat.at, beat.at + 6)}`}>
-                <span class="beat-head">
-                  <span class="beat-label">{beat.label}</span>
-                  <svg class="tick beat-tick" style={`${span(beat.at + 5, beat.at + 9)}`} viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
-                  </svg>
-                </span>
-                <span class="beat-note">{beat.note}</span>
-              </li>
-            ))}
-          </ol>
         </div>
       </div>
     </div>
@@ -793,6 +836,32 @@ const harnesses = [
           the position the exchange reports. It survives the app closing.
         </p>
       </div>
+    </div>
+  </section>
+
+  <!-- ── Live testnet band ─────────────────────────────────────── -->
+  <section class="sec-tape" aria-label="Hyperliquid testnet markets">
+    <div class="tape" id="tape" data-state="loading">
+      <div class="tape-track">
+        {[0, 1].map((copy) => (
+          <div class="tape-run" aria-hidden={copy === 1 ? "true" : undefined}>
+            {tapeMarkets.map((symbol) => (
+              <span class="tape-item" data-symbol={symbol} data-copy={copy}>
+                <span class="tape-sym">{symbol}</span>
+                <span class="tape-px">- - - -</span>
+                <span class="tape-chg">·</span>
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <div class="container tape-note">
+      <p>
+        Live mid prices from Hyperliquid testnet, the only network this alpha talks to.
+        Testnet funds have no real-world value and there is no mainnet configuration.
+      </p>
     </div>
   </section>
 
@@ -1195,9 +1264,8 @@ const harnesses = [
 
   /* ── Hero ─────────────────────────────────────────────────── */
   .hero {
-    padding: 64px 0 72px;
+    padding: 64px 0 8px;
     position: relative;
-    overflow: hidden;
     border-top: 0;
   }
 
@@ -1255,7 +1323,7 @@ const harnesses = [
     flex-direction: column;
     align-items: center;
     gap: 16px;
-    margin-bottom: 60px;
+    margin-bottom: 10px;
   }
 
   .dl-icon {
@@ -1290,102 +1358,17 @@ const harnesses = [
     opacity: 1;
   }
 
-  /* ── Floating harness marks ───────────────────────────────── */
-  /* Bounded to the copy zone. Below this the screenshot claims the full
-     width, and a mark floating over it reads as a rendering bug. */
-  .hero-float {
+  /* The one wash of brand colour the top of the page carries. It sits behind
+     the headline and bleeds toward the window below, so the accent reads as
+     the room's light rather than a decoration. */
+  .hero-glow {
     position: absolute;
-    inset: 0 0 auto 0;
-    height: 600px;
+    inset: -20% -10% auto;
+    height: 120%;
     pointer-events: none;
-    z-index: 1;
-  }
-
-  .hero-float-mark {
-    --tilt: 0deg;
-    position: absolute;
-    width: 96px;
-    height: 96px;
-    border-radius: 24px;
-    display: grid;
-    place-items: center;
-    background: rgba(20, 20, 24, 0.9);
-    border: 1px solid var(--border);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    box-shadow:
-      0 20px 48px -16px rgba(0, 0, 0, 0.65),
-      0 2px 0 0 rgba(255, 255, 255, 0.04) inset;
-    rotate: var(--tilt);
-    animation:
-      mark-enter 0.9s ease-out backwards,
-      float-drift 9s ease-in-out infinite;
-  }
-
-  .hero-float-mark img {
-    width: 54px;
-    height: 54px;
-    object-fit: contain;
-  }
-
-  @keyframes mark-enter {
-    from { opacity: 0; scale: 0.85; }
-    to { opacity: 1; scale: 1; }
-  }
-
-  @keyframes float-drift {
-    0%, 100% { translate: 0 0; rotate: var(--tilt); }
-    50% { translate: 0 -12px; rotate: calc(var(--tilt) + 2.5deg); }
-  }
-
-  .hero-float-mark.hf-claude   { --tilt: -8deg; background: radial-gradient(circle at 30% 25%, rgba(217, 119, 87, 0.22), rgba(20, 20, 24, 0.92) 65%); top: 10%; left: 6%;  animation-delay: 0.5s, 0s; }
-  .hero-float-mark.hf-codex    { --tilt: 6deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 7%;  right: 6%; animation-delay: 0.62s, -2.5s; }
-  .hero-float-mark.hf-opencode { --tilt: 4deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.06), rgba(20, 20, 24, 0.92) 65%); top: 44%; left: 3%;  animation-delay: 0.74s, -5s; }
-  .hero-float-mark.hf-cursor   { --tilt: -5deg; background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 42%; right: 3%; animation-delay: 0.86s, -7s; }
-  .hero-float-mark.hf-grok     { --tilt: 3deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 74%; left: 9%;  animation-delay: 0.98s, -1.2s; }
-
-  @media (max-width: 1180px) {
-    .hero-float-mark { width: 76px; height: 76px; border-radius: 20px; }
-    .hero-float-mark img { width: 42px; height: 42px; }
-    .hero-float-mark.hf-claude   { top: 6%;  left: 2%; }
-    .hero-float-mark.hf-codex    { top: 3%;  right: 2%; }
-    .hero-float-mark.hf-opencode { top: 44%; left: 1%; }
-    .hero-float-mark.hf-cursor   { top: 42%; right: 1%; }
-    .hero-float-mark.hf-grok     { display: none; }
-  }
-
-  /* ── Hero screenshot ──────────────────────────────────────── */
-  .hero-preview {
-    max-width: 1180px;
-    margin: 0 auto;
-    perspective: 2200px;
-    animation: fade-in 0.9s ease-out 0.32s backwards;
-  }
-
-  .hero-screenshot-frame {
-    position: relative;
-    overflow: hidden;
-    aspect-ratio: 2400 / 1535;
-    border-radius: 14px;
-    background: #0a0a0c;
-    border: 1px solid var(--border);
-    box-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.9);
-    transform-origin: 50% 100%;
-  }
-
-  .hero-screenshot-frame img {
-    width: calc(100% + 4px);
-    height: calc(100% + 4px);
-    margin: -2px;
-    object-fit: cover;
-    object-position: center top;
-  }
-
-  .hero-preview-caption {
-    margin: 18px auto 0;
-    color: var(--fg-dim);
-    font-size: 13px;
-    max-width: 620px;
+    background:
+      radial-gradient(ellipse 46% 42% at 50% 8%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
+      radial-gradient(ellipse 30% 30% at 78% 30%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 70%);
   }
 
   /* ── Live tape ────────────────────────────────────────────── */
@@ -1467,14 +1450,14 @@ const harnesses = [
     line-height: 1.6;
   }
 
-  /* ── Mission console ──────────────────────────────────────── */
+  /* ── The cockpit window ───────────────────────────────────── */
   .sec-mission {
     padding-bottom: 0;
   }
 
   .mission-scroller {
-    min-height: 300vh;
-    margin-top: 44px;
+    min-height: 340vh;
+    margin-top: 40px;
   }
 
   .mission-sticky {
@@ -1484,33 +1467,399 @@ const harnesses = [
     display: flex;
     flex-direction: column;
     justify-content: center;
-    padding: 74px 0 28px;
+    padding: 70px 0 24px;
   }
 
-  .console {
-    display: grid;
-    grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr);
-    gap: 14px;
-    align-items: stretch;
-  }
-
-  .panel,
-  .console-chart,
-  .console-readout {
-    position: relative;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+  /* The room going dark around the app. It covers the whole pinned viewport
+     and carries a vignette, so the window reads as the one lit object. */
+  .mission-dim {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.006) 42%),
-      rgba(10, 10, 12, 0.6);
+      radial-gradient(ellipse 90% 70% at 50% 46%, transparent 30%, rgba(3, 3, 5, 0.9) 100%),
+      rgba(3, 3, 5, 0.62);
+  }
+
+  .stage-container {
+    position: relative;
+  }
+
+  /* The window itself: the desktop app's chrome, drawn with the same glass
+     the app's own panels use. */
+  .appwin {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    overflow: hidden;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.008) 46%),
+      rgba(11, 12, 14, 0.94);
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.06),
-      0 30px 60px -34px rgba(0, 0, 0, 0.9);
+      inset 0 1px 0 rgba(255, 255, 255, 0.09),
+      0 42px 110px -42px rgba(0, 0, 0, 0.95);
+  }
+
+  .appwin-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.018);
+  }
+
+  .tl-dots {
+    display: inline-flex;
+    gap: 6px;
+  }
+
+  .tl-dots i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  .tl-dots i:nth-child(1) { background: #f2555a; }
+  .tl-dots i:nth-child(2) { background: #f5b93e; }
+  .tl-dots i:nth-child(3) { background: #43c465; }
+
+  .tl-title {
+    font-size: 12px;
+    font-weight: 550;
+    letter-spacing: -0.01em;
+    color: var(--fg-muted);
+  }
+
+  .tl-net {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--warn);
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+  }
+
+  .appwin-body {
+    display: grid;
+    grid-template-columns: 176px minmax(0, 0.95fr) minmax(0, 1.35fr);
+    align-items: stretch;
+    min-height: 0;
+  }
+
+  /* ── Sidebar ──────────────────────────────────────────────── */
+  .appwin-side {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 8px;
+    border-right: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.28);
+    min-width: 0;
+  }
+
+  .side-legend {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    padding: 0 8px 6px;
+  }
+
+  .side-thread {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 9px;
+    border-radius: 8px;
+    min-width: 0;
+  }
+
+  .side-thread--live {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+  }
+
+  .side-thread-title {
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--fg-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .side-thread--live .side-thread-title {
+    color: var(--fg);
+  }
+
+  .side-thread-meta {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--fg-faint);
+  }
+
+  /* The live row's status walks the story on a reel: waiting, armed, the
+     open position, the banked result. */
+  .side-status {
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  .status-window {
+    display: block;
+    height: 1.5em;
+    overflow: hidden;
+  }
+
+  .status-reel {
+    display: block;
+    /* Rests on the settled state for browsers without scroll timelines. */
+    transform: translateY(-4.5em);
+  }
+
+  .status-step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 1.5em;
+    color: var(--fg-dim);
+    white-space: nowrap;
+  }
+
+  .status-step--armed { color: var(--warn); }
+  .status-step--long { color: var(--ok); }
+  .status-step--won { color: var(--ok); }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: none;
+    background: currentColor;
+  }
+
+  .status-dot--wait { background: var(--fg-faint); }
+
+  /* ── Thread column ────────────────────────────────────────── */
+  .appwin-thread {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--border);
+  }
+
+  .thread-phases {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .phase-word { color: var(--fg); }
+  .phase-sep { color: var(--fg-faint); }
+
+  .log-feed {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 14px;
+  }
+
+  /* The mandate, as the sent message that opened the thread. */
+  .log-mandate {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 8px;
+    padding: 9px 11px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .log-mandate-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+
+  .log-mandate p {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  .log-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 5px 2px;
+  }
+
+  .log-time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    flex: none;
+    padding-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The tone rail the app hangs on every log row. */
+  .log-rail {
+    flex: none;
+    width: 2px;
+    border-radius: 2px;
+    align-self: stretch;
+    background: var(--fg-faint);
+    opacity: 0.62;
+  }
+
+  .log-row--armed .log-rail { background: var(--warn); }
+  .log-row--profit .log-rail { background: var(--ok); }
+  .log-row--loss .log-rail { background: var(--loss); }
+  .log-row--plan .log-rail { background: var(--accent); }
+
+  .log-text {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--fg);
+    letter-spacing: -0.005em;
+    min-width: 0;
+  }
+
+  .log-sub {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Composer ─────────────────────────────────────────────── */
+  .composer {
+    margin: 0 12px 12px;
+    padding: 9px 12px 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.3);
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .composer-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 12px;
+    color: var(--fg-faint);
+  }
+
+  .composer-caret {
+    width: 1px;
+    height: 13px;
+    background: var(--fg-muted);
+    animation: blink 1.1s steps(1, end) infinite;
+  }
+
+  .composer-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--fg-faint);
+  }
+
+  .composer-chip {
+    padding: 1px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-dim);
+  }
+
+  /* ── Market column ────────────────────────────────────────── */
+  .appwin-market {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
   }
 
   .console-chart {
-    padding: 16px 14px 12px;
+    position: relative;
+    padding: 0 14px 10px;
     overflow: hidden;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .chart-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 2px 8px;
+  }
+
+  .chart-market {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .chart-legend {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+
+  /* The live figure at the top of the chart card, ticking on the same reel
+     the readout reads. */
+  .chart-price {
+    font-family: var(--font-mono);
+    font-size: 19px;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+
+  .chart-price .pnl-window { height: 1.3em; }
+  .chart-price .pnl-step { color: inherit; text-align: left; }
+
+  .chart-interval {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-dim);
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
   }
 
   /* Scaling by aspect rather than a fixed height. A fixed height letterboxed
@@ -2129,54 +2478,6 @@ const harnesses = [
     color: var(--fg-dim);
   }
 
-  /* ── Beat rail ────────────────────────────────────────────── */
-  .beat-rail {
-    list-style: none;
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 1px;
-    margin-top: 12px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-  }
-
-  .beat {
-    padding: 9px 12px 10px;
-    background: rgba(9, 9, 11, 0.9);
-    border-top: 2px solid transparent;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .beat-head {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .beat-label {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--fg-dim);
-  }
-
-  .beat-tick {
-    width: 11px;
-    height: 11px;
-    margin-left: auto;
-  }
-
-  .beat-note {
-    font-size: 11.5px;
-    line-height: 1.36;
-    color: var(--fg-faint);
-  }
-
   /* ── Mission notes ────────────────────────────────────────── */
   /* One rule across the top and a divider between each note, so the three
      read as one group closing out the console rather than three columns
@@ -2710,20 +3011,6 @@ const harnesses = [
      frame, so nothing is hidden from anyone. */
   @media (prefers-reduced-motion: no-preference) {
     @supports (animation-timeline: view()) {
-      /* The screenshot lies back at load and rotates flat as you scroll into
-         it, so the wheel does the reveal instead of a canned transition. */
-      .hero-screenshot-frame {
-        transform: rotateX(9deg) scale(0.95);
-        animation: shot-settle linear both;
-        animation-timeline: view();
-        animation-range: entry 26% cover 46%;
-      }
-
-      @keyframes shot-settle {
-        from { transform: rotateX(9deg) scale(0.95); }
-        to { transform: rotateX(0deg) scale(1); }
-      }
-
       /* The tape only advances while the page is moving, so prices stay
          readable when the reader stops. */
       .tape-track {
@@ -2779,10 +3066,91 @@ const harnesses = [
       .armed-state--wait,
       .rr-seg,
       .console-success,
-      .beat,
+      .log-row,
+      .phase-word,
       .mission-sticky .tick path {
         animation-timeline: --mission;
         animation-range: contain var(--from) contain var(--to);
+      }
+
+      /* The log fills the way the checks list does: each row rises from a
+         ghost of itself on its own beat. */
+      .log-row {
+        animation-name: check-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      /* Phases light as the mission enters them and stay lit. */
+      .phase-word {
+        animation-name: phase-lit;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes phase-lit {
+        from { color: var(--fg-faint); }
+        to { color: var(--fg); }
+      }
+
+      /* The full-length tracks: the room dims while the story plays, the
+         window sharpens into focus, and the sidebar status reel steps through
+         its states. All three own the whole pinned range and put their
+         choreography in the keyframes. */
+      .mission-dim,
+      .appwin,
+      .status-reel {
+        animation-timeline: --mission;
+        animation-range: contain 0% contain 100%;
+        animation-fill-mode: both;
+        animation-timing-function: linear;
+      }
+
+      .mission-dim { animation-name: dim-hold; }
+
+      @keyframes dim-hold {
+        0% { opacity: 0; }
+        7% { opacity: 0.85; }
+        90% { opacity: 0.85; }
+        100% { opacity: 0.55; }
+      }
+
+      .appwin { animation-name: win-live; }
+
+      @keyframes win-live {
+        0% {
+          transform: scale(0.965) translateY(14px);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.09),
+            0 42px 110px -42px rgba(0, 0, 0, 0.95);
+        }
+        8% {
+          transform: none;
+        }
+        86% {
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.09),
+            0 42px 110px -42px rgba(0, 0, 0, 0.95);
+        }
+        94%, 100% {
+          transform: none;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.09),
+            0 42px 110px -42px rgba(0, 0, 0, 0.95),
+            0 0 90px -18px color-mix(in srgb, var(--ok) 34%, transparent);
+        }
+      }
+
+      /* Stepped, so each state lands rather than slides: waiting until the
+         watch arms at 18, armed until the fill at 47, live until the target
+         at 91. */
+      .status-reel { animation-name: status-walk; }
+
+      @keyframes status-walk {
+        0%, 17.9% { transform: translateY(0); }
+        18%, 46.9% { transform: translateY(-1.5em); }
+        47%, 90.9% { transform: translateY(-3em); }
+        91%, 100% { transform: translateY(-4.5em); }
       }
 
       .candle,
@@ -2863,8 +3231,9 @@ const harnesses = [
       }
 
       @keyframes fire-ping {
-        from { opacity: 0.9; transform: scale(0.4); }
-        to { opacity: 0; transform: scale(3.4); }
+        0% { opacity: 0; transform: scale(0.4); }
+        12% { opacity: 0.9; transform: scale(0.55); }
+        100% { opacity: 0; transform: scale(3.4); }
       }
 
       .mark-dot {
@@ -3070,24 +3439,6 @@ const harnesses = [
         to { opacity: 0; }
       }
 
-      /* The rail step for the current beat lifts out of the row. */
-      .beat {
-        animation-name: beat-live;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-      }
-
-      @keyframes beat-live {
-        from {
-          border-top-color: transparent;
-          background: rgba(9, 9, 11, 0.9);
-        }
-        to {
-          border-top-color: var(--accent);
-          background: rgba(255, 255, 255, 0.035);
-        }
-      }
-
       /* The three rules confirm themselves as the group comes into view. */
       .mission-notes {
         view-timeline-name: --notes;
@@ -3173,6 +3524,17 @@ const harnesses = [
       padding: 0;
     }
 
+    /* The dim layer and the window focus only make sense while pinned. */
+    .mission-dim { display: none; }
+    .appwin { animation: none; }
+
+    /* The status reel keeps stepping, but on the compressed cover pass. */
+    .status-reel {
+      animation-range:
+        cover var(--pass-base)
+        cover calc(var(--pass-base) + 100% * var(--pass));
+    }
+
     .candle,
     .proj-candle,
     .payoff,
@@ -3206,20 +3568,24 @@ const harnesses = [
     .armed-state--wait,
     .rr-seg,
     .console-success,
-    .beat,
+    .log-row,
+    .phase-word,
     .mission-sticky .tick path {
-      /* The console is taller than the viewport it is no longer pinned to, so
+      /* The window is taller than the viewport it is no longer pinned to, so
          a full `cover` pass finishes the story long after the chart has left
-         the top of the screen. Compressing the slices into the first part of
-         the pass keeps the target, the tick, and the payoff on screen at the
-         moment they land. */
+         the top of the screen. The window's top reaches the top of the screen
+         at roughly cover 40%, so the slices are compressed into the stretch
+         where the chart is actually on screen: the story starts once the
+         window is well into view and lands its target before the chart
+         scrolls away. */
       animation-range:
-        cover calc(var(--from) * var(--pass))
-        cover calc(var(--to) * var(--pass));
+        cover calc(var(--pass-base) + var(--from) * var(--pass))
+        cover calc(var(--pass-base) + var(--to) * var(--pass));
     }
 
     .mission-scroller {
-      --pass: 0.38;
+      --pass: 0.42;
+      --pass-base: 13%;
     }
   }
 
@@ -3230,13 +3596,21 @@ const harnesses = [
       gap: 44px;
     }
 
-    .console {
+    /* One column: the chart leads, the log follows, the sidebar folds away.
+       The story still plays on the compressed cover pass. */
+    .appwin-body {
       grid-template-columns: 1fr;
     }
 
-    /* Nine beats divide evenly by three at every width they are shown at. */
-    .beat-rail {
-      grid-template-columns: 1fr 1fr 1fr;
+    .appwin-side { display: none; }
+
+    .appwin-market {
+      order: -1;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .appwin-thread {
+      border-right: 0;
     }
 
     .mission-notes {
@@ -3311,11 +3685,6 @@ const harnesses = [
       padding: 60px 0 76px;
     }
 
-    /* Three columns of beat is too narrow to read on a phone. Two, with the
-       last one taking the leftover half-row. */
-    .beat-rail { grid-template-columns: 1fr 1fr; }
-    .beat:last-child { grid-column: 1 / -1; }
-
     /* The band fades in partway through the scroll, so at phone widths it
        stays one line. A wrapped one reserves a tall gap that reads as a hole
        until it arrives, and the readout above already carries these numbers. */
@@ -3353,50 +3722,28 @@ const harnesses = [
       grid-template-columns: 1fr;
     }
 
-    /* The full window is unreadable at phone width, so the frame crops into
-       the thread column where the position and its watches live. */
-    .hero-screenshot-frame {
-      aspect-ratio: 4 / 3;
+    /* Phone-width window: tighter chrome, smaller feed type. */
+    .appwin-body {
+      grid-template-columns: 1fr;
     }
 
-    .hero-screenshot-frame img {
-      object-position: 62% top;
+    .log-feed {
+      padding: 10px 12px;
     }
 
-    .hero-float-mark {
-      width: 64px;
-      height: 64px;
-      border-radius: 18px;
-    }
-
-    .hero-float-mark img {
-      width: 36px;
-      height: 36px;
-    }
-
-    /* Only the top two marks sit in clear space. The rest collide with copy. */
-    .hero-float-mark.hf-claude { top: 26px; left: 8px; }
-    .hero-float-mark.hf-codex { top: 26px; right: 8px; }
-
-    .hero-float-mark.hf-opencode,
-    .hero-float-mark.hf-cursor,
-    .hero-float-mark.hf-grok {
-      display: none;
-    }
+    .composer { display: none; }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .hero-eyebrow,
     .hero-title,
     .hero-sub,
-    .hero-actions,
-    .hero-preview,
-    .hero-float-mark {
+    .hero-actions {
       animation: none;
     }
 
-    .hero-screenshot-frame {
-      transform: none;
+    .composer-caret {
+      animation: none;
     }
 
     .arming-state--armed .arming-dot {
