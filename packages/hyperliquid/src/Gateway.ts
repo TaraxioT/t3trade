@@ -193,7 +193,11 @@ function toMarketSnapshotFields(
     // stays well-formed (the POC market always has a book).
     midPrice: ctx.midPx === null ? mark : num(ctx.midPx),
     oraclePrice: num(ctx.oraclePx),
-    fundingRate8h: num(ctx.funding),
+    // The exchange's `funding` field is the rate paid each HOUR (Hyperliquid
+    // computes an 8h rate and pays one eighth of it hourly). Every consumer of
+    // this field speaks per-8h, so convert at the boundary where the wire
+    // value enters a field whose name promises 8h.
+    fundingRate8h: num(ctx.funding) * 8,
     openInterest: num(ctx.openInterest),
     dayVolumeUsd: num(ctx.dayNtlVlm),
     bestBidOffer: book,

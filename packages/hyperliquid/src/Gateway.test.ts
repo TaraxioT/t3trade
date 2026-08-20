@@ -141,6 +141,9 @@ describe("HyperliquidGateway.getMarketSnapshot", () => {
       expect(snap.bestBidOffer.askPrice).toBe(3750.9);
       // 24h change derived from prevDayPx 3700 → mark 3750.1.
       expect(snap.change24hPercent).toBeCloseTo(1.351, 1);
+      // Funding: the wire field is the hourly rate (0.00012/h); the snapshot
+      // field promises the 8h-equivalent.
+      expect(snap.fundingRate8h).toBeCloseTo(0.00096, 10);
       // Freshness: asset context aged at 5s, BBO at 2s.
       expect(snap.freshness.staleAfterMillis).toBe(5_000);
       expect(snap.bestBidOffer.freshness.staleAfterMillis).toBe(2_000);
