@@ -23,11 +23,7 @@ an instrument, not an agency showreel.
    inside data marks. They are never used for page chrome, CTAs, links or
    section decoration. The app's trading tokens, verified against
    `apps/web/src/trading.css`, are `--profit`, `--loss`, `--long`, `--short`,
-   `--armed`, plus the `--mission-chart-*` hues. Exception, added by the
-   developer's explicit instruction to replicate the reference landing exactly:
-   the hero frame's decorative illumination may use the reference's cool
-   gradient (violet to cyan). It is light, not chrome; no other element may
-   adopt those hues.
+   `--armed`, plus the `--mission-chart-*` hues.
 4. One radius ladder. Page chrome uses the marketing ladder. The replica uses
    the app ladder. The two never mix inside one element.
 5. Eyebrows: at most `ceil(sectionCount / 3)` on the whole page, hero counts as
