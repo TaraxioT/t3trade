@@ -98,13 +98,18 @@ matching existing fork practice.
 Run the prompts in order, one session each (2 and 3 may be one session).
 Full text of each prompt lives in the chat transcript of 2026-08-20; summary:
 
-- **Prompt 0 (gate)** — the sync starts only AFTER Plan 39 completes and its
-  commits are on main. Prompt 1 is the readiness check, not a WIP-parking step.
-- **Prompt 1** — verify Plan 39 is fully landed (clean tree, gates green),
-  push main to origin.
+- **Prompt 0 (gate)** — the sync starts only AFTER Plan 39 **Phase 0** completes
+  and its commits are on main. Phases 1–5 stay parked until after the sync
+  (Prompt 4), because `index.css` is both a forecast conflict and a Phase-4
+  file. Prompt 1 is the readiness check, not a WIP-parking step.
+- **Prompt 1** — verify Plan 39 Phase 0 is fully landed (clean tree, gates
+  green), push main to origin.
 - **Prompt 2** — backfill PATCH_LEDGER for plans 27–39 seams (only the 28
-  forecast-conflict files matter), then create the sync branch, `git merge --no-ff
-upstream/main`, resolve the 28 conflicts per the buckets above.
+  forecast-conflict files matter), then create the sync branch and
+  `git merge --no-ff beab6886f` — the pinned target, equivalently its tag
+  `v0.0.34-nightly.20260820.1142`, never the moving `upstream/main`, so the
+  merged ancestry is exactly what Prompt 3 records as the new baseline — then
+  resolve the 28 conflicts per the buckets above.
 - **Prompt 3** — full gate on the merge commit, open the sync PR per
   SYNC_RUNBOOK.md step 6, merge with a merge commit, tag
   `upstream-base/2026-08-20-beab6886f`, add the BASELINE.md row, push the tag.

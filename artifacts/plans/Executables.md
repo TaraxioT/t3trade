@@ -413,6 +413,13 @@ every trade goes through the mission agent.
 
 ## Not a prompt — soak-end checklist (operator actions, when mission 2af6960b concludes)
 
+These PIDs were captured at spawn and the soak runs for hours, so the numbers
+may have been recycled onto unrelated work by the time you get here. Before
+stopping any of them, confirm the PID is still the process you mean — check
+`ps -o pid,user,lstart,args -p <pid>` and, for the archivers,
+`readlink /proc/<pid>/cwd` — and abort that step if the command, start time, or
+owner does not match. Never widen this into a pattern kill.
+
 1. Stop the soak harness and monitor (PIDs 31356 / 58649).
 2. Stop the WORKSPACE archiver (PID 8537 → .t3/userdata/market-archive.sqlite).
    Keep the ~/.t3 archiver (PID 78836, restarted 2026-08-20) running — it is
