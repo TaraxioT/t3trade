@@ -95,6 +95,11 @@ Adding a beat re-times the whole story consistently or it is rejected.
   start their own.
 - Marketing-only staged sets fail the `vp fmt` pre-commit hook. Commit those
   with `--no-verify`.
+- All image analysis in this effort goes through the `agy-vision` skill:
+  screenshot comparison, scroll-frame reading, OCR of captured frames, UI
+  diffing, alt-text drafting. Load it by name with the Skill tool and use its
+  `agy` CLI invocation pattern with absolute image paths. Do not use other
+  image-analysis tools for these judgments.
 - Only the orchestrator deploys, only when the user says so, with
   `wrangler pages deploy` from `apps/marketing`.
 
