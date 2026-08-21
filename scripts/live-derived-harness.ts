@@ -33,7 +33,7 @@ import { TradingWakeupComposer } from "../apps/server/src/trading/TradingWakeupC
 import { TradingWatchService } from "../apps/server/src/trading/TradingWatchService.ts";
 import { WatchEvaluator, WatchEvaluatorLive } from "../apps/server/src/trading/WatchEvaluator.ts";
 
-const REPORT = "/Users/george/Workspace/t3trade/live-derived-soak.md";
+const REPORT = "/Users/george/Workspace/t3trade/artifacts/investigations/live-derived-soak.md";
 // The state database this harness shares with the server. The trading layer
 // takes the single-writer lease scoped to this path, so a harness boot and a
 // server boot can never both run trading housekeeping against it silently:

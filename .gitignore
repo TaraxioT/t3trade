@@ -50,7 +50,9 @@ artifacts/t3-trade-report/
 /plan-*.md
 /plan-*-prompts/
 /Executables.md
-/live-derived-soak.md
+# Agent briefs. Same reason, plus these name the fork's own relay and
+# environment hostnames, and this repository is public.
+/glm-*.md
 artifacts/investigations/
 
 # T3 Trade themed assets & backups

@@ -1,13 +1,13 @@
 /**
  * Plan 38 Phase 3 live-soak monitor. Every 60s appends a timestamped line per
  * watch (status, last_observed_value, baseline_signature, next_evaluate_at)
- * plus any trading_harness_runs for the soak mission, to live-derived-soak.md.
+ * plus any trading_harness_runs for the soak mission, to artifacts/investigations/live-derived-soak.md.
  * Read-only DB access (mode=ro URI).
  *
  * Run: bun scripts/live-derived-monitor.ts <missionId>
  */
 const MISSION_ID = process.argv[2];
-const REPORT = "/Users/george/Workspace/t3trade/live-derived-soak.md";
+const REPORT = "/Users/george/Workspace/t3trade/artifacts/investigations/live-derived-soak.md";
 if (!MISSION_ID) throw new Error("usage: bun scripts/live-derived-monitor.ts <missionId>");
 
 const { Database } = require("bun:sqlite");
