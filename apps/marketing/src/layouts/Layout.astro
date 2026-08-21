@@ -110,13 +110,32 @@ const {
     --ok: oklch(0.72 0.15 152);
     --warn: oklch(0.78 0.125 78);
     --loss: oklch(0.66 0.18 27);
-    /* The app's primary blue: its progress rule, wedge, and open-state ink. */
-    --chart-blue: oklch(0.64 0.17 259);
+    /* The app's --color-info: wedge ink and open-state token ink. */
+    --chart-blue: oklch(62.3% 0.214 259.815);
+    /* The app's --primary: the agent-log progress fill (bg-primary). The app
+       uses two different blues; --chart-blue and --chart-primary keep them
+       apart. */
+    --chart-primary: oklch(0.571 0.21 264);
+    /* The app's panel-scoped --foreground override (92.2% inside
+       .mission-panel); window chrome stays at --fg's 97%. */
+    --fg-panel: oklch(0.922 0 0);
     --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     --radius: 12px;
     --radius-sm: 8px;
     --radius-lg: 16px;
+  }
+
+  /* Cockpit-only ink overrides. The page-wide --fg/--fg-muted/--border above
+     are shared with the marketing sections (hero, rails, CTA), so the app's
+     resolved values are scoped to the replica window instead of repointing
+     the globals. Byte-for-byte the app's dark tokens:
+     --foreground 97%, --muted-foreground, --border. Card borders at 12% are
+     the panel-glass override and live in index.astro. */
+  .appwin {
+    --fg: oklch(0.97 0 0);
+    --fg-muted: color-mix(in srgb, oklch(55.6% 0 0) 90%, #fff);
+    --border: color-mix(in oklab, #fff 6%, transparent);
   }
 
   * {
