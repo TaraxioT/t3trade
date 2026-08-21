@@ -58,8 +58,8 @@ We need to be on the same page with terminology. When communicating, use this la
 
 ## The three ways to hurt yourself
 
-1. **Killing by pattern.** Never `pkill -f`, `pgrep | kill`, or `kill` a PID you found by matching a name, path, or worktree string. Your own agent process has this worktree's path in its argv, and this machine runs several other dev servers at once. Kill only a PID you captured at spawn, or the owner of your port from `ss -H -ltnp` after confirming `/proc/<pid>/cwd` is your worktree.
-2. **Writing to the live install.** `~/.t3/userdata` is the developer's real T3 Code database, in use while you work. Reading it and copying from it are fine, and a good way to get real test data (see Test data). Never start a server against it, never open it read-write, never clean it up.
+1. **Killing by pattern.** Never `pkill -f`, `pgrep | kill`, or `kill` a PID you found by matching a name, path, or worktree string. Your own agent process has this checkout's path in its argv, and this machine runs several other dev servers at once. Kill only a PID you captured at spawn, or the owner of your port: on macOS `lsof -nP -iTCP:<port> -sTCP:LISTEN` and confirm with `lsof -a -d cwd -p <pid>`, on Linux `ss -H -ltnp` and `/proc/<pid>/cwd`. Killing the dev-runner parent is not enough — Vite and the server survive it and keep holding their ports, so kill the port owners too.
+2. **Two writers on one database.** `~/.t3trade/userdata` belongs to the installed app, which holds `state.sqlite` open the whole time it runs. `vp run dev` does not go there: in development the state directory is `~/.t3trade/dev`, seeded with a copy of the real data, so the dev server and the installed app coexist and neither needs quitting. You may still aim a dev server at `userdata` with `--home-dir` when you want the live environment itself, but then quit the app first, confirm nothing else holds the file, and take a `VACUUM INTO` snapshot before booting. Never delete or reset either directory.
 3. **Baking in origins.** Never set `VITE_HTTP_URL` or `VITE_WS_URL` for dev. Dev is single-origin and Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known`. Setting them bakes localhost into the bundle and silently breaks every remote browser.
 
 ## Hit every surface
@@ -74,20 +74,49 @@ The most common defect in this repo is a change that works on the path you teste
 - **Connection modes.** Local, remote/relay, and tunnel behave differently. Multi-device and multi-environment cases are real.
 - **Docs.** `docs/` splits by audience. Behavior changes that a user would notice belong in `docs/user/` (shipped-product voice, no repo tooling or source paths); architecture and contributor changes in `docs/internals/`; runbooks in `docs/operations/`; new vocabulary in `docs/internals/glossary.md`.
 
+## Living next to upstream
+
+A user may have upstream T3 Code installed already. Everything the fork writes
+to a shared location must therefore carry the fork's own name, or the two
+applications collide on a first run in ways that are silent and fatal.
+
+The forked names live in one place, `packages/shared/src/forkPaths.ts`, and the
+call sites import from it rather than repeating a literal:
+
+- `~/.t3trade` — the data directory, so the two apps never share `state.sqlite`.
+- `t3trade` / `t3trade-dev` — Electron `userData`. Electron scopes the
+  single-instance lock to this directory, so sharing it hands the second launch
+  to the other app.
+- `t3trade://` / `t3trade-dev://` — the renderer URL scheme.
+- `com.t3trades.app` — the bundle identifier.
+
+The same rule applies outside `forkPaths.ts` wherever a name reaches a shared
+namespace: `t3trade.service` and `com.t3tools.t3trade.service` for the boot
+service, `t3trade.desktop` and the `t3trade` WM class on Linux,
+`t3trade-url-handler.desktop`, `t3trade-ssh-askpass`, and the WSL marker files.
+
+Deliberately **not** forked: `T3CODE_HOME` keeps its name, because it is opt-in
+and renaming it would touch every call site to buy nothing. The backend port
+needs no fork either — desktop scans upward from 3773, the dev runner from
+13773/5733, and the session cookie is already port-scoped.
+
+An upstream sync will try to pull these back to `t3code`. They are fork patches;
+keep them.
+
 ## Dev servers
 
 - `vp i` installs. Worktrees get this from the t3.json setup script; if module resolution looks broken, it probably did not run.
-- `vp run dev` starts server and web. In a worktree, state defaults to that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME` so you cannot land on shared state by accident. An explicit `--home-dir` still wins.
-- Ports derive from the worktree path and are stable across restarts, but read the real ones from the `[dev-runner]` line since occupied ports shift.
+- `vp run dev` starts server and web. In a **worktree**, the base directory is that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME`. In the **main checkout** the base is `~/.t3trade`, and because dev mode sets no explicit home the state directory below it is `dev`, not `userdata`. An explicit `--home-dir` beats both and flips the state directory to `userdata`, so pass it only when you mean the live environment. Read `baseDir` off the `[dev-runner]` line and remember the `/dev` suffix; see rule 2.
+- Ports derive from the checkout path and are stable across restarts, but read the real ones from the `[dev-runner]` line since occupied ports shift.
 - Sharing over the tailnet is three steps: run `vp run dev --share` in the background, wait for the `pairingUrl:` line in its output, paste that full URL (token included) in your reply. Do not wire up `tailscale serve` by hand for this, and do not open the URL yourself.
 - The web app requires pairing. Hand over the pairing URL, not the bare origin. A URL without its token is useless to whoever you gave it to. If the token got consumed, mint a fresh one with `node apps/server/src/bin.ts pair` — note it carries standard scopes, while the startup URL carries admin scopes (needed for Settings → Connections management).
 - Stop what you started, by the PID you tracked. See rule 1.
 
 ## Test data
 
-An empty database is a bad test. Seed your worktree's `.t3` with a copy of real data instead of pointing at live state:
+An empty database is a bad test, and a fresh `~/.t3trade/dev` is empty. It is seeded from the real data and should stay that way; reseed it, or seed a throwaway `.t3`, with a copy rather than by pointing at live state:
 
-- Copy from `~/.t3/userdata` (the developer's real data, the most realistic test set) or `~/.t3/dev`. Worktree state lives at `<worktree>/.t3/userdata`.
+- Copy from `~/.t3trade/userdata` (the real data, the most realistic test set) or `~/.t3trade/dev`. Worktree state lives at `<worktree>/.t3/userdata`.
 - Snapshot the database with `VACUUM INTO`, which is safe even while a server has the source open and yields one consistent file:
 
   ```bash
@@ -100,6 +129,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 - Bring `secrets` and `settings.json` only if the flow under test needs them.
 - Copy in, never symlink. Data flows one way: into your sandbox, never back out.
+- Snapshot before running against the real directory too, not just when copying out of it. It costs seconds and it is the only undo there is.
 
 ## Verifying
 
@@ -107,7 +137,10 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - **Do not run repo-wide checks.** No `vp check`, no `vp run -r test`, no `vp run -r typecheck` unless I ask. CI owns the full suite.
 - Backend behavior changes ship with focused tests for that behavior.
 - The server is event-sourced and its async flows emit typed receipts. Wait on receipts and worker drains, never on sleeps or polling. A test that needs a timeout to pass is wrong.
-- Upon request, user-visible frontend changes should get one integrated pass in a real client: `test-t3-app` for web, `test-t3-mobile` for mobile. The primary agent does this once after integrating. Subagents do not launch their own dev servers. Ask permission before doing computer use or spinning up browsers.
+- User-visible frontend changes get an integrated pass in a real client: `test-t3-app` for web, `test-t3-mobile` for mobile. Name the skill explicitly when you delegate; a worker will not find it from its description.
+- The dev server, its ports, its `.t3` state and the browser are one each per worktree. One agent owns them for the whole loop, not for a turn, and only that agent drives the browser. Subagents do not launch their own dev servers.
+- Any other agent that needs the running app reads the owner's artifact for ports, base directory and pairing URL rather than starting a second stack.
+- Split implementation by file ownership, one writer per file per batch. Genuinely parallel verification needs one worktree per agent, created before dispatch with its own absolute path, since ports derive from that path. A single sequential pass does not need a worktree at all — the main checkout against the real install is the more faithful test.
 
 ## Pull requests
 
@@ -143,5 +176,5 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Additional tips
 
-- Don't verify with browsers or computer use unless the user explicitly agrees or requests it.
+- Browser verification through the `test-t3-app` loop is standing authorization in this fork. Anything beyond that loop, including computer use outside the controlled browser, still needs a request.
 - Security is important, but should not be over-indexed on, especially for dev mode/maintainer-only features.

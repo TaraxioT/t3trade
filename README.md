@@ -159,7 +159,7 @@ never authenticates, and never touches an order endpoint or an account read.
 
 ### Where it lives
 
-`~/.t3/userdata/market-archive.sqlite` — its own file, its own tiny schema, its
+`~/.t3trade/userdata/market-archive.sqlite` — its own file, its own tiny schema, its
 own version row in a `meta` table. It shares nothing with `state.sqlite` and is
 not part of the application's migration chain.
 

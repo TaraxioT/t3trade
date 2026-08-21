@@ -255,7 +255,7 @@ const expected = {
   nodePtyVersion: require("node-pty/package.json").version,
 };
 const prebuildDir = path.join(pkgDir, "prebuilds", "linux-" + process.arch);
-const marker = path.join(prebuildDir, "t3code-wsl-node-pty.json");
+const marker = path.join(prebuildDir, "t3trade-wsl-node-pty.json");
 const binary = path.join(prebuildDir, "pty.node");
 if (!fs.existsSync(marker) || !fs.existsSync(binary)) process.exit(${NODE_PTY_PREBUILD_MISSING_EXIT_CODE});
 require("node-pty");

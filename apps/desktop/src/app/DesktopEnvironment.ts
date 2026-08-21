@@ -4,6 +4,10 @@ import type {
   DesktopRuntimeArch,
   DesktopRuntimeInfo,
 } from "@t3tools/contracts";
+import {
+  DESKTOP_USER_DATA_DIR_NAME,
+  DESKTOP_USER_DATA_DIR_NAME_DEV,
+} from "@t3tools/shared/forkPaths";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -178,7 +182,9 @@ const make = Effect.fn("desktop.environment.make")(function* (
     joinPath: path.join,
     t3Home: config.t3Home,
   });
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
+  const userDataDirName = isDevelopment
+    ? DESKTOP_USER_DATA_DIR_NAME_DEV
+    : DESKTOP_USER_DATA_DIR_NAME;
   const legacyUserDataDirName = isDevelopment ? "T3 Trade (Dev)" : "T3 Trade (Alpha)";
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
@@ -226,8 +232,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
       isDevelopment ? "com.t3trades.app.dev" : "com.t3trades.app",
     ),
-    linuxDesktopEntryName: isDevelopment ? "t3code-dev.desktop" : "t3code.desktop",
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    linuxDesktopEntryName: isDevelopment ? "t3trade-dev.desktop" : "t3trade.desktop",
+    linuxWmClass: isDevelopment ? "t3trade-dev" : "t3trade",
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
     userDataDirName,

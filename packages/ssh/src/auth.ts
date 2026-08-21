@@ -60,7 +60,7 @@ export interface SshChildEnvironmentOptions {
   readonly authSecret?: string | null;
 }
 
-const SSH_ASKPASS_DIR_NAME = "t3code-ssh-askpass";
+const SSH_ASKPASS_DIR_NAME = "t3trade-ssh-askpass";
 
 function joinSshAskpassPath(
   directory: string,

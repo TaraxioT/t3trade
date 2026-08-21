@@ -154,7 +154,7 @@ describe("DesktopWslServerTree", () => {
         const dep = yield* fileSystem.exists(path.join(root, "node_modules/effect/package.json"));
         assert.isTrue(dep);
         const marker = yield* fileSystem.readFileString(
-          path.join(root, "t3code-wsl-server-tree.json"),
+          path.join(root, "t3trade-wsl-server-tree.json"),
         );
         assert.include(marker, '"version":"1.2.3"');
       }),

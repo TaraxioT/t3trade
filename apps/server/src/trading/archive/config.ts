@@ -16,6 +16,7 @@
 
 // @effect-diagnostics nodeBuiltinImport:off - a standalone process resolves its own paths.
 import * as NodeOS from "node:os";
+import { T3_HOME_DIR_NAME } from "@t3tools/shared/forkPaths";
 import * as NodePath from "node:path";
 
 /** Coins the archiver tracks. Extend the list; the schema needs no change. */
@@ -107,6 +108,6 @@ export const REQUEST_ATTEMPTS = 6;
  * migration chain with `state.sqlite`.
  */
 export function archiveDatabasePath(): string {
-  const home = process.env["T3CODE_HOME"] ?? NodePath.join(NodeOS.homedir(), ".t3");
+  const home = process.env["T3CODE_HOME"] ?? NodePath.join(NodeOS.homedir(), T3_HOME_DIR_NAME);
   return NodePath.join(home, "userdata", "market-archive.sqlite");
 }
