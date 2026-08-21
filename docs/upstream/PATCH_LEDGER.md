@@ -449,3 +449,16 @@ Drift is measured, not remembered: `scripts/upstream-drift.sh` reports the
 commit count and the `merge-tree` conflict forecast, and
 `.github/workflows/upstream-drift.yml` runs it weekly and opens one
 `upstream-sync` issue when either threshold is crossed.
+
+## INFRA REMOVAL · CI and Macroscope (2026-08-21)
+
+The fork runs no GitHub Actions. Upstream ships 14 workflow definitions that
+run on Blacksmith runners, plus `.macroscope/` check-run agent configs read by
+the `macroscopeapp` installation; both org apps are being removed.
+
+### Applied
+
+| Seam                 | File(s)                | Change                                                                                                                                                                                |
+| -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow definitions | `.github/workflows/**` | All 14 upstream workflows deleted (`bdf852fa2`) — every one ran on `blacksmith-*` runners. A sync restores them; delete again, or port selectively via the free-tier CI plan (PR #4). |
+| Macroscope agents    | `.macroscope/**`       | Deleted. Inert once `macroscopeapp` is uninstalled; it exists only to instruct that app. A sync restores the directory — delete it again.                                             |
