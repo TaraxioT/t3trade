@@ -85,7 +85,9 @@ Adding a beat re-times the whole story consistently or it is rejected.
   get folded. Raise `MIN_TIMELINES` whenever the real count rises. Never lower
   it.
 - Shipped JS stays under 12kB gzipped for the whole page. The only scripts are
-  the release lookup and the Hyperliquid tape.
+  the release lookup, the Hyperliquid tape, and the section minimap rail (an
+  IntersectionObserver-driven nav; observing sections is not a scroll-position
+  read, so the scroll-listener ban still holds).
 
 ## Working rules
 - Marketing dev server: `pnpm --filter @t3tools/marketing dev --port 4180`.
