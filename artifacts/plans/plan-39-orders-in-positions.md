@@ -53,8 +53,8 @@ order lifecycle cannot be drawn from that. Everything needed is in SQLite:
 
 1. Add `TradingOrderView` to `packages/contracts/src/trading.ts` beside
    `TradingExecutionView`: `executionId, cloid, actionType, side, market, size,
-   limitPrice, timeInForce, reduceOnly, status, filledSize, avgFillPrice
-   (nullable), feeUsd, closedPnl, orderId (optional), createdAt, updatedAt`.
+limitPrice, timeInForce, reduceOnly, status, filledSize, avgFillPrice
+(nullable), feeUsd, closedPnl, orderId (optional), createdAt, updatedAt`.
 2. Add `orders: Schema.Array(TradingOrderView)` to `OrchestrationTradingMission`.
    Additive only — rename nothing, keep `inFlightExecution` and `recentFills`.
 3. In `readExecutionSurfaces`, one new query: every execution record for the
@@ -68,13 +68,13 @@ order lifecycle cannot be drawn from that. Everything needed is in SQLite:
      not orders and must not become ledger rows: filter
      `action_type IN ('open','scale_in','close','reduce','reduce_only_exit')`.
      A stop move is an Agent Log row (Phase 3's `ShieldCheck`); a cancel action
-     surfaces as its *target* order's `cancelled` status, never as a row of
+     surfaces as its _target_ order's `cancelled` status, never as a row of
      its own.
    - **Join on both keys.** `trading_fills.cloid` is nullable (migration 038
      line 77) — an exchange-reconciled fill can arrive without one, and the
      existing `plannedRisk` query already guards `cloid IS NOT NULL` for
      exactly this reason. Aggregate fills by `COALESCE(cloid, execution_id)`
-     and join that key against the record's `cloid` *and* `execution_id`, so
+     and join that key against the record's `cloid` _and_ `execution_id`, so
      no fill silently drops off its order.
    - **Use `trading_orders`.** Migration 038 also keeps a reconciled
      open-order table — `(mission_id, cloid) → order_id, remaining_size` —
@@ -91,7 +91,7 @@ order lifecycle cannot be drawn from that. Everything needed is in SQLite:
 Two faults. The ledger is a sibling `<section>` **below** `CARD_ROW_CLASS`
 ([MissionLivePanel.tsx:1046](apps/web/src/components/trading/MissionLivePanel.tsx:1046)),
 so a position appearing reflows the row and shoves the chart up — and the panel
-is bottom-docked above the composer, so it grows *upward* and the chart jumps.
+is bottom-docked above the composer, so it grows _upward_ and the chart jumps.
 Meanwhile the chart is pinned at `CHART_HEIGHT_CLASS = "h-[260px] w-full
 sm:h-[340px]"` (line 220) while a third of the viewport above sits empty.
 
@@ -112,7 +112,7 @@ operator is watching it hardest" (line 1409). Extend it to the whole panel.
   its height is fixed too. It changes only when the window resizes. Delete the
   standalone ledger section and the `max-h-[220px]` on the turn scroller.
 - `CHART_HEIGHT_CLASS` becomes `h-[260px] w-full sm:h-auto sm:min-h-[300px]
-  sm:flex-1` inside a `flex min-h-0 flex-col` card. The SVG is already
+sm:flex-1` inside a `flex min-h-0 flex-col` card. The SVG is already
   `preserveAspectRatio="none"` + `h-full w-full` with viewBox-percentage overlays
   ([MissionPriceChart.tsx:841](apps/web/src/components/trading/MissionPriceChart.tsx:841)),
   so it stretches to any height with no geometry change. Give the same
@@ -149,7 +149,7 @@ operator is watching it hardest" (line 1409). Extend it to the whole panel.
 
 One glance answers everything the mission has done or is trying to do. **One
 list, one row per order** — not per round trip. An order is the atomic thing the
-exchange acts on, and a filled opening order *is* the position it created, so
+exchange acts on, and a filled opening order _is_ the position it created, so
 one row per leg is the only model that holds pending orders, partial fills and
 positions in one column without inventing a second grammar. This is also what
 "don't combine open and close" means: an open leg and a close leg are two rows,
@@ -163,21 +163,21 @@ nowMillis)` returning one row per order, newest first, merging
 
 ### Row states
 
-| status | word | reads as |
-| --- | --- | --- |
-| `reserved` | `queued` | muted, no figures yet |
-| `submitted` / `accepted` | `working` | armed amber, limit price live |
-| filled `0 < f < size` | `partial` | armed amber + fill track |
-| `filled`, opening leg, still held | `open` | info, **live** mark/P&L/fee |
-| `filled`, closing leg | `closed` | muted, realised figures frozen |
-| `cancelled` | `cancelled` | muted |
-| `rejected` | `rejected` | loss ink |
+| status                            | word        | reads as                       |
+| --------------------------------- | ----------- | ------------------------------ |
+| `reserved`                        | `queued`    | muted, no figures yet          |
+| `submitted` / `accepted`          | `working`   | armed amber, limit price live  |
+| filled `0 < f < size`             | `partial`   | armed amber + fill track       |
+| `filled`, opening leg, still held | `open`      | info, **live** mark/P&L/fee    |
+| `filled`, closing leg             | `closed`    | muted, realised figures frozen |
+| `cancelled`                       | `cancelled` | muted                          |
+| `rejected`                        | `rejected`  | loss ink                       |
 
 **An eighth state, `planned`, closes a hole the plan left open.** Once the
 right column is pure log, the armed-state `StatGrid` branch — SIZE / RISK /
 TARGET, [MissionLivePanel.tsx:1338](apps/web/src/components/trading/MissionLivePanel.tsx:1338)
 — has no destination anywhere in this document, and a mission waiting on a
-*trigger* (no resting order yet) would show an empty positions card while
+_trigger_ (no resting order yet) would show an empty positions card while
 committed to $892 of size. Decision: while the plan commits an entry that no
 live order covers, the card draws one **`planned` ghost row** — dashed border
 in the `PositionSkeleton` idiom, muted, planned size and entry price, `—` for
@@ -267,20 +267,20 @@ row a silhouette readable at a glance without adding a word.
 
 Icon map, replacing `turnCardIdentity`'s Radar / FileText / FileText / Receipt:
 
-| meaning | glyph | tone |
-| --- | --- | --- |
-| woke on a timer | `AlarmClock` | muted |
-| woke on a level | `Zap` | info |
-| looked at the market | `Eye` | muted |
-| read a strategy sheet | `BookOpen` | muted |
-| plan published / revised | `Route` | info |
-| stood aside | `Hand` | muted |
-| watch armed | `Crosshair` | armed |
-| watch fired | `BellRing` | info |
-| watch retired / replaced | `CircleSlash` | muted |
-| stop moved | `ShieldCheck` | armed |
-| journal note | `NotebookPen` | muted |
-| fill / trade | `Receipt` | profit / loss |
+| meaning                  | glyph         | tone          |
+| ------------------------ | ------------- | ------------- |
+| woke on a timer          | `AlarmClock`  | muted         |
+| woke on a level          | `Zap`         | info          |
+| looked at the market     | `Eye`         | muted         |
+| read a strategy sheet    | `BookOpen`    | muted         |
+| plan published / revised | `Route`       | info          |
+| stood aside              | `Hand`        | muted         |
+| watch armed              | `Crosshair`   | armed         |
+| watch fired              | `BellRing`    | info          |
+| watch retired / replaced | `CircleSlash` | muted         |
+| stop moved               | `ShieldCheck` | armed         |
+| journal note             | `NotebookPen` | muted         |
+| fill / trade             | `Receipt`     | profit / loss |
 
 Keep the chart↔log selection join (`data-timeline-card`, `data-watch-chip`,
 `flyChipToCard`), the take-down group folding, the `+N earlier` counts, and the
@@ -290,7 +290,7 @@ sr-only kind word on every row.
 
 ## Phase 4 — the transitions
 
-Positions is a live surface; a state change must be *seen*, never merely found
+Positions is a live surface; a state change must be _seen_, never merely found
 on the next poll. Add beside the existing `mission-*` keyframes in `index.css`,
 all one-shot, all identity-keyed, all reduced-motion guarded:
 
@@ -306,7 +306,7 @@ all one-shot, all identity-keyed, all reduced-motion guarded:
 - `mission-log-enter` — 260ms fade + `translateY(4px)` for a new log row; the dot
   keeps `watch-tick-in`.
 - Partial-fill track — an inset `absolute inset-y-0 left-0 rounded-full
-  bg-armed/12` behind the row, width `filledSize / size`, driven by
+bg-armed/12` behind the row, width `filledSize / size`, driven by
   `transition-[width] duration-600 ease-out`. A CSS transition, not a keyframe,
   so successive partials grow it continuously instead of restarting.
 - Size-unit toggle — 180ms cross-fade on the figure, no reflow.
@@ -327,7 +327,7 @@ complete) × **1440 / 1100 / 820px** × **light and dark**:
 1. **Motion** — the panel's `top` and the chart's `height` must be byte-identical
    across all four states. Anything that moves when state changes is a defect.
    (This is an `lg:` invariant — below `lg` the panel stacks and grows
-   intrinsically, so assert it at 1440 and 1100 and *not* at 820, where only
+   intrinsically, so assert it at 1440 and 1100 and _not_ at 820, where only
    the overflow and figure checks apply.)
 2. **Overflow** — no horizontal page scroll; every wide region scrolls inside its
    own container; no clipped glyph, no truncated figure, no text riding a border.

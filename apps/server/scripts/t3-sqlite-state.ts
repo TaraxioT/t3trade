@@ -183,7 +183,9 @@ export const runSqliteState = Effect.fn("runSqliteState")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = path.resolve(input.baseDir);
-  const sharedHome = path.resolve(options.sharedHome ?? path.join(NodeOS.homedir(), T3_HOME_DIR_NAME));
+  const sharedHome = path.resolve(
+    options.sharedHome ?? path.join(NodeOS.homedir(), T3_HOME_DIR_NAME),
+  );
   const databasePath = path.join(baseDir, "userdata", "state.sqlite");
   const source = yield* resolveSqlSource(input.sql, input.file);
 

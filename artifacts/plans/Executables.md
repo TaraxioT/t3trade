@@ -26,6 +26,7 @@ artifacts/cockpit-verify/. Gates: web typecheck clean, 2353 tests pass (7
 added), lint 0 errors.
 
 Two open items left by R8, neither in its scope:
+
 - A 0.0001 ETH dust short (~$0.23) remains open on testnet, unmanaged since
   the isolated environment was shut down. Close it when convenient.
 - The SERVER projection ships an empty watch list for runtime-armed watches;
@@ -34,7 +35,7 @@ Two open items left by R8, neither in its scope:
 - The isolated state dir /tmp/t3code-test.oQXqhH is preserved on purpose: it
   holds the mission's 23 fills and 22 harness runs as reproduction evidence
   for the seven fixes. Do not sweep it as stray temp until those are settled.
-  (Two older /tmp/t3code-test.* dirs, j4XdhZ and xP9cne, are not R8's.)
+  (Two older /tmp/t3code-test.\* dirs, j4XdhZ and xP9cne, are not R8's.)
 
 Housekeeping done 2026-08-20 (no prompt needed): plan/report docs moved off
 the repo root into artifacts/ (commit f47f4ec0e); the canonical ~/.t3 market

@@ -28,7 +28,7 @@ upstream/main` returns nothing) — only `index.css` intersects Plan 39.
 **A. Fork identity — keep ours (or keep our deletion):**
 README.md · docs/user/install.md · apps/marketing/src/pages/index.astro ·
 apps/marketing/src/pages/download.astro (deleted in fork — keep deleted) ·
-.github/workflows/release.yml (fork release conventions: t3trade-v* tags, unsigned
+.github/workflows/release.yml (fork release conventions: t3trade-v\* tags, unsigned
 arm64, prerelease) · .github/workflows/mobile-showcase-screenshots.yml ·
 apps/desktop/resources/icon.ico + icon.png — **verified**: upstream commit
 `ad117235b` deleted icon.icns/ico/png and replaced committed binaries with an
@@ -51,6 +51,7 @@ DesktopTelemetryPublisher.test.ts · DesktopApplicationMenu.test.ts.
 
 **C. Known fork seams — take upstream's rewrite, re-inject the fork seam
 (backfill PATCH_LEDGER first). Verified upstream-side sizes:**
+
 - apps/web/src/index.css — **1600 lines changed upstream**, dominated by
   `9885a845c refactor(web): simplify global styling (#6381)` plus dark-theme
   fixes. The fork's mission keyframes block will not survive as a hunk.
@@ -103,7 +104,7 @@ Full text of each prompt lives in the chat transcript of 2026-08-20; summary:
   push main to origin.
 - **Prompt 2** — backfill PATCH_LEDGER for plans 27–39 seams (only the 28
   forecast-conflict files matter), then create the sync branch, `git merge --no-ff
-  upstream/main`, resolve the 28 conflicts per the buckets above.
+upstream/main`, resolve the 28 conflicts per the buckets above.
 - **Prompt 3** — full gate on the merge commit, open the sync PR per
   SYNC_RUNBOOK.md step 6, merge with a merge commit, tag
   `upstream-base/2026-08-20-beab6886f`, add the BASELINE.md row, push the tag.

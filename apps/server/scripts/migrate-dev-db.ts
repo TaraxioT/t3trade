@@ -362,7 +362,9 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const sharedHome = path.resolve(options.sharedHome ?? path.join(NodeOS.homedir(), T3_HOME_DIR_NAME));
+  const sharedHome = path.resolve(
+    options.sharedHome ?? path.join(NodeOS.homedir(), T3_HOME_DIR_NAME),
+  );
   const sourcePath = path.resolve(
     input.source ?? path.join(sharedHome, "userdata", "state.sqlite"),
   );
