@@ -38,7 +38,9 @@ an instrument, not an agency showreel.
    390x844.
 9. Every animation must be justifiable in one sentence as hierarchy,
    storytelling, feedback or state transition. Delete anything else. No
-   perpetual loops except the ticker tape, which is real data.
+   perpetual loops in page chrome except the ticker tape, which is real data.
+   Inside the replica, an idle loop the real product itself runs (for example
+   the composer caret blink) is fidelity and is exempt.
 10. `prefers-reduced-motion: reduce` must land on a fully composed, readable
     end-state frame, never a blank or half-drawn one.
 
