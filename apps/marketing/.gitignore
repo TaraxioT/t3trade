@@ -1,1 +1,5 @@
-apps/marketing/orchestration/shots/
+orchestration/shots/
+orchestration/p5/
+orchestration/p7/
+orchestration/p11a/*.png
+orchestration/p11a/*.mjs
