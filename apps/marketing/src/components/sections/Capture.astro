@@ -1,0 +1,133 @@
+---
+// P7: the one real capture on the page. Everything else on the page is the
+// replica system; this section is the proof the product exists. Self-contained:
+// own scoped styles, own assets under /capture/, no replica imports.
+---
+<section id="capture" class="sec-capture">
+  <div class="capture-inner">
+    <h2 class="capture-title">Not a mockup. The panel itself.</h2>
+    <p class="capture-lede">
+      A screenshot of T3 Trade running: the mission panel mid-trade, with the
+      entry, the stop, the target and the agent's own log.
+    </p>
+
+    <figure class="capture-frame">
+      <picture>
+        <source
+          type="image/avif"
+          media="(max-width: 639px)"
+          srcset="/capture/mission-live-panel-mobile.avif"
+        />
+        <source
+          type="image/webp"
+          media="(max-width: 639px)"
+          srcset="/capture/mission-live-panel-mobile.webp"
+        />
+        <source type="image/avif" srcset="/capture/mission-live-panel-desktop.avif" />
+        <source type="image/webp" srcset="/capture/mission-live-panel-desktop.webp" />
+        <img
+          src="/capture/mission-live-panel-desktop.webp"
+          alt="Dark-mode crypto trading dashboard for ETH/USD at 1,869.4 (+1.84%), showing a 1m price chart with target and stop levels, an automated agent log of trade executions, and active 5x leveraged long positions."
+          width="2812"
+          height="1560"
+          loading="lazy"
+          decoding="async"
+        />
+      </picture>
+      <figcaption class="capture-caption">
+        The real mission panel, captured at 2x from the running app in dark mode,
+        desktop and mobile widths. The mission shown is a fixed example.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<style>
+  .sec-capture {
+    padding: 96px 0;
+  }
+
+  .capture-inner {
+    width: 100%;
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+
+  .capture-title {
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 500;
+    letter-spacing: -0.035em;
+    line-height: 1.05;
+    color: var(--fg);
+    max-width: 22ch;
+  }
+
+  .capture-lede {
+    margin-top: 16px;
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--fg-dim);
+    max-width: 58ch;
+  }
+
+  .capture-frame {
+    margin: 40px 0 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-elev);
+    padding: 8px;
+    /* The screenshot already carries its own glass and glow; the frame only
+       has to seat it on the page without adding decoration. */
+    box-shadow: 0 24px 60px -32px rgba(0, 0, 0, 0.8);
+  }
+
+  .capture-frame img {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* Space is reserved from the desktop intrinsic ratio; mobile swaps to its
+       own ratio before load, so neither width shifts the layout. */
+    aspect-ratio: 2812 / 1560;
+    border-radius: calc(var(--radius) - 4px);
+  }
+
+  @media (max-width: 639px) {
+    .capture-inner {
+      padding: 0 20px;
+    }
+    .capture-frame {
+      padding: 6px;
+    }
+    .capture-frame img {
+      aspect-ratio: 712 / 1964;
+    }
+  }
+
+  .capture-caption {
+    margin-top: 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    /* fg-dim, not fg-faint: a caption is reading text and must clear AA on
+       the page bg (fg-faint lands at 2.7:1). */
+    color: var(--fg-dim);
+    max-width: 70ch;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      /* One arrival scrub: the proof enters with the read. */
+      .capture-frame {
+        animation: capture-rise linear both;
+        animation-timeline: view();
+        animation-range: entry 8% cover 30%;
+      }
+      @keyframes capture-rise {
+        from {
+          opacity: 0.35;
+          translate: 0 28px;
+        }
+      }
+    }
+  }
+</style>

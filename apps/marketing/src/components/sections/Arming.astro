@@ -1,0 +1,163 @@
+---
+---
+<!-- ── Signer key ──────────────────────────────────────────────
+     A full-bleed state band, not another split: the copy stacks above, and
+     the two execution states run edge to edge as one horizontal strip that
+     bleeds off the right frame. The armed half lights once as the band
+     enters view, a state transition, not a loop. -->
+<section id="arming" class="sec-arming">
+  <div class="container arming-copy">
+    <h2 class="section-title">Execution needs one local testnet key.</h2>
+    <p class="section-lede">
+      This alpha has no wallet onboarding. Put a single 32-byte EVM private key for a
+      Hyperliquid testnet account in <code>~/.t3trade/secrets</code>. T3 Trade derives the
+      address, holds the raw key in server memory, and signs orders locally with it. The
+      key is never written to logs, reports, or the database. Use a testnet-only key.
+    </p>
+  </div>
+
+  <div class="arming-band">
+    <div class="arming-half">
+      <span class="arming-state arming-state--safe">
+        <span class="arming-dot"></span> No valid signer key
+      </span>
+      <span class="arming-desc">
+        Execution is disabled. Every action that needs a signature is rejected.
+      </span>
+    </div>
+    <div class="arming-half arming-half--armed">
+      <span class="arming-state arming-state--armed">
+        <span class="arming-dot"></span> Valid key loaded
+      </span>
+      <span class="arming-desc">
+        Execution is enabled for the Hyperliquid testnet account derived from that key.
+      </span>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ── Signer key ───────────────────────────────────────────── */
+  .sec-arming {
+    padding-bottom: 0;
+    background: linear-gradient(180deg, #08080a, #070708);
+  }
+
+  .arming-copy {
+    padding-bottom: 56px;
+  }
+
+  /* One strip, two states: the left half rests dim (the default state the
+     app boots in), the right half crosses a hairline and carries the same
+     mono state language the product uses. Bleeds off the right edge. */
+  .arming-band {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border-block: 1px solid var(--border);
+    margin-right: calc(50% - 50vw);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent);
+  }
+
+  .arming-half {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 26px 0 26px 32px;
+  }
+
+  /* The right half reaches past the content column to the frame edge. */
+  .arming-half--armed {
+    padding-left: 32px;
+    padding-right: 32px;
+    border-left: 1px solid var(--border);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ok) 4%, transparent) 55%);
+  }
+
+  .arming-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .arming-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .arming-state--safe { color: var(--fg-muted); }
+  .arming-state--safe .arming-dot { background: var(--fg-dim); }
+  .arming-state--armed { color: var(--ok); }
+
+  /* The armed light is a transition, not a pulse: it is dark until the band
+     arrives, then lights once and stays lit. */
+  .arming-state--armed .arming-dot {
+    background: var(--ok);
+    opacity: 1;
+  }
+
+  .arming-desc {
+    color: var(--fg-muted);
+    font-size: 14px;
+    line-height: 1.5;
+    max-width: 44ch;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      .arming-band {
+        view-timeline-name: --arming;
+        view-timeline-axis: block;
+      }
+
+      .arming-state--armed .arming-dot {
+        animation: arming-light linear both;
+        animation-timeline: --arming;
+        animation-range: cover 22% cover 42%;
+      }
+
+      .arming-half--armed {
+        animation: arming-wake linear both;
+        animation-timeline: --arming;
+        animation-range: cover 22% cover 42%;
+      }
+
+      @keyframes arming-light {
+        from { opacity: 0.25; box-shadow: none; }
+        to { opacity: 1; box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 55%, transparent); }
+      }
+
+      @keyframes arming-wake {
+        from { background: linear-gradient(90deg, transparent, transparent); }
+        to {
+          background: linear-gradient(
+            90deg,
+            transparent,
+            color-mix(in srgb, var(--ok) 4%, transparent) 55%
+          );
+        }
+      }
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 820px) {
+    .arming-band {
+      grid-template-columns: 1fr;
+    }
+
+    .arming-half {
+      padding: 20px 20px;
+    }
+
+    .arming-half--armed {
+      border-left: 0;
+      border-top: 1px solid var(--border);
+    }
+  }
+</style>

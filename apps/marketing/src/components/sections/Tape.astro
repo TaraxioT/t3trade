@@ -1,0 +1,127 @@
+---
+/* Rendered as placeholders and filled in from the Hyperliquid testnet API on
+   the client. If that call fails the band removes itself rather than show a
+   number nobody can verify. */
+/* All present in the Hyperliquid testnet universe (verified against
+   metaAndAssetCtxs), so no item removes itself at fill time. */
+const tapeMarkets = ["BTC", "ETH", "BNB", "APT", "ADA", "XLM", "NEAR"];
+---
+<!-- ── Live testnet band ─────────────────────────────────────── -->
+<section class="sec-tape" aria-label="Hyperliquid testnet markets">
+  <div class="tape" id="tape" data-state="loading">
+    <div class="tape-track">
+      {[0, 1].map((copy) => (
+        <div class="tape-run" aria-hidden={copy === 1 ? "true" : undefined}>
+          {tapeMarkets.map((symbol) => (
+            <span class="tape-item" data-symbol={symbol} data-copy={copy}>
+              <span class="tape-sym">{symbol}</span>
+              <span class="tape-px">- - - -</span>
+              <span class="tape-chg">·</span>
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .sec-tape {
+    padding: 30px 0 0;
+    border-top: 0;
+  }
+
+  .tape {
+    overflow: hidden;
+    border-block: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
+    mask-image: linear-gradient(90deg, transparent, black 6%, black 94%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, black 6%, black 94%, transparent);
+  }
+
+  .tape-track {
+    display: flex;
+    width: max-content;
+  }
+
+  /* Constant-speed marquee: the track is two identical runs side by side
+     (width: max-content), so a translate3d(-50%) wrap is seamless and the
+     compositor owns the whole loop: no layout, no background-position. */
+  @media (prefers-reduced-motion: no-preference) {
+    .tape-track {
+      animation-name: tape-run;
+      animation-duration: 36s;
+      animation-timing-function: linear;
+      animation-iteration-count: infinite;
+      will-change: transform;
+    }
+  }
+
+  @keyframes tape-run {
+    from { transform: translate3d(0, 0, 0); }
+    to { transform: translate3d(-50%, 0, 0); }
+  }
+
+  .tape-run {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .tape-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 14px 26px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    border-right: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  .tape-sym {
+    color: var(--fg-dim);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+  }
+
+  .tape-px {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tape-chg {
+    font-size: 11px;
+    /* fg-dim, not fg-faint: the placeholder dot and any no-prev cell are
+       text; the filled cells override with ok/loss inks. */
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tape-chg.is-up { color: var(--ok); }
+  .tape-chg.is-down { color: var(--loss); }
+
+  /* Placeholder shimmer while the exchange call is in flight. */
+  .tape[data-state="loading"] .tape-px {
+    color: transparent;
+    border-radius: 4px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.05));
+    background-size: 300% 100%;
+    animation: tape-shimmer 1.4s linear infinite;
+  }
+
+  @keyframes tape-shimmer {
+    to { background-position: -300% 0; }
+  }
+
+  @media (max-width: 820px) {
+    .sec-tape {
+      padding: 0 0 72px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tape[data-state="loading"] .tape-px {
+      animation: none;
+    }
+  }
+</style>

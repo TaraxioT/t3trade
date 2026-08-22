@@ -1,0 +1,1076 @@
+---
+import {
+  BREAK_INDEX,
+  candles,
+  CHART_INTERVAL,
+  chgArc,
+  CANDLE_COUNT,
+  DIP_PRICE,
+  dipPnl,
+  GRID_PRICES,
+  markArc,
+  MISSION,
+  PLAN,
+  risk,
+  riskLabel,
+  reward,
+  rewardLabel,
+  rr,
+} from "../../lib/mission";
+import {
+  beatPoint,
+  beatRange,
+  beatSlice,
+  beatSpan,
+  beatStart,
+  pct,
+  rangeOf,
+} from "../../lib/beats";
+import { formatPrice, formatSignedUsd } from "../../lib/format";
+import { renderIcon } from "../../lib/icons";
+
+/* The app's chart frame: viewBox 0 0 1000 160, preserveAspectRatio none.
+   The recorded walk and the plan keep their shape; only the coordinate
+   system is rebased so the plot box geometry matches the real chart. */
+const CHART_W = 1000;
+const CHART_H = 160;
+const P_MIN = 75168.0;
+/* The domain top clears the target by ~200 so the target line and its
+   dot/check sit in-frame near the top with breathing room, the way the app
+   frames a target sitting well above the recent range. */
+const P_MAX = 76960.0;
+const GUTTER = 78; // right-hand room for the docked level chips
+const PLOT_W = CHART_W - GUTTER;
+/* The record takes a little under three fifths of the plot, which leaves the
+   plan enough room to walk at the same horizontal pace. */
+const CANDLE_W = PLOT_W * 0.58;
+const SLOT = CANDLE_W / CANDLE_COUNT;
+const yOf = (price: number) => CHART_H - ((price - P_MIN) / (P_MAX - P_MIN)) * CHART_H;
+const xOf = (index: number) => index * SLOT + SLOT / 2;
+const planX = (t: number) => CANDLE_W + (PLOT_W - CANDLE_W) * t;
+
+const DIP_X = planX(0.5);
+const TARGET_X = planX(1);
+
+/* ── The price line, the way the app draws it ─────────────────────────────
+   One polyline from the recorded closes into the plan's walk, an area wash
+   under it, and a live dot riding the end of the stroke. The line draws
+   itself along the pinned scroll: the keyframes below are generated from the
+   path's own measured length, so each story beat lands on the exact fraction
+   of ink it owns. */
+const linePts: [number, number][] = [
+  ...candles.map((candle, index) => [xOf(index), yOf(candle.close)] as [number, number]),
+  ...PLAN.slice(1).map(([t, p]) => [planX(t), yOf(p)] as [number, number]),
+];
+
+const pricePath = linePts
+  .map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`)
+  .join(" ");
+
+const washPath = `${pricePath} L${linePts[linePts.length - 1]![0].toFixed(1)} ${CHART_H} L${linePts[0]![0].toFixed(1)} ${CHART_H} Z`;
+
+const cumulative: number[] = [0];
+for (let index = 1; index < linePts.length; index += 1) {
+  const [x0, y0] = linePts[index - 1]!;
+  const [x1, y1] = linePts[index]!;
+  cumulative.push(cumulative[index - 1]! + Math.hypot(x1 - x0, y1 - y0));
+}
+const pathTotal = cumulative[cumulative.length - 1]!;
+const fracAt = (index: number) => cumulative[index]! / pathTotal;
+/* The point on the walk at an arc-length fraction, for placing the
+   riding dot and the wash's clip edge in HTML/percent space. */
+const ptAt = (frac: number): [number, number] => {
+  const target = frac * pathTotal;
+  for (let i = 1; i < cumulative.length; i += 1) {
+    if (cumulative[i]! >= target) {
+      const [x0, y0] = linePts[i - 1]!;
+      const [x1, y1] = linePts[i]!;
+      const seg = cumulative[i]! - cumulative[i - 1]! || 1;
+      const t = (target - cumulative[i - 1]!) / seg;
+      return [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
+    }
+  }
+  return linePts[linePts.length - 1]!;
+};
+const posPct = (x: number, y: number) =>
+  `left: ${((x / CHART_W) * 100).toFixed(2)}%; top: ${((y / CHART_H) * 100).toFixed(2)}%;`;
+const DIP_INDEX = CANDLE_COUNT + PLAN.findIndex(([t]) => t === 0.5) - 1;
+
+/* Length fractions for the stroke and the dot, x fractions for the wash. */
+const F = {
+  range: fracAt(BREAK_INDEX),
+  brk: fracAt(BREAK_INDEX + 2),
+  mark: fracAt(CANDLE_COUNT - 1),
+  dip: fracAt(DIP_INDEX),
+};
+
+/* Beats: every stop below is a beat start or a point inside a beat from
+   beats.ts, so the ink lands exactly when that level's beat fires: the
+   range prints through the survey and holds while the thread sleeps, jumps
+   on the break, climbs to the entry while the order is worked, holds at the
+   mark while the wedge opens, falls into the drawdown when the stop is
+   tested, and runs out to the target. */
+const T = {
+  armed: beatStart("watch-armed"),
+  hit: beatStart("trigger-hit"),
+  brk: beatPoint("trigger-hit", 2 / 15),
+  retest: beatPoint("trigger-hit", 8 / 15),
+  fill: beatPoint("entry", 5 / 6),
+  wedge: beatStart("wedge-open"),
+  dip: beatStart("drawdown"),
+  target: beatStart("settle"),
+};
+/* Where the wash's settle track completes, as a share of the timeline. */
+const WASH_SETTLE = pct(beatPoint("trigger-hit", 4 / 15));
+
+/* The line and the dot share ONE sync table: the dot rides the end of the
+   stroke, so the ink arrives at each level exactly when that level's beat
+   fires. Each segment runs on the app's own mission-line-draw bezier (E6:
+   the app draws in wall time; the replay draws on the scroll timeline). */
+const clipAt = (frac: number) =>
+  `inset(0 ${(100 - (ptAt(frac)[0] / CHART_W) * 100).toFixed(2)}% 0 0)`;
+const chartKeyframes = `
+@keyframes wash-clip {
+  0% { clip-path: inset(0 100% 0 0); }
+  ${T.armed}% { clip-path: ${clipAt(F.range)}; }
+  ${T.hit}% { clip-path: ${clipAt(F.range)}; }
+  ${T.brk}% { clip-path: ${clipAt(F.brk)}; }
+  ${T.retest}% { clip-path: ${clipAt(F.brk)}; }
+  ${T.fill}% { clip-path: ${clipAt(F.mark)}; }
+  ${T.wedge}% { clip-path: ${clipAt(F.mark)}; }
+  ${T.dip}% { clip-path: ${clipAt(F.dip)}; }
+  ${T.target}%, 100% { clip-path: inset(0 0 0 0); }
+}
+@keyframes price-wash {
+  0% { opacity: 0.4; transform: translateX(-6px); animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); }
+  100% { opacity: 1; transform: none; }
+}`;
+
+/* The chips docked in the chart's right gutter, the way the app docks its
+   level chips: each at its price row, each arriving on its own beat. */
+const chipTop = (price: number) => `top: ${((yOf(price) / CHART_H) * 100).toFixed(1)}%`;
+
+/* The wedge the app projects ahead of a live position: from the mark out to
+   the frame edge, opening between the target above and the stop below. */
+const MARK_X = xOf(CANDLE_COUNT - 1);
+const wedgePoints = [
+  `${MARK_X.toFixed(1)},${yOf(MISSION.mark).toFixed(1)}`,
+  `${PLOT_W},${yOf(MISSION.target).toFixed(1)}`,
+  `${PLOT_W},${yOf(MISSION.stop).toFixed(1)}`,
+].join(" ");
+---
+<!-- The chart's generated keyframes: story beats mapped onto the measured
+     length of the price path. Injected raw so the numbers computed in the
+     frontmatter can drive keyframe stops, which custom properties cannot. -->
+<Fragment set:html={`<style>${chartKeyframes}</style>`} />
+
+<figure class="console-chart">
+  <div class="chart-head">
+    <span class="chart-market">{MISSION.market} · USD</span>
+    <span class="chart-figures">
+      <span class="chart-price">
+        <span class="pnl-window"><span class="mark-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+          {markArc.map((value) => <span class="pnl-step">{value}</span>)}
+        </span></span></span>
+      </span>
+      <span class="chart-chg">
+        <span class="pnl-window"><span class="mark-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+          {chgArc.map((value) => <span class="pnl-step">{value}</span>)}
+        </span></span></span>
+      </span>
+    </span>
+    <span class="chart-interval">{CHART_INTERVAL}</span>
+  </div>
+  <div class="chart-plot">
+  <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} preserveAspectRatio="none" class="chart-svg" role="img"
+    aria-label={`Price chart of the BTC mission: a range, a break above ${formatPrice(MISSION.trigger)}, an entry at ${formatPrice(MISSION.entry)}, a stop at ${formatPrice(MISSION.stop)}, and a target at ${formatPrice(MISSION.target)}.`}>
+    <defs>
+      <!-- The app's own wash and wedge tokens, straight from the bridge:
+           three wash stops (top / mid / floor) and the wedge's near/far fade. -->
+      <linearGradient id="washGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="var(--ok)" stop-opacity="var(--app-mission-chart-wash-top)" />
+        <stop offset="0.45" stop-color="var(--ok)" stop-opacity="var(--app-mission-chart-wash-mid)" />
+        <stop offset="1" stop-color="var(--ok)" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="wedgeGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="var(--chart-blue)" stop-opacity="var(--app-mission-chart-wedge-near)" />
+        <stop offset="1" stop-color="var(--chart-blue)" stop-opacity="var(--app-mission-chart-wedge-far)" />
+      </linearGradient>
+    </defs>
+
+    <!-- A price grid with the axis on the left, the way the app
+         rules its frame. -->
+    {GRID_PRICES.map((price, index) => (
+      <g class="grid" style={`${beatSlice("survey", index * 0.125, index * 0.125 + 0.625)}`}>
+        <line x1="0" x2={CHART_W} y1={yOf(price)} y2={yOf(price)} />
+      </g>
+    ))}
+
+    <!-- The plan's levels: the target from the beat the plan
+         names it, the trigger while the watch is armed, then the
+         entry, the stop, and the wake as the position earns them. -->
+    <g class="level level--target" style={`${beatSlice("plan", 0, 2 / 3)}`}>
+      <line x1="0" x2={PLOT_W} y1={yOf(MISSION.target)} y2={yOf(MISSION.target)} />
+    </g>
+    <g class="level level--trigger" style={`${beatSlice("watch-armed", 0, 3 / 7)}`}>
+      <line x1="0" x2={PLOT_W} y1={yOf(MISSION.trigger)} y2={yOf(MISSION.trigger)} />
+    </g>
+    <g class="level level--entry" style={`${beatSlice("entry", 0, 5 / 6)}`}>
+      <line x1="0" x2={PLOT_W} y1={yOf(MISSION.entry)} y2={yOf(MISSION.entry)} />
+    </g>
+    <g class="level level--stop" style={`${beatSlice("stop-placed", 0, 5 / 6)}`}>
+      <line x1="0" x2={PLOT_W} y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} />
+    </g>
+    <g class="level level--wake" style={`${rangeOf(beatStart("wake-set"), beatPoint("run", 1 / 3))}`}>
+      <line x1="0" x2={PLOT_W} y1={yOf(MISSION.wake)} y2={yOf(MISSION.wake)} />
+    </g>
+
+    <!-- The projection wedge the app opens ahead of a live
+         position: from the mark out to the frame edge, between
+         the target and the stop. -->
+    <polygon class="wedge" points={wedgePoints} style={`${beatSlice("wedge-open", 0, 0.7)}`} />
+    <line class="wedge-edge" x1={MARK_X} x2={MARK_X}
+      y1={yOf(MISSION.target)} y2={yOf(MISSION.stop)} style={`${beatSlice("wedge-open", 0, 0.7)}`} />
+
+    <!-- The price itself: the wash, the stroke, and the live dot
+         riding the end of the ink. All three walk the same
+         generated keyframes, so they can never disagree. -->
+    <path class="price-wash" d={washPath} style={`--wash-settle: ${WASH_SETTLE}`} />
+    <path class="price-line" d={pricePath} pathLength="1" vector-effect="non-scaling-stroke" />
+
+    <!-- The drawdown drop line: vertical, axis-aligned, safe
+         under the non-uniform stretch. The dots, labels and
+         drawn marks live in the HTML overlay below. -->
+    <line class="dip-drop" x1={DIP_X} x2={DIP_X}
+      y1={yOf(DIP_PRICE)} y2={yOf(MISSION.stop)} style={`${beatSlice("drawdown", 0, 0.5)}`} />
+
+    <!-- The stop flares at the low, because that is the moment it
+         is the only thing between the position and the budget. -->
+    <line class="stop-hold" x1="0" x2={PLOT_W}
+      y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} style={`${beatSlice("drawdown", 0.125, 1)}`} />
+  </svg>
+
+  <!-- Dots, labels and drawn glyphs as an HTML overlay, like the
+       app's own marks: preserveAspectRatio=none stretches any
+       circle or diagonal inside the svg into an ellipse/skew. -->
+  <div class="chart-marks" aria-hidden="true">
+    <i class="mk fire-ping" style={`${posPct(xOf(BREAK_INDEX), yOf(MISSION.trigger))}; ${beatSlice("trigger-hit", 0, 8 / 15)}`}></i>
+    <i class="mk fire-dot" style={`${posPct(xOf(BREAK_INDEX), yOf(MISSION.trigger))}; ${beatSlice("trigger-hit", 0, 6 / 15)}`}></i>
+    <i class="mk dip-dot" style={`${posPct(DIP_X, yOf(DIP_PRICE))}; ${beatSlice("drawdown", 0, 0.5)}`}></i>
+    <span class="mk mk--anchor-left dip-label" style={`${posPct(DIP_X - 14, yOf(DIP_PRICE))}; ${beatSlice("drawdown", 0, 0.5)}`}>{formatSignedUsd(dipPnl)}</span>
+    <span class="mk mk--anchor-left stop-hold-label" style={`left: 5.2%; top: ${((yOf(MISSION.stop) + 10) / CHART_H * 100).toFixed(1)}%; ${beatSlice("drawdown", 0.25, 0.875)}`}>stop holds</span>
+    <i class="mk target-ping" style={`${posPct(TARGET_X, yOf(MISSION.target))}; ${rangeOf(beatStart("target-hit"), beatPoint("settle", 0.5))}`}></i>
+    <i class="mk target-dot" style={`${posPct(TARGET_X, yOf(MISSION.target))}; ${rangeOf(beatStart("target-hit"), beatPoint("settle", 0.5))}`}></i>
+    <span class="mk target-check" style={`${posPct(TARGET_X, yOf(MISSION.target))}; ${beatSlice("settle", 0, 0.5)}`}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" /></svg>
+    </span>
+  </div>
+
+  <!-- The axis labels are HTML, like the app's: svg text would
+       distort under the non-uniform viewBox stretch. -->
+  <div class="grid-labels" aria-hidden="true">
+    {GRID_PRICES.map((price) => (
+      <span style={`top: ${((yOf(price) / CHART_H) * 100).toFixed(1)}%`}>{formatPrice(price)}</span>
+    ))}
+  </div>
+
+  <!-- The level chips docked in the right gutter, the way the app
+       docks them: glass pills at their price rows. The armed chip
+       flashes green when its watch fires, then retires to make
+       room for the entry. -->
+  <div class="chart-chips" aria-hidden="true">
+    <span class="chip chip--target" style={`${chipTop(MISSION.target)}; ${beatSlice("plan", 0, 5 / 9)}`}>{formatPrice(MISSION.target)} <span class="chip-cap">target</span></span>
+    <span class="chip chip--armed" style={`${chipTop(MISSION.trigger)}; ${beatSpan("watch-armed")}`}><Fragment set:html={renderIcon("Radar", { size: 9, strokeWidth: 2, class: "chip-ico" })} /> {formatPrice(MISSION.trigger)} <span class="chip-cap">above</span></span>
+    <span class="chip chip--met" style={`${chipTop(MISSION.trigger)}; ${beatSlice("trigger-hit", 0, 14 / 15)}`}><Fragment set:html={renderIcon("ShieldCheck", { size: 9, strokeWidth: 2, class: "chip-ico" })} /> {formatPrice(MISSION.trigger)} <span class="chip-cap">above</span></span>
+    <span class="chip chip--mark" style={`${chipTop(MISSION.mark)}; ${rangeOf(beatStart("run"), beatPoint("stop-holds", 4 / 7))}`}>
+      <span class="pnl-window"><span class="mark-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+        {markArc.map((value) => <span class="pnl-step">{value}</span>)}
+      </span></span></span>
+    </span>
+    <span class="chip chip--entry" style={`${chipTop(MISSION.entry)}; ${beatSlice("entry", 0, 5 / 6)}`}>{formatPrice(MISSION.entry)} <span class="chip-cap">entry</span></span>
+    <span class="chip chip--stop" style={`${chipTop(MISSION.stop)}; ${beatSlice("stop-placed", 0, 5 / 6)}`}>{formatPrice(MISSION.stop)} <span class="chip-cap">stop</span></span>
+    <span class="chip chip--wake" style={`${chipTop(MISSION.wake)}; ${rangeOf(beatStart("wake-set"), beatPoint("run", 1 / 3))}`}>{formatPrice(MISSION.wake)} <span class="chip-cap">wake</span></span>
+    <span class="chip chip--reassess" style={`${beatSpan("watch-armed")}`}><Fragment set:html={renderIcon("Clock", { size: 9, strokeWidth: 2, class: "chip-ico" })} /> reassess</span>
+  </div>
+  </div>
+
+  <!-- What the two levels are actually worth, to scale. Both bars
+       are measured outward from the entry, in the order the run
+       creates them: the stop caps the downside first, then the
+       target opens the upside. -->
+  <figcaption class="rr">
+    <span class="rr-bar">
+      <span class="rr-seg rr-seg--risk" style={`flex: ${risk}; ${beatSpan("stop-placed")}`}>
+        <span class="rr-cap">stop</span>
+        <span class="rr-val">{riskLabel}</span>
+      </span>
+      <span class="rr-seg rr-seg--reward" style={`flex: ${reward}; ${rangeOf(beatPoint("stop-placed", 5 / 6), beatPoint("run", 2 / 3))}`}>
+        <span class="rr-cap">target</span>
+        <span class="rr-val">{rewardLabel}</span>
+      </span>
+    </span>
+    <span class="rr-note">
+      <svg class="tick" style={`${rangeOf(beatPoint("run", 2 / 3), beatPoint("wedge-open", 0.3))}`} viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+      </svg>
+      <span><strong>{rr.toFixed(1)}:1</strong> planned. Both sides are fixed before
+      the order is signed, so neither one moves later.</span>
+    </span>
+  </figcaption>
+</figure>
+
+<style>
+  /* ── Chart card ───────────────────────────────────────────── */
+  .console-chart {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .chart-plot {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /* The app's chart header: label on its own line, mark + change under
+     it, interval pill docked right on the mark's row. */
+  .chart-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    column-gap: 12px;
+    row-gap: 2px;
+    align-items: end;
+    padding: 12px 20px 8px;
+  }
+
+  .chart-market {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    align-self: start;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 15.75px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+  }
+
+  .chart-figures {
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .chart-legend {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+  }
+
+  /* The live figure at the top of the chart card, ticking on the same reel
+     the readout reads. */
+  .chart-price {
+    font-family: var(--font-mono);
+    font-size: 26px;
+    line-height: 26px;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-panel);
+  }
+
+  /* The mark box is exactly one 26px line, like the app's leading-none
+     figure; the 1.3em replay steps crop to it (digits sit clear of the
+     crop by the line box's own leading). */
+  .chart-price .pnl-window { height: 26px; }
+  .chart-price .pnl-step { color: inherit; text-align: left; }
+
+  /* The 24h figure is mono in the panel foreground at 70%, like the mark. */
+  .chart-chg {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: color-mix(in oklab, var(--fg-panel) 70%, transparent);
+  }
+
+  .chart-chg .pnl-step { color: inherit; text-align: left; }
+
+  .chart-interval {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: end;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 16.5px;
+    text-transform: lowercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    padding: 2px 8px;
+    border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+    border-radius: calc(infinity * 1px);
+  }
+
+  /* Scaling by aspect rather than a fixed height in the stacked layout; the
+     desktop surface stretches the viewBox to the measured plot box instead
+     (preserveAspectRatio="none", stroke kept honest by non-scaling-stroke). */
+  .chart-svg {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1000 / 160;
+    display: block;
+  }
+
+  /* ── The price line, its wash, and the dot riding it ──────── */
+  .price-line {
+    fill: none;
+    stroke: var(--ok);
+    stroke-width: 2.25;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    /* No dash draw: under the chart's non-uniform viewBox stretch, engine
+       dash rendering both paints resting paths (a tail segment at
+       stroke-dashoffset 1, a round-cap dot at the origin) and drops the
+       final segment at extreme stretch, all regardless of the offset value.
+       The line reveals purely through the wash's clip track, whose stops are
+       generated from the same beat table, so line and wash can never
+       disagree. */
+  }
+
+  .price-wash {
+    fill: url(#washGrad);
+    stroke: none;
+    /* Rests settled (opacity 1, no transform) for browsers without
+     timelines, matching the settle grammar's final frame. */
+  }
+
+  /* The marks overlay: true circles and undistorted glyphs, positioned in
+     percent space over the stretched plot (the app does the same in HTML). */
+  .chart-marks {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .mk {
+    position: absolute;
+    transform: translate(-50%, -50%);
+  }
+
+  .mk--anchor-left {
+    transform: translate(-100%, -50%);
+  }
+
+  .fire-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--warn);
+    border: 2px solid #0a0a0c;
+    box-sizing: content-box;
+  }
+
+  /* Pings centre by negative margins so their scale keyframes own the
+     transform. */
+  .fire-ping {
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    border-radius: 50%;
+    border: 1.5px solid var(--warn);
+    transform: none;
+    opacity: 0;
+  }
+
+  .target-ping {
+    width: 32px;
+    height: 32px;
+    margin: -16px 0 0 -16px;
+    border-radius: 50%;
+    border: 1.6px solid var(--ok);
+    transform: none;
+    opacity: 0;
+  }
+
+  .target-dot {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--ok) 28%, transparent);
+    border: 2px solid var(--ok);
+    box-sizing: border-box;
+  }
+
+  .target-check {
+    width: 26px;
+    height: 26px;
+  }
+
+  .target-check svg { width: 100%; height: 100%; display: block; }
+
+  .dip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--loss);
+    border: 2px solid #0a0a0c;
+    box-sizing: content-box;
+  }
+
+  .wedge {
+    fill: url(#wedgeGrad);
+  }
+
+  /* The hard invalidation edge at the mark, closing the wedge. */
+  .wedge-edge {
+    stroke: color-mix(in oklab, var(--chart-blue) 70%, transparent);
+    stroke-width: 1.5;
+  }
+
+  .dip-dot { fill: var(--loss); }
+
+  /* Same weight and dash as the levels it measures between. */
+  .dip-drop {
+    stroke: var(--loss);
+    stroke-width: 1;
+    stroke-dasharray: 2 4;
+    opacity: 0.5;
+  }
+
+  .dip-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--loss);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* This is the stop level lighting up, not a second line laid over it, so it
+     keeps the level's dash. */
+  /* Rests at the flare's 100% frame (clause 10) so the composed end state
+     shows the thicker "stop holds" line; the animation's 0% frame hides it
+     until the drawdown beat wherever it runs. */
+  .stop-hold {
+    stroke: var(--loss);
+    stroke-width: 2;
+    stroke-dasharray: 2 4;
+    opacity: 0.32;
+  }
+
+  .stop-hold-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--loss);
+    white-space: nowrap;
+    opacity: 1;
+  }
+
+  /* ── The target prints ────────────────────────────────────── */
+  .target-dot {
+    fill: var(--ok);
+    stroke: #0a0a0c;
+    stroke-width: 2;
+  }
+
+  .target-ping {
+    fill: none;
+    stroke: var(--ok);
+    stroke-width: 1.6;
+    opacity: 0;
+  }
+
+  .target-check path {
+    fill: none;
+    stroke: #06120c;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+
+  /* ── Risk and reward, to scale: the context band strip ────── */
+  .rr {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 0;
+    padding: 8px 20px;
+    border-top: 1px solid color-mix(in oklab, var(--border) 40%, transparent);
+    background: color-mix(in oklab, var(--fg-panel) 2%, transparent);
+  }
+
+  .rr-bar {
+    display: flex;
+    flex: 1;
+    height: 20px;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .rr-seg {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 15px;
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    /* Each side is revealed by a wipe rather than a scale, so the figures
+       stay at their true size while the bar measures itself out. */
+    clip-path: inset(0);
+  }
+
+  .rr-cap {
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    font-size: 9px;
+    opacity: 0.62;
+  }
+
+  .rr-val {
+    margin-left: auto;
+  }
+
+  /* Both sides read outward from the entry, so the risk figure hugs the
+     divider and the reward figure runs away from it. */
+  .rr-seg--risk {
+    background: color-mix(in srgb, var(--loss) 15%, transparent);
+    color: var(--loss);
+    opacity: 0.68;
+    flex-direction: row-reverse;
+    border-right: 1px solid color-mix(in srgb, var(--app-white) 45%, transparent);
+  }
+
+  .rr-seg--risk .rr-val { margin-left: 0; margin-right: auto; }
+
+  .rr-seg--reward {
+    background: color-mix(in srgb, var(--ok) 15%, transparent);
+    color: var(--ok);
+    opacity: 0.68;
+  }
+
+  /* One line, inline to the right of the bar: the strip is 37px tall,
+     full stop. */
+  .rr-note {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 16.5px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .rr-note strong {
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-weight: 500;
+  }
+
+  .rr-note .tick { margin-top: 2px; }
+
+  /* The app's dash grammar: rules and stubs at 2 4, the entry at 5 4. */
+  .level line {
+    stroke-width: 1;
+    stroke-dasharray: 2 4;
+    stroke-opacity: 0.85;
+  }
+
+  .level--entry line { stroke-dasharray: 5 4; }
+
+  .grid line {
+    stroke: color-mix(in oklab, var(--fg-panel) 7%, transparent);
+    stroke-width: 1;
+  }
+
+  .grid-labels {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .grid-labels span {
+    position: absolute;
+    left: 6px;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-muted);
+    opacity: 0.5;
+  }
+
+  .level--entry line { stroke: var(--fg-faint); }
+  .level--stop line { stroke: var(--loss); }
+  .level--target line { stroke: var(--ok); }
+  .level--trigger line { stroke: var(--warn); }
+  .level--wake line { stroke: var(--warn); opacity: 0.55; }
+
+  .fire-dot { fill: var(--warn); }
+  .fire-ping { fill: none; stroke: var(--warn); stroke-width: 1.5; opacity: 0; }
+
+  /* ── The docked level chips ───────────────────────────────── */
+  .chart-chips {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  /* The app's mission-chip material: neutral hairline, card-tinted glass,
+     and the level's own ink at 85% carried by the text alone. */
+  .chip {
+    position: absolute;
+    right: 2px;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1.5px 6px;
+    border-radius: calc(infinity * 1px);
+    border: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
+    background: color-mix(in srgb, var(--card-app) 62%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(8px);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 10.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  /* The caption word under the price: the app recesses it (9.5px, 70%
+     opacity) below the figure. */
+  .chip-cap {
+    font-size: 9.5px;
+    opacity: 0.7;
+  }
+
+  /* The chip glyphs: the app's 9px lucide marks in the chip's own ink. */
+  .chip-ico { color: inherit; }
+
+  .chip--target { color: color-mix(in oklab, var(--ok) 85%, transparent); }
+  .chip--armed { color: color-mix(in oklab, var(--warn) 85%, transparent); }
+  .chip--met { color: color-mix(in oklab, var(--ok) 85%, transparent); }
+  .chip--entry { color: color-mix(in oklab, var(--fg) 85%, transparent); }
+  .chip--stop { color: color-mix(in oklab, var(--loss) 85%, transparent); }
+  .chip--wake { color: color-mix(in oklab, var(--warn) 85%, transparent); }
+
+  /* The live mark chip: a standard mission-chip in the foreground ink,
+     not an inverted badge; the app's mark chip reads like any other level. */
+  .chip--mark {
+    color: color-mix(in oklab, var(--fg) 85%, transparent);
+    font-weight: 400;
+  }
+
+  .chip--mark .pnl-window { height: 1.3em; }
+  .chip--mark .pnl-step { color: inherit; text-align: left; }
+
+  .chip--reassess {
+    top: auto;
+    bottom: 8px;
+    right: 12%;
+    transform: none;
+    color: color-mix(in oklab, var(--warn) 85%, transparent);
+  }
+
+  /* ── The chart's scroll-driven layer ───────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      /* The price line, its wash, and the dot riding it own the whole pinned
+         range; their choreography lives in the generated keyframes, measured
+         from the path itself. --t0/--t1 are the timeline bounds, declared on
+         the scroller. Line and wash reveal through the SAME clip track: the
+         dash-draw technique is unusable here (see .price-line below), and one
+         shared reveal means the ink and its wash can never disagree. */
+      .price-line,
+      .price-wash,
+      .dip-drop {
+        animation-timeline: --mission;
+        animation-range: contain var(--t0) contain var(--t1);
+        animation-fill-mode: both;
+        animation-timing-function: linear;
+      }
+
+      .price-line { animation-name: wash-clip; }
+      .price-wash { animation-name: price-wash, wash-clip; }
+
+      /* The wash settles early: the app's wash is already at rest when the
+         cockpit is on screen, so the settle track completes (opacity 1, no
+         transform) partway through the trigger-hit beat. The line and the
+         dot keep the full-range draw. */
+      .price-wash {
+        /* First track (the settle) finishes early at --wash-settle (a point
+           inside the trigger-hit beat, set inline from beats.ts); the clip
+           track runs the full range so the wash's reveal never leads the
+           ink. */
+        animation-range:
+          contain var(--t0) contain var(--wash-settle),
+          contain var(--t0) contain var(--t1);
+      }
+
+      /* Chips slide in from the gutter. The armed, met, and mark chips flash
+         through instead: they retire once the story has moved past them. */
+      .chip {
+        animation-name: chip-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      /* The app's mission-chip-arm: scale 0.88 -> 1.06 -> 1 with opacity
+         0.35 -> 1 on the app's settle bezier. */
+      /* The arm grammar (scale 0.88 -> 1.06@55% -> 1 on the app's bezier).
+         The head starts at opacity 0, not the app-live 0.35: in the replay
+         every future chip rests on its 0% frame until its beat starts, and
+         a 0.35 pre-state ghosts chips under the ones already arrived
+         (entry/stop/wake sit 3px off the armed chip's row). In the app a
+         not-yet-armed chip does not exist, and 0 is the honest pre-state. */
+      @keyframes chip-in {
+        0% { opacity: 0; transform: translateY(-50%) scale(0.88); animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); }
+        55% { transform: translateY(-50%) scale(1.06); }
+        100% { opacity: 1; transform: translateY(-50%) scale(1); }
+      }
+
+      .chip--armed,
+      .chip--met,
+      .chip--mark {
+        animation-name: chip-flash;
+      }
+
+      /* The app's mission-chip-fire: a box-shadow ripple growing to 10px
+         at 45% of the armed ink on the app's decel bezier. The head arms
+         the chip (mission-chip-arm) and the tail retires it
+         (mission-chip-retire: opacity -> 0, translateX(6px) scale(0.9));
+         the scroll replay has no React re-render to swap the chip out, so
+         the retire rides the same track. */
+      @keyframes chip-flash {
+        0% { opacity: 0; transform: translateY(-50%) scale(0.88); animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); }
+        10% { opacity: 1; transform: translateY(-50%) scale(1.06); }
+        14% { transform: translateY(-50%) scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 45%, transparent); animation-timing-function: cubic-bezier(0, 0, 0.2, 1); }
+        40% { box-shadow: 0 0 10px 0 color-mix(in srgb, var(--warn) 45%, transparent); }
+        84% { opacity: 1; transform: translateY(-50%) scale(1); animation-timing-function: ease-out; }
+        100% { opacity: 0; transform: translateY(-50%) translateX(6px) scale(0.9); }
+      }
+
+      /* The reassess pill sits in the future gutter, not on a price row. It
+         retires when the watch fires: the wake that follows makes its own
+         appointment. */
+      .chip--reassess {
+        animation-name: reassess-flash;
+      }
+
+      @keyframes reassess-flash {
+        0% { opacity: 0; }
+        14% { opacity: 1; }
+        86% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+
+      .wedge,
+      .wedge-edge {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .level {
+        animation-name: level-draw;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        transform-origin: 0 50%;
+      }
+
+      @keyframes level-draw {
+        from { opacity: 0; transform: scaleX(0.02); }
+        to { opacity: 1; transform: scaleX(1); }
+      }
+
+      /* The watch firing is the one moment the page should feel like an
+         event, so the marker lands and a ring leaves it. */
+      .fire-dot,
+      .dip-drop,
+      .dip-dot,
+      .dip-label,
+      .target-dot,
+      .target-check,
+      .stop-hold-label {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .fire-ping {
+        animation-name: fire-ping;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        transform-origin: center;
+        transform-box: fill-box;
+      }
+
+      @keyframes fire-ping {
+        0% { opacity: 0; transform: scale(0.4); }
+        12% { opacity: 0.5; transform: scale(0.55); }
+        100% { opacity: 0; transform: scale(3.4); }
+      }
+
+      /* ── The drawdown and its drama ─────────────────────────
+         The dip arrives at the low, and the stop flares at exactly the
+         moment it is the only thing holding the position. */
+      .grid {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes zone-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      .stop-hold {
+        animation-name: stop-flare;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes stop-flare {
+        0% { opacity: 0; stroke-width: 1; }
+        40% { opacity: 1; stroke-width: 4; }
+        100% { opacity: 0.32; stroke-width: 2; }
+      }
+
+      /* The stop-hold label arrives like a row, but not with check-in's
+         global from-frame: check-in rests at opacity 0.12, which ghosts this
+         label over the chart from page load until the drawdown beat. This
+         local variant starts fully dark. */
+      .stop-hold-label {
+        animation-name: stop-note-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes stop-note-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: none; }
+      }
+
+      .target-ping {
+        animation-name: target-ping;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        transform-origin: center;
+        transform-box: fill-box;
+      }
+
+      @keyframes target-ping {
+        0% { opacity: 0; transform: scale(0.5); }
+        30% { opacity: 0.95; transform: scale(1.1); }
+        100% { opacity: 0; transform: scale(3.6); }
+      }
+
+      .target-check path {
+        stroke-dashoffset: 1;
+        animation-name: scrub-draw;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        /* Without this the check draws on the document timeline: it finishes
+           at page load and paints from the first frame. The span's zone-in
+           above is the second gate on the same settle slice. */
+        animation-timeline: --mission;
+        animation-range: contain var(--from) contain var(--to);
+      }
+
+      /* The two figures are measured outward from the entry divider, in the
+         order the run creates them. A wipe keeps the numbers at true size,
+         so the motion says "this much" rather than just moving. */
+      .rr-seg {
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .rr-seg--risk { animation-name: measure-down; }
+      .rr-seg--reward { animation-name: measure-up; }
+
+      @keyframes measure-down {
+        from { clip-path: inset(0 0 0 100%); }
+        to { clip-path: inset(0); }
+      }
+
+      @keyframes measure-up {
+        from { clip-path: inset(0 100% 0 0); }
+        to { clip-path: inset(0); }
+      }
+    }
+  }
+
+  /* ── Desktop surface ───────────────────────────────────────── */
+  @media (min-width: 1081px) and (min-height: 861px) {
+    .console-chart {
+      flex: 1 1 0;
+      min-height: 0;
+    }
+
+    .chart-svg {
+      height: 100%;
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 1080px) {
+    /* The bar wants the full width once the column is one card wide. */
+    .rr {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .rr-bar { flex: none; }
+    /* The one-line note wraps instead of clipping at the right edge. */
+    .rr-note { max-width: none; white-space: normal; }
+
+    /* The viewBox scales down hard on a phone, so the chart labels are sized
+       in user units to stay readable at that scale. */
+    .level line { stroke-dasharray: 5 10; }
+    .level--entry line { stroke-dasharray: 13 10; }
+    .grid-labels span { font-size: 12px; }
+    .dip-label,
+    .stop-hold-label { font-size: 10px; stroke-width: 3; }
+  }
+
+  @media (max-width: 820px) {
+    /* The phone surface runs the chart and the log at a larger relative
+       scale: the plot gets more than double the stacked aspect's height so
+       the price walk has vertical room to read, and the leading mark figure
+       steps up the way the app's own compact header does. */
+    .chart-svg {
+      aspect-ratio: 1000 / 380;
+    }
+
+    .chart-price {
+      font-size: 30px;
+      line-height: 30px;
+    }
+
+    .chart-price .pnl-window {
+      height: 30px;
+    }
+  }
+</style>

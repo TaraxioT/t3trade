@@ -1,0 +1,201 @@
+---
+import { kineticWords } from "../../lib/mission";
+import { renderIcon } from "../../lib/icons";
+
+const harnesses = [
+  { name: "Claude Code", command: "claude auth login", trades: true, icon: "claude-ai-icon.svg" },
+  { name: "Codex CLI", command: "codex login", trades: true, icon: "openai_dark.svg" },
+  { name: "OpenCode", command: "opencode auth login", trades: true, icon: "opencode-dark.svg" },
+  { name: "Cursor", command: "agent login", trades: false, icon: "cursor_light.svg" },
+  { name: "Grok CLI", command: "grok login", trades: false, icon: "grok-dark.svg" },
+];
+---
+<!-- ── Harnesses ───────────────────────────────────────────────
+     A switcher, not a card row: the tab strip names the five CLIs, the one
+     panel swaps command and capability. Pure CSS radio tabs, so no script
+     joins the page's budget and the section never pins. -->
+<section id="harnesses" class="sec-harness">
+  <div class="container">
+    <h2 class="section-title kinetic">
+      {kineticWords("Bring your own agent CLI.").map(({ word, range }) => (
+        <>
+          <span style={`animation-range: ${range}`}>{word}</span>{" "}
+        </>
+      ))}
+    </h2>
+    <p class="section-lede scrub">
+      T3 Trade drives five CLIs already installed and authenticated on your machine. Three of
+      them can run trading missions today. None of them ever receives the signer key.
+    </p>
+
+    <div class="switch scrub">
+      {harnesses.map((_harness, index) => (
+        <input
+          type="radio"
+          name="harness"
+          class="switch-input"
+          id={`harness-${index}`}
+          checked={index === 0}
+        />
+      ))}
+
+      <div class="switch-tabs" role="tablist" aria-label="Agent CLIs">
+        {harnesses.map((harness, index) => (
+          <label class="switch-tab" for={`harness-${index}`} role="tab">
+            <img src={`/harnesses/${harness.icon}`} alt="" />
+            <span>{harness.name}</span>
+          </label>
+        ))}
+      </div>
+
+      <div class="switch-panel-wrap">
+        {harnesses.map((harness) => (
+          <div class="switch-panel" role="tabpanel">
+            <code class="switch-cmd">{harness.command}</code>
+            <span class={`switch-tag ${harness.trades ? "switch-tag--trades" : ""}`}>
+              <Fragment set:html={renderIcon("Check", { size: 11, class: "switch-tag-icon" })} />
+              {harness.trades ? "trading missions" : "coding threads"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ── Harnesses ────────────────────────────────────────────── */
+  .sec-harness {
+    background:
+      radial-gradient(ellipse 60% 40% at 80% 0%, rgba(255, 255, 255, 0.018), transparent 70%),
+      linear-gradient(180deg, #0a0a0c, var(--bg));
+  }
+
+  .switch {
+    margin-top: 48px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
+    overflow: hidden;
+  }
+
+  /* The radios stay in the a11y tree and keyboard-operable, just visually
+     folded into the tabs they drive. */
+  .switch-input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .switch-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+
+  .switch-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 14px 18px;
+    font-size: 13.5px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--fg-dim);
+    white-space: nowrap;
+    cursor: pointer;
+    border-right: 1px solid var(--border);
+    transition: color 0.18s ease, background 0.18s ease;
+  }
+
+  .switch-tab:last-child { border-right: 0; }
+
+  .switch-tab:hover {
+    color: var(--fg-muted);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .switch-tab img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    opacity: 0.75;
+  }
+
+  .switch-panel-wrap {
+    display: flex;
+  }
+
+  .switch-panel {
+    display: none;
+    flex: 1;
+    align-items: center;
+    gap: 18px;
+    padding: 20px 22px;
+  }
+
+  .switch-cmd {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--fg-muted);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .switch-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    /* fg-dim, not fg-faint: the tag is text and must clear AA on the switch
+       surface (fg-faint lands at 2.6:1 there). */
+    color: var(--fg-dim);
+  }
+
+  .switch-tag--trades { color: var(--ok); }
+
+  /* Checked wiring: one radio lights one tab and opens one panel. */
+  .switch-input:nth-of-type(1):checked ~ .switch-tabs .switch-tab:nth-of-type(1),
+  .switch-input:nth-of-type(2):checked ~ .switch-tabs .switch-tab:nth-of-type(2),
+  .switch-input:nth-of-type(3):checked ~ .switch-tabs .switch-tab:nth-of-type(3),
+  .switch-input:nth-of-type(4):checked ~ .switch-tabs .switch-tab:nth-of-type(4),
+  .switch-input:nth-of-type(5):checked ~ .switch-tabs .switch-tab:nth-of-type(5) {
+    color: var(--fg);
+    background: rgba(255, 255, 255, 0.045);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  .switch-input:nth-of-type(1):checked ~ .switch-panel-wrap .switch-panel:nth-of-type(1),
+  .switch-input:nth-of-type(2):checked ~ .switch-panel-wrap .switch-panel:nth-of-type(2),
+  .switch-input:nth-of-type(3):checked ~ .switch-panel-wrap .switch-panel:nth-of-type(3),
+  .switch-input:nth-of-type(4):checked ~ .switch-panel-wrap .switch-panel:nth-of-type(4),
+  .switch-input:nth-of-type(5):checked ~ .switch-panel-wrap .switch-panel:nth-of-type(5) {
+    display: inline-flex;
+  }
+
+  /* Keyboard parity: arrowing through the radios lights the tab the focus
+     is on, exactly like the pointer path. */
+  .switch:has(.switch-input:nth-of-type(1):focus-visible) .switch-tab:nth-of-type(1),
+  .switch:has(.switch-input:nth-of-type(2):focus-visible) .switch-tab:nth-of-type(2),
+  .switch:has(.switch-input:nth-of-type(3):focus-visible) .switch-tab:nth-of-type(3),
+  .switch:has(.switch-input:nth-of-type(4):focus-visible) .switch-tab:nth-of-type(4),
+  .switch:has(.switch-input:nth-of-type(5):focus-visible) .switch-tab:nth-of-type(5) {
+    color: var(--fg);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 820px) {
+    .switch-panel {
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+  }
+</style>

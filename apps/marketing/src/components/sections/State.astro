@@ -1,0 +1,102 @@
+---
+---
+<!-- ── Scope ───────────────────────────────────────────────────
+     One pane, two ledgers: Today and Not today share a single tile split
+     by a rule, so the honest pair reads as one scope statement rather than
+     two matching cards. -->
+<section id="state" class="sec-state">
+  <div class="container">
+    <h2 class="section-title">What ships in this alpha.</h2>
+    <div class="tile state-pane scrub">
+      <div class="state-col">
+        <div class="state-label state-label--is">Today</div>
+        <ul>
+          <li>Trading missions on Claude Code, Codex, and OpenCode</li>
+          <li>Hyperliquid testnet orders under fixed authority and a USD loss limit</li>
+          <li>Required reduce-only stops, exchange reconciliation, retry-safe submission</li>
+          <li>An Apple Silicon macOS app and a self-hosted web app run from source</li>
+        </ul>
+      </div>
+      <div class="state-col">
+        <div class="state-label state-label--isnt">Not today</div>
+        <ul>
+          <li>No mainnet support of any kind</li>
+          <li>No packaged Windows, Linux, or Intel Mac builds</li>
+          <li>No wallet onboarding, only the local testnet key</li>
+          <li>No mobile app and no unattended trading with real funds</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ── Scope ────────────────────────────────────────────────── */
+  .sec-state {
+    background: linear-gradient(180deg, #0a0a0d, var(--bg));
+  }
+
+  .state-pane {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    margin-top: 48px;
+    padding: 0;
+  }
+
+  .state-col {
+    padding: 26px 28px;
+  }
+
+  .state-col + .state-col {
+    border-left: 1px solid var(--border);
+  }
+
+  .state-label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+
+  .state-label--is { color: var(--ok); }
+  .state-label--isnt { color: var(--warn); }
+
+  .state-col ul {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .state-col li {
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.5;
+    padding-left: 16px;
+    position: relative;
+  }
+
+  .state-col li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.66em;
+    width: 6px;
+    height: 1px;
+    background: var(--fg-faint);
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 820px) {
+    .state-pane {
+      grid-template-columns: 1fr;
+    }
+
+    .state-col + .state-col {
+      border-left: 0;
+      border-top: 1px solid var(--border);
+    }
+  }
+</style>

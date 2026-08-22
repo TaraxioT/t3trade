@@ -1,0 +1,513 @@
+---
+import {
+  DIP_STEPS,
+  EARLIER_TURNS,
+  LOG,
+  open,
+  reward,
+  RUN_STEPS,
+  pctArc,
+  pnlArc,
+  roiArc,
+} from "../../lib/mission";
+import {
+  beatPoint,
+  beatRange,
+  logRowSpan,
+  pct,
+  rangeOf,
+} from "../../lib/beats";
+import { formatSignedUsd } from "../../lib/format";
+import { renderIcon } from "../../lib/icons";
+
+/* The header money cluster lands as the recovery completes and holds
+   through the first half of the settle beat. */
+const lateFigures = rangeOf(beatPoint("stop-holds", 6 / 7), beatPoint("settle", 0.5));
+
+/* The bar bends where the number does. The two stops are RUN_STEPS and
+   RUN_STEPS + DIP_STEPS as a share of the reel (10/32 and 18/32), and the
+   first value is the open PnL as a share of the reward. Generated here so
+   retiming the reel retimes the bar with it. */
+const REEL_STEPS = pnlArc.length - 1;
+const arcKeyframes = `
+@keyframes progress-arc {
+  0% { transform: scaleX(0); }
+  ${pct((100 * RUN_STEPS) / REEL_STEPS)} { transform: scaleX(${(open / reward).toFixed(3)}); }
+  ${pct((100 * (RUN_STEPS + DIP_STEPS)) / REEL_STEPS)} { transform: scaleX(0); }
+  100% { transform: scaleX(1); }
+}`;
+
+/* The feed follows its tail the way the app's scroller does. The card
+   window shows the first PAGE rows; from the (PAGE+1)-th row on, each
+   newly-entered row nudges the feed up by one row height, exactly on that
+   row's own beat, so the newest line is always the last visible one.
+   Keyframes generated from LOG + the beat table: retiming a beat retimes
+   the follow. Row height is the row's own box (16.5 text + 16 padding +
+   1 divide). */
+const FEED_ROW_H = 33.5;
+const FEED_PAGE = 14;
+const feedStops: { at: number; shift: number }[] = [];
+{
+  let shift = 0;
+  LOG.forEach((row, index) => {
+    if (index < FEED_PAGE) return;
+    shift = (index - FEED_PAGE + 1) * FEED_ROW_H;
+    const at = beatPoint(row.at, row.slot);
+    const prev = feedStops[feedStops.length - 1];
+    if (prev && prev.at === at) prev.shift = shift; // same beat: keep the later row
+    else if (prev && prev.at > at) return; // never scrolls backwards
+    else feedStops.push({ at, shift });
+  });
+}
+const feedKeyframes = `
+@keyframes feed-follow {
+  0% { transform: translateY(0); animation-timing-function: steps(1, end); }
+${feedStops.map(({ at, shift }) => `  ${pct(at)} { transform: translateY(-${shift}px); animation-timing-function: steps(1, end); }`).join("\n")}
+  100% { transform: translateY(-${feedStops.length ? feedStops[feedStops.length - 1].shift : 0}px); }
+}`;
+
+/* The phone's twin: same beats, different row box (18 text + 26 padding +
+   1 divide) and a shorter first page (the band under the pinned chart
+   seats eight rows). Generated from the same walk so the two surfaces can
+   never disagree on timing. */
+const FEED_ROW_H_PHONE = 45;
+const FEED_PAGE_PHONE = 8;
+const feedStopsPhone: { at: number; shift: number }[] = [];
+{
+  let shift = 0;
+  LOG.forEach((row, index) => {
+    if (index < FEED_PAGE_PHONE) return;
+    shift = (index - FEED_PAGE_PHONE + 1) * FEED_ROW_H_PHONE;
+    const at = beatPoint(row.at, row.slot);
+    const prev = feedStopsPhone[feedStopsPhone.length - 1];
+    if (prev && prev.at === at) prev.shift = shift;
+    else if (prev && prev.at > at) return;
+    else feedStopsPhone.push({ at, shift });
+  });
+}
+const feedKeyframesPhone = `
+@keyframes feed-follow-phone {
+  0% { transform: translateY(0); animation-timing-function: steps(1, end); }
+${feedStopsPhone.map(({ at, shift }) => `  ${pct(at)} { transform: translateY(-${shift}px); animation-timing-function: steps(1, end); }`).join("\n")}
+  100% { transform: translateY(-${feedStopsPhone.length ? feedStopsPhone[feedStopsPhone.length - 1].shift : 0}px); }
+}`;
+
+/* The taller phone-band twin: above 400px the pinned band under the chart
+   seats about ten rows, so the first page is one step longer. Same walk,
+   same row box; only the page length differs. */
+const FEED_PAGE_MID = 10;
+const feedStopsMid: { at: number; shift: number }[] = [];
+{
+  let shift = 0;
+  LOG.forEach((row, index) => {
+    if (index < FEED_PAGE_MID) return;
+    shift = (index - FEED_PAGE_MID + 1) * FEED_ROW_H_PHONE;
+    const at = beatPoint(row.at, row.slot);
+    const prev = feedStopsMid[feedStopsMid.length - 1];
+    if (prev && prev.at === at) prev.shift = shift;
+    else if (prev && prev.at > at) return;
+    else feedStopsMid.push({ at, shift });
+  });
+}
+const feedKeyframesMid = `
+@keyframes feed-follow-mid {
+  0% { transform: translateY(0); animation-timing-function: steps(1, end); }
+${feedStopsMid.map(({ at, shift }) => `  ${pct(at)} { transform: translateY(-${shift}px); animation-timing-function: steps(1, end); }`).join("\n")}
+  100% { transform: translateY(-${feedStopsMid.length ? feedStopsMid[feedStopsMid.length - 1].shift : 0}px); }
+}`;
+
+/* The strip's resting shift for browsers without timelines (and reduced
+   motion): the last stop each variant's 100% keyframe computes, so the
+   composed end frame shows the feed's settled tail, not its first page. */
+const feedRest = feedStops.length ? feedStops[feedStops.length - 1]!.shift : 0;
+const feedRestPhone = feedStopsPhone.length ? feedStopsPhone[feedStopsPhone.length - 1]!.shift : 0;
+const feedRestMid = feedStopsMid.length ? feedStopsMid[feedStopsMid.length - 1]!.shift : 0;
+const feedRestStyle = `--feed-rest: -${feedRest}px; --feed-rest-phone: -${feedRestPhone}px; --feed-rest-mid: -${feedRestMid}px`;
+---
+<!-- The agent log card: the story, in the app's own rows. Every row enters
+     on its beat; the money and the progress rule count on the run beat. -->
+<Fragment set:html={`<style>${arcKeyframes}${feedKeyframes}${feedKeyframesPhone}${feedKeyframesMid}</style>`} />
+<div class="log-card">
+  <div class="log-head">
+    <span class="card-legend">Agent log</span>
+    <span class="log-pnl" style={lateFigures}>
+      <span class="pnl-window"><span class="roi-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+        {roiArc.map((value) => (
+          <span class={value.startsWith("-") ? "pnl-step pnl-step--down" : "pnl-step"}>{value}</span>
+        ))}
+      </span></span></span>
+      <span class="pnl-window"><span class="pnl-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+        {pnlArc.map((value) => (
+          <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{formatSignedUsd(value)}</span>
+        ))}
+      </span></span></span>
+    </span>
+  </div>
+  <div class="log-progress" aria-hidden="true">
+    <span class="progress-track"><span class="progress-fill" style={`${beatRange("run", "settle")}`}></span></span>
+    <span class="progress-label">
+      <span class="pnl-window"><span class="pct-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+        {pctArc.map((value) => <span class="pnl-step">{value}%</span>)}
+      </span></span></span>
+      <span>&nbsp;to target</span>
+    </span>
+  </div>
+  <p class="sr-only">
+    Progress rule: the run reached {pctArc[pctArc.length - 1]} percent of the target and closed there.
+  </p>
+  <div class="log-feed">
+    <div class="log-feed-inner" style={feedRestStyle}>
+    {LOG.map((row) => (
+      <div class={`log-row log-row--${row.tone}`} style={logRowSpan(row.at, row.slot)}>
+        <span class="log-rail" aria-hidden="true"></span>
+        <span class="log-glyph" aria-hidden="true"><span class="log-glyph-ink"><Fragment set:html={renderIcon(row.glyph, { size: 11, strokeWidth: 2 })} /></span></span>
+        <span class="log-text">{row.text}</span>
+        <span class={`log-value ${row.valueTone === "down" ? "log-value--down" : row.valueTone === "up" ? "log-value--up" : ""}`}>{row.value}</span>
+        <span class="log-time">{row.time}</span>
+      </div>
+    ))}
+    <div class="log-footer">{EARLIER_TURNS} earlier turns not shown</div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── Agent log card ───────────────────────────────────────── */
+  .log-card {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .log-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 20px 6px;
+  }
+
+  .log-pnl {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ok);
+    transform-origin: 100% 50%;
+  }
+
+  /* The dollar figure next to the ROI reads one size up, the way the app's
+     header money always does. */
+  .log-pnl .pnl-reel {
+    font-size: 15px;
+    letter-spacing: -0.02em;
+  }
+
+  .log-progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 20px 10px;
+  }
+
+  .log-feed {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    border-top: 1px solid color-mix(in oklab, var(--border) 40%, transparent);
+  }
+
+  /* The translated strip inside the feed's clip. The follow animation rides
+     this inner wrapper, NOT .log-feed: a transform on the overflow box would
+     carry the clip away with it and paint nothing. */
+  .log-feed-inner {
+    display: flex;
+    flex-direction: column;
+    /* Rests at the feed's final shift (clause 10): without this the composed
+       end frame shows the first page of rows. The follow animation overrides
+       the transform wherever it runs. */
+    transform: translateY(var(--feed-rest, 0px));
+  }
+
+  /* The stream's settled footer line, mono 11 in the app's muted ink,
+     docked to the bottom of the feed the way the scroller's tail sits. */
+  .log-footer {
+    margin-top: auto;
+    padding: 8px 20px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 16.5px;
+    color: var(--fg-muted);
+  }
+
+  .log-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    column-gap: 8px;
+    padding: 8px 20px;
+    border-radius: 0;
+    font-size: 12px;
+    line-height: 16.5px;
+  }
+
+  /* The app's divide ink, stated literally: mixing it from the border
+     token lands at 0.009 alpha in this pipeline; the app computes 0.015. */
+  .log-row {
+    border-bottom: 1px solid oklab(0.999994 0.0000455678 0.0000200868 / 0.015);
+  }
+
+  /* The tone rail and glyph the app hangs on every log row. */
+  .log-rail {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: calc(infinity * 1px);
+    background: var(--fg-muted);
+    opacity: 0.62;
+  }
+
+  /* The app's token: a foreground-colored 16px circle whose lucide ICON
+     (11px, strokeWidth 2) carries the row tone; the container itself stays
+     at the foreground ink. */
+  .log-glyph {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    border-radius: calc(infinity * 1px);
+    color: var(--fg);
+    background: color-mix(in oklab, var(--fg-muted) 30%, transparent);
+    opacity: 0.88;
+  }
+
+  .log-glyph-ink {
+    display: grid;
+    place-items: center;
+    color: var(--fg-muted);
+  }
+
+  .log-row--armed .log-rail { background: var(--warn); }
+  .log-row--armed .log-glyph { background: color-mix(in oklab, var(--warn) 10%, transparent); }
+  .log-row--armed .log-glyph-ink { color: var(--warn); }
+  .log-row--fired .log-rail { background: var(--chart-blue); }
+  .log-row--fired .log-glyph { background: color-mix(in oklab, var(--chart-blue) 10%, transparent); }
+  .log-row--fired .log-glyph-ink { color: var(--chart-blue); }
+  .log-row--check .log-rail { background: var(--ok); }
+  .log-row--check .log-glyph { background: color-mix(in oklab, var(--ok) 10%, transparent); }
+  .log-row--check .log-glyph-ink { color: var(--ok); }
+  .log-row--buy .log-rail { background: var(--chart-blue); }
+  .log-row--buy .log-glyph { background: color-mix(in oklab, var(--chart-blue) 65%, transparent); }
+  .log-row--buy .log-glyph-ink { color: #fff; }
+  .log-row--stop .log-rail { background: var(--loss); }
+  .log-row--stop .log-glyph { background: color-mix(in oklab, var(--loss) 60%, transparent); }
+  .log-row--stop .log-glyph-ink { color: #fff; }
+  .log-row--loss .log-rail { background: var(--loss); }
+  .log-row--loss .log-glyph { background: color-mix(in oklab, var(--loss) 10%, transparent); }
+  .log-row--loss .log-glyph-ink { color: var(--loss); }
+  .log-row--win .log-rail { background: var(--ok); }
+  .log-row--win .log-glyph { background: var(--ok); }
+  .log-row--win .log-glyph-ink { color: #04120b; }
+
+  .log-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 16.5px;
+    color: color-mix(in srgb, var(--fg-panel) 90%, transparent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The right-aligned figure column sits one step quieter than the sentence
+     (the app's text-muted-foreground), with the tone colours carrying the
+     up/down emphasis. */
+  .log-value {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-muted);
+  }
+
+  .log-value--up { color: var(--ok); }
+  .log-value--down { color: var(--loss); }
+
+  .log-time {
+    flex: none;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The app's primary progress rule toward the target, under the log
+     header. Drawn in the accent, deliberately not in P&L tone. */
+  .progress-track {
+    flex: 1;
+    height: 3px;
+    border-radius: calc(infinity * 1px);
+    background: color-mix(in oklab, var(--fg-panel) 8%, transparent);
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    display: block;
+    height: 100%;
+    width: 100%;
+    border-radius: calc(infinity * 1px);
+    background: var(--chart-primary);
+    transform-origin: 0 50%;
+  }
+
+  .progress-label {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    gap: normal;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .progress-label .pnl-window { height: 1.3em; }
+  .progress-label .pnl-step { color: inherit; }
+
+  /* ── The card's scroll-driven layer ────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      .log-row {
+        animation-name: log-enter;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes log-enter {
+        0% { opacity: 0; transform: translateY(4px); animation-timing-function: ease-out; }
+        100% { opacity: 1; transform: none; }
+      }
+
+      /* The bar bends where the number does; its keyframes are generated in
+         the frontmatter from the reel's own step counts. */
+      .progress-fill {
+        animation-name: progress-arc;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      /* The feed follows its tail on the same timeline: the keyframes are
+         generated from LOG's own beat points, one row-height step per new
+         row once the card's first page has filled. The animation rides the
+         inner strip; .log-feed stays put as the clip box. */
+      .log-feed-inner {
+        animation-name: feed-follow;
+        animation-timing-function: steps(1, end);
+        animation-fill-mode: both;
+        animation-timeline: --mission;
+        animation-range: contain var(--t0) contain var(--t1);
+      }
+    }
+  }
+
+  /* ── Desktop surface ───────────────────────────────────────── */
+  @media (min-width: 1081px) and (min-height: 861px) {
+    .log-card {
+      flex: none;
+      height: 100%;
+    }
+
+    /* Part of the fixed 630px shell's shrink chain: the log card must be
+       allowed to shrink past its content with the chart column. */
+    .log-card {
+      min-height: 0;
+    }
+  }
+
+  /* ── Un-pinned surface (narrow or short viewports) ─────────── */
+  @media (max-width: 1080px), (max-height: 860px) {
+    /* The card keeps its desktop grammar - a fixed window whose feed
+       streams inside it - so the feed-follow translation stays in sync
+       with the rows' own beats wherever the console is not pinned. */
+    .log-card {
+      flex: none;
+      height: min(520px, 68vh);
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 820px) {
+    .log-feed {
+      padding: 0;
+    }
+
+    /* The pinned phone stage: the card is the band under the chart, so it
+       fills its grid row and the feed streams inside it on the phone's own
+       row-box twin of the follow keyframes. */
+    .log-card {
+      height: 100%;
+      min-height: 0;
+    }
+
+    .log-feed-inner {
+      animation-name: feed-follow-phone;
+      transform: translateY(var(--feed-rest-phone, var(--feed-rest, 0px)));
+    }
+
+    /* The taller band above 400px seats about ten rows, so its first page
+       is one step longer. */
+    @media (min-width: 401px) {
+      .log-feed-inner {
+        animation-name: feed-follow-mid;
+        transform: translateY(var(--feed-rest-mid, var(--feed-rest-phone, var(--feed-rest, 0px))));
+      }
+    }
+
+    /* The phone's larger relative scale: the log is one of the two surfaces
+       the phone keeps, so its rows step up one size rather than shrinking
+       with the viewport. */
+    .log-row {
+      padding: 13px 20px;
+      font-size: 13px;
+      line-height: 18px;
+    }
+
+    .log-text {
+      font-size: 13px;
+      line-height: 18px;
+    }
+
+    .log-value {
+      font-size: 12px;
+    }
+
+    .log-time {
+      font-size: 11px;
+    }
+
+    .log-glyph {
+      width: 18px;
+      height: 18px;
+    }
+
+    .log-pnl .pnl-reel {
+      font-size: 17px;
+    }
+
+    .log-footer {
+      font-size: 12px;
+      line-height: 18px;
+    }
+  }
+</style>

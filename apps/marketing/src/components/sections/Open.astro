@@ -1,0 +1,55 @@
+---
+import { GITHUB_REPOSITORY_URL, UPSTREAM_REPOSITORY_URL } from "../../lib/site";
+import { kineticWords } from "../../lib/mission";
+---
+<!-- ── Open source ───────────────────────────────────────────── -->
+<section id="open" class="sec-open">
+  <div class="container open-inner">
+    <h2 class="section-title kinetic open-title">
+      {kineticWords("Built on T3 Code. Open all the way down.").map(({ word, range }) => (
+        <>
+          <span style={`animation-range: ${range}`}>{word}</span>{" "}
+        </>
+      ))}
+    </h2>
+    <p class="section-lede scrub">
+      T3 Trade is an MIT-licensed fork of <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a>,
+      Ping Labs' open-source interface for coding agents. It keeps the upstream agent and
+      repository workflows, adds trading in dedicated packages, and records every intentional
+      fork change in its <a class="inline-link" href={`${GITHUB_REPOSITORY_URL}/blob/main/docs/upstream/PATCH_LEDGER.md`} target="_blank" rel="noopener noreferrer">patch ledger</a>.
+    </p>
+    <div class="open-actions scrub">
+      <a class="btn btn-ghost" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a class="btn btn-ghost" href={`${GITHUB_REPOSITORY_URL}/blob/main/docs/architecture/trading-execution.md`} target="_blank" rel="noopener noreferrer">Read the execution design</a>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ── Open source ──────────────────────────────────────────── */
+  .open-inner {
+    max-width: 760px;
+  }
+
+  .open-title {
+    max-width: 20ch;
+  }
+
+  .open-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 32px;
+  }
+
+  .inline-link {
+    color: var(--fg);
+    text-decoration: underline;
+    text-decoration-color: rgba(250, 250, 250, 0.35);
+    text-underline-offset: 3px;
+  }
+
+  .inline-link:hover {
+    text-decoration-color: var(--fg);
+  }
+</style>

@@ -6,7 +6,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 const DIST = new URL("../dist/_astro/", import.meta.url).pathname;
-const MIN_TIMELINES = 12;
+const MIN_TIMELINES = 37;
 
 const css = NodeFS.readdirSync(DIST)
   .filter((name) => name.endsWith(".css"))

@@ -1,0 +1,384 @@
+---
+import {
+  MISSION,
+  pnlArc,
+  POS_TIMES,
+  reward,
+  roiArc,
+  SETTLED_POSITIONS,
+} from "../../lib/mission";
+import {
+  beatPoint,
+  beatRange,
+  beatStart,
+  beatSlice,
+  rangeOf,
+} from "../../lib/beats";
+import {
+  formatNotionalUsd,
+  formatPrice,
+  formatSignedPercent,
+  formatSignedUsd,
+} from "../../lib/format";
+---
+<!-- The positions card, in the app's own column grammar. -->
+<div class="pos-card">
+  <div class="pos-head">
+    <span class="card-legend">Positions</span>
+    <span class="pos-unreal" style={`${rangeOf(beatPoint("stop-holds", 6 / 7), beatPoint("settle", 0.5))}`}>
+      <span class="card-legend">Unrealised</span>
+      <span class="pnl-window"><span class="roi-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+        {roiArc.map((value) => (
+          <span class={value.startsWith("-") ? "pnl-step pnl-step--down" : "pnl-step"}>{value}</span>
+        ))}
+      </span></span></span>
+      <span class="pnl-window pos-usd"><span class="pnl-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+        {pnlArc.map((value) => (
+          <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{formatSignedUsd(value)}</span>
+        ))}
+      </span></span></span>
+    </span>
+  </div>
+  <!-- The table body is decorative replica glass; this summary is what the
+       mission actually did, stated once for screen readers. -->
+  <p class="sr-only">
+    Mission outcome: opened a {MISSION.side.toLowerCase()} of {MISSION.size} BTC at {MISSION.leverage} on {MISSION.market},
+    entry {formatPrice(MISSION.entry)}, stop {formatPrice(MISSION.stop)}, target {formatPrice(MISSION.target)}.
+    Position closed at the target for a profit of {formatSignedUsd(reward)}, return {formatSignedPercent((reward / MISSION.margin) * 100)} on margin.
+    The reduce-only stop order completed without filling.
+  </p>
+  <div class="pos-scroll" aria-hidden="true">
+    <div class="pos-cols">
+      <span>State</span><span>Entry / Exit</span><span>Size · $</span>
+      <span class="ta-r">USD</span><span class="ta-r">Time</span>
+      <div class="pos-row" style={`${beatSlice("entry", 0, 5 / 6)}`}>
+        <span class="pos-state">
+          <span class="pos-pill">BTC <b>{MISSION.leverage}</b> {MISSION.side}</span>
+          <span class="armed-swap" style={`${rangeOf(beatStart("target-hit"), beatPoint("settle", 3 / 8))}`}>
+            <span class="armed-stack">
+              <span class="armed-state armed-state--wait pos-token pos-token--open"><span>Open</span></span>
+              <span class="armed-state armed-state--met pos-token pos-token--won"><span>Closed</span></span>
+            </span>
+          </span>
+        </span>
+        <span>{formatPrice(MISSION.entry)}</span>
+        <span>{formatNotionalUsd(MISSION.entry, MISSION.size)}</span>
+        <span class="ta-r">
+          <span class="pnl-window"><span class="pnl-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+            {pnlArc.map((value) => (
+              <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{formatSignedUsd(value)}</span>
+            ))}
+          </span></span></span>
+        </span>
+        <span class="ta-r pos-time">{POS_TIMES.open}</span>
+      </div>
+      <div class="pos-row" style={`${beatSlice("stop-placed", 0, 5 / 6)}`}>
+        <span class="pos-state">
+          <span class="pos-pill">BTC <b>{MISSION.leverage}</b> {MISSION.side}</span>
+          <span class="armed-swap" style={`${rangeOf(beatStart("target-hit"), beatPoint("settle", 3 / 8))}`}>
+            <span class="armed-stack">
+              <span class="armed-state armed-state--wait pos-token pos-token--working"><span>Working</span></span>
+              <span class="armed-state armed-state--met pos-token pos-token--done"><span>Done</span></span>
+            </span>
+          </span>
+        </span>
+        <span>{formatPrice(MISSION.stop)}</span>
+        <span>{formatNotionalUsd(MISSION.stop, MISSION.size)}</span>
+        <span class="ta-r pos-none">-</span>
+        <span class="ta-r pos-time">{POS_TIMES.stop}</span>
+      </div>
+      {SETTLED_POSITIONS.map((row) => (
+        <div class="pos-row pos-row--settled">
+          <span class="pos-state">
+            <span class={`pos-pill ${row.side === "short" ? "pos-pill--short" : ""}`}>BTC <b>{row.leverage}</b> {row.side === "short" ? "Short" : "Long"}</span>
+            <span class="pos-token pos-token--closed">Closed</span>
+          </span>
+          <span>{formatPrice(row.entry)}</span><span>{row.notional}</span>
+          <span class="ta-r pos-val pos-val--down">{row.pnl}</span>
+          <span class="ta-r pos-time">{row.time}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── Positions card ───────────────────────────────────────── */
+  .pos-card {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pos-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 20px 6px;
+  }
+
+  /* The header money cluster: a plain 12px label, ROI at 11, P&L at 15. */
+  /* Header money grammar: plain 12px label, ROI mono 11, P&L mono 15,
+     both figures in the pnl tone. */
+  .pos-unreal {
+    display: inline-flex;
+    align-items: baseline;
+    gap: normal;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--fg-muted);
+    transform-origin: 100% 50%;
+  }
+
+  /* The cluster is one 18px line tall: the 15px P&L reel crops to it and
+     the figures keep their rhythm through margins instead of gap. The
+     cluster itself is clamped too: baseline alignment of the 12px label
+     against the 15px figure otherwise stretches the box 4px past 18. */
+  .pos-unreal .pnl-window {
+    height: 18px;
+    margin-left: 12px;
+  }
+
+  .pos-unreal {
+    height: 18px;
+    overflow: hidden;
+  }
+
+  .pos-unreal .roi-reel {
+    font-size: 11px;
+    color: var(--ok);
+  }
+
+  .pos-unreal .card-legend {
+    font-size: 12px;
+    letter-spacing: normal;
+    text-transform: none;
+    color: var(--fg-muted);
+  }
+
+  .pos-usd,
+  .pos-unreal .pnl-reel {
+    font-size: 15px;
+    letter-spacing: -0.02em;
+    color: var(--ok);
+  }
+
+  /* The app's ONE grid: the headings row and the order rows are rows of
+     the same grid (row-gap 6px, column-gap normal), each row spanning the
+     full width with its own 12px column rhythm and 8px side padding. */
+  .pos-scroll {
+    padding: 0 20px;
+    min-width: 0;
+  }
+
+  .pos-cols,
+  .pos-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.8fr) 44px;
+    align-items: center;
+  }
+
+  .pos-cols {
+    row-gap: 6px;
+    color: var(--fg);
+  }
+
+  .pos-cols > span {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 15.75px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+  }
+
+  .pos-row {
+    grid-column: 1 / -1;
+    height: 28px;
+    padding: 0 8px;
+    column-gap: 12px;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: var(--fg);
+    border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+    border-radius: calc(infinity * 1px);
+    background: color-mix(in oklab, var(--fg-panel) 3%, transparent);
+  }
+
+  .ta-r { text-align: right; }
+  .ta-r .pnl-window { margin-left: auto; width: max-content; }
+  .pos-time { color: var(--fg-muted); font-size: 10.5px; white-space: nowrap; }
+
+  /* Settled history: present from scroll start like the app's waiting
+     state, dimmer than the live narrative rows. */
+  .pos-pill--short { border-color: color-mix(in oklab, var(--loss) 40%, transparent); background: color-mix(in oklab, var(--loss) 10%, transparent); color: var(--loss); }
+
+  .pos-token--closed { color: var(--fg-muted); }
+
+  .pos-val--down { color: var(--loss); }
+  .pos-none { color: var(--fg-muted); }
+
+  .pos-state {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .pos-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 6px;
+    border-radius: calc(infinity * 1px);
+    font-size: 10.5px;
+    line-height: 15.75px;
+    color: var(--ok);
+    border: 1px solid color-mix(in oklab, var(--ok) 40%, transparent);
+    background: color-mix(in oklab, var(--ok) 10%, transparent);
+    white-space: nowrap;
+  }
+
+  .pos-pill b {
+    font-weight: 500;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, currentColor 16%, transparent);
+  }
+
+  .pos-token {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    line-height: 16.5px;
+    height: 15px;
+    overflow: hidden;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .pos-token::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+
+  .pos-token--done::before {
+    background: none;
+    border: 1px solid currentColor;
+  }
+
+  /* The working ring reads faint at 1x raster, so the ring grows to 7px and
+     takes a step-brighter amber (the armed token lifted toward white) than
+     the word so the armed state reads at a glance. The token's box and gap
+     are untouched. */
+  .pos-token--working::before {
+    background: none;
+    width: 7px;
+    height: 7px;
+    border: 1px solid color-mix(in oklab, var(--warn) 85%, white);
+  }
+
+  .pos-token--open { color: var(--chart-blue); }
+  .pos-token--working { color: var(--warn); }
+  .pos-token--won { color: var(--ok); }
+
+  /* The stop's row once the close makes it moot: settled, not alarming.
+     Wins over the swap machinery's green met state. */
+  .pos-token--done.armed-state--met { color: var(--fg-faint); }
+
+  /* Two states occupying one cell, so a row never reflows when its state
+     crosses over. */
+  .armed-swap {
+    display: block;
+    height: 15px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  /* The state swap is a one-line crop, not a crossfade: the stack (live word
+     above, settled word below) lifts one row in a single discrete step, so
+     the settled word lands in the window exactly as the live word leaves it
+     and the two never print on top of each other. The shift rides the inner
+     stack, not the clip box: a transform on .armed-swap would carry the
+     window away with it and crop nothing. */
+  .armed-stack {
+    display: block;
+    /* Rests at the met state (clause 10): without timelines the window shows
+       Closed / Done, matching the settled-history story. The swap-in
+       animation's from frame resets the stack while it runs. */
+    transform: translateY(-15px);
+  }
+
+  .armed-swap .armed-state {
+    display: block;
+    height: 15px;
+    line-height: 15px;
+  }
+
+  .armed-state--met { color: var(--ok); }
+
+  /* ── The card's scroll-driven layer ────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      /* The log and positions rows rise the way the app's rows enter:
+         mission-log-enter (4px, ease-out, from flat zero) for log rows,
+         mission-order-enter (6px + scale 0.97 spring) for order rows. */
+      .pos-row {
+        animation-name: order-enter;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes order-enter {
+        0% { opacity: 0; transform: translateY(6px) scale(0.97); animation-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1); }
+        100% { opacity: 1; transform: none; }
+      }
+
+      .armed-stack {
+        animation-name: swap-in;
+        animation-timing-function: steps(1, end);
+        animation-fill-mode: both;
+      }
+
+      @keyframes swap-in {
+        from { transform: translateY(0); }
+        to { transform: translateY(-15px); }
+      }
+    }
+  }
+
+  /* ── Desktop surface ───────────────────────────────────────── */
+  @media (min-width: 1081px) and (min-height: 861px) {
+    .pos-card {
+      flex: none;
+      height: 200px;
+      overflow-y: auto;
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 820px) {
+    /* Five columns cannot breathe at 335px; the age column goes. */
+    .pos-cols,
+    .pos-row {
+      grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.9fr);
+      gap: 8px;
+    }
+
+    /* The two-state token cannot share the squeezed first column with the
+       pill without colliding with the price column; the pill already says
+       long/short, so the state word is the one to drop. */
+    .pos-token { display: none; }
+
+    .pos-time,
+    .pos-cols span:nth-child(5) { display: none; }
+  }
+</style>

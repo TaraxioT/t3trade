@@ -1,0 +1,124 @@
+---
+import { MISSION, STATUSBAR } from "../../lib/mission";
+import { beatSlice } from "../../lib/beats";
+import { formatPrice } from "../../lib/format";
+import { renderIcon } from "../../lib/icons";
+---
+<!-- The status bar, the strip the app closes the panel with. The strip itself
+     is decorative; the sentence below carries its end state for AT. -->
+<p class="sr-only">
+  Status bar at the end of the mission: mission complete. Target
+  {formatPrice(MISSION.target)} reached by {STATUSBAR.targetBy}. {STATUSBAR.funding}.
+  Positions held on Hyperliquid.
+</p>
+<div class="statusbar" aria-hidden="true">
+  <span class="status-main">
+    <span class="status-window"><span class="status-reel"><span class="status-track">
+      <span class="status-step"><i class="status-dot status-dot--wait"></i>Planning</span>
+      <span class="status-step status-step--armed"><i class="status-dot status-dot--armed"></i>Waiting on trigger</span>
+      <span class="status-step status-step--long"><i class="status-dot status-dot--long"></i>Holding long</span>
+      <span class="status-step status-step--won"><i class="status-dot status-dot--long"></i>Mission complete</span>
+    </span></span></span>
+  </span>
+  <span class="sb-chip"><Fragment set:html={renderIcon("FileText", { size: 11, strokeWidth: 2, class: "sb-ico" })} />Plan</span>
+  <span class="sb-pred" style={`${beatSlice("plan", 0, 5 / 9)}`}><Fragment set:html={renderIcon("TrendingUp", { size: 11, strokeWidth: 2, class: "sb-trend" })} /> {formatPrice(MISSION.target)} by {STATUSBAR.targetBy}</span>
+  <span class="sb-right">{STATUSBAR.funding}<span class="sb-ext">Hyperliquid<Fragment set:html={renderIcon("ExternalLink", { size: 11, strokeWidth: 2, class: "sb-ext-ico" })} /></span></span>
+</div>
+
+<style>
+  /* ── Status bar: the third pane of glass ──────────────────── */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    gap: 4px 16px;
+    padding: 10px 20px;
+    border: 1px solid var(--app-mission-panel-outline);
+    border-radius: var(--app-radius-xl);
+    background: color-mix(in srgb, var(--app-mission-panel-surface) var(--app-mission-panel-opacity), transparent);
+    box-shadow: var(--app-mission-panel-shadow);
+    backdrop-filter: blur(var(--app-glass-blur)) saturate(var(--app-glass-saturation));
+    color: var(--fg);
+  }
+
+  .status-main {
+    font-size: 13px;
+    line-height: 19.5px;
+    color: var(--fg-panel);
+  }
+
+  .sb-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+    border-radius: calc(infinity * 1px);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+
+  .sb-pred {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The projection chip's trend glyph: the app's lucide TrendingUp at
+     11px / strokeWidth 2 (MissionLivePanel's log-token geometry). */
+  .sb-trend {
+    color: var(--fg-muted);
+  }
+
+  .sb-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The ambient cluster's external-link tail ("Hyperliquid ↗"). */
+  .sb-ext {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .sb-ext-ico,
+  .sb-ico {
+    flex: none;
+    color: var(--fg-muted);
+  }
+
+  /* ── The bar's scroll-driven layer ─────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      .sb-pred {
+        animation-name: check-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+    }
+  }
+
+  /* ── Desktop surface ───────────────────────────────────────── */
+  @media (min-width: 1081px) and (min-height: 861px) {
+    .statusbar {
+      flex: none;
+      height: 45px;
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 1080px) {
+    .statusbar { flex-wrap: wrap; row-gap: 4px; }
+  }
+</style>

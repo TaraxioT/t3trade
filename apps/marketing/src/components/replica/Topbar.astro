@@ -1,0 +1,118 @@
+---
+import { MISSION, pnlArc } from "../../lib/mission";
+import { beatRange } from "../../lib/beats";
+import { formatSignedUsd } from "../../lib/format";
+---
+<!-- The thread header, cropped to the one element that carries the story:
+     the mission capsule, with the state reel on the left and the P&L figure
+     walking with the position on the right (the app's formatSignedUsd on the
+     live unrealised P&L, on the same beat range every other money reel
+     uses). -->
+<div class="appwin-crumb" aria-hidden="true">
+  <span class="crumb-capsule">
+    <span class="status-window"><span class="status-reel"><span class="status-track">
+      <span class="status-step"><i class="status-dot status-dot--wait"></i>{MISSION.market} · Waiting</span>
+      <span class="status-step status-step--armed"><i class="status-dot status-dot--armed"></i>{MISSION.market} · Armed</span>
+      <span class="status-step status-step--long"><i class="status-dot status-dot--long"></i>{MISSION.market} · Long {MISSION.size}</span>
+      <span class="status-step status-step--won"><i class="status-dot status-dot--long"></i>{MISSION.market} · Completed</span>
+    </span></span></span>
+    <span class="capsule-pnl">
+      <span class="pnl-window"><span class="pnl-reel"><span class="pnl-track" style={`${beatRange("run", "settle")}`}>
+        {pnlArc.map((value) => (
+          <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{formatSignedUsd(value)}</span>
+        ))}
+      </span></span></span>
+    </span>
+    <span class="capsule-dots"><i class="is-done"></i><i></i><i></i></span>
+  </span>
+</div>
+
+<style>
+  /* ── Thread header row: a slim band holding only the capsule ── */
+  .appwin-crumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 0 20px;
+    font-size: 16px;
+  }
+
+  /* The capsule's phase dots, the app's MissionHeaderPill tail: one solid
+     dot, two hollow. */
+  .capsule-dots {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .capsule-dots i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1px solid color-mix(in oklab, var(--fg-muted) 40%, transparent);
+  }
+
+  .capsule-dots i.is-done {
+    background: var(--fg);
+    border-color: var(--fg);
+  }
+
+  /* The current phase reads as a foreground ring (the app's middle dot),
+   * one step above the pending rings. */
+  .capsule-dots i:nth-child(2) {
+    border-color: var(--fg);
+  }
+
+  /* The mission capsule: the app's MissionHeaderPill shell - card glass
+     at 60%, 8px blur, 12px/4px padding, the neutral hairline, a 30px box. */
+  .crumb-capsule {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    overflow: hidden;
+    font-size: 14px;
+    line-height: 20px;
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: calc(infinity * 1px);
+    background: color-mix(in oklab, var(--card-app) 60%, transparent);
+    backdrop-filter: blur(8px);
+    color: var(--fg);
+    white-space: nowrap;
+  }
+
+  /* The walking P&L tail: same reel machinery as every other money figure,
+     cropped to the capsule's own 20px line, green through the run and red
+     through the drawdown via the reel steps' own colours. */
+  .capsule-pnl {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .capsule-pnl .pnl-window { height: 20px; }
+  .capsule-pnl .pnl-step { text-align: left; }
+
+  /* ── Desktop surface ───────────────────────────────────────── */
+  @media (min-width: 1081px) and (min-height: 861px) {
+    /* The slim header band over the main column; the capsule centres over
+       it (the app's absolute inset-x-0 justify-center tier). */
+    .appwin-crumb {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 44px;
+      padding: 0 20px;
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 820px) {
+    /* At phone width the capsule carries the state on its own. */
+    .appwin-crumb { justify-content: flex-start; }
+  }
+</style>

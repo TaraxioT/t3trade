@@ -1,0 +1,301 @@
+---
+import { kineticWords } from "../../lib/mission";
+import { renderIcon } from "../../lib/icons";
+import Window from "../replica/Window.astro";
+
+const ruleMark = renderIcon("Check", { size: 13, strokeWidth: 2.4, class: "note-mark" });
+---
+<!-- ── Mission lifecycle ─────────────────────────────────────── -->
+<section id="missions" class="sec-mission">
+  <div class="container">
+    <h2 class="section-title kinetic">
+      {kineticWords("Watch one mission run.").map(({ word, range }) => (
+        <>
+          <span style={`animation-range: ${range}`}>{word}</span>{" "}
+        </>
+      ))}
+    </h2>
+    <p class="section-lede scrub">
+      A mission binds one agent thread to one market. This is the cockpit itself, replaying
+      a testnet BTC run from trigger to target: the log fills, the entry checks pass, the
+      stop rests on the exchange, and the position closes at the target.
+    </p>
+  </div>
+
+  <!-- The window pins for the length of the story. Each beat owns a slice
+       of this timeline, and the log, the chart, and the readout all move
+       together on it. The dim layer behind the window is what makes the
+       page recede while the app plays. -->
+  <div class="mission-scroller">
+    <div class="mission-sticky">
+      <div class="mission-dim" aria-hidden="true"></div>
+      <div class="container stage-container">
+        <Window />
+      </div>
+    </div>
+  </div>
+
+  <!-- The three rules the run above never broke, so each one carries the
+       same mark the console used to confirm them. -->
+  <div class="container mission-notes">
+    <div class="note" style={`--from:12%;--to:40%`}>
+      <h3>
+        <Fragment set:html={ruleMark} />
+        The exchange is the source of truth
+      </h3>
+      <p>
+        Positions, orders, and fills are re-read from Hyperliquid after every submission,
+        fill, reconnect, and restart. Local records never override it.
+      </p>
+    </div>
+    <div class="note" style={`--from:20%;--to:48%`}>
+      <h3>
+        <Fragment set:html={ruleMark} />
+        Risk is counted before entry
+      </h3>
+      <p>
+        Realised loss, paid fees, protected open risk, and pending-entry risk all draw down
+        the same budget. Exhaust it and new exposure is blocked while stops stay in place.
+      </p>
+    </div>
+    <div class="note" style={`--from:28%;--to:56%`}>
+      <h3>
+        <Fragment set:html={ruleMark} />
+        The stop is not advisory
+      </h3>
+      <p>
+        It rests on Hyperliquid as a reduce-only order, and its size is reconciled against
+        the position the exchange reports. It survives the app closing.
+      </p>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ── The cockpit window ───────────────────────────────────── */
+  .sec-mission {
+    padding-bottom: 0;
+    background: linear-gradient(180deg, var(--bg) 0%, #070709 30%, #060608 100%);
+  }
+
+  .mission-scroller {
+    /* 340vh, back to the wave-3 desktop baseline: a retune to 240vh rode
+       in with an uncommissioned patch during the tree incident and changed
+       the desktop page height; P8's scope is the phone, and the desktop
+       pin keeps its measured pre-wave budget. */
+    min-height: 340vh;
+    margin-top: 40px;
+  }
+
+  .mission-sticky {
+    position: sticky;
+    top: 0;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 70px 0 24px;
+  }
+
+  /* The room going dark around the app. It covers the whole pinned viewport
+     and carries a vignette, so the window reads as the one lit object. */
+  .mission-dim {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    background:
+      radial-gradient(ellipse 90% 70% at 50% 46%, transparent 30%, rgba(3, 3, 5, 0.9) 100%),
+      rgba(3, 3, 5, 0.62);
+  }
+
+  .stage-container {
+    position: relative;
+  }
+
+  /* ── Mission notes ────────────────────────────────────────── */
+  /* One rule across the top and a divider between each note, so the three
+     read as one group closing out the console rather than three columns
+     floating below it. */
+  .mission-notes {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    padding-top: 0;
+    padding-bottom: 76px;
+    margin-top: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .note {
+    padding: 22px 30px 0 0;
+  }
+
+  .note + .note {
+    padding-left: 30px;
+    border-left: 1px solid var(--border);
+  }
+
+  .note h3 {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 15.5px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    margin-bottom: 7px;
+  }
+
+  .note h3 :global(.note-mark) {
+    color: var(--ok);
+    flex-shrink: 0;
+    align-self: center;
+  }
+
+  .note p {
+    color: var(--fg-muted);
+    font-size: 14.5px;
+    line-height: 1.6;
+  }
+
+  /* ── The section's scroll-driven layer ─────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      /* One pinned scroller drives everything: the candles, the four price
+         levels and their labels, the watch that fires, the run, the counting
+         PnL, the armed watches, and the rail that names the current beat.
+         Each element carries its own slice as an inline animation-range, so
+         the beats stay in step with each other. */
+      .mission-scroller {
+        view-timeline-name: --mission;
+        view-timeline-axis: block;
+        /* The timeline bounds, as named values so no animation-range in the
+           replica carries a literal percentage. */
+        --t0: 0%;
+        --t1: 100%;
+      }
+
+      .mission-dim { animation-name: dim-hold; }
+
+      /* The vignette is an opening flourish: it fades in with the window
+         and releases by the time the trading panel is the story (~18%),
+         when the app's own flat surface takes over. It never hazes the
+         dense beats. */
+      @keyframes dim-hold {
+        0% { opacity: 0; }
+        7% { opacity: 0.85; }
+        18% { opacity: 0; }
+        100% { opacity: 0; }
+      }
+
+      /* The three rules confirm themselves as the group comes into view. */
+      .mission-notes {
+        view-timeline-name: --notes;
+        view-timeline-axis: block;
+      }
+
+      .note h3 :global(.note-mark) {
+        animation: check-in linear both;
+        animation-timeline: --notes;
+        animation-range: cover var(--from) cover var(--to);
+      }
+    }
+  }
+
+  /* ── Desktop surface ───────────────────────────────────────── */
+  @media (min-width: 1081px) and (min-height: 861px) {
+    .mission-sticky {
+      padding: 0;
+      /* The pinned stage owns the whole viewport: it paints above the
+         marketing site's own sticky header (z-50), which otherwise sits
+         over the cockpit's topbar band. */
+      z-index: 60;
+    }
+
+    .mission-sticky .stage-container {
+      max-width: none;
+      padding: 0;
+    }
+  }
+
+  /* ── Responsive ──────────────────────────────────────────────
+     One beat map, two projections. Pinning only works while the console
+     fits the viewport it is pinned to; too narrow or too short and it
+     becomes a normal block. The beats keep their numbers and the viewport
+     difference is expressed as SCROLLER LENGTH: the un-pinned phone gains
+     scroll room below the console (the padding below), which stretches the
+     element's cover pass so a wider window of it is spent with the chart
+     actually on screen. The pass window below is that window: the same
+     --from/--to beat slices are projected linearly into it. */
+  @media (max-width: 1080px), (max-height: 860px) {
+    .mission-scroller {
+      min-height: 0;
+      margin-top: 32px;
+      /* The phone's scroller length: scroll room under the console so the
+         story can play at near-desktop pace instead of being crushed into
+         the last sliver of the cover pass. */
+      padding-bottom: 26vh;
+    }
+
+    .mission-sticky {
+      position: static;
+      min-height: 0;
+      padding: 0;
+    }
+
+    /* The dim layer and the window focus only make sense while pinned. */
+    .mission-dim { display: none; }
+
+    /* The pass window over the cover pass. On the phone surface the chart
+       pins while the log streams beneath it, so the story runs from the
+       moment the chart is fully in view (~12% of the pass, the console
+       entering) until the console's content has crossed the viewport
+       (~92%): every beat lands while its anchor is on screen, and the
+       short runway below only breathes between the story's end and the
+       notes. The old 110vh runway was tuned for a taller console; against
+       the phone's slim surface it rendered as a blank corridor after the
+       story had already finished. */
+    .mission-scroller {
+      --pass: 0.6;
+      --pass-base: 13%;
+    }
+  }
+
+  /* ── The phone's own pin budget ───────────────────────────────
+     A phone pin must cost far less than the desktop's 340vh stage. The
+     window is a fixed-height mini cockpit (Window.astro), so the section
+     pins it for 300vh of scroll and releases; every anchor stays on screen
+     for the whole pass because the log streams inside its own card. The
+     pass window starts when the stage engages (its top reaching the nav,
+     ~23% of the cover pass) and ends just before release. */
+  @media (max-width: 820px) {
+    .mission-scroller {
+      min-height: 300vh;
+      padding-bottom: 0;
+      --pass: 0.68;
+      --pass-base: 23%;
+    }
+
+    .mission-sticky {
+      position: sticky;
+      top: 60px;
+      z-index: 40;
+    }
+  }
+
+  @media (max-width: 1080px) {
+    .mission-notes {
+      grid-template-columns: 1fr;
+      margin-top: 28px;
+      padding-bottom: 72px;
+    }
+
+    .note { padding: 20px 0 0; }
+
+    .note + .note {
+      padding-left: 0;
+      border-left: 0;
+      border-top: 1px solid var(--border);
+    }
+  }
+</style>

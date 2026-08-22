@@ -1,0 +1,285 @@
+/*
+ * Replica-shared machinery, imported by replica components only
+ * (replica/Window.astro imports it once). Everything here is CSS that either
+ * targets markup rendered by more than one replica component (the card glass,
+ * the status and PnL reels, the sidebar icon sizes) or rides the one mission
+ * scroll timeline with selector lists that span components. It is global on
+ * purpose: Astro scoping would strand the cross-component selectors, and the
+ * equal-specificity pairs (for example .side-ico before .sb-ext-ico) keep
+ * their original source order so the cascade does not move. Per-surface
+ * styling lives in each component's own scoped <style>.
+ */
+
+/* The panel's cards: the app's own dark glass, every value from the
+   generated token bridge (app-tokens.generated.css). Shared by the chart,
+   positions, and log cards. */
+.console-chart,
+.pos-card,
+.log-card {
+  position: relative;
+  border: 1px solid var(--app-mission-panel-outline);
+  border-radius: var(--app-radius-xl);
+  background: color-mix(in srgb, var(--app-mission-panel-surface) var(--app-mission-panel-opacity), transparent);
+  box-shadow: var(--app-mission-panel-shadow);
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(var(--app-glass-saturation));
+  min-width: 0;
+}
+
+/* Solid fallback: without transparency the panes sit on the app's card
+   surface itself, so the transcript behind the glass reads as card texture
+   instead of vanishing. */
+@media (prefers-reduced-transparency: reduce) {
+  .console-chart,
+  .pos-card,
+  .log-card,
+  .statusbar {
+    background: var(--app-mission-panel-surface);
+    backdrop-filter: none;
+  }
+}
+
+.card-legend {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* ── The status reel ──────────────────────────────────────────────────────
+   Shared by the sidebar's live row, the topbar capsule, and the status bar.
+   The sidebar's own 16px twin overrides live in Sidebar.astro at higher
+   specificity. */
+.status-window {
+  display: block;
+  height: 1.5em;
+  overflow: hidden;
+}
+
+/* The reel is two elements: a static 1.5em crop (this rule) and the
+   moving track inside it. The app's labels are single-line spans; the
+   crop makes the stepped replay measure the same one line tall. */
+.status-reel {
+  display: block;
+  height: 1.5em;
+  overflow: hidden;
+}
+
+.status-track {
+  display: block;
+  /* Rests on the settled state for browsers without scroll timelines. */
+  transform: translateY(-4.5em);
+}
+
+.status-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 1.5em;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.status-step--armed { color: var(--warn); }
+.status-step--long { color: var(--ok); }
+.status-step--won { color: var(--ok); }
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: currentColor;
+}
+
+.status-dot--wait { background: var(--fg-faint); }
+
+/* ── The PnL / ROI / mark / percent reels ─────────────────────────────────
+   Same cropper pattern as the status reels: the *-reel class is a static
+   single-line crop, the .pnl-track strip inside it moves. Shared by the
+   chart header and chips, the positions card, and the agent log. */
+.pnl-window {
+  display: block;
+  height: 1.3em;
+  overflow: hidden;
+}
+
+.pnl-reel,
+.pct-reel,
+.mark-reel,
+.roi-reel {
+  display: block;
+  height: 1.3em;
+  overflow: hidden;
+}
+
+/* Rests on the final stop, so a browser without scroll timelines shows
+   the figure the run ends on rather than a zero it will never count up
+   from. */
+.pnl-track {
+  display: block;
+  transform: translateY(calc(-32 * 1.3em));
+}
+
+.pnl-step {
+  display: block;
+  height: 1.3em;
+  line-height: 1.3em;
+  text-align: right;
+  color: var(--ok);
+}
+
+/* The reel carries its own colour per stop, so the number turns red through
+   the drawdown without a second animation. */
+.pnl-step--down { color: var(--loss); }
+
+/* ── The desktop surface lift for the floating panes ──────────────────── */
+@media (min-width: 1081px) and (min-height: 861px) {
+  .panel-shell,
+  .wakeup-cap,
+  .composer {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+/* ── The shared scroll-driven layer ──────────────────────────────────────
+   One pinned timeline drives the whole cockpit; these selector lists name
+   elements owned by several components at once, so they stay global. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .grid,
+    .level,
+    .fire-dot,
+    .fire-ping,
+    .wedge,
+    .wedge-edge,
+    .chip,
+    .dip-dot,
+    .dip-drop,
+    .dip-label,
+    .stop-hold,
+    .stop-hold-label,
+    .target-dot,
+    .target-ping,
+    .target-check,
+    .pnl-track,
+    .progress-fill,
+    .pos-row,
+    .sb-pred,
+    .armed-stack,
+    .rr-seg,
+    .log-row,
+    .mission-sticky .tick path {
+      animation-timeline: --mission;
+      animation-range: contain var(--from) contain var(--to);
+    }
+
+    /* The full-length tracks: the room dims while the story plays, the
+       window sharpens into focus, and the sidebar status reel steps through
+         its states. All three own the whole pinned range (--t0/--t1 are the
+         timeline bounds, declared on the scroller) and put their
+         choreography in the keyframes. */
+    .mission-dim,
+    .appwin,
+    .status-track {
+      animation-timeline: --mission;
+      animation-range: contain var(--t0) contain var(--t1);
+      animation-fill-mode: both;
+      animation-timing-function: linear;
+    }
+
+    /* Stepped, so each state lands rather than slides: waiting until the
+       watch arms, armed until the fill, live until the target prints. The
+       keyframes are generated from the beat table in Window.astro, along
+       with the sidebar's pixel-exact twin. */
+    .status-track { animation-name: status-walk; }
+
+    /* One reel, three phases, stepped so the digits land rather than
+       slide: up to the open figure, down through the drawdown, out to
+       the target. The money clusters themselves do not flash: the
+       app's figures just count. */
+    .pnl-track {
+      animation-name: pnl-count;
+      animation-timing-function: steps(32, end);
+      animation-fill-mode: both;
+    }
+
+    @keyframes pnl-count {
+      from { transform: translateY(0); }
+      to { transform: translateY(calc(-32 * 1.3em)); }
+    }
+
+    /* Every checkmark in the pinned story draws itself. The slice comes from
+       the `--from` and `--to` set on the svg above it, which custom
+       properties inherit. scrub-draw itself is defined globally by the
+       layout. */
+    .mission-sticky .tick path {
+      stroke-dashoffset: 1;
+      animation-name: scrub-draw;
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+    }
+  }
+}
+
+/* ── Responsive: the un-pinned pass ──────────────────────────────────────
+   Pinning only works while the console fits the viewport it is pinned to.
+   Too narrow or too short and every beat re-times onto `cover` so the same
+   slices play as the section passes up the screen instead. */
+@media (max-width: 1080px), (max-height: 860px) {
+  /* The feed's tail-follow keeps running on the pass window, in lockstep
+     with the rows' own projected beats: both read the same --from/--to
+     slices, so the newest line is always the last visible one. The range
+     rides the inner strip (the animated element); .log-feed stays put as
+     the clip box. */
+  .log-feed-inner {
+    animation-range:
+      cover var(--pass-base)
+      cover calc(var(--pass-base) + 100% * var(--pass));
+  }
+
+  /* The full-range tracks keep stepping, on the compressed cover pass. */
+  .status-track,
+  .price-line,
+  .price-wash {
+    animation-range:
+      cover var(--pass-base)
+      cover calc(var(--pass-base) + 100% * var(--pass));
+  }
+
+  .grid,
+  .level,
+  .fire-dot,
+  .fire-ping,
+  .wedge,
+  .wedge-edge,
+    .chip,
+    .dip-dot,
+    .dip-drop,
+    .dip-label,
+    .stop-hold,
+    .stop-hold-label,
+    .target-dot,
+    .target-ping,
+    .target-check,
+    .pnl-track,
+    .progress-fill,
+    .pos-row,
+    .sb-pred,
+    .armed-stack,
+    .rr-seg,
+    .log-row,
+    .mission-sticky .tick path {
+    /* The window is taller than the viewport it is no longer pinned to, so
+       a full `cover` pass finishes the story long after the chart has left
+       the top of the screen. The window's top reaches the top of the screen
+       at roughly cover 40%, so the slices are compressed into the stretch
+       where the chart is actually on screen: the story starts once the
+       window is well into view and lands its target before the chart
+       scrolls away. */
+    animation-range:
+      cover calc(var(--pass-base) + var(--from) * var(--pass))
+      cover calc(var(--pass-base) + var(--to) * var(--pass));
+  }
+}

@@ -1,0 +1,330 @@
+---
+import { CHECK_COUNT, CONTROLS, PREVIEW_CHECKS } from "../../lib/mission";
+import { renderIcon } from "../../lib/icons";
+
+const passMark = renderIcon("Check", { size: 13, strokeWidth: 2.4, class: "pass-mark" });
+---
+<!-- ── The fourteen checks ───────────────────────────────────── -->
+<section id="rails" class="sec-checks">
+  <div class="checks-scroller">
+    <div class="checks-sticky">
+      <div class="container checks-inner">
+        <div class="checks-copy">
+          <h2 class="section-title">Every entry passes the same fourteen checks.</h2>
+          <p class="section-lede">
+            Before signing a position-increasing order, T3 Trade re-checks the mission, its
+            authority, the agent lease, direction, signer approval, data freshness, size and
+            price, exchange minimums, leverage, notional, per-position risk, the loss budget,
+            pending conflicts, and the stop. One failure rejects the order.
+          </p>
+          <ul class="rail-list">
+            <li><strong>Every position increase carries a stop.</strong> T3 Trade submits an exchange-native reduce-only stop, then reconciles its size against the position Hyperliquid reports.</li>
+            <li><strong>A retry is the same order.</strong> The client order ID and local request key are deterministic, so a resubmission cannot open a second position.</li>
+            <li><strong>You keep the controls.</strong> Pause, cancel entries, reduce, close, and revoke all work with the agent CLI stopped.</li>
+          </ul>
+        </div>
+
+        <div class="checks-visual">
+          <div class="tile preview-card">
+            <div class="preview-head">
+              <span class="preview-title">trading_preview_order</span>
+              <span class="preview-tally" aria-label={`${CHECK_COUNT} checks passing`}>
+                <span class="tally-window">
+                  <span class="tally-reel">
+                    {Array.from({ length: CHECK_COUNT + 1 }, (_, n) => <span>{n}</span>)}
+                  </span>
+                </span>
+                <span class="tally-total">/ {CHECK_COUNT}</span>
+              </span>
+            </div>
+
+            <ul class="preview-list">
+              {PREVIEW_CHECKS.map((check, index) => (
+                <li style={`animation-range: cover ${16 + index * 5}% cover ${29 + index * 5}%`}>
+                  <Fragment set:html={passMark} />
+                  <span class="preview-check-label">{check.label}</span>
+                  <span class="preview-check-detail">{check.detail}</span>
+                </li>
+              ))}
+            </ul>
+
+            <div class="preview-verdict">
+              <span class="preview-stamp">signed locally</span>
+              <span class="preview-verdict-note">all fourteen passed</span>
+            </div>
+          </div>
+
+          <div class="controls-strip">
+            <span class="controls-strip-label">Operator controls</span>
+            {CONTROLS.map((control, index) => (
+              <span class="control-chip" style={`animation-range: cover ${56 + index * 3}% cover ${65 + index * 3}%`}>{control}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* ── Checks ───────────────────────────────────────────────── */
+  /* Not pinned. The console above already holds the reader still for three
+     viewports, and a second pinned box left a screen of empty space between
+     the two. This one scrubs as it enters, at normal section height. */
+  .sec-checks {
+    padding: 0;
+    background: #08080a;
+  }
+
+  .checks-scroller {
+    min-height: 0;
+  }
+
+  .checks-sticky {
+    padding: 92px 0 104px;
+  }
+
+  .checks-inner {
+    display: grid;
+    grid-template-columns: 1fr 1.02fr;
+    gap: 64px;
+    align-items: center;
+  }
+
+  .rail-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 28px;
+  }
+
+  .rail-list li {
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.55;
+    padding-left: 18px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+
+  .rail-list strong {
+    color: var(--fg);
+    font-weight: 500;
+  }
+
+  .preview-card {
+    padding: 20px;
+    background: rgba(9, 9, 11, 0.7);
+  }
+
+  /* The pane bleeds off the right frame edge rather than sitting centred
+     in a box with equal margins (desktop only). */
+  @media (min-width: 1081px) {
+    .checks-visual {
+      margin-right: calc(50% - 50vw);
+      padding-right: 32px;
+    }
+  }
+
+  .preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .preview-title {
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  /* Odometer: a reel of digits translated by the same scroll timeline that
+     ticks the checks, snapped to whole numbers. */
+  .preview-tally {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--accent);
+  }
+
+  .tally-window {
+    display: block;
+    height: 1.25em;
+    overflow: hidden;
+  }
+
+  /* Rests on 14 so a browser without scroll timelines shows the passing count
+     rather than a zero it will never count up from. */
+  .tally-reel {
+    display: block;
+    transform: translateY(calc(-14 * 1.25em));
+  }
+
+  .tally-reel span {
+    display: block;
+    height: 1.25em;
+    line-height: 1.25em;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    min-width: 2ch;
+  }
+
+  .tally-total {
+    color: var(--fg-dim);
+    font-size: 11px;
+  }
+
+  .preview-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .preview-list li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-top: 1px dashed var(--border);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .preview-list li :global(.pass-mark) {
+    color: var(--ok);
+    flex-shrink: 0;
+  }
+
+  .preview-check-label {
+    color: var(--fg-muted);
+    flex: 1;
+  }
+
+  .preview-check-detail {
+    /* fg-dim, not fg-faint: detail text must clear AA on the preview card
+       (fg-faint lands at 2.7:1 there). */
+    color: var(--fg-dim);
+    font-size: 11px;
+  }
+
+  .preview-verdict {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .preview-stamp {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 4px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 999px;
+  }
+
+  .preview-verdict-note {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-dim);
+  }
+
+  .controls-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
+  }
+
+  .controls-strip-label {
+    font-size: 12px;
+    color: var(--fg-dim);
+    margin-right: 4px;
+  }
+
+  .control-chip {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  /* ── The section's scroll-driven layer ─────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      /* The checks tick, the reel counts to fourteen, and the controls
+         arrive last, all across the card's own pass up the screen. */
+      .checks-scroller {
+        view-timeline-name: --checks;
+        view-timeline-axis: block;
+      }
+
+      .preview-list li {
+        animation: check-in linear both;
+        animation-timeline: --checks;
+      }
+
+      .tally-reel {
+        animation: tally-count steps(14, end) both;
+        animation-timeline: --checks;
+        animation-range: cover 16% cover 56%;
+      }
+
+      @keyframes tally-count {
+        from { transform: translateY(0); }
+        to { transform: translateY(calc(-14 * 1.25em)); }
+      }
+
+      .preview-stamp {
+        animation: stamp-land linear both;
+        animation-timeline: --checks;
+        animation-range: cover 56% cover 64%;
+      }
+
+      .preview-verdict-note {
+        animation: check-in linear both;
+        animation-timeline: --checks;
+        animation-range: cover 60% cover 68%;
+      }
+
+      @keyframes stamp-land {
+        from { opacity: 0; transform: scale(1.4) rotate(-5deg); }
+        to { opacity: 1; transform: none; }
+      }
+
+      .control-chip {
+        animation: check-in linear both;
+        animation-timeline: --checks;
+      }
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 1080px) {
+    .checks-inner {
+      grid-template-columns: 1fr;
+      gap: 44px;
+    }
+  }
+
+  @media (max-width: 820px) {
+    .sec-checks {
+      padding: 0;
+    }
+
+    .checks-sticky {
+      padding: 60px 0 76px;
+    }
+  }
+</style>
