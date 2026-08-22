@@ -12,7 +12,7 @@ futures markets with a defined strategy, loss budget, and deterministic controls
 
 **[t3trade.pages.dev](https://t3trade.pages.dev)** · [Releases](https://github.com/TaraxioT/t3trade/releases) · [Docs](./docs/user/install.md)
 
-<img src="docs/media/t3trade-mission.png" alt="T3 Trade showing an ETH mission: the agent's reasoning, its fills, an open position with entry, stop and target, and three armed market watches" width="920" />
+<img src="docs/media/mission-live-panel.webp" alt="T3 Trade running an ETH/USD mission at 1,869.4 (+1.84%): a chart with target, entry and stop levels, two 5x long positions, and an agent log showing the agent's fills and armed watches" width="920" />
 
 <sub>One ETH mission: the agent's reasoning, its fills, the open position with
 its stop and target, and the watches that will wake it.</sub>

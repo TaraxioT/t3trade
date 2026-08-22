@@ -207,9 +207,16 @@ def main():
     # 4. Hero Screenshots & Media
     hero_targets = {
         f"{THEMED_DIR}/apps/marketing/public/t3trade-screenshot.webp": (2400, 1535, "WEBP"),
-        f"{THEMED_DIR}/docs/media/t3trade-mission.png": (1840, 1177, "PNG"),
     }
     save_image_sizes(HERO_ART, hero_targets)
+
+    # Real capture of the running app (2812x1560) replaces the banned AI-generated
+    # docs/media/t3trade-mission.png; copied verbatim, never resized or re-encoded.
+    LIVE_CAPTURE = "apps/marketing/public/capture/mission-live-panel-desktop.webp"
+    themed_capture = f"{THEMED_DIR}/docs/media/mission-live-panel.webp"
+    ensure_dir(themed_capture)
+    shutil.copyfile(LIVE_CAPTURE, themed_capture)
+    print(f"Copied: {themed_capture} (byte copy of {LIVE_CAPTURE})")
 
     # 5. Marketing Harness SVGs
     build_harness_svgs()
