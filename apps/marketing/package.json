@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build && node ./scripts/check-scroll-timelines.mjs",
+    "build": "node ./scripts/extract-app-tokens.mjs --check && node ./src/lib/beats.test.ts && astro build && node ./scripts/check-scroll-timelines.mjs",
     "preview": "astro preview",
     "typecheck": "astro check"
   },
@@ -16,6 +16,7 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.7",
     "@vercel/config": "^0.3.0",
+    "lucide-react": "0.564.0",
     "typescript": "catalog:"
   }
 }
