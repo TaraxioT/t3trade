@@ -299,6 +299,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
+  const minimapTrackRef = useRef<HTMLDivElement | null>(null);
   const disclosureAnchorKeyRef = useRef<string | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
@@ -467,7 +468,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const scrollTop = state.scroll ?? 0;
     const scrollBottom = scrollTop + (state.scrollLength ?? 0);
 
-    for (const item of minimapItems) {
+    let firstStripInView = false;
+    let lastStripInView = false;
+    for (let index = 0; index < minimapItems.length; index += 1) {
+      const item = minimapItems[index]!;
       const strip = minimapStripMap.get(item.id);
       if (!strip) {
         continue;
@@ -481,6 +485,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         rowTop + Math.max(1, rowHeight ?? 1) > scrollTop;
 
       strip.dataset.inView = inView ? "true" : "false";
+      if (index === 0) {
+        firstStripInView = inView;
+      }
+      if (index === minimapItems.length - 1) {
+        lastStripInView = inView;
+      }
+    }
+
+    // The rail ends fade only toward content that exists beyond the viewport,
+    // so the rail reads as a scroll indicator instead of free-floating marks.
+    // Dataset writes, like the strip flags above, skip the React render cycle.
+    // isAtEnd covers the composer end-space, where the last turn already sits
+    // above the viewport: that is the bottom of the thread, not "more below".
+    const track = minimapTrackRef.current;
+    if (track) {
+      track.dataset.moreAbove = firstStripInView ? "false" : "true";
+      track.dataset.moreBelow = lastStripInView || isAtEnd === true ? "false" : "true";
     }
   }, [contentInsetEndAdjustment, listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
 
@@ -632,6 +653,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             hasPersistentGutter={minimapHasPersistentGutter}
             hitStripWidth={minimapHitStripWidth}
             stripMap={minimapStripMap}
+            trackRef={minimapTrackRef}
             onSelect={(item) => {
               onManualNavigation();
               void listRef.current?.scrollToIndex({
@@ -734,12 +756,14 @@ function TimelineMinimap({
   hitStripWidth,
   items,
   stripMap,
+  trackRef,
   onSelect,
 }: {
   hasPersistentGutter: boolean;
   hitStripWidth: number;
   items: ReadonlyArray<TimelineMinimapItem>;
   stripMap: Map<string, HTMLSpanElement>;
+  trackRef: React.RefObject<HTMLDivElement | null>;
   onSelect: (item: TimelineMinimapItem) => void;
 }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -807,6 +831,28 @@ function TimelineMinimap({
       data-persistent-gutter={hasPersistentGutter ? "true" : "false"}
     >
       <div className="relative h-full w-full select-none">
+        {/* Full-height rail track: spans the scrollable extent like a scrollbar
+            lane, so the turn marks read as position, not decoration. The end
+            fades appear only while messages exist beyond that end (dataset
+            flags are maintained by the scroll handler without re-rendering). */}
+        <div
+          aria-hidden="true"
+          className="group/minimap-track pointer-events-none absolute inset-y-0 left-3 w-px"
+          data-more-above="false"
+          data-more-below="false"
+          data-minimap-track=""
+          ref={trackRef}
+        >
+          <div className="absolute inset-0 bg-border/15" />
+          <div
+            className="absolute -inset-x-[3px] top-0 h-10 bg-gradient-to-b from-background to-transparent opacity-0 transition-opacity duration-150 group-data-[more-above=true]/minimap-track:opacity-100"
+            data-minimap-fade="above"
+          />
+          <div
+            className="absolute -inset-x-[3px] bottom-0 h-10 bg-gradient-to-t from-background to-transparent opacity-0 transition-opacity duration-150 group-data-[more-below=true]/minimap-track:opacity-100"
+            data-minimap-fade="below"
+          />
+        </div>
         <button
           aria-label={`Jump to message: ${activeItem?.userText ?? "User message"}`}
           className={cn(
@@ -862,7 +908,6 @@ function TimelineMinimap({
           }}
           type="button"
         >
-          <div className="absolute top-0 left-3 h-full w-px bg-border/15" />
           {items.map((item, index) => {
             const top = `${resolveTimelineMinimapTopPercent(index, items.length)}%`;
             const activeDistance =

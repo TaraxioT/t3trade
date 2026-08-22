@@ -295,6 +295,37 @@ describe("MessagesTimeline", () => {
     expect(fadedMarkup).toContain("topbar-scroll-fade");
   });
 
+  it("renders the minimap as a full-height rail whose end fades start hidden", () => {
+    // Two user turns is the minimap's minimum; the rail must ship a track and
+    // both end fades, defaulted to "nothing beyond this end" until the scroll
+    // handler measures the viewport.
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          { ...buildUserTimelineEntry("First prompt."), id: "entry-1" },
+          {
+            ...buildUserTimelineEntry("Second prompt."),
+            id: "entry-2",
+            message: {
+              ...buildUserTimelineEntry("Second prompt.").message,
+              id: MessageId.make("message-2"),
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-minimap-track=""');
+    expect(markup).toContain('data-more-above="false"');
+    expect(markup).toContain('data-more-below="false"');
+    expect(markup).toContain('data-minimap-fade="above"');
+    expect(markup).toContain('data-minimap-fade="below"');
+    expect(markup).toContain("from-background");
+    // The old button-local hairline is gone; the track owns the line.
+    expect(markup).not.toContain('class="absolute top-0 left-3 h-full w-px bg-border/15"');
+  });
+
   it("keeps assistant changed-files headers sticky below the thread header", () => {
     const assistantMessageId = MessageId.make("message-assistant-with-files");
     const turnId = TurnId.make("turn-with-files");
