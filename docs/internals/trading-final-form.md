@@ -132,7 +132,7 @@ Upstream touches: `packages/contracts/src/trading.ts`, `orchestration.ts`, `ws.t
 - [ ] 2.1 Supervision and packaging. Pack `src/trading/archive/main.ts`; new
       `ArchiveSupervisor.ts` spawning the archiver as a Node child (PID captured at
       spawn, exponential backoff, stdout heartbeat); single-writer heartbeat lock.
-- [ ] 2.2 `FollowSetRegistry.ts` deriving followed markets; emits follow/unfollow
+- [x] 2.2 `FollowSetRegistry.ts` deriving followed markets; emits follow/unfollow
       to the archiver (control channel) and the watch evaluator.
 - [ ] 2.3 Collection changes: archive schema v2 with `venue` columns,
       `ARCHIVE_COINS` dies, WS candle subscriptions, the missing 3m interval,
