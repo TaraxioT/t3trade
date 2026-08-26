@@ -149,12 +149,14 @@ export function classifyFailure(failure: ClassifiableFailure): FailureRecovery {
     // The rest are not about the condition being wrong as such: the mission
     // ended underneath the call; the level is one the position or market has
     // already passed, which is a fact that changes; or the archive the metric
-    // needs is not running, which the fix is to start — not to stand down on.
+    // needs is not running or has fallen behind, which the fix is to start it —
+    // not to stand down on.
     case "TradingWatchRefusal":
       return failure.reason === "mission_not_found" ||
         failure.reason === "giveback_below_current_drawdown" ||
         failure.reason === "derived_already_true" ||
-        failure.reason === "derived_needs_archive"
+        failure.reason === "derived_needs_archive" ||
+        failure.reason === "derived_stale"
         ? permanent("read_state", `watch_${failure.reason}`)
         : permanent("stand_down", `watch_${failure.reason ?? "refused"}`);
 

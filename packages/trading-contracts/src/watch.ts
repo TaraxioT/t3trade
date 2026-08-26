@@ -558,6 +558,13 @@ export const WatchRefusalCode = Schema.Literals([
    */
   "derived_window_unavailable",
   /**
+   * The series is complete but no longer advancing — the newest stored bar
+   * closed more than three intervals ago, which is a stopped archiver rather
+   * than a quiet market. The number would be about the past, so it is not
+   * served. Start the archiver; the detail names how far behind it is.
+   */
+  "derived_stale",
+  /**
    * A derived condition whose params are structurally wrong: `params.metric`
    * does not match `metric`, a numeric param is missing/non-integer/out of
    * range, `sigma_ratio` has `fast >= slow`, `direction`/`value` are missing
@@ -632,7 +639,7 @@ const DERIVED_FLIP_METRICS: ReadonlySet<DerivedMetricName> = new Set(["funding_s
 
 /**
  * Validate a `derived` condition's params — pure, no archive access. The
- * archive-dependent refusals (`derived_needs_archive`,
+ * archive-dependent refusals (`derived_needs_archive`, `derived_stale`,
  * `derived_window_unavailable`, `derived_already_true`) belong to the handler
  * and the evaluator, not here.
  */

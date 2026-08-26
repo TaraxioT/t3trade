@@ -8,8 +8,13 @@
  * position entry time — each returns `{ status: "unavailable", kind, detail }`
  * where `kind` is what later maps onto a watch refusal code:
  * `archive` → derived_needs_archive, `window` → derived_window_unavailable,
- * `context` → an evaluation-time skip (no position, reference watch not fired,
- * zero variance).
+ * `stale` → derived_stale, `context` → an evaluation-time skip (no position,
+ * reference watch not fired, zero variance).
+ *
+ * `stale` is the guard against the failure the other three cannot see: an
+ * archiver that stopped writing leaves a complete, gap-free series whose last
+ * bar is hours old. Every candle-sourced metric checks it, so a dead archiver
+ * refuses instead of serving yesterday's number as today's.
  *
  * Math conventions shared by every formula here: population stdev is
  * sqrt(mean((x − x̄)²)); an EMA of `period` is seeded with the first close in
@@ -27,7 +32,7 @@ import { candlesInRange, fundingInRange, knownGaps } from "./read.ts";
 
 import type { BarInterval, DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 
-export type DerivedMetricUnavailabilityKind = "archive" | "window" | "context";
+export type DerivedMetricUnavailabilityKind = "archive" | "window" | "stale" | "context";
 
 export type DerivedMetricOutcome =
   | {
@@ -62,6 +67,12 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 const MINUTE_MS = 60_000;
 /** The archiver samples asset_ctx/book ~1/min; coverage older than this is slack. */
 const COVERAGE_SLACK_MS = 2 * MINUTE_MS;
+/**
+ * How many intervals the last stored bar may trail `now` before the series
+ * counts as stale. One interval is normal (the current bar has not closed),
+ * two absorbs a slow write; three means nobody is writing.
+ */
+const STALE_INTERVALS = 3;
 
 // ---------------------------------------------------------------------------
 // Local prepared-statement helpers, in the read.ts style
@@ -224,6 +235,46 @@ function returnsOf(closes: ReadonlyArray<number>): ReadonlyArray<number> {
   return returns;
 }
 
+/** The close time of the newest stored bar for a series, or `null` when none. */
+function lastCandleClose(db: ArchiveDatabase, coin: string, interval: string): number | null {
+  const rows = db.all<{ latest: number | null }>(
+    "SELECT MAX(t_close) AS latest FROM candles WHERE coin = ? AND interval = ?",
+    coin,
+    interval,
+  );
+  return rows[0]?.latest ?? null;
+}
+
+/**
+ * The freshness bound every candle-sourced metric shares. A series whose newest
+ * bar closed more than `STALE_INTERVALS` intervals ago is a stopped archiver,
+ * not a quiet market — the rows are all there and gap-free, so nothing else in
+ * this module would notice. Returns the refusal, or `null` when the series is
+ * current enough to answer with.
+ */
+function refuseOnStale(
+  db: ArchiveDatabase,
+  coin: string,
+  interval: BarInterval,
+  now: number,
+): DerivedMetricOutcome | null {
+  const latest = lastCandleClose(db, coin, interval);
+  if (latest === null) {
+    return null; // "no bars at all" is a window/archive answer the callers give.
+  }
+  const staleAfterMs = STALE_INTERVALS * INTERVAL_MS[interval];
+  if (now - latest <= staleAfterMs) {
+    return null;
+  }
+  return {
+    status: "unavailable",
+    kind: "stale",
+    detail:
+      `${coin} ${interval} archive stopped at ${latest}, ` +
+      `${Math.round((now - latest) / MINUTE_MS)}m before now — the archiver is not writing`,
+  };
+}
+
 /**
  * A candle lookback `fromT..now` is refused as `archive` when a recorded gap
  * overlaps it — the backfill already told us those bars never existed.
@@ -251,7 +302,8 @@ function refuseOnGap(
 
 /**
  * The last `barsNeeded` bars, refused as `window` when the archive holds
- * fewer. Callers that also need gap protection pass a non-null `gapFromT`.
+ * fewer and as `stale` when the series stopped advancing. Callers that also
+ * need gap protection pass a non-null `gapFromT`.
  */
 function requireBars(
   db: ArchiveDatabase,
@@ -263,6 +315,10 @@ function requireBars(
 ): { readonly bars: ReadonlyArray<CandleRow> } | DerivedMetricOutcome {
   const intervalMs = INTERVAL_MS[interval];
   const fromT = gapFromT ?? now - barsNeeded * intervalMs;
+  const staleRefusal = refuseOnStale(db, coin, interval, now);
+  if (staleRefusal !== null) {
+    return staleRefusal;
+  }
   const gapRefusal = refuseOnGap(db, coin, interval, fromT, now);
   if (gapRefusal !== null) {
     return gapRefusal;
@@ -508,6 +564,8 @@ export function derivedMetricValue(
           detail: "reference watch has not fired",
         };
       }
+      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now);
+      if (staleRefusal !== null) return staleRefusal;
       const gapRefusal = refuseOnGap(db, coin, params.interval, sinceMs, ctx.now);
       if (gapRefusal !== null) return gapRefusal;
       if (candleCount(db, coin, params.interval) === 0) {
@@ -530,6 +588,8 @@ export function derivedMetricValue(
           detail: "no open position to count bars since",
         };
       }
+      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now);
+      if (staleRefusal !== null) return staleRefusal;
       const gapRefusal = refuseOnGap(db, coin, params.interval, entryAt, ctx.now);
       if (gapRefusal !== null) return gapRefusal;
       if (candleCount(db, coin, params.interval) === 0) {
@@ -547,6 +607,8 @@ export function derivedMetricValue(
       // (Σ typical·v / Σ v over the bars that opened inside the current UTC
       // day), in population-σ units of the session's closes.
       const dayStart = Math.floor(ctx.now / DAY_MS) * DAY_MS;
+      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now);
+      if (staleRefusal !== null) return staleRefusal;
       const gapRefusal = refuseOnGap(db, coin, params.interval, dayStart, ctx.now);
       if (gapRefusal !== null) return gapRefusal;
       const bars = candlesInRange(db, coin, params.interval, dayStart, ctx.now);

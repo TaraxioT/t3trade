@@ -83,7 +83,7 @@ const ok = (outcome: DerivedMetricOutcome): number => {
 
 const unavailable = (
   outcome: DerivedMetricOutcome,
-  kind: "archive" | "window" | "context",
+  kind: "archive" | "window" | "stale" | "context",
   detailFragment: string,
 ): void => {
   assert.strictEqual(outcome.status, "unavailable");
@@ -493,13 +493,22 @@ describe("vwap_distance", () => {
     vwapBar(DAY_START + 2 * FIVE, 101, 97, 99, 20),
     vwapBar(DAY_START + 3 * FIVE, 105, 101, 103, 40),
   ];
+  // The session's own clock: just past its last bar's close. The freshness
+  // guard refuses a series that stopped advancing, so a session fixture has to
+  // be read at the time it actually describes.
+  const SESSION_NOW = DAY_START + 4 * FIVE;
 
   it("is the last close's signed distance from the session VWAP, in session sigmas", () => {
     withArchive((db) => {
       upsertCandles(db, session);
       assert.closeTo(
         ok(
-          derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+          derivedMetricValue(
+            db,
+            "BTC",
+            { metric: "vwap_distance", interval: "5m" },
+            { now: SESSION_NOW },
+          ),
         ),
         0.364527,
         1e-5,
@@ -514,7 +523,7 @@ describe("vwap_distance", () => {
         db,
         "BTC",
         { metric: "vwap_distance", interval: "5m" },
-        { now: NOW },
+        { now: SESSION_NOW },
       );
       assert.strictEqual(outcome.status, "ok");
       if (outcome.status !== "ok") return;
@@ -542,7 +551,7 @@ describe("vwap_distance", () => {
         db,
         "BTC",
         { metric: "vwap_distance", interval: "5m" },
-        { now: NOW },
+        { now: SESSION_NOW },
       );
       assert.strictEqual(outcome.status, "ok");
       if (outcome.status !== "ok") return;
@@ -559,7 +568,12 @@ describe("vwap_distance", () => {
       upsertCandles(db, [vwapBar(DAY_START - FIVE, 299, 100, 200, 1_000), ...session]);
       assert.closeTo(
         ok(
-          derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+          derivedMetricValue(
+            db,
+            "BTC",
+            { metric: "vwap_distance", interval: "5m" },
+            { now: SESSION_NOW },
+          ),
         ),
         0.364527,
         1e-5,
@@ -572,7 +586,14 @@ describe("vwap_distance", () => {
       // Bars exist, but only before today's UTC boundary.
       upsertCandles(db, [vwapBar(DAY_START - FIVE, 102, 100, 101, 10)]);
       unavailable(
-        derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+        // One bar into the new day: the prior bar is stale-free, so what is
+        // missing is the session, not the archiver.
+        derivedMetricValue(
+          db,
+          "BTC",
+          { metric: "vwap_distance", interval: "5m" },
+          { now: DAY_START + FIVE },
+        ),
         "window",
         "no 5m bars in the current UTC day",
       );
@@ -586,9 +607,80 @@ describe("vwap_distance", () => {
         session.map((bar) => ({ ...bar, v: 0 })),
       );
       unavailable(
-        derivedMetricValue(db, "BTC", { metric: "vwap_distance", interval: "5m" }, { now: NOW }),
+        derivedMetricValue(
+          db,
+          "BTC",
+          { metric: "vwap_distance", interval: "5m" },
+          { now: SESSION_NOW },
+        ),
         "context",
         "zero volume",
+      );
+    });
+  });
+
+  it("refuses a session whose bars stopped advancing", () => {
+    withArchive((db) => {
+      upsertCandles(db, session);
+      // Same complete, gap-free session, read an hour after its last bar: the
+      // archiver died, and the VWAP would describe a market that has moved.
+      unavailable(
+        derivedMetricValue(
+          db,
+          "BTC",
+          { metric: "vwap_distance", interval: "5m" },
+          { now: SESSION_NOW + HOUR },
+        ),
+        "stale",
+        "the archiver is not writing",
+      );
+    });
+  });
+});
+
+describe("the freshness guard", () => {
+  const params: DerivedMetricParams = {
+    metric: "sigma_distance",
+    interval: "1m",
+    period: 3,
+    basis: "mean",
+  };
+  const bars = [
+    candle(NOW - 4 * MINUTE, 100),
+    candle(NOW - 3 * MINUTE, 101),
+    candle(NOW - 2 * MINUTE, 103),
+  ];
+
+  it("serves a series whose last bar is within three intervals", () => {
+    withArchive((db) => {
+      upsertCandles(db, bars);
+      assert.strictEqual(derivedMetricValue(db, "BTC", params, { now: NOW }).status, "ok");
+    });
+  });
+
+  it("refuses the same complete series once it stops advancing", () => {
+    withArchive((db) => {
+      upsertCandles(db, bars);
+      unavailable(
+        derivedMetricValue(db, "BTC", params, { now: NOW + 10 * MINUTE }),
+        "stale",
+        "the archiver is not writing",
+      );
+    });
+  });
+
+  it("counts bars since a reference only while the series is current", () => {
+    withArchive((db) => {
+      upsertCandles(db, bars);
+      unavailable(
+        derivedMetricValue(
+          db,
+          "BTC",
+          { metric: "bars_since", interval: "1m", sinceWatchId: "watch-1" },
+          { now: NOW + 10 * MINUTE, sinceMs: NOW - 5 * MINUTE },
+        ),
+        "stale",
+        "the archiver is not writing",
       );
     });
   });

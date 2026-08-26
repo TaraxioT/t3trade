@@ -109,7 +109,8 @@ export interface DerivedMetricOk {
 /**
  * A derived metric the archive could not serve. `kind` is the refusal the
  * evaluator maps onto: `archive` → derived_needs_archive, `window` →
- * derived_window_unavailable, `context` → an evaluation-time skip.
+ * derived_window_unavailable, `stale` → derived_stale, `context` → an
+ * evaluation-time skip.
  */
 export interface DerivedMetricUnavailable {
   readonly status: "unavailable";
@@ -188,6 +189,12 @@ export class TradingMarketArchive extends Context.Service<
 >()("t3/trading/TradingMarketArchive") {}
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
+/**
+ * How far behind the scan's mark may fall before it is withheld: two 5m bars.
+ * One bar is the normal trail of an archive-only read; two means nobody wrote
+ * the last one.
+ */
+const SCAN_MARK_STALE_MS = 2 * 5 * 60_000;
 
 /**
  * Build the service against an explicit archive path. Tests pass a temp
@@ -363,8 +370,17 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             const round2 = (value: number): number => Math.round(value * 100) / 100;
             // Mark is the last archived 5m close — the scan is an archive-only
             // key and makes no live exchange call, so it can trail the tape by
-            // up to one bar.
-            entry["mark"] = round2(last.c);
+            // up to one bar. Two bars behind is no longer a trailing tape but a
+            // stopped archiver, and a price nobody should read as the market's.
+            const markAgeMs = now - last.tClose;
+            if (markAgeMs > SCAN_MARK_STALE_MS) {
+              missing.push(
+                `last 5m bar closed ${Math.round(markAgeMs / 60_000)}m ago — ` +
+                  "mark withheld, the archiver is not writing",
+              );
+            } else {
+              entry["mark"] = round2(last.c);
+            }
             if (first.o > 0) {
               entry["change24hPct"] = round2(((last.c - first.o) / first.o) * 100);
             } else {

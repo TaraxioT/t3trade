@@ -2769,6 +2769,9 @@ const handlers = {
           if (result.kind === "window") {
             return refuseDerived("derived_window_unavailable", result.reason);
           }
+          if (result.kind === "stale") {
+            return refuseDerived("derived_stale", result.reason);
+          }
           return refuseDerived("derived_params_invalid", result.reason);
         }
 

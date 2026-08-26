@@ -262,6 +262,44 @@ it.effect("a thin 24h candle window names its reason per coin, and the key still
   }),
 );
 
+it.effect("a mark more than two bars behind is withheld, not published", () =>
+  Effect.gen(function* () {
+    const dir = tempDir("market-archive-stale-mark-");
+    const path = NodePath.join(dir, "archive.sqlite");
+    const writer = openArchiveDatabase(path);
+    // A complete, gap-free run of 5m bars that simply stopped an hour ago —
+    // the shape a dead archiver leaves behind. The last close is a real price
+    // from a market that has since moved, so the scan must not serve it.
+    const FIVE = 5 * MINUTE;
+    const bar = (t: number): CandleRow => ({
+      coin: "SOL",
+      interval: "5m",
+      t,
+      tClose: t + FIVE - 1,
+      o: 141,
+      h: 142,
+      l: 140,
+      c: 141,
+      v: 12.5,
+      n: 30,
+    });
+    upsertCandles(
+      writer,
+      [12, 11, 10].map((back) => bar(NOW - back * FIVE)),
+    );
+    writer.close();
+
+    const archive = makeTradingMarketArchive(path);
+    const scan = yield* archive.scan({ now: NOW });
+    assert.strictEqual(scan.status, "ok");
+    if (scan.status !== "ok") return;
+    const sol = scan.coins.find((coin) => coin.coin === "SOL");
+    assert.ok(sol !== undefined);
+    assert.equal(sol.mark, undefined);
+    assert.include(sol.unavailable, "mark withheld, the archiver is not writing");
+  }),
+);
+
 it.effect("asking for more rows than exist returns what exists", () =>
   Effect.gen(function* () {
     const dir = tempDir("market-archive-short-");
