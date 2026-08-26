@@ -87,23 +87,30 @@ per file per batch.
       stored open older than ~3× interval → unavailable, reason `derived_stale`);
       `scan`'s mark gets a 2-bar freshness bound. **Accept:** with a stopped
       archiver all six lookback metrics refuse rather than serve stale values.
-- [ ] 0.2 Mission integrity. `TradingMissionService.ts`,
+- [x] 0.2 Mission integrity. `TradingMissionService.ts`,
       `TradingMissionSweep.ts`, `TradingMissionReactor.ts`. Boot sweep revokes
       orphans, never deletes; `deleteMission` covers the 8 missing tables;
       `thread.deleted` uses the close-then-revoke path. **Accept:** a projection
       reset leaves mission history intact; deleting a thread with an open position
       closes it and frees the market.
-- [ ] 0.3 Explicit arming + key hygiene. `AutoMissionConfig.ts`,
+- [x] 0.3 Explicit arming + key hygiene. `AutoMissionConfig.ts`,
       `TradingAutoMission.ts`, the `ws.ts` gate, `InterimSignerConfig.ts`.
       Auto-mission defaults off; the signer key refuses group/other-readable file
       permissions. **Accept:** an armed server creates no mission on a new thread's
       first message.
-- [ ] 0.4 Wire `agent_unavailable`. `TradingTurnCoordinator.ts`,
+- [x] 0.4 Wire `agent_unavailable`. `TradingTurnCoordinator.ts`,
       `TradingMissionService.ts`. Repeated failed wakes suspend the mission; the two
       never-written `blockedReason`s are wired or removed. **Accept:** killing the
       provider surfaces `agent_unavailable` within ~1 minute.
 
-Upstream touches: `ws.ts` (0.3) only.
+Upstream touches: none in the end — 0.3's gate is entirely inside
+`AutoMissionConfig`, so `ws.ts` was left alone.
+
+Two decisions made during execution: the boot sweep **revokes** orphans rather
+than deleting them, and reads orphanhood off a `thread.deleted` event in the log
+rather than off `projection_threads`; and the blocked-reason union lost
+`account_unavailable` and `reconciliation_failure`, which nothing wrote —
+Phase 7 re-adds the first when the account gate lands.
 
 ### Phase 1 — Market identity groundwork
 
