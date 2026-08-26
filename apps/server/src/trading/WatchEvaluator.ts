@@ -47,7 +47,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
 import { INTERVAL_MS } from "./archive/config.ts";
 import type { MarketWatch, PersistedWatch } from "./Schemas.ts";
-import { TradingMarket, TradingTimeframe } from "./Schemas.ts";
+import { TradingTimeframe } from "./Schemas.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
@@ -59,8 +59,16 @@ import { TradingWatchService } from "./TradingWatchService.ts";
 /** The market assumed for a candle delivery that does not name its coin. */
 const DEFAULT_MARKET = "ETH";
 
-/** Every market a mission may be mandated to trade (§10.1). */
-const MARKETS = TradingMarket.literals;
+/**
+ * The markets this evaluator subscribes candle streams for.
+ *
+ * Hardcoded, and known to be wrong: a mission may now be mandated on any asset
+ * the venue lists, and a candle-close watch on anything outside this pair is
+ * only evaluated by the slow sweep. The follow-set registry replaces this list
+ * with the assets attention is actually on — until then, widening it would
+ * multiply subscriptions by the whole universe.
+ */
+const MARKETS: ReadonlyArray<string> = ["ETH", "BTC"];
 
 /**
  * The five §13 direct candle intervals. Subscribing to all of them keeps the

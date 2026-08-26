@@ -36,7 +36,8 @@ export type TradingId = typeof TradingId.Type;
  * undecodable, which killed every wakeup that carried it.
  *
  * Use this for what the exchange reports back; use `TradingMarket` for what the
- * mission asks for.
+ * mission asks for. They are the same shape now that assets are opaque; the
+ * distinction that remains is intent, and the names carry it.
  */
 export const ExchangeMarket = TrimmedString.check(Schema.isNonEmpty());
 export type ExchangeMarket = typeof ExchangeMarket.Type;
@@ -69,9 +70,80 @@ export type Price = typeof Price.Type;
 export const EvmAddress = Schema.TemplateLiteral(["0x", Schema.String]);
 export type EvmAddress = typeof EvmAddress.Type;
 
-/** The markets a mission may be mandated to trade. Declared type: `"ETH" | "BTC"`. */
-export const TradingMarket = Schema.Literals(["ETH", "BTC"]);
+/**
+ * A venue T3 Trade can trade on. Declared type: `"hyperliquid"`.
+ *
+ * One member, and the axis exists anyway: every market identity carries its
+ * venue so that adding a second one is a data question rather than a rewrite.
+ * No venue abstraction is built until there is a second venue to abstract
+ * over — the literal union is the whole of it.
+ */
+export const TradingVenue = Schema.Literals(["hyperliquid"]);
+export type TradingVenue = typeof TradingVenue.Type;
+
+/** The venue every market belongs to until a second one arrives. */
+export const DEFAULT_TRADING_VENUE: TradingVenue = "hyperliquid";
+
+/**
+ * An asset id, in whatever form its venue names it. Declared type: `string`.
+ *
+ * This used to be `"ETH" | "BTC"`, which was the whole of what a mission could
+ * be mandated to trade — two literals standing in for a universe of nearly two
+ * hundred. Validation moved to where the answer actually lives: Hyperliquid's
+ * `MarketResolver` already resolves the live universe, so it decides whether an
+ * asset exists, and shared code treats the id as opaque. A future venue names
+ * its assets its own way (a chain and a token address, say) without this schema
+ * having an opinion.
+ */
+export const TradingMarket = TrimmedString.check(Schema.isNonEmpty());
 export type TradingMarket = typeof TradingMarket.Type;
 
-/** The market a mission trades when none was chosen at creation. */
+/** The asset a mission trades when none was chosen at creation. */
 export const DEFAULT_TRADING_MARKET: TradingMarket = "ETH";
+
+/**
+ * Which asset on which venue — the identity every market-scoped row, contract,
+ * and read model carries.
+ *
+ * Persisted as two columns rather than one composite string, so a query can
+ * ask about a venue or an asset without parsing. The pair is the identity: two
+ * venues may well name an asset the same thing and mean different markets.
+ */
+export const MarketRef = Schema.Struct({
+  venue: TradingVenue,
+  asset: TradingMarket,
+});
+export type MarketRef = typeof MarketRef.Type;
+
+/** The `MarketRef` for an asset on the default venue. */
+export const marketRef = (asset: TradingMarket): MarketRef => ({
+  venue: DEFAULT_TRADING_VENUE,
+  asset,
+});
+
+/**
+ * Read a `MarketRef` out of persisted JSON that may predate the venue axis.
+ *
+ * Wakes, plans, and watches carry market strings written before venues
+ * existed; a bare `"ETH"` means Hyperliquid, because that is the only venue
+ * there has ever been. New payloads carry the pair and decode unchanged.
+ */
+export const decodeMarketRef = (value: unknown): MarketRef | null => {
+  if (typeof value === "string" && value.trim().length > 0) return marketRef(value.trim());
+  if (value === null || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const asset = record["asset"];
+  if (typeof asset !== "string" || asset.trim().length === 0) return null;
+  const venue = record["venue"];
+  return {
+    venue: venue === undefined ? DEFAULT_TRADING_VENUE : (venue as TradingVenue),
+    asset: asset.trim(),
+  };
+};
+
+/** `venue:asset`, for a log line or a map key. Never for storage. */
+export const formatMarketRef = (ref: MarketRef): string => `${ref.venue}:${ref.asset}`;
+
+/** Whether two refs name the same market. */
+export const sameMarket = (left: MarketRef, right: MarketRef): boolean =>
+  left.venue === right.venue && left.asset === right.asset;

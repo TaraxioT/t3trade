@@ -477,6 +477,24 @@ const make = Effect.gen(function* () {
 
     const harness = yield* resolveHarnessBinding(threadId);
 
+    // The asset has to exist on the venue. Two literals used to make this the
+    // schema's job; now that a mission may name any listed asset, the live
+    // universe is the only thing that knows, and asking it at creation is much
+    // cheaper than discovering it when the first order is refused.
+    if (market !== undefined) {
+      const resolved = yield* gateway
+        .resolveMarket(market)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+      if (resolved === null || !resolved.available) {
+        yield* Effect.logWarning("trading mission creation refused: no such market", {
+          missionId,
+          threadId,
+          market,
+        });
+        return;
+      }
+    }
+
     // No stated capital means "size the mandate from the account". Resolved
     // here rather than in `TradingMissionService` because this is where the
     // exchange gateway already is; the service stays SQL-only. See
