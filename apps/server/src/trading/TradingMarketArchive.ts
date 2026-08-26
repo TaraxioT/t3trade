@@ -32,6 +32,7 @@ import { openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./archive/db.
 import { derivedMetricValue, type DerivedMetricUnavailabilityKind } from "./archive/derived.ts";
 import type { FundingRow } from "./archive/funding.ts";
 
+import type { CandleRow } from "./archive/candles.ts";
 import type { DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import {
   assetCtxAtOrBefore,
@@ -176,6 +177,21 @@ export interface TradingMarketArchiveShape {
     readonly positionEntryAt?: number;
     readonly sinceMs?: number;
   }) => Effect.Effect<DerivedMetricResult>;
+  /**
+   * Stored bars for a series inside a closed window, oldest first.
+   *
+   * The exchange serves roughly the most recent 5,000 bars and nothing older,
+   * so the chart of a trade closed a week ago can only come from here. An
+   * empty result means the archive was not recording then, which the caller
+   * answers by asking the exchange — not by drawing an empty chart.
+   */
+  readonly candlesInWindow: (input: {
+    readonly coin: string;
+    readonly interval: string;
+    readonly fromT: number;
+    readonly toT: number;
+    readonly maxBars: number;
+  }) => Effect.Effect<ReadonlyArray<CandleRow>>;
   readonly scan: (input: { readonly now: number }) => Effect.Effect<ScanResult>;
   readonly sessionLevels: (input: {
     readonly coin: string;
@@ -347,6 +363,15 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             : { status: "unavailable", kind: "archive", reason: result.reason },
       ),
 
+    candlesInWindow: ({ coin, interval, fromT, toT, maxBars }) =>
+      withHandle((db) => {
+        const bars = candlesInRange(db, coin, interval, fromT, toT);
+        // Newest bars win when the window holds more than the caller asked
+        // for: a chart is read right-to-left.
+        return bars.length <= maxBars ? bars : bars.slice(bars.length - maxBars);
+      }, "archive file not found").pipe(
+        Effect.map((result) => (Array.isArray(result) ? result : [])),
+      ),
     scan: ({ now }) =>
       withHandle((db) => {
         // One compact digest per archived coin, from the coin list the archive

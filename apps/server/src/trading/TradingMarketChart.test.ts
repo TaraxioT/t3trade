@@ -24,6 +24,7 @@ import type {
   MarketHistory,
 } from "@t3tools/trading-contracts/market";
 
+import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { TradingMarketChart, TradingMarketChartLive } from "./TradingMarketChart.ts";
 
 const freshness = {
@@ -92,10 +93,21 @@ const stubGateway = Layer.succeed(HyperliquidGateway, {
   getTakerFeeRateBps: unusedRead,
 } as unknown as (typeof HyperliquidGateway)["Service"]);
 
+/**
+ * An archive holding nothing, which is what a live (unwindowed) read sees
+ * anyway: these cases are about the gateway pair and the cache window.
+ */
+const emptyArchive = Layer.succeed(TradingMarketArchive, {
+  candlesInWindow: () => Effect.succeed([]),
+} as unknown as (typeof TradingMarketArchive)["Service"]);
+
 /** The real chart layer on the stub gateway, plus the TestClock the TTL reads. */
 const testLayer = () =>
   Effect.provide(
-    Layer.merge(TradingMarketChartLive.pipe(Layer.provide(stubGateway)), TestClock.layer()),
+    Layer.merge(
+      TradingMarketChartLive.pipe(Layer.provide(Layer.merge(stubGateway, emptyArchive))),
+      TestClock.layer(),
+    ),
   );
 
 it.effect("serves a cached view to concurrent reads without re-reading the gateway", () =>
@@ -270,5 +282,93 @@ it.effect("maps the gateway pair into the view, dropping closeTime/volume/trades
 
     // observedAt is the gateway's UnixMillis freshness stamp, rendered as ISO-8601.
     assert.equal(view.observedAt, DateTime.formatIso(DateTime.makeUnsafe(freshness.observedAt)));
+  }).pipe(testLayer()),
+);
+
+it.effect("draws a closed window from the archive instead of asking the exchange", () =>
+  Effect.gen(function* () {
+    // The exchange serves roughly the last 5,000 bars. A trade closed a week
+    // ago is outside that window entirely, so a post-mortem chart that asked
+    // the exchange got nothing — the archive is the only thing that has it.
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    historyCalls = 0;
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({
+      market: "ETH",
+      interval: "1m",
+      maxBars: 10,
+      startTime: 1_600_000_000_000,
+      endTime: 1_600_000_600_000,
+    });
+
+    assert.isNotNull(view);
+    assert.deepEqual(
+      view?.candles.map((bar) => bar.close),
+      [10, 11],
+    );
+    assert.equal(historyCalls, 0);
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        TradingMarketChartLive.pipe(
+          Layer.provide(
+            Layer.merge(
+              stubGateway,
+              Layer.succeed(TradingMarketArchive, {
+                candlesInWindow: () =>
+                  Effect.succeed([
+                    {
+                      coin: "ETH",
+                      interval: "1m",
+                      t: 1,
+                      tClose: 2,
+                      o: 9,
+                      h: 11,
+                      l: 8,
+                      c: 10,
+                      v: 1,
+                      n: 1,
+                    },
+                    {
+                      coin: "ETH",
+                      interval: "1m",
+                      t: 3,
+                      tClose: 4,
+                      o: 10,
+                      h: 12,
+                      l: 9,
+                      c: 11,
+                      v: 1,
+                      n: 1,
+                    },
+                  ]),
+              } as unknown as (typeof TradingMarketArchive)["Service"]),
+            ),
+          ),
+        ),
+        TestClock.layer(),
+      ),
+    ),
+  ),
+);
+
+it.effect("falls back to the exchange when the archive was not recording then", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    historyCalls = 0;
+
+    const chart = yield* TradingMarketChart;
+    yield* chart.read({
+      market: "ETH",
+      interval: "1m",
+      maxBars: 10,
+      startTime: 1_600_000_000_000,
+      endTime: 1_600_000_600_000,
+    });
+
+    assert.equal(historyCalls, 1);
   }).pipe(testLayer()),
 );

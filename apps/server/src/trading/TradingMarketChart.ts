@@ -32,6 +32,7 @@ import * as Ref from "effect/Ref";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import type { TradingMarketChartView } from "@t3tools/contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
+import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 
 export interface TradingMarketChartReadInput {
   readonly market: string;
@@ -76,6 +77,7 @@ interface CachedChart {
 
 export const makeTradingMarketChart = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
+  const archive = yield* TradingMarketArchive;
   const cache = yield* Ref.make(new Map<string, CachedChart>());
 
   const read = (input: TradingMarketChartReadInput): Effect.Effect<TradingMarketChartView | null> =>
@@ -98,20 +100,47 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         ),
         Effect.orElseSucceed(() => null),
       );
-      const history = yield* gateway
-        .getMarketHistory({
-          market: market as TradingMarket,
-          interval,
-          maxBars,
-          ...(startTime !== undefined ? { startTime } : {}),
-          ...(endTime !== undefined ? { endTime } : {}),
-        })
-        .pipe(
-          Effect.tapError((cause) =>
-            Effect.logDebug("trading chart history read failed", { market, interval, cause }),
-          ),
-          Effect.orElseSucceed(() => null),
-        );
+      // A windowed read is the post-mortem chart of a finished trade, and the
+      // exchange serves roughly the most recent 5,000 bars and nothing older.
+      // The archive is the only thing that still holds a week-old window, so
+      // it is asked first; an empty answer means it was not recording then,
+      // and the exchange gets the question after all.
+      const archived =
+        startTime === undefined || endTime === undefined
+          ? []
+          : yield* archive.candlesInWindow({
+              coin: market,
+              interval,
+              fromT: startTime,
+              toT: endTime,
+              maxBars,
+            });
+
+      const history =
+        archived.length > 0
+          ? {
+              candles: archived.map((bar) => ({
+                openTime: bar.t,
+                open: bar.o,
+                high: bar.h,
+                low: bar.l,
+                close: bar.c,
+              })),
+            }
+          : yield* gateway
+              .getMarketHistory({
+                market: market as TradingMarket,
+                interval,
+                maxBars,
+                ...(startTime !== undefined ? { startTime } : {}),
+                ...(endTime !== undefined ? { endTime } : {}),
+              })
+              .pipe(
+                Effect.tapError((cause) =>
+                  Effect.logDebug("trading chart history read failed", { market, interval, cause }),
+                ),
+                Effect.orElseSucceed(() => null),
+              );
       if (snapshot === null || history === null) {
         // Serve the last good view rather than blanking the surface. Only the
         // freshness claim changes — everything drawn is what the exchange last

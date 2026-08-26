@@ -87,7 +87,12 @@ export const TradingCoreLayerLive = Layer.mergeAll(
   TradingMarketPriceLive.pipe(Layer.provide(gatewayWithRead)),
   // The chart surface pairs the same live snapshot with candle history; it
   // shares the read gateway so the two never disagree on freshness.
-  TradingMarketChartLive.pipe(Layer.provide(gatewayWithRead)),
+  // The chart reads a closed window out of the archive before it asks the
+  // exchange, which only serves the last ~5,000 bars.
+  TradingMarketChartLive.pipe(
+    Layer.provide(gatewayWithRead),
+    Layer.provide(TradingMarketArchiveLive),
+  ),
   // What the venue lists, for the picker and the watchlist search. Same read
   // gateway again, so the universe and a resolve of one asset never disagree.
   TradingUniverseLive.pipe(Layer.provide(gatewayWithRead)),
