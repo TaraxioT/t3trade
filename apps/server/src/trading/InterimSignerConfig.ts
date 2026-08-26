@@ -31,6 +31,11 @@
  * deliberate: this is the only code path that spends testnet capital, so the
  * gate must fail closed until the owner explicitly arms it.
  *
+ * The key file must be readable by its owner alone. Any group or other
+ * permission bit is refused with `insecure_key_permissions` — loudly, because
+ * a key the rest of the machine can read is a different problem from no key,
+ * and the fix is `chmod 600`.
+ *
  * The key never touches `trading_accounts.master_wallet_json` (whose schema
  * is key-less and Privy-bound by design - §10.1). It is held as raw bytes in
  * memory and never persisted by this module.
@@ -48,20 +53,35 @@ export class SecretFileReadError extends Schema.TaggedErrorClass<SecretFileReadE
   { path: Schema.String, cause: Schema.Unknown },
 ) {}
 
+/** A secret file's contents and the POSIX permission bits it was stored with. */
+export interface SecretFile {
+  readonly text: string;
+  /** The low 9 bits of the file mode, or `null` where they mean nothing. */
+  readonly mode: number | null;
+}
+
 /**
- * Read a file as UTF-8 text. Read errors (absence, perms) are caught upstream.
+ * Read a secret file as UTF-8 text, along with its permission bits. Read errors
+ * (absence, perms) are caught upstream.
  *
  * `tryPromise`, not `promise`: a rejection from `promise` becomes a DEFECT, and
  * a defect walks straight past the `orElseSucceed` that turns an absent key
  * file into "unarmed". With `promise` the fail-closed fallback never fired —
  * a missing file killed the caller instead.
  *
+ * Windows reports a mode that says nothing about who can read the file, so it
+ * reports `null` there and the permission check is skipped rather than faked.
+ *
  * Exported so the regression test can drive the real reader; a fake one is
  * exactly what let the defect through.
  */
-export const readFileText = (path: string): Effect.Effect<string, SecretFileReadError> =>
+export const readFileText = (path: string): Effect.Effect<SecretFile, SecretFileReadError> =>
   Effect.tryPromise({
-    try: () => import("node:fs/promises").then((fs) => fs.readFile(path, "utf8")),
+    try: () =>
+      import("node:fs/promises").then(async (fs) => {
+        const [text, stat] = await Promise.all([fs.readFile(path, "utf8"), fs.stat(path)]);
+        return { text, mode: process.platform === "win32" ? null : stat.mode & 0o777 };
+      }),
     catch: (cause) => new SecretFileReadError({ path, cause }),
   });
 
@@ -73,6 +93,7 @@ export class InterimSignerError extends Schema.TaggedErrorClass<InterimSignerErr
       "interim_signer_not_configured",
       "invalid_private_key",
       "address_mismatch",
+      "insecure_key_permissions",
     ]),
   },
 ) {
@@ -176,7 +197,7 @@ export const resolveInterimSignerFromEnv = (
  * `readFile` is injected so this stays pure and testable.
  */
 export const resolveInterimSignerFromFile = (
-  readFile: (path: string) => Effect.Effect<string, SecretFileReadError>,
+  readFile: (path: string) => Effect.Effect<SecretFile, SecretFileReadError>,
   secretsDir: string,
   explicitAddress?: string,
 ): Effect.Effect<Option.Option<InterimSigner>, InterimSignerError> =>
@@ -184,12 +205,20 @@ export const resolveInterimSignerFromFile = (
     const path = `${secretsDir}/${INTERIM_SIGNER_SECRET_NAME}.bin`;
     // A read failure (file absent, perms, etc.) means the file source is not
     // armed → none. orElseSucceed absorbs any read error into the absent branch.
-    const keyRaw = yield* readFile(path).pipe(
-      Effect.map((text) => Option.some(text)),
-      Effect.orElseSucceed(() => Option.none<string>()),
+    const file = yield* readFile(path).pipe(
+      Effect.map((read) => Option.some(read)),
+      Effect.orElseSucceed(() => Option.none<SecretFile>()),
     );
-    if (Option.isNone(keyRaw)) return Option.none();
-    const signer = yield* buildSigner(keyRaw.value, explicitAddress);
+    if (Option.isNone(file)) return Option.none();
+    // A key any other account on the machine can read is not a key. This one
+    // spends real capital, so it refuses loudly rather than quietly unarming:
+    // "not armed" and "armed with a key everyone can read" need different
+    // answers, and only one of them is fixed by a chmod.
+    const { mode } = file.value;
+    if (mode !== null && (mode & 0o077) !== 0) {
+      return yield* new InterimSignerError({ reason: "insecure_key_permissions" });
+    }
+    const signer = yield* buildSigner(file.value.text, explicitAddress);
     return Option.some(signer);
   });
 
@@ -199,7 +228,7 @@ export const resolveInterimSignerFromFile = (
  */
 export const resolveInterimSigner = (
   env: Record<string, string | undefined>,
-  readFile: (path: string) => Effect.Effect<string, SecretFileReadError>,
+  readFile: (path: string) => Effect.Effect<SecretFile, SecretFileReadError>,
   secretsDir: string,
 ): Effect.Effect<Option.Option<InterimSigner>, InterimSignerError> =>
   Effect.gen(function* () {

@@ -8,20 +8,20 @@
  * lab, where a testing loop is "open a thread, watch it trade" repeated dozens
  * of times a day.
  *
- * So: on a server whose interim signer is armed, a thread gets a mission on its
- * FIRST MESSAGE — that message is the mandate (see `TradingAutoMission`) — under
- * the POC authority, with the standing operating note appended. Settling the
- * thread revokes it again (see `TradingMissionReactor`), which makes the
- * sidebar's Settle the way out.
+ * So: with the shortcut on, a thread gets a mission on its FIRST MESSAGE —
+ * that message is the mandate (see `TradingAutoMission`) — under the POC
+ * authority, with the standing operating note appended. Settling or deleting
+ * the thread revokes it again (see `TradingMissionReactor`).
  *
- * Arming the signer is the opt-in. It is already the deliberate, one-time act
- * that turns a checkout into a trading lab — nothing here can spend anything
- * without it, and a server that has never been armed sees no behaviour change.
- * The env knobs override that default and adjust what gets created:
+ * The shortcut is off unless `T3_TRADES_AUTO_MISSION=1` says otherwise. It used
+ * to default on for any server with an armed signer, which meant that arming a
+ * signer — a one-time act done for entirely different reasons — silently turned
+ * the next message anyone typed into a live trading mandate. Creating authority
+ * to spend money is not something to infer from a key being present.
  *
- *   - `T3_TRADES_AUTO_MISSION`             — `0` disables the shortcut on an
- *                                            armed server; `1` enables it on an
- *                                            unarmed one.
+ *   - `T3_TRADES_AUTO_MISSION`             — `1` turns the shortcut on. Any
+ *                                            other value, including unset,
+ *                                            leaves it off.
  *   - `T3_TRADES_AUTO_MISSION_WORKSPACE`   — optional. Narrows the shortcut to
  *                                            threads in the project at this
  *                                            workspace root; unset means every
@@ -47,8 +47,6 @@
 import { Context, Effect, Layer, Option } from "effect";
 
 import { POC_STANDING_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
-
-import { InterimSignerConfig } from "./InterimSignerConfig.ts";
 
 /** A resolved auto-mission target: where it applies and what it creates. */
 export interface AutoMissionSettings {
@@ -91,9 +89,6 @@ export class AutoMissionConfig extends Context.Service<
 /**
  * Read the settings out of an env bag. Exposed for tests.
  *
- * `signerArmed` is the default answer to "is this a trading lab"; the explicit
- * knob overrides it in both directions.
- *
  * A capital value that is not a positive finite number resolves to `null` —
  * the same as unset, so the mandate is sized from the account. This is a
  * convenience knob, and refusing to start the whole feature over a typo'd
@@ -101,11 +96,8 @@ export class AutoMissionConfig extends Context.Service<
  */
 export const resolveAutoMission = (
   env: Record<string, string | undefined>,
-  signerArmed: boolean,
 ): Option.Option<AutoMissionSettings> => {
-  const knob = env.T3_TRADES_AUTO_MISSION?.trim();
-  const enabled = knob === "0" ? false : knob === "1" ? true : signerArmed;
-  if (!enabled) return Option.none();
+  if (env.T3_TRADES_AUTO_MISSION?.trim() !== "1") return Option.none();
 
   const capital = Number(env.T3_TRADES_AUTO_MISSION_CAPITAL_USD);
   const allocatedCapitalUsd = Number.isFinite(capital) && capital > 0 ? capital : null;
@@ -127,21 +119,12 @@ export const resolveAutoMission = (
 };
 
 /**
- * Live layer reading `process.env` and the signer. Resolved per call, not at
- * build, so arming the signer or setting the knob takes effect without a
- * restart. A signer that fails to resolve (a malformed key) counts as unarmed:
- * a broken gate must not be the thing that starts missions.
+ * Live layer reading `process.env`. Resolved per call, not at build, so setting
+ * the knob takes effect without a restart.
  */
-export const AutoMissionConfigLive = Layer.effect(
+export const AutoMissionConfigLive = Layer.succeed(
   AutoMissionConfig,
-  Effect.gen(function* () {
-    const signer = yield* InterimSignerConfig;
-    const armed = signer.resolve.pipe(
-      Effect.map(Option.isSome),
-      Effect.orElseSucceed(() => false),
-    );
-    return AutoMissionConfig.of({
-      resolve: armed.pipe(Effect.map((isArmed) => resolveAutoMission(process.env, isArmed))),
-    });
+  AutoMissionConfig.of({
+    resolve: Effect.sync(() => resolveAutoMission(process.env)),
   }),
 );

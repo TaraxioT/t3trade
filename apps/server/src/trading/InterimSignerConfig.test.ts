@@ -1,7 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off - temp files for a temp key.
 import { Effect, Option } from "effect";
 import { describe, expect, it } from "@effect/vitest";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import {
+  INTERIM_SIGNER_SECRET_NAME,
   readFileText,
   resolveInterimSignerFromEnv,
   resolveInterimSignerFromFile,
@@ -87,6 +92,37 @@ describe("resolveInterimSignerFromFile with the real reader", () => {
         "/nonexistent/t3-trades-secrets",
       );
       expect(resolved).toEqual(Option.none());
+    }),
+  );
+
+  // A key the rest of the machine can read spends the same money. Refusing is
+  // deliberate where absence is silent: the two need different answers, and
+  // only one of them is fixed by a chmod.
+  it.effect("refuses a key file other accounts can read", () =>
+    Effect.gen(function* () {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-signer-perms-"));
+      const path = NodePath.join(dir, `${INTERIM_SIGNER_SECRET_NAME}.bin`);
+      NodeFS.writeFileSync(path, VALID_KEY, { mode: 0o644 });
+      try {
+        const error = yield* resolveInterimSignerFromFile(readFileText, dir).pipe(Effect.flip);
+        expect(error.reason).toBe("insecure_key_permissions");
+      } finally {
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("accepts the same key once only its owner can read it", () =>
+    Effect.gen(function* () {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-signer-perms-"));
+      const path = NodePath.join(dir, `${INTERIM_SIGNER_SECRET_NAME}.bin`);
+      NodeFS.writeFileSync(path, VALID_KEY, { mode: 0o600 });
+      try {
+        const resolved = yield* resolveInterimSignerFromFile(readFileText, dir);
+        expect(Option.isSome(resolved)).toBe(true);
+      } finally {
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+      }
     }),
   );
 });
