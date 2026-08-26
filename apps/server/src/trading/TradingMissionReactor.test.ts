@@ -38,6 +38,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
 import {
+  LOCAL_TRADING_USER_ID,
   moduleReadPlanTarget,
   TradingMissionReactor,
   TradingMissionReactorLive,
@@ -563,6 +564,50 @@ const settleThread = (threadId: ThreadId) =>
     });
     yield* settle;
   });
+
+/** Delete a thread the way the sidebar's Delete does, then drain the reactor. */
+const deleteThread = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    yield* engine.dispatch({
+      type: "thread.delete",
+      commandId: yield* commandId,
+      threadId,
+    });
+    yield* settle;
+  });
+
+it.layer(TestLayer)("deleting a mission-bound thread", (it) => {
+  // Deleting a thread used to leave its mission holding authority with no
+  // surface to see it on, until the boot sweep erased the row and the record
+  // of the money it was holding. Deletion now ends the mission the same way
+  // settle does.
+  it.effect("revokes the mission bound to the deleted thread and keeps its row", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createQuietMission;
+
+      yield* deleteThread(THREAD_ID);
+
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      assert.equal(yield* missionRowCount, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  // The mission is no longer authoritative, so the market it held is free —
+  // which is the whole point of ending it rather than leaving the orphan.
+  it.effect("frees the mission's authority", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createQuietMission;
+
+      yield* deleteThread(THREAD_ID);
+
+      const missions = yield* TradingMissionService;
+      assert.isTrue(Option.isNone(yield* missions.findActiveMission(LOCAL_TRADING_USER_ID)));
+    }).pipe(Effect.scoped),
+  );
+});
 
 it.layer(TestLayer)("settling a mission-bound thread", (it) => {
   // Settle is the way out of a mission. A thread the user has finished with

@@ -94,9 +94,11 @@ type TradingRequestEvent = Extract<
   | { type: "trading.mission-risk-control-requested" }
   | { type: "trading.mission-watch-fired" }
   | { type: "trading.execution-requested" }
-  // Not a trading intent: settling a thread is what ends its mission. Starting
-  // one is the first message's job — see `TradingAutoMission`.
+  // Not trading intents: settling a thread is what ends its mission, and
+  // deleting one ends it just as finally. Starting a mission is the first
+  // message's job — see `TradingAutoMission`.
   | { type: "thread.settled" }
+  | { type: "thread.deleted" }
 >;
 
 const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -106,6 +108,7 @@ const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "trading.mission-watch-fired",
   "trading.execution-requested",
   "thread.settled",
+  "thread.deleted",
 ]);
 
 /**
@@ -581,12 +584,15 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Settling a thread ends its mission.
+   * Settling or deleting a thread ends its mission.
    *
-   * Settle is the sidebar's "I am done with this thread", and a thread bound to
-   * a mission cannot be done while the mission still holds authority to trade
-   * on its behalf — it would keep waking, keep placing orders, and keep holding
-   * the one active-mission slot the next thread needs.
+   * Settle is the sidebar's "I am done with this thread", and delete is the
+   * same statement made permanently. Neither can be true while the mission
+   * still holds authority to trade on the thread's behalf — it would keep
+   * waking, keep placing orders, and keep holding the one active-mission slot
+   * the next thread needs. Deletion used to leave exactly that: an orphan with
+   * an open position and no surface to see it on, which the boot sweep then
+   * erased along with the record of the money it was holding.
    *
    * Exposure decides how it ends. A flat mission is simply revoked. A mission
    * that still holds a position goes through §17.5's close-and-revoke, which
@@ -597,10 +603,11 @@ const make = Effect.gen(function* () {
    * `findMissionByThreadId` returns only a still-authoritative mission, so a
    * settle on an already-revoked thread is a no-op rather than an error.
    */
-  const processThreadSettled = Effect.fn("TradingMissionReactor.threadSettled")(function* (
-    event: Extract<TradingRequestEvent, { type: "thread.settled" }>,
+  const processThreadEnded = Effect.fn("TradingMissionReactor.threadEnded")(function* (
+    event: Extract<TradingRequestEvent, { type: "thread.settled" | "thread.deleted" }>,
   ) {
     const threadId = event.payload.threadId;
+    const ending = event.type === "thread.deleted" ? "deleted" : "settled";
     const found = yield* missions.findMissionByThreadId(threadId);
     if (Option.isNone(found)) return;
 
@@ -614,9 +621,10 @@ const make = Effect.gen(function* () {
         masterAddress,
         market: mission.market,
       });
-      yield* Effect.logInfo("settle closed and revoked a mission holding a position", {
+      yield* Effect.logInfo("thread ending closed and revoked a mission holding a position", {
         missionId,
         threadId,
+        ending,
         summary: outcome.summary,
       });
       if (outcome.status !== undefined) {
@@ -628,7 +636,7 @@ const make = Effect.gen(function* () {
             missionId,
             tradingAccountId: mission.tradingAccountId,
             market: mission.market,
-            reason: "the thread was settled",
+            reason: `the thread was ${ending}`,
           });
         }
       }
@@ -644,9 +652,10 @@ const make = Effect.gen(function* () {
     const terminal: TradingMissionStatus =
       traded && mission.status !== "blocked" ? "completed" : "revoked";
 
-    yield* Effect.logInfo("settle ended a flat mission", {
+    yield* Effect.logInfo("thread ending ended a flat mission", {
       missionId,
       threadId,
+      ending,
       terminal,
       traded,
       status: mission.status,
@@ -656,16 +665,16 @@ const make = Effect.gen(function* () {
       threadId,
       from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
       to: terminal,
-      reason: "thread_settled",
+      reason: ending === "deleted" ? "thread_deleted" : "thread_settled",
     });
     // Whatever resting entry the mission left behind goes with it — a flat
-    // settle skips the close-and-revoke path that cancels entries for a
+    // ending skips the close-and-revoke path that cancels entries for a
     // position, and a patient entry must not outlive its mission.
     yield* retireWorkingOrdersQuietly({
       missionId,
       tradingAccountId: mission.tradingAccountId,
       market: mission.market,
-      reason: "the thread was settled",
+      reason: `the thread was ${ending}`,
     });
   });
 
@@ -1707,8 +1716,8 @@ const make = Effect.gen(function* () {
         yield* processRiskControlRequested(event);
       } else if (event.type === "trading.mission-watch-fired") {
         yield* processWatchFired(event);
-      } else if (event.type === "thread.settled") {
-        yield* processThreadSettled(event);
+      } else if (event.type === "thread.settled" || event.type === "thread.deleted") {
+        yield* processThreadEnded(event);
       } else {
         yield* processExecutionRequested(event).pipe(
           Effect.tapCause((cause) =>

@@ -1,15 +1,26 @@
 /**
- * TradingMissionSweep - the boot-time purge of missions with no thread left.
+ * TradingMissionSweep - the boot-time revocation of missions with no thread left.
  *
- * Settled missions are kept (plan 27 H1): a terminal row is the permanent
- * record of what was traded, and deleting it destroyed exactly the data the
- * stop-placement and calibration measurements need. What still goes is the
- * orphan — a mission whose thread was deleted out from under it. Nothing can
- * wake it, nothing can settle it, no surface can ever show it, and a
- * non-terminal orphan holds the one active-mission slot.
+ * An orphan is a mission whose thread was deleted out from under it while the
+ * server was down. Nothing can wake it, nothing can settle it, no surface can
+ * ever show it, and it holds authority over its market forever. The sweep
+ * withdraws that authority.
  *
- * Runs at boot, only while flat. Kept rather than made a one-off migration
- * because it is idempotent and cheap: on a clean database it finds nothing.
+ * It does not delete. An earlier version did, and read orphanhood off
+ * `projection_threads` — so the first projection rebuild made every live
+ * mission look orphaned and the boot sweep erased a running soak. Mission rows
+ * are the permanent record of what was traded (plan 27 H1); revoking frees the
+ * market without destroying the record, and is safe even if the orphan test is
+ * ever wrong again.
+ *
+ * A mission still holding a position is left alone entirely: revoking it would
+ * leave real exposure that nobody is authorized to manage. Live deletion goes
+ * through the reactor's close-then-revoke path instead; this sweep only picks
+ * up what happened while the process was not running, and an orphan with
+ * exposure is reported rather than touched.
+ *
+ * Runs at boot. Kept rather than made a one-off migration because it is
+ * idempotent and cheap: on a clean database it finds nothing.
  *
  * @module TradingMissionSweep
  */
@@ -23,8 +34,8 @@ import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 
 /**
  * Whether the mission still has exposure on the exchange, per the reconciled
- * snapshot. A row is never deleted while this is true: doing so would strand
- * real money with no record of who opened it.
+ * snapshot. Authority is never withdrawn while this is true: doing so would
+ * leave real money with nobody authorized to close it.
  */
 const holdsPosition = (missionId: string) =>
   Effect.gen(function* () {
@@ -36,35 +47,40 @@ const holdsPosition = (missionId: string) =>
     return (rows[0]?.open_count ?? 0) > 0;
   });
 
-export const purgeFinishedMissions = Effect.gen(function* () {
-  // The purge only runs while this process holds the trading lease: a second
-  // runtime against the same database would otherwise delete the same
-  // mission rows the live holder still believes in.
+export const revokeOrphanedMissions = Effect.gen(function* () {
+  // The sweep only runs while this process holds the trading lease: a second
+  // runtime against the same database would otherwise revoke the same
+  // missions the live holder still believes in.
   const lease = yield* TradingRuntimeLease;
   if (!lease.held) {
     yield* Effect.logWarning(
-      "TradingMissionSweep: trading lease not held - skipping the boot purge",
+      "TradingMissionSweep: trading lease not held - skipping the boot sweep",
     );
     return;
   }
   const missions = yield* TradingMissionService;
-  const candidates = yield* missions.listDeletableMissions();
+  const candidates = yield* missions.listOrphanedMissions();
   if (candidates.length === 0) return;
 
-  let deleted = 0;
-  let skipped = 0;
+  let revoked = 0;
+  const stranded: Array<string> = [];
   for (const candidate of candidates) {
     if (yield* holdsPosition(candidate.missionId)) {
-      skipped += 1;
+      stranded.push(candidate.missionId);
       continue;
     }
-    yield* missions.deleteMission(candidate.missionId);
-    deleted += 1;
+    const expectedVersion = yield* missions.getMissionVersion(candidate.missionId);
+    yield* missions.transition({
+      missionId: candidate.missionId,
+      to: "revoked",
+      expectedVersion,
+    });
+    revoked += 1;
   }
 
-  yield* Effect.logInfo("TradingMissionSweep: purged finished missions", {
-    deleted,
-    skippedHoldingPosition: skipped,
+  yield* Effect.logInfo("TradingMissionSweep: revoked orphaned missions", {
+    revoked,
+    strandedHoldingPosition: stranded,
   });
 });
 
@@ -77,9 +93,9 @@ export const TradingMissionSweepLive: Layer.Layer<
   never,
   SqlClient.SqlClient | TradingMissionService | TradingRuntimeLease
 > = Layer.effectDiscard(
-  purgeFinishedMissions.pipe(
+  revokeOrphanedMissions.pipe(
     Effect.catchCause((cause) =>
-      Effect.logWarning("TradingMissionSweep: could not purge finished missions", {
+      Effect.logWarning("TradingMissionSweep: could not revoke orphaned missions", {
         cause: Cause.pretty(cause),
       }),
     ),

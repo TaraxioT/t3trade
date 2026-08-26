@@ -231,13 +231,16 @@ export interface TradingMissionServiceShape {
   /**
    * Erase a mission and everything keyed to it, in one transaction.
    *
-   * A settled mission is finished, and every row it ever wrote is finished with
-   * it. Missions used to accumulate forever — the wall of settled rows on the
-   * Trading Settings page — because nothing ever removed one.
+   * Deliberately not called by the boot sweep: an orphan is revoked, not
+   * erased, because a mission row is the permanent record of what was traded
+   * and the sweep cannot tell a deleted thread from a rebuilt projection with
+   * certainty enough to destroy one. This is the implementation an explicit
+   * "delete this mission" surface will use, and it must be complete when that
+   * arrives — every table keyed to `mission_id` is listed below.
    *
    * This deletes the mission's realised history too: its `trading_closed_trades`
    * rows go with it, so the calibration a later mission could have read off them
-   * is gone. That is the accepted trade of "settled means gone".
+   * is gone. That is the accepted trade of an explicit delete.
    *
    * Idempotent (deleting absent rows is a no-op) and NOT guarded: the caller is
    * responsible for checking the mission is flat first. Deleting a mission that
@@ -247,10 +250,16 @@ export interface TradingMissionServiceShape {
   readonly deleteMission: (missionId: string) => Effect.Effect<void, PersistenceSqlError>;
 
   /**
-   * Every mission in a permanently terminal status, plus every non-terminal
-   * mission whose bound thread no longer exists. The startup sweep's input.
+   * Every still-authoritative mission whose thread was deleted out from under
+   * it. The startup sweep's input.
+   *
+   * Orphanhood is read off the event log, never off a projection: a
+   * `thread.deleted` event is a fact that stays true, while an empty
+   * `projection_threads` is what a projection rebuild looks like from the
+   * outside. Reading the projection is what once made every live mission look
+   * orphaned the moment the projections were reset.
    */
-  readonly listDeletableMissions: () => Effect.Effect<
+  readonly listOrphanedMissions: () => Effect.Effect<
     ReadonlyArray<{ readonly missionId: string; readonly status: string }>,
     PersistenceSqlError
   >;
@@ -643,26 +652,41 @@ const makeTradingMissionService = Effect.gen(function* () {
           yield* sql`DELETE FROM trading_account_observations WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_authority_versions WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_plan_history WHERE mission_id = ${missionId}`;
+          // The eight tables that arrived after this list was written and were
+          // never added to it. Each one kept a mission's rows alive after the
+          // mission itself was gone, keyed to an id nothing resolves.
+          yield* sql`DELETE FROM trading_entry_context WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_execution_sequences WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_journal WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_level_events WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_market_samples WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_protection_orders WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_stop_adjustments WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_structure_reads WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM projection_trading_missions WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_missions WHERE mission_id = ${missionId}`;
         }),
       )
       .pipe(Effect.mapError(sqlFail("deleteMission")), Effect.asVoid);
 
-  const listDeletableMissions: TradingMissionServiceShape["listDeletableMissions"] = () =>
-    // Only orphans are deletable. A terminal (revoked/completed) mission with a
-    // surviving thread is the permanent record of what was traded — plan 27 H1
-    // stopped deleting those; a mission whose thread no longer exists has no
-    // surface left to show that record on and nothing that can ever wake it.
+  const listOrphanedMissions: TradingMissionServiceShape["listOrphanedMissions"] = () =>
+    // A mission whose thread carries a `thread.deleted` event has no surface
+    // left to show it on and nothing that can ever wake it. Terminal missions
+    // are left alone either way — a revoked or completed row is the permanent
+    // record of what was traded (plan 27 H1), and the sweep's job is to free
+    // the authority an orphan is still holding, not to erase history.
     sql<{ readonly mission_id: string; readonly status: string }>`
       SELECT m.mission_id, m.status
       FROM trading_missions m
-      WHERE NOT EXISTS (
-              SELECT 1 FROM projection_threads t
-              WHERE t.thread_id = json_extract(m.harness_json, '$.threadId')
+      WHERE m.status NOT IN ('revoked', 'completed')
+        AND EXISTS (
+              SELECT 1 FROM orchestration_events e
+              WHERE e.aggregate_kind = 'thread'
+                AND e.stream_id = json_extract(m.harness_json, '$.threadId')
+                AND e.event_type = 'thread.deleted'
             )
     `.pipe(
-      Effect.mapError(sqlFail("listDeletableMissions")),
+      Effect.mapError(sqlFail("listOrphanedMissions")),
       Effect.map((rows) => rows.map((row) => ({ missionId: row.mission_id, status: row.status }))),
     );
 
@@ -680,7 +704,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     readPeakUnrealisedPnl,
     readDrawdownFromPeak,
     deleteMission,
-    listDeletableMissions,
+    listOrphanedMissions,
   } satisfies TradingMissionServiceShape;
 });
 

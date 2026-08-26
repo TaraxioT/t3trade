@@ -47,78 +47,59 @@ const migrated = Effect.gen(function* () {
  * delete without being added here fails loudly on the count, and a table added
  * to the schema without being added to the delete fails on the assertion.
  */
-const MISSION_SCOPED_ROWS: ReadonlyArray<{
-  readonly table: string;
-  readonly columns: string;
-  readonly values: string;
-}> = [
-  {
-    table: "trading_watches",
-    columns: "watch_id, watch_json, status, version, created_at, updated_at",
-    values: '\'w1\', \'{"type":"position_update","market":"ETH"}\', \'active\', 1, 0, 0',
-  },
-  {
-    table: "trading_harness_runs",
-    columns: "run_id, cause, status, started_at, created_at",
-    values: "'r1', 'mission_created', 'completed', 0, 0",
-  },
-  {
-    table: "trading_event_inbox",
-    columns: "event_id, category, deduplication_key, payload_json, occurred_at, status, created_at",
-    values: "'e1', 'market', 'k1', '{}', 0, 'pending', 0",
-  },
-  {
-    table: "trading_execution_records",
-    columns:
-      "execution_id, execution_sequence, action_type, cloid, idempotency_key, market, side, size, limit_price, time_in_force, reduce_only, signer_address, status, order_results_json, created_at, updated_at",
-    values:
-      "'x1', 1, 'entry', 'c1', 'i1', 'ETH', 'buy', 1, 100, 'Ioc', 0, '0xabc', 'settled', '[]', 0, 0",
-  },
-  {
-    table: "trading_orders",
-    columns: "cloid, order_id, market, side, limit_price, remaining_size, reduce_only, observed_at",
-    values: "'c1', 1, 'ETH', 'buy', 100, 0, 0, 0",
-  },
-  {
-    table: "trading_fills",
-    columns:
-      "fill_id, execution_id, cloid, order_id, market, side, filled_size, avg_fill_price, fee_usd, fee_token, traded_at, observed_at",
-    values: "'f1', 'x1', 'c1', 1, 'ETH', 'buy', 1, 100, 0.1, 'USDC', 0, 0",
-  },
-  {
-    table: "trading_position_snapshots",
-    columns: "market, size, entry_price, unrealised_pnl, margin_used, protected_size, observed_at",
-    values: "'ETH', 0, 100, 0, 0, 0, 0",
-  },
-  {
-    table: "trading_risk_reservations",
-    columns:
-      "reservation_id, execution_id, cloid, action_type, reserved_risk_usd, status, reserved_at",
-    values: "'rr1', 'x1', 'c1', 'entry', 5, 'released', 0",
-  },
-  {
-    table: "trading_closed_trades",
-    columns:
-      "market, opened_at, closed_at, hold_millis, direction, size, entry_price, exit_price, realized_pnl, fees_paid, net_pnl, peak_unrealised_pnl, trough_unrealised_pnl, giveback_from_peak, fill_count",
-    values: "'ETH', 0, 60000, 60000, 'long', 1, 100, 101, 1, 0.1, 0.9, 1, 0, 0, 1",
-  },
-  {
-    table: "trading_account_snapshots",
-    columns:
-      "master_address, account_value, margin_used, withdrawable, positions_json, observed_at",
-    values: "'0xabc', 1000, 0, 1000, '[]', 0",
-  },
-  {
-    table: "trading_account_observations",
-    columns: "account_value, observed_at",
-    values: "1000, 0",
-  },
-  {
-    table: "trading_plan_history",
-    columns: "version, strategy_json, created_at",
-    values: "1, '{}', 0",
-  },
-];
+interface ColumnInfo {
+  readonly name: string;
+  readonly type: string;
+  readonly notnull: number;
+  readonly dflt_value: string | null;
+}
+
+/** Every table in the live schema carrying a `mission_id` column. */
+const missionScopedTables = (sql: SqlClient.SqlClient) =>
+  Effect.gen(function* () {
+    const tables = yield* sql.unsafe<{ readonly name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+    );
+    const scoped: Array<string> = [];
+    for (const { name } of tables) {
+      const columns = yield* sql.unsafe<ColumnInfo>(`PRAGMA table_info(${name})`);
+      if (columns.some((column) => column.name === "mission_id")) scoped.push(name);
+    }
+    return scoped;
+  });
+
+/**
+ * One row keyed to `mission_1`, with a schema-shaped value for every column the
+ * table requires. The values are meaningless — the row exists to be deleted.
+ */
+const insertProbeRow = (sql: SqlClient.SqlClient, table: string) =>
+  Effect.gen(function* () {
+    const columns = yield* sql.unsafe<ColumnInfo>(`PRAGMA table_info(${table})`);
+    const names: Array<string> = [];
+    const values: Array<string> = [];
+    for (const column of columns) {
+      if (column.name === "mission_id") {
+        names.push(column.name);
+        values.push("'mission_1'");
+        continue;
+      }
+      if (column.notnull === 0 || column.dflt_value !== null) continue;
+      names.push(column.name);
+      const type = column.type.toUpperCase();
+      values.push(type.includes("INT") || type.includes("REAL") ? "0" : "'x'");
+    }
+    yield* sql.unsafe(`INSERT INTO ${table} (${names.join(", ")}) VALUES (${values.join(", ")})`);
+  });
+
+/** A durable `thread.deleted` event — the only evidence of orphanhood. */
+const recordThreadDeleted = (sql: SqlClient.SqlClient, threadId: string) =>
+  sql.unsafe(
+    "INSERT INTO orchestration_events (" +
+      "event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, " +
+      "actor_kind, payload_json, metadata_json" +
+      `) VALUES ('evt_${threadId}', 'thread', '${threadId}', 1, 'thread.deleted', ` +
+      "'2026-01-01T00:00:00Z', 'user', '{}', '{}')",
+  );
 
 layer("TradingMissionService", (it) => {
   it.effect("creates an ETH momentum mission with the testnet authority defaults", () =>
@@ -377,39 +358,35 @@ layer("TradingMissionService", (it) => {
     }),
   );
 
-  // Deletion still exists for orphans — missions whose thread is gone — and it
-  // takes every table keyed to the mission with it. Settled missions with a
-  // surviving thread are never deleted any more (plan 27 H1).
-  it.effect("deletes every row keyed to the mission", () =>
+  // Deletion takes every table keyed to the mission with it. The table list is
+  // read out of the schema rather than written down here: the hand-kept list
+  // fell eight tables behind the migrations before anyone noticed, and a test
+  // that repeats the implementation's list can only ever agree with it.
+  it.effect("deletes every row in every table keyed to the mission", () =>
     Effect.gen(function* () {
       yield* migrated;
       const sql = yield* SqlClient.SqlClient;
       const service = yield* TradingMissionService;
       yield* service.createMission(createInput());
 
-      for (const row of MISSION_SCOPED_ROWS) {
-        yield* sql.unsafe(
-          `INSERT INTO ${row.table} (mission_id, ${row.columns}) VALUES ('mission_1', ${row.values})`,
-        );
+      const tables = yield* missionScopedTables(sql);
+      // The count is not asserted, only that the schema had some — a query
+      // that silently matched nothing would otherwise pass this test forever.
+      assert.isAbove(tables.length, 15);
+
+      for (const table of tables) {
+        if (table === "trading_missions") continue;
+        yield* insertProbeRow(sql, table);
       }
 
       yield* service.deleteMission("mission_1");
 
-      for (const row of MISSION_SCOPED_ROWS) {
+      for (const table of tables) {
         const remaining = yield* sql.unsafe<{ readonly c: number }>(
-          `SELECT COUNT(*) AS c FROM ${row.table} WHERE mission_id = 'mission_1'`,
+          `SELECT COUNT(*) AS c FROM ${table} WHERE mission_id = 'mission_1'`,
         );
-        assert.equal(remaining[0]?.c, 0, `${row.table} still holds rows for the deleted mission`);
+        assert.equal(remaining[0]?.c, 0, `${table} still holds rows for the deleted mission`);
       }
-
-      const missions = yield* sql<{ readonly c: number }>`
-        SELECT COUNT(*) AS c FROM trading_missions WHERE mission_id = 'mission_1'
-      `;
-      assert.equal(missions[0]?.c, 0);
-      const authorities = yield* sql<{ readonly c: number }>`
-        SELECT COUNT(*) AS c FROM trading_authority_versions WHERE mission_id = 'mission_1'
-      `;
-      assert.equal(authorities[0]?.c, 0);
     }),
   );
 
@@ -421,9 +398,10 @@ layer("TradingMissionService", (it) => {
     }),
   );
 
-  // The startup sweep's input: only orphans. A settled mission with a
-  // surviving thread is the permanent record of what was traded (plan 27 H1).
-  it.effect("lists only missions whose thread is gone", () =>
+  // The startup sweep's input: only missions whose thread was actually
+  // deleted, read off the event log. An empty projection is not evidence of
+  // anything — reading one is what once made a live soak look orphaned.
+  it.effect("lists only missions whose thread carries a deletion event", () =>
     Effect.gen(function* () {
       yield* migrated;
       const sql = yield* SqlClient.SqlClient;
@@ -434,28 +412,18 @@ layer("TradingMissionService", (it) => {
       yield* sql`
         UPDATE trading_missions SET status = 'revoked' WHERE mission_id = 'mission_done'
       `;
-      // Both missions' threads were never projected, so nothing can ever wake,
-      // settle, or display either of them — terminal or not, both are orphans.
-      const deletable = yield* service.listDeletableMissions();
-      assert.deepEqual(deletable.map((m) => m.missionId).sort(), ["mission_done", "mission_live"]);
+      // No projection rows for either thread, and no deletion events: nothing
+      // is orphaned, whatever the projections happen to hold right now.
+      assert.deepEqual(yield* service.listOrphanedMissions(), []);
 
-      // Give the live mission a thread and it stops being deletable. The
-      // revoked one keeps a thread too and stops being deletable as well:
-      // terminal status alone no longer qualifies.
-      yield* sql`
-        INSERT INTO projection_projects (
-          project_id, title, workspace_root, scripts_json, created_at, updated_at
-        ) VALUES ('p1', 'p', '/tmp/p', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-      `;
-      yield* sql`
-        INSERT INTO projection_threads (
-          thread_id, project_id, title, created_at, updated_at
-        ) VALUES ('thread_1', 'p1', 't', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-      `;
-      const stillDeletable = yield* service.listDeletableMissions();
+      // Both missions share thread_1 (createInput's binding), so deleting it
+      // orphans both — but the revoked one is already terminal and is left
+      // alone: the sweep frees authority, it does not tidy history.
+      yield* recordThreadDeleted(sql, "thread_1");
+      const orphans = yield* service.listOrphanedMissions();
       assert.deepEqual(
-        stillDeletable.map((m) => m.missionId),
-        [],
+        orphans.map((m) => m.missionId),
+        ["mission_live"],
       );
     }),
   );

@@ -15,7 +15,7 @@ import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 
 import { TradingMissionService } from "./TradingMissionService.ts";
-import { purgeFinishedMissions } from "./TradingMissionSweep.ts";
+import { revokeOrphanedMissions } from "./TradingMissionSweep.ts";
 import {
   acquire,
   breakStaleLock,
@@ -229,20 +229,20 @@ describe("TradingRuntimeLease", () => {
 describe("TradingMissionSweep lease gate", () => {
   const missionsFake = (calls: string[]) =>
     Layer.succeed(TradingMissionService, {
-      listDeletableMissions: () =>
+      listOrphanedMissions: () =>
         Effect.sync(() => {
           calls.push("list");
           return [];
         }),
-      deleteMission: (id: string) =>
+      transition: (input: { readonly missionId: string }) =>
         Effect.sync(() => {
-          calls.push("delete:" + id);
+          calls.push("revoke:" + input.missionId);
         }),
     } as unknown as TradingMissionService["Service"]);
 
-  const runPurge = (held: boolean) => {
+  const runSweep = (held: boolean) => {
     const calls: string[] = [];
-    return purgeFinishedMissions.pipe(
+    return revokeOrphanedMissions.pipe(
       Effect.map(() => calls),
       Effect.provide(
         Layer.mergeAll(
@@ -254,16 +254,16 @@ describe("TradingMissionSweep lease gate", () => {
     );
   };
 
-  it.effect("lists deletable missions while holding the lease", () =>
+  it.effect("lists orphaned missions while holding the lease", () =>
     Effect.gen(function* () {
-      const calls = yield* runPurge(true);
+      const calls = yield* runSweep(true);
       assert.deepEqual(calls, ["list"]);
     }),
   );
 
-  it.effect("does not run the purge when the lease was refused", () =>
+  it.effect("does not run the sweep when the lease was refused", () =>
     Effect.gen(function* () {
-      const calls = yield* runPurge(false);
+      const calls = yield* runSweep(false);
       assert.deepEqual(calls, []);
     }),
   );
