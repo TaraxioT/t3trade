@@ -43,11 +43,17 @@ export const TradingMissionStatus = Schema.Literals([
 ]);
 export type TradingMissionStatus = typeof TradingMissionStatus.Type;
 
+/**
+ * Why a mission is blocked. Every member is written by something: the union
+ * used to carry `account_unavailable` and `reconciliation_failure`, and no
+ * code path ever set either — the account gate is still an explicit no-op seam
+ * in the coordinator, and a failed reconcile retries rather than blocking. A
+ * reason nobody writes is a promise the UI cannot keep, so they are gone until
+ * the gate that would write them exists.
+ */
 export const TradingMissionBlockedReason = Schema.Literals([
   "cumulative_loss_limit",
   "protection_failure",
-  "account_unavailable",
-  "reconciliation_failure",
 ]);
 export type TradingMissionBlockedReason = typeof TradingMissionBlockedReason.Type;
 

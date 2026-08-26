@@ -15,6 +15,8 @@ import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import {
+  AGENT_UNAVAILABLE_FAILURE_STREAK,
+  consecutiveFailedRuns,
   consecutiveNoOpWakes,
   TradingTurnCoordinator,
   TradingTurnCoordinatorLive,
@@ -802,5 +804,31 @@ describe("consecutiveNoOpWakes", () => {
   it("breaks the streak on a failed run", () => {
     // A failed wake is not a considered no-op — nothing looked at the market.
     assert.equal(consecutiveNoOpWakes([{ ...noOpWake, status: "failed" }, noOpWake]), 0);
+  });
+});
+
+describe("consecutiveFailedRuns", () => {
+  const run = (status: string) => ({ status });
+
+  it("counts the trailing failures, newest first", () => {
+    assert.equal(consecutiveFailedRuns([]), 0);
+    assert.equal(consecutiveFailedRuns([run("failed"), run("failed")]), 2);
+  });
+
+  it("stops at the last run that answered", () => {
+    // The provider came back for one turn, so whatever failed before it is
+    // history — the mission is not unavailable, it is running again.
+    assert.equal(consecutiveFailedRuns([run("completed"), run("failed"), run("failed")]), 0);
+    assert.equal(consecutiveFailedRuns([run("failed"), run("completed"), run("failed")]), 1);
+  });
+
+  it("does not count a run still in flight as a failure", () => {
+    assert.equal(consecutiveFailedRuns([run("running"), run("failed")]), 0);
+  });
+
+  it("suspends on more than a single blip", () => {
+    // One failure is a provider restarting. The threshold has to be past that,
+    // or every hiccup parks the mission.
+    assert.isAbove(AGENT_UNAVAILABLE_FAILURE_STREAK, 1);
   });
 });

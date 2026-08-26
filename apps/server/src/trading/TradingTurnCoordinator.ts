@@ -78,6 +78,7 @@ import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 import { isActiveMissionStatus, isOperativeMissionStatus } from "./MissionTransitions.ts";
+import type { TradingMissionStatus } from "./Schemas.ts";
 
 /**
  * A run request, plus whether the caller is waiting on the wake itself.
@@ -209,6 +210,31 @@ export function consecutiveNoOpWakes(rows: ReadonlyArray<NoOpWakeRow>): number {
  * capped at 6, so reading past eight rows cannot change the armed interval.
  */
 const NO_OP_STREAK_READ_LIMIT = 8;
+
+/**
+ * How many consecutive failed runs mean the agent is gone rather than flaky.
+ *
+ * One failure is a blip — a provider restarting, a session dropping mid-turn.
+ * Two in a row is a provider that is not coming back on its own, and the
+ * mission needs to say so instead of quietly waking into nothing.
+ */
+export const AGENT_UNAVAILABLE_FAILURE_STREAK = 2;
+
+/**
+ * Consecutive failed runs, counting back from the newest.
+ *
+ * `failed` is written both when a wake never reaches the provider and when the
+ * session ends its turn in `error`, so this counts the two shapes of "the
+ * harness did not answer" as one streak.
+ */
+export function consecutiveFailedRuns(rows: ReadonlyArray<{ readonly status: string }>): number {
+  let streak = 0;
+  for (const row of rows) {
+    if (row.status !== "failed") break;
+    streak += 1;
+  }
+  return streak;
+}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -376,6 +402,7 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+      yield* noteRunOutcome(missionId, terminal);
       // Close the inbox lifecycle for the events this run claimed.
       yield* inbox.markIncludedConsumed(missionId).pipe(
         Effect.catchCause((cause) =>
@@ -873,6 +900,62 @@ const make = Effect.gen(function* () {
    * unlikely, and an unbounded retry loop against a genuinely broken provider
    * is worse than the staleness floor already is.
    */
+  /**
+   * React to a run reaching its terminal status.
+   *
+   * `agent_unavailable` is a published status with a styled label and a place
+   * in the transition table, and nothing ever wrote it: a mission whose
+   * provider had died went on being `waiting` forever, waking into nothing and
+   * looking healthy on every surface. A run of consecutive failures now says
+   * so, and the first run that completes says so in the other direction —
+   * resuming into `analysing`, which is the ordinary way out of a suspended
+   * status.
+   *
+   * Never fatal: this is bookkeeping about a run that has already ended.
+   */
+  const noteRunOutcome = (missionId: string, status: "completed" | "failed") =>
+    Effect.gen(function* () {
+      const mission = yield* missions.getMission(missionId);
+
+      if (status === "completed") {
+        if (mission.status !== "agent_unavailable") return;
+        yield* transitionMission(missionId, "analysing");
+        yield* Effect.logInfo("TradingTurnCoordinator: the agent answered again", { missionId });
+        return;
+      }
+
+      if (!isOperativeMissionStatus(mission.status)) return;
+      const rows = yield* sql<{ readonly status: string }>`
+        SELECT status FROM trading_harness_runs
+        WHERE mission_id = ${missionId}
+        ORDER BY started_at DESC, run_id DESC
+        LIMIT ${AGENT_UNAVAILABLE_FAILURE_STREAK}
+      `.pipe(Effect.mapError(sqlFail("countConsecutiveFailedRuns")));
+      const failures = consecutiveFailedRuns(rows);
+      if (failures < AGENT_UNAVAILABLE_FAILURE_STREAK) return;
+
+      yield* transitionMission(missionId, "agent_unavailable");
+      yield* Effect.logWarning("TradingTurnCoordinator: the agent stopped answering", {
+        missionId,
+        consecutiveFailedRuns: failures,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not record the run outcome", {
+          missionId,
+          status,
+          cause: String(cause),
+        }),
+      ),
+    );
+
+  /** Move a mission, reading the row version the transition needs. */
+  const transitionMission = (missionId: string, to: TradingMissionStatus) =>
+    Effect.gen(function* () {
+      const expectedVersion = yield* missions.getMissionVersion(missionId);
+      yield* missions.transition({ missionId, to, expectedVersion });
+    });
+
   const recoverFromFailedWake = (input: {
     readonly missionId: string;
     readonly triggeringWatchId?: string;
@@ -987,6 +1070,7 @@ const make = Effect.gen(function* () {
           runId,
           cause: String(woke.cause),
         });
+        yield* noteRunOutcome(input.missionId, "failed");
         yield* recoverFromFailedWake({
           missionId: input.missionId,
           ...(input.triggeringWatchId !== undefined

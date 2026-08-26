@@ -193,13 +193,8 @@ describe("blockedReason validation", () => {
     });
   });
 
-  it("accepts each of the four published reasons", () => {
-    for (const blockedReason of [
-      "cumulative_loss_limit",
-      "protection_failure",
-      "account_unavailable",
-      "reconciliation_failure",
-    ] as const) {
+  it("accepts each published reason", () => {
+    for (const blockedReason of ["cumulative_loss_limit", "protection_failure"] as const) {
       assert.equal(
         validateTransition({ from: "position_open", to: "blocked", blockedReason }),
         undefined,
