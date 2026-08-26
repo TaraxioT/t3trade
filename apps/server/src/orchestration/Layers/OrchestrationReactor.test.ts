@@ -11,12 +11,23 @@ import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
+import { ArchiveSupervisor } from "../../trading/ArchiveSupervisor.ts";
 import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
 import { TradingRuntimeLease } from "../../trading/TradingRuntimeLease.ts";
 import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
+
+/** A supervisor that has never spawned anything — the fake's whole state. */
+const IDLE_ARCHIVE_HEALTH = {
+  running: false,
+  pid: null,
+  lastHeartbeatAt: null,
+  lastHeartbeat: null,
+  restarts: 0,
+  stoppedReason: "test",
+} as const;
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -85,6 +96,12 @@ describe("OrchestrationReactor", () => {
             evaluateDelivery: () => Effect.void,
             sweep: Effect.void,
             forgetDeliveredCandles: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(ArchiveSupervisor, {
+            start: () => Effect.void,
+            health: Effect.succeed(IDLE_ARCHIVE_HEALTH),
           }),
         ),
         Layer.provideMerge(
@@ -167,6 +184,15 @@ describe("OrchestrationReactor", () => {
                 evaluateDelivery: () => Effect.void,
                 sweep: Effect.void,
                 forgetDeliveredCandles: Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(ArchiveSupervisor, {
+                start: () => {
+                  started.push("archive-supervisor");
+                  return Effect.void;
+                },
+                health: Effect.succeed(IDLE_ARCHIVE_HEALTH),
               }),
             ),
             Layer.provideMerge(

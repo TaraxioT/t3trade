@@ -354,10 +354,37 @@ export const OrchestrationTradingMission = Schema.Struct({
 });
 export type OrchestrationTradingMission = typeof OrchestrationTradingMission.Type;
 
+/**
+ * Whether the market archiver is running, and how far behind it is.
+ *
+ * The archive is what every windowed chart, every derived metric, and every
+ * "recording since…" label reads from, so its health is not an operations
+ * detail — it is the difference between a number and a refusal, and a surface
+ * that shows one has to be able to explain the other.
+ */
+export const TradingArchiveHealth = Schema.Struct({
+  running: Schema.Boolean,
+  /** The heartbeat line the archiver last printed, verbatim. */
+  lastHeartbeat: Schema.NullOr(Schema.String),
+  /** When that line arrived. Null means it has not printed one yet. */
+  lastHeartbeatAt: Schema.NullOr(IsoDateTime),
+  /** Restarts since the server booted. A climbing number is a crash loop. */
+  restarts: NonNegativeInt,
+  /** Why it is not running, when it is not. */
+  stoppedReason: Schema.NullOr(Schema.String),
+});
+export type TradingArchiveHealth = typeof TradingArchiveHealth.Type;
+
 export const TradingMissionSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   missions: Schema.Array(OrchestrationTradingMission),
   updatedAt: IsoDateTime,
+  /**
+   * Optional so an older server still decodes. Rides this snapshot rather than
+   * getting its own poll: every surface that shows a derived number is already
+   * reading it, and archiver health is what says whether that number is real.
+   */
+  archive: Schema.optional(TradingArchiveHealth),
 });
 export type TradingMissionSnapshot = typeof TradingMissionSnapshot.Type;
 

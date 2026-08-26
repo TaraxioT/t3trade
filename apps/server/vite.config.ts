@@ -36,7 +36,10 @@ export default mergeConfig(
       },
     },
     pack: {
-      entry: ["src/bin.ts"],
+      // Two entries: the CLI, and the market archiver the server spawns as a
+      // child. Without the second one a packed install has a supervisor and
+      // nothing to supervise.
+      entry: ["src/bin.ts", "src/trading/archive/main.ts"],
       outDir: "dist",
       sourcemap: true,
       clean: true,

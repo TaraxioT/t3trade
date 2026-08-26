@@ -297,11 +297,16 @@ export const acquire = (
 
 /**
  * Rewrite the heartbeat, but only while the file still names this process.
+ *
+ * Exported because the archive file has the same problem this lease solves and
+ * a different scope: it lives beside `userdata` and is shared by the dev server
+ * and the installed app, so its single writer cannot be decided by the state
+ * database's lease. `ArchiveSupervisor` runs this over its own lock path.
  * Every tick re-verifies ownership: a file that is gone or names another
  * holder means the lease was taken over (or clobbered), so the loop logs
  * the new holder, stands down via `onLoss`, and stops refreshing.
  */
-const heartbeatLoop = (lockPath: string, record: LeaseRecord, onLoss: () => void) =>
+export const heartbeatLoop = (lockPath: string, record: LeaseRecord, onLoss: () => void) =>
   Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep(HEARTBEAT_INTERVAL_MS);

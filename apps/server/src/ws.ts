@@ -81,6 +81,7 @@ import { TradingJournalService } from "./trading/TradingJournalService.ts";
 import { publishPlanWithAftermath } from "./trading/TradingPlanPublication.ts";
 import { composePlanRevisionNote } from "./trading/TradingPlanRevisionNote.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
+import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
@@ -400,6 +401,7 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
+      const archiveSupervisor = yield* ArchiveSupervisor;
       const tradingUniverse = yield* TradingUniverse;
       const tradingMarketPrice = yield* TradingMarketPrice;
       const tradingMarketChart = yield* TradingMarketChart;
@@ -1440,10 +1442,21 @@ const makeWsRpcLayer = (
               // stream) from a fresh one. Previously this was hardcoded to 0,
               // which made the sequence useless for ordered catch-up.
               const snapshotSequence = yield* orchestrationEngine.latestSequence;
+              const archive = yield* archiveSupervisor.health;
               return {
                 snapshotSequence,
                 missions,
                 updatedAt: missions[0]?.updatedAt ?? EPOCH_ISO,
+                archive: {
+                  running: archive.running,
+                  lastHeartbeat: archive.lastHeartbeat,
+                  lastHeartbeatAt:
+                    archive.lastHeartbeatAt === null
+                      ? null
+                      : DateTime.formatIso(DateTime.makeUnsafe(archive.lastHeartbeatAt)),
+                  restarts: archive.restarts,
+                  stoppedReason: archive.stoppedReason,
+                },
               };
             }).pipe(
               Effect.tapError((cause) =>

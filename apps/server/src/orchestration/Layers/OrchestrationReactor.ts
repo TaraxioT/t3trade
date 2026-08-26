@@ -10,6 +10,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
+import { ArchiveSupervisor } from "../../trading/ArchiveSupervisor.ts";
 import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
 import { TradingRuntimeLease } from "../../trading/TradingRuntimeLease.ts";
 import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
@@ -22,6 +23,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const tradingMissionReactor = yield* TradingMissionReactor;
   const watchEvaluator = yield* WatchEvaluator;
+  const archiveSupervisor = yield* ArchiveSupervisor;
   const tradingLease = yield* TradingRuntimeLease;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
@@ -37,6 +39,9 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     if (tradingLease.held) {
       yield* tradingMissionReactor.start();
       yield* watchEvaluator.start();
+      // The archive is the only market history this install will ever have,
+      // and a minute not recorded is gone. It starts with the server.
+      yield* archiveSupervisor.start();
     } else {
       yield* Effect.logWarning(
         "OrchestrationReactor: trading lease not held - mission reactor and watch evaluator stay down",

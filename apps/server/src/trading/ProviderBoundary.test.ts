@@ -52,6 +52,17 @@ const PROCESS_SPAWNING_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ["Command.make", /\bCommand\.make\s*\(/],
 ];
 
+/**
+ * The one module allowed to start a process, and the reason.
+ *
+ * §6.3 exists so that no trading code becomes a second provider runtime.
+ * `ArchiveSupervisor` is not one: it spawns the market archiver — an in-repo
+ * script that reads public market data and writes a SQLite file, holding no
+ * provider session and no key. The provider-CLI scan below still covers it, so
+ * the exemption cannot quietly grow into launching a harness.
+ */
+const PROCESS_SPAWNING_EXEMPT = "ArchiveSupervisor.ts";
+
 /** Provider CLI binaries the harness would otherwise be launched with. */
 const PROVIDER_CLI_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ["claude CLI invocation", /["'`]claude["'`]\s*,\s*\[/],
@@ -68,6 +79,7 @@ describe("trading code never spawns a provider runtime (§6.3)", () => {
 
   it("never imports or calls a process-spawning API", () => {
     for (const { file, source } of sources) {
+      if (file.endsWith(PROCESS_SPAWNING_EXEMPT)) continue;
       for (const [label, pattern] of PROCESS_SPAWNING_PATTERNS) {
         assert.equal(
           pattern.test(source),
@@ -76,6 +88,17 @@ describe("trading code never spawns a provider runtime (§6.3)", () => {
         );
       }
     }
+  });
+
+  // The exemption is for one file spawning one thing. If it ever spawns
+  // something the repo does not own, this is where that shows up.
+  it("lets the archive supervisor spawn only the archiver", () => {
+    const supervisor = sources.find((entry) => entry.file.endsWith(PROCESS_SPAWNING_EXEMPT));
+    assert.ok(supervisor !== undefined, "the exempt module no longer exists — drop the exemption");
+    assert.match(supervisor.source, /archive", "main\.ts"/);
+    assert.equal(/\bspawn\s*\(/.test(supervisor.source), true);
+    // Whatever it spawns, it spawns with this process's own Node binary.
+    assert.match(supervisor.source, /NodeProcess\.execPath/);
   });
 
   it("never invokes a provider CLI directly", () => {

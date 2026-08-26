@@ -115,6 +115,7 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
+import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
@@ -873,6 +874,21 @@ const buildAppUnderTest = (options?: {
         Layer.mock(TradingMarketChart)({
           read: () => Effect.succeed(null),
           ...options?.layers?.tradingMarketChart,
+        }),
+      ),
+      // The mission snapshot reports whether the archiver is recording. No
+      // child process here, and "not running" is an honest answer.
+      Layer.provide(
+        Layer.mock(ArchiveSupervisor)({
+          start: () => Effect.void,
+          health: Effect.succeed({
+            running: false,
+            pid: null,
+            lastHeartbeatAt: null,
+            lastHeartbeat: null,
+            restarts: 0,
+            stoppedReason: "no archiver in tests",
+          }),
         }),
       ),
       // The universe RPC lists what the venue trades. No exchange here, and a
