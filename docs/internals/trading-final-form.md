@@ -112,12 +112,12 @@ rather than off `projection_threads`; and the blocked-reason union lost
 `account_unavailable` and `reconciliation_failure`, which nothing wrote —
 Phase 7 re-adds the first when the account gate lands.
 
-### Phase 1 — Market identity groundwork
+### Phase 1 — Market identity groundwork _(landed)_
 
 - [ ] `MarketRef` schema in `primitives.ts`; `TradingMarket` literals deleted; a
       compat codec mapping legacy `"BTC"|"ETH"` to `{venue:"hyperliquid", asset}`
       for persisted JSON (wakes, plans, watches).
-- [ ] Mechanical sweep of `TradingMarket` consumers across
+- [x] Mechanical sweep of `TradingMarket` consumers across
       `packages/trading-contracts`, `apps/server/src/trading`,
       `packages/contracts/src/trading.ts` and the web imports. SQL keeps the legacy
       single column until 074/075; the service layer owns the mapping meanwhile.
