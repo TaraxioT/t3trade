@@ -15,21 +15,80 @@
  */
 
 // @effect-diagnostics nodeBuiltinImport:off - a standalone process resolves its own paths.
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import { T3_HOME_DIR_NAME } from "@t3tools/shared/forkPaths";
 import * as NodePath from "node:path";
 
-/** Coins the archiver tracks. Extend the list; the schema needs no change. */
+/**
+ * Coins recorded when nothing says otherwise — a fresh install with no
+ * positions, no watches and no watchlist.
+ *
+ * The list used to be the whole of what the archiver tracked. It is now only
+ * the floor: the server publishes a follow set derived from what the user is
+ * actually paying attention to, and the archiver records the union.
+ */
 export const ARCHIVE_COINS = ["BTC", "ETH", "SOL"] as const;
 export type ArchiveCoin = (typeof ARCHIVE_COINS)[number];
 
-/** Candle intervals recorded for every coin. */
-export const ARCHIVE_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
+/**
+ * How many coins are deeply recorded at once.
+ *
+ * Deep recording is candles at every interval plus a book sample per minute,
+ * which is one request per series per tick. The follow set is already capped
+ * server-side; this is the archiver's own floor against a control file that
+ * says something unreasonable.
+ */
+export const MAX_ARCHIVE_COINS = 24;
+
+/**
+ * Where the server publishes the follow set. Read fresh each tick, so
+ * following a new asset starts recording it within a minute without anything
+ * being restarted.
+ */
+export function followSetPath(): string {
+  return `${archiveDatabasePath()}.follow.json`;
+}
+
+/**
+ * The coins to record this tick: the defaults, plus whatever the server says
+ * attention is on.
+ *
+ * A missing, unreadable, or malformed control file yields the defaults. The
+ * archiver is the process that must not stop, and "the server has not written
+ * its file yet" is the ordinary state of a fresh install.
+ */
+export function readArchiveCoins(readFile: (path: string) => string): ReadonlyArray<string> {
+  const coins = new Set<string>(ARCHIVE_COINS);
+  try {
+    const parsed: unknown = JSON.parse(readFile(followSetPath()));
+    const followed = (parsed as { followed?: unknown } | null)?.followed;
+    if (Array.isArray(followed)) {
+      for (const entry of followed) {
+        const asset = (entry as { asset?: unknown } | null)?.asset;
+        if (typeof asset === "string" && asset.length > 0) coins.add(asset);
+      }
+    }
+  } catch {
+    // No file, bad file, no matter — the defaults are always recorded.
+  }
+  return [...coins].slice(0, MAX_ARCHIVE_COINS);
+}
+
+/**
+ * Candle intervals recorded for every coin.
+ *
+ * `3m` is here because the watch contract accepts it as a candle-close
+ * interval and the archive did not hold it, so every 3m derived metric refused
+ * for want of data nobody had decided not to record.
+ */
+export const ARCHIVE_INTERVALS = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"] as const;
 export type ArchiveInterval = (typeof ARCHIVE_INTERVALS)[number];
 
 /** Bar width per interval, in milliseconds. */
 export const INTERVAL_MS: Record<ArchiveInterval, number> = {
   "1m": 60_000,
+  "3m": 3 * 60_000,
   "5m": 5 * 60_000,
   "15m": 15 * 60_000,
   "1h": 60 * 60_000,
@@ -45,6 +104,7 @@ export const INTERVAL_MS: Record<ArchiveInterval, number> = {
  */
 export const POLL_TAIL_BARS: Record<ArchiveInterval, number> = {
   "1m": 10,
+  "3m": 10,
   "5m": 10,
   "15m": 10,
   "1h": 3,
@@ -110,4 +170,9 @@ export const REQUEST_ATTEMPTS = 6;
 export function archiveDatabasePath(): string {
   const home = process.env["T3CODE_HOME"] ?? NodePath.join(NodeOS.homedir(), T3_HOME_DIR_NAME);
   return NodePath.join(home, "userdata", "market-archive.sqlite");
+}
+
+/** `readArchiveCoins` against the real file. What the archiver actually calls. */
+export function readArchiveCoinsFromDisk(): ReadonlyArray<string> {
+  return readArchiveCoins((path) => NodeFS.readFileSync(path, "utf8"));
 }

@@ -3599,11 +3599,20 @@ it.live("serves every catalog key within ±20% of its published size", () => {
 // -- R3: the real-trader reads (scan, session levels, vwap_distance) -------------
 
 /** Five-minute bars with hand-known OHLCV, seeded around a real epoch. */
-const r3Bar = (coin: string, t: number, o: number, h: number, l: number, c: number, v: number) => ({
+const r3Bar = (
+  coin: string,
+  t: number,
+  o: number,
+  h: number,
+  l: number,
+  c: number,
+  v: number,
+  interval: "1m" | "5m" = "5m",
+) => ({
   coin,
-  interval: "5m" as const,
+  interval,
   t,
-  tClose: t + 5 * 60_000 - 1,
+  tClose: t + (interval === "1m" ? 60_000 : 5 * 60_000) - 1,
   o,
   h,
   l,
@@ -3655,13 +3664,18 @@ it.live("marks per-coin unavailability on the scan, never a zero and never a fai
   const now = Date.now();
   const DAY = 24 * 3_600_000;
   const HOUR = 3_600_000;
-  const dayStart = Math.floor(now / DAY) * DAY;
+  // 24h of 5m bars ending at the newest completed one. Anchored to `now`
+  // rather than to a day boundary because the digest withholds a mark that
+  // stopped advancing, and a fixture whose last bar is hours old is exactly
+  // the dead archiver that guard exists to catch.
+  const FIVE_MIN = 5 * 60_000;
+  const newestOpen = Math.floor(now / FIVE_MIN) * FIVE_MIN - FIVE_MIN;
   upsertCandles(
     db,
     Array.from({ length: 288 }, (_, i) =>
       r3Bar(
         "BTC",
-        dayStart - DAY + i * 5 * 60_000,
+        newestOpen - (287 - i) * FIVE_MIN,
         61_000 + i,
         61_100 + i,
         60_900 + i,
@@ -3778,13 +3792,25 @@ it.live("arms a derived vwap_distance watch from a seeded archive", () => {
   const now = Date.now();
   const DAY = 24 * 3_600_000;
   const dayStart = Math.floor(now / DAY) * DAY;
-  const FIVE = 5 * 60_000;
-  upsertCandles(db, [
-    r3Bar("ETH", dayStart, 101, 102, 100, 101, 10),
-    r3Bar("ETH", dayStart + FIVE, 104, 106, 102, 104, 30),
-    r3Bar("ETH", dayStart + 2 * FIVE, 99, 101, 97, 99, 20),
-    r3Bar("ETH", dayStart + 3 * FIVE, 103, 105, 101, 103, 40),
-  ]);
+  const MINUTE = 60_000;
+  // A day's worth of 1m bars up to the newest completed one, cycling through
+  // four shapes. `vwap_distance` anchors its session to the UTC day, so the
+  // bars have to reach both back to that boundary and forward to now: a
+  // session that stopped advancing is refused as stale, and one that starts
+  // mid-day would not be a session.
+  const newest = Math.floor(now / MINUTE) * MINUTE - MINUTE;
+  const shapes = [
+    [101, 102, 100, 101, 10],
+    [104, 106, 102, 104, 30],
+    [99, 101, 97, 99, 20],
+    [103, 105, 101, 103, 40],
+  ] as const;
+  const bars = [];
+  for (let open = dayStart; open <= newest; open += MINUTE) {
+    const shape = shapes[((open - dayStart) / MINUTE) % shapes.length] as (typeof shapes)[number];
+    bars.push(r3Bar("ETH", open, shape[0], shape[1], shape[2], shape[3], shape[4], "1m"));
+  }
+  upsertCandles(db, bars);
   db.close();
 
   return withMcpServer(
@@ -3796,7 +3822,7 @@ it.live("arms a derived vwap_distance watch from a seeded archive", () => {
             kind: "derived",
             market: "ETH",
             metric: "vwap_distance",
-            params: { metric: "vwap_distance", interval: "5m" },
+            params: { metric: "vwap_distance", interval: "1m" },
             direction: "above",
             value: 1,
             mode: "cross",

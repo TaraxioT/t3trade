@@ -29,6 +29,7 @@ import {
 } from "./candles.ts";
 import {
   ARCHIVE_COINS,
+  readArchiveCoinsFromDisk,
   ARCHIVE_INTERVALS,
   CANDLE_WINDOW_BARS,
   FUNDING_INTERVAL_MS,
@@ -91,8 +92,9 @@ export async function backfillCandles(
   counters: ArchiveCounters,
   now: number,
   shouldContinue: () => boolean = () => true,
+  coins: ReadonlyArray<string> = ARCHIVE_COINS,
 ): Promise<void> {
-  for (const coin of ARCHIVE_COINS) {
+  for (const coin of coins) {
     for (const interval of ARCHIVE_INTERVALS) {
       if (!shouldContinue()) {
         return;
@@ -137,8 +139,9 @@ export async function pollCandles(
   info: InfoClient,
   counters: ArchiveCounters,
   now: number,
+  coins: ReadonlyArray<string> = ARCHIVE_COINS,
 ): Promise<void> {
-  for (const coin of ARCHIVE_COINS) {
+  for (const coin of coins) {
     for (const interval of ARCHIVE_INTERVALS) {
       const intervalMs = INTERVAL_MS[interval];
       const currentOpen = Math.floor(now / intervalMs) * intervalMs;
@@ -155,8 +158,9 @@ export async function pullFunding(
   info: InfoClient,
   counters: ArchiveCounters,
   shouldContinue: () => boolean = () => true,
+  coins: ReadonlyArray<string> = ARCHIVE_COINS,
 ): Promise<void> {
-  for (const coin of ARCHIVE_COINS) {
+  for (const coin of coins) {
     const stored = latestFundingTime(db, coin);
     let cursor = stored === null ? FUNDING_ORIGIN_MS : stored + 1;
     let pages = 0;
@@ -195,7 +199,10 @@ export async function pollAssetContexts(
   ts: number,
 ): Promise<void> {
   const raw = await info.post("metaAndAssetCtxs", { type: "metaAndAssetCtxs" });
-  counters.assetCtx += upsertAssetContexts(db, parseAssetContexts(raw, ARCHIVE_COINS, ts));
+  // The whole universe, not just the followed coins: the call already carries
+  // every listed asset, so an asset nobody follows still accumulates the OI and
+  // funding history that makes it worth looking at later.
+  counters.assetCtx += upsertAssetContexts(db, parseAssetContexts(raw, null, ts));
 }
 
 /** Sample the top of book and the depth behind it, one call per coin. */
@@ -204,8 +211,9 @@ export async function pollBookSummaries(
   info: InfoClient,
   counters: ArchiveCounters,
   ts: number,
+  coins: ReadonlyArray<string> = ARCHIVE_COINS,
 ): Promise<void> {
-  for (const coin of ARCHIVE_COINS) {
+  for (const coin of coins) {
     const raw = await info.post("l2Book", { type: "l2Book", coin });
     const row = summariseBook(raw, coin, ts);
     if (row !== null) {
@@ -277,30 +285,46 @@ export async function runArchiver(input: {
   readonly info: InfoClient;
   readonly shouldContinue: () => boolean;
   readonly sleep: (ms: number) => Promise<void>;
+  /** The coins to record, re-read each tick. Defaults to the control file. */
+  readonly readCoins?: () => ReadonlyArray<string>;
 }): Promise<void> {
   const { db, info, shouldContinue, sleep } = input;
+  const readCoins = input.readCoins ?? readArchiveCoinsFromDisk;
   const counters = emptyCounters();
   const startedAt = Date.now();
 
   // The backfill can take minutes on a cold start, so it checks the stop
   // signal between series and between funding pages: a kill during startup
   // should end the process promptly, not after three years of funding.
-  logInfo("archiver: starting backfill");
-  await backfillCandles(db, info, counters, Date.now(), shouldContinue);
-  await pullFunding(db, info, counters, shouldContinue);
+  let coins = readCoins();
+  logInfo(`archiver: starting backfill for ${coins.join(" ")}`);
+  await backfillCandles(db, info, counters, Date.now(), shouldContinue, coins);
+  await pullFunding(db, info, counters, shouldContinue, coins);
   logInfo("archiver: backfill complete");
 
   let lastFundingAt = Date.now();
+  const hydrated = new Set(coins);
 
   while (shouldContinue()) {
     const tickStartedAt = Date.now();
     const ts = alignToMinute(tickStartedAt);
     try {
-      await pollCandles(db, info, counters, tickStartedAt);
+      // Re-read attention every tick. Following an asset has to start
+      // recording it now — a user who adds it to a watchlist and opens its
+      // chart is asking a question about the next few minutes.
+      coins = readCoins();
+      const fresh = coins.filter((coin) => !hydrated.has(coin));
+      if (fresh.length > 0) {
+        logInfo(`archiver: hydrating ${fresh.join(" ")}`);
+        await backfillCandles(db, info, counters, tickStartedAt, shouldContinue, fresh);
+        await pullFunding(db, info, counters, shouldContinue, fresh);
+        for (const coin of fresh) hydrated.add(coin);
+      }
+      await pollCandles(db, info, counters, tickStartedAt, coins);
       await pollAssetContexts(db, info, counters, ts);
-      await pollBookSummaries(db, info, counters, ts);
+      await pollBookSummaries(db, info, counters, ts, coins);
       if (tickStartedAt - lastFundingAt >= FUNDING_INTERVAL_MS) {
-        await pullFunding(db, info, counters, shouldContinue);
+        await pullFunding(db, info, counters, shouldContinue, coins);
         lastFundingAt = tickStartedAt;
       }
     } catch (error) {

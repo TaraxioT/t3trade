@@ -298,7 +298,9 @@ it.effect("registers annotated tools and preserves authenticated request context
 const publishWithManyIssues = {
   expectedVersion: 0,
   strategy: {
-    market: "SOL",
+    // Empty, not merely unusual: any asset the venue lists is now a legal
+    // market, so an invalid one has to be invalid in shape.
+    market: "   ",
     intent: "sideways",
     entry: {
       triggers: [{ description: "reclaim", priceLevel: "63206" }],

@@ -82,6 +82,8 @@ import { publishPlanWithAftermath } from "./trading/TradingPlanPublication.ts";
 import { composePlanRevisionNote } from "./trading/TradingPlanRevisionNote.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
+import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
+import { marketRef } from "@t3tools/trading-contracts/primitives";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
@@ -402,6 +404,7 @@ const makeWsRpcLayer = (
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
       const archiveSupervisor = yield* ArchiveSupervisor;
+      const followSetRegistry = yield* FollowSetRegistry;
       const tradingUniverse = yield* TradingUniverse;
       const tradingMarketPrice = yield* TradingMarketPrice;
       const tradingMarketChart = yield* TradingMarketChart;
@@ -1511,6 +1514,9 @@ const makeWsRpcLayer = (
                   }),
                 );
               }
+              // Opening a chart is attention: it starts (or extends) recording
+              // for that market, so the next question about it has data.
+              yield* followSetRegistry.noteChartOpened(marketRef(input.market));
               const maxBars = 120;
               const chart = yield* tradingMarketChart.read({
                 market: input.market,

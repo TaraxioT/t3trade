@@ -12,6 +12,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { ArchiveSupervisor } from "../../trading/ArchiveSupervisor.ts";
+import { FollowSetRegistry } from "../../trading/FollowSetRegistry.ts";
 import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
 import { TradingRuntimeLease } from "../../trading/TradingRuntimeLease.ts";
 import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
@@ -105,6 +106,13 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
+          Layer.succeed(FollowSetRegistry, {
+            start: () => Effect.void,
+            list: Effect.succeed([]),
+            noteChartOpened: () => Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
           Layer.succeed(AgentAwarenessRelay.AgentAwarenessRelay, {
             publishThread: () => Effect.void,
             start: () => {
@@ -193,6 +201,16 @@ describe("OrchestrationReactor", () => {
                   return Effect.void;
                 },
                 health: Effect.succeed(IDLE_ARCHIVE_HEALTH),
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(FollowSetRegistry, {
+                start: () => {
+                  started.push("follow-set");
+                  return Effect.void;
+                },
+                list: Effect.succeed([]),
+                noteChartOpened: () => Effect.void,
               }),
             ),
             Layer.provideMerge(

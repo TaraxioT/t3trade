@@ -116,6 +116,7 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
+import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
@@ -889,6 +890,15 @@ const buildAppUnderTest = (options?: {
             restarts: 0,
             stoppedReason: "no archiver in tests",
           }),
+        }),
+      ),
+      // Opening a chart tells the registry to follow that market. Nothing is
+      // recording in tests, so noting it is all there is to do.
+      Layer.provide(
+        Layer.mock(FollowSetRegistry)({
+          start: () => Effect.void,
+          list: Effect.succeed([]),
+          noteChartOpened: () => Effect.void,
         }),
       ),
       // The universe RPC lists what the venue trades. No exchange here, and a

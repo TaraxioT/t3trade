@@ -30,6 +30,7 @@ import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import { AutoMissionConfigLive } from "./AutoMissionConfig.ts";
 import { ArchiveSupervisorLive } from "./ArchiveSupervisor.ts";
+import { FollowSetRegistryLive } from "./FollowSetRegistry.ts";
 import { TradingMarketChartLive } from "./TradingMarketChart.ts";
 import { TradingUniverseLive } from "./TradingUniverse.ts";
 import { TradingMarketPriceLive } from "./TradingMarketPrice.ts";
@@ -258,6 +259,8 @@ export const TradingLayerLive = Layer.mergeAll(
   // The market archiver, supervised: spawned while this process holds the
   // trading lease, restarted with backoff, its heartbeat read off stdout.
   ArchiveSupervisorLive,
+  // What attention is on, published to the archiver so recording follows it.
+  FollowSetRegistryLive,
   TradingExecutionLayerLive,
   HyperliquidWsLayerLive,
 ).pipe(Layer.provideMerge(infoWithHttp));

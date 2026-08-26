@@ -35,7 +35,8 @@ export interface AssetCtxRow {
  */
 export function parseAssetContexts(
   raw: unknown,
-  coins: ReadonlyArray<string>,
+  /** Which coins to keep, or `null` for the whole universe the call returned. */
+  coins: ReadonlyArray<string> | null,
   ts: number,
 ): ReadonlyArray<AssetCtxRow> {
   const pair = asArray(raw);
@@ -55,7 +56,10 @@ export function parseAssetContexts(
   });
 
   const rows: AssetCtxRow[] = [];
-  for (const coin of coins) {
+  // One `metaAndAssetCtxs` call already carries every listed asset's open
+  // interest, funding and volume, so keeping the lot costs nothing beyond the
+  // rows — and it is the only history an unfollowed asset ever gets.
+  for (const coin of coins ?? [...indexByCoin.keys()]) {
     const index = indexByCoin.get(coin);
     const context = index === undefined ? null : asRecord(contexts[index]);
     if (context === null) {
