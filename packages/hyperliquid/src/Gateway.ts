@@ -30,6 +30,7 @@ import {
   type MarketHistoryRequest,
   type OrderBook,
   type ResolvedMarket,
+  type TradingUniverseEntry,
 } from "@t3tools/trading-contracts/market";
 import type { EvmAddress } from "@t3tools/trading-contracts/primitives";
 import { HyperliquidInfoClient } from "./InfoClient.ts";
@@ -76,6 +77,8 @@ export class HyperliquidGateway extends Context.Service<
   {
     /** Resolve canonical market identifiers from live metadata. */
     readonly resolveMarket: (symbol: string) => Effect.Effect<ResolvedMarket, GatewayError>;
+    /** The venue's whole tradable universe, for search and watchlists. */
+    readonly listUniverse: Effect.Effect<ReadonlyArray<TradingUniverseEntry>, GatewayError>;
     /** Mark/mid/oracle/funding/OI/day-volume/BBO + computed 24h change. */
     readonly getMarketSnapshot: (
       symbol: string,
@@ -316,6 +319,8 @@ const makeHyperliquidGateway = Effect.gen(function* () {
       return address;
     });
 
+  const listUniverse = resolver.listUniverse;
+
   const resolveMarket = Effect.fn("HyperliquidGateway.resolveMarket")(function* (symbol: string) {
     return yield* resolver.resolveMarket(symbol);
   });
@@ -544,6 +549,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
 
   return HyperliquidGateway.of({
     resolveMarket,
+    listUniverse,
     getMarketSnapshot,
     getMarketHistory,
     getOrderBook,

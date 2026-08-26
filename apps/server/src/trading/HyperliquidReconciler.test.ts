@@ -101,6 +101,7 @@ const resetAccountReads = () => {
 const makeMutableGateway = (ref: Ref.Ref<FakeState>) =>
   Layer.succeed(HyperliquidGateway, {
     resolveMarket: () => Effect.die("not used"),
+    listUniverse: Effect.die("not used"),
     getMarketSnapshot: () => Effect.die("not used"),
     getMarketHistory: () => Effect.die("not used"),
     getOrderBook: () => Effect.die("not used"),

@@ -92,6 +92,7 @@ import type {
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
   TradingMarketChartView,
+  TradingUniverseView,
   TradingMissionSnapshot,
 } from "./trading.ts";
 import { EnvironmentId } from "./baseSchemas.ts";
@@ -1366,6 +1367,7 @@ export interface EnvironmentApi {
     getTradingMarketChart: (
       input: OrchestrationGetTradingMarketChartInput,
     ) => Promise<TradingMarketChartView>;
+    getTradingUniverse: () => Promise<TradingUniverseView>;
     reviseTradingPlan: (
       input: OrchestrationReviseTradingPlanInput,
     ) => Promise<OrchestrationReviseTradingPlanResult>;

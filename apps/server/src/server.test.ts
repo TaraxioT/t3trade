@@ -115,6 +115,7 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
+import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
 import { TradingMissionServiceLive } from "./trading/TradingMissionService.ts";
@@ -422,6 +423,7 @@ const buildAppUnderTest = (options?: {
     tradingAutoMission?: Partial<TradingAutoMission["Service"]>;
     tradingMarketPrice?: Partial<TradingMarketPrice["Service"]>;
     tradingMarketChart?: Partial<TradingMarketChart["Service"]>;
+    tradingUniverse?: Partial<TradingUniverse["Service"]>;
     tradingPlanProtection?: Partial<TradingPlanProtectionService["Service"]>;
     tradingWorkingOrder?: Partial<TradingWorkingOrderService["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
@@ -871,6 +873,14 @@ const buildAppUnderTest = (options?: {
         Layer.mock(TradingMarketChart)({
           read: () => Effect.succeed(null),
           ...options?.layers?.tradingMarketChart,
+        }),
+      ),
+      // The universe RPC lists what the venue trades. No exchange here, and a
+      // client that gets an empty list simply has nothing to pick from.
+      Layer.provide(
+        Layer.mock(TradingUniverse)({
+          list: Effect.succeed([]),
+          ...options?.layers?.tradingUniverse,
         }),
       ),
       // The WS turn-start path asks the coordinator whether the thread belongs

@@ -57,6 +57,14 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-market-chart",
       tag: ORCHESTRATION_WS_METHODS.getTradingMarketChart,
     }),
+    // The venue's listed assets. Held long because the list changes when a
+    // market is added or delisted, which is not a per-keystroke event; the
+    // server caches under it too.
+    tradingUniverse: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-universe",
+      tag: ORCHESTRATION_WS_METHODS.getTradingUniverse,
+      staleTimeMs: 60_000,
+    }),
 
     // §14.7's deterministic controls. Ordinary environment commands: a
     // workspace button dispatches straight to the server, which is the whole

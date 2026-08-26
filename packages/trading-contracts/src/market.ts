@@ -16,7 +16,7 @@
  * @module MarketReads
  */
 import { Schema } from "effect";
-import { Price, TradingMarket, UnixMillis, UsdAmount } from "./primitives.ts";
+import { Price, TradingMarket, TradingVenue, UnixMillis, UsdAmount } from "./primitives.ts";
 import { TradingTimeframe } from "./strategy.ts";
 
 // -- §13 freshness windows ---------------------------------------------------
@@ -90,6 +90,30 @@ export const ResolvedMarket = Schema.Struct({
   available: Schema.Boolean,
 });
 export type ResolvedMarket = typeof ResolvedMarket.Type;
+
+/**
+ * One asset in the venue's tradable universe, as a picker or watchlist needs
+ * it: enough to recognise the market and judge whether it is worth attention,
+ * and nothing more. Everything here comes off the single `metaAndAssetCtxs`
+ * read the resolver already makes, so listing the universe costs no extra call.
+ */
+export const TradingUniverseEntry = Schema.Struct({
+  venue: TradingVenue,
+  asset: TradingMarket,
+  /** Mark price. */
+  mark: Price,
+  /** Change since the prior day's close, in percent. */
+  change24hPct: Schema.Number,
+  /** 24h notional volume, USD. */
+  dayVolumeUsd: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Open interest, base units. */
+  openInterest: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Exchange leverage ceiling for this market. */
+  maxLeverage: Schema.Number.check(Schema.isGreaterThan(0)),
+  /** False for a delisted market: still listed, no longer opening positions. */
+  available: Schema.Boolean,
+});
+export type TradingUniverseEntry = typeof TradingUniverseEntry.Type;
 
 // -- best bid / offer --------------------------------------------------------
 

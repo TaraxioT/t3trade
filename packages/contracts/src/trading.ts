@@ -31,6 +31,7 @@ import {
   TradingMissionStatus,
   TradingOrderIntent,
   TradingOrderTimeInForce,
+  TradingUniverseEntry,
 } from "@t3tools/trading-contracts";
 import * as Schema from "effect/Schema";
 
@@ -359,6 +360,19 @@ export const TradingMissionSnapshot = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type TradingMissionSnapshot = typeof TradingMissionSnapshot.Type;
+
+/**
+ * The venue's tradable universe, as the asset picker and watchlist search it.
+ *
+ * Served whole rather than searched server-side: it is a couple of hundred
+ * rows off one cached exchange read, and a client that holds it can filter
+ * without a round trip per keystroke.
+ */
+export const TradingUniverseView = Schema.Struct({
+  assets: Schema.Array(TradingUniverseEntry),
+  observedAt: IsoDateTime,
+});
+export type TradingUniverseView = typeof TradingUniverseView.Type;
 
 // -- client-dispatchable commands -------------------------------------------
 

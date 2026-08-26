@@ -16,7 +16,11 @@
  */
 import { Context, Effect, Layer, Ref } from "effect";
 import * as Clock from "effect/Clock";
-import { MARKET_FRESHNESS, type ResolvedMarket } from "@t3tools/trading-contracts/market";
+import {
+  MARKET_FRESHNESS,
+  type ResolvedMarket,
+  type TradingUniverseEntry,
+} from "@t3tools/trading-contracts/market";
 import { HyperliquidInfoClient } from "./InfoClient.ts";
 import {
   HyperliquidDecodeError,
@@ -67,6 +71,15 @@ export class HyperliquidMarketResolver extends Context.Service<
     readonly resolveMarket: (
       symbol: string,
     ) => Effect.Effect<ResolvedMarket, HyperliquidMarketError | HyperliquidInfoError>;
+
+    /**
+     * The whole tradable universe, from the same cache `resolveMarket` scans.
+     *
+     * A picker searching for an asset and a resolve of one asset read the same
+     * `metaAndAssetCtxs` response, so listing costs nothing the resolver was
+     * not already paying.
+     */
+    readonly listUniverse: Effect.Effect<ReadonlyArray<TradingUniverseEntry>, HyperliquidInfoError>;
   }
 >()("@t3tools/hyperliquid/MarketResolver/HyperliquidMarketResolver") {}
 
@@ -141,7 +154,32 @@ const makeHyperliquidMarketResolver = Effect.gen(function* () {
     return resolved;
   });
 
-  return HyperliquidMarketResolver.of({ resolveMarket });
+  const listUniverse = Effect.gen(function* () {
+    yield* refreshIfStale;
+    const { rows } = yield* Ref.get(cache);
+    const entries: Array<TradingUniverseEntry> = [];
+    for (const row of rows) {
+      const mark = Number(row.context.markPx);
+      const previous = Number(row.context.prevDayPx);
+      // A market whose mark does not parse is not one anyone can act on, so it
+      // is left out rather than served as a NaN the client has to guard.
+      if (!Number.isFinite(mark) || mark <= 0) continue;
+      entries.push({
+        venue: "hyperliquid",
+        asset: row.universe.name,
+        mark,
+        change24hPct:
+          Number.isFinite(previous) && previous > 0 ? ((mark - previous) / previous) * 100 : 0,
+        dayVolumeUsd: Math.max(0, Number(row.context.dayNtlVlm) || 0),
+        openInterest: Math.max(0, Number(row.context.openInterest) || 0),
+        maxLeverage: row.universe.maxLeverage,
+        available: row.universe.isDelisted !== true,
+      });
+    }
+    return entries;
+  });
+
+  return HyperliquidMarketResolver.of({ resolveMarket, listUniverse });
 });
 
 /** Live layer. Declared after `makeHyperliquidMarketResolver` (const is not hoisted). */

@@ -30,6 +30,7 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTradingMarketChart]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.getTradingUniverse]: AuthOrchestrationReadScope,
   // A drag publishes a plan and moves the exchange stop. It is an operate.
   [ORCHESTRATION_WS_METHODS.reviseTradingPlan]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,

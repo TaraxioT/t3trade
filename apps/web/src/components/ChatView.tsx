@@ -6598,6 +6598,9 @@ function ChatViewContent(props: ChatViewProps) {
                               ? {
                                   assetPicker: (
                                     <TradingAssetPicker
+                                      environmentId={
+                                        activeThread?.environmentId ?? primaryEnvironmentId
+                                      }
                                       value={draftTradingMarket}
                                       onChange={setDraftTradingMarket}
                                     />

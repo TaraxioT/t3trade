@@ -81,6 +81,7 @@ import { TradingJournalService } from "./trading/TradingJournalService.ts";
 import { publishPlanWithAftermath } from "./trading/TradingPlanPublication.ts";
 import { composePlanRevisionNote } from "./trading/TradingPlanRevisionNote.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
+import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
@@ -399,6 +400,7 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
+      const tradingUniverse = yield* TradingUniverse;
       const tradingMarketPrice = yield* TradingMarketPrice;
       const tradingMarketChart = yield* TradingMarketChart;
       const tradingTurnCoordinator = yield* TradingTurnCoordinator;
@@ -1451,6 +1453,30 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to load the trading mission snapshot",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTradingUniverse]: () =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingUniverse,
+            Effect.gen(function* () {
+              // Unentitled by design: this is the list of what the venue
+              // trades, the same public data the exchange serves anyone. It
+              // carries no account, no mission, and no position.
+              const assets = yield* tradingUniverse.list;
+              const observedAt = yield* nowIso;
+              return { assets, observedAt };
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logWarning("trading universe load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load the trading universe",
                     cause,
                   }),
               ),

@@ -30,6 +30,7 @@ import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import { AutoMissionConfigLive } from "./AutoMissionConfig.ts";
 import { TradingMarketChartLive } from "./TradingMarketChart.ts";
+import { TradingUniverseLive } from "./TradingUniverse.ts";
 import { TradingMarketPriceLive } from "./TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
@@ -85,6 +86,9 @@ export const TradingCoreLayerLive = Layer.mergeAll(
   // The chart surface pairs the same live snapshot with candle history; it
   // shares the read gateway so the two never disagree on freshness.
   TradingMarketChartLive.pipe(Layer.provide(gatewayWithRead)),
+  // What the venue lists, for the picker and the watchlist search. Same read
+  // gateway again, so the universe and a resolve of one asset never disagree.
+  TradingUniverseLive.pipe(Layer.provide(gatewayWithRead)),
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
 );

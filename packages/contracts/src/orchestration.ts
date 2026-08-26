@@ -32,6 +32,7 @@ import {
   TradingMarket,
   TradingMissionRunStartedPayload,
   TradingMissionSnapshot,
+  TradingUniverseView,
   TradingMissionStatusChangedPayload,
   TradingMissionStrategyPublishedPayload,
   TradingMissionWatchCancelledPayload,
@@ -52,6 +53,7 @@ export const ORCHESTRATION_WS_METHODS = {
   searchThreads: "orchestration.searchThreads",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getTradingMissionSnapshot: "orchestration.getTradingMissionSnapshot",
+  getTradingUniverse: "orchestration.getTradingUniverse",
   getTradingMarketChart: "orchestration.getTradingMarketChart",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
   subscribeShell: "orchestration.subscribeShell",
@@ -1821,6 +1823,10 @@ export const OrchestrationRpcSchemas = {
   getTradingMissionSnapshot: {
     input: Schema.Struct({}),
     output: TradingMissionSnapshot,
+  },
+  getTradingUniverse: {
+    input: Schema.Struct({}),
+    output: TradingUniverseView,
   },
   getTradingMarketChart: {
     input: OrchestrationGetTradingMarketChartInput,
