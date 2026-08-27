@@ -141,3 +141,63 @@ by the sidebar (R2-1), and the round's fill test uncovered that manual close
 is broken whenever the mandatory stop rests (R2-2) with an exchange-side
 liquidation as the exit of last resort (R2-5). Phase 3's mechanism passes;
 phases 3+7's promise to the human trader only half-lands.
+
+## Round 3 — 2026-08-27 — Trade home (Phase 4)
+
+Same seeded environment. Screenshots: `evidence/final-form/r3-trade-home-light.png`,
+`r3-trade-home-dark.png` (analyzed with agy-vision).
+
+| Acceptance | Result | Evidence |
+| --- | --- | --- |
+| Fresh launch opens /trade | Pass | observed three times (both boot pairings land on `/trade`; with the toggle on, `/` redirects to `/trade`, `routes/_chat.index.tsx:42-46`) |
+| `openOnTradeHome` off → classic draft landing | **Fail** | toggle at `settings/trading` ("Open on the trade home") persists; with it off, `/` lands on `/draft/<uuid>` — which crashes 100% of the time (R3-1) |
+| Universe search adds any Hyperliquid asset; recording starts | Pass | SOL on the fresh boot (R1: follow published ≤30s, 32k bars in 46s) and HYPE on the seed (watchlist row live, chart entitled, follow set carrying it). Removal is the reverse state and works: row gone + `trading_watchlist` empty, HYPE stayed followed only via the recent-chart decay window — D2's union behaving as designed. The seed's wake watches (52 active legacy rows, `deliver='wake'` backfilled by 074) pulled BTC/ETH back into recording |
+| Positions show provenance + authority labels | Pass (manual arm only) | "Stop on exchange" (D5 provenance) + "Manual" (authority) seen in R2. The mission-authority arm was not observable: the seeded account is flat and all 23 missions are settled/revoked |
+| Coding threads reachable from sidebar/palette | Partial | existing threads open from the sidebar and from the palette's "Recent Threads" (opened "Hi there" cleanly); the palette carries the "Open trade home" action and it works. But **creating** a new thread crashes (R3-1) |
+
+### Findings
+
+- **[Critical] R3-1 — the draft landing hard-crashes; new coding threads
+  cannot be created.** Every fresh draft (`/draft/<uuid>`) dies with the
+  full-page error boundary: "Base UI: SelectRootContext is missing. Select
+  parts must be placed within <Select.Root>". Reproduced three ways: (a)
+  toggle `openOnTradeHome` off and open `/`; (b) "New thread" → pick any
+  project in the palette; (c) Round 1's phantom tab on first pairing — that
+  unexplained tab was the app auto-opening a draft landing, crashing. Root
+  cause: `TradingAssetPicker` uses
+  `<ComboboxTrigger render={<ComposerSelectControl …/>}>`
+  (`apps/web/src/components/trading/TradingAssetPicker.tsx`, trigger at the
+  `AssetCombobox` return; `ComposerSelectControl` extends Base UI
+  `SelectTrigger`, `apps/web/src/components/chat/ComposerControl.tsx:60-70`),
+  mounted unconditionally into the draft composer footer by
+  `ChatView.tsx:6597-6608`. A Select trigger rendered under a Combobox root
+  throws for want of `Select.Root`. Trading-first dogfooding never opens a
+  draft, so it shipped. This breaks: the toggle-off landing, New thread from
+  the sidebar, and the draft-hero mission-claiming path Phase 8 plans to
+  retire.
+- **[Low] R3-2 — chart Y-axis label collision and raw price precision.**
+  In the light screenshot the session-level tag `vwap 82.13` overlaps the
+  axis label `80.81882328` (8 decimals, no tick rounding) on the HYPE 1m
+  chart. Cosmetic, but the 8-decimal label suggests the axis formatter
+  misses HYPE's tick size. `MarketChartPanel.tsx` price gutter; revisit in
+  Round 5.
+- **[Info] R3-3 — "Go to threads" is a no-op while trading-first is on.**
+  The logo link navigates to `/`, which the index route immediately
+  redirects back to `/trade` when `openOnTradeHome` is on (clicked; observed
+  bounce-back at 12:51). Threads are reachable only via thread rows or the
+  palette.
+- **[Note] R3-4 — sidebar title truncation is seed data, not UI.** The
+  "rade ETH on the 1m…" row is stored truncated in `projection_threads`
+  (verified by query); no UI defect.
+
+### Verdict
+
+The trade home itself is right: trading-first landing, honest empty states,
+universe search that starts recording, watchlist round-trip, palette
+integration, and the provenance/authority vocabulary — all present and
+working in both themes (one cosmetic chart-label overlap). But the round
+found the most severe defect of the whole verification: the classic draft
+landing — the explicit off-path of the phase's own headline feature — and
+with it all new-thread creation, crashes on main. Phase 4's checkbox says
+"landed"; its acceptance path "toggle off → classic draft landing" cannot be
+walked by a user.
