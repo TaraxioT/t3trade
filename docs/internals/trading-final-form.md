@@ -164,30 +164,41 @@ After Phase 1. **Accept:** a fill updates positions within ~1s with no polling.
 Notes: `withdrawableUsd` is `null` — nothing persists it today, and a null is
 honest; the `manual` authority arm is reserved for Phase 7.
 
-### Phase 4 — Watchlist + trading-first home
+### Phase 4 — Watchlist + trading-first home _(landed)_
 
-- [ ] Migration 074 part 1: `trading_watchlist` (venue, asset, added_at, position).
-- [ ] New `apps/web/src/components/trading/`: `TradeHomePanel.tsx`,
-      `WatchlistPanel.tsx`, `AccountPositionsPanel.tsx`, `AlertFeedPanel.tsx`; new
-      `routes/trade.tsx` following the `routes/settings.trading.tsx` pattern.
-- [ ] Four mount points: route registration, sidebar entry, command palette
-      entries, a default-view setting opening on the trade home.
-- [ ] Watchlist rows and chart-opens feed `FollowSetRegistry`.
+- [x] Migration 074 part 1: `trading_watchlist` (venue, asset, added_at, position).
+- [x] New `apps/web/src/components/trading/`: `TradeHomePanel.tsx`,
+      `WatchlistPanel.tsx`, `AccountPositionsPanel.tsx`, `AlertFeedPanel.tsx`,
+      `UniverseAssetSearch.tsx`; new `routes/trade.tsx`. The archiver-health
+      line (2.4's deferred surface) rides the trade home.
+- [x] Mount points: route registration, sidebar entry, "Open trade home"
+      palette action, `openOnTradeHome` client setting (default on) redirecting
+      the index route. An "Add to watchlist…" palette entry was skipped — it
+      needs a palette sub-view, not a one-liner.
+- [x] Watchlist rows feed `FollowSetRegistry` directly (the registry reads the
+      table); chart-opens ping via the existing chart read path. A missionless
+      watchlist asset shows an honest placeholder until Phase 6 entitles it.
 
 After 1 and 3. Shares 074 and `ws.ts` with Phase 5 — one writer.
+Notes: per-asset "recording since" awaits a per-asset coverage source; the
+watchlist renders in persisted position order (no reorder RPC yet).
 
 ### Phase 5 — Alerts become a product
 
-- [ ] Migration 074 part 2: `trading_watches` rebuilt (nullable `mission_id`,
+- [x] Migration 074 part 2: `trading_watches` rebuilt (nullable `mission_id`,
       venue/asset, `account_id`, `deliver`, `rearm_json`); new
-      `trading_alert_events`. Recreate 035's dedupe + status indexes; backfill
-      `deliver='wake'`, `venue='hyperliquid'`.
-- [ ] `WatchEvaluator.ts` subscriptions key off the registry; `processFire`
-      branches on `deliver`; repeat semantics for notify watches; agent wakes stay
-      single-fire; the hardcoded `findActiveMission("local")` dies.
-- [ ] Account-scoped watch CRUD, arm/cancel/list RPCs, alert-feed read + push.
-- [ ] Arming form in `AlertFeedPanel`; chart-drag arming (with Phase 6).
-- [ ] Desktop OS notification via one Electron IPC addition.
+      `trading_alert_events`. 035's surviving index recreated; backfill
+      `deliver='wake'`, `venue='hyperliquid'`; round-trip migration test.
+- [x] `WatchEvaluator.ts` subscriptions key off the registry (30s reconcile
+      loop); `processFire` branches on `deliver`; pure-notify watches re-arm
+      after cooldown; agent wakes stay single-fire; `findActiveMission("local")`
+      and the hardcoded market list are dead.
+- [x] Account-scoped watch CRUD, arm/cancel/list RPCs, alert-feed read; alert
+      appends ring the existing account doorbell rather than a second stream.
+- [~] Arming form in `AlertFeedPanel` landed; chart-drag arming waits for
+  Phase 6's standalone chart.
+- [x] Desktop OS notification via one Electron IPC addition; web feature-detects
+      and skips.
 
 After 1, 2.2, 3. **Accept:** a user with no mission arms an alert; it fires into
 the feed and as an OS notification; existing wake tests pass unchanged.
