@@ -35,6 +35,15 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.subscribeTradingAccount]: AuthOrchestrationReadScope,
   // A drag publishes a plan and moves the exchange stop. It is an operate.
   [ORCHESTRATION_WS_METHODS.reviseTradingPlan]: AuthOrchestrationOperateScope,
+  // Arming, cancelling, and watchlist edits change standing server state;
+  // the three list reads are reads like every other trading view.
+  [ORCHESTRATION_WS_METHODS.armTradingWatch]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_WS_METHODS.cancelTradingWatch]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_WS_METHODS.listTradingWatches]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.listTradingAlerts]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_WS_METHODS.removeTradingWatchlistEntry]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_WS_METHODS.listTradingWatchlist]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
   [WS_METHODS.serverProbe]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetConfig]: AuthOrchestrationReadScope,

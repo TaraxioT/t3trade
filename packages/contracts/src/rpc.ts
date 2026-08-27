@@ -962,6 +962,69 @@ export const WsOrchestrationGetTradingMarketChartRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationArmTradingWatchRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.armTradingWatch,
+  {
+    payload: OrchestrationRpcSchemas.armTradingWatch.input,
+    success: OrchestrationRpcSchemas.armTradingWatch.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationCancelTradingWatchRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.cancelTradingWatch,
+  {
+    payload: OrchestrationRpcSchemas.cancelTradingWatch.input,
+    success: OrchestrationRpcSchemas.cancelTradingWatch.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationListTradingWatchesRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listTradingWatches,
+  {
+    payload: OrchestrationRpcSchemas.listTradingWatches.input,
+    success: OrchestrationRpcSchemas.listTradingWatches.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationListTradingAlertsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listTradingAlerts,
+  {
+    payload: OrchestrationRpcSchemas.listTradingAlerts.input,
+    success: OrchestrationRpcSchemas.listTradingAlerts.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationAddTradingWatchlistEntryRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry,
+  {
+    payload: OrchestrationRpcSchemas.addTradingWatchlistEntry.input,
+    success: OrchestrationRpcSchemas.addTradingWatchlistEntry.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationRemoveTradingWatchlistEntryRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.removeTradingWatchlistEntry,
+  {
+    payload: OrchestrationRpcSchemas.removeTradingWatchlistEntry.input,
+    success: OrchestrationRpcSchemas.removeTradingWatchlistEntry.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationListTradingWatchlistRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listTradingWatchlist,
+  {
+    payload: OrchestrationRpcSchemas.listTradingWatchlist.input,
+    success: OrchestrationRpcSchemas.listTradingWatchlist.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationReviseTradingPlanRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.reviseTradingPlan,
   {
@@ -1139,6 +1202,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTradingMarketChartRpc,
   WsOrchestrationGetTradingUniverseRpc,
   WsOrchestrationGetTradingAccountViewRpc,
+  WsOrchestrationArmTradingWatchRpc,
+  WsOrchestrationCancelTradingWatchRpc,
+  WsOrchestrationListTradingWatchesRpc,
+  WsOrchestrationListTradingAlertsRpc,
+  WsOrchestrationAddTradingWatchlistEntryRpc,
+  WsOrchestrationRemoveTradingWatchlistEntryRpc,
+  WsOrchestrationListTradingWatchlistRpc,
   WsOrchestrationReviseTradingPlanRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,

@@ -46,11 +46,14 @@ export {
 } from "@t3tools/trading-contracts/mission";
 
 export {
+  DEFAULT_TRADING_VENUE,
   EvmAddress,
+  MarketRef,
   Price,
   TradingId,
   TradingMarket,
   TradingText,
+  TradingVenue,
   UnixMillis,
   UsdAmount,
 } from "@t3tools/trading-contracts/primitives";
@@ -91,12 +94,18 @@ export {
 export {
   findMisarmedEntryConditions,
   findUnarmedEntryConditions,
+  isWatchRefusal,
   MarketWatch,
   MisarmedEntryCondition,
   PersistedWatch,
   PersistedWatchStatus,
+  toMarketWatch,
+  toWatchCondition,
+  TradingWatchDeliver,
+  TradingWatchRearm,
   UnarmedEntryCondition,
   WatchArmedReason,
+  WatchCondition,
 } from "@t3tools/trading-contracts/watch";
 
 export {

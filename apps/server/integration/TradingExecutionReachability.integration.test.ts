@@ -91,6 +91,8 @@ import {
 } from "../src/trading/TradingMissionReactor.ts";
 import { TradingMarketArchiveLive } from "../src/trading/TradingMarketArchive.ts";
 import { TradingRuntimeLease } from "../src/trading/TradingRuntimeLease.ts";
+import { FollowSetRegistry } from "../src/trading/FollowSetRegistry.ts";
+import { TradingAlertService } from "../src/trading/TradingAlertService.ts";
 import { WatchEvaluatorLive } from "../src/trading/WatchEvaluator.ts";
 import { TradingMissionProjection } from "../src/trading/TradingMissionProjection.ts";
 import { TradingMissionService } from "../src/trading/TradingMissionService.ts";
@@ -508,6 +510,26 @@ function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
         // The evaluator computes `metric_derived` watches through the archive
         // seam; a missing archive file answers unavailable, never zero.
         Layer.provide(TradingMarketArchiveLive),
+        // The notify delivery route and the follow-set-driven subscriptions
+        // (final-form Phase 5). This proof only drives wake watches, so both
+        // are inert stand-ins.
+        Layer.provide(
+          Layer.mock(TradingAlertService)({
+            armWatch: () =>
+              Effect.succeed({ outcome: "rejected" as const, reason: "not in this proof" }),
+            cancelWatch: () => Effect.succeed(false),
+            listWatches: Effect.succeed([]),
+            append: () => Effect.void,
+            listAlerts: () => Effect.succeed([]),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(FollowSetRegistry)({
+            start: () => Effect.void,
+            list: Effect.succeed([]),
+            noteChartOpened: () => Effect.void,
+          }),
+        ),
       ),
     ),
     Layer.provideMerge(OrchestrationEngineLive),

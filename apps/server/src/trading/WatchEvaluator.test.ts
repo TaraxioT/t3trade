@@ -20,12 +20,19 @@ import { makeTradingMarketArchive } from "./TradingMarketArchive.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import type { TradingHarnessBinding, MarketWatch } from "./Schemas.ts";
+import * as Schema from "effect/Schema";
+
+import { MarketWatch, type TradingHarnessBinding } from "./Schemas.ts";
+
+const encodeWatchJson = Schema.encodeUnknownSync(Schema.fromJsonString(MarketWatch));
 import {
   TradingMarketArchive,
   type TradingMarketArchiveShape,
   type DerivedMetricResult,
 } from "./TradingMarketArchive.ts";
+import { FollowSetRegistryLive } from "./FollowSetRegistry.ts";
+import { TradingAccountProjectionLive } from "./TradingAccountProjection.ts";
+import { TradingAlertServiceLive } from "./TradingAlertService.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
@@ -165,9 +172,10 @@ const candleCloseWatch: MarketWatch = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // `trading_orders` arrives in 038 (the `order_update` watch reads it) and
-  // `peak_unrealised_pnl` in 045 (the `pnl_giveback` watch reads it).
-  yield* runMigrations({ toMigrationInclusive: 73 });
+  // `trading_orders` arrives in 038 (the `order_update` watch reads it),
+  // `peak_unrealised_pnl` in 045 (the `pnl_giveback` watch reads it), and the
+  // evaluator's tracked read selects the deliver/venue columns 074 adds.
+  yield* runMigrations({ toMigrationInclusive: 74 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -320,6 +328,12 @@ const layer = it.layer(
     Layer.provideMerge(TradingMissionServiceLive),
     Layer.provideMerge(TradingStrategyServiceLive),
     Layer.provideMerge(TradingWatchServiceLive),
+    // The notify delivery route (alert append + doorbell) and the follow-set
+    // read the subscription sync uses. Same fakes underneath as everything
+    // else: the stub gateway and the in-memory database.
+    Layer.provideMerge(TradingAlertServiceLive),
+    Layer.provideMerge(FollowSetRegistryLive),
+    Layer.provideMerge(TradingAccountProjectionLive),
     Layer.provideMerge(TradingEventInboxLive),
     Layer.provideMerge(fakeWebSocketClientLayer([])),
     Layer.provideMerge(stubGateway),
@@ -1347,6 +1361,178 @@ layer("WatchEvaluator", (it) => {
 
       NodeFS.rmSync(dir, { recursive: true, force: true });
       resetDerivedFake();
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // Delivery routes (final-form Phase 5): `notify` fires into the alert feed
+  // with no inbox and no mission; `both` does both; a repeat notify watch
+  // re-arms after its cooldown while wake watches stay single-fire.
+  // -------------------------------------------------------------------------
+
+  /** Insert an account-scoped (mission-less) watch row directly. */
+  const seedAccountWatch = (input: {
+    readonly id: string;
+    readonly watch: MarketWatch;
+    readonly deliver: "wake" | "notify" | "both";
+    readonly rearmJson?: string;
+  }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const market = "market" in input.watch ? input.watch.market : null;
+      yield* sql`
+        INSERT INTO trading_watches (
+          watch_id, mission_id, watch_json, status, version, created_at,
+          updated_at, venue, asset, account_id, deliver, rearm_json
+        ) VALUES (
+          ${input.id}, NULL, ${encodeWatchJson(input.watch)}, 'active', 1,
+          ${PAST_CLOSE}, ${PAST_CLOSE}, 'hyperliquid', ${market}, 'acct_1',
+          ${input.deliver}, ${input.rearmJson ?? null}
+        )
+      `;
+    });
+
+  const readAlerts = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{
+      readonly watch_id: string;
+      readonly asset: string;
+      readonly summary: string;
+      readonly fired_at: number;
+    }>`
+      SELECT watch_id, asset, summary, fired_at FROM trading_alert_events
+      ORDER BY fired_at ASC, event_id ASC
+    `;
+  });
+
+  it.effect("a mission-less notify watch fires into the alert feed, not the inbox", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_alert_events`;
+      // Stub mark is 3_100, so "mark above 3_000" matches.
+      yield* seedAccountWatch({
+        id: "aw_notify",
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "above",
+          price: 3_000,
+        },
+        deliver: "notify",
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const alerts = yield* readAlerts;
+      assert.equal(alerts.length, 1);
+      assert.equal(alerts[0]?.watch_id, "aw_notify");
+      assert.equal(alerts[0]?.asset, "ETH");
+      assert.match(alerts[0]?.summary ?? "", /crossed above 3000/);
+
+      // No mission, no inbox rows anywhere.
+      const inboxRows = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_event_inbox
+      `;
+      assert.equal(inboxRows[0]?.n, 0);
+
+      // Once-delivery: the watch is consumed like any other.
+      const status = yield* sql<{ readonly status: string }>`
+        SELECT status FROM trading_watches WHERE watch_id = 'aw_notify'
+      `;
+      assert.equal(status[0]?.status, "triggered");
+    }),
+  );
+
+  it.effect("a repeat notify watch re-arms after its cooldown and fires again", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_alert_events`;
+      const COOLDOWN = 5 * 60_000;
+      yield* seedAccountWatch({
+        id: "aw_repeat",
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "above",
+          price: 3_000,
+        },
+        deliver: "notify",
+        rearmJson: `{"mode":"repeat","cooldownMs":${COOLDOWN}}`,
+      });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      assert.equal((yield* readAlerts).length, 1);
+
+      // Re-armed, cooldown parked in next_evaluate_at.
+      const row = yield* sql<{
+        readonly status: string;
+        readonly next_evaluate_at: number | null;
+      }>`
+        SELECT status, next_evaluate_at FROM trading_watches
+        WHERE watch_id = 'aw_repeat'
+      `;
+      assert.equal(row[0]?.status, "active");
+      assert.equal(row[0]?.next_evaluate_at, NOW + COOLDOWN);
+
+      // Inside the cooldown: still one alert.
+      yield* TestClock.setTime(NOW + COOLDOWN - 1);
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      assert.equal((yield* readAlerts).length, 1);
+
+      // Past it: the second firing lands as a second append-only row.
+      yield* TestClock.setTime(NOW + COOLDOWN + 1);
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      assert.equal((yield* readAlerts).length, 2);
+    }),
+  );
+
+  it.effect("a mission watch delivering both wakes the harness AND feeds the alert", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_alert_events`;
+      const watch = yield* seed({
+        type: "price_cross",
+        market: "ETH",
+        priceSource: "mark",
+        direction: "above",
+        price: 3_000,
+      });
+      yield* sql`UPDATE trading_watches SET deliver = 'both' WHERE watch_id = ${watch.id}`;
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      // The wake half: one inbox event, exactly as a wake watch fires.
+      const inbox = yield* TradingEventInbox;
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.deduplicationKey, `price_cross:${watch.id}`);
+
+      // The notify half: one alert row. And single-fire — a wake half always
+      // consumes the watch, whatever the notify half might have wanted.
+      const alerts = yield* readAlerts;
+      assert.equal(alerts.length, 1);
+      assert.equal(alerts[0]?.watch_id, watch.id);
     }),
   );
 });

@@ -22,6 +22,8 @@ import {
 import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.ts";
 import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
 import { TradingAccountProjectionLive } from "./TradingAccountProjection.ts";
+import { TradingAlertServiceLive } from "./TradingAlertService.ts";
+import { TradingWatchlistServiceLive } from "./TradingWatchlistService.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingExecutionOutcomeLive } from "./TradingExecutionOutcome.ts";
@@ -279,4 +281,15 @@ export const TradingLayerLive = Layer.mergeAll(
   // `ws.ts` can serve the view and its subscription off the same instance the
   // reconciler and the projection pipeline publish into.
   TradingAccountProjectionLive,
+  // Account-scoped watches + the alert feed (Phase 5) and the watchlist
+  // (Phase 4). Both validate assets through the read gateway and ring the
+  // same account doorbell, so they are built on the same instances.
+  TradingAlertServiceLive.pipe(
+    Layer.provide(HyperliquidReadLayerLive),
+    Layer.provide(TradingAccountProjectionLive),
+  ),
+  TradingWatchlistServiceLive.pipe(
+    Layer.provide(HyperliquidReadLayerLive),
+    Layer.provide(TradingAccountProjectionLive),
+  ),
 ).pipe(Layer.provideMerge(infoWithHttp));

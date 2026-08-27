@@ -907,6 +907,39 @@ export function toWatchCondition(watch: MarketWatch): WatchCondition {
   }
 }
 
+/**
+ * Where a firing goes — final-form Phase 5.
+ *
+ * `wake` is the original behaviour and stays byte-identical: an inbox event
+ * plus an orchestration announcement that wakes the mission's harness. `notify`
+ * appends a `trading_alert_events` row and rings the account doorbell — no
+ * inbox, no reactor, no mission required. `both` does both, and its wake half
+ * keeps every wake rule (single-fire included).
+ */
+export const TradingWatchDeliver = Schema.Literals(["wake", "notify", "both"]);
+export type TradingWatchDeliver = typeof TradingWatchDeliver.Type;
+
+/** The floor a repeat alert's cooldown is validated against: one minute. */
+export const WATCH_REARM_MIN_COOLDOWN_MILLIS = 60_000;
+
+/**
+ * What happens to a watch after it fires.
+ *
+ * `once` (and an absent re-arm) is every watch's historic behaviour: the fire
+ * consumes it. `repeat` is legal only on a `notify` watch — a wake is a turn
+ * of harness attention and stays single-fire — and re-arms the watch after
+ * `cooldownMs`, so a standing alert ("tell me whenever ETH prints a 2× volume
+ * bar") keeps telling without spamming a fire per sweep.
+ */
+export const TradingWatchRearm = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal("once") }),
+  Schema.Struct({
+    mode: Schema.Literal("repeat"),
+    cooldownMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(WATCH_REARM_MIN_COOLDOWN_MILLIS)),
+  }),
+]);
+export type TradingWatchRearm = typeof TradingWatchRearm.Type;
+
 /** Watch lifecycle - spec §11.3. */
 export const PersistedWatchStatus = Schema.Literals([
   "active",

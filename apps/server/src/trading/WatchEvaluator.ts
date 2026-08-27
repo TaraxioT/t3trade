@@ -38,37 +38,43 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { type PersistenceSqlError } from "../persistence/Errors.ts";
+import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { INTERVAL_MS } from "./archive/config.ts";
-import type { MarketWatch, PersistedWatch } from "./Schemas.ts";
+import { FollowSetRegistry } from "./FollowSetRegistry.ts";
+import { isActiveMissionStatus } from "./MissionTransitions.ts";
+import type {
+  MarketWatch,
+  PersistedWatch,
+  TradingMissionStatus,
+  TradingVenue,
+  TradingWatchDeliver,
+  TradingWatchRearm,
+} from "./Schemas.ts";
 import { TradingTimeframe } from "./Schemas.ts";
+import { TradingAlertService } from "./TradingAlertService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
-import { TradingStrategyService } from "./TradingStrategyService.ts";
-import { TradingWatchService } from "./TradingWatchService.ts";
-
-/** The market assumed for a candle delivery that does not name its coin. */
-const DEFAULT_MARKET = "ETH";
+import { toPersistedWatch, TradingWatchService } from "./TradingWatchService.ts";
 
 /**
- * The markets this evaluator subscribes candle streams for.
+ * How often the candle subscriptions are reconciled against the follow set.
  *
- * Hardcoded, and known to be wrong: a mission may now be mandated on any asset
- * the venue lists, and a candle-close watch on anything outside this pair is
- * only evaluated by the slow sweep. The follow-set registry replaces this list
- * with the assets attention is actually on — until then, widening it would
- * multiply subscriptions by the whole universe.
+ * Matches the registry's own publish cadence: the archiver and the evaluator
+ * learn about a newly followed market in the same beat. Arming a watch on a
+ * new asset therefore starts delivery-driven evaluation within half a minute;
+ * until then the slow sweep already covers everything price-shaped.
  */
-const MARKETS: ReadonlyArray<string> = ["ETH", "BTC"];
+const FOLLOW_SYNC_INTERVAL_MS = 30_000;
 
 /**
  * The five §13 direct candle intervals. Subscribing to all of them keeps the
@@ -115,13 +121,22 @@ export class WatchEvaluator extends Context.Service<WatchEvaluator, WatchEvaluat
 ) {}
 
 /**
- * A watch the evaluator is tracking, with its bound mission and thread so a
- * firing can announce on the right orchestration stream.
+ * A watch the evaluator is tracking, with its delivery route and — when a
+ * mission armed it — the mission and thread a wake announces on.
+ *
+ * `missionId`/`threadId` are null for an account-scoped alert (final-form
+ * Phase 5): those deliver into the alert feed and never touch the inbox, the
+ * orchestration stream, or a harness.
  */
 export interface TrackedWatch {
   readonly watch: PersistedWatch;
-  readonly missionId: TradingMissionId;
-  readonly threadId: ThreadId;
+  readonly deliver: TradingWatchDeliver;
+  readonly rearm: TradingWatchRearm | null;
+  readonly venue: TradingVenue;
+  readonly asset: string | null;
+  readonly accountId: string | null;
+  readonly missionId: TradingMissionId | null;
+  readonly threadId: ThreadId | null;
 }
 
 /** A firing the evaluator queued for processing. */
@@ -149,6 +164,38 @@ const num = (value: unknown): number | undefined => {
 const field = (data: unknown, key: string): unknown => {
   if (typeof data !== "object" || data === null) return undefined;
   return (data as Record<string, unknown>)[key];
+};
+
+/** The thread a mission's harness binding names, or null on a malformed row. */
+const harnessThreadId = (harnessJson: string | null): ThreadId | null => {
+  if (harnessJson === null) return null;
+  try {
+    const threadId = field(JSON.parse(harnessJson), "threadId");
+    return typeof threadId === "string" && threadId.length > 0 ? (threadId as ThreadId) : null;
+  } catch {
+    return null;
+  }
+};
+
+/** The delivery route off the row; anything unrecognized reads as `wake`. */
+const decodeDeliver = (value: string): TradingWatchDeliver =>
+  value === "notify" || value === "both" ? value : "wake";
+
+/** The re-arm rule off the row; null and anything malformed read as once. */
+const decodeRearm = (rearmJson: string | null): TradingWatchRearm | null => {
+  if (rearmJson === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(rearmJson);
+    const mode = field(parsed, "mode");
+    if (mode === "once") return { mode: "once" };
+    const cooldownMs = num(field(parsed, "cooldownMs"));
+    if (mode === "repeat" && cooldownMs !== undefined && cooldownMs > 0) {
+      return { mode: "repeat", cooldownMs };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 };
 
 /** One delivered candle, reduced to the fields finality, matching, and the
@@ -189,8 +236,9 @@ const make = Effect.gen(function* () {
   const ws = yield* HyperliquidWebSocketClient;
   const gateway = yield* HyperliquidGateway;
   const watches = yield* TradingWatchService;
-  const strategies = yield* TradingStrategyService;
   const missions = yield* TradingMissionService;
+  const alerts = yield* TradingAlertService;
+  const followSet = yield* FollowSetRegistry;
   const archive = yield* TradingMarketArchive;
   const inbox = yield* TradingEventInbox;
   const engine = yield* OrchestrationEngineService;
@@ -219,34 +267,75 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Process a queued firing: flip the watch to `triggered`, persist the inbox
-   * event, and announce on the orchestration stream.
+   * Process a queued firing: flip the watch to `triggered`, then deliver.
    *
    * `markTriggered` is the authoritative single-fire guard — if a concurrent
    * supersede or cancel already moved the watch off `active`, this returns
-   * `null` and the firing is dropped (the inbox event is never persisted).
+   * `null` and the firing is dropped (nothing is persisted anywhere).
+   *
+   * Delivery branches on the watch's `deliver` route:
+   * - `wake` (and the wake half of `both`): the original path, untouched —
+   *   inbox event, orchestration announcement, harness wake. Single-fire.
+   * - `notify` (and the notify half of `both`): one `trading_alert_events`
+   *   row plus the account doorbell. No inbox, no reactor.
+   *
+   * Re-arm: a pure-notify watch with `rearm: repeat` flips back to `active`
+   * with `next_evaluate_at` set `cooldownMs` ahead — the same due-time column
+   * the derived cadence uses, so both sweep and delivery paths already know
+   * to leave it alone until the cooldown passes. Anything with a wake half
+   * stays single-fire.
    */
   const processFire = (fire: PendingFire) =>
     Effect.gen(function* () {
       const triggered = yield* watches.markTriggered(fire.tracked.watch.id);
       if (triggered === null) return;
 
+      const tracked = fire.tracked;
       const occurredAt = yield* nowMs;
-      yield* inbox.persist({
-        missionId: fire.tracked.missionId,
-        category: fire.tracked.watch.watch.type === "scheduled_reassessment" ? "timer" : "market",
-        deduplicationKey: fire.deduplicationKey,
-        payload: fire.payload,
-        occurredAt,
-        summary: fire.summary,
-      });
 
-      yield* announceFired({
-        missionId: fire.tracked.missionId,
-        threadId: fire.tracked.threadId,
-        watchId: fire.tracked.watch.id,
-        deduplicationKey: fire.deduplicationKey,
-      });
+      const wake = tracked.deliver === "wake" || tracked.deliver === "both";
+      if (wake && tracked.missionId !== null && tracked.threadId !== null) {
+        yield* inbox.persist({
+          missionId: tracked.missionId,
+          category: tracked.watch.watch.type === "scheduled_reassessment" ? "timer" : "market",
+          deduplicationKey: fire.deduplicationKey,
+          payload: fire.payload,
+          occurredAt,
+          summary: fire.summary,
+        });
+
+        yield* announceFired({
+          missionId: tracked.missionId,
+          threadId: tracked.threadId,
+          watchId: tracked.watch.id,
+          deduplicationKey: fire.deduplicationKey,
+        });
+      }
+
+      if (tracked.deliver === "notify" || tracked.deliver === "both") {
+        const watch = tracked.watch.watch;
+        yield* alerts.append({
+          venue: tracked.venue,
+          asset: tracked.asset ?? ("market" in watch ? watch.market : ""),
+          accountId: tracked.accountId,
+          watchId: tracked.watch.id,
+          firedAt: occurredAt,
+          summary: fire.summary,
+          payload: fire.payload,
+        });
+
+        if (tracked.deliver === "notify" && tracked.rearm?.mode === "repeat") {
+          // Durable re-arm: the row goes back to active with its cooldown
+          // written as the due time, so a restart mid-cooldown still honours
+          // it. Guarded on 'triggered' so a concurrent cancel wins.
+          yield* sql`
+            UPDATE trading_watches
+            SET status = 'active', version = version + 1,
+                next_evaluate_at = ${occurredAt + tracked.rearm.cooldownMs}
+            WHERE watch_id = ${tracked.watch.id} AND status = 'triggered'
+          `.pipe(Effect.orDie);
+        }
+      }
     });
 
   const worker = yield* makeDrainableWorker((fire: PendingFire) =>
@@ -269,17 +358,84 @@ const make = Effect.gen(function* () {
   ) => worker.enqueue({ tracked, deduplicationKey: dedupeKey, summary, payload });
 
   /**
-   * The active watches of the active mission, with mission and thread binding.
-   * The POC has one active mission; a multi-mission fork generalizes this read.
+   * Every active watch, with its delivery route and — where a mission armed
+   * it — that mission's thread binding, read in one join.
+   *
+   * This replaces the `findActiveMission("local")` read: watches are no
+   * longer reached through THE active mission (there may be one per market
+   * under D4, or none at all for an account alert). A mission-bound watch is
+   * only tracked while its mission still holds an active status — the same
+   * gate the old read applied — and a mission-less watch is always tracked.
    */
   const activeTrackedWatches = Effect.fn("WatchEvaluator.activeTrackedWatches")(function* () {
-    const mission = yield* missions.findActiveMission("local");
-    if (mission._tag === "None") return [] as ReadonlyArray<TrackedWatch>;
-    const all = yield* strategies.listWatches(mission.value.id);
-    const threadId = mission.value.harness.threadId as ThreadId;
-    return all
-      .filter((watch) => watch.status === "active")
-      .map((watch) => ({ watch, missionId: mission.value.id as TradingMissionId, threadId }));
+    const rows = yield* sql<{
+      readonly watch_id: string;
+      readonly mission_id: string | null;
+      readonly watch_json: string;
+      readonly status: string;
+      readonly armed_reason: string | null;
+      readonly created_at: number;
+      readonly updated_at: number;
+      readonly last_observed_value: number | null;
+      readonly last_evaluated_at: number | null;
+      readonly prediction_version: number | null;
+      readonly next_evaluate_at: number | null;
+      readonly venue: string;
+      readonly asset: string | null;
+      readonly account_id: string | null;
+      readonly deliver: string;
+      readonly rearm_json: string | null;
+      readonly mission_status: string | null;
+      readonly harness_json: string | null;
+    }>`
+      SELECT w.watch_id, w.mission_id, w.watch_json, w.status, w.armed_reason,
+             w.created_at, w.updated_at, w.last_observed_value,
+             w.last_evaluated_at, w.prediction_version, w.next_evaluate_at,
+             w.venue, w.asset, w.account_id, w.deliver, w.rearm_json,
+             m.status AS mission_status, m.harness_json
+      FROM trading_watches w
+      LEFT JOIN trading_missions m ON m.mission_id = w.mission_id
+      WHERE w.status = 'active'
+    `.pipe(Effect.mapError(toPersistenceSqlError("WatchEvaluator.activeTrackedWatches")));
+
+    const tracked: Array<TrackedWatch> = [];
+    for (const row of rows) {
+      let threadId: ThreadId | null = null;
+      if (row.mission_id !== null) {
+        // A mission-bound watch on a mission that is gone or terminal is not
+        // evaluated — the behaviour the active-mission read always had.
+        if (
+          row.mission_status === null ||
+          !isActiveMissionStatus(row.mission_status as TradingMissionStatus)
+        ) {
+          continue;
+        }
+        threadId = harnessThreadId(row.harness_json);
+      }
+      tracked.push({
+        watch: toPersistedWatch({
+          watch_id: row.watch_id,
+          mission_id: row.mission_id ?? "",
+          watch_json: row.watch_json,
+          status: row.status,
+          armed_reason: row.armed_reason,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          last_observed_value: row.last_observed_value,
+          last_evaluated_at: row.last_evaluated_at,
+          prediction_version: row.prediction_version,
+          next_evaluate_at: row.next_evaluate_at,
+        }),
+        deliver: decodeDeliver(row.deliver),
+        rearm: decodeRearm(row.rearm_json),
+        venue: row.venue as TradingVenue,
+        asset: row.asset,
+        accountId: row.account_id,
+        missionId: row.mission_id === null ? null : (row.mission_id as TradingMissionId),
+        threadId,
+      });
+    }
+    return tracked as ReadonlyArray<TrackedWatch>;
   });
 
   /**
@@ -363,7 +519,9 @@ const make = Effect.gen(function* () {
         watch.direction === "above"
           ? candle.high !== undefined && candle.high > watch.price
           : candle.low !== undefined && candle.low < watch.price;
-      if (matched || wicked) {
+      // Level memory is mission memory: an account alert has no mission whose
+      // later turns would read it, so nothing is recorded for one.
+      if ((matched || wicked) && tracked.missionId !== null) {
         yield* recordLevelEvent({
           missionId: tracked.missionId,
           market: watch.market,
@@ -406,15 +564,18 @@ const make = Effect.gen(function* () {
     if (!matched) return;
 
     // Level memory (plan 27 B1): a price-cross firing is the market touching
-    // the armed level. Recorded once — the fire consumes the watch.
-    yield* recordLevelEvent({
-      missionId: tracked.missionId,
-      market: watch.market,
-      level: watch.price,
-      kind: "touched",
-      price: reference,
-      occurredAt: observedAt,
-    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    // the armed level. Recorded once — the fire consumes the watch — and only
+    // for a mission, whose later turns are what read it.
+    if (tracked.missionId !== null) {
+      yield* recordLevelEvent({
+        missionId: tracked.missionId,
+        market: watch.market,
+        level: watch.price,
+        kind: "touched",
+        price: reference,
+        occurredAt: observedAt,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    }
 
     yield* enqueueFire(
       tracked,
@@ -511,6 +672,9 @@ const make = Effect.gen(function* () {
   ) {
     const watch = tracked.watch.watch;
     if (watch.type !== "position_update") return;
+    // A fill watch is a question about a mission's position; there is no
+    // account-scoped one (the arm path refuses it), so this is only a guard.
+    if (tracked.missionId === null) return;
 
     const rows = yield* sql<{
       readonly size: number;
@@ -541,6 +705,7 @@ const make = Effect.gen(function* () {
   ) {
     const watch = tracked.watch.watch;
     if (watch.type !== "order_update") return;
+    if (tracked.missionId === null) return;
 
     const rows = yield* sql<{ readonly remaining_size: number }>`
       SELECT remaining_size FROM trading_orders
@@ -561,9 +726,9 @@ const make = Effect.gen(function* () {
    * flat position fires nothing and leaves the watch active, so a strategy
    * publish or a later re-entry still supersedes it like any other watch.
    */
-  const readLivePosition = (tracked: TrackedWatch, market: string) =>
+  const readLivePosition = (missionId: TradingMissionId, market: string) =>
     Effect.gen(function* () {
-      const mission = yield* missions.getMission(tracked.missionId);
+      const mission = yield* missions.getMission(missionId);
       const address = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
       const position = yield* gateway.getPosition(address, market);
       return position.size === 0 ? null : position;
@@ -612,9 +777,9 @@ const make = Effect.gen(function* () {
    * early is a decision point arriving early, which is recoverable; one that
    * cannot fire because a fee read failed is a wake the mission never gets.
    */
-  const unpaidExitCost = (tracked: TrackedWatch, position: AgentNetPosition) =>
+  const unpaidExitCost = (missionId: TradingMissionId, position: AgentNetPosition) =>
     Effect.gen(function* () {
-      const mission = yield* missions.getMission(tracked.missionId);
+      const mission = yield* missions.getMission(missionId);
       const address = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
       const fallback = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
       const feeBps = yield* takerFeeBps(address, fallback);
@@ -650,11 +815,12 @@ const make = Effect.gen(function* () {
   ) {
     const watch = tracked.watch.watch;
     if (watch.type !== "pnl_above") return;
+    if (tracked.missionId === null) return;
 
-    const position = yield* readLivePosition(tracked, watch.market);
+    const position = yield* readLivePosition(tracked.missionId, watch.market);
     if (position === null) return;
 
-    const exitCostUsd = yield* unpaidExitCost(tracked, position);
+    const exitCostUsd = yield* unpaidExitCost(tracked.missionId, position);
     const netPnl = position.unrealisedPnl - exitCostUsd;
 
     const observedAt = yield* nowMs;
@@ -689,8 +855,9 @@ const make = Effect.gen(function* () {
   ) {
     const watch = tracked.watch.watch;
     if (watch.type !== "pnl_below") return;
+    if (tracked.missionId === null) return;
 
-    const position = yield* readLivePosition(tracked, watch.market);
+    const position = yield* readLivePosition(tracked.missionId, watch.market);
     if (position === null) return;
 
     const observedAt = yield* nowMs;
@@ -725,8 +892,9 @@ const make = Effect.gen(function* () {
   ) {
     const watch = tracked.watch.watch;
     if (watch.type !== "pnl_giveback") return;
+    if (tracked.missionId === null) return;
 
-    const position = yield* readLivePosition(tracked, watch.market);
+    const position = yield* readLivePosition(tracked.missionId, watch.market);
     if (position === null) return;
 
     const rows = yield* sql<{ readonly peak_unrealised_pnl: number | null }>`
@@ -1050,7 +1218,10 @@ const make = Effect.gen(function* () {
     // The two anchors the archive cannot resolve itself.
     let positionEntryAt: number | undefined;
     let sinceMs: number | undefined;
-    if (watch.metric === "funding_cumulative" || watch.metric === "hold_bars") {
+    if (
+      (watch.metric === "funding_cumulative" || watch.metric === "hold_bars") &&
+      tracked.missionId !== null
+    ) {
       positionEntryAt = yield* readPositionEntryAt(tracked.missionId, watch.market);
     }
     if (watch.params.metric === "bars_since") {
@@ -1165,7 +1336,10 @@ const make = Effect.gen(function* () {
       const candle = candleFromDelivery(delivery);
       if (candle === undefined) return;
 
-      const market = delivery.subscription.coin ?? DEFAULT_MARKET;
+      // Every subscription names its coin (the follow-set sync opens them),
+      // so a delivery without one has nothing to be matched against.
+      const market = delivery.subscription.coin;
+      if (market === undefined) return;
       const key = `${market}:${interval}`;
       const previous = lastDelivered.get(key);
       lastDelivered.set(key, candle);
@@ -1178,7 +1352,16 @@ const make = Effect.gen(function* () {
       const priorVolumes = recentVolumes.get(key) ?? [];
       const finalVolume = finalized.volume;
 
-      const tracked = yield* activeTrackedWatches();
+      // A re-armed repeat alert parks its cooldown in `next_evaluate_at`; a
+      // candle-driven one sits out deliveries until the cooldown passes. The
+      // derived watches keep their own rule — delivery is their clock, and
+      // their cadence column means something else on the delivery path.
+      const now = yield* nowMs;
+      const tracked = (yield* activeTrackedWatches()).filter((t) => {
+        if (t.watch.watch.type === "metric_derived") return true;
+        const due = t.watch.nextEvaluateAt;
+        return due === undefined || due <= now;
+      });
       yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, market, interval, finalized));
       yield* Effect.forEach(tracked, (t) => evaluateDerivedDelivery(t, market, interval));
       if (finalVolume !== undefined) {
@@ -1215,15 +1398,20 @@ const make = Effect.gen(function* () {
   };
 
   /**
-   * O(1) sweep skip for a derived watch, before any archive call (plan 38
-   * §3.5). A `confirm: "bar_close"` watch on an interval the delivery path
-   * carries is never sweep-evaluated; any derived watch whose cadence has not
-   * come due is skipped until it has.
+   * O(1) sweep skip before any archive or exchange call.
+   *
+   * For a derived watch (plan 38 §3.5): a `confirm: "bar_close"` watch on an
+   * interval the delivery path carries is never sweep-evaluated, and any
+   * derived watch whose cadence has not come due is skipped until it has.
+   *
+   * The due-time check now applies to EVERY watch type, because a re-armed
+   * repeat alert parks its cooldown in the same `next_evaluate_at` column.
+   * Wake watches never carry a due time (only the derived cadence and the
+   * notify re-arm write it), so their sweep behaviour is unchanged.
    */
-  const sweepSkipsDerived = (t: TrackedWatch, now: number): boolean => {
+  const sweepSkips = (t: TrackedWatch, now: number): boolean => {
     const watch = t.watch.watch;
-    if (watch.type !== "metric_derived") return false;
-    if (watch.confirm === "bar_close") {
+    if (watch.type === "metric_derived" && watch.confirm === "bar_close") {
       const interval = derivedInterval(watch.params);
       // DIRECT_INTERVALS (1m/3m/5m/15m/1h) are the delivered intervals. A
       // bar_close watch on 4h/1d has no delivery to ride, so it falls back to
@@ -1243,7 +1431,7 @@ const make = Effect.gen(function* () {
     const tracked = yield* activeTrackedWatches();
     const observedAt = yield* nowMs;
     for (const t of tracked) {
-      if (sweepSkipsDerived(t, observedAt)) continue;
+      if (sweepSkips(t, observedAt)) continue;
       // Contained per watch: the evaluators read the exchange and the DB
       // through `orDie`, and one watch's transient failure must not starve the
       // rest of this sweep — a silent evaluator is a deaf mission wearing a
@@ -1260,33 +1448,83 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const start: WatchEvaluatorShape["start"] = () =>
+  /**
+   * The candle consumers per followed asset, so a market that falls out of
+   * the follow set can have its subscriptions interrupted.
+   */
+  const consumers = new Map<string, Array<Fiber.Fiber<unknown, unknown>>>();
+
+  /**
+   * One candle subscription per §13 direct interval for one asset.
+   * Deliveries route to the candle-close watches bound to that interval.
+   *
+   * The forked consumers read the services the evaluator captured at build,
+   * so nothing extra is required in the forked fibers' context.
+   * `catchCause`, not `ignore`: `ignore` swallows typed failures only, and
+   * the evaluators die (`orDie`) on gateway/DB errors — a defect escaping
+   * here would kill the consumer fiber and silence every watch it drives,
+   * with nothing on the mission to say it happened.
+   */
+  const subscribeAsset = (asset: string) =>
     Effect.gen(function* () {
-      // One candle subscription per market per §13 direct interval.
-      // Deliveries route to the candle-close watches bound to that interval.
-      //
-      // The forked consumers read the services the evaluator captured at build,
-      // so nothing extra is required in the forked fibers' context.
-      // `catchCause`, not `ignore`: `ignore` swallows typed failures only, and
-      // the evaluators die (`orDie`) on gateway/DB errors — a defect escaping
-      // here would kill the consumer fiber and silence every watch it drives,
-      // with nothing on the mission to say it happened.
-      for (const market of MARKETS) {
-        for (const interval of DIRECT_INTERVALS) {
-          const subscription = ws.subscribe({ type: "candle", coin: market, interval });
-          yield* Effect.forkScoped(
-            Stream.runForEach(subscription, (delivery) =>
-              evaluateDelivery(delivery).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("WatchEvaluator: candle evaluation failed", {
-                    cause: String(cause),
-                  }),
-                ),
+      const fibers: Array<Fiber.Fiber<unknown, unknown>> = [];
+      for (const interval of DIRECT_INTERVALS) {
+        const subscription = ws.subscribe({ type: "candle", coin: asset, interval });
+        const fiber = yield* Effect.forkScoped(
+          Stream.runForEach(subscription, (delivery) =>
+            evaluateDelivery(delivery).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("WatchEvaluator: candle evaluation failed", {
+                  cause: String(cause),
+                }),
               ),
             ),
-          );
-        }
+          ),
+        );
+        fibers.push(fiber);
       }
+      consumers.set(asset, fibers);
+    });
+
+  /**
+   * Reconcile the candle subscriptions against the follow set — the registry
+   * replaces the hardcoded market list this evaluator used to carry. The set
+   * already includes every armed watch's market (the registry reads
+   * `trading_watches` itself), so an armed watch on any asset gets
+   * delivery-driven evaluation, and a market nobody is paying attention to
+   * stops costing five subscriptions.
+   */
+  const syncSubscriptions = Effect.gen(function* () {
+    const followed = yield* followSet.list;
+    const wanted = new Set(followed.map((entry) => entry.asset));
+    for (const asset of wanted) {
+      if (!consumers.has(asset)) yield* subscribeAsset(asset);
+    }
+    for (const [asset, fibers] of consumers) {
+      if (wanted.has(asset)) continue;
+      consumers.delete(asset);
+      yield* Effect.forEach(fibers, (fiber) => Fiber.interrupt(fiber));
+    }
+  });
+
+  const start: WatchEvaluatorShape["start"] = () =>
+    Effect.gen(function* () {
+      // Candle subscriptions follow attention: reconciled now and then on the
+      // registry's own cadence.
+      yield* Effect.forkScoped(
+        Effect.gen(function* () {
+          while (true) {
+            yield* syncSubscriptions.pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("WatchEvaluator: follow-set sync failed; retrying", {
+                  cause: String(cause),
+                }),
+              ),
+            );
+            yield* Effect.sleep(FOLLOW_SYNC_INTERVAL_MS);
+          }
+        }),
+      );
 
       // The slow sweep for price-cross and scheduled watches.
       yield* Effect.forkScoped(

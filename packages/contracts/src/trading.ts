@@ -34,6 +34,9 @@ import {
   TradingOrderIntent,
   TradingOrderTimeInForce,
   TradingUniverseEntry,
+  TradingWatchDeliver,
+  TradingWatchRearm,
+  WatchCondition,
 } from "@t3tools/trading-contracts";
 import * as Schema from "effect/Schema";
 
@@ -521,6 +524,111 @@ export const TradingAccountStreamEvent = Schema.Struct({
   occurredAt: IsoDateTime,
 });
 export type TradingAccountStreamEvent = typeof TradingAccountStreamEvent.Type;
+
+// -- account-scoped watches + alert feed (final-form phase 5) ----------------
+
+/**
+ * Arm an account-scoped watch — no mission anywhere near it. The condition is
+ * the same vocabulary the model writes (`WatchCondition`); the server refuses
+ * position-scoped kinds (pnl, giveback, fill) and any deliver other than
+ * `notify`, because a wake needs a mission thread to wake.
+ */
+export const TradingArmWatchInput = Schema.Struct({
+  condition: WatchCondition,
+  /** Defaults to `notify` — the only route an account watch may take today. */
+  deliver: Schema.optional(TradingWatchDeliver),
+  /** Once (the default) or repeat-with-cooldown. */
+  rearm: Schema.optional(TradingWatchRearm),
+  accountId: Schema.optional(TrimmedNonEmptyString),
+});
+export type TradingArmWatchInput = typeof TradingArmWatchInput.Type;
+
+/** One account-scoped watch as the RPCs serve it. */
+export const TradingAccountWatch = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  market: MarketRef,
+  condition: WatchCondition,
+  deliver: TradingWatchDeliver,
+  rearm: Schema.optional(TradingWatchRearm),
+  status: PersistedWatchStatus,
+  accountId: Schema.NullOr(Schema.String),
+  /** What the predicate last read, when the evaluator could read a value. */
+  lastObservedValue: Schema.optional(Schema.Number),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type TradingAccountWatch = typeof TradingAccountWatch.Type;
+
+/** Refusals are answers, not errors: the reason is for the user to read. */
+export const TradingArmWatchResult = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("armed"), watch: TradingAccountWatch }),
+  Schema.Struct({ outcome: Schema.Literal("rejected"), reason: TrimmedNonEmptyString }),
+]);
+export type TradingArmWatchResult = typeof TradingArmWatchResult.Type;
+
+export const TradingCancelWatchInput = Schema.Struct({
+  watchId: TrimmedNonEmptyString,
+});
+export type TradingCancelWatchInput = typeof TradingCancelWatchInput.Type;
+
+/** False when nothing active matched — already fired, cancelled, or unknown. */
+export const TradingCancelWatchResult = Schema.Struct({
+  cancelled: Schema.Boolean,
+});
+export type TradingCancelWatchResult = typeof TradingCancelWatchResult.Type;
+
+export const TradingWatchListView = Schema.Struct({
+  watches: Schema.Array(TradingAccountWatch),
+});
+export type TradingWatchListView = typeof TradingWatchListView.Type;
+
+/** One fired alert in the feed. Append-only history; newest first. */
+export const TradingAlertEvent = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  market: MarketRef,
+  accountId: Schema.NullOr(Schema.String),
+  watchId: TrimmedNonEmptyString,
+  firedAt: IsoDateTime,
+  summary: Schema.String,
+});
+export type TradingAlertEvent = typeof TradingAlertEvent.Type;
+
+export const TradingListAlertsInput = Schema.Struct({
+  /** Clamped server-side to [1, 200]; default 50. */
+  limit: Schema.optional(NonNegativeInt),
+});
+export type TradingListAlertsInput = typeof TradingListAlertsInput.Type;
+
+export const TradingAlertFeedView = Schema.Struct({
+  alerts: Schema.Array(TradingAlertEvent),
+});
+export type TradingAlertFeedView = typeof TradingAlertFeedView.Type;
+
+// -- the watchlist (final-form phase 4) --------------------------------------
+
+export const TradingWatchlistEntry = Schema.Struct({
+  market: MarketRef,
+  addedAt: IsoDateTime,
+  position: NonNegativeInt,
+});
+export type TradingWatchlistEntry = typeof TradingWatchlistEntry.Type;
+
+export const TradingWatchlistView = Schema.Struct({
+  entries: Schema.Array(TradingWatchlistEntry),
+});
+export type TradingWatchlistView = typeof TradingWatchlistView.Type;
+
+export const TradingWatchlistMutationInput = Schema.Struct({
+  market: MarketRef,
+});
+export type TradingWatchlistMutationInput = typeof TradingWatchlistMutationInput.Type;
+
+/** A rejected add names its reason (unknown asset, delisted market). */
+export const TradingWatchlistMutationResult = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("ok"), entries: Schema.Array(TradingWatchlistEntry) }),
+  Schema.Struct({ outcome: Schema.Literal("rejected"), reason: TrimmedNonEmptyString }),
+]);
+export type TradingWatchlistMutationResult = typeof TradingWatchlistMutationResult.Type;
 
 // -- client-dispatchable commands -------------------------------------------
 

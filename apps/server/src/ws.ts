@@ -31,6 +31,9 @@ import {
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
   type OrchestrationTradingMission,
+  type TradingAccountWatch,
+  type TradingWatchlistEntry,
+  type TradingWatchlistMutationResult,
   ORCHESTRATION_WS_METHODS,
   type ProjectId,
   type ProjectEntriesFailure,
@@ -87,6 +90,12 @@ import { marketRef } from "@t3tools/trading-contracts/primitives";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts";
+import { TradingAlertService, type AccountWatch } from "./trading/TradingAlertService.ts";
+import {
+  TradingWatchlistService,
+  type WatchlistEntry,
+  type WatchlistMutationResult,
+} from "./trading/TradingWatchlistService.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 
@@ -172,6 +181,34 @@ import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+const epochIso = (epochMillis: number): string =>
+  DateTime.formatIso(DateTime.makeUnsafe(epochMillis));
+
+/** The service's epoch-millis account watch, as the ISO wire contract. */
+const toWireAccountWatch = (watch: AccountWatch): TradingAccountWatch => ({
+  id: watch.id,
+  market: watch.market,
+  condition: watch.condition,
+  deliver: watch.deliver,
+  ...(watch.rearm === undefined ? {} : { rearm: watch.rearm }),
+  status: watch.status,
+  accountId: watch.accountId,
+  ...(watch.lastObservedValue === undefined ? {} : { lastObservedValue: watch.lastObservedValue }),
+  createdAt: epochIso(watch.createdAt),
+  updatedAt: epochIso(watch.updatedAt),
+});
+
+const toWireWatchlistEntry = (entry: WatchlistEntry): TradingWatchlistEntry => ({
+  market: entry.market,
+  addedAt: epochIso(entry.addedAt),
+  position: entry.position,
+});
+
+const toWireWatchlistResult = (result: WatchlistMutationResult): TradingWatchlistMutationResult =>
+  result.outcome === "rejected"
+    ? result
+    : { outcome: "ok", entries: result.entries.map(toWireWatchlistEntry) };
 const EDITOR_DISCOVERY_TIMEOUT = Duration.seconds(5);
 
 export const resolveAvailableEditorsForConfig = <A, E, R>(
@@ -405,6 +442,8 @@ const makeWsRpcLayer = (
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
       const tradingAccountProjection = yield* TradingAccountProjection;
+      const tradingAlertService = yield* TradingAlertService;
+      const tradingWatchlistService = yield* TradingWatchlistService;
       const archiveSupervisor = yield* ArchiveSupervisor;
       const followSetRegistry = yield* FollowSetRegistry;
       const tradingUniverse = yield* TradingUniverse;
@@ -1545,7 +1584,142 @@ const makeWsRpcLayer = (
             ORCHESTRATION_WS_METHODS.subscribeTradingAccount,
             // Doorbell-only: each event tells the client to refetch the view.
             // No snapshot rides the stream — the view RPC is the snapshot.
+            // Alert appends and watch/watchlist edits ring this same doorbell,
+            // so the alert feed needs no second subscription.
             Effect.succeed(tradingAccountProjection.changes),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.armTradingWatch]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.armTradingWatch,
+            tradingAlertService.armWatch(input).pipe(
+              Effect.map((result) =>
+                result.outcome === "rejected"
+                  ? result
+                  : { outcome: "armed" as const, watch: toWireAccountWatch(result.watch) },
+              ),
+              Effect.tapError((cause) => Effect.logError("trading watch arm failed", { cause })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to arm the trading watch",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.cancelTradingWatch]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.cancelTradingWatch,
+            tradingAlertService.cancelWatch(input.watchId).pipe(
+              Effect.map((cancelled) => ({ cancelled })),
+              Effect.tapError((cause) => Effect.logError("trading watch cancel failed", { cause })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to cancel the trading watch",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listTradingWatches]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listTradingWatches,
+            tradingAlertService.listWatches.pipe(
+              Effect.map((watches) => ({ watches: watches.map(toWireAccountWatch) })),
+              Effect.tapError((cause) => Effect.logError("trading watch list failed", { cause })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to list the trading watches",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listTradingAlerts]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listTradingAlerts,
+            tradingAlertService
+              .listAlerts(input.limit === undefined ? {} : { limit: input.limit })
+              .pipe(
+                Effect.map((alerts) => ({
+                  alerts: alerts.map((alert) => ({
+                    id: alert.id,
+                    market: alert.market,
+                    accountId: alert.accountId,
+                    watchId: alert.watchId,
+                    firedAt: DateTime.formatIso(DateTime.makeUnsafe(alert.firedAt)),
+                    summary: alert.summary,
+                  })),
+                })),
+                Effect.tapError((cause) => Effect.logError("trading alert list failed", { cause })),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "Failed to list the trading alerts",
+                      cause,
+                    }),
+                ),
+              ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry,
+            tradingWatchlistService.add(input.market).pipe(
+              Effect.map(toWireWatchlistResult),
+              Effect.tapError((cause) =>
+                Effect.logError("trading watchlist add failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to add the watchlist entry",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.removeTradingWatchlistEntry]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.removeTradingWatchlistEntry,
+            tradingWatchlistService.remove(input.market).pipe(
+              Effect.map(toWireWatchlistResult),
+              Effect.tapError((cause) =>
+                Effect.logError("trading watchlist remove failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to remove the watchlist entry",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listTradingWatchlist]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listTradingWatchlist,
+            tradingWatchlistService.list.pipe(
+              Effect.map((entries) => ({ entries: entries.map(toWireWatchlistEntry) })),
+              Effect.tapError((cause) =>
+                Effect.logError("trading watchlist list failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to list the watchlist",
+                    cause,
+                  }),
+              ),
+            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getTradingMarketChart]: (input) =>

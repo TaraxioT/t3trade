@@ -45,6 +45,16 @@ import {
   TradingMarketChartView,
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
+  TradingArmWatchInput,
+  TradingArmWatchResult,
+  TradingCancelWatchInput,
+  TradingCancelWatchResult,
+  TradingWatchListView,
+  TradingListAlertsInput,
+  TradingAlertFeedView,
+  TradingWatchlistMutationInput,
+  TradingWatchlistMutationResult,
+  TradingWatchlistView,
 } from "./trading.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
@@ -59,6 +69,13 @@ export const ORCHESTRATION_WS_METHODS = {
   getTradingAccountView: "orchestration.getTradingAccountView",
   getTradingMarketChart: "orchestration.getTradingMarketChart",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
+  armTradingWatch: "orchestration.armTradingWatch",
+  cancelTradingWatch: "orchestration.cancelTradingWatch",
+  listTradingWatches: "orchestration.listTradingWatches",
+  listTradingAlerts: "orchestration.listTradingAlerts",
+  addTradingWatchlistEntry: "orchestration.addTradingWatchlistEntry",
+  removeTradingWatchlistEntry: "orchestration.removeTradingWatchlistEntry",
+  listTradingWatchlist: "orchestration.listTradingWatchlist",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
   subscribeTradingAccount: "orchestration.subscribeTradingAccount",
@@ -1843,6 +1860,34 @@ export const OrchestrationRpcSchemas = {
   reviseTradingPlan: {
     input: OrchestrationReviseTradingPlanInput,
     output: OrchestrationReviseTradingPlanResult,
+  },
+  armTradingWatch: {
+    input: TradingArmWatchInput,
+    output: TradingArmWatchResult,
+  },
+  cancelTradingWatch: {
+    input: TradingCancelWatchInput,
+    output: TradingCancelWatchResult,
+  },
+  listTradingWatches: {
+    input: Schema.Struct({}),
+    output: TradingWatchListView,
+  },
+  listTradingAlerts: {
+    input: TradingListAlertsInput,
+    output: TradingAlertFeedView,
+  },
+  addTradingWatchlistEntry: {
+    input: TradingWatchlistMutationInput,
+    output: TradingWatchlistMutationResult,
+  },
+  removeTradingWatchlistEntry: {
+    input: TradingWatchlistMutationInput,
+    output: TradingWatchlistMutationResult,
+  },
+  listTradingWatchlist: {
+    input: Schema.Struct({}),
+    output: TradingWatchlistView,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

@@ -119,6 +119,8 @@ import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
 import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection.ts";
+import { TradingAlertService } from "./trading/TradingAlertService.ts";
+import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
 import { TradingMissionServiceLive } from "./trading/TradingMissionService.ts";
@@ -903,6 +905,27 @@ const buildAppUnderTest = (options?: {
           start: () => Effect.void,
           list: Effect.succeed([]),
           noteChartOpened: () => Effect.void,
+        }),
+      ),
+      // Account-scoped watches and the alert feed (final-form Phase 5), and
+      // the watchlist (Phase 4). Both validate assets against the exchange,
+      // which these tests do not have — a rejected arm/add is a real outcome.
+      Layer.provide(
+        Layer.mock(TradingAlertService)({
+          armWatch: () =>
+            Effect.succeed({ outcome: "rejected" as const, reason: "no exchange in tests" }),
+          cancelWatch: () => Effect.succeed(false),
+          listWatches: Effect.succeed([]),
+          append: () => Effect.void,
+          listAlerts: () => Effect.succeed([]),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(TradingWatchlistService)({
+          add: () =>
+            Effect.succeed({ outcome: "rejected" as const, reason: "no exchange in tests" }),
+          remove: () => Effect.succeed({ outcome: "ok" as const, entries: [] }),
+          list: Effect.succeed([]),
         }),
       ),
       // The universe RPC lists what the venue trades. No exchange here, and a
