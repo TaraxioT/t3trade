@@ -259,3 +259,68 @@ mandated model/effort/tier recorded and stable. The gaps are structural
 rather than behavioral: no human surface for derived watches (phase 8), a
 column-contract inconsistency on mission watches, and the OS-notification
 half that only a desktop build can prove.
+
+## Round 5 — 2026-08-27 — The chart (Phase 6)
+
+HYPE chart (missionless, followed) on the trade home; mission chart on the
+live ETH mission. Screenshots `evidence/final-form/r5-hover-chip.png`,
+`r5-4h-chart.png`, `r5-mission-chart.png` (vision-analyzed with agy-vision).
+
+| Acceptance | Result | Evidence |
+| --- | --- | --- |
+| Candles, EMA overlays, volume underlay, session levels | Pass | vision on `r5-hover-chip.png`: candlesticks, EMA9/EMA21 lines, volume underlay at the bottom, session levels `pd hi/pd lo/pd cl/d op/d hi/d lo/vwap`; line↔candle toggle flips and persists (`mission-chart-mode-toggle`) |
+| Seven intervals; 4h/1d archive-only | Pass | walked 1m→1d via `market-chart-interval-*`; every interval renders with interval-appropriate EMAs (1m 82.4/82.4 → 4h 80.6/81.6 → 1d 69.6/76.9). 1h showed "Loading chart…" for >1s on first select (fetch latency, not a failure — renders by 4s) |
+| Gap/pre-recording shading | Pipeline pass, **not live-observable** | `known_gaps` holds 3 rows (BTC/ETH/SOL 1m, Aug 21–23) but the chart's fixed ~120-bar window cannot reach them; no in-window gap existed during the round (a deliberate unfollow self-heals via the 10-bar poll tail before it could display). Receipts: `TradingMarketChart.test.ts` + `marketChartOverlays.test.ts` 20/20 pass; wiring `contracts trading.ts:201-206,254` → `MarketChartPanel.tsx:106` → renderer |
+| Hover chip arms an alert at price | **Fail for real users** | the chip renders ("+ alert 80.23", `data-testid="market-chart-arm-chip"`) and its handler works — a synthetic `.click()` armed "HYPE above 80.23" — but the price-gutter overlay (`absolute inset-y-0 right-0`, pointer-events auto) sits above the chip (`right-1`): playwright's actionability check and `document.elementFromPoint(chipCenter)` both resolve to the gutter div. No mouse click can reach the chip (R5-2) |
+| Mission charts show fills/rules/wake overlays | Partial | rules ✔ (`▲ ETH 5m close above 2,502.02` marker), wake/journal/strategy timeline ✔ (vision on `r5-mission-chart.png`), plan revision ✔; **fills untested** — the Luna mission correctly never entered, so no fill markers existed to render |
+| GPU stays quiet | Pass | `document.getAnimations()` on the live chart page: **0 running**. The mission-live page has exactly one: a 14px `mission-mark-pulse` dot (R5-5) |
+
+### Findings
+
+- **[High] R5-1 — the chart draws mainnet candles under a testnet market.**
+  The archiver's REST and WS clients both default to **mainnet**
+  (`archive/config.ts:126-129` `MAINNET_INFO_URL` / `MAINNET_WS_URL`;
+  `main.ts:52` and `info.ts:53` take those defaults), a deliberate choice per
+  the config comments ("the archiver posts nothing else, anywhere"), while
+  trading, fills, marks, and the watch evaluator's price crosses are
+  testnet. On ETH/BTC the venues sit within a point so nobody notices; on
+  HYPE at 13:26 UTC the archive held 82.5 bars (mainnet), the testnet
+  `candleSnapshot` said 60→41, and the testnet mark said 43.6 — all three
+  visible in one UI: candles/EMAs/session levels at 80-84, mark chip at 41,
+  alert history printing fills at 60.3. Consequences: unreadable charts on
+  any divergent asset, session levels/vwap that contradict the venue being
+  traded, and watch-vs-fill cross-checks that can disagree (R4-3). Either
+  the archive should record testnet, or the chart must label its source and
+  the two must not share a canvas unlabeled.
+- **[High] R5-2 — the arm-at-price chip is unclickable.** The gutter
+  overlay intercepts every pointer event over the chip (evidence above);
+  phase 6's headline interaction ships dead to mouse users. The chip sits at
+  `right-1` under the gutter's `right-0` full-height strip in
+  `MarketChartPanel`/`MissionPriceChart` (chip render + gutter div); a
+  z-order or pointer-events fix is needed.
+- **[Low] R5-3 — session-level/axis label collisions persist.** Same family
+  as R3-2, now with more examples: `open 81.18` over `vwap 81.14`, `pd hi`
+  stacked over `d hi` on 4h, 8-decimal axis labels (`80.81882328`). The
+  session-level chips need collision folding like the price gutter has.
+- **[Info] R5-4 — gap shading is unreachable in practice.** The chart has
+  no pan/zoom; its window is ~120 bars. All three known gaps predate the
+  window on every interval, so the honest-coverage shading the phase
+  advertises cannot appear for a user today. The pipeline and tests are
+  sound; the window just never contains a gap that survives the poll's
+  10-bar self-heal.
+- **[Info] R5-5 — one continuous animation.** `mission-mark-pulse`
+  (14px dot) runs permanently on the mission-live page — the only running
+  animation in the trading UI. Tiny, but it is a continuous repaint by
+  design; the workspace taste rule says none.
+
+### Verdict
+
+The chart itself is a real chart: candles, EMAs, volume, session levels,
+seven intervals including the archive-only ones, a persisted mode toggle,
+mission rules/wake overlays, and quiet rendering — all present. But the
+round found two High defects at its edges: the arm-at-price chip cannot be
+clicked by a mouse (the phase's one new interaction), and the canvas
+silently mixes mainnet price history with the testnet market being traded,
+which is a correctness problem for every derived line and level the trader
+reads. Phase 6's checklist is done; its two promises that matter most to a
+trader — honest data and arm-at-price — are the two that don't hold.
