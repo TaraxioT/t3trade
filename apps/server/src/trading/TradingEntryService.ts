@@ -226,7 +226,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
       if (mission.market !== request.market) {
         return refused(
           "market_is_eth",
-          `mission is mandated to ${mission.market} only; got ${request.market}`,
+          `nothing was placed: this chat holds authority on ${mission.market}, not ${request.market}. Trade ${mission.market} here, or ask the user to open ${request.market} in its own chat.`,
         );
       }
 
@@ -234,7 +234,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
       if (harnessRunId === null) {
         return refused(
           "harness_run_owns_lease",
-          "no harness run currently owns this mission's decision lease; an entry is only executable inside a turn",
+          "nothing was placed: no turn currently holds this mission's decision lease, and an order is only taken inside a turn. Wait for the next wake, or ask the user to send a message on this chat, and enter from that turn.",
         );
       }
 
@@ -509,11 +509,11 @@ export const makeTradingEntryService = Effect.gen(function* () {
           request.side === "buy" ? entryPrice - noiseFloorUsd : entryPrice + noiseFloorUsd;
         return refused(
           "stop_inside_noise_floor",
-          `the stop at ${request.stopPrice} sits ${stopDistanceUsd.toFixed(2)} USD from the ` +
+          `nothing was placed: the stop at ${request.stopPrice} sits ${stopDistanceUsd.toFixed(2)} USD from the ` +
             `${entryPrice} entry, inside the ${noiseFloorUsd.toFixed(2)} USD noise floor ` +
-            `(max(2 x ${halfSpreadUsd.toFixed(2)} half-spread, 0.35 x ${(setupSnapshot.atrUsd ?? 0).toFixed(2)} ATR)); ` +
-            `${clearingStop.toFixed(2)} is the nearest stop that clears it — place yours at or beyond ` +
-            "the level that invalidates the thesis, plus that margin, and try once more",
+            `(max(2 x ${halfSpreadUsd.toFixed(2)} half-spread, 0.35 x ${(setupSnapshot.atrUsd ?? 0).toFixed(2)} ATR)), so ordinary noise would take it out. ` +
+            `${clearingStop.toFixed(2)} is the nearest stop that clears it. Place yours at or beyond ` +
+            "the level that invalidates the thesis, plus that margin, and try once more.",
         );
       }
 
@@ -577,7 +577,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
       }
       if (costs === null) {
         warnings.push(
-          "the round-trip cost could not be read, so estimatedRoundTripCostUsd is 0 — hold the target against trading_look",
+          "the round-trip cost could not be read, so estimatedRoundTripCostUsd is 0. Hold the target against trading_look instead.",
         );
       }
 

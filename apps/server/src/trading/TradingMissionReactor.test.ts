@@ -691,6 +691,7 @@ it.live("asks the coordinator for a run when a watch fires", () =>
           return { status: "started", harnessRunId: `run_${calls.length}` } as const;
         }),
       requestUserMessageRun: () => Effect.succeed(false),
+      adoptTurn: () => Effect.succeed(false),
     });
 
     const StubbedLayer = TradingMissionReactorLive.pipe(
@@ -969,6 +970,7 @@ it.live("retires the position's watches when the harness closes the position", (
     const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
       requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
       requestUserMessageRun: () => Effect.succeed(false),
+      adoptTurn: () => Effect.succeed(false),
     });
 
     const StubbedLayer = TradingMissionReactorLive.pipe(
@@ -1098,6 +1100,7 @@ it.live(
             return { status: "started", harnessRunId: `run_${runs.length}` } as const;
           }),
         requestUserMessageRun: () => Effect.succeed(false),
+        adoptTurn: () => Effect.succeed(false),
       });
 
       const protectionCalls: Array<{ readonly stopPrice: number }> = [];
@@ -1212,6 +1215,7 @@ it.live(
       const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
         requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
         requestUserMessageRun: () => Effect.succeed(false),
+        adoptTurn: () => Effect.succeed(false),
       });
 
       const protectionCalls: Array<{ readonly stopPrice: number }> = [];

@@ -96,7 +96,7 @@ export const makeTradingExitService = Effect.gen(function* () {
       if (market !== mission.market) {
         return refused(
           "market_is_eth",
-          `mission is mandated to ${mission.market} only; got ${market}`,
+          `nothing was sent: this chat holds authority on ${mission.market}, not ${market}. Exit ${mission.market} here, or move to the chat that holds ${market}.`,
         );
       }
 
@@ -109,7 +109,7 @@ export const makeTradingExitService = Effect.gen(function* () {
       ) {
         return refused(
           "no_target_named",
-          "name the cloid of the resting order to withdraw; trading_look lists them",
+          "nothing was cancelled: a cancel has to name the order it withdraws, and this one named none. Read the resting orders with trading_look and call again with the cloid.",
         );
       }
 
@@ -117,7 +117,7 @@ export const makeTradingExitService = Effect.gen(function* () {
       if (harnessRunId === null) {
         return refused(
           "harness_run_owns_lease",
-          "no harness run currently owns this mission's decision lease; an exit is only executable inside a turn",
+          "nothing was sent: no turn currently holds this mission's decision lease, and an exit is only taken inside a turn. Wait for the next wake, or ask the user to send a message on this chat, and exit from that turn.",
         );
       }
 
@@ -175,7 +175,7 @@ export const makeTradingExitService = Effect.gen(function* () {
       if (bestBid === undefined || bestAsk === undefined) {
         return refused(
           "market_data_unavailable",
-          `${market} has no two-sided book right now, so there is no price to exit against`,
+          `nothing was sent: ${market} has no two-sided book right now, so there is no price to exit against. Try again in a moment, and tell the user the market has gone one sided if it persists.`,
         );
       }
 
@@ -231,7 +231,7 @@ export const makeTradingExitService = Effect.gen(function* () {
           Effect.as(
             refused(
               "market_data_unavailable",
-              "the position, book, or mission state an exit is sized from could not be read; retry once",
+              "nothing was sent: the position, book, or mission state an exit is sized from could not be read. Try the same call once more, and say which read failed if it fails again.",
             ),
           ),
         ),

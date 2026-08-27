@@ -456,7 +456,10 @@ describe("previewOrder — §16.3 checklist", () => {
         Effect.flip,
       );
       expect(rejection.item).toBe("valid_stop_defined");
-      expect(rejection.detail).toContain("§16.3 item 17");
+      // The gate is unchanged; what it says is now what was refused, why, and
+      // what to do about it.
+      expect(rejection.detail).toContain("needs a stop");
+      expect(rejection.detail).toContain("Name the stop");
     }),
   );
 
@@ -801,7 +804,7 @@ describe("the budget gate measures the whole reservation", () => {
       ).pipe(Effect.flip);
 
       expect(rejection.item).toBe("reservations_plus_proposed_within_budget");
-      expect(rejection.detail).toContain("round-trip cost");
+      expect(rejection.detail).toContain("the round trip");
     }),
   );
 

@@ -195,13 +195,16 @@ const isActive: Check = (_intent, ctx) =>
     ? Effect.void
     : reject(
         "mission_active",
-        `mission status is ${ctx.mission.status}, not executing/position_open`,
+        `nothing was placed: this mission is ${ctx.mission.status.replace("_", " ")}, and an order is only taken while it is executing or holding a position. Take a fresh look and publish a plan, or resume the mission if it was paused.`,
       );
 
 const entriesAllowed: Check = (_intent, ctx) =>
   ctx.mission.control.entriesAllowed && !ctx.mission.status.includes("blocked")
     ? Effect.void
-    : reject("entries_allowed", "mission control disallows entries or mission is blocked");
+    : reject(
+        "entries_allowed",
+        `nothing was placed: entries are switched off for this mission${ctx.mission.status.includes("blocked") ? " and it is blocked" : ""}. Turn entries back on from the trade home, or exit and manage what is already open.`,
+      );
 
 const harnessRunOwnsLease: Check = (_intent, ctx) =>
   ctx.activeHarnessRunId !== null && ctx.activeHarnessRunId === ctx.requestingHarnessRunId
@@ -394,7 +397,7 @@ const reservationsPlusProposedWithinBudget: Check = (intent, ctx) => {
   if (budget.exhausted && !isPermittedUnderExhaustion(intent.actionType)) {
     return reject(
       "reservations_plus_proposed_within_budget",
-      "budget exhausted; action not permitted under §16.4",
+      "nothing was placed: this mission has spent its whole loss budget, so it may only reduce or close from here. Tell the user the budget is done, and manage what is open or ask them to raise it.",
     );
   }
   const proposed = proposedReservationUsd(intent, ctx);
@@ -403,8 +406,7 @@ const reservationsPlusProposedWithinBudget: Check = (intent, ctx) => {
     ? Effect.void
     : reject(
         "reservations_plus_proposed_within_budget",
-        `proposed reservation $${proposed.toFixed(2)} (stop loss $${plannedLossOf(intent).toFixed(2)} ` +
-          `+ round-trip cost) exceeds the $${budget.remainingCumulativeLossUsd.toFixed(2)} remaining`,
+        `nothing was placed: this order reserves $${proposed.toFixed(2)} of loss budget (a $${plannedLossOf(intent).toFixed(2)} stop plus the round trip) and only $${budget.remainingCumulativeLossUsd.toFixed(2)} is left. Ask for a smaller size or a tighter stop, and try once more.`,
       );
 };
 

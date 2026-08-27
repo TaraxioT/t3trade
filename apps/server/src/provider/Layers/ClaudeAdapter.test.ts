@@ -37,7 +37,10 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import * as SessionProfile from "../SessionProfile.ts";
-import { TRADING_ALLOWED_TOOL_NAMES } from "../TradingSessionProfile.ts";
+import {
+  TRADING_ALLOWED_TOOL_NAMES,
+  WORKSPACE_TRADING_PREAMBLE,
+} from "../TradingSessionProfile.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import {
   makeClaudeAdapter,
@@ -437,6 +440,33 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(options?.strictMcpConfig, true);
     }).pipe(
       Effect.ensuring(Effect.sync(() => SessionProfile.clearSessionProfile(TRADING_THREAD_ID))),
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("grounds an ordinary claude session in the workspace it is running in", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // Not a trading thread, so it keeps the coding preset, its settings
+      // sources and its cwd. It still reaches the t3-trade tools and can still
+      // take a market on its first plan or entry, so the grounding block rides
+      // the preset rather than replacing it.
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.systemPrompt, {
+        type: "preset",
+        preset: "claude_code",
+        append: WORKSPACE_TRADING_PREAMBLE,
+      });
+      assert.notDeepEqual(options?.tools, []);
+    }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );

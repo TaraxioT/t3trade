@@ -50,6 +50,8 @@ import { TradingEventInbox } from "../../../trading/TradingEventInbox.ts";
 import { TradingMarketArchive } from "../../../trading/TradingMarketArchive.ts";
 import { TradingAlertService } from "../../../trading/TradingAlertService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -97,6 +99,12 @@ const dependencies = [
   // An analyst session's `trading_watch` arms account-scoped notify alerts
   // (final-form Phase 8) — no mission anywhere near them.
   TradingAlertService,
+  // Bind-on-first-use: `trading_plan` and `trading_enter` take authority on the
+  // market they name when this thread holds none, which needs the provider the
+  // credential belongs to (the frozen §10.2 harness binding) and the decision
+  // lease for the chat turn already in flight.
+  ProviderRegistry,
+  TradingTurnCoordinator,
   SqlClient.SqlClient,
 ];
 

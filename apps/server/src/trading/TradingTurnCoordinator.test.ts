@@ -24,6 +24,7 @@ import {
 } from "./TradingTurnCoordinator.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
 import { TradingWatchService, TradingWatchServiceLive } from "./TradingWatchService.ts";
+import { readActiveRun } from "./TradingRunTelemetry.ts";
 
 /**
  * A no-op `OrchestrationEngineService` for the coordinator's unit tests. These
@@ -178,6 +179,37 @@ layer("TradingTurnCoordinator", (it) => {
       });
 
       assert.equal(outcome.status, "started");
+    }),
+  );
+
+  it.effect("adopts a chat turn, so an entry from it owns the decision lease", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const sql = yield* SqlClient.SqlClient;
+
+      // Bind-on-first-use: the turn is already running, nobody dispatched it,
+      // and until this there is no run for the execution checks to point at.
+      assert.equal(yield* readActiveRun(sql, "mission_1"), null);
+
+      const adopted = yield* coordinator.adoptTurn({
+        missionId: "mission_1",
+        threadId: "thread_1",
+      });
+      assert.equal(adopted, true);
+
+      // The same read `TradingEntryService` makes before it prices anything.
+      const runId = yield* readActiveRun(sql, "mission_1");
+      assert.isNotNull(runId);
+
+      // The single-lease invariant still holds: a second adoption of the same
+      // mission finds the lease taken rather than opening a second run.
+      assert.equal(
+        yield* coordinator.adoptTurn({ missionId: "mission_1", threadId: "thread_1" }),
+        false,
+      );
     }),
   );
 

@@ -14,6 +14,7 @@ import {
   TRADING_ANALYST_TOOL_NAMES,
   TRADING_SYSTEM_PROMPT,
   TRADING_TOOL_NAMES,
+  WORKSPACE_TRADING_PREAMBLE,
 } from "./TradingSessionProfile.ts";
 
 const registeredToolNames = Object.values(TradingToolkit.tools).map((tool) => tool.name);
@@ -73,6 +74,23 @@ it("prefixes the analyst contract onto an analyst thread's turn", () => {
   expect(second.text.length).toBeLessThan(first.text.length / 4);
 
   clearAllSessionProfiles();
+});
+
+it("grounds every thread in the workspace, in under 800 characters", () => {
+  // It rides every turn in the workspace, trading thread or not, so its size is
+  // paid on every call here. The four things it says are the four a thread
+  // cannot work them out from the tools alone.
+  expect(WORKSPACE_TRADING_PREAMBLE.length).toBeLessThan(800);
+  expect(WORKSPACE_TRADING_PREAMBLE).toContain("Hyperliquid testnet");
+  expect(WORKSPACE_TRADING_PREAMBLE).toContain("Every entry needs a stop");
+  expect(WORKSPACE_TRADING_PREAMBLE).toContain("binds automatically");
+  // Plain sentences, no em-dashes, in anything a user or a model reads.
+  expect(WORKSPACE_TRADING_PREAMBLE).not.toContain("\u2014");
+
+  // And every prompt in the workspace carries it: the mission's, the
+  // analyst's, and both turn contracts.
+  expect(TRADING_SYSTEM_PROMPT).toContain(WORKSPACE_TRADING_PREAMBLE);
+  expect(TRADING_ANALYST_SYSTEM_PROMPT).toContain(WORKSPACE_TRADING_PREAMBLE);
 });
 
 it("mentions only registered tool names in the system prompt", () => {
@@ -141,7 +159,17 @@ it("prefixes the contract onto a trading thread's turn, and leaves other threads
   expect(prefixed.text.endsWith(wakeup)).toBe(true);
   expect(prefixed.text).toContain("trading_plan");
   expect(prefixed.text).toContain("blocked_by_data");
+  // An ordinary thread here is not a trading thread, but it still reaches the
+  // trading tools and can still take a market on its first plan or entry, so it
+  // carries the workspace grounding block and nothing else.
+  const coding = applyTradingTurnContract(codingThread, wakeup);
+  expect(coding.text).toContain("T3 Trade grounding");
+  expect(coding.text).not.toContain("blocked_by_data");
+  expect(coding.text.endsWith(wakeup)).toBe(true);
+  coding.markDelivered();
+  // Once per session instance, like the contract itself.
   expect(applyTradingTurnContract(codingThread, wakeup).text).toBe(wakeup);
+  resetTradingContractDelivery(codingThread);
 
   clearAllSessionProfiles();
 });

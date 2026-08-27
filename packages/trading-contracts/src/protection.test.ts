@@ -143,10 +143,16 @@ describe("checkStopInformation", () => {
 });
 
 describe("describeStopGateDefect", () => {
-  it("names the section for a missing stop", () => {
+  it("says what was refused, why, and what to do about a missing stop", () => {
     const input = { ...longEntry, stop: undefined };
-    expect(describeStopGateDefect("stop_missing", input)).toContain("§16.3 item 17");
-    expect(describeStopGateDefect("stop_missing", input)).toContain("open");
+    const message = describeStopGateDefect("stop_missing", input);
+    expect(message).toContain("nothing was placed");
+    expect(message).toContain("needs a stop");
+    expect(message).toContain("Name the stop");
+    // The action it refused, so the model knows which call to fix.
+    expect(message).toContain("open");
+    // Plain sentences: no em-dashes in anything a user or a model reads.
+    expect(message).not.toContain("\u2014");
   });
 
   it("reports both prices for a wrong-sided stop", () => {

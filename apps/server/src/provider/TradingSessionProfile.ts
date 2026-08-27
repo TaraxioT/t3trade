@@ -39,6 +39,23 @@ import { hasTradingProfile, isTradingAnalystThread } from "./SessionProfile.ts";
 export const TRADING_MCP_SERVER_NAME = "t3-trade";
 
 /**
+ * The workspace grounding block, carried by EVERY thread here.
+ *
+ * Chat is the front door for trading now, so a thread that has never held a
+ * mission can still reach the trading tools and still has to know four things
+ * before it says anything: which venue exists, that market facts are fetched
+ * rather than recalled, that an entry without a stop is not an entry, and that
+ * authority binds itself on first use rather than being applied for. It is
+ * deliberately short — it rides every turn's system context, trading thread or
+ * not, and anything longer is paid for on every call in the workspace.
+ */
+export const WORKSPACE_TRADING_PREAMBLE = `T3 Trade grounding, for every thread in this workspace:
+- The only execution venue is Hyperliquid testnet. Never offer or discuss executing on another exchange or DEX.
+- Never state a price, funding rate, or other market fact from memory. Fetch it with the look and market tools first, and say when a fetch fails.
+- Every entry needs a stop. If the user does not give one, choose a sensible level and state it plainly when you place the order.
+- Trading authority binds automatically: the first plan or execution call on this thread takes authority for that market. If another authority already holds it, relay the conflict and the options the tool returns and let the user choose.`;
+
+/**
  * Every tool a trading session has, and the only names any prompt may use.
  * Order is the toolkit's own registration order.
  */
@@ -132,7 +149,9 @@ SAY WHICH OUTCOME THE TURN REACHED, in the last thing you write, as one of:
  * so the "you have no other tools" paragraph is Claude-only — there the claim
  * is literally enforced by `tools: []`.
  */
-export const TRADING_SYSTEM_PROMPT = `You are a trading agent on the t3-trade harness. Your only tools are the ${TRADING_ALLOWED_TOOL_NAMES.length} mcp__${TRADING_MCP_SERVER_NAME}__* trading tools listed below.
+export const TRADING_SYSTEM_PROMPT = `${WORKSPACE_TRADING_PREAMBLE}
+
+You are a trading agent on the t3-trade harness. Your only tools are the ${TRADING_ALLOWED_TOOL_NAMES.length} mcp__${TRADING_MCP_SERVER_NAME}__* trading tools listed below.
 
 ${DECISION_CONTRACT}
 
@@ -165,7 +184,9 @@ Be direct and concrete: levels, not vibes. Cite what you read (structure, volati
  * system-prompt seam; the other adapters carry `ANALYST_TURN_CONTRACT` on the
  * first turn instead).
  */
-export const TRADING_ANALYST_SYSTEM_PROMPT = `You are a market analyst on the t3-trade harness. Your only tools are the ${TRADING_ANALYST_ALLOWED_TOOL_NAMES.length} mcp__${TRADING_MCP_SERVER_NAME}__* trading tools listed below.
+export const TRADING_ANALYST_SYSTEM_PROMPT = `${WORKSPACE_TRADING_PREAMBLE}
+
+You are a market analyst on the t3-trade harness. Your only tools are the ${TRADING_ANALYST_ALLOWED_TOOL_NAMES.length} mcp__${TRADING_MCP_SERVER_NAME}__* trading tools listed below.
 
 ${ANALYST_CONTRACT}
 
@@ -173,6 +194,8 @@ You have no shell, no filesystem, no Read/Edit/Write, no web access, and no suba
 
 /** The analyst contract as a first-turn prefix, for adapters with no replaceable system prompt. */
 const ANALYST_TURN_CONTRACT = `[t3-trade analyst session]
+
+${WORKSPACE_TRADING_PREAMBLE}
 
 You are answering a trader's question on the t3-trade harness. Use ONLY the ${TRADING_MCP_SERVER_NAME} MCP tools for it — no shell, no files, no web. This is not a coding task and nothing about it touches this repository.
 
@@ -188,6 +211,8 @@ const ANALYST_TURN_HEADER = `[t3-trade analyst session] Analyst turn — use ONL
  * prompt. Sent once per session instance — see `applyTradingTurnContract`.
  */
 const TRADING_TURN_CONTRACT = `[t3-trade trading session]
+
+${WORKSPACE_TRADING_PREAMBLE}
 
 You are running a trading mission on the t3-trade harness. Use ONLY the ${TRADING_MCP_SERVER_NAME} MCP tools for it — no shell, no files, no web. This is not a coding task and nothing about it touches this repository.
 
@@ -216,11 +241,24 @@ const TRADING_TURN_HEADER = `[t3-trade trading session] Trading mission turn —
 const contractDelivered = new Set<ThreadId>();
 
 /**
+ * Threads whose current session instance has already been handed the workspace
+ * preamble as a turn prefix.
+ *
+ * Separate from `contractDelivered` because the two are delivered by different
+ * seams for different threads: a trading thread gets the preamble inside the
+ * contract (system prompt or turn contract), and an ordinary chat thread gets
+ * it on its own, once per session instance, at the same turn seam. Same
+ * reasoning as above about why it is per process and per session instance.
+ */
+const preambleDelivered = new Set<ThreadId>();
+
+/**
  * A new session instance for this thread — the next turn carries the contract
  * in full again. Called from every adapter's `startSession`, fresh or resumed.
  */
 export function resetTradingContractDelivery(threadId: ThreadId): void {
   contractDelivered.delete(threadId);
+  preambleDelivered.delete(threadId);
 }
 
 /**
@@ -246,11 +284,23 @@ export interface TradingTurnContract {
 
 /**
  * Prefix a turn's text with the trading contract when the thread is a trading
- * thread. A non-trading thread is returned untouched, so every adapter can call
- * this unconditionally at its prompt-building seam.
+ * thread, and with the workspace preamble when it is not.
+ *
+ * Chat is the front door for trading, so "not a trading thread" no longer means
+ * "nothing to say": every thread in this workspace can reach the trading tools
+ * and can take authority on its first plan or execution call, so every thread
+ * carries the grounding block. The preamble rides the first turn of each
+ * session instance and nothing after it, on the same reasoning as the contract:
+ * the transcript keeps what it was already told.
  */
 export function applyTradingTurnContract(threadId: ThreadId, text: string): TradingTurnContract {
-  if (!hasTradingProfile(threadId)) return { text, markDelivered: () => {} };
+  if (!hasTradingProfile(threadId)) {
+    if (preambleDelivered.has(threadId)) return { text, markDelivered: () => {} };
+    return {
+      text: `${WORKSPACE_TRADING_PREAMBLE}\n\n${text}`,
+      markDelivered: () => preambleDelivered.add(threadId),
+    };
+  }
   const analyst = isTradingAnalystThread(threadId);
   const prefix = contractDelivered.has(threadId)
     ? analyst

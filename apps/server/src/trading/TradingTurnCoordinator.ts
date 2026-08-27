@@ -128,6 +128,26 @@ export interface TradingTurnCoordinatorShape {
     readonly threadId: string;
     readonly text: string;
   }) => Effect.Effect<boolean>;
+
+  /**
+   * Take the decision lease for a turn that is ALREADY running on this thread.
+   *
+   * The wake path owns the lease for turns it starts. A chat turn that has just
+   * taken authority on a market is a turn nobody dispatched, and every
+   * execution check that asks "does a harness run own this mission's lease?"
+   * would refuse it — correctly, since without a run there is no turn boundary
+   * to release on. This opens that run against the turn in flight and forks the
+   * same turn-end watcher a woken run gets, so the lease is released when the
+   * chat turn ends rather than held forever.
+   *
+   * Returns `true` when this call opened the run, `false` when a run already
+   * owns the lease (which is just as good: the caller is inside a turn that
+   * holds it).
+   */
+  readonly adoptTurn: (input: {
+    readonly missionId: string;
+    readonly threadId: string;
+  }) => Effect.Effect<boolean, PersistenceSqlError>;
 }
 
 export class TradingTurnCoordinator extends Context.Service<
@@ -371,8 +391,8 @@ const make = Effect.gen(function* () {
    * The flag is local to each watcher — one tracker per run, read and written
    * by the single fiber that runs that run's stream.
    */
-  const makeTurnEndTracker = (threadId: string) => {
-    let started = false;
+  const makeTurnEndTracker = (threadId: string, alreadyStarted = false) => {
+    let started = alreadyStarted;
     return {
       hasStarted: () => started,
       isTurnEnd: (event: OrchestrationEvent): boolean => {
@@ -478,9 +498,14 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const watchTurnEndAndRelease = (runId: string, missionId: string, threadId: string) =>
+  const watchTurnEndAndRelease = (
+    runId: string,
+    missionId: string,
+    threadId: string,
+    alreadyStarted = false,
+  ) =>
     Effect.suspend(() => {
-      const tracker = makeTurnEndTracker(threadId);
+      const tracker = makeTurnEndTracker(threadId, alreadyStarted);
       const untilTurnEnds = engine.streamDomainEvents.pipe(
         Stream.filter(tracker.isTurnEnd),
         Stream.take(1),
@@ -1250,7 +1275,29 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  return { requestRun, requestUserMessageRun } satisfies TradingTurnCoordinatorShape;
+  const adoptTurn: TradingTurnCoordinatorShape["adoptTurn"] = (input) =>
+    Effect.gen(function* () {
+      // `user_message` is the honest cause: the turn being adopted is one the
+      // user started by typing, not one the runtime woke.
+      const runId = yield* acquireLease(input.missionId, "user_message");
+      if (runId === null) return false;
+
+      // The turn is already in flight, so the watcher is told the turn has
+      // started rather than waiting for a `running` event that may already
+      // have gone past. Without that it would sit through this turn's end and
+      // release on the NEXT one, holding the lease across turns.
+      yield* Effect.forkDetach(
+        watchTurnEndAndRelease(runId, input.missionId, input.threadId, true),
+      );
+      yield* Effect.logInfo("TradingTurnCoordinator: adopted a chat turn", {
+        missionId: input.missionId,
+        threadId: input.threadId,
+        runId,
+      });
+      return true;
+    });
+
+  return { requestRun, requestUserMessageRun, adoptTurn } satisfies TradingTurnCoordinatorShape;
 });
 
 export const TradingTurnCoordinatorLive = Layer.effect(TradingTurnCoordinator, make);

@@ -47,7 +47,7 @@ import {
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
-import { TRADING_SYSTEM_PROMPT } from "../TradingSessionProfile.ts";
+import { TRADING_SYSTEM_PROMPT, WORKSPACE_TRADING_PREAMBLE } from "../TradingSessionProfile.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
@@ -354,12 +354,15 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         }),
       );
 
-      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
-        input: "hello",
-        model: "gpt-5.3-codex",
-        effort: "high",
-        serviceTier: "priority",
-      });
+      const sent = runtime.sendTurnImpl.mock.calls[0]?.[0];
+      NodeAssert.deepStrictEqual(
+        { ...sent, input: undefined },
+        { input: undefined, model: "gpt-5.3-codex", effort: "high", serviceTier: "priority" },
+      );
+      // Every thread in this workspace carries the grounding block ahead of its
+      // text, trading thread or not.
+      NodeAssert.ok(sent?.input?.startsWith(WORKSPACE_TRADING_PREAMBLE));
+      NodeAssert.ok(sent?.input?.endsWith("hello"));
     }),
   );
 
@@ -531,12 +534,13 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         }),
       );
 
-      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
-        input: "hello",
-        model: "gpt-5.3-codex",
-        effort: "high",
-        serviceTier: "flex",
-      });
+      const sent = runtime.sendTurnImpl.mock.calls[0]?.[0];
+      NodeAssert.deepStrictEqual(
+        { ...sent, input: undefined },
+        { input: undefined, model: "gpt-5.3-codex", effort: "high", serviceTier: "flex" },
+      );
+      NodeAssert.ok(sent?.input?.startsWith(WORKSPACE_TRADING_PREAMBLE));
+      NodeAssert.ok(sent?.input?.endsWith("hello"));
     }).pipe(Effect.provide(customLayer));
   });
 });

@@ -4201,7 +4201,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                   ? TradingSessionProfile.TRADING_ANALYST_SYSTEM_PROMPT
                   : TRADING_SYSTEM_PROMPT,
             }
-          : { systemPrompt: { type: "preset", preset: "claude_code" } }),
+          : {
+              // Chat is the front door for trading: an ordinary thread here
+              // still has the t3-trade tools mounted and can still take
+              // authority on its first plan or execution call, so it carries
+              // the workspace grounding block appended to the coding preset.
+              systemPrompt: {
+                type: "preset",
+                preset: "claude_code",
+                append: TradingSessionProfile.WORKSPACE_TRADING_PREAMBLE,
+              },
+            }),
         settingSources: tradingProfile ? [] : [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.

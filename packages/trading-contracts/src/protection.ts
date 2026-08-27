@@ -267,10 +267,10 @@ export function isFullyProtected(input: ProtectionConfirmationInput): boolean {
 export function describeStopGateDefect(defect: StopGateDefect, input: StopGateInput): string {
   switch (defect) {
     case "stop_missing":
-      return `${input.actionType} is position-increasing and carries no stop information (§16.3 item 17)`;
+      return `nothing was placed: an order that adds to a position needs a stop, and this ${input.actionType} carried none. Name the stop, at the level that says the read was wrong, and try once more.`;
     case "stop_price_not_positive":
-      return `stop price ${input.stop?.stopPrice} is not a positive price`;
+      return `nothing was placed: the stop price ${input.stop?.stopPrice} is not a price. Name a positive stop price and try once more.`;
     case "stop_on_wrong_side_of_entry":
-      return `stop ${input.stop?.stopPrice} is on the wrong side of entry ${input.referencePrice} for a ${input.side}`;
+      return `nothing was placed: a ${input.side} loses when price ${input.side === "buy" ? "falls, so its stop belongs below" : "rises, so its stop belongs above"} the ${input.referencePrice} entry, and ${input.stop?.stopPrice} is on the other side. Move the stop to the losing side of entry and try once more.`;
   }
 }

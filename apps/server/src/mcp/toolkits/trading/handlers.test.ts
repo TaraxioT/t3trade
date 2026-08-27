@@ -51,6 +51,10 @@ import { TradingCalibrationServiceLive } from "../../../trading/TradingCalibrati
 import { TradingAccountProjection } from "../../../trading/TradingAccountProjection.ts";
 import { TradingAlertServiceLive } from "../../../trading/TradingAlertService.ts";
 import { clearAllSessionProfiles, setSessionProfile } from "../../../provider/SessionProfile.ts";
+import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerRegistryMock.ts";
+import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
+import { LOCAL_TRADING_USER_ID } from "../../../trading/TradingMissionReactor.ts";
+import { LOCAL_TRADING_ACCOUNT_ID } from "../../../trading/TradingAccountBootstrap.ts";
 import {
   TradingCostEstimator,
   TradingCostEstimatorLive,
@@ -169,6 +173,9 @@ const withDecodedBody = (response: { readonly result?: any; readonly error?: any
  * stopping at the database.
  */
 const dispatchedCommands: Array<OrchestrationCommand> = [];
+
+/** Every chat turn bind-on-first-use took the decision lease for. */
+const adoptedTurns: Array<{ readonly missionId: string; readonly threadId: string }> = [];
 
 const recordingEngine = Layer.succeed(OrchestrationEngineService, {
   dispatch: (command) =>
@@ -478,8 +485,26 @@ const tradingLayerOverExchange = (
     "market-archive.sqlite",
   ),
   costEstimator: Layer.Layer<TradingCostEstimator> = fakeCostEstimator,
+  /** Bind-on-first-use drives the entry path, so its tests supply a real one. */
+  entryService: Layer.Layer<TradingEntryService> = Layer.succeed(
+    TradingEntryService,
+    {} as unknown as TradingEntryService["Service"],
+  ),
 ) =>
   Layer.mergeAll(
+    // Bind-on-first-use reads the provider its credential belongs to and takes
+    // the decision lease for the chat turn. Neither is an exchange service, so
+    // both are stand-ins here; `adoptedTurns` is what the tests assert on.
+    makeProviderRegistryLayer(),
+    Layer.succeed(TradingTurnCoordinator, {
+      requestRun: () => Effect.die("not used"),
+      requestUserMessageRun: () => Effect.die("not used"),
+      adoptTurn: (input: { readonly missionId: string; readonly threadId: string }) =>
+        Effect.sync(() => {
+          adoptedTurns.push(input);
+          return true;
+        }),
+    } as unknown as TradingTurnCoordinator["Service"]),
     // `trading_look` reaches the exchange directly, so the fake gateway is part
     // of what this layer offers rather than only an input to the services.
     exchangeGatewayLayer(fake),
@@ -547,7 +572,7 @@ const tradingLayerOverExchange = (
           budget: { remainingCumulativeLossUsd: 0, exhausted: false },
         }),
     } as unknown as TradingExecutionOutcome["Service"]),
-    Layer.succeed(TradingEntryService, {} as unknown as TradingEntryService["Service"]),
+    entryService,
     Layer.succeed(TradingExitService, {
       prepare: (request: { readonly missionId: string; readonly market?: string }) =>
         Effect.succeed({
@@ -568,10 +593,20 @@ const tradingLayerOverExchange = (
           note: null,
         }),
     } as unknown as TradingExitService["Service"]),
-  );
+    // The test double occupies the real layer's seam. Its service set overlaps
+    // but does not equal the real one, so the cast is what lets one
+    // `mcpLayerOver` take either.
+  ) as unknown as typeof TradingLayerLive;
 
-/** Either the real trading runtime or the fake-exchange rebuild above. */
-type TradingLayerInput = typeof TradingLayerLive | ReturnType<typeof tradingLayerOverExchange>;
+/**
+ * Either the real trading runtime or the fake-exchange rebuild above.
+ *
+ * The fake stands in for the real layer at the same seam, so it is typed as it
+ * rather than unioned with it: the two offer overlapping but unequal service
+ * sets, and a union of layers is not a layer anything can be provided from.
+ * `tradingLayerOverExchange` casts itself into this shape.
+ */
+type TradingLayerInput = typeof TradingLayerLive;
 
 const mcpLayerOver = (tradingLayer: TradingLayerInput) =>
   McpHttpServer.layer.pipe(
@@ -660,6 +695,14 @@ const withMcpServer = <A, E>(
     }) => Effect.Effect<void, never, never>;
     /** Open one harness run, as a wake would — the run the funnel records against. */
     readonly seedHarnessRun: () => Effect.Effect<void, never, never>;
+    /** The account bind-on-first-use creates its missions against. */
+    readonly seedLocalTradingAccount: () => Effect.Effect<void, never, never>;
+    /** Give the local user an active mission on `market`, as a bind would. */
+    readonly seedLocalMissionOn: (input: {
+      readonly missionId: string;
+      readonly market: string;
+      readonly threadId: string;
+    }) => Effect.Effect<void, never, never>;
     /** What the open run recorded as its first execution refusal, if anything. */
     readonly readFirstRefusal: () => Effect.Effect<string | null, never, never>;
   }) => Effect.Effect<A, E, HttpServer.HttpServer>,
@@ -668,6 +711,7 @@ const withMcpServer = <A, E>(
   Effect.scoped(
     Effect.gen(function* () {
       dispatchedCommands.length = 0;
+      adoptedTurns.length = 0;
       const built = yield* Layer.build(
         HttpRouter.serve(mcpLayerOver(tradingLayer), {
           disableListenLog: true,
@@ -844,6 +888,43 @@ const withMcpServer = <A, E>(
           INSERT INTO trading_harness_runs (run_id, mission_id, cause, status, started_at, created_at)
           VALUES ('run_funnel', ${MISSION_ID}, 'scheduled_reassessment', 'starting', 1000, 1000)
         `.pipe(Effect.asVoid, Effect.orDie);
+      const seedLocalTradingAccount = () =>
+        sql`
+          INSERT INTO trading_accounts (
+            account_id, user_id, environment, master_wallet_json,
+            execution_wallet_json, status, created_at, updated_at
+          ) VALUES (
+            ${LOCAL_TRADING_ACCOUNT_ID}, ${LOCAL_TRADING_USER_ID}, 'testnet',
+            ${JSON.stringify({
+              privyWalletId: "wal_local_trading",
+              address: "0x1234567890abcdef1234567890abcdef12345678",
+              ownership: "user",
+            })},
+            '{"privyWalletId":"wal_local_trading","address":"0x0000000000000000000000000000000000000002","hyperliquidAgentName":"t3","status":"ready"}',
+            'ready', 1, 1
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
+      const seedLocalMissionOn = (input: {
+        readonly missionId: string;
+        readonly market: string;
+        readonly threadId: string;
+      }) =>
+        missions
+          .createMission({
+            missionId: input.missionId,
+            userId: LOCAL_TRADING_USER_ID,
+            tradingAccountId: LOCAL_TRADING_ACCOUNT_ID,
+            instruction: `Trade ${input.market}`,
+            allocatedCapitalUsd: 500,
+            market: input.market,
+            harness: {
+              provider: "claude",
+              providerInstanceId: PROVIDER_INSTANCE,
+              threadId: ThreadId.make(input.threadId),
+              status: "available",
+            },
+          })
+          .pipe(Effect.asVoid, Effect.orDie);
       const readFirstRefusal = () =>
         sql<{ readonly first_preview_refusal: string | null }>`
           SELECT first_preview_refusal FROM trading_harness_runs WHERE run_id = 'run_funnel'
@@ -933,6 +1014,8 @@ const withMcpServer = <A, E>(
         seedLevelEvent,
         seedInboxEvent,
         readFirstRefusal,
+        seedLocalTradingAccount,
+        seedLocalMissionOn,
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest));
@@ -1415,12 +1498,11 @@ it.effect("answers an unbound thread instead of failing every tool on it", () =>
         missionId: "mission_belonging_to_someone_else",
       });
       assert.equal(wrongMission.result.isError, true);
-      assert.deepStrictEqual(wrongMission.result.content, [
-        {
-          type: "text",
-          text: `TradingToolRejectedError: mission_not_bound_to_thread (thread=${BOUND_THREAD}, mission=mission_belonging_to_someone_else)`,
-        },
-      ]);
+      assert.match(wrongMission.result.content[0].text, /cannot act on the mission it named/);
+      assert.include(
+        wrongMission.result.content[0].text,
+        `[reason=mission_not_bound_to_thread, thread=${BOUND_THREAD}, mission=mission_belonging_to_someone_else]`,
+      );
       assert.notEqual(wrongMission.result.content[0].text, INTERNAL_ERROR_TEXT);
     }),
   ),
@@ -1435,13 +1517,184 @@ it.effect("keeps write tools closed on an unbound thread", () =>
         strategy: strategyBody("v1"),
       });
       assert.equal(published.result.isError, true);
-      assert.deepStrictEqual(published.result.content, [
-        {
-          type: "text",
-          text: `TradingToolRejectedError: thread_not_bound_to_mission (thread=${UNBOUND_THREAD}, mission=${MISSION_ID})`,
-        },
-      ]);
+      // Naming another thread's mission is a mismatch, not a market to take:
+      // bind-on-first-use never answers it with a mission of its own.
+      assert.match(published.result.content[0].text, /holds no trading authority/);
+      assert.include(
+        published.result.content[0].text,
+        `[reason=thread_not_bound_to_mission, thread=${UNBOUND_THREAD}, mission=${MISSION_ID}]`,
+      );
     }),
+  ),
+);
+
+// -- bind-on-first-use -------------------------------------------------------
+//
+// Chat is the front door. A thread that has never held a mission places an
+// order, and the order goes out: the mission is created, bound to that thread,
+// and the entry carries on inside the SAME call. What is under test is that the
+// agent never needs a second attempt.
+
+/** The thread that has held nothing and is about to take a market. */
+const FRESH_CHAT_THREAD = ThreadId.make("thread-fresh-chat");
+
+/** An entry service that records what it was asked for and prepares an intent. */
+const preparedEntries: Array<{ readonly missionId: string; readonly market: string }> = [];
+const recordingEntryService = Layer.succeed(TradingEntryService, {
+  prepare: (request: { readonly missionId: string; readonly market: string }) =>
+    Effect.sync(() => {
+      preparedEntries.push({ missionId: request.missionId, market: request.market });
+      return {
+        outcome: "prepared" as const,
+        intent: {
+          missionId: request.missionId,
+          executionSequence: 1,
+          actionType: "open" as const,
+          market: request.market,
+          side: "buy" as const,
+          size: 0.1,
+          orderPreference: "marketable_ioc" as const,
+          limitPrice: 3_010,
+          stop: { stopPrice: 2_900, plannedLossAtStopUsd: 11 },
+          reduceOnly: false,
+        },
+        expectedAuthorityVersion: 1,
+        activeHarnessRunId: "run_adopted",
+        size: 0.1,
+        constrainedBy: "requested" as const,
+        notionalUsd: 301,
+        plannedLossAtStopUsd: 11,
+        estimatedRoundTripCostUsd: 1,
+        notes: [],
+      };
+    }),
+} as unknown as TradingEntryService["Service"]);
+
+const bindLayer = () =>
+  tradingLayerOverExchange(makeFakeExchange(), undefined, undefined, recordingEntryService);
+
+it.effect("takes authority on a free market and enters in the same call", () =>
+  withMcpServer(
+    ({ callTool, missions, seedLocalTradingAccount }) =>
+      Effect.gen(function* () {
+        preparedEntries.length = 0;
+        yield* seedLocalTradingAccount();
+
+        // One call. No mission was created first, and none is named.
+        const entered = yield* callTool(FRESH_CHAT_THREAD, "trading_enter", {
+          market: "SOL",
+          side: "buy",
+          stopPrice: 2_900,
+          sizeEth: 0.1,
+        });
+
+        assert.notEqual(entered.result.isError, true);
+        assert.equal(entered.result.body.status, "filled");
+
+        // The mission exists, holds the market that was named, and is bound to
+        // the chat that named it.
+        const bound = yield* missions.findMissionByThreadId(FRESH_CHAT_THREAD).pipe(Effect.orDie);
+        assert.equal(bound._tag, "Some");
+        const mission = (
+          bound as {
+            readonly value: {
+              readonly market: string;
+              readonly status: string;
+              readonly id: string;
+            };
+          }
+        ).value;
+        assert.equal(mission.market, "SOL");
+        // `waiting` is what an entry is reachable from; the §11.1 walk ran.
+        assert.equal(mission.status, "waiting");
+
+        // The entry carried on into the same invocation, against the mission
+        // that had just been created for it.
+        assert.deepStrictEqual(preparedEntries, [{ missionId: mission.id, market: "SOL" }]);
+
+        // The chat turn took the decision lease, so the execution checks that
+        // ask who owns it have an answer.
+        assert.deepStrictEqual(adoptedTurns, [
+          { missionId: mission.id, threadId: FRESH_CHAT_THREAD },
+        ]);
+
+        // And the order actually went to the reactor.
+        const requested = dispatchedCommands.filter(
+          (command) => command.type === "trading.execution.requested",
+        );
+        assert.equal(requested.length, 1);
+
+        clearAllSessionProfiles();
+      }),
+    bindLayer(),
+  ),
+);
+
+it.effect("refuses a market another authority holds, and places nothing", () =>
+  withMcpServer(
+    ({ callTool, missions, seedLocalTradingAccount, seedLocalMissionOn }) =>
+      Effect.gen(function* () {
+        preparedEntries.length = 0;
+        yield* seedLocalTradingAccount();
+        yield* seedLocalMissionOn({
+          missionId: "mission_holding_sol",
+          market: "SOL",
+          threadId: "thread-holding-sol",
+        });
+
+        const refused = yield* callTool(FRESH_CHAT_THREAD, "trading_enter", {
+          market: "SOL",
+          side: "buy",
+          stopPrice: 2_900,
+          sizeEth: 0.1,
+        });
+
+        assert.equal(refused.result.isError, true);
+        const text = refused.result.content[0].text as string;
+        // The holder is named in words the model relays, and the ways out come
+        // with it — a refusal the user cannot act on costs the turn twice.
+        assert.include(text, "another mission already holds SOL");
+        assert.include(text, "What you can do:");
+        assert.include(text, "[reason=market_held_by_other_authority");
+        assert.notInclude(text, "—");
+
+        // Nothing was taken and nothing was sent.
+        const bound = yield* missions.findMissionByThreadId(FRESH_CHAT_THREAD).pipe(Effect.orDie);
+        assert.equal(bound._tag, "None");
+        assert.deepStrictEqual(preparedEntries, []);
+        assert.deepStrictEqual(adoptedTurns, []);
+        assert.equal(
+          dispatchedCommands.filter((command) => command.type === "trading.execution.requested")
+            .length,
+          0,
+        );
+
+        clearAllSessionProfiles();
+      }),
+    bindLayer(),
+  ),
+);
+
+it.effect("publishing a plan on a fresh chat takes the market it names", () =>
+  withMcpServer(
+    ({ callTool, missions, seedLocalTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedLocalTradingAccount();
+
+        const published = yield* callTool(FRESH_CHAT_THREAD, "trading_plan", {
+          expectedMissionVersion: 3,
+          strategy: strategyBody("first plan from chat"),
+        });
+
+        assert.notEqual(published.result.isError, true);
+        assert.equal(published.result.body.outcome, "accepted");
+
+        const bound = yield* missions.findMissionByThreadId(FRESH_CHAT_THREAD).pipe(Effect.orDie);
+        assert.equal(bound._tag, "Some");
+
+        clearAllSessionProfiles();
+      }),
+    bindLayer(),
   ),
 );
 
@@ -2020,12 +2273,11 @@ it.effect("still rejects a wrong missionId with mission_not_bound_to_thread", ()
         missionId: "mission_belonging_to_someone_else",
       });
       assert.equal(wrong.result.isError, true);
-      assert.deepStrictEqual(wrong.result.content, [
-        {
-          type: "text",
-          text: `TradingToolRejectedError: mission_not_bound_to_thread (thread=${BOUND_THREAD}, mission=mission_belonging_to_someone_else)`,
-        },
-      ]);
+      assert.match(wrong.result.content[0].text, /cannot act on the mission it named/);
+      assert.include(
+        wrong.result.content[0].text,
+        `[reason=mission_not_bound_to_thread, thread=${BOUND_THREAD}, mission=mission_belonging_to_someone_else]`,
+      );
     }),
   ),
 );

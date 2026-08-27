@@ -25,6 +25,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { WORKSPACE_TRADING_PREAMBLE } from "../TradingSessionProfile.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
@@ -1039,16 +1040,23 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         ),
       });
 
-      NodeAssert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
-        sessionID: "http://127.0.0.1:9999/session",
-        model: {
-          providerID: "anthropic",
-          modelID: "claude-sonnet-4-5",
+      const prompted = runtimeMock.state.promptCalls.at(-1) as {
+        readonly parts?: ReadonlyArray<{ readonly text?: string }>;
+      };
+      NodeAssert.deepEqual(
+        { ...prompted, parts: undefined },
+        {
+          sessionID: "http://127.0.0.1:9999/session",
+          model: { providerID: "anthropic", modelID: "claude-sonnet-4-5" },
+          agent: "github-copilot",
+          variant: "high",
+          parts: undefined,
         },
-        agent: "github-copilot",
-        variant: "high",
-        parts: [{ type: "text", text: "Fix it" }],
-      });
+      );
+      // Every thread in this workspace carries the grounding block ahead of its
+      // text, trading thread or not.
+      NodeAssert.ok(prompted?.parts?.[0]?.text?.startsWith(WORKSPACE_TRADING_PREAMBLE));
+      NodeAssert.ok(prompted?.parts?.[0]?.text?.endsWith("Fix it"));
     }).pipe(Effect.provide(adapterLayer));
   });
 
@@ -1083,14 +1091,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         input: "Fix it",
       });
 
-      NodeAssert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
-        sessionID: "http://127.0.0.1:9999/session",
-        model: {
-          providerID: "anthropic",
-          modelID: "claude-sonnet-4-5",
+      const prompted = runtimeMock.state.promptCalls.at(-1) as {
+        readonly parts?: ReadonlyArray<{ readonly text?: string }>;
+      };
+      NodeAssert.deepEqual(
+        { ...prompted, parts: undefined },
+        {
+          sessionID: "http://127.0.0.1:9999/session",
+          model: { providerID: "anthropic", modelID: "claude-sonnet-4-5" },
+          parts: undefined,
         },
-        parts: [{ type: "text", text: "Fix it" }],
-      });
+      );
+      NodeAssert.ok(prompted?.parts?.[0]?.text?.startsWith(WORKSPACE_TRADING_PREAMBLE));
+      NodeAssert.ok(prompted?.parts?.[0]?.text?.endsWith("Fix it"));
     }).pipe(Effect.provide(adapterLayer));
   });
 

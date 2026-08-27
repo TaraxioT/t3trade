@@ -76,9 +76,24 @@ export const TRADING_STRATEGY_TOOL = "trading_strategy";
  */
 export const TradingToolRejectionReason = Schema.Literals([
   "capability_not_granted",
+  /**
+   * No authority, and none could be taken: the call named no market, or the
+   * session is one that may never hold a mission (an analyst).
+   *
+   * Since chat became the front door this is no longer the ordinary state of a
+   * thread that has not traded yet — a plan or an entry naming a free market
+   * takes authority on the spot. What is left here is the case where there is
+   * nothing to take authority on.
+   */
   "thread_not_bound_to_mission",
   "mission_not_bound_to_thread",
   "mission_not_found",
+  /**
+   * The market is already held by another authority — another chat's mission,
+   * or the user's own hand on the exchange. The `detail` names the holder and
+   * the ways out, because the model has to relay both to the user.
+   */
+  "market_held_by_other_authority",
   /** A required exchange read failed. The tool has nothing to answer with, and
       saying so is better than the opaque crash a defect produces. */
   "market_data_unavailable",
@@ -90,6 +105,35 @@ export const TradingToolRejectionReason = Schema.Literals([
   "fetch_key_params_invalid",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
+
+/**
+ * What each rejection says to the person reading it.
+ *
+ * One sentence pattern, every time: what was refused, why, and what to do
+ * next. The reason code alone is a label — it told a model that something
+ * named `thread_not_bound_to_mission` had happened and left it to guess
+ * whether that was its fault, the user's, or the server's, and the guess cost
+ * the same turn twice. The machine-readable half still rides the end of the
+ * message, so telemetry and the tests can key off the code.
+ */
+const REJECTION_PROSE: Record<TradingToolRejectionReason, string> = {
+  capability_not_granted:
+    "Refused: this session cannot reach the trading tools. Its credential was issued without the trading capability. Start a new turn on this thread, and tell the user the server needs a restart if it happens again.",
+  thread_not_bound_to_mission:
+    "Refused: this chat holds no trading authority, and the call named no market to take authority on. Name the market on the call, or start the market you want from the trade home.",
+  mission_not_bound_to_thread:
+    "Refused: this chat cannot act on the mission it named. Authority is held by the chat a mission is bound to, and that is not this one. Omit missionId to act on this chat's own authority, or move to the chat that holds that mission.",
+  mission_not_found:
+    "Refused: the mission this chat held is no longer active, so nothing was changed. Take a fresh look, and place a new plan or entry if you still want the market.",
+  market_held_by_other_authority:
+    "Refused: another authority already holds this market, so nothing was placed.",
+  market_data_unavailable:
+    "Refused: the market read this answer is built from could not be taken, so nothing was placed. Try the same call again in a moment, and say which read failed if it keeps failing.",
+  unknown_fetch_key:
+    "Refused: that fetch key is not in the catalog, so nothing was read. Ask again with a key the catalog lists.",
+  fetch_key_params_invalid:
+    "Refused: that fetch key's parameters are out of range, so nothing was read. Ask again inside the bound named below.",
+};
 
 export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToolRejectedError>()(
   "TradingToolRejectedError",
@@ -116,8 +160,8 @@ export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToo
    */
   override get message(): string {
     const mission = this.missionId === undefined ? "" : `, mission=${this.missionId}`;
-    const detail = this.detail === undefined ? "" : `: ${this.detail}`;
-    return `TradingToolRejectedError: ${this.reason} (thread=${this.threadId}${mission})${detail}`;
+    const detail = this.detail === undefined ? "" : ` ${this.detail}`;
+    return `${REJECTION_PROSE[this.reason]}${detail} [reason=${this.reason}, thread=${this.threadId}${mission}]`;
   }
 }
 

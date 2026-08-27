@@ -81,6 +81,9 @@ import {
 import { recordExecutionRefusal } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { isTradingAnalystThread } from "../../../provider/SessionProfile.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import { bindThreadToMarket } from "../../../trading/TradingAuthorityBinding.ts";
+import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
 import { TradingAlertService } from "../../../trading/TradingAlertService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
@@ -140,6 +143,7 @@ const rejectCall = (input: {
     | "capability_not_granted"
     | "thread_not_bound_to_mission"
     | "mission_not_bound_to_thread"
+    | "market_held_by_other_authority"
     | "unknown_fetch_key"
     | "fetch_key_params_invalid";
   readonly threadId: string;
@@ -204,6 +208,79 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
   }
 
   return { threadId: scope.threadId, mission: bound.value };
+});
+
+/**
+ * The same gate, but the market named on the call may take authority.
+ *
+ * Chat is the front door: a thread that has never held a mission and names a
+ * free market on a plan or an entry TAKES that market, here, inside the call it
+ * is already making. The agent never has to ask for a mission, and never has to
+ * make a second attempt — a bind and the original call are one invocation.
+ *
+ * Three things are deliberately not done here. An analyst session never binds:
+ * it holds no mission by design, and the handlers are its fence. A call that
+ * names no market cannot bind, because there is nothing to take authority on.
+ * And a market another authority holds is never taken: the existing per-market
+ * exclusivity check refuses it, and the refusal names the holder in words the
+ * model relays to the user.
+ */
+const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(function* (input: {
+  readonly missionId: string | undefined;
+  readonly market: string | undefined;
+}): Effect.fn.Return<
+  BoundCall,
+  TradingToolRejectedError,
+  | McpInvocationContext.McpInvocationContext
+  | TradingMissionService
+  | TradingTurnCoordinator
+  | HyperliquidGateway
+  | ProviderRegistry
+  | OrchestrationEngineService
+  | Crypto.Crypto
+> {
+  const scope = yield* McpInvocationContext.requireCapability("trading", (denial) => denial).pipe(
+    Effect.catch((denial) =>
+      rejectCall({
+        reason: "capability_not_granted",
+        threadId: denial.threadId,
+        missionId: input.missionId,
+      }),
+    ),
+  );
+
+  const missions = yield* TradingMissionService;
+  const bound = yield* missions.findMissionByThreadId(scope.threadId).pipe(Effect.orDie);
+  if (Option.isSome(bound)) return yield* resolveBoundCall(input.missionId);
+
+  // Naming someone else's mission is a mismatch whether or not this thread
+  // could have taken a market; answering it with a fresh mission would be
+  // answering a different question.
+  if (input.missionId !== undefined) return yield* resolveBoundCall(input.missionId);
+
+  const market = input.market?.trim();
+  if (
+    isTradingAnalystThread(ThreadId.make(scope.threadId)) ||
+    market === undefined ||
+    market === ""
+  ) {
+    return yield* resolveBoundCall(input.missionId);
+  }
+
+  const binding = yield* bindThreadToMarket({
+    threadId: scope.threadId,
+    providerInstanceId: scope.providerInstanceId,
+    market,
+  });
+  if (binding.outcome === "conflict") {
+    return yield* rejectCall({
+      reason: "market_held_by_other_authority",
+      threadId: scope.threadId,
+      missionId: input.missionId,
+      detail: `${binding.conflict.detail} What you can do: ${binding.conflict.options.join("; or ")}.`,
+    });
+  }
+  return { threadId: scope.threadId, mission: binding.mission };
 });
 
 /**
@@ -1956,7 +2033,10 @@ const handlers = {
 
   trading_plan: (input) =>
     Effect.gen(function* () {
-      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+      const { threadId, mission } = yield* resolveBindableCall({
+        missionId: input.missionId,
+        market: input.strategy.market,
+      });
       // The strategy service keys off `input.missionId`; resolve it to the bound
       // mission so an omitted `missionId` reaches the publish path.
       const resolvedInput = { ...input, missionId: mission.id };
@@ -2016,7 +2096,10 @@ const handlers = {
    */
   trading_enter: (input) =>
     Effect.gen(function* () {
-      const { mission } = yield* resolveBoundCall(input.missionId);
+      const { mission } = yield* resolveBindableCall({
+        missionId: input.missionId,
+        market: input.market,
+      });
       const entries = yield* TradingEntryService;
       const prepared = yield* entries.prepare({
         missionId: mission.id,
