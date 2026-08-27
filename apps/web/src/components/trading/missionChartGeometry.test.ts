@@ -12,6 +12,7 @@ import {
   MAX_DRAWN_CONDITIONS,
   MAX_DRAWN_PAST_MARKERS,
   MIN_CANDLES_FOR_SVG,
+  MIN_VISIBLE_BARS,
   PLOT_WIDTH,
   computeChartGeometry,
   dedupeConditions,
@@ -1154,6 +1155,20 @@ describe("selectVisibleCandles", () => {
     const visible = selectVisibleCandles(series, 60, series[119]!.openTime + 600_000);
     expect(visible).toHaveLength(60);
   });
+
+  // Final-form phase 6: the window floor lives with the windowing function, so
+  // no caller can narrow the chart below a readable 60-bar window.
+  it(`floors a narrower ask at ${MIN_VISIBLE_BARS} bars`, () => {
+    expect(selectVisibleCandles(series, 24, null)).toHaveLength(MIN_VISIBLE_BARS);
+  });
+
+  it("honours an ask wider than the floor", () => {
+    expect(selectVisibleCandles(series, 100, null)).toHaveLength(100);
+  });
+
+  it("gives back everything when the series is shorter than the floor", () => {
+    expect(selectVisibleCandles(series.slice(0, 30), 24, null)).toHaveLength(30);
+  });
 });
 
 describe("findLevelAtPrice", () => {
@@ -1230,6 +1245,44 @@ describe("computeChartGeometry — candles", () => {
 
     expect(bars.map((bar) => bar.direction)).toEqual(["up", "down", "up"]);
     expect(bars[2]!.bodyTop).toBe(bars[2]!.bodyBottom);
+  });
+
+  it("maps each bar's coordinates through the same axes everything else uses", () => {
+    // The renderer draws the bars verbatim, so the geometry must place them on
+    // the shared xForTime/yForPrice mapping: a bar off its own candle's x, or a
+    // body edge off the open/close prices, would sit beside the fills and
+    // levels rather than under them. Real bodies, both directions — the shared
+    // fixture's opens equal its closes, which would let a swapped open/close
+    // mapping pass unnoticed.
+    const candles = [
+      { openTime: 0, open: 100, high: 106, low: 99, close: 105 },
+      { openTime: 60_000, open: 105, high: 107, low: 101, close: 102 },
+      { openTime: 120_000, open: 102, high: 104, low: 100, close: 103 },
+    ];
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+    })!;
+
+    expect(geometry.bars).toHaveLength(candles.length);
+    for (const [index, bar] of geometry.bars.entries()) {
+      const candle = candles[index]!;
+      expect(bar.key).toBe(candle.openTime);
+      expect(bar.x).toBeCloseTo(geometry.xForTime(candle.openTime), 10);
+      expect(bar.highY).toBeCloseTo(geometry.yForPrice(candle.high), 10);
+      expect(bar.lowY).toBeCloseTo(geometry.yForPrice(candle.low), 10);
+      // y is inverted, so the HIGHER of open/close is the body's top edge.
+      expect(bar.bodyTop).toBeCloseTo(geometry.yForPrice(Math.max(candle.open, candle.close)), 10);
+      expect(bar.bodyBottom).toBeCloseTo(
+        geometry.yForPrice(Math.min(candle.open, candle.close)),
+        10,
+      );
+    }
   });
 
   it("draws no bodies for a series that carries only closes", () => {

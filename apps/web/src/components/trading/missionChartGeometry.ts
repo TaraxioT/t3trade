@@ -601,14 +601,26 @@ export function deriveEntryFillAtMillis(
 }
 
 /**
+ * The fewest bars the live window is allowed to show (final-form phase 6).
+ *
+ * A real trading chart's window is 60–120 bars: enough that structure —
+ * a trend, a range, the swing a stop hides behind — is on screen, not just
+ * the last few minutes of tape. The floor lives here with the windowing
+ * function rather than at each call site, so no caller can narrow the chart
+ * below a readable window; a caller asking for MORE than this is honoured.
+ */
+export const MIN_VISIBLE_BARS = 60;
+
+/**
  * The tail of a fetched series to draw, widened to keep a moment in frame.
  *
  * The live chart draws fewer bars than it fetches, for resolution. That crops
  * history, and history is where the session's earlier fills are — an entry from
  * ninety minutes ago would fall off a sixty-bar window and take its marker with
  * it, which is precisely the record the markers exist to keep. So the window
- * starts at `VISIBLE_BARS` and widens, up to everything fetched, until the
- * earliest moment that must stay visible is inside it.
+ * starts at `visibleBars` (floored at {@link MIN_VISIBLE_BARS}) and widens, up
+ * to everything fetched, until the earliest moment that must stay visible is
+ * inside it.
  *
  * `earliestNeeded` of null (no fills yet) leaves the plain tail.
  */
@@ -617,7 +629,7 @@ export function selectVisibleCandles<T extends { readonly openTime: number }>(
   visibleBars: number,
   earliestNeeded: number | null,
 ): ReadonlyArray<T> {
-  const tailStart = Math.max(0, candles.length - visibleBars);
+  const tailStart = Math.max(0, candles.length - Math.max(visibleBars, MIN_VISIBLE_BARS));
   if (earliestNeeded === null) return candles.slice(tailStart);
 
   // The bar the moment falls in, minus one for a little approach context.

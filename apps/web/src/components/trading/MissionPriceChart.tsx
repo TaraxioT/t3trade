@@ -2,9 +2,9 @@
 // MissionPriceChart
 // ---------------------------------------------------------------------------
 //
-// The pure-props SVG renderer for one mission's price line. No state, no
-// effects, no data fetching — it draws exactly what its props say, derived
-// through `computeChartGeometry`.
+// The SVG renderer for one mission's price series — candles by default, a
+// close line on the toggle (final-form phase 6). No data fetching — it draws
+// exactly what its props say, derived through `computeChartGeometry`.
 //
 // Visual idea: the shape of the trade you are in is the only saturated thing
 // on screen. The pre-entry line is muted, the levels are thin/dashed, and the
@@ -33,6 +33,7 @@ import type { ReactNode } from "react";
 
 import type { TradingChartCandle } from "@t3tools/contracts";
 
+import { useMissionChartMode } from "./missionChartModeStore";
 import { isMomentSelected, useMissionSelection } from "./missionSelectionStore";
 import { cn } from "~/lib/utils";
 
@@ -530,6 +531,12 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   const [hoveredTagKey, setHoveredTagKey] = useState<string | null>(null);
   const [hoveredTimeKey, setHoveredTimeKey] = useState<string | null>(null);
 
+  // Candles or the close line (final-form phase 6). One persisted preference
+  // shared by every mounted chart, so the live panel and the review read the
+  // same way. Candle is the default; the store owns that decision.
+  const chartMode = useMissionChartMode((state) => state.mode);
+  const toggleChartMode = useMissionChartMode((state) => state.toggle);
+
   // --- The chip lifecycle (phase 4): arm pulses once, retire fades once. ---
   //
   // Both key off the watch's own id, never the element: a re-render or a
@@ -624,6 +631,12 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // Stripped to word characters: React's generated ids carry punctuation that
   // is legal in an `id` attribute and illegal inside `url(#…)`.
   const gradientId = `mission-chart-${useId().replaceAll(/[^a-zA-Z0-9_-]/g, "")}`;
+
+  // Candle mode needs bodies to draw, and a series that carries only closes
+  // has none (`geometry.bars` is empty then) — so it degrades to the line
+  // rather than to an empty plot. The toggle still shows the preference; the
+  // data is what is missing.
+  const drawCandles = chartMode === "candle" && geometry.bars.length > 0;
 
   // While flat there is no P&L to tint by, so the line takes the window's own
   // direction — up over the hour is green, down is red — which is the rule the
@@ -936,7 +949,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               slideOffset === 0 ? "transform 700ms cubic-bezier(0.33, 1, 0.68, 1)" : "none",
           }}
         >
-          {areaPath !== "" ? (
+          {!drawCandles && areaPath !== "" ? (
             <path
               className="mission-plot-settle"
               d={areaPath}
@@ -945,24 +958,73 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             />
           ) : null}
 
-          {/* The candle bars are gone: the chart is a line chart now — the
-            price is one continuous close line, which is the faithful shape of
-            "where has price been" without the texture of every bar competing
-            with the levels drawn over it. The geometry still computes bars;
-            nothing here reads them. */}
+          {/* Candle mode (final-form phase 6): every bar as body + wicks, in
+            the profit/loss pair by direction. The bar the wick took a stop out
+            on is invisible in a line of closes; this is the picture the
+            exchange draws. The bodies are viewBox rects — the plot stretches,
+            and a body SHOULD stretch with the bar pitch — while the wicks keep
+            a real 1px through `non-scaling-stroke`. A doji's body is given a
+            minimum height so the bar still happened on screen. */}
+          {drawCandles ? (
+            <g className="mission-plot-settle" data-testid="mission-chart-candles">
+              {geometry.bars.map((bar) => {
+                const barColor =
+                  bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)";
+                return (
+                  <g key={bar.key}>
+                    <line
+                      x1={bar.x}
+                      y1={bar.highY}
+                      x2={bar.x}
+                      y2={bar.lowY}
+                      stroke={barColor}
+                      strokeWidth={1}
+                      opacity={0.85}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <rect
+                      x={bar.x - bar.halfWidth}
+                      y={bar.bodyTop}
+                      width={bar.halfWidth * 2}
+                      height={Math.max(bar.bodyBottom - bar.bodyTop, 0.75)}
+                      fill={barColor}
+                      opacity={0.9}
+                    />
+                  </g>
+                );
+              })}
+            </g>
+          ) : null}
 
-          {/* The two EMAs are not drawn. Three curves in one frame — price, fast,
-            slow — read as three subjects, and the two that were meant to be a
-            quiet backdrop were the two the eye followed, because they are the
-            smooth ones. The chart's subject is the price and the levels the
-            plan drew across it. `geometry.emaLines` is still computed and still
-            tested; putting the pair back is this block and the legend below it. */}
+          {/* The two EMAs, over the candles only. Over the close line the
+            smooth pair stole the eye from the price; over candle texture they
+            read as the overlay they are — and the cross of fast through slow is
+            the strategy's own entry read, drawn from the same arithmetic the
+            gate runs. Slow first (geometry orders them), so fast sits on top. */}
+          {drawCandles
+            ? geometry.emaLines.map((line) => (
+                <polyline
+                  key={`ema-${line.speed}`}
+                  data-testid={`mission-chart-ema-${line.speed}`}
+                  points={toPoints(line.points)}
+                  fill="none"
+                  stroke={
+                    line.speed === "fast" ? "var(--color-info)" : "var(--color-muted-foreground)"
+                  }
+                  strokeWidth={1.25}
+                  opacity={0.85}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))
+            : null}
 
           {/* Pre-entry segment. Held at three quarters of the line's colour
             rather than in grey: the hour before the fill is the same price
             series, and draining it to muted grey was what made the chart look
             like two different instruments spliced at the entry. */}
-          {geometry.preEntryPoints.length >= 2 ? (
+          {!drawCandles && geometry.preEntryPoints.length >= 2 ? (
             <polyline
               className={drawClass}
               onAnimationEnd={() => setIntroDone(true)}
@@ -979,7 +1041,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           ) : null}
 
           {/* Post-entry segment: the held part, at full strength. */}
-          {geometry.postEntryPoints.length >= 2 ? (
+          {!drawCandles && geometry.postEntryPoints.length >= 2 ? (
             <polyline
               className={drawClass}
               onAnimationEnd={() => setIntroDone(true)}
@@ -1388,9 +1450,45 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         </span>
       ))}
 
-      {/* The EMA legend went with the lines it named. A legend for a series
-          that is not drawn is two more prices to read in the corner of a chart
-          whose top-left is otherwise empty ground. */}
+      {/* The mode control and, in candle mode, the EMA legend beside it — one
+          quiet row at the top-right of the plot, left of the gutter chips. The
+          legend names the two overlays in their own inks; the toggle is a
+          segmented pair so both readings are visible and the active one is the
+          lit one. HTML, like every other glyph on this chart. */}
+      <div
+        className="absolute top-1 flex items-center gap-2 font-mono text-[9.5px] leading-none tabular-nums"
+        style={{ right: `calc(${gutterPercent}% + 6px)` }}
+      >
+        {drawCandles
+          ? geometry.emaLines.map((line) => (
+              <span
+                key={`ema-legend-${line.speed}`}
+                data-testid={`mission-chart-ema-legend-${line.speed}`}
+                className="pointer-events-none whitespace-nowrap"
+                style={{
+                  color:
+                    line.speed === "fast" ? "var(--color-info)" : "var(--color-muted-foreground)",
+                }}
+                aria-hidden="true"
+              >
+                EMA{line.period} {formatPrice(line.lastValue)}
+              </span>
+            ))
+          : null}
+        <button
+          type="button"
+          data-testid="mission-chart-mode-toggle"
+          className="flex cursor-pointer items-center gap-1 rounded-full border border-border/50 bg-background/70 px-1.5 py-[1.5px] font-mono text-[9.5px] leading-none text-muted-foreground outline-none backdrop-blur-sm transition-colors hover:border-border focus-visible:border-border"
+          aria-label={chartMode === "candle" ? "Switch to line chart" : "Switch to candle chart"}
+          onClick={toggleChartMode}
+        >
+          <span className={chartMode === "candle" ? "text-foreground" : undefined}>candles</span>
+          <span className="opacity-40" aria-hidden>
+            ·
+          </span>
+          <span className={chartMode === "line" ? "text-foreground" : undefined}>line</span>
+        </button>
+      </div>
 
       {/* The grid's own prices, sitting just above their rules at the left of
           the plot. The Stocks app puts this scale on the right; here the right
