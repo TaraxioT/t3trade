@@ -20,7 +20,7 @@ import * as NodePath from "node:path";
 
 import { upsertAssetContexts } from "./archive/assetCtx.ts";
 import { upsertBookSummaries } from "./archive/bookSummary.ts";
-import { upsertCandles, type CandleRow } from "./archive/candles.ts";
+import { recordKnownGap, upsertCandles, type CandleRow } from "./archive/candles.ts";
 import { openArchiveDatabase } from "./archive/db.ts";
 import { upsertFunding } from "./archive/funding.ts";
 import {
@@ -323,5 +323,77 @@ it.effect("asking for more rows than exist returns what exists", () =>
     assert.strictEqual(series.status, "ok");
     if (series.status !== "ok") return;
     assert.strictEqual(series.count, 2);
+  }),
+);
+
+it.effect("coverage reports the recording start and clips known gaps to the window", () =>
+  Effect.gen(function* () {
+    const dir = tempDir("market-archive-coverage-");
+    const path = NodePath.join(dir, "archive.sqlite");
+    const writer = openArchiveDatabase(path);
+    const bar = (t: number): CandleRow => ({
+      coin: "BTC",
+      interval: "5m",
+      t,
+      tClose: t + 5 * MINUTE,
+      o: 100,
+      h: 101,
+      l: 99,
+      c: 100.5,
+      v: 2,
+      n: 3,
+    });
+    upsertCandles(writer, [bar(NOW - 2 * DAY), bar(NOW - MINUTE)]);
+    // One gap inside the asked window (must be clipped to it), one entirely
+    // before it (must not appear), and one straddling the window start.
+    recordKnownGap(writer, {
+      coin: "BTC",
+      interval: "5m",
+      fromT: NOW - 10 * DAY,
+      toT: NOW - 9 * DAY,
+      recordedAt: NOW,
+    });
+    recordKnownGap(writer, {
+      coin: "BTC",
+      interval: "5m",
+      fromT: NOW - 2 * DAY,
+      toT: NOW - DAY + MINUTE,
+      recordedAt: NOW,
+    });
+    writer.close();
+
+    const archive = makeTradingMarketArchive(path);
+    const coverage = yield* archive.coverage({
+      coin: "BTC",
+      interval: "5m",
+      fromT: NOW - DAY,
+      toT: NOW,
+    });
+    assert.strictEqual(coverage.recordingSince, NOW - 2 * DAY);
+    assert.deepStrictEqual(coverage.gaps, [{ fromT: NOW - DAY, toT: NOW - DAY + MINUTE }]);
+
+    // A different interval has its own recording start and no gap records.
+    const other = yield* archive.coverage({
+      coin: "BTC",
+      interval: "1m",
+      fromT: NOW - DAY,
+      toT: NOW,
+    });
+    assert.strictEqual(other.recordingSince, null);
+    assert.deepStrictEqual(other.gaps, []);
+  }),
+);
+
+it.effect("coverage over a missing archive is empty, never a failure", () =>
+  Effect.gen(function* () {
+    const dir = tempDir("market-archive-coverage-missing-");
+    const archive = makeTradingMarketArchive(NodePath.join(dir, "absent.sqlite"));
+    const coverage = yield* archive.coverage({
+      coin: "BTC",
+      interval: "5m",
+      fromT: NOW - DAY,
+      toT: NOW,
+    });
+    assert.deepStrictEqual(coverage, { recordingSince: null, gaps: [] });
   }),
 );

@@ -94,11 +94,14 @@ const stubGateway = Layer.succeed(HyperliquidGateway, {
 } as unknown as (typeof HyperliquidGateway)["Service"]);
 
 /**
- * An archive holding nothing, which is what a live (unwindowed) read sees
- * anyway: these cases are about the gateway pair and the cache window.
+ * An archive holding nothing: latest-bars reads fall through to the gateway,
+ * and the coverage/session decorations degrade to absence. These cases are
+ * about the gateway pair and the cache window.
  */
 const emptyArchive = Layer.succeed(TradingMarketArchive, {
   candlesInWindow: () => Effect.succeed([]),
+  coverage: () => Effect.succeed({ recordingSince: null, gaps: [] }),
+  sessionLevels: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
 } as unknown as (typeof TradingMarketArchive)["Service"]);
 
 /** The real chart layer on the stub gateway, plus the TestClock the TTL reads. */
@@ -244,7 +247,7 @@ it.effect("stops serving a stale view once it is minutes old", () =>
   }).pipe(testLayer()),
 );
 
-it.effect("maps the gateway pair into the view, dropping closeTime/volume/trades", () =>
+it.effect("maps the gateway pair into the view, dropping closeTime/trades, keeping volume", () =>
   Effect.gen(function* () {
     snapshotRead = Effect.succeed(snapshot);
     historyRead = Effect.succeed(history);
@@ -257,13 +260,15 @@ it.effect("maps the gateway pair into the view, dropping closeTime/volume/trades
     assert.equal(view.market, "ETH");
     assert.equal(view.interval, "1m");
     assert.equal(view.candles.length, 2);
-    // closeTime/volume/trades are dropped by the projection.
+    // closeTime/trades are dropped by the projection; volume is kept for the
+    // chart's volume underlay (final-form phase 6).
     assert.deepEqual(view.candles[0], {
       openTime: 1_000,
       open: 1_999,
       high: 2_001,
       low: 1_998,
       close: 2_000,
+      volume: 100,
     });
     assert.deepEqual(view.candles[1], {
       openTime: 61_000,
@@ -271,6 +276,7 @@ it.effect("maps the gateway pair into the view, dropping closeTime/volume/trades
       high: 2_011,
       low: 2_008,
       close: 2_010,
+      volume: 100,
     });
 
     // Header figures lifted straight off the snapshot.
@@ -309,6 +315,15 @@ it.effect("draws a closed window from the archive instead of asking the exchange
       [10, 11],
     );
     assert.equal(historyCalls, 0);
+    // The archive's volume rides through, coverage decorates the view, and a
+    // windowed read carries no session levels ("today" would be the wrong day).
+    assert.deepEqual(
+      view?.candles.map((bar) => bar.volume),
+      [1, 1],
+    );
+    assert.equal(view?.recordingSince, 1);
+    assert.deepEqual(view?.gaps, [{ fromT: 1_600_000_100_000, toT: 1_600_000_200_000 }]);
+    assert.equal(view?.sessionLevels, undefined);
   }).pipe(
     Effect.provide(
       Layer.merge(
@@ -344,6 +359,12 @@ it.effect("draws a closed window from the archive instead of asking the exchange
                       n: 1,
                     },
                   ]),
+                coverage: () =>
+                  Effect.succeed({
+                    recordingSince: 1,
+                    gaps: [{ fromT: 1_600_000_100_000, toT: 1_600_000_200_000 }],
+                  }),
+                sessionLevels: () => Effect.die("windowed reads must not ask for session levels"),
               } as unknown as (typeof TradingMarketArchive)["Service"]),
             ),
           ),
@@ -352,6 +373,82 @@ it.effect("draws a closed window from the archive instead of asking the exchange
       ),
     ),
   ),
+);
+
+it.effect("serves latest bars from the archive while its tail is fresh", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    historyCalls = 0;
+
+    // now = 1_000_000 on the TestClock; a bar closing at 990_000 is well
+    // inside the three-bar freshness bound for 1m.
+    yield* TestClock.adjust(Duration.millis(1_000_000));
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 120 });
+
+    assert.isNotNull(view);
+    assert.equal(historyCalls, 0, "a fresh archive tail must not reach the exchange");
+    assert.deepEqual(
+      view?.candles.map((bar) => bar.close),
+      [50],
+    );
+    // A live read carries the session levels the archive computed.
+    assert.deepEqual(view?.sessionLevels, { priorDayHigh: 60, priorDayLow: 40, priorDayClose: 55 });
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        TradingMarketChartLive.pipe(
+          Layer.provide(
+            Layer.merge(
+              stubGateway,
+              Layer.succeed(TradingMarketArchive, {
+                candlesInWindow: () =>
+                  Effect.succeed([
+                    {
+                      coin: "ETH",
+                      interval: "1m",
+                      t: 930_000,
+                      tClose: 990_000,
+                      o: 49,
+                      h: 51,
+                      l: 48,
+                      c: 50,
+                      v: 3,
+                      n: 5,
+                    },
+                  ]),
+                coverage: () => Effect.succeed({ recordingSince: 930_000, gaps: [] }),
+                sessionLevels: () =>
+                  Effect.succeed({
+                    status: "ok",
+                    priorUtcDay: { high: 60, low: 40, close: 55 },
+                  }),
+              } as unknown as (typeof TradingMarketArchive)["Service"]),
+            ),
+          ),
+        ),
+        TestClock.layer(),
+      ),
+    ),
+  ),
+);
+
+// The gateway stops at 1h; the wider intervals exist only in the archive, so
+// an empty archive must fail the read instead of asking the exchange for a
+// series it cannot serve.
+it.effect("a 4h read with no archive yields null without reaching the exchange", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    historyCalls = 0;
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "4h", maxBars: 120 });
+
+    assert.equal(view, null);
+    assert.equal(historyCalls, 0);
+  }).pipe(testLayer()),
 );
 
 it.effect("falls back to the exchange when the archive was not recording then", () =>

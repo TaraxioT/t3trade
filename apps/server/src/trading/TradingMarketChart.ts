@@ -30,13 +30,18 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
-import type { TradingMarketChartView } from "@t3tools/contracts";
+import type {
+  TradingChartCandle,
+  TradingChartInterval,
+  TradingChartSessionLevels,
+  TradingMarketChartView,
+} from "@t3tools/contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 
 export interface TradingMarketChartReadInput {
   readonly market: string;
-  readonly interval: "1m" | "3m" | "5m" | "15m" | "1h";
+  readonly interval: TradingChartInterval;
   readonly maxBars: number;
   /** Epoch millis bounding the candle window; omitted means the latest bars. */
   readonly startTime?: number;
@@ -75,6 +80,74 @@ interface CachedChart {
   readonly readAt: number;
 }
 
+/** Millis per servable candle interval — the archive's own interval set. */
+const INTERVAL_MILLIS: Record<TradingChartInterval, number> = {
+  "1m": 60_000,
+  "3m": 3 * 60_000,
+  "5m": 5 * 60_000,
+  "15m": 15 * 60_000,
+  "1h": 60 * 60_000,
+  "4h": 4 * 60 * 60_000,
+  "1d": 24 * 60 * 60_000,
+};
+
+/** The intervals the exchange gateway can serve; `4h`/`1d` are archive-only. */
+const GATEWAY_INTERVALS = new Set<TradingChartInterval>(["1m", "3m", "5m", "15m", "1h"]);
+
+const isGatewayInterval = (
+  interval: TradingChartInterval,
+): interval is "1m" | "3m" | "5m" | "15m" | "1h" => GATEWAY_INTERVALS.has(interval);
+
+/**
+ * How far behind "now" the newest archived bar may trail before a latest-bars
+ * read stops trusting the archive and falls back live. One bar is the normal
+ * trail of an archive read (the forming bar is not stored); three means the
+ * WS collector is not writing and the series would render a stopped market.
+ */
+const ARCHIVE_FRESH_BARS = 3;
+
+/**
+ * Map the archive's session-levels answer onto the wire struct, flattened.
+ * `null` when the archive refused outright (no file, no rows at all).
+ */
+export function toWireSessionLevels(
+  result:
+    | {
+        readonly status: "ok";
+        readonly priorUtcDay?: {
+          readonly high: number;
+          readonly low: number;
+          readonly close: number;
+        };
+        readonly currentUtcDay?: {
+          readonly open: number;
+          readonly high: number;
+          readonly low: number;
+        };
+        readonly vwap?: number;
+      }
+    | { readonly status: "unavailable"; readonly reason: string },
+): TradingChartSessionLevels | null {
+  if (result.status !== "ok") return null;
+  return {
+    ...(result.priorUtcDay === undefined
+      ? {}
+      : {
+          priorDayHigh: result.priorUtcDay.high,
+          priorDayLow: result.priorUtcDay.low,
+          priorDayClose: result.priorUtcDay.close,
+        }),
+    ...(result.currentUtcDay === undefined
+      ? {}
+      : {
+          todayOpen: result.currentUtcDay.open,
+          todayHigh: result.currentUtcDay.high,
+          todayLow: result.currentUtcDay.low,
+        }),
+    ...(result.vwap === undefined ? {} : { vwap: result.vwap }),
+  };
+}
+
 export const makeTradingMarketChart = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const archive = yield* TradingMarketArchive;
@@ -86,8 +159,9 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       // The window is part of the identity of the read: a post-mortem chart of
       // a closed trade and the live chart of the same market/interval are
       // different series, and sharing a cache entry would serve one as the
-      // other.
-      const key = `${market}:${interval}:${startTime ?? ""}:${endTime ?? ""}`;
+      // other. `maxBars` is part of it too — a 360-bar read and a 120-bar
+      // read of the same series are different answers.
+      const key = `${market}:${interval}:${maxBars}:${startTime ?? ""}:${endTime ?? ""}`;
       const now = yield* Clock.currentTimeMillis;
       const cached = (yield* Ref.get(cache)).get(key);
       if (cached !== undefined && now - cached.readAt < CACHE_WINDOW_MS) return cached.view;
@@ -100,34 +174,45 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         ),
         Effect.orElseSucceed(() => null),
       );
-      // A windowed read is the post-mortem chart of a finished trade, and the
-      // exchange serves roughly the most recent 5,000 bars and nothing older.
-      // The archive is the only thing that still holds a week-old window, so
-      // it is asked first; an empty answer means it was not recording then,
-      // and the exchange gets the question after all.
-      const archived =
-        startTime === undefined || endTime === undefined
-          ? []
-          : yield* archive.candlesInWindow({
-              coin: market,
-              interval,
-              fromT: startTime,
-              toT: endTime,
-              maxBars,
-            });
+      // The archive is asked first for BOTH shapes of read. A windowed read is
+      // the post-mortem chart of a finished trade, and the exchange serves
+      // roughly the most recent 5,000 bars and nothing older — the archive is
+      // the only thing that still holds a week-old window. A latest-bars read
+      // trusts the archive only while its newest bar is fresh: the WS
+      // collector writes followed markets continuously, so a stale tail means
+      // it is not recording and the exchange answers instead. `4h`/`1d` have
+      // no exchange path here (the gateway stops at `1h`), so for those the
+      // archive is the only source and an empty answer fails the read.
+      const intervalMillis = INTERVAL_MILLIS[interval];
+      const windowed = startTime !== undefined && endTime !== undefined;
+      const windowFrom = windowed ? startTime : now - maxBars * intervalMillis;
+      const windowTo = windowed ? endTime : now;
+      const archived = yield* archive.candlesInWindow({
+        coin: market,
+        interval,
+        fromT: windowFrom,
+        toT: windowTo,
+        maxBars,
+      });
+      const newestClose = archived.length > 0 ? archived[archived.length - 1]!.tClose : null;
+      const archiveServes =
+        archived.length > 0 &&
+        (windowed ||
+          (newestClose !== null && now - newestClose <= ARCHIVE_FRESH_BARS * intervalMillis));
 
-      const history =
-        archived.length > 0
-          ? {
-              candles: archived.map((bar) => ({
-                openTime: bar.t,
-                open: bar.o,
-                high: bar.h,
-                low: bar.l,
-                close: bar.c,
-              })),
-            }
-          : yield* gateway
+      const history: { candles: ReadonlyArray<TradingChartCandle> } | null = archiveServes
+        ? {
+            candles: archived.map((bar) => ({
+              openTime: bar.t,
+              open: bar.o,
+              high: bar.h,
+              low: bar.l,
+              close: bar.c,
+              volume: bar.v,
+            })),
+          }
+        : isGatewayInterval(interval)
+          ? yield* gateway
               .getMarketHistory({
                 market: market as TradingMarket,
                 interval,
@@ -136,11 +221,24 @@ export const makeTradingMarketChart = Effect.gen(function* () {
                 ...(endTime !== undefined ? { endTime } : {}),
               })
               .pipe(
+                Effect.map((live) => ({
+                  candles: live.candles.map(
+                    (candle): TradingChartCandle => ({
+                      openTime: candle.openTime,
+                      open: candle.open,
+                      high: candle.high,
+                      low: candle.low,
+                      close: candle.close,
+                      volume: candle.volume,
+                    }),
+                  ),
+                })),
                 Effect.tapError((cause) =>
                   Effect.logDebug("trading chart history read failed", { market, interval, cause }),
                 ),
                 Effect.orElseSucceed(() => null),
-              );
+              )
+          : null;
       if (snapshot === null || history === null) {
         // Serve the last good view rather than blanking the surface. Only the
         // freshness claim changes — everything drawn is what the exchange last
@@ -154,16 +252,27 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         return { ...cached.view, stale: true };
       }
 
+      // Coverage and session levels are decoration, never a reason to fail:
+      // both come from the archive alone and degrade to absence.
+      const coverage = yield* archive.coverage({
+        coin: market,
+        interval,
+        fromT: windowFrom,
+        toT: windowTo,
+      });
+      // "Prior day" and "today" are anchored at now, so a post-mortem window
+      // from last week must not carry them — they would be the wrong day's.
+      const sessionLevels = windowed
+        ? null
+        : toWireSessionLevels(yield* archive.sessionLevels({ coin: market, now }));
+
       const view: TradingMarketChartView = {
         market,
         interval,
-        candles: history.candles.map((candle) => ({
-          openTime: candle.openTime,
-          open: candle.open,
-          high: candle.high,
-          low: candle.low,
-          close: candle.close,
-        })),
+        candles: history.candles,
+        ...(sessionLevels === null ? {} : { sessionLevels }),
+        ...(coverage.recordingSince === null ? {} : { recordingSince: coverage.recordingSince }),
+        ...(coverage.gaps.length === 0 ? {} : { gaps: coverage.gaps }),
         markPrice: snapshot.markPrice,
         change24hPercent: snapshot.change24hPercent,
         fundingRate8h: snapshot.fundingRate8h,

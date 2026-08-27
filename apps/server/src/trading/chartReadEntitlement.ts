@@ -2,16 +2,20 @@
  * Who may read a market chart.
  *
  * The chart RPC must not become a free Hyperliquid proxy, so it serves only
- * markets the caller holds — or held — a mission on. The environment is the
- * trust boundary (the mission snapshot RPC does not bind to
- * `currentSession.subject` either), so this checks the market and the mission's
- * status and nothing more.
+ * markets this install is actually paying attention to. Two things entitle a
+ * read: a mission on the market, and (final-form phase 6) the market being in
+ * the follow set — held, armed, watchlisted, or recently charted. The
+ * environment is the trust boundary (the mission snapshot RPC does not bind
+ * to `currentSession.subject` either), so this checks the market against
+ * those two lists and nothing more.
  *
- * Extracted from the `ws.ts` handler because the rule has two shapes and both
- * need pinning: the live chart requires a mission that is currently running,
- * while the post-mortem chart on a finished mission's card is windowed and its
- * mission is terminal by definition. Refusing a terminal mission on the
- * windowed path would refuse every review chart there is.
+ * The mission rule keeps its two shapes: the live chart requires a mission
+ * that is currently running, while the post-mortem chart on a finished
+ * mission's card is windowed and its mission is terminal by definition.
+ * Refusing a terminal mission on the windowed path would refuse every review
+ * chart there is. A followed market is entitled to both shapes — a manual
+ * trader reviewing yesterday on a watchlisted market has no mission to point
+ * at, and the follow set is the attention record that stands in for one.
  *
  * @module chartReadEntitlement
  */
@@ -37,15 +41,19 @@ export function isReviewRead(request: ChartReadRequest): boolean {
 }
 
 /**
- * Whether any of `missions` entitles this read.
+ * Whether any of `missions`, or membership in `followedAssets`, entitles this
+ * read.
  *
- * A review read is entitled by any mission on the market, terminal included; a
- * live read needs one that is still running.
+ * A review read is entitled by any mission on the market, terminal included;
+ * a live read needs one that is still running. A followed asset entitles
+ * either shape.
  */
 export function isChartReadEntitled(
   request: ChartReadRequest,
   missions: ReadonlyArray<ChartReadMission>,
+  followedAssets: ReadonlyArray<string> = [],
 ): boolean {
+  if (followedAssets.includes(request.market)) return true;
   const review = isReviewRead(request);
   return missions.some((mission) => {
     if (mission.market !== request.market) return false;

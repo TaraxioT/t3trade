@@ -38,7 +38,9 @@ import {
   archivedCoins,
   assetCtxAtOrBefore,
   candlesInRange,
+  earliestCandleTime,
   fundingInRange,
+  knownGaps,
   latestAssetContext,
   minFundingTime,
   recentAssetContext,
@@ -153,6 +155,22 @@ export interface SessionLevelsOk {
 
 export type SessionLevelsResult = SessionLevelsOk | ArchiveUnavailable;
 
+/**
+ * What the archive can honestly say about its own record of a series inside a
+ * window: when recording started, and the stretches it knows it is missing.
+ *
+ * Unlike the metric reads, this never refuses — an absent archive is simply a
+ * series with no `recordingSince` and no known gaps, which the chart shades
+ * as "not recorded". Returning `unavailable` here would make the chart RPC
+ * fail over a figure that only decorates it.
+ */
+export interface ArchiveCoverage {
+  /** Open time of the oldest stored bar, or null when nothing is recorded. */
+  readonly recordingSince: number | null;
+  /** Known missing stretches clipped to the asked window, oldest first. */
+  readonly gaps: ReadonlyArray<{ readonly fromT: number; readonly toT: number }>;
+}
+
 export interface TradingMarketArchiveShape {
   readonly fundingStats: (input: {
     readonly coin: string;
@@ -198,6 +216,18 @@ export interface TradingMarketArchiveShape {
     readonly coin: string;
     readonly now: number;
   }) => Effect.Effect<SessionLevelsResult>;
+  /**
+   * The archive's own coverage claim for a series inside a window: when
+   * recording started and which stretches are known missing. Never refuses —
+   * an absent archive is `{ recordingSince: null, gaps: [] }`, which the
+   * chart renders as an unrecorded series rather than as an RPC failure.
+   */
+  readonly coverage: (input: {
+    readonly coin: string;
+    readonly interval: string;
+    readonly fromT: number;
+    readonly toT: number;
+  }) => Effect.Effect<ArchiveCoverage>;
 }
 
 export class TradingMarketArchive extends Context.Service<
@@ -527,6 +557,24 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
           ...(missing.length > 0 ? { unavailable: missing.join("; ") } : {}),
         };
       }, `archive file not found at ${filePath}`),
+
+    coverage: ({ coin, interval, fromT, toT }) =>
+      Effect.map(
+        withHandle((db): ArchiveCoverage => {
+          const recordingSince = earliestCandleTime(db, coin, interval);
+          const gaps = knownGaps(db, coin, interval)
+            .filter((gap) => gap.toT >= fromT && gap.fromT <= toT)
+            .map((gap) => ({
+              fromT: Math.max(gap.fromT, fromT),
+              toT: Math.min(gap.toT, toT),
+            }));
+          return { recordingSince, gaps };
+        }, "archive file not found"),
+        // A missing or unreadable archive is honest emptiness, not a failure:
+        // the chart decorates with coverage, it does not depend on it.
+        (result): ArchiveCoverage =>
+          "gaps" in result ? result : { recordingSince: null, gaps: [] },
+      ),
   });
 };
 

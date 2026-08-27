@@ -1,5 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, TradingMarketChartView } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  TradingChartInterval,
+  TradingMarketChartView,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useRef } from "react";
@@ -7,8 +11,8 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { orchestrationEnvironment } from "../state/orchestration";
 
-/** Candle intervals the `getTradingMarketChart` RPC accepts. */
-export type ChartInterval = "1m" | "3m" | "5m" | "15m" | "1h";
+/** Candle intervals the `getTradingMarketChart` RPC accepts — the archive's set. */
+export type ChartInterval = TradingChartInterval;
 
 /**
  * A closed candle window, in epoch millis.

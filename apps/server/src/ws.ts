@@ -1726,21 +1726,31 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTradingMarketChart,
             Effect.gen(function* () {
-              // See `chartReadEntitlement`: a live read needs a running mission
-              // on the market, a windowed (post-mortem) read is entitled by any
-              // mission on it.
+              // See `chartReadEntitlement`: a mission on the market entitles a
+              // read (running for live, any for windowed), and so does the
+              // market being followed — watchlist, positions, armed watches,
+              // or a recent chart open (final-form phase 6).
               const missions = yield* tradingMissionProjection.list();
-              if (!isChartReadEntitled(input, missions)) {
+              const followed = yield* followSetRegistry.list;
+              if (
+                !isChartReadEntitled(
+                  input,
+                  missions,
+                  followed.map((market) => market.asset),
+                )
+              ) {
                 return yield* Effect.fail(
                   new OrchestrationGetSnapshotError({
-                    message: `No mission for market ${input.market}`,
+                    message: `Market ${input.market} is neither followed nor held by a mission`,
                   }),
                 );
               }
               // Opening a chart is attention: it starts (or extends) recording
-              // for that market, so the next question about it has data.
+              // for that market, so the next question about it has data. This
+              // runs for every entitled read — missionless ones included.
               yield* followSetRegistry.noteChartOpened(marketRef(input.market));
-              const maxBars = 120;
+              // The client may ask for a wider window; the server owns the cap.
+              const maxBars = Math.min(input.maxBars ?? 120, 360);
               const chart = yield* tradingMarketChart.read({
                 market: input.market,
                 interval: input.interval,

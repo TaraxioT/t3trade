@@ -31,8 +31,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-import type { TradingChartCandle } from "@t3tools/contracts";
+import type {
+  TradingChartCandle,
+  TradingChartGap,
+  TradingChartSessionLevels,
+} from "@t3tools/contracts";
 
+import { coverageBands, sessionLevelLines } from "./marketChartOverlays";
 import { useMissionChartMode } from "./missionChartModeStore";
 import { isMomentSelected, useMissionSelection } from "./missionSelectionStore";
 import { cn } from "~/lib/utils";
@@ -176,6 +181,28 @@ interface MissionPriceChartProps {
    * change, and the ripple is its announcement, never a loop.
    */
   readonly firedWatchIds?: ReadonlyArray<string> | undefined;
+  /**
+   * Session levels to rule across the plot (final-form phase 6) — prior-day
+   * H/L/C, today's O/H/L, VWAP — drawn muted and labeled at the left. Absent
+   * on mission charts, which keep their own overlay set untouched.
+   */
+  readonly sessionLevels?: TradingChartSessionLevels | undefined;
+  /**
+   * Coverage honesty for archive-served series: everything before
+   * `recordingSince` and inside `gaps` is shaded, so recorded history never
+   * pretends to a continuity the recorder cannot vouch for.
+   */
+  readonly recordingSince?: number | undefined;
+  readonly gaps?: ReadonlyArray<TradingChartGap> | undefined;
+  /** Draw the per-bar volume underlay along the bottom edge. */
+  readonly showVolume?: boolean;
+  /**
+   * Arm-at-price affordance (final-form phase 6): while the pointer is over
+   * the plot, a chip in the gutter tracks its price; clicking it hands the
+   * price here — the market chart arms a notify watch from it. Absent on
+   * mission charts, whose pointer interactions stay exactly as they were.
+   */
+  readonly onArmAtPrice?: (price: number) => void;
   readonly className?: string;
 }
 
@@ -496,6 +523,11 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     positionSize,
     overflowCount,
     firedWatchIds,
+    sessionLevels,
+    recordingSince,
+    gaps,
+    showVolume,
+    onArmAtPrice,
     className,
   } = props;
   const [drag, setDrag] = useState<{
@@ -519,6 +551,13 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     readonly at: number;
     /** True when the sample is the live mark, not a candle close. */
     readonly isMark: boolean;
+  } | null>(null);
+  // The arm-at-price affordance's tracking state: viewBox y plus the rounded
+  // price the pointer is currently stating. Only written when the affordance
+  // is enabled, so mission charts never re-render for it.
+  const [armHover, setArmHover] = useState<{
+    readonly y: number;
+    readonly price: number;
   } | null>(null);
 
   // --- Chip hovers (phase 1/3). ----------------------------------------------
@@ -663,6 +702,24 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     CHART_VIEWBOX_HEIGHT,
   );
   const gridPrices = gridPricesFor(geometry.domainMin, geometry.domainMax, 4);
+
+  // Final-form phase 6 overlays, all prop-gated: a mission chart passes none
+  // of them and renders exactly as before.
+  const shadedBands = coverageBands({
+    gaps,
+    recordingSince,
+    timeStart: geometry.timeStart,
+    timeEnd: geometry.timeEnd,
+  });
+  const sessionLines = sessionLevelLines(sessionLevels, geometry.domainMin, geometry.domainMax);
+  const maxVolume =
+    showVolume === true ? candles.reduce((max, candle) => Math.max(max, candle.volume), 0) : 0;
+  const volumeByOpenTime =
+    maxVolume > 0 ? new Map(candles.map((candle) => [candle.openTime, candle.volume])) : null;
+  /** How tall the volume underlay may stand, in viewBox units (~16%). */
+  const VOLUME_PANE_HEIGHT = 26;
+  /** Clamp a band edge into the drawn record — never into the future gutter. */
+  const bandX = (t: number): number => Math.min(Math.max(geometry.xForTime(t), 0), geometry.nowX);
 
   // One bar's width on the axis, and the slide that plays when a new one lands.
   //
@@ -821,9 +878,23 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       // The grab strips capture their own pointer during a drag, so the frame
       // sees no moves then; the guard is for the pathological overlap.
       onPointerMove={(event) => {
-        if (drag === null) hoverAtClient(event.clientX);
+        if (drag === null) {
+          hoverAtClient(event.clientX);
+          if (onArmAtPrice !== undefined) {
+            const frame = frameRef.current;
+            const price = priceAtClientY(event.clientY);
+            if (frame !== null && price !== null) {
+              const box = frame.getBoundingClientRect();
+              const ratio = Math.min(1, Math.max(0, (event.clientY - box.top) / box.height));
+              setArmHover({ y: ratio * CHART_VIEWBOX_HEIGHT, price });
+            }
+          }
+        }
       }}
-      onPointerLeave={() => setHover(null)}
+      onPointerLeave={() => {
+        setHover(null);
+        setArmHover(null);
+      }}
     >
       {/* The mark's ring animation, declared once for the whole chart. */}
       <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
@@ -914,6 +985,46 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           />
         ))}
 
+        {/* Coverage shading (phase 6): the stretches of this window the
+            archive never recorded — before recording started, and its own
+            known gaps. A muted wash, not a colour: the bands say "no record
+            here", and anything louder would read as data. */}
+        {shadedBands.map((band) => {
+          const x1 = bandX(band.fromT);
+          const x2 = bandX(band.toT);
+          if (x2 - x1 < 0.5) return null;
+          return (
+            <rect
+              key={`coverage-${band.key}`}
+              data-testid={`market-chart-coverage-${band.kind}`}
+              x={x1}
+              y={0}
+              width={x2 - x1}
+              height={CHART_VIEWBOX_HEIGHT}
+              fill="color-mix(in oklab, var(--color-muted-foreground) 8%, transparent)"
+              stroke="none"
+            />
+          );
+        })}
+
+        {/* Session-level rules (phase 6): thin, dashed, muted — the labels
+            live in the HTML overlay so they never stretch. Only drawn on the
+            market chart (the prop is absent on mission charts). */}
+        {sessionLines.map((line) => (
+          <line
+            key={`session-${line.key}`}
+            data-testid={`market-chart-session-${line.key}`}
+            x1={0}
+            y1={geometry.yForPrice(line.price)}
+            x2={geometry.nowX}
+            y2={geometry.yForPrice(line.price)}
+            stroke="color-mix(in oklab, var(--color-muted-foreground) 35%, transparent)"
+            strokeWidth={1}
+            strokeDasharray="6 5"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+
         {/* The future gutter's ground. Barely there now: at 4% it was a grey
             block pasted over the right third of the plot, and the eye read it
             as a different material rather than as the same plot after now.
@@ -949,6 +1060,30 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               slideOffset === 0 ? "transform 700ms cubic-bezier(0.33, 1, 0.68, 1)" : "none",
           }}
         >
+          {/* The volume underlay (phase 6): one quiet bar per candle along the
+              bottom edge, direction-tinted at low opacity, scaled to the
+              window's own maximum. It slides with the series. */}
+          {volumeByOpenTime !== null
+            ? geometry.bars.map((bar) => {
+                const volume = volumeByOpenTime.get(bar.key) ?? 0;
+                const height = maxVolume > 0 ? (volume / maxVolume) * VOLUME_PANE_HEIGHT : 0;
+                if (height <= 0) return null;
+                return (
+                  <rect
+                    key={`volume-${bar.key}`}
+                    data-testid="market-chart-volume-bar"
+                    x={bar.x - bar.halfWidth}
+                    y={CHART_VIEWBOX_HEIGHT - height}
+                    width={bar.halfWidth * 2}
+                    height={height}
+                    fill={bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)"}
+                    opacity={0.22}
+                    stroke="none"
+                  />
+                );
+              })
+            : null}
+
           {!drawCandles && areaPath !== "" ? (
             <path
               className="mission-plot-settle"
@@ -1505,6 +1640,36 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           {formatPrice(price)}
         </span>
       ))}
+
+      {/* The session rules' labels (phase 6): tiny, muted, at the left end of
+          their rule, under it so they never sit on the grid labels above. */}
+      {sessionLines.map((line) => (
+        <span
+          key={`session-label-${line.key}`}
+          className="pointer-events-none absolute left-1.5 pt-0.5 font-mono text-[9px] leading-none tabular-nums text-muted-foreground/80"
+          style={{ top: `${(geometry.yForPrice(line.price) / CHART_VIEWBOX_HEIGHT) * 100}%` }}
+          aria-hidden="true"
+        >
+          {line.label} {formatPrice(line.price)}
+        </span>
+      ))}
+
+      {/* The arm-at-price chip (phase 6): docked in the gutter at the pointer's
+          own price while the affordance is on. Clicking it arms a notify watch
+          at that price — the chip is the statement, the click sends it. */}
+      {onArmAtPrice !== undefined && armHover !== null && drag === null ? (
+        <button
+          type="button"
+          data-testid="market-chart-arm-chip"
+          className="absolute right-1 flex -translate-y-1/2 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border border-armed/50 bg-background/85 px-1.5 py-[1.5px] font-mono text-[10px] leading-none text-armed outline-none backdrop-blur-sm hover:border-armed focus-visible:border-armed"
+          style={{ top: `${(armHover.y / CHART_VIEWBOX_HEIGHT) * 100}%` }}
+          aria-label={`Arm an alert at ${formatPrice(armHover.price)}`}
+          onClick={() => onArmAtPrice(armHover.price)}
+        >
+          <span aria-hidden>+</span>
+          <span>alert {formatPrice(armHover.price)}</span>
+        </button>
+      ) : null}
 
       {/* The hover crosshair — the Stocks-app read. A hairline at the sampled
           moment, a dot on the line, and the price/time pair floating above,

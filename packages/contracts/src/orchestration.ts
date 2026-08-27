@@ -42,6 +42,7 @@ import {
   TradingMissionWatchRegisteredPayload,
   TradingMissionStopAdjustedPayload,
   TradingExecutionRequestedPayload,
+  TradingChartInterval,
   TradingMarketChartView,
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
@@ -634,21 +635,26 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
 
 /**
  * Input for `getTradingMarketChart`: which market to chart and at which candle
- * interval. The interval literal is inlined here (not shared from
- * `@t3tools/trading-contracts`) to keep `@t3tools/contracts` self-contained —
- * the same trade-off `trading.ts` makes for its own view-style literal unions.
+ * interval. The interval union is `TradingChartInterval` — the archive's own
+ * interval set, which is what makes `4h`/`1d` servable at all (the exchange
+ * gateway stops at `1h`; the wider pair is archive-backed).
  *
  * `startTime`/`endTime` are epoch millis bounding the candle window. Both
  * omitted is the live chart: the most recent bars up to the server's cap. Both
  * present is the post-mortem read a finished mission's card makes — the window
  * its own trade occupied, which is not reachable by asking for "the latest N
  * bars" once the mission has been closed for a while.
+ *
+ * `maxBars` asks for a wider (or narrower) window than the default; the
+ * server clamps it to its own cap, so a client cannot turn the chart RPC into
+ * a bulk history export.
  */
 export const OrchestrationGetTradingMarketChartInput = Schema.Struct({
   market: TrimmedNonEmptyString,
-  interval: Schema.Literals(["1m", "3m", "5m", "15m", "1h"]),
+  interval: TradingChartInterval,
   startTime: Schema.optional(Schema.Number),
   endTime: Schema.optional(Schema.Number),
+  maxBars: Schema.optional(PositiveInt),
 });
 export type OrchestrationGetTradingMarketChartInput =
   typeof OrchestrationGetTradingMarketChartInput.Type;

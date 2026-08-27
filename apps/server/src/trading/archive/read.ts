@@ -291,6 +291,25 @@ export function archivedCoins(db: ArchiveDatabase): ReadonlyArray<string> {
     .map((row) => row.coin);
 }
 
+/**
+ * The open time of the oldest stored bar for a series, or `null` when nothing
+ * is recorded. This is the chart's "recording since…" figure: everything left
+ * of it is not a gap in the market, it is a gap in the recording.
+ */
+export function earliestCandleTime(
+  db: ArchiveDatabase,
+  coin: string,
+  interval: string,
+): number | null {
+  const rows = db.all<{ earliest: number | null }>(
+    "SELECT MIN(t) AS earliest FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
+    ARCHIVE_VENUE,
+    coin,
+    interval,
+  );
+  return rows[0]?.earliest ?? null;
+}
+
 /** The earliest funding timestamp recorded for a coin, or `null` when none. */
 export function minFundingTime(db: ArchiveDatabase, coin: string): number | null {
   const rows = db.all<{ earliest: number | null }>(

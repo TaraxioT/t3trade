@@ -49,4 +49,24 @@ describe("isChartReadEntitled", () => {
     expect(isChartReadEntitled({ market: "ETH", startTime: 1_000 }, missions)).toBe(false);
     expect(isChartReadEntitled({ market: "ETH", endTime: 2_000 }, missions)).toBe(false);
   });
+
+  // Final-form phase 6: the follow set entitles a chart with no mission
+  // anywhere near it — watchlist, positions and armed watches are attention,
+  // and attention is what the chart RPC serves.
+  it("serves a followed market with no mission at all, both shapes", () => {
+    expect(isChartReadEntitled(LIVE, [], ["ETH"])).toBe(true);
+    expect(isChartReadEntitled(REVIEW, [], ["ETH"])).toBe(true);
+  });
+
+  it("does not let one followed market entitle another", () => {
+    expect(isChartReadEntitled(LIVE, [], ["BTC"])).toBe(false);
+    expect(isChartReadEntitled(REVIEW, [], ["BTC"])).toBe(false);
+  });
+
+  // A terminal mission refuses the live shape, but the market being followed
+  // still serves it: the two entitlements are independent.
+  it("follow set entitles a live read even where the mission rule refuses", () => {
+    const missions = [{ market: "ETH", status: "completed" }];
+    expect(isChartReadEntitled(LIVE, missions, ["ETH"])).toBe(true);
+  });
 });

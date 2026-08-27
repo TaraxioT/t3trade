@@ -159,9 +159,9 @@ export const TradingPositionView = Schema.Struct({
 export type TradingPositionView = typeof TradingPositionView.Type;
 
 /**
- * One OHLCV bar for the chart. Volume and trade count are dropped on
- * purpose — the chart draws neither, so carrying them is bandwidth for
- * nothing on a 15s poll.
+ * One OHLCV bar for the chart. Volume rides along (final-form phase 6: the
+ * market chart draws a volume underlay); trade count is still dropped —
+ * nothing renders it, so carrying it is bandwidth for nothing on a 15s poll.
  */
 export const TradingChartCandle = Schema.Struct({
   /** Epoch millis, start of the bar. */
@@ -170,8 +170,42 @@ export const TradingChartCandle = Schema.Struct({
   high: Schema.Number,
   low: Schema.Number,
   close: Schema.Number,
+  volume: Schema.Number,
 });
 export type TradingChartCandle = typeof TradingChartCandle.Type;
+
+/**
+ * The UTC-day anchored session levels a market chart rules (final-form phase
+ * 6): the prior day's extremes and close, today's open and extremes, and the
+ * volume-weighted average price of the current UTC day. Every half is
+ * optional — the archive serves what it has recorded and nothing more, and a
+ * missing level is simply not drawn.
+ */
+export const TradingChartSessionLevels = Schema.Struct({
+  priorDayHigh: Schema.optional(Schema.Number),
+  priorDayLow: Schema.optional(Schema.Number),
+  priorDayClose: Schema.optional(Schema.Number),
+  todayOpen: Schema.optional(Schema.Number),
+  todayHigh: Schema.optional(Schema.Number),
+  todayLow: Schema.optional(Schema.Number),
+  vwap: Schema.optional(Schema.Number),
+});
+export type TradingChartSessionLevels = typeof TradingChartSessionLevels.Type;
+
+/**
+ * A stretch of the served window the archive knows it is missing, so the
+ * client can shade it instead of drawing a line that pretends continuity.
+ */
+export const TradingChartGap = Schema.Struct({
+  /** Epoch millis, inclusive bounds of the missing stretch. */
+  fromT: Schema.Number,
+  toT: Schema.Number,
+});
+export type TradingChartGap = typeof TradingChartGap.Type;
+
+/** Candle intervals the chart RPC serves — the archive's own interval set. */
+export const TradingChartInterval = Schema.Literals(["1m", "3m", "5m", "15m", "1h", "4h", "1d"]);
+export type TradingChartInterval = typeof TradingChartInterval.Type;
 
 /**
  * Candles plus the snapshot figures for one market. The chart needs both a
@@ -182,7 +216,7 @@ export type TradingChartCandle = typeof TradingChartCandle.Type;
  */
 export const TradingMarketChartView = Schema.Struct({
   market: TrimmedNonEmptyString,
-  interval: Schema.Literals(["1m", "3m", "5m", "15m", "1h"]),
+  interval: TradingChartInterval,
   candles: Schema.Array(TradingChartCandle),
   markPrice: Schema.Number,
   change24hPercent: Schema.Number,
@@ -201,6 +235,21 @@ export const TradingMarketChartView = Schema.Struct({
    * fails properly from there.
    */
   stale: Schema.optional(Schema.Boolean),
+  /**
+   * Session levels for the market, from the archive's own 5m record. Absent
+   * on windowed (post-mortem) reads — "today" would be the wrong day — and
+   * whenever the archive has nothing to compute them from.
+   */
+  sessionLevels: Schema.optional(TradingChartSessionLevels),
+  /**
+   * Epoch millis of the oldest bar the archive holds for this market at this
+   * interval. The client shades everything before it: recording that started
+   * yesterday must not read as a market that started yesterday. Absent when
+   * the archive holds nothing for the series.
+   */
+  recordingSince: Schema.optional(Schema.Number),
+  /** Known missing stretches inside the served window, for honest shading. */
+  gaps: Schema.optional(Schema.Array(TradingChartGap)),
 });
 export type TradingMarketChartView = typeof TradingMarketChartView.Type;
 

@@ -5,10 +5,11 @@
  *
  * Everything on this page is a server read: the account view (doorbell-
  * invalidated), the watchlist, the alert feed, and the mission projection.
- * The chart is the existing mission chart pipeline — `getTradingMarketChart`
- * is entitled per market by a mission on it (see `chartReadEntitlement`), so
- * a selected asset with a live mission draws that mission's candles, and one
- * without shows an honest placeholder until Phase 6 entitles followed assets.
+ * The chart is the shared chart pipeline — `getTradingMarketChart`, entitled
+ * per market by a mission on it or by the follow set (see
+ * `chartReadEntitlement`). A selected asset with a live mission draws that
+ * mission's chart with its overlays; one without gets the standalone
+ * `MarketChartPanel` (final-form phase 6).
  *
  * The archiver-health line is Phase 2.4's deferred surface: one quiet line in
  * the staleness banner's register, absent while recording is demonstrably
@@ -31,6 +32,7 @@ import { SidebarInset } from "../ui/sidebar";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { AccountPositionsPanel } from "./AccountPositionsPanel";
 import { AlertFeedPanel } from "./AlertFeedPanel";
+import { MarketChartPanel } from "./MarketChartPanel";
 import { MissionPriceChart } from "./MissionPriceChart";
 import { describeArchiveHealth } from "./tradeHomePresentation";
 import { useTradingUniverseAssets } from "./UniverseAssetSearch";
@@ -133,16 +135,14 @@ function TradeHomeChart({
           {chart.error !== null ? "Chart unavailable" : "Building chart…"}
         </div>
       ) : (
-        <div
-          className={`${CHART_HEIGHT_CLASS} flex flex-col items-center justify-center gap-1 rounded-md border border-border/60 px-6 text-center`}
-        >
-          <p className="text-sm text-muted-foreground">No chart for {asset} yet.</p>
-          <p className="max-w-sm text-xs text-muted-foreground/80">
-            Charts are served for markets a mission holds; the standalone market chart for any
-            watched asset lands with the follow-set entitlement (Phase 6). Recording keeps following
-            the watchlist meanwhile.
-          </p>
-        </div>
+        // Phase 6: no mission on the asset means the standalone market chart,
+        // entitled by the follow set — timeframes, volume, session levels,
+        // coverage shading, and arm-at-price.
+        <MarketChartPanel
+          environmentId={environmentId}
+          asset={asset}
+          className={CHART_HEIGHT_CLASS}
+        />
       )}
     </section>
   );
