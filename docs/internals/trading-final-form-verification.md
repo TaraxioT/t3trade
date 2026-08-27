@@ -201,3 +201,61 @@ landing — the explicit off-path of the phase's own headline feature — and
 with it all new-thread creation, crashes on main. Phase 4's checkbox says
 "landed"; its acceptance path "toggle off → classic draft landing" cannot be
 walked by a user.
+
+## Round 4 — 2026-08-27 — Alerts (Phase 5)
+
+Same environment, plus: the dev server was restarted with
+`T3_TRADES_AUTO_MISSION=1`, capital `$60`, workspace `t3-trade-test`,
+account `local-hyperliquid-testnet` (the only mission-creation path on
+main — phase 8's explicit form is not landed). **Disclosure:** because
+R3-1 makes every fresh draft crash, a one-hunk worktree-only patch was
+applied to unblock the wake-path test (`TradingAssetPicker.tsx`: plain
+`ComboboxTrigger` instead of the Select-based `ComposerSelectControl`;
+comment marks it VERIFICATION PATCH; not on any branch, main checkout
+untouched). Screenshots: `evidence/final-form/r4-alert-fired.png`,
+`r4-alerts-rearmed.png`.
+
+| Acceptance | Result | Evidence |
+| --- | --- | --- |
+| No mission; price-cross notify alert fires into the feed | Pass | all 23 seeded missions settled/revoked; armed "ETH above 2498.6" at 18:50:33 → fired 18:51:17 "mark ETH crossed above 2498.6 (at 2498.7)" (one evaluator sweep), pushed to the feed via the doorbell; once-watch went `triggered` and left the Armed list |
+| Desktop build raises an OS notification | Not testable in web (code-verified) | `apps/desktop/src/ipc/methods/tradingNotification.ts:18-33` raises an Electron `Notification`; `AlertFeedPanel.tsx:214-232` feature-detects `window.desktopBridge?.showTradingNotification` and skips in a web tab — verified the skip silently. No desktop build was launched in this loop |
+| Repeat-with-cooldown re-arms | Pass | "HYPE below 48.5, repeats" fired 18:56:50 ("at 41" — testnet HYPE crashed) and **again** 19:01:51, one 5-min cooldown apart, watch back to `active` after each fire |
+| Derived-metric alert on a freshly-followed asset refuses honestly | Pass in code; **no user surface exists** | refusal semantics live in the evaluator: `WatchEvaluator.evaluateDerived` treats `archive.derivedMetric`'s `unavailable` as "no fire, no observation write, advance the retry clock" (`WatchEvaluator.ts:1240-1247`); window refusals `derived_needs_archive`/`derived_stale`/`derived_window_unavailable` coded in `archive/derived.ts`. Receipts: `vp test run archive/derived.test.ts WatchEvaluator.test.ts` → 58/58 pass. But the arming form is price-only by design (`AlertFeedPanel.tsx:44`, "the form only arms price watches today") and the chart chip arms price too — on main, a human cannot arm a derived watch at all; that surface is phase 8's analyst |
+| Agent wake watches still fire wakes (one Luna-medium mission) | Pass | mission created from the draft's first message (auto-mission log 18:42:03), record carries `provider: codex`, runtime payload `model: gpt-5.6-luna`, options `reasoningEffort: medium`, `serviceTier: default` (the wire value of the UI's checked "Standard" radio — `codexModelOptions.ts:7-14`). Run 1 (1m38s): correct stand-aside EMA analysis, plan published, journal, wake watch armed ("5m close above 2502.02"), reassess booked. The scheduled-reassessment **watch triggered 18:58:44 → harness run 2 woke** (55s): "price closed above 2502, but EMA(9) below EMA(21)… stayed flat; cancelled the stale proxy and armed the next reassessment". Model/effort/tier unchanged across the wake. Sidebar pinned the mission thread with live "Waiting" status |
+
+### Findings
+
+- **[Medium] R4-1 — mission-armed watches don't populate 074's columns.**
+  `TradingWatchService.ts:319-325` inserts without `venue`, `asset`,
+  `deliver`, `account_id`, `rearm_json`, so mission watches carry empty
+  columns while account watches (`TradingAlertService.ts:231-240`) fill
+  them. Behavior is safe today — `FollowSetRegistry.ts:159-165` reads
+  `watch_json` — but the columns exist precisely so queries don't have to
+  parse JSON, and anything that trusts them (my own audits included) misses
+  every mission watch.
+- **[Info] R4-2 — no UI surface arms derived-metric watches.** The honest
+  refusal machinery is present and tested, but on main it is reachable only
+  by an agent's `trading_watch` tool. The phase-5 acceptance as written
+  ("a derived-metric alert … refuses honestly") is only half-realizable by
+  a human; noting as a phase-8 dependency, not a defect.
+- **[Info] R4-3 — mixed data sources make watch forensics ambiguous.** The
+  mission's `candle_close` watch evaluates on the archiver's bars, which are
+  recorded from **mainnet** (see R5-1); the agent's own "closed above 2502"
+  journal line reads the same mainnet archive while the mission trades
+  testnet marks. For ETH the venues sit within a point so nothing visibly
+  broke this round, but a cross can be true on one venue and not the other.
+- **[Note] R4-4 — repeat fires while the region holds.** The repeat watch
+  re-fired 5:01 after the first fire with HYPE still below the threshold
+  (no re-cross needed). Reasonable reading of "repeat with cooldown", recorded
+  here because the form's label doesn't say which semantics to expect.
+
+### Verdict
+
+Phase 5 holds up end to end in the live product: arming, firing into the
+feed, once-vs-repeat semantics, cooldown re-arm, and — the part the phase
+existed to protect — the agent wake path, proven with a real Luna-medium
+mission that woke, re-analyzed, and re-armed exactly as designed, with the
+mandated model/effort/tier recorded and stable. The gaps are structural
+rather than behavioral: no human surface for derived watches (phase 8), a
+column-contract inconsistency on mission watches, and the OS-notification
+half that only a desktop build can prove.
