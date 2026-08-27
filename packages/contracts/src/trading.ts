@@ -707,6 +707,52 @@ export const TradingEnsureAnalystThreadResult = Schema.Struct({
 });
 export type TradingEnsureAnalystThreadResult = typeof TradingEnsureAnalystThreadResult.Type;
 
+// -- the thread's market (the chat companion panel) --------------------------
+
+/**
+ * What put a market on a thread.
+ *
+ * `seeded` is the trade home's "Trade in chat", written before the thread has
+ * said anything; `look` is the agent reading that market; `bound` is the thread
+ * taking trading authority on it. The client shows the same panel for all
+ * three — the source is here so a reader of the row can tell a market the user
+ * asked for from one the agent went looking at.
+ */
+export const TradingThreadMarketSource = Schema.Literals(["seeded", "look", "bound"]);
+export type TradingThreadMarketSource = typeof TradingThreadMarketSource.Type;
+
+/** The market a chat thread is currently about, with when and why it got there. */
+export const TradingThreadMarketFocus = Schema.Struct({
+  threadId: ThreadId,
+  market: MarketRef,
+  source: TradingThreadMarketSource,
+  updatedAt: IsoDateTime,
+});
+export type TradingThreadMarketFocus = typeof TradingThreadMarketFocus.Type;
+
+export const TradingThreadMarketInput = Schema.Struct({ threadId: ThreadId });
+export type TradingThreadMarketInput = typeof TradingThreadMarketInput.Type;
+
+/** `focus` is null for every thread that has never been about a market. */
+export const TradingThreadMarketView = Schema.Struct({
+  focus: Schema.NullOr(TradingThreadMarketFocus),
+});
+export type TradingThreadMarketView = typeof TradingThreadMarketView.Type;
+
+/**
+ * Seed a thread's market from the client, before the agent has said anything.
+ *
+ * The trade home's "Trade in chat" writes this so the companion panel is
+ * already up when the new thread opens. It is a note about attention, not an
+ * authority grant: the mission still only binds on the thread's first plan or
+ * entry.
+ */
+export const TradingSetThreadMarketInput = Schema.Struct({
+  threadId: ThreadId,
+  asset: TrimmedNonEmptyString,
+});
+export type TradingSetThreadMarketInput = typeof TradingSetThreadMarketInput.Type;
+
 // -- client-dispatchable commands -------------------------------------------
 
 export const TradingMissionCreateCommand = Schema.Struct({

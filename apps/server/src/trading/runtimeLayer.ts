@@ -24,6 +24,7 @@ import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
 import { TradingAccountProjectionLive } from "./TradingAccountProjection.ts";
 import { TradingAlertServiceLive } from "./TradingAlertService.ts";
 import { TradingAnalystServiceLive } from "./TradingAnalystService.ts";
+import { TradingThreadMarketServiceLive } from "./TradingThreadMarketService.ts";
 import { TradingWatchlistServiceLive } from "./TradingWatchlistService.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
@@ -295,4 +296,8 @@ export const TradingLayerLive = Layer.mergeAll(
   // The analyst-thread registry (Phase 8). SQL-only; its layer also replays
   // every registered analyst profile into the session-profile map at boot.
   TradingAnalystServiceLive,
+  // Which market a chat thread is about, so the companion panel beside the
+  // conversation knows what to draw. Rings the same account doorbell, so it
+  // is built on the projection instance every other trading read shares.
+  TradingThreadMarketServiceLive.pipe(Layer.provide(TradingAccountProjectionLive)),
 ).pipe(Layer.provideMerge(infoWithHttp));

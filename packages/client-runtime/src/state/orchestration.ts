@@ -163,6 +163,18 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:commands:trading:ensure-analyst-thread",
       tag: ORCHESTRATION_WS_METHODS.ensureTradingAnalystThread,
     }),
+    // Which market a chat thread is about (the companion panel beside the
+    // conversation). The read rides the account doorbell like every other
+    // trading view; the write is the trade home's "Trade in chat", which needs
+    // the answer before it navigates, so it is an RPC command.
+    tradingThreadMarket: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-thread-market",
+      tag: ORCHESTRATION_WS_METHODS.getTradingThreadMarket,
+    }),
+    setTradingThreadMarket: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:set-thread-market",
+      tag: ORCHESTRATION_WS_METHODS.setTradingThreadMarket,
+    }),
     placeTradingOrder: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:place-order",
       execute: (input: TradingOrderPlaceInput) => tradingOrderPlace(input),

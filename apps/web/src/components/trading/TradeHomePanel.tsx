@@ -30,11 +30,9 @@ import { useProjects } from "../../state/entities";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { Button } from "../ui/button";
 import { AccountPositionsPanel } from "./AccountPositionsPanel";
 import { AlertFeedPanel } from "./AlertFeedPanel";
 import { MarketChartPanel } from "./MarketChartPanel";
-import { MissionCreateForm } from "./MissionCreateForm";
 import { MissionPriceChart } from "./MissionPriceChart";
 import { OrderTicket } from "./OrderTicket";
 import { describeArchiveHealth } from "./tradeHomePresentation";
@@ -186,9 +184,6 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
   const positions = accounts.flatMap((state) => state.positions);
 
   const [pickedAsset, setPickedAsset] = useState<string | null>(null);
-  // The Phase 8 "New mission" affordance — the only way a mission is born now
-  // that draft-hero claiming is retired.
-  const [missionFormOpen, setMissionFormOpen] = useState(false);
   // The chart follows attention: an explicit pick wins, else the first open
   // position, else nothing (the placeholder says how to get one).
   const selectedAsset = pickedAsset ?? positions[0]?.market.asset ?? null;
@@ -200,25 +195,6 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
     <ScrollArea className="min-h-0 flex-1">
       <div className="flex flex-col gap-3 px-4 py-3 sm:px-5">
         <ArchiveHealthLine message={archiveMessage} />
-        {missionFormOpen ? (
-          <MissionCreateForm
-            environmentId={environmentId}
-            accounts={accounts}
-            initialAsset={selectedAsset}
-            onClose={() => setMissionFormOpen(false)}
-          />
-        ) : (
-          <div className="flex justify-end">
-            <Button
-              size="xs"
-              variant="secondary"
-              onClick={() => setMissionFormOpen(true)}
-              data-testid="mission-create-open"
-            >
-              New mission
-            </Button>
-          </div>
-        )}
         {account.error === null ? null : (
           <p className="text-sm text-destructive">{account.error}</p>
         )}

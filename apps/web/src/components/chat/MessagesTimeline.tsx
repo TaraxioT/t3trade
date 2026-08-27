@@ -37,6 +37,7 @@ import {
   workEntryDisplayIndicatesToolFailure,
   workLogEntryIsToolLike,
 } from "../../session-logic";
+import { WORKSPACE_TRADING_SIGNPOST } from "../../composerPlaceholder";
 import { type TurnDiffSummary } from "../../types";
 import {
   getRenderablePatch,
@@ -596,8 +597,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return null;
     }
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
         <p className="text-placeholder text-sm">Send a message to start the conversation.</p>
+        <p className="text-placeholder text-sm">{WORKSPACE_TRADING_SIGNPOST}</p>
       </div>
     );
   }

@@ -443,15 +443,15 @@ export function getStartedThreadModelChangeBlockReason(input: {
   };
 }
 
-export async function waitForStartedServerThread(
+async function waitForThreadDetail(
   threadRef: ScopedThreadRef,
-  timeoutMs = 1_000,
+  isReady: (thread: Thread | null | undefined) => boolean,
+  timeoutMs: number,
 ): Promise<boolean> {
   const threadAtom = environmentThreadDetails.detailAtom(threadRef);
   const getThread = () => appAtomRegistry.get(threadAtom);
-  const thread = getThread();
 
-  if (threadHasStarted(thread)) {
+  if (isReady(getThread())) {
     return true;
   }
 
@@ -471,13 +471,13 @@ export async function waitForStartedServerThread(
     };
 
     const unsubscribe = appAtomRegistry.subscribe(threadAtom, (thread) => {
-      if (!threadHasStarted(thread)) {
+      if (!isReady(thread)) {
         return;
       }
       finish(true);
     });
 
-    if (threadHasStarted(getThread())) {
+    if (isReady(getThread())) {
       finish(true);
       return;
     }
@@ -486,6 +486,29 @@ export async function waitForStartedServerThread(
       finish(false);
     }, timeoutMs);
   });
+}
+
+export async function waitForStartedServerThread(
+  threadRef: ScopedThreadRef,
+  timeoutMs = 1_000,
+): Promise<boolean> {
+  return await waitForThreadDetail(threadRef, threadHasStarted, timeoutMs);
+}
+
+/**
+ * Wait until a freshly created thread exists in this client.
+ *
+ * Navigating to a thread the client has not synced yet lands on the route's
+ * "missing" branch, which bounces straight back where it came from. A thread
+ * created without a first turn has not *started*, so
+ * {@link waitForStartedServerThread} would time out on it; existing is the
+ * weaker condition the route actually needs.
+ */
+export async function waitForServerThread(
+  threadRef: ScopedThreadRef,
+  timeoutMs = 3_000,
+): Promise<boolean> {
+  return await waitForThreadDetail(threadRef, (thread) => Boolean(thread), timeoutMs);
 }
 
 export interface LocalDispatchSnapshot {

@@ -8,6 +8,10 @@
  * also the "start collecting data on this" button, and the hint under the
  * header says so.
  *
+ * Each row also opens a chat about its market. That is how trading starts now:
+ * a conversation with the market already beside it, which becomes an authority
+ * over that market when the agent first plans or enters on it.
+ *
  * @module WatchlistPanel
  */
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -25,6 +29,7 @@ import {
 } from "./UniverseAssetSearch";
 import { formatPrice } from "./tradingPresentation";
 import { describeControlFailure } from "./useMissionControls";
+import { useMarketThreadLauncher } from "./useTradingThreadLaunch";
 
 export function WatchlistPanel({
   environmentId,
@@ -44,6 +49,7 @@ export function WatchlistPanel({
   const entries = data?.entries ?? [];
   const listed = useMemo(() => new Set(entries.map((entry) => entry.market.asset)), [entries]);
 
+  const launcher = useMarketThreadLauncher(environmentId);
   const add = useAtomCommand(orchestrationEnvironment.addTradingWatchlistEntry);
   const remove = useAtomCommand(orchestrationEnvironment.removeTradingWatchlistEntry);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -82,6 +88,9 @@ export function WatchlistPanel({
       {mutationError === null ? null : (
         <p className="px-1 text-xs text-destructive">{mutationError}</p>
       )}
+      {launcher.error === null ? null : (
+        <p className="px-1 text-xs text-destructive">{launcher.error}</p>
+      )}
       {error !== null ? (
         <p className="px-1 text-sm text-destructive">{error}</p>
       ) : entries.length === 0 ? (
@@ -118,6 +127,16 @@ export function WatchlistPanel({
                       </span>
                     </span>
                   )}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Trade ${asset} in chat`}
+                  disabled={launcher.busy}
+                  className="shrink-0 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground opacity-0 transition-opacity duration-100 group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 disabled:opacity-40"
+                  onClick={() => void launcher.open(asset)}
+                  data-testid="watchlist-trade-in-chat"
+                >
+                  Trade in chat
                 </button>
                 <button
                   type="button"

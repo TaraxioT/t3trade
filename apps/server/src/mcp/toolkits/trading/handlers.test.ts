@@ -50,6 +50,7 @@ import {
 import { TradingCalibrationServiceLive } from "../../../trading/TradingCalibrationService.ts";
 import { TradingAccountProjection } from "../../../trading/TradingAccountProjection.ts";
 import { TradingAlertServiceLive } from "../../../trading/TradingAlertService.ts";
+import { TradingThreadMarketServiceLive } from "../../../trading/TradingThreadMarketService.ts";
 import { clearAllSessionProfiles, setSessionProfile } from "../../../provider/SessionProfile.ts";
 import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerRegistryMock.ts";
 import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
@@ -528,6 +529,16 @@ const tradingLayerOverExchange = (
         } as unknown as TradingAccountProjection["Service"]),
       ),
     ),
+    // Which market the thread is about, written by `trading_look` and by
+    // taking authority. Real, over the same memory database, so the tests can
+    // read the row back; the doorbell is the same no-op stand-in.
+    TradingThreadMarketServiceLive.pipe(
+      Layer.provide(
+        Layer.succeed(TradingAccountProjection, {
+          invalidate: () => Effect.void,
+        } as unknown as TradingAccountProjection["Service"]),
+      ),
+    ),
     // `trading_exit`'s `move_stop` runs for real against the fake book.
     TradingStopAdjustmentServiceLive.pipe(
       Layer.provide(exchangeGatewayLayer(fake)),
@@ -705,6 +716,8 @@ const withMcpServer = <A, E>(
     }) => Effect.Effect<void, never, never>;
     /** What the open run recorded as its first execution refusal, if anything. */
     readonly readFirstRefusal: () => Effect.Effect<string | null, never, never>;
+    /** The market noted on a thread, for the panel beside the chat. */
+    readonly readThreadMarket: (threadId: string) => Effect.Effect<string | null, never, never>;
   }) => Effect.Effect<A, E, HttpServer.HttpServer>,
   tradingLayer: TradingLayerInput = TradingLayerLive,
 ) =>
@@ -932,6 +945,13 @@ const withMcpServer = <A, E>(
           Effect.map((rows) => rows[0]?.first_preview_refusal ?? null),
           Effect.orDie,
         );
+      const readThreadMarket = (threadId: string) =>
+        sql<{ readonly asset: string }>`
+          SELECT asset FROM trading_thread_market_focus WHERE thread_id = ${threadId}
+        `.pipe(
+          Effect.map((rows) => rows[0]?.asset ?? null),
+          Effect.orDie,
+        );
       const httpClient = yield* HttpClient.HttpClient;
 
       // Unpinned: this endpoint serves whatever the production schema is, and a
@@ -1014,6 +1034,7 @@ const withMcpServer = <A, E>(
         seedLevelEvent,
         seedInboxEvent,
         readFirstRefusal,
+        readThreadMarket,
         seedLocalTradingAccount,
         seedLocalMissionOn,
       });
@@ -1624,6 +1645,54 @@ it.effect("takes authority on a free market and enters in the same call", () =>
         );
         assert.equal(requested.length, 1);
 
+        clearAllSessionProfiles();
+      }),
+    bindLayer(),
+  ),
+);
+
+// -- the market beside the chat ---------------------------------------------
+//
+// The companion panel is driven by one row per thread. These assert that the
+// two tool paths write it: the read the agent takes, and the market it takes
+// authority on.
+
+it.effect("notes the market a look resolved, so the chat panel follows it", () =>
+  withMcpServer(({ callTool, readThreadMarket }) =>
+    Effect.gen(function* () {
+      // An unbound chat naming a market: the panel has something to draw before
+      // any authority exists, which is the whole point of showing it.
+      const looked = yield* callTool(UNBOUND_THREAD, "trading_look", { market: "SOL" });
+      assert.notEqual(looked.result.isError, true);
+      assert.equal(yield* readThreadMarket(UNBOUND_THREAD), "SOL");
+
+      // Most recent wins: looking elsewhere moves the panel with the reading.
+      yield* callTool(UNBOUND_THREAD, "trading_look", { market: "BTC", fetch: ["snapshot"] });
+      assert.equal(yield* readThreadMarket(UNBOUND_THREAD), "BTC");
+
+      // A bound thread's look resolves the mission's own market without being
+      // told it, and the panel gets that.
+      yield* callTool(BOUND_THREAD, "trading_look", {});
+      assert.equal(yield* readThreadMarket(BOUND_THREAD), "ETH");
+    }),
+  ),
+);
+
+it.effect("notes the market a chat took authority on", () =>
+  withMcpServer(
+    ({ callTool, seedLocalTradingAccount, readThreadMarket }) =>
+      Effect.gen(function* () {
+        preparedEntries.length = 0;
+        yield* seedLocalTradingAccount();
+
+        yield* callTool(FRESH_CHAT_THREAD, "trading_enter", {
+          market: "SOL",
+          side: "buy",
+          stopPrice: 2_900,
+          sizeEth: 0.1,
+        });
+
+        assert.equal(yield* readThreadMarket(FRESH_CHAT_THREAD), "SOL");
         clearAllSessionProfiles();
       }),
     bindLayer(),

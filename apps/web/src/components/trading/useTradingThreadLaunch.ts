@@ -8,9 +8,14 @@
  *   market, reused, with the question sent as an ordinary turn. The server
  *   binds the `trading_analyst` session profile, so the thread runs with the
  *   three read tools and nothing else.
+ * - `useMarketThreadLauncher` opens an ordinary chat thread with a market
+ *   already noted on it, so the companion panel is up when the user arrives.
+ *   No mission is created: the thread takes authority on the market only when
+ *   its first plan or entry does. This is how trading starts from the trade
+ *   home now.
  * - `useMissionLauncher` creates the thread a new mission binds to and
- *   dispatches `trading.mission.create`; the reactor starts the first run
- *   itself, so no turn is sent here.
+ *   dispatches `trading.mission.create`. Nothing on the trade home mounts it
+ *   any more; it is kept only because `MissionCreateForm` still imports it.
  *
  * @module useTradingThreadLaunch
  */
@@ -25,15 +30,15 @@ import {
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
-import { waitForStartedServerThread } from "../ChatView.logic";
+import { waitForServerThread, waitForStartedServerThread } from "../ChatView.logic";
 import { newMessageId, newThreadId } from "../../lib/utils";
 import { resolveDefaultProviderModelSelection } from "../../providerInstances";
+import { refreshTradingMissions } from "../../lib/tradingMissionsState";
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { refreshTradingMissions } from "../../lib/tradingMissionsState";
 
 interface LaunchContext {
   readonly projectId: ProjectId;
@@ -164,6 +169,85 @@ export function analystPositionPrompt(input: {
   );
 }
 
+export interface MarketThreadLauncherHandle {
+  readonly open: (asset: string) => Promise<void>;
+  readonly busy: boolean;
+  readonly error: string | null;
+}
+
+/**
+ * "Trade in chat": open a fresh thread already about a market.
+ *
+ * The thread is created, the market is noted on it, and the workspace
+ * navigates there. No mission is created and no turn is sent — the thread is
+ * a conversation about a market, and it becomes an authority over that market
+ * only when the agent's first plan or entry takes it. Seeding is what makes
+ * the companion panel show the chart before a word has been said.
+ *
+ * A failed seed is not a failed launch: the thread is real either way, and
+ * arriving in it without its panel beats not arriving at all.
+ */
+export function useMarketThreadLauncher(environmentId: EnvironmentId): MarketThreadLauncherHandle {
+  const context = useLaunchContext(environmentId);
+  const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
+  const setThreadMarket = useAtomCommand(orchestrationEnvironment.setTradingThreadMarket, {
+    reportFailure: false,
+  });
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const open = useCallback(
+    async (asset: string) => {
+      if (busy) return;
+      if (typeof context === "string") {
+        setError(context);
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        const threadId = newThreadId();
+        const created = await createThread({
+          environmentId,
+          input: {
+            threadId,
+            projectId: context.projectId,
+            title: `${asset} — trade`,
+            modelSelection: context.modelSelection,
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+        if (created._tag === "Failure") {
+          setError("Could not create the thread.");
+          return;
+        }
+
+        await setThreadMarket({ environmentId, input: { threadId, asset } });
+
+        // The route bounces a thread this client has not synced yet, so the
+        // navigation waits for it to exist rather than for it to have started:
+        // a thread opened on a market has no first turn to wait for.
+        await waitForServerThread(scopeThreadRef(environmentId, threadId));
+
+        await router.navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, context, createThread, environmentId, router, setThreadMarket],
+  );
+
+  return { open, busy, error };
+}
+
 export interface MissionLaunchInput {
   readonly asset: string;
   readonly instruction: string;
@@ -182,8 +266,9 @@ export interface MissionLauncherHandle {
  * The explicit mission form's submit: create the thread the mission binds to,
  * dispatch `trading.mission.create`, and navigate to the thread. The server
  * refuses a market already owned (mission or manual exposure); dispatch is an
- * acknowledgement, so a refusal surfaces on the thread/mission views rather
- * than here.
+ * acknowledgement, so the refusal lands asynchronously in the alert feed with
+ * its reason verbatim (the reactor appends it and rings the account doorbell)
+ * rather than here.
  */
 export function useMissionLauncher(environmentId: EnvironmentId): MissionLauncherHandle {
   const context = useLaunchContext(environmentId);

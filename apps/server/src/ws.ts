@@ -97,6 +97,10 @@ import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts"
 import { TradingAlertService, type AccountWatch } from "./trading/TradingAlertService.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import {
+  TradingThreadMarketService,
+  type ThreadMarketFocus,
+} from "./trading/TradingThreadMarketService.ts";
+import {
   TradingWatchlistService,
   type WatchlistEntry,
   type WatchlistMutationResult,
@@ -188,6 +192,17 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 const epochIso = (epochMillis: number): string =>
   DateTime.formatIso(DateTime.makeUnsafe(epochMillis));
+
+/** The thread's market row, as the ISO wire contract. */
+const toWireThreadMarketFocus = (focus: ThreadMarketFocus | null) =>
+  focus === null
+    ? null
+    : {
+        threadId: ThreadId.make(focus.threadId),
+        market: marketRef(focus.asset),
+        source: focus.source,
+        updatedAt: epochIso(focus.updatedAt),
+      };
 
 /** The service's epoch-millis account watch, as the ISO wire contract. */
 const toWireAccountWatch = (watch: AccountWatch): TradingAccountWatch => ({
@@ -448,6 +463,7 @@ const makeWsRpcLayer = (
       const tradingAccountProjection = yield* TradingAccountProjection;
       const tradingAlertService = yield* TradingAlertService;
       const tradingAnalystService = yield* TradingAnalystService;
+      const tradingThreadMarket = yield* TradingThreadMarketService;
       const tradingWatchlistService = yield* TradingWatchlistService;
       const tradingManualEntry = yield* TradingManualEntryService;
       const tradingControls = yield* TradingControlService;
@@ -1616,6 +1632,44 @@ const makeWsRpcLayer = (
                   (cause) =>
                     new OrchestrationGetSnapshotError({
                       message: "Failed to resolve the analyst thread",
+                      cause,
+                    }),
+                ),
+              ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTradingThreadMarket]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingThreadMarket,
+            tradingThreadMarket.read(input.threadId).pipe(
+              Effect.map((focus) => ({ focus: toWireThreadMarketFocus(focus) })),
+              Effect.tapError((cause) =>
+                Effect.logError("trading thread market read failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to read the thread's market",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.setTradingThreadMarket]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.setTradingThreadMarket,
+            tradingThreadMarket
+              .record({ threadId: input.threadId, asset: input.asset, source: "seeded" })
+              .pipe(
+                Effect.map((focus) => ({ focus: toWireThreadMarketFocus(focus) })),
+                Effect.tapError((cause) =>
+                  Effect.logError("trading thread market seed failed", { cause }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "Failed to put that market on the thread",
                       cause,
                     }),
                 ),

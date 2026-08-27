@@ -50,6 +50,12 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.closeTradingManualPosition]: AuthOrchestrationOperateScope,
   // Registers a standing analyst thread for a market and binds its profile.
   [ORCHESTRATION_WS_METHODS.ensureTradingAnalystThread]: AuthOrchestrationOperateScope,
+  // Which market a chat thread is about: a read, and a note the trade home
+  // writes when it opens a thread on a market. The row grants no authority —
+  // a mission still only binds through `createMission` — but it does change
+  // standing server state, so the write is an operate.
+  [ORCHESTRATION_WS_METHODS.getTradingThreadMarket]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.setTradingThreadMarket]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
   [WS_METHODS.serverProbe]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetConfig]: AuthOrchestrationReadScope,

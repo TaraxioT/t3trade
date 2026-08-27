@@ -474,6 +474,26 @@
     animation: mission-size-crossfade 180ms ease-out 1;
   }
 
+  /* The companion market panel arriving beside a chat. It appears because the
+     conversation turned to a market, which the reader did not ask for and did
+     not watch happen — so it fades and settles rather than simply being there
+     on the next frame. One shot, on mount, and nothing repeats: the panel then
+     holds still while the chart inside it does the moving. */
+  @keyframes thread-market-panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .thread-market-panel {
+    animation: thread-market-panel-in 180ms ease-out 1;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .mission-chip-arm,
     .mission-card-flash,
@@ -485,7 +505,8 @@
     .mission-order-filled-ring-loss,
     .mission-order-exit,
     .mission-log-enter,
-    .mission-size-crossfade {
+    .mission-size-crossfade,
+    .thread-market-panel {
       animation: none;
     }
 

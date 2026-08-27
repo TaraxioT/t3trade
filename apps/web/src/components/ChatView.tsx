@@ -188,6 +188,9 @@ import { useTradingMissions } from "~/lib/tradingMissionsState";
 import { MissionLivePanel } from "./trading/MissionLivePanel";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
+import { ThreadMarketPanel } from "./trading/ThreadMarketPanel";
+import { selectThreadMarket } from "./trading/threadMarketPanelState";
+import { useTradingThreadMarketFocus } from "~/lib/tradingThreadMarketState";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
@@ -1232,6 +1235,19 @@ function ChatViewContent(props: ChatViewProps) {
   // side — so this is a read.
   const { missions, error: missionFeedError } = useTradingMissions(environmentId);
   const boundMission = missions.find((mission) => mission.threadId === threadId) ?? null;
+  // The market this conversation is about, if any: seeded by the trade home,
+  // moved by the agent's own look, written again when the thread takes
+  // authority. It gates the companion panel beside the chat, and it is null for
+  // every thread that has never named a market.
+  const threadMarketFocus = useTradingThreadMarketFocus(environmentId, threadId);
+  const threadMarket = selectThreadMarket({
+    focus: threadMarketFocus.focus,
+    mission: boundMission,
+  });
+  // Below this the companion is a row above the timeline that expands from a
+  // chip; above it, a column beside the chat. The breakpoint is the one the
+  // right panel already switches its own layout at.
+  const useCompanionChipLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
@@ -6309,6 +6325,18 @@ function ChatViewContent(props: ChatViewProps) {
     ) : null
   ) : null;
 
+  const threadMarketCompanion =
+    threadMarket === null ? null : (
+      <ThreadMarketPanel
+        key={`${routeThreadKey}:${threadMarket}`}
+        environmentId={environmentId}
+        asset={threadMarket}
+        missions={missions}
+        threadKey={routeThreadKey}
+        layout={useCompanionChipLayout ? "chip" : "column"}
+      />
+    );
+
   const workspaceFileDropHandlers = makeWorkspaceFileDropHandlers({
     setDragActive: setIsWorkspaceFileDragActive,
     addFiles: (files) => composerRef.current?.addDroppedFiles(files),
@@ -6414,6 +6442,12 @@ function ChatViewContent(props: ChatViewProps) {
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
               />
             </div>
+            {/*
+              Narrow viewports: the market is a row above the timeline that
+              expands from a chip. Inside the chat column and above the scroll,
+              so it can never sit over the composer.
+            */}
+            {useCompanionChipLayout ? threadMarketCompanion : null}
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
@@ -6735,6 +6769,12 @@ function ChatViewContent(props: ChatViewProps) {
             ) : null}
           </div>
           {/* end chat column */}
+          {/*
+            Wide viewports: the market is its own column beside the chat. A
+            sibling of the chat column rather than an overlay, so the composer
+            narrows with it instead of being covered by it.
+          */}
+          {useCompanionChipLayout ? null : threadMarketCompanion}
         </div>
         {/* end horizontal flex container */}
 

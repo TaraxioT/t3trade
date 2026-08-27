@@ -52,6 +52,7 @@ import { TradingAlertService } from "../../../trading/TradingAlertService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
+import { TradingThreadMarketService } from "../../../trading/TradingThreadMarketService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -105,6 +106,9 @@ const dependencies = [
   // lease for the chat turn already in flight.
   ProviderRegistry,
   TradingTurnCoordinator,
+  // Which market this thread is about, so the panel beside the chat follows
+  // the conversation. Written by `trading_look` and by taking authority.
+  TradingThreadMarketService,
   SqlClient.SqlClient,
 ];
 

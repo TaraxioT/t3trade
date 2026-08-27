@@ -46,9 +46,22 @@ function describeAccountWatch(watch: TradingAccountWatch): string {
   return `${watch.market.asset}: ${condition.kind}`;
 }
 
-function ArmWatchForm({ environmentId }: { environmentId: EnvironmentId }) {
+function ArmWatchForm({
+  environmentId,
+  fixedAsset,
+}: {
+  environmentId: EnvironmentId;
+  /** When the panel is scoped to one market, the form is scoped with it. */
+  fixedAsset?: string | undefined;
+}) {
   const arm = useAtomCommand(orchestrationEnvironment.armTradingWatch);
-  const [asset, setAsset] = useState<string | null>(null);
+  const [pickedAsset, setPickedAsset] = useState<string | null>(null);
+  const asset = fixedAsset ?? pickedAsset;
+  const setAsset = (next: string | null) => {
+    // A scoped form has nothing to change the asset to, so its clear button is
+    // absent and this never runs with a fixed asset.
+    if (fixedAsset === undefined) setPickedAsset(next);
+  };
   const [direction, setDirection] = useState<"above" | "below">("above");
   const [priceText, setPriceText] = useState("");
   const [repeat, setRepeat] = useState(false);
@@ -108,14 +121,16 @@ function ArmWatchForm({ environmentId }: { environmentId: EnvironmentId }) {
       ) : (
         <div className="flex items-center gap-1.5">
           <span className="text-sm font-medium text-foreground">{asset}</span>
-          <button
-            type="button"
-            aria-label="Change asset"
-            className="rounded-md p-0.5 text-muted-foreground hover:text-foreground"
-            onClick={() => setAsset(null)}
-          >
-            <XIcon className="size-3.5" />
-          </button>
+          {fixedAsset === undefined ? (
+            <button
+              type="button"
+              aria-label="Change asset"
+              className="rounded-md p-0.5 text-muted-foreground hover:text-foreground"
+              onClick={() => setAsset(null)}
+            >
+              <XIcon className="size-3.5" />
+            </button>
+          ) : null}
           <div className="ml-auto flex overflow-hidden rounded-md border border-border/70 text-xs">
             {(["above", "below"] as const).map((option) => (
               <button
@@ -164,11 +179,19 @@ function ArmWatchForm({ environmentId }: { environmentId: EnvironmentId }) {
   );
 }
 
-function ArmedWatches({ environmentId }: { environmentId: EnvironmentId }) {
+function ArmedWatches({
+  environmentId,
+  market,
+}: {
+  environmentId: EnvironmentId;
+  market?: string | undefined;
+}) {
   const { data, error } = useTradingWatches(environmentId);
   const cancel = useAtomCommand(orchestrationEnvironment.cancelTradingWatch);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const active = (data?.watches ?? []).filter((watch) => watch.status === "active");
+  const active = (data?.watches ?? []).filter(
+    (watch) => watch.status === "active" && (market === undefined || watch.market.asset === market),
+  );
 
   if (error !== null) return <p className="px-1 text-xs text-destructive">{error}</p>;
   if (active.length === 0) return null;
@@ -228,10 +251,27 @@ function useDesktopAlertNotifications(
   }, [alerts]);
 }
 
-export function AlertFeedPanel({ environmentId }: { environmentId: EnvironmentId }) {
+export function AlertFeedPanel({
+  environmentId,
+  market,
+}: {
+  environmentId: EnvironmentId;
+  /**
+   * Scope the whole panel to one market: the feed, the armed list, and the
+   * arm form's asset. The trade home leaves it out and sees everything; the
+   * chat's companion panel passes the thread's market.
+   */
+  market?: string | undefined;
+}) {
   const { data, error, isLoading } = useTradingAlerts(environmentId);
-  const alerts = data?.alerts ?? null;
-  useDesktopAlertNotifications(alerts);
+  const allAlerts = data?.alerts ?? null;
+  // Notifications stay account-wide even in a scoped panel: an alert on
+  // another market is still one the trader armed and still wants raised.
+  useDesktopAlertNotifications(allAlerts);
+  const alerts =
+    allAlerts === null || market === undefined
+      ? allAlerts
+      : allAlerts.filter((alert) => alert.market.asset === market);
 
   return (
     <section aria-label="Alerts" className="flex min-h-0 flex-col gap-2">
@@ -246,13 +286,17 @@ export function AlertFeedPanel({ environmentId }: { environmentId: EnvironmentId
           refresh
         </button>
       </header>
-      <ArmWatchForm environmentId={environmentId} />
-      <ArmedWatches environmentId={environmentId} />
+      <ArmWatchForm environmentId={environmentId} fixedAsset={market} />
+      <ArmedWatches environmentId={environmentId} market={market} />
       {error !== null ? (
         <p className="px-1 text-sm text-destructive">{error}</p>
       ) : alerts === null || alerts.length === 0 ? (
         <p className="px-1 py-2 text-sm text-muted-foreground">
-          {isLoading && alerts === null ? "Loading alerts…" : "Nothing has fired yet."}
+          {isLoading && alerts === null
+            ? "Loading alerts…"
+            : market === undefined
+              ? "Nothing has fired yet."
+              : `Nothing has fired on ${market} yet.`}
         </p>
       ) : (
         <ul className="min-h-0 divide-y divide-border/40 overflow-y-auto">

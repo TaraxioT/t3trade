@@ -121,6 +121,7 @@ import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService } from "./trading/TradingAlertService.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
+import { TradingThreadMarketServiceLive } from "./trading/TradingThreadMarketService.ts";
 import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingManualEntryService } from "./trading/TradingManualEntryService.ts";
@@ -939,6 +940,12 @@ const buildAppUnderTest = (options?: {
             ensureThread: (input) =>
               Effect.succeed({ threadId: input.candidateThreadId, created: true }),
           }),
+        ),
+        // Which market a chat thread is about (the companion panel). Real
+        // rather than mocked: it is SQL over the same test database these
+        // routes already have, so the two RPCs are exercised for real.
+        Layer.provide(
+          TradingThreadMarketServiceLive.pipe(Layer.provide(TradingAccountProjectionLive)),
         ),
         // The universe RPC lists what the venue trades. No exchange here, and a
         // client that gets an empty list simply has nothing to pick from.

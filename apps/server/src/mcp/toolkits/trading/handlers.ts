@@ -85,6 +85,10 @@ import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts
 import { bindThreadToMarket } from "../../../trading/TradingAuthorityBinding.ts";
 import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
 import { TradingAlertService } from "../../../trading/TradingAlertService.ts";
+import {
+  TradingThreadMarketService,
+  type ThreadMarketSource,
+} from "../../../trading/TradingThreadMarketService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
@@ -156,6 +160,37 @@ const rejectCall = (input: {
       new TradingToolRejectedError({
         ...input,
         ...(input.detail === undefined ? {} : { detail: input.detail }),
+      }),
+    ),
+  );
+
+/**
+ * Note which market this thread is about, for the panel beside the chat.
+ *
+ * Called from the read path and from the bind path, so the panel follows the
+ * conversation whether the agent is only looking or has taken the market. It
+ * is advisory: a failure here loses a panel update and must never fail the
+ * tool call the user is waiting on, so it is logged and swallowed. The service
+ * itself skips the write, and the doorbell, when the market has not moved.
+ */
+const noteThreadMarket = (input: {
+  readonly threadId: string;
+  readonly market: string;
+  readonly source: ThreadMarketSource;
+}) =>
+  Effect.gen(function* () {
+    const focus = yield* TradingThreadMarketService;
+    yield* focus.record({
+      threadId: input.threadId,
+      asset: input.market,
+      source: input.source,
+    });
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("could not note the thread's market", {
+        threadId: input.threadId,
+        market: input.market,
+        cause: String(cause),
       }),
     ),
   );
@@ -237,6 +272,7 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
   | HyperliquidGateway
   | ProviderRegistry
   | OrchestrationEngineService
+  | TradingThreadMarketService
   | Crypto.Crypto
 > {
   const scope = yield* McpInvocationContext.requireCapability("trading", (denial) => denial).pipe(
@@ -280,6 +316,7 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
       detail: `${binding.conflict.detail} What you can do: ${binding.conflict.options.join("; or ")}.`,
     });
   }
+  yield* noteThreadMarket({ threadId: scope.threadId, market, source: "bound" });
   return { threadId: scope.threadId, mission: binding.mission };
 });
 
@@ -777,6 +814,11 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
   const mission = call.mission;
   const market = input.market ?? mission?.market ?? DEFAULT_TRADING_MARKET;
   const observedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+
+  // The market this thread is about, for the panel beside the chat. Recorded
+  // on the menu call too: naming a market is the moment the conversation turned
+  // to it, and the menu is often the first call a chat makes.
+  yield* noteThreadMarket({ threadId: call.threadId, market, source: "look" });
 
   // With no keys, the call is the catalog call and gets the menu (§2.3
   // rule 3) — the cheapest possible answer to "what can I ask for?".
