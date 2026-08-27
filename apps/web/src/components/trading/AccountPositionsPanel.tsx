@@ -33,6 +33,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { describeProtection } from "./tradeHomePresentation";
 import { formatPrice, formatSignedUsd, formatUsd } from "./tradingPresentation";
 import { describeControlFailure, useMissionControls } from "./useMissionControls";
+import { analystPositionPrompt, useAskAnalyst } from "./useTradingThreadLaunch";
 
 function missionForAuthority(
   position: TradingAccountPosition,
@@ -150,6 +151,9 @@ function PositionRow({
   const router = useRouter();
   const mission = missionForAuthority(position, missions);
   const side = position.size >= 0 ? "Long" : "Short";
+  // "Ask the analyst" (Phase 8): the market's analyst thread, asked about
+  // this position specifically.
+  const analyst = useAskAnalyst(environmentId);
 
   return (
     <li
@@ -214,7 +218,28 @@ function PositionRow({
           {position.authority.kind === "mission" ? "Mission (settled)" : "Manual"}
         </span>
       )}
-      <span className="ml-auto">
+      <span className="ml-auto flex items-center gap-1.5">
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={analyst.busy}
+          onClick={() =>
+            void analyst.ask({
+              asset: position.market.asset,
+              prompt: analystPositionPrompt({
+                asset: position.market.asset,
+                side: side.toLowerCase(),
+                sizeText: String(Math.abs(position.size)),
+              }),
+            })
+          }
+          data-testid="position-ask-analyst"
+        >
+          {analyst.busy ? "Asking…" : "Analyst"}
+        </Button>
+        {analyst.error === null ? null : (
+          <span className="text-xs text-destructive">{analyst.error}</span>
+        )}
         {mission !== null ? (
           <PositionMissionControls mission={mission} environmentId={environmentId} />
         ) : position.authority.kind === "manual" ? (

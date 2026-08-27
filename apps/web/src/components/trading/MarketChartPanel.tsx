@@ -29,9 +29,11 @@ import { useTradingMarketChart, type ChartInterval } from "../../lib/tradingMark
 import { cn } from "../../lib/utils";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { Button } from "../ui/button";
 import { formatPrice } from "./tradingPresentation";
 import { MissionPriceChart } from "./MissionPriceChart";
 import { describeControlFailure } from "./useMissionControls";
+import { analystMarketPrompt, useAskAnalyst } from "./useTradingThreadLaunch";
 
 /** The intervals offered, in axis order — the archive's own set. */
 const INTERVALS: ReadonlyArray<ChartInterval> = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"];
@@ -56,6 +58,8 @@ export function MarketChartPanel({
   const arm = useAtomCommand(orchestrationEnvironment.armTradingWatch);
   const [armStatus, setArmStatus] = useState<ArmStatus | null>(null);
   const [isArming, setIsArming] = useState(false);
+  // "Ask the analyst" (Phase 8): one analyst thread per market, reused.
+  const analyst = useAskAnalyst(environmentId);
 
   const data = chart.data;
 
@@ -144,6 +148,19 @@ export function MarketChartPanel({
             </button>
           ))}
         </div>
+        <Button
+          size="xs"
+          variant="ghost"
+          className="text-[10.5px]"
+          disabled={analyst.busy}
+          onClick={() => void analyst.ask({ asset, prompt: analystMarketPrompt(asset) })}
+          data-testid="market-chart-ask-analyst"
+        >
+          {analyst.busy ? "Asking…" : "Ask the analyst"}
+        </Button>
+        {analyst.error === null ? null : (
+          <span className="text-[10.5px] text-destructive">{analyst.error}</span>
+        )}
         {armStatus === null ? (
           <span className="text-[10.5px] text-muted-foreground/80">
             Hover the chart and click the chip to arm a price alert.

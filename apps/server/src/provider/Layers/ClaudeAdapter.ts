@@ -4180,7 +4180,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // spreads, so no CLAUDE.md, no project settings, and no working
       // directory reach the agent. The `mcpServers` block is kept for both
       // branches — it is the only thing a trading thread has.
-      const tradingProfile = SessionProfile.isTradingThread(input.threadId);
+      const tradingProfileKind = SessionProfile.readSessionProfile(input.threadId)?.kind;
+      const tradingProfile = tradingProfileKind !== undefined;
       // The attachments dir grant lets the agent Read/copy pasted images at
       // the paths ProviderService injects into the turn text, without an
       // approval prompt. It is a leaf directory holding only attachment
@@ -4194,7 +4195,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
         ...(tradingProfile
-          ? { systemPrompt: TRADING_SYSTEM_PROMPT }
+          ? {
+              systemPrompt:
+                tradingProfileKind === "trading_analyst"
+                  ? TradingSessionProfile.TRADING_ANALYST_SYSTEM_PROMPT
+                  : TRADING_SYSTEM_PROMPT,
+            }
           : { systemPrompt: { type: "preset", preset: "claude_code" } }),
         settingSources: tradingProfile ? [] : [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
@@ -4226,7 +4232,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               // Explicit trading tool names, not `mcp__t3-trade__*`: the
               // preview toolkit is mounted on the same MCP server, so the
               // wildcard also handed a trading session a browser.
-              allowedTools: [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
+              allowedTools:
+                tradingProfileKind === "trading_analyst"
+                  ? [...TradingSessionProfile.TRADING_ANALYST_ALLOWED_TOOL_NAMES]
+                  : [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
               strictMcpConfig: true,
             }
           : {}),

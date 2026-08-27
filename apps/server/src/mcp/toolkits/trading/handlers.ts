@@ -10,6 +10,7 @@
 import {
   TradingToolRejectedError,
   type TradingGetMissionResult,
+  type TradingWatchInput,
 } from "@t3tools/trading-contracts/tools";
 import type { TradingOrderIntent, TradingOrderResult } from "@t3tools/trading-contracts/execution";
 import type { TradingTimeframe, TradingUrgency } from "@t3tools/trading-contracts/strategy";
@@ -83,6 +84,8 @@ import {
 } from "../../../trading/TradingLevelHistory.ts";
 import { recordExecutionRefusal } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { isTradingAnalystThread } from "../../../provider/SessionProfile.ts";
+import { TradingAlertService } from "../../../trading/TradingAlertService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
@@ -2085,6 +2088,58 @@ const cancelWatch = Effect.fn("TradingToolkit.cancelWatch")(function* (
   return { outcome: "cancelled" as const, watch: cancelled };
 });
 
+/**
+ * The analyst's `trading_watch` (final-form Phase 8).
+ *
+ * An analyst session holds no mission, so its watches are the account-scoped
+ * kind `TradingAlertService` owns: they fire into the trader's alert feed
+ * (`deliver: 'notify'`) and never wake anything. Asking for a `'wake'` (or
+ * `'both'`) is refused rather than coerced — a wake needs a mission thread to
+ * wake, and silently downgrading the route would leave the model believing it
+ * armed one.
+ */
+const analystWatch = Effect.fn("TradingToolkit.analystWatch")(function* (input: TradingWatchInput) {
+  const alerts = yield* TradingAlertService;
+  const rejected = (reason: string) => ({ outcome: "alert_rejected" as const, reason });
+
+  if (input.condition !== undefined && input.cancel !== undefined) {
+    return rejected("a call arms a condition or cancels a watch, not both");
+  }
+  if (input.cancel !== undefined) {
+    const existing = yield* alerts.listWatches.pipe(Effect.orDie);
+    const matches = resolveWatchHandle(
+      input.cancel,
+      existing.map((watch) => watch.id),
+    );
+    const watchId = matches.length === 1 ? matches[0]! : input.cancel;
+    const cancelled = yield* alerts.cancelWatch(watchId).pipe(Effect.orDie);
+    return cancelled
+      ? { outcome: "alert_cancelled" as const, watchId }
+      : rejected(`no active alert watch matches ${input.cancel}`);
+  }
+  if (input.condition === undefined) {
+    return rejected("name a condition to arm, or a watch id in `cancel` to retire");
+  }
+  if (input.deliver !== undefined && input.deliver !== "notify") {
+    return rejected(
+      "a 'wake' watch resumes a mission's harness, and this analyst session has no mission — " +
+        "analyst watches deliver 'notify' alerts into the trader's feed. Re-arm with deliver " +
+        "omitted or 'notify'",
+    );
+  }
+
+  const armed = yield* alerts
+    .armWatch({ condition: input.condition, deliver: "notify" })
+    .pipe(Effect.orDie);
+  if (armed.outcome === "rejected") return rejected(armed.reason);
+  return {
+    outcome: "armed_alert" as const,
+    watchId: armed.watch.id,
+    market: armed.watch.market.asset,
+    deliver: "notify" as const,
+  };
+});
+
 const moveStop = Effect.fn("TradingToolkit.moveStop")(function* (input: {
   readonly missionId?: string | undefined;
   readonly market?: TradingMarket | undefined;
@@ -2553,7 +2608,37 @@ const handlers = {
 
   trading_watch: (input) =>
     Effect.gen(function* () {
+      // An analyst thread (Phase 8) has the capability but no mission: its
+      // watches are account-scoped notify alerts, routed before the
+      // mission-binding gate would refuse the call outright.
+      const scope = yield* McpInvocationContext.requireCapability(
+        "trading",
+        (denial) => denial,
+      ).pipe(
+        Effect.catch((denial) =>
+          rejectCall({
+            reason: "capability_not_granted",
+            threadId: denial.threadId,
+            missionId: input.missionId,
+          }),
+        ),
+      );
+      if (isTradingAnalystThread(scope.threadId)) {
+        return yield* analystWatch(input);
+      }
+
       const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+
+      // A mission's watches exist to wake the mission; naming another route is
+      // answered, not coerced (Phase 8 — `deliver` is the analyst's field).
+      if (input.deliver !== undefined && input.deliver !== "wake") {
+        return {
+          outcome: "alert_rejected" as const,
+          reason:
+            "mission watches wake the mission — alert-only ('notify') watches are armed from " +
+            "the trade home or an analyst session, not from a mission thread",
+        };
+      }
 
       // One call does one thing to the armed set. Neither named, or both, is a
       // rule about the call, so it stands down like every other one.

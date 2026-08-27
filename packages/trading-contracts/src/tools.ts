@@ -41,7 +41,13 @@ import { EntrySizeConstraint } from "./entry.ts";
 import { TradingExitRefusalCode } from "./exit.ts";
 import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState } from "./strategy.ts";
-import { PersistedWatch, TradingWatchRow, WatchCondition, WatchRefusalCode } from "./watch.ts";
+import {
+  PersistedWatch,
+  TradingWatchDeliver,
+  TradingWatchRow,
+  WatchCondition,
+  WatchRefusalCode,
+} from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
 
 // Renamed from `trading_plan` — plan 29 step 6.5. The behaviour is
@@ -793,6 +799,16 @@ export const TradingWatchInput = Schema.Struct({
    * re-levelled unwatched in between. This closes that window.
    */
   replacesWatchId: Schema.optional(TradingId),
+  /**
+   * How the firing is delivered (final-form Phase 8).
+   *
+   * On a mission thread the only route is `"wake"` (the default there): the
+   * mission's watches exist to wake the mission. On an analyst thread the only
+   * route is `"notify"` (the default there): the alert lands in the trader's
+   * feed, because an analyst session holds no mission to wake. Naming the
+   * route the session cannot have is refused, never coerced.
+   */
+  deliver: Schema.optional(TradingWatchDeliver),
 });
 export type TradingWatchInput = typeof TradingWatchInput.Type;
 
@@ -843,6 +859,28 @@ export const TradingWatchResult = Schema.Union([
     reason: WatchRefusalCode,
     detail: Schema.String,
     recovery: FailureRecovery,
+  }),
+  /**
+   * The analyst arms (final-form Phase 8): an account-scoped alert with no
+   * mission anywhere near it. Its own shapes rather than `armed`/`cancelled`
+   * because those carry a `PersistedWatch`, whose `missionId` an account watch
+   * does not have.
+   */
+  Schema.Struct({
+    outcome: Schema.Literal("armed_alert"),
+    watchId: TradingId,
+    /** The asset the alert watches, or "" for a time alert. */
+    market: Schema.String,
+    deliver: Schema.Literal("notify"),
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("alert_cancelled"),
+    watchId: TradingId,
+  }),
+  /** Why an analyst arm or cancel did nothing. Plain prose; nothing was armed. */
+  Schema.Struct({
+    outcome: Schema.Literal("alert_rejected"),
+    reason: Schema.String,
   }),
 ]);
 export type TradingWatchResult = typeof TradingWatchResult.Type;

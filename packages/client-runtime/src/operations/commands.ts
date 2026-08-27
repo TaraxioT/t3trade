@@ -357,8 +357,10 @@ export interface TradingMissionCreateInput {
   readonly instruction: string;
   /** Omit to have the server size the mandate from the live account value. */
   readonly allocatedCapitalUsd?: number;
-  /** The market the mission is mandated to trade. Omit for the default (ETH). */
-  readonly market?: "ETH" | "BTC";
+  /** The market the mission is mandated to trade — any listed asset. Omit for the default (ETH). */
+  readonly market?: string;
+  /** The wake budget (Phase 8): runs the mission may spend before it blocks. Omit for unlimited. */
+  readonly maxWakes?: number;
 }
 
 export const tradingMissionCreate: (input: TradingMissionCreateInput) => CommandEffect = Effect.fn(
@@ -379,6 +381,7 @@ export const tradingMissionCreate: (input: TradingMissionCreateInput) => Command
       ? {}
       : { allocatedCapitalUsd: input.allocatedCapitalUsd }),
     ...(input.market === undefined ? {} : { market: input.market }),
+    ...(input.maxWakes === undefined ? {} : { maxWakes: input.maxWakes }),
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

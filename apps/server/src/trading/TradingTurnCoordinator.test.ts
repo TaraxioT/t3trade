@@ -526,6 +526,76 @@ layer("TradingTurnCoordinator", (it) => {
       assert.equal(second.status, "started");
     }),
   );
+
+  // Final-form Phase 8: the wake budget. Runs are the count and the active
+  // authority version is the epoch; exhaustion blocks visibly, and resume —
+  // re-issuing the same envelope as a fresh version — resets the counter
+  // against the same `maxWakes`.
+  it.effect("blocks at wake-budget exhaustion and resumes on a fresh authority tranche", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const missions = yield* TradingMissionService;
+      yield* missions.createMission({
+        missionId: "mission_1",
+        userId: "local",
+        tradingAccountId: "acct_1",
+        instruction: "Trade ETH momentum",
+        allocatedCapitalUsd: 1_000,
+        maxWakes: 1,
+        harness,
+      });
+      assert.equal((yield* missions.getMission("mission_1")).authority.maxWakes, 1);
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const sql = yield* SqlClient.SqlClient;
+
+      // The budget funds exactly one run.
+      const first = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "market_watch_triggered",
+      });
+      assert.equal(first.status, "started");
+      yield* sql`UPDATE trading_harness_runs SET status = 'completed' WHERE mission_id = 'mission_1'`;
+
+      // The second ask is blocked BEFORE a lease is taken, and the mission is
+      // moved to the visible blocked reason.
+      const second = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "scheduled_reassessment",
+      });
+      assert.equal(second.status, "blocked");
+      assert.equal(second.status === "blocked" && second.reason, "wake_budget_exhausted");
+      const blocked = yield* missions.getMission("mission_1");
+      assert.equal(blocked.status, "blocked");
+      assert.equal(blocked.blockedReason, "wake_budget_exhausted");
+      const runs = yield* sql<{ readonly c: number }>`
+        SELECT COUNT(*) AS c FROM trading_harness_runs WHERE mission_id = 'mission_1'
+      `;
+      assert.equal(runs[0]?.c, 1);
+
+      // Resume, as the reactor does it: re-issue the envelope (the epoch
+      // moves), then transition back into the loop. The spent run is backdated
+      // so the fresh version's `created_at` is strictly after it, as it is in
+      // real time.
+      yield* sql`UPDATE trading_harness_runs SET started_at = started_at - 10000 WHERE mission_id = 'mission_1'`;
+      const refreshed = yield* missions.refreshAuthorityVersion("mission_1");
+      assert.equal(refreshed.authorityVersion, 2);
+      assert.equal(refreshed.authority.maxWakes, 1);
+      const version = yield* missions.getMissionVersion("mission_1");
+      yield* missions.transition({
+        missionId: "mission_1",
+        to: "analysing",
+        expectedVersion: version,
+      });
+
+      // The same budget, counting from zero: one more run starts.
+      const third = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "scheduled_reassessment",
+      });
+      assert.equal(third.status, "started");
+    }),
+  );
 });
 
 /**

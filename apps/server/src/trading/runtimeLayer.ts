@@ -23,6 +23,7 @@ import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.t
 import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
 import { TradingAccountProjectionLive } from "./TradingAccountProjection.ts";
 import { TradingAlertServiceLive } from "./TradingAlertService.ts";
+import { TradingAnalystServiceLive } from "./TradingAnalystService.ts";
 import { TradingWatchlistServiceLive } from "./TradingWatchlistService.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
@@ -302,4 +303,7 @@ export const TradingLayerLive = Layer.mergeAll(
     Layer.provide(HyperliquidReadLayerLive),
     Layer.provide(TradingAccountProjectionLive),
   ),
+  // The analyst-thread registry (Phase 8). SQL-only; its layer also replays
+  // every registered analyst profile into the session-profile map at boot.
+  TradingAnalystServiceLive,
 ).pipe(Layer.provideMerge(infoWithHttp));

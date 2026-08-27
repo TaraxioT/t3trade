@@ -956,6 +956,44 @@ const make = Effect.gen(function* () {
       yield* missions.transition({ missionId, to, expectedVersion });
     });
 
+  /**
+   * Leased runs since the active authority version was written — the wake
+   * budget's spend. The insert that acquires a lease is what spends a wake, so
+   * counting rows counts wakes, and failed or completed runs both count: the
+   * budget bounds attention, not success.
+   */
+  const countWakesSpent = (missionId: string, authorityVersion: number) =>
+    sql<{ readonly spent: number }>`
+      SELECT COUNT(*) AS spent FROM trading_harness_runs
+      WHERE mission_id = ${missionId}
+        AND started_at >= (
+          SELECT created_at FROM trading_authority_versions
+          WHERE mission_id = ${missionId} AND version = ${authorityVersion}
+        )
+    `.pipe(
+      Effect.mapError(sqlFail("countWakesSpent")),
+      Effect.map((rows) => rows[0]?.spent ?? 0),
+    );
+
+  /** Block the mission with the visible wake-budget reason. Never fatal. */
+  const blockForWakeBudget = (missionId: string) =>
+    Effect.gen(function* () {
+      const expectedVersion = yield* missions.getMissionVersion(missionId);
+      yield* missions.transition({
+        missionId,
+        to: "blocked",
+        blockedReason: "wake_budget_exhausted",
+        expectedVersion,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not block an exhausted mission", {
+          missionId,
+          cause: String(cause),
+        }),
+      ),
+    );
+
   const recoverFromFailedWake = (input: {
     readonly missionId: string;
     readonly triggeringWatchId?: string;
@@ -999,6 +1037,27 @@ const make = Effect.gen(function* () {
       }
       if (!isActiveMissionStatus(mission.status)) {
         return { status: "blocked", reason: "mission_not_active" } as const;
+      }
+
+      // Phase 8 wake budget. Runs are the count and the active authority
+      // version is the epoch: every leased run since that version was written
+      // has spent one wake, whatever its cause. At the cap the mission blocks
+      // visibly (`wake_budget_exhausted`) instead of running one more turn;
+      // resume re-issues the envelope, which moves the epoch and resets the
+      // counter against the same `maxWakes`. Operative statuses only — a
+      // mission already suspended has nothing left to spend.
+      const maxWakes = mission.authority.maxWakes;
+      if (maxWakes !== undefined && isOperativeMissionStatus(mission.status)) {
+        const spent = yield* countWakesSpent(mission.id, mission.authorityVersion);
+        if (spent >= maxWakes) {
+          yield* Effect.logInfo("TradingTurnCoordinator: wake budget exhausted", {
+            missionId: mission.id,
+            maxWakes,
+            spent,
+          });
+          yield* blockForWakeBudget(mission.id);
+          return { status: "blocked", reason: "wake_budget_exhausted" } as const;
+        }
       }
 
       // §12.3 check 2: Provider binding is present. The binding is immutable

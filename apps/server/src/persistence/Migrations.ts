@@ -88,6 +88,7 @@ import Migration0072 from "./Migrations/072_TradingWatchArmedWithPosition.ts";
 import Migration0073 from "./Migrations/073_TradingWatchEvaluationCadence.ts";
 import Migration0074 from "./Migrations/074_TradingWatchlistAlerts.ts";
 import Migration0075 from "./Migrations/075_TradingManualExecution.ts";
+import Migration0076 from "./Migrations/076_TradingAnalystThreads.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -178,6 +179,7 @@ export const migrationEntries = [
   [73, "TradingWatchEvaluationCadence", Migration0073],
   [74, "TradingWatchlistAlerts", Migration0074],
   [75, "TradingManualExecution", Migration0075],
+  [76, "TradingAnalystThreads", Migration0076],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

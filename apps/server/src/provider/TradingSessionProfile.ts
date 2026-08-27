@@ -33,7 +33,7 @@ import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
 import type { ThreadId } from "@t3tools/contracts";
 
-import { isTradingThread } from "./SessionProfile.ts";
+import { hasTradingProfile, isTradingAnalystThread } from "./SessionProfile.ts";
 
 /** The MCP server name every adapter mounts the trading toolkit under. */
 export const TRADING_MCP_SERVER_NAME = "t3-trade";
@@ -62,6 +62,22 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
 export const TRADING_ALLOWED_TOOL_NAMES: ReadonlyArray<string> = TRADING_TOOL_NAMES.map(
   (name) => `mcp__${TRADING_MCP_SERVER_NAME}__${name}`,
 );
+
+/**
+ * The analyst's tools (final-form Phase 8): reads, the strategy library, and
+ * alert-only watches. No plan, no journal, no enter, no exit — an analyst
+ * session holds no mission and may not act on the exchange or publish a plan
+ * as if it did. The handlers enforce the same boundary server-side, so this
+ * allowlist is a courtesy to the model, not the fence.
+ */
+export const TRADING_ANALYST_TOOL_NAMES: ReadonlyArray<string> = [
+  TRADING_LOOK_TOOL,
+  TRADING_STRATEGY_TOOL,
+  TRADING_WATCH_TOOL,
+];
+
+export const TRADING_ANALYST_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
+  TRADING_ANALYST_TOOL_NAMES.map((name) => `mcp__${TRADING_MCP_SERVER_NAME}__${name}`);
 
 /**
  * The decision contract, shared by every provider.
@@ -125,6 +141,49 @@ You have no shell, no filesystem, no Read/Edit/Write, no web access, and no suba
 Your trading strategy, entry rules, and risk parameters are NOT given here. Read them with ${TRADING_STRATEGY_TOOL} and follow the procedure it returns.`;
 
 /**
+ * The analyst's contract (final-form Phase 8).
+ *
+ * An analyst session is not a mission: it advises the trader who asked, it
+ * never trades, and it never publishes a plan. It has three tools — the read,
+ * the strategy library, and alert-only watches — and the contract says what
+ * each is for rather than restating the mission loop, which does not apply to
+ * a session that is never woken.
+ */
+const ANALYST_CONTRACT = `You are a market analyst. A trader asked you a question; answer THAT, in plain language, grounded in data you actually read this turn.
+
+Your three tools:
+- ${TRADING_LOOK_TOOL} is the read: mark, book, candles, volatility, multi-timeframe structure with scored candidates[], costs, and the account's positions. Scope it to the question.
+- ${TRADING_STRATEGY_TOOL} is the playbook library. Name the strategy a setup fits before citing it; an indicator reading is evidence, never a strategy.
+- ${TRADING_WATCH_TOOL} arms an ALERT for the trader — a price level, a metric, or a time. Analyst alerts deliver as notifications to the trader's feed; they never wake you, because there is no mission here to wake. Arm one only when the trader asks to be told about a level or condition, and say what you armed.
+
+You hold no mission and no mandate. You cannot enter, exit, publish a plan, or touch the exchange — those tools do not exist in this session, and recommending an action is as far as you go. When the trader should act, say what you would do and why, with the levels that matter. When the data refuses or is stale, say which read failed rather than guessing.
+
+Be direct and concrete: levels, not vibes. Cite what you read (structure, volatility, costs), name the strategy fit if there is one, and state what would change your read.`;
+
+/**
+ * The analyst system prompt (Claude and Codex install it at their
+ * system-prompt seam; the other adapters carry `ANALYST_TURN_CONTRACT` on the
+ * first turn instead).
+ */
+export const TRADING_ANALYST_SYSTEM_PROMPT = `You are a market analyst on the t3-trade harness. Your only tools are the ${TRADING_ANALYST_ALLOWED_TOOL_NAMES.length} mcp__${TRADING_MCP_SERVER_NAME}__* trading tools listed below.
+
+${ANALYST_CONTRACT}
+
+You have no shell, no filesystem, no Read/Edit/Write, no web access, and no subagents. Everything you can possibly do is one of the mcp__${TRADING_MCP_SERVER_NAME}__* trading tools; if a task seems to need anything else, it is out of scope — say so rather than reach for a tool you do not have.`;
+
+/** The analyst contract as a first-turn prefix, for adapters with no replaceable system prompt. */
+const ANALYST_TURN_CONTRACT = `[t3-trade analyst session]
+
+You are answering a trader's question on the t3-trade harness. Use ONLY the ${TRADING_MCP_SERVER_NAME} MCP tools for it — no shell, no files, no web. This is not a coding task and nothing about it touches this repository.
+
+${ANALYST_CONTRACT}
+
+The trader's question follows.`;
+
+/** Every later analyst turn names the frame and nothing else. */
+const ANALYST_TURN_HEADER = `[t3-trade analyst session] Analyst turn — use ONLY the ${TRADING_MCP_SERVER_NAME} MCP tools; no shell, files, or web. The trader's message follows.`;
+
+/**
  * The same contract as a prefix for adapters that cannot replace their system
  * prompt. Sent once per session instance — see `applyTradingTurnContract`.
  */
@@ -171,7 +230,7 @@ export function resetTradingContractDelivery(threadId: ThreadId): void {
  * installs `TRADING_SYSTEM_PROMPT` at the provider's own system-prompt seam.
  */
 export function markTradingContractDelivered(threadId: ThreadId): void {
-  if (isTradingThread(threadId)) contractDelivered.add(threadId);
+  if (hasTradingProfile(threadId)) contractDelivered.add(threadId);
 }
 
 /** What one turn's prefix is, and how to record that it actually arrived. */
@@ -191,8 +250,15 @@ export interface TradingTurnContract {
  * this unconditionally at its prompt-building seam.
  */
 export function applyTradingTurnContract(threadId: ThreadId, text: string): TradingTurnContract {
-  if (!isTradingThread(threadId)) return { text, markDelivered: () => {} };
-  const prefix = contractDelivered.has(threadId) ? TRADING_TURN_HEADER : TRADING_TURN_CONTRACT;
+  if (!hasTradingProfile(threadId)) return { text, markDelivered: () => {} };
+  const analyst = isTradingAnalystThread(threadId);
+  const prefix = contractDelivered.has(threadId)
+    ? analyst
+      ? ANALYST_TURN_HEADER
+      : TRADING_TURN_HEADER
+    : analyst
+      ? ANALYST_TURN_CONTRACT
+      : TRADING_TURN_CONTRACT;
   return {
     text: `${prefix}\n\n${text}`,
     markDelivered: () => contractDelivered.add(threadId),

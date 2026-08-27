@@ -188,8 +188,6 @@ import { useTradingMissions } from "~/lib/tradingMissionsState";
 import { MissionLivePanel } from "./trading/MissionLivePanel";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
-import { TradingAssetPicker } from "./trading/TradingAssetPicker";
-import type { TradingMarket } from "@t3tools/trading-contracts";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
@@ -2048,10 +2046,9 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProvider: selectedProviderByThreadId,
     threadProvider,
   });
-  // The start page's asset choice. A mission's market is fixed at creation, so
-  // this only matters for the first message of a draft; it rides that turn's
-  // `tradingMarket` field into the auto-mission create path.
-  const [draftTradingMarket, setDraftTradingMarket] = useState<TradingMarket>("ETH");
+  // The draft-hero asset picker is gone (final-form Phase 8): a first message
+  // no longer becomes a trading mission. Missions are created explicitly from
+  // the trade home's "New mission" form, dispatching `trading.mission.create`.
   // Once a thread selects an environment, never substitute the primary
   // environment's config while the selected environment is still loading.
   const serverConfig = activeThread
@@ -5421,7 +5418,6 @@ function ChatViewContent(props: ChatViewProps) {
           runtimeMode,
           interactionMode,
           ...(bootstrap ? { bootstrap } : {}),
-          ...(isFirstMessage ? { tradingMarket: draftTradingMarket } : {}),
           createdAt: messageCreatedAt,
         },
       });
@@ -6594,19 +6590,6 @@ function ChatViewContent(props: ChatViewProps) {
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
-                            {...(isDraftHeroState
-                              ? {
-                                  assetPicker: (
-                                    <TradingAssetPicker
-                                      environmentId={
-                                        activeThread?.environmentId ?? primaryEnvironmentId
-                                      }
-                                      value={draftTradingMarket}
-                                      onChange={setDraftTradingMarket}
-                                    />
-                                  ),
-                                }
-                              : {})}
                             providerStatuses={providerStatuses as ServerProvider[]}
                             activeProjectDefaultModelSelection={
                               activeProject?.defaultModelSelection

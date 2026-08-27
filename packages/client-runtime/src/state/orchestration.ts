@@ -156,6 +156,13 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:commands:trading:close-manual-position",
       tag: ORCHESTRATION_WS_METHODS.closeTradingManualPosition,
     }),
+    // "Ask the analyst" (final-form Phase 8): resolve the market's standing
+    // analyst thread, or register the caller's candidate id as it. An RPC
+    // command because the caller branches on `created`.
+    ensureTradingAnalystThread: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:ensure-analyst-thread",
+      tag: ORCHESTRATION_WS_METHODS.ensureTradingAnalystThread,
+    }),
     placeTradingOrder: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:place-order",
       execute: (input: TradingOrderPlaceInput) => tradingOrderPlace(input),

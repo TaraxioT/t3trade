@@ -72,7 +72,7 @@ upstream-owned and sync-eligible. Everything trading lives in fork-owned modules
 (`apps/server/src/trading/`, `packages/trading-contracts`, `packages/hyperliquid`,
 `apps/web/src/components/trading/`, new route files). Each phase names its
 upstream touch points so sync-conflict surface stays measured. Fork migrations
-consume the next free ids: 074, 075.
+consume the next free ids: 074, 075 — and Phase 8 took 076.
 
 ## 4 · Execution plan
 
@@ -254,16 +254,50 @@ one case in `OrchestrationEngine.commandToAggregateRef` (the first threadless
 command needs an aggregate ref). The live testnet smoke
 (`executionLive.test.ts` pattern) is deliberately left to the operator.
 
-### Phase 8 — The LLM finds its place
+### Phase 8 — The LLM finds its place _(landed)_
 
-- [ ] A `trading_analyst` session profile: `trading_look`, `trading_strategy`,
+- [x] A `trading_analyst` session profile: `trading_look`, `trading_strategy`,
       and `trading_watch` restricted to `deliver:'notify'`; no enter/exit/plan.
-- [ ] "Ask the analyst" on chart and position views; mission creation becomes an
-      explicit form dispatching `trading.mission.create`; draft-hero claiming retires.
-- [ ] `maxWakes` in the authority envelope; exhaustion pauses visibly and
+      `SessionProfile` carries the second kind; the analyst system prompt /
+      turn contract lives beside the mission's in `TradingSessionProfile.ts`,
+      and all five adapters pick it up at their existing seam (Claude and
+      Codex branch on the profile kind; Grok/Cursor/OpenCode already route
+      through `applyTradingTurnContract`, which now branches internally). The
+      `trading_watch` handler arms analyst conditions as account-scoped notify
+      alerts through `TradingAlertService` (`armed_alert` / `alert_cancelled`
+      / `alert_rejected` result arms, additive); `deliver:'wake'` is refused,
+      never coerced, and the acting tools refuse on the missing mission
+      binding as before.
+- [x] "Ask the analyst" on chart and position views; mission creation becomes
+      an explicit form dispatching `trading.mission.create`; draft-hero
+      claiming retires. One analyst thread per `{venue, asset}`, reused, held
+      in `trading_analyst_threads` (migration 076 — the registry is also what
+      re-binds analyst profiles after a restart) behind the
+      `ensureTradingAnalystThread` RPC: the client mints a candidate thread
+      id, the server returns the incumbent or registers the candidate, and the
+      client creates the thread and sends the question
+      (`useTradingThreadLaunch.ts`). The trade home gains `MissionCreateForm`
+      (market via `TradingAssetPicker`, mandate prose, capital, wake budget);
+      `ChatView.tsx` lost the draft-hero asset picker and the `tradingMarket`
+      ride-along, so a first message can no longer become a mission — the
+      env-gated server auto-mission path remains but defaults off (0.3) and is
+      Phase 9 deletion fodder.
+- [x] `maxWakes` in the authority envelope; exhaustion pauses visibly and
       resumes on click. Rides the versioned authority JSON — no migration.
+      Runs are the count and the active authority version's `created_at` is
+      the epoch: the coordinator counts `trading_harness_runs` since it, and
+      at the cap transitions the mission to `blocked` /
+      `wake_budget_exhausted` (new `TradingMissionBlockedReason` member).
+      Resume re-issues the same envelope as a fresh authority version
+      (`refreshAuthorityVersion`), so the counter resets against the same
+      `maxWakes`; the mission strip offers Resume for exactly this blocked
+      reason.
 
-After 5, 7, 0.3, 0.4.
+After 5, 7, 0.3, 0.4. Upstream touches: the five adapters' trading branches,
+`ChatView.tsx` mount-point edits, contracts additively (`ws` command +
+payload `maxWakes`, the analyst RPC, the watch-tool `deliver` field and result
+arms), `McpSessionRegistry`/`ProviderCommandReactor`'s existing profile checks
+widened to both kinds.
 
 ### Phase 9 — Deletions and consolidation
 
@@ -285,6 +319,7 @@ After 5, 7, 0.3, 0.4.
 | --- | ---------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 074 | Phases 4+5 | `trading_watchlist`; `trading_watches` rebuild; `trading_alert_events`             | Recreate 035 indexes; backfill `deliver='wake'`, `venue='hyperliquid'`; wake behavior byte-identical                                                                                                |
 | 075 | Phase 7    | Six execution tables rebuilt; `trading_missions.venue`; per-market authority index | Landed. `account_id` carries `DEFAULT 'unattributed'` (the orphan-backfill sentinel); the position/account-snapshot uniqueness moved onto partial indexes, so upserts name the index `WHERE` clause |
+| 076 | Phase 8    | `trading_analyst_threads` — the per-market analyst-thread registry                 | Landed. Pure `CREATE TABLE IF NOT EXISTS`; also the boot source that re-binds analyst session profiles after a restart                                                                              |
 | —   | Phase 2    | Archive DB v1→v2 (venue columns) via its own version row                           | Never joins the app chain                                                                                                                                                                           |
 
 ## 6 · Deliberately not doing

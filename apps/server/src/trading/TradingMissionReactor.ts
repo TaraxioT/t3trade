@@ -481,6 +481,7 @@ const make = Effect.gen(function* () {
   ) {
     const { missionId, threadId, tradingAccountId, instruction, allocatedCapitalUsd, market } =
       event.payload;
+    const maxWakes = event.payload.maxWakes;
 
     const harness = yield* resolveHarnessBinding(threadId);
 
@@ -522,6 +523,7 @@ const make = Effect.gen(function* () {
       instruction,
       allocatedCapitalUsd: capital.allocatedCapitalUsd,
       ...(market === undefined ? {} : { market }),
+      ...(maxWakes === undefined ? {} : { maxWakes }),
       harness,
     });
     // Bind the trading profile to the thread so the provider adapter (the
@@ -935,6 +937,15 @@ const make = Effect.gen(function* () {
           "before_resuming_paused_mission",
         );
       }).pipe(Effect.catch(() => Effect.void));
+
+      // Phase 8: resuming an exhausted mission grants a fresh wake tranche —
+      // the same envelope re-issued as a new authority version, which is the
+      // epoch the coordinator counts runs from. Same `maxWakes`, counter at
+      // zero. Done before the transition so the first post-resume wake does
+      // not immediately re-block on the old epoch.
+      if (mission.status === "blocked" && mission.blockedReason === "wake_budget_exhausted") {
+        yield* missions.refreshAuthorityVersion(missionId);
+      }
     }
 
     const expectedVersion = yield* missions.getMissionVersion(missionId);

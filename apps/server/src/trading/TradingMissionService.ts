@@ -49,6 +49,8 @@ export const CreateTradingMissionInput = Schema.Struct({
   allocatedCapitalUsd: Schema.Number,
   /** The market the mission is mandated to trade. Absent means the default (ETH). */
   market: Schema.optional(TradingMarket),
+  /** The wake budget the mandate names (Phase 8). Absent means unlimited. */
+  maxWakes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   harness: TradingHarnessBinding,
 });
 export type CreateTradingMissionInput = typeof CreateTradingMissionInput.Type;
@@ -114,6 +116,19 @@ export interface TradingMissionServiceShape {
   readonly transition: (
     input: TransitionTradingMissionInput,
   ) => Effect.Effect<TradingMission, TradingMissionServiceError>;
+
+  /**
+   * Re-issue the mission's current authority envelope as a fresh version —
+   * same JSON, version + 1, a new `created_at`.
+   *
+   * The wake budget's reset (Phase 8): the coordinator counts runs from the
+   * active authority version's `created_at`, so resuming a
+   * `wake_budget_exhausted` mission re-issues the envelope and the same
+   * `maxWakes` starts counting from zero.
+   */
+  readonly refreshAuthorityVersion: (
+    missionId: string,
+  ) => Effect.Effect<TradingMission, PersistenceSqlError | TradingMissionNotFoundError>;
 
   /**
    * Update the binding's runtime bookkeeping — session id, resume cursor,
@@ -614,7 +629,12 @@ const makeTradingMissionService = Effect.gen(function* () {
 
       // The testnet lab preset, not the spec's $1,000 worked example — see
       // `TestnetAuthority` for the sizing and the env knobs that adjust it.
-      const authority = resolveTestnetAuthority(process.env, input.allocatedCapitalUsd);
+      // The wake budget rides the envelope (Phase 8): the counter's epoch is
+      // the authority version's own `created_at`.
+      const authority = {
+        ...resolveTestnetAuthority(process.env, input.allocatedCapitalUsd),
+        ...(input.maxWakes === undefined ? {} : { maxWakes: input.maxWakes }),
+      };
       const control: TradingMissionControl = {
         entriesAllowed: true,
         reentryAllowed: authority.allowReentry,
@@ -687,6 +707,36 @@ const makeTradingMissionService = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("transition")));
 
       return yield* getMission(input.missionId);
+    });
+
+  const refreshAuthorityVersion: TradingMissionServiceShape["refreshAuthorityVersion"] = (
+    missionId,
+  ) =>
+    Effect.gen(function* () {
+      const rows = yield* readMissionRow(missionId);
+      const row = rows[0];
+      if (row === undefined) {
+        return yield* new TradingMissionNotFoundError({ missionId });
+      }
+      const authority = yield* readAuthorityJson(missionId, row.authority_version);
+      const authorityJson = authority[0]?.authority_json;
+      if (authorityJson === undefined) {
+        return yield* new TradingMissionNotFoundError({ missionId });
+      }
+
+      const now = yield* Clock.currentTimeMillis;
+      const nextVersion = row.authority_version + 1;
+      yield* sql`
+        INSERT INTO trading_authority_versions (mission_id, version, authority_json, created_at)
+        VALUES (${missionId}, ${nextVersion}, ${authorityJson}, ${now})
+      `.pipe(Effect.mapError(sqlFail("refreshAuthorityVersion:insert")));
+      yield* sql`
+        UPDATE trading_missions
+        SET authority_version = ${nextVersion}, version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${missionId}
+      `.pipe(Effect.mapError(sqlFail("refreshAuthorityVersion:update")));
+
+      return yield* getMission(missionId);
     });
 
   const updateHarnessBinding: TradingMissionServiceShape["updateHarnessBinding"] = (input) =>
@@ -788,6 +838,7 @@ const makeTradingMissionService = Effect.gen(function* () {
   return {
     createMission,
     transition,
+    refreshAuthorityVersion,
     updateHarnessBinding,
     getMission,
     getMissionVersion,

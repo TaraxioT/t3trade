@@ -49,6 +49,9 @@ import {
   TradingWorkingOrderService,
 } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingCalibrationServiceLive } from "../../../trading/TradingCalibrationService.ts";
+import { TradingAccountProjection } from "../../../trading/TradingAccountProjection.ts";
+import { TradingAlertServiceLive } from "../../../trading/TradingAlertService.ts";
+import { clearAllSessionProfiles, setSessionProfile } from "../../../provider/SessionProfile.ts";
 import {
   TradingCostEstimator,
   TradingCostEstimatorLive,
@@ -491,6 +494,17 @@ const tradingLayerOverExchange = (
     TradingJournalServiceLive,
     TradingTradeHistoryServiceLive,
     TradingCalibrationServiceLive,
+    // The analyst's `trading_watch` writes account-scoped notify alerts
+    // (Phase 8) through the real service, over the same fake exchange. The
+    // projection doorbell is a no-op: nothing in these tests subscribes.
+    TradingAlertServiceLive.pipe(
+      Layer.provide(exchangeGatewayLayer(fake)),
+      Layer.provide(
+        Layer.succeed(TradingAccountProjection, {
+          invalidate: () => Effect.void,
+        } as unknown as TradingAccountProjection["Service"]),
+      ),
+    ),
     // `trading_exit`'s `move_stop` runs for real against the fake book.
     TradingStopAdjustmentServiceLive.pipe(
       Layer.provide(exchangeGatewayLayer(fake)),
@@ -3833,3 +3847,133 @@ it.live("arms a derived vwap_distance watch from a seeded archive", () => {
     tradingLayerOverExchange(makeFakeExchange(), archivePath),
   ).pipe(Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))));
 });
+
+// -- final-form Phase 8: the analyst session --------------------------------
+//
+// An analyst thread carries the trading capability and no mission. It may
+// look, read strategies, and arm account-scoped notify alerts; a wake watch,
+// and every acting tool, is refused.
+
+const ANALYST_THREAD = ThreadId.make("thread-analyst-session");
+
+it.effect("the analyst can look, read a strategy, and arm a notify alert", () =>
+  withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        setSessionProfile({ threadId: ANALYST_THREAD, kind: "trading_analyst" });
+
+        // The mission-less read answers rather than refusing.
+        const look = yield* callTool(ANALYST_THREAD, "trading_look", { scope: ["mission"] });
+        assert.notEqual(look.result.isError, true);
+        assert.equal(look.result.body.mission.bound, false);
+
+        // The strategy library is static contract data; the capability alone
+        // entitles it.
+        const strategy = yield* callTool(ANALYST_THREAD, "trading_strategy", {
+          name: "classify",
+        });
+        assert.notEqual(strategy.result.isError, true);
+        assert.equal(strategy.result.body.name, "classify");
+
+        // Arming defaults to a notify alert: account-scoped, no mission id
+        // anywhere in the result.
+        const armed = yield* callTool(ANALYST_THREAD, "trading_watch", {
+          condition: {
+            kind: "price",
+            market: "ETH",
+            direction: "above",
+            price: 3_200,
+            confirm: "touch",
+          },
+        });
+        assert.notEqual(armed.result.isError, true);
+        assert.equal(armed.result.body.outcome, "armed_alert");
+        assert.equal(armed.result.body.deliver, "notify");
+        assert.equal(armed.result.body.market, "ETH");
+
+        // …and the same watch can be retired again by its id.
+        const cancelled = yield* callTool(ANALYST_THREAD, "trading_watch", {
+          cancel: armed.result.body.watchId,
+        });
+        assert.notEqual(cancelled.result.isError, true);
+        assert.equal(cancelled.result.body.outcome, "alert_cancelled");
+
+        clearAllSessionProfiles();
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);
+
+it.effect("the analyst is refused a wake watch and every acting tool", () =>
+  withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        setSessionProfile({ threadId: ANALYST_THREAD, kind: "trading_analyst" });
+
+        // deliver:'wake' (and 'both') is refused, never coerced to notify.
+        for (const deliver of ["wake", "both"]) {
+          const refused = yield* callTool(ANALYST_THREAD, "trading_watch", {
+            condition: {
+              kind: "price",
+              market: "ETH",
+              direction: "above",
+              price: 3_200,
+              confirm: "touch",
+            },
+            deliver,
+          });
+          assert.notEqual(refused.result.isError, true);
+          assert.equal(refused.result.body.outcome, "alert_rejected");
+          assert.match(refused.result.body.reason, /no mission/);
+        }
+
+        // The acting tools refuse on the missing mission binding.
+        const plan = yield* callTool(ANALYST_THREAD, "trading_plan", {
+          expectedMissionVersion: 1,
+          strategy: strategyBody("v1"),
+        });
+        assert.equal(plan.result.isError, true);
+        assert.match(plan.result.content[0].text, /thread_not_bound_to_mission/);
+
+        const enter = yield* callTool(ANALYST_THREAD, "trading_enter", {
+          market: "ETH",
+          side: "buy",
+          stopPrice: 2_900,
+        });
+        assert.equal(enter.result.isError, true);
+        assert.match(enter.result.content[0].text, /thread_not_bound_to_mission/);
+
+        const exit = yield* callTool(ANALYST_THREAD, "trading_exit", { action: "close" });
+        assert.equal(exit.result.isError, true);
+        assert.match(exit.result.content[0].text, /thread_not_bound_to_mission/);
+
+        clearAllSessionProfiles();
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);
+
+it.effect(
+  "a mission thread naming deliver:'notify' on trading_watch is answered, not coerced",
+  () =>
+    withMcpServer(
+      ({ callTool }) =>
+        Effect.gen(function* () {
+          const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+            missionId: MISSION_ID,
+            condition: {
+              kind: "price",
+              market: "ETH",
+              direction: "above",
+              price: 3_200,
+              confirm: "touch",
+            },
+            deliver: "notify",
+          });
+          assert.notEqual(refused.result.isError, true);
+          assert.equal(refused.result.body.outcome, "alert_rejected");
+          assert.match(refused.result.body.reason, /wake the mission/);
+        }),
+      tradingLayerOverExchange(makeFakeExchange()),
+    ),
+);

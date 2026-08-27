@@ -1436,6 +1436,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? {}
             : { allocatedCapitalUsd: command.allocatedCapitalUsd }),
           ...(command.market === undefined ? {} : { market: command.market }),
+          ...(command.maxWakes === undefined ? {} : { maxWakes: command.maxWakes }),
           requestedAt: command.createdAt,
         },
       };

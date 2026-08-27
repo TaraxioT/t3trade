@@ -681,6 +681,32 @@ export const TradingWatchlistMutationResult = Schema.Union([
 ]);
 export type TradingWatchlistMutationResult = typeof TradingWatchlistMutationResult.Type;
 
+// -- the analyst thread (final-form phase 8) ---------------------------------
+
+/**
+ * Resolve the analyst thread for a market — one per `{venue, asset}`, reused.
+ *
+ * The client mints `candidateThreadId` before asking. When a live analyst
+ * thread already exists for the asset the server returns it and the candidate
+ * id is simply never used; when none does, the server registers the candidate
+ * as the market's analyst thread and the client then creates the thread under
+ * that id and sends the first turn. Registration-before-creation is safe: a
+ * registration whose thread never materialises fails the liveness check on the
+ * next ask and is replaced.
+ */
+export const TradingEnsureAnalystThreadInput = Schema.Struct({
+  asset: TrimmedNonEmptyString,
+  candidateThreadId: ThreadId,
+});
+export type TradingEnsureAnalystThreadInput = typeof TradingEnsureAnalystThreadInput.Type;
+
+export const TradingEnsureAnalystThreadResult = Schema.Struct({
+  threadId: ThreadId,
+  /** True when `candidateThreadId` was registered — the caller must now create the thread. */
+  created: Schema.Boolean,
+});
+export type TradingEnsureAnalystThreadResult = typeof TradingEnsureAnalystThreadResult.Type;
+
 // -- client-dispatchable commands -------------------------------------------
 
 export const TradingMissionCreateCommand = Schema.Struct({
@@ -694,6 +720,11 @@ export const TradingMissionCreateCommand = Schema.Struct({
   allocatedCapitalUsd: Schema.optional(Schema.Number),
   /** The market the mission is mandated to trade. Omit for the default (ETH). */
   market: Schema.optional(TradingMarket),
+  /**
+   * The wake budget (final-form Phase 8): how many harness runs this mission
+   * may spend before it blocks as `wake_budget_exhausted`. Omit for unlimited.
+   */
+  maxWakes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   createdAt: IsoDateTime,
 });
 
@@ -1024,6 +1055,8 @@ export const TradingMissionCreateRequestedPayload = Schema.Struct({
   allocatedCapitalUsd: Schema.optional(Schema.Number),
   /** The market the mission is mandated to trade. Absent means the default (ETH). */
   market: Schema.optional(TradingMarket),
+  /** The wake budget the mandate names. Absent means unlimited. */
+  maxWakes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   requestedAt: IsoDateTime,
 });
 

@@ -28,7 +28,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
-import { isTradingThread } from "../../provider/SessionProfile.ts";
+import { hasTradingProfile } from "../../provider/SessionProfile.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -662,7 +662,10 @@ const make = Effect.gen(function* () {
       // worse, emitted the session-lifecycle events the run's lease watcher
       // read as "the turn ended", killing each lease about a second after it
       // was granted. The thread's workspace is simply not this session's cwd.
-      const cwdChanged = !isTradingThread(threadId) && effectiveCwd !== activeSession?.cwd;
+      // Mission and analyst sessions alike own their own cwd (or none at all),
+      // so the workspace comparison is meaningless for both — see the comment
+      // above.
+      const cwdChanged = !hasTradingProfile(threadId) && effectiveCwd !== activeSession?.cwd;
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
       const modelChanged =

@@ -54,6 +54,12 @@ export type TradingMissionStatus = typeof TradingMissionStatus.Type;
 export const TradingMissionBlockedReason = Schema.Literals([
   "cumulative_loss_limit",
   "protection_failure",
+  /**
+   * The authority's `maxWakes` budget is spent (final-form Phase 8). Written by
+   * the turn coordinator; cleared by resume, which grants a fresh tranche of
+   * the same budget.
+   */
+  "wake_budget_exhausted",
 ]);
 export type TradingMissionBlockedReason = typeof TradingMissionBlockedReason.Type;
 

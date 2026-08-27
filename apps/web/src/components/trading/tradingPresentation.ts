@@ -454,9 +454,13 @@ export function deriveMissionStrip(mission: {
   // While exposed, the primary action is always the way out — one click, no
   // menu. It stays primary even when the mission is blocked or paused: those
   // states stop new exposure, they do not remove the exposure already taken.
+  // A spent wake budget resumes on click (Phase 8) — resume grants another
+  // tranche of the same budget, so it is the one blocked reason whose primary
+  // action is the way back in rather than Pause.
   const primaryAction = exposed
     ? ("close_and_revoke" as const)
-    : mission.status === "paused"
+    : mission.status === "paused" ||
+        (mission.status === "blocked" && mission.blockedReason === "wake_budget_exhausted")
       ? ("resume" as const)
       : ("pause" as const);
 

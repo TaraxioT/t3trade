@@ -48,6 +48,8 @@ export const RPC_REQUIRED_SCOPES = {
   // dispatchCommand (operate). Closing a manual position signs an order.
   [ORCHESTRATION_WS_METHODS.previewTradingOrder]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.closeTradingManualPosition]: AuthOrchestrationOperateScope,
+  // Registers a standing analyst thread for a market and binds its profile.
+  [ORCHESTRATION_WS_METHODS.ensureTradingAnalystThread]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
   [WS_METHODS.serverProbe]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetConfig]: AuthOrchestrationReadScope,

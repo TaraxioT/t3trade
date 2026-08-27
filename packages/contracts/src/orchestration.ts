@@ -52,6 +52,8 @@ import {
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
   TradingArmWatchInput,
+  TradingEnsureAnalystThreadInput,
+  TradingEnsureAnalystThreadResult,
   TradingArmWatchResult,
   TradingCancelWatchInput,
   TradingCancelWatchResult,
@@ -84,6 +86,7 @@ export const ORCHESTRATION_WS_METHODS = {
   listTradingWatchlist: "orchestration.listTradingWatchlist",
   previewTradingOrder: "orchestration.previewTradingOrder",
   closeTradingManualPosition: "orchestration.closeTradingManualPosition",
+  ensureTradingAnalystThread: "orchestration.ensureTradingAnalystThread",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
   subscribeTradingAccount: "orchestration.subscribeTradingAccount",
@@ -1915,6 +1918,10 @@ export const OrchestrationRpcSchemas = {
   closeTradingManualPosition: {
     input: TradingManualCloseInput,
     output: TradingManualCloseResult,
+  },
+  ensureTradingAnalystThread: {
+    input: TradingEnsureAnalystThreadInput,
+    output: TradingEnsureAnalystThreadResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

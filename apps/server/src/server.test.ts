@@ -120,6 +120,7 @@ import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService } from "./trading/TradingAlertService.ts";
+import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingManualEntryService } from "./trading/TradingManualEntryService.ts";
@@ -931,6 +932,14 @@ const buildAppUnderTest = (options?: {
               Effect.succeed({ outcome: "rejected" as const, reason: "no exchange in tests" }),
             remove: () => Effect.succeed({ outcome: "ok" as const, entries: [] }),
             list: Effect.succeed([]),
+          }),
+        ),
+        // The analyst-thread registry (Phase 8). These tests never ask for an
+        // analyst, so registering the candidate is the honest echo.
+        Layer.provide(
+          Layer.mock(TradingAnalystService)({
+            ensureThread: (input) =>
+              Effect.succeed({ threadId: input.candidateThreadId, created: true }),
           }),
         ),
         // The universe RPC lists what the venue trades. No exchange here, and a

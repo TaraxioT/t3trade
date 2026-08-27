@@ -65,6 +65,17 @@ export const TradingAuthority = Schema.Struct({
   riskPolicy: TradingRiskPolicy,
 
   validUntil: TradingAuthorityValidUntil,
+
+  /**
+   * The wake budget (final-form Phase 8): how many harness runs this authority
+   * version funds. Every run the coordinator leases counts — watch fires,
+   * scheduled reassessments, operator messages, the bootstrap turn. Counted
+   * from the moment the active authority version was written, so resuming a
+   * `wake_budget_exhausted` mission resets the counter by writing a fresh
+   * version of the same envelope. Absent means unlimited — every mission
+   * created before this field existed keeps its old behavior.
+   */
+  maxWakes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 export type TradingAuthority = typeof TradingAuthority.Type;
 

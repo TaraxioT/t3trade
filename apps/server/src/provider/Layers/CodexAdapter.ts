@@ -43,11 +43,12 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { isTradingThread } from "../SessionProfile.ts";
+import { readSessionProfile } from "../SessionProfile.ts";
 import {
   applyTradingTurnContract,
   markTradingContractDelivered,
   resetTradingContractDelivery,
+  TRADING_ANALYST_SYSTEM_PROMPT,
   TRADING_SYSTEM_PROMPT,
 } from "../TradingSessionProfile.ts";
 
@@ -1704,7 +1705,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         // below) — the feature flags drop the coding tools, and the cwd is an
         // empty directory owned by this server so no AGENTS.md or leftover
         // workspace ever leaks into the session.
-        const tradingProfile = isTradingThread(input.threadId);
+        const tradingProfileKind = readSessionProfile(input.threadId)?.kind;
+        const tradingProfile = tradingProfileKind !== undefined;
         const tradingCwd = pathService.join(serverConfig.stateDir, "trading-cwd");
         if (tradingProfile) {
           yield* fileSystem
@@ -1734,7 +1736,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
-          ...(tradingProfile ? { baseInstructions: TRADING_SYSTEM_PROMPT } : {}),
+          ...(tradingProfile
+            ? {
+                baseInstructions:
+                  tradingProfileKind === "trading_analyst"
+                    ? TRADING_ANALYST_SYSTEM_PROMPT
+                    : TRADING_SYSTEM_PROMPT,
+              }
+            : {}),
           ...(mcpSession
             ? {
                 environment: {

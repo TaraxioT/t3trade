@@ -9,6 +9,9 @@ import {
   applyTradingTurnContract,
   resetTradingContractDelivery,
   TRADING_ALLOWED_TOOL_NAMES,
+  TRADING_ANALYST_ALLOWED_TOOL_NAMES,
+  TRADING_ANALYST_SYSTEM_PROMPT,
+  TRADING_ANALYST_TOOL_NAMES,
   TRADING_SYSTEM_PROMPT,
   TRADING_TOOL_NAMES,
 } from "./TradingSessionProfile.ts";
@@ -23,6 +26,53 @@ it("allowlists the trading tools by name rather than the whole MCP server", () =
   expect(TRADING_ALLOWED_TOOL_NAMES).toHaveLength(registeredToolNames.length);
   expect(TRADING_ALLOWED_TOOL_NAMES.every((name) => name.startsWith("mcp__t3-trade__"))).toBe(true);
   expect(TRADING_ALLOWED_TOOL_NAMES).not.toContain("mcp__t3-trade__*");
+});
+
+it("gives the analyst the reads and alert watches, and none of the acting tools", () => {
+  // The allowlist is a subset of the registered toolkit…
+  for (const name of TRADING_ANALYST_TOOL_NAMES) {
+    expect(registeredToolNames).toContain(name);
+  }
+  expect([...TRADING_ANALYST_TOOL_NAMES].sort()).toEqual(
+    ["trading_look", "trading_strategy", "trading_watch"].sort(),
+  );
+  // …and the acting tools are exactly what it lacks.
+  for (const excluded of ["trading_enter", "trading_exit", "trading_plan", "trading_journal"]) {
+    expect(TRADING_ANALYST_TOOL_NAMES).not.toContain(excluded);
+    expect(TRADING_ANALYST_ALLOWED_TOOL_NAMES).not.toContain(`mcp__t3-trade__${excluded}`);
+  }
+  expect(
+    TRADING_ANALYST_ALLOWED_TOOL_NAMES.every((name) => name.startsWith("mcp__t3-trade__")),
+  ).toBe(true);
+  expect(TRADING_ANALYST_ALLOWED_TOOL_NAMES).not.toContain("mcp__t3-trade__*");
+
+  // The analyst prompt mentions only tools the analyst actually has.
+  const mentioned = new Set(TRADING_ANALYST_SYSTEM_PROMPT.match(/trading_[a-z_]+/g) ?? []);
+  expect(mentioned.size).toBeGreaterThan(0);
+  for (const name of mentioned) {
+    expect(TRADING_ANALYST_TOOL_NAMES).toContain(name);
+  }
+});
+
+it("prefixes the analyst contract onto an analyst thread's turn", () => {
+  clearAllSessionProfiles();
+  const analystThread = ThreadId.make("thread-analyst");
+  setSessionProfile({ threadId: analystThread, kind: "trading_analyst" });
+  resetTradingContractDelivery(analystThread);
+
+  const question = "Read the current structure on ETH and tell me what matters.";
+  const first = applyTradingTurnContract(analystThread, question);
+  expect(first.text.endsWith(question)).toBe(true);
+  expect(first.text).toContain("t3-trade analyst session");
+  expect(first.text).toContain("You cannot enter, exit, publish a plan");
+  first.markDelivered();
+
+  const second = applyTradingTurnContract(analystThread, question);
+  expect(second.text).toContain("t3-trade analyst session");
+  expect(second.text).not.toContain("You cannot enter, exit, publish a plan");
+  expect(second.text.length).toBeLessThan(first.text.length / 4);
+
+  clearAllSessionProfiles();
 });
 
 it("mentions only registered tool names in the system prompt", () => {

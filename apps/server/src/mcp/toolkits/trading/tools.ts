@@ -48,6 +48,7 @@ import { TradingJournalService } from "../../../trading/TradingJournalService.ts
 import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
 import { TradingEventInbox } from "../../../trading/TradingEventInbox.ts";
 import { TradingMarketArchive } from "../../../trading/TradingMarketArchive.ts";
+import { TradingAlertService } from "../../../trading/TradingAlertService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
 const dependencies = [
@@ -93,6 +94,9 @@ const dependencies = [
   TradingMarketArchive,
   // `trading_journal` appends to and reads back the mission's memory.
   TradingJournalService,
+  // An analyst session's `trading_watch` arms account-scoped notify alerts
+  // (final-form Phase 8) — no mission anywhere near them.
+  TradingAlertService,
   SqlClient.SqlClient,
 ];
 

@@ -8,7 +8,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpServer } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
-import { isTradingThread } from "../provider/SessionProfile.ts";
+import { hasTradingProfile } from "../provider/SessionProfile.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
 
@@ -116,11 +116,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     httpServer.address._tag === "TcpAddress"
       ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}`
       : "http://127.0.0.1";
-  // Trading threads get the trading-only endpoint; the session profile is set
-  // by the trading coordinator before the provider session starts, so it is
-  // already decided by the time a credential is issued.
+  // Trading threads — mission and analyst alike — get the trading-only
+  // endpoint; the session profile is set by the trading coordinator (or the
+  // analyst service) before the provider session starts, so it is already
+  // decided by the time a credential is issued.
   const endpointForThread = (threadId: ThreadId) =>
-    `${endpointOrigin}${isTradingThread(threadId) ? TRADING_MCP_PATH : MCP_PATH}`;
+    `${endpointOrigin}${hasTradingProfile(threadId) ? TRADING_MCP_PATH : MCP_PATH}`;
 
   const hashToken = (token: string) =>
     crypto

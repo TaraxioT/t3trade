@@ -95,6 +95,7 @@ import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService, type AccountWatch } from "./trading/TradingAlertService.ts";
+import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import {
   TradingWatchlistService,
   type WatchlistEntry,
@@ -447,6 +448,7 @@ const makeWsRpcLayer = (
       const tradingMissionProjection = yield* TradingMissionProjection;
       const tradingAccountProjection = yield* TradingAccountProjection;
       const tradingAlertService = yield* TradingAlertService;
+      const tradingAnalystService = yield* TradingAnalystService;
       const tradingWatchlistService = yield* TradingWatchlistService;
       const tradingManualEntry = yield* TradingManualEntryService;
       const tradingControls = yield* TradingControlService;
@@ -1614,6 +1616,29 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.ensureTradingAnalystThread]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.ensureTradingAnalystThread,
+            tradingAnalystService
+              .ensureThread({ asset: input.asset, candidateThreadId: input.candidateThreadId })
+              .pipe(
+                Effect.map((result) => ({
+                  threadId: ThreadId.make(result.threadId),
+                  created: result.created,
+                })),
+                Effect.tapError((cause) =>
+                  Effect.logError("trading analyst thread ensure failed", { cause }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "Failed to resolve the analyst thread",
+                      cause,
+                    }),
+                ),
+              ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.cancelTradingWatch]: (input) =>
