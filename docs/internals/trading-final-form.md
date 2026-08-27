@@ -134,10 +134,11 @@ Upstream touches: `packages/contracts/src/trading.ts`, `orchestration.ts`, `ws.t
       spawn, exponential backoff, stdout heartbeat); single-writer heartbeat lock.
 - [x] 2.2 `FollowSetRegistry.ts` deriving followed markets; emits follow/unfollow
       to the archiver (control channel). The watch-evaluator rewire is Phase 5's.
-- [~] 2.3 Collection changes: the 3m interval, whole-universe `asset_ctx` and
-  first-follow lazy hydration landed. Deferred: archive schema v2 with
-  `venue` columns, retiring `ARCHIVE_COINS` as the seed set, and WS candle
-  subscriptions (polling `candleSnapshot` remains the collector).
+- [x] 2.3 Collection changes: archive schema v2 with `venue` columns (own
+      version chain, a v1 file rebuilt in place), `ARCHIVE_COINS` retired for
+      the follow set (BTC/ETH seed only on cold start), WS candle subscriptions
+      with per-series poll fallback, the 3m interval, whole-universe
+      `asset_ctx`, first-follow lazy hydration.
 - [~] 2.4 Archive-backed windowed chart reads landed; archiver health rides
   `TradingMissionSnapshot.archive`. The UI surface lands with Phase 4's
   trade home.
