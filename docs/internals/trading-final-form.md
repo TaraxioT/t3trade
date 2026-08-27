@@ -82,7 +82,7 @@ per file per batch.
 
 ### Phase 0 — Stop the bleeding
 
-- [ ] 0.1 Archive staleness guards. `archive/derived.ts`,
+- [x] 0.1 Archive staleness guards. `archive/derived.ts`,
       `TradingMarketArchive.ts` + tests. `requireBars` gains a recency bound (last
       stored open older than ~3× interval → unavailable, reason `derived_stale`);
       `scan`'s mark gets a 2-bar freshness bound. **Accept:** with a stopped
@@ -114,14 +114,14 @@ Phase 7 re-adds the first when the account gate lands.
 
 ### Phase 1 — Market identity groundwork _(landed)_
 
-- [ ] `MarketRef` schema in `primitives.ts`; `TradingMarket` literals deleted; a
+- [x] `MarketRef` schema in `primitives.ts`; `TradingMarket` literals deleted; a
       compat codec mapping legacy `"BTC"|"ETH"` to `{venue:"hyperliquid", asset}`
       for persisted JSON (wakes, plans, watches).
 - [x] Mechanical sweep of `TradingMarket` consumers across
       `packages/trading-contracts`, `apps/server/src/trading`,
       `packages/contracts/src/trading.ts` and the web imports. SQL keeps the legacy
       single column until 074/075; the service layer owns the mapping meanwhile.
-- [ ] `listTradingUniverse` WS RPC backed by `metaAndAssetCtxs`;
+- [x] `getTradingUniverse` WS RPC backed by `metaAndAssetCtxs`;
       `TradingAssetPicker.tsx` becomes a search over it.
 
 Blocks phases 3, 5, 6, 7. Migrations: none by design.
@@ -129,16 +129,18 @@ Upstream touches: `packages/contracts/src/trading.ts`, `orchestration.ts`, `ws.t
 
 ### Phase 2 — Archiver v2
 
-- [ ] 2.1 Supervision and packaging. Pack `src/trading/archive/main.ts`; new
+- [x] 2.1 Supervision and packaging. Pack `src/trading/archive/main.ts`; new
       `ArchiveSupervisor.ts` spawning the archiver as a Node child (PID captured at
       spawn, exponential backoff, stdout heartbeat); single-writer heartbeat lock.
 - [x] 2.2 `FollowSetRegistry.ts` deriving followed markets; emits follow/unfollow
-      to the archiver (control channel) and the watch evaluator.
-- [ ] 2.3 Collection changes: archive schema v2 with `venue` columns,
-      `ARCHIVE_COINS` dies, WS candle subscriptions, the missing 3m interval,
-      whole-universe `asset_ctx`, first-follow lazy hydration.
-- [ ] 2.4 Archive-backed windowed chart reads + an archiver-health RPC surfaced
-      in the workspace.
+      to the archiver (control channel). The watch-evaluator rewire is Phase 5's.
+- [~] 2.3 Collection changes: the 3m interval, whole-universe `asset_ctx` and
+  first-follow lazy hydration landed. Deferred: archive schema v2 with
+  `venue` columns, retiring `ARCHIVE_COINS` as the seed set, and WS candle
+  subscriptions (polling `candleSnapshot` remains the collector).
+- [~] 2.4 Archive-backed windowed chart reads landed; archiver health rides
+  `TradingMissionSnapshot.archive`. The UI surface lands with Phase 4's
+  trade home.
 
 Requires 0.1. Migrations: archive DB own chain only.
 
