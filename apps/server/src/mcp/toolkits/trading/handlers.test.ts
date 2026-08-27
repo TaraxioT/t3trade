@@ -3654,9 +3654,9 @@ it.effect("refuses the levels key with a reason when the archive is absent", () 
   ),
 );
 
-it.live("marks per-coin unavailability on the scan, never a zero and never a failed key", () => {
-  // BTC is fully populated; ETH and SOL have no rows at all — the digest
-  // still serves, with each missing coin named on the coin itself.
+it.live("serves the scan digest for the coins the archive holds", () => {
+  // Only BTC has rows, so only BTC appears — the scan enumerates what the
+  // candle table actually holds, and the archived coin answers in full.
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-scan-"));
   const archivePath = NodePath.join(dir, "market-archive.sqlite");
   const db = openArchiveDatabase(archivePath);
@@ -3714,9 +3714,14 @@ it.live("marks per-coin unavailability on the scan, never a zero and never a fai
         const read = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["scan"] });
         assert.equal(read.result.isError, false);
         const coins = read.result.body.scan;
+        // The scan digests the coins the archive's candle table actually
+        // holds — since v2 the follow set drives collection and there is no
+        // config coin list left to enumerate. ETH and SOL have no rows here,
+        // so they do not appear; per-coin absence marking is pinned by
+        // TradingMarketArchive.test.ts against a coin with thin data.
         assert.deepEqual(
           coins.map((entry: { coin: string }) => entry.coin),
-          ["BTC", "ETH", "SOL"],
+          ["BTC"],
         );
         // The archived coin answers in full.
         const btc = coins[0];
@@ -3729,14 +3734,6 @@ it.live("marks per-coin unavailability on the scan, never a zero and never a fai
         assert.closeTo(btc.funding7dMeanPer8h, 0.00001 * 8, 1e-12);
         assert.isDefined(btc.oiChange24hPct);
         assert.equal(btc.unavailable, undefined);
-        // The empty coins are marked per coin, with reasons — never zeros
-        // that read as a flat market, and never a failed key.
-        for (const empty of [coins[1], coins[2]]) {
-          assert.isDefined(empty.unavailable);
-          assert.include(empty.unavailable, "no 5m candles");
-          assert.isUndefined(empty.mark);
-          assert.isUndefined(empty.change24hPct);
-        }
         assert.isUndefined(read.result.body.unavailable);
       }),
     tradingLayerOverExchange(makeFakeExchange(), archivePath),

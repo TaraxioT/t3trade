@@ -25,7 +25,7 @@
 import { Context, Effect } from "effect";
 import * as Layer from "effect/Layer";
 
-import { archiveDatabasePath, ARCHIVE_COINS } from "./archive/config.ts";
+import { archiveDatabasePath } from "./archive/config.ts";
 import type { AssetCtxRow } from "./archive/assetCtx.ts";
 import type { BookSummaryRow } from "./archive/bookSummary.ts";
 import { openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./archive/db.ts";
@@ -35,6 +35,7 @@ import type { FundingRow } from "./archive/funding.ts";
 import type { CandleRow } from "./archive/candles.ts";
 import type { DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import {
+  archivedCoins,
   assetCtxAtOrBefore,
   candlesInRange,
   fundingInRange,
@@ -374,13 +375,14 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
       ),
     scan: ({ now }) =>
       withHandle((db) => {
-        // One compact digest per archived coin, from the coin list the archive
-        // config owns. Each half is best-effort: a coin the archive cannot
-        // answer is marked on the coin, never by failing the whole key.
-        // There is deliberately no regime field: it is not derivable from the
-        // existing structure code at acceptable cost, and the plan says omit
-        // rather than invent.
-        const coins = ARCHIVE_COINS.map((coin): ScanCoinDigest => {
+        // One compact digest per archived coin — the coins the archive's
+        // candle table actually holds, now that the follow set (not a config
+        // list) decides what is recorded. Each half is best-effort: a coin the
+        // archive cannot answer is marked on the coin, never by failing the
+        // whole key. There is deliberately no regime field: it is not
+        // derivable from the existing structure code at acceptable cost, and
+        // the plan says omit rather than invent.
+        const coins = archivedCoins(db).map((coin): ScanCoinDigest => {
           const entry: { coin: string } & Record<string, number | string> = { coin };
           const missing: Array<string> = [];
 

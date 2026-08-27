@@ -9,6 +9,7 @@
  *
  * @module trading/archive/funding
  */
+import { ARCHIVE_VENUE } from "./config.ts";
 import type { ArchiveDatabase } from "./db.ts";
 import { asArray, asInteger, asNumber, asRecord, asString } from "./wire.ts";
 
@@ -44,8 +45,8 @@ export function parseFunding(raw: unknown, coin: string): ReadonlyArray<FundingR
 }
 
 const UPSERT_FUNDING_SQL =
-  "INSERT INTO funding (coin, time, funding_rate, premium) VALUES (?, ?, ?, ?) " +
-  "ON CONFLICT(coin, time) DO UPDATE SET " +
+  "INSERT INTO funding (venue, coin, time, funding_rate, premium) VALUES (?, ?, ?, ?, ?) " +
+  "ON CONFLICT(venue, coin, time) DO UPDATE SET " +
   "funding_rate = excluded.funding_rate, premium = excluded.premium";
 
 export function upsertFunding(db: ArchiveDatabase, rows: ReadonlyArray<FundingRow>): number {
@@ -54,7 +55,7 @@ export function upsertFunding(db: ArchiveDatabase, rows: ReadonlyArray<FundingRo
   }
   return db.transaction(() => {
     for (const row of rows) {
-      db.run(UPSERT_FUNDING_SQL, row.coin, row.time, row.fundingRate, row.premium);
+      db.run(UPSERT_FUNDING_SQL, ARCHIVE_VENUE, row.coin, row.time, row.fundingRate, row.premium);
     }
     return rows.length;
   });
@@ -63,7 +64,8 @@ export function upsertFunding(db: ArchiveDatabase, rows: ReadonlyArray<FundingRo
 /** Newest stored funding timestamp for a coin, or `null` on a cold start. */
 export function latestFundingTime(db: ArchiveDatabase, coin: string): number | null {
   const rows = db.all<{ latest: number | null }>(
-    "SELECT MAX(time) AS latest FROM funding WHERE coin = ?",
+    "SELECT MAX(time) AS latest FROM funding WHERE venue = ? AND coin = ?",
+    ARCHIVE_VENUE,
     coin,
   );
   return rows[0]?.latest ?? null;

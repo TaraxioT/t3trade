@@ -14,6 +14,7 @@
  *
  * @module trading/archive/candles
  */
+import { ARCHIVE_VENUE } from "./config.ts";
 import type { ArchiveDatabase } from "./db.ts";
 import { asArray, asInteger, asNumber, asRecord, asString } from "./wire.ts";
 
@@ -126,9 +127,9 @@ export function parseCandles(
 }
 
 const UPSERT_CANDLE_SQL =
-  "INSERT INTO candles (coin, interval, t, t_close, o, h, l, c, v, n) " +
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-  "ON CONFLICT(coin, interval, t) DO UPDATE SET " +
+  "INSERT INTO candles (venue, coin, interval, t, t_close, o, h, l, c, v, n) " +
+  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+  "ON CONFLICT(venue, coin, interval, t) DO UPDATE SET " +
   "t_close = excluded.t_close, o = excluded.o, h = excluded.h, l = excluded.l, " +
   "c = excluded.c, v = excluded.v, n = excluded.n";
 
@@ -141,6 +142,7 @@ export function upsertCandles(db: ArchiveDatabase, rows: ReadonlyArray<CandleRow
     for (const row of rows) {
       db.run(
         UPSERT_CANDLE_SQL,
+        ARCHIVE_VENUE,
         row.coin,
         row.interval,
         row.t,
@@ -164,7 +166,8 @@ export function latestStoredOpen(
   interval: string,
 ): number | null {
   const rows = db.all<{ latest: number | null }>(
-    "SELECT MAX(t) AS latest FROM candles WHERE coin = ? AND interval = ?",
+    "SELECT MAX(t) AS latest FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
+    ARCHIVE_VENUE,
     coin,
     interval,
   );
@@ -187,8 +190,10 @@ export function recordKnownGap(
   },
 ): void {
   db.run(
-    "INSERT INTO known_gaps (coin, interval, from_t, to_t, recorded_at) VALUES (?, ?, ?, ?, ?) " +
-      "ON CONFLICT(coin, interval, from_t, to_t) DO NOTHING",
+    "INSERT INTO known_gaps (venue, coin, interval, from_t, to_t, recorded_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?) " +
+      "ON CONFLICT(venue, coin, interval, from_t, to_t) DO NOTHING",
+    ARCHIVE_VENUE,
     gap.coin,
     gap.interval,
     gap.fromT,

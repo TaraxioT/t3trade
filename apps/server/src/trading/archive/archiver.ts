@@ -2,11 +2,12 @@
  * The archiver loop.
  *
  * One sequential tick, forever. Every minute it refreshes the tail of each
- * candle series, samples the derivatives context and the top of book, and
- * prints a heartbeat; every half hour it also pulls funding forward from its
- * high-water mark. Sequential rather than three timers, so the single-flight
- * Info client is never contended and the log reads in the order things
- * happened.
+ * candle series the WS feed cannot vouch for, samples the derivatives context
+ * and the top of book, and prints a heartbeat; every half hour it also pulls
+ * funding forward from its high-water mark. Candles arrive primarily over the
+ * WebSocket feed (`ws.ts`) between ticks; the poll is boot backfill and gap
+ * repair. Sequential rather than three timers, so the single-flight Info
+ * client is never contended and the log reads in the order things happened.
  *
  * Nothing here throws. A failed request returns `null` from the client and
  * the tick moves on — the next one re-asks for an overlapping window, so a
@@ -27,8 +28,9 @@ import {
   recordKnownGap,
   upsertCandles,
 } from "./candles.ts";
+import type { CandleRow } from "./candles.ts";
+import type { CandleFeed } from "./ws.ts";
 import {
-  ARCHIVE_COINS,
   readArchiveCoinsFromDisk,
   ARCHIVE_INTERVALS,
   CANDLE_WINDOW_BARS,
@@ -91,8 +93,8 @@ export async function backfillCandles(
   info: InfoClient,
   counters: ArchiveCounters,
   now: number,
-  shouldContinue: () => boolean = () => true,
-  coins: ReadonlyArray<string> = ARCHIVE_COINS,
+  shouldContinue: () => boolean,
+  coins: ReadonlyArray<string>,
 ): Promise<void> {
   for (const coin of coins) {
     for (const interval of ARCHIVE_INTERVALS) {
@@ -133,21 +135,30 @@ export async function backfillCandles(
   }
 }
 
-/** Refresh the trailing bars of every series, including the one in progress. */
+/**
+ * Refresh the trailing bars of every series the WS feed cannot vouch for,
+ * including the bar in progress. With no feed, every series is polled — the
+ * pre-WS behavior, and the fallback whenever the socket is down.
+ */
 export async function pollCandles(
   db: ArchiveDatabase,
   info: InfoClient,
   counters: ArchiveCounters,
   now: number,
-  coins: ReadonlyArray<string> = ARCHIVE_COINS,
+  coins: ReadonlyArray<string>,
+  feed: CandleFeed | null = null,
 ): Promise<void> {
   for (const coin of coins) {
     for (const interval of ARCHIVE_INTERVALS) {
+      if (feed !== null && !feed.shouldPoll(coin, interval, now)) {
+        continue;
+      }
       const intervalMs = INTERVAL_MS[interval];
       const currentOpen = Math.floor(now / intervalMs) * intervalMs;
       const startTime = currentOpen - (POLL_TAIL_BARS[interval] - 1) * intervalMs;
       const raw = await info.post("candleSnapshot", candleSnapshotBody(coin, interval, startTime));
       counters.candles += upsertCandles(db, parseCandles(raw, coin, interval));
+      feed?.markPolled(coin, interval);
     }
   }
 }
@@ -157,8 +168,8 @@ export async function pullFunding(
   db: ArchiveDatabase,
   info: InfoClient,
   counters: ArchiveCounters,
-  shouldContinue: () => boolean = () => true,
-  coins: ReadonlyArray<string> = ARCHIVE_COINS,
+  shouldContinue: () => boolean,
+  coins: ReadonlyArray<string>,
 ): Promise<void> {
   for (const coin of coins) {
     const stored = latestFundingTime(db, coin);
@@ -211,7 +222,7 @@ export async function pollBookSummaries(
   info: InfoClient,
   counters: ArchiveCounters,
   ts: number,
-  coins: ReadonlyArray<string> = ARCHIVE_COINS,
+  coins: ReadonlyArray<string>,
 ): Promise<void> {
   for (const coin of coins) {
     const raw = await info.post("l2Book", { type: "l2Book", coin });
@@ -287,56 +298,72 @@ export async function runArchiver(input: {
   readonly sleep: (ms: number) => Promise<void>;
   /** The coins to record, re-read each tick. Defaults to the control file. */
   readonly readCoins?: () => ReadonlyArray<string>;
+  /**
+   * Builds the WS candle feed, handed the upsert it should drive. Optional so
+   * tests (and a build that wants polling only) can run without a socket;
+   * with no feed, every series is polled every tick as before.
+   */
+  readonly makeFeed?: (onCandle: (row: CandleRow) => void) => CandleFeed;
 }): Promise<void> {
   const { db, info, shouldContinue, sleep } = input;
   const readCoins = input.readCoins ?? readArchiveCoinsFromDisk;
   const counters = emptyCounters();
   const startedAt = Date.now();
+  const feed =
+    input.makeFeed?.((row) => {
+      counters.candles += upsertCandles(db, [row]);
+    }) ?? null;
 
-  // The backfill can take minutes on a cold start, so it checks the stop
-  // signal between series and between funding pages: a kill during startup
-  // should end the process promptly, not after three years of funding.
-  let coins = readCoins();
-  logInfo(`archiver: starting backfill for ${coins.join(" ")}`);
-  await backfillCandles(db, info, counters, Date.now(), shouldContinue, coins);
-  await pullFunding(db, info, counters, shouldContinue, coins);
-  logInfo("archiver: backfill complete");
+  try {
+    // The backfill can take minutes on a cold start, so it checks the stop
+    // signal between series and between funding pages: a kill during startup
+    // should end the process promptly, not after three years of funding.
+    let coins = readCoins();
+    feed?.setCoins(coins);
+    logInfo(`archiver: starting backfill for ${coins.join(" ")}`);
+    await backfillCandles(db, info, counters, Date.now(), shouldContinue, coins);
+    await pullFunding(db, info, counters, shouldContinue, coins);
+    logInfo("archiver: backfill complete");
 
-  let lastFundingAt = Date.now();
-  const hydrated = new Set(coins);
+    let lastFundingAt = Date.now();
+    const hydrated = new Set(coins);
 
-  while (shouldContinue()) {
-    const tickStartedAt = Date.now();
-    const ts = alignToMinute(tickStartedAt);
-    try {
-      // Re-read attention every tick. Following an asset has to start
-      // recording it now — a user who adds it to a watchlist and opens its
-      // chart is asking a question about the next few minutes.
-      coins = readCoins();
-      const fresh = coins.filter((coin) => !hydrated.has(coin));
-      if (fresh.length > 0) {
-        logInfo(`archiver: hydrating ${fresh.join(" ")}`);
-        await backfillCandles(db, info, counters, tickStartedAt, shouldContinue, fresh);
-        await pullFunding(db, info, counters, shouldContinue, fresh);
-        for (const coin of fresh) hydrated.add(coin);
+    while (shouldContinue()) {
+      const tickStartedAt = Date.now();
+      const ts = alignToMinute(tickStartedAt);
+      try {
+        // Re-read attention every tick. Following an asset has to start
+        // recording it now — a user who adds it to a watchlist and opens its
+        // chart is asking a question about the next few minutes.
+        coins = readCoins();
+        feed?.setCoins(coins);
+        const fresh = coins.filter((coin) => !hydrated.has(coin));
+        if (fresh.length > 0) {
+          logInfo(`archiver: hydrating ${fresh.join(" ")}`);
+          await backfillCandles(db, info, counters, tickStartedAt, shouldContinue, fresh);
+          await pullFunding(db, info, counters, shouldContinue, fresh);
+          for (const coin of fresh) hydrated.add(coin);
+        }
+        await pollCandles(db, info, counters, tickStartedAt, coins, feed);
+        await pollAssetContexts(db, info, counters, ts);
+        await pollBookSummaries(db, info, counters, ts, coins);
+        if (tickStartedAt - lastFundingAt >= FUNDING_INTERVAL_MS) {
+          await pullFunding(db, info, counters, shouldContinue, coins);
+          lastFundingAt = tickStartedAt;
+        }
+      } catch (error) {
+        // The Info client swallows request failures, so reaching here means a
+        // write or a decode misbehaved. Log it and keep the loop alive: a
+        // stopped archiver loses history that cannot be re-fetched.
+        logWarn(`tick failed: ${describeError(error)}`);
       }
-      await pollCandles(db, info, counters, tickStartedAt, coins);
-      await pollAssetContexts(db, info, counters, ts);
-      await pollBookSummaries(db, info, counters, ts, coins);
-      if (tickStartedAt - lastFundingAt >= FUNDING_INTERVAL_MS) {
-        await pullFunding(db, info, counters, shouldContinue, coins);
-        lastFundingAt = tickStartedAt;
-      }
-    } catch (error) {
-      // The Info client swallows request failures, so reaching here means a
-      // write or a decode misbehaved. Log it and keep the loop alive: a
-      // stopped archiver loses history that cannot be re-fetched.
-      logWarn(`tick failed: ${describeError(error)}`);
+
+      logInfo(formatHeartbeat(db, counters, info, Date.now(), startedAt));
+
+      const elapsed = Date.now() - tickStartedAt;
+      await sleep(Math.max(0, POLL_INTERVAL_MS - elapsed));
     }
-
-    logInfo(formatHeartbeat(db, counters, info, Date.now(), startedAt));
-
-    const elapsed = Date.now() - tickStartedAt;
-    await sleep(Math.max(0, POLL_INTERVAL_MS - elapsed));
+  } finally {
+    feed?.close();
   }
 }

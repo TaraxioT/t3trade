@@ -16,12 +16,22 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { alignToMinute, emptyCounters, formatHeartbeat, runArchiver } from "./archiver.ts";
-import { ARCHIVE_COINS, ARCHIVE_INTERVALS, CANDLE_WINDOW_BARS, INTERVAL_MS } from "./config.ts";
+import {
+  ARCHIVE_INTERVALS,
+  CANDLE_WINDOW_BARS,
+  INTERVAL_MS,
+  type ArchiveInterval,
+} from "./config.ts";
 import { openArchiveDatabase, type ArchiveDatabase } from "./db.ts";
 import type { InfoClient } from "./info.ts";
-import { upsertCandles } from "./candles.ts";
+import { upsertCandles, type CandleRow } from "./candles.ts";
+import type { CandleFeed } from "./ws.ts";
 
 const MINUTE = 60_000;
+
+/** The coins every loop test records — pinned here so no test reads the real
+ * follow file on the machine running it. */
+const COINS = ["BTC", "ETH", "SOL"] as const;
 
 /** One stored bar for a given interval; the caller sets `t`. */
 const bar = (interval: string) => ({
@@ -87,8 +97,8 @@ function fakeInfo(): InfoClient & { readonly calls: Array<string> } {
       }
       if (operation === "metaAndAssetCtxs") {
         return Promise.resolve([
-          { universe: ARCHIVE_COINS.map((name) => ({ name })) },
-          ARCHIVE_COINS.map(() => ({
+          { universe: COINS.map((name) => ({ name })) },
+          COINS.map(() => ({
             funding: "0.00001",
             openInterest: "1000.0",
             premium: "-0.0001",
@@ -117,7 +127,12 @@ function fakeInfo(): InfoClient & { readonly calls: Array<string> } {
  * each tick, because `shouldContinue` is a flag the archiver also consults
  * during the backfill — counting its calls would end the run mid-startup.
  */
-async function runTicks(db: ArchiveDatabase, info: InfoClient, ticks: number): Promise<void> {
+async function runTicks(
+  db: ArchiveDatabase,
+  info: InfoClient,
+  ticks: number,
+  makeFeed?: (onCandle: (row: CandleRow) => void) => CandleFeed,
+): Promise<void> {
   let remaining = ticks;
   await runArchiver({
     db,
@@ -127,6 +142,8 @@ async function runTicks(db: ArchiveDatabase, info: InfoClient, ticks: number): P
       remaining -= 1;
       return Promise.resolve();
     },
+    readCoins: () => COINS,
+    ...(makeFeed === undefined ? {} : { makeFeed }),
   });
 }
 
@@ -165,10 +182,10 @@ describe("runArchiver", () => {
       const series = db.all<{ total: number }>(
         "SELECT COUNT(*) AS total FROM (SELECT DISTINCT coin, interval FROM candles)",
       );
-      assert.strictEqual(series[0]?.total, ARCHIVE_COINS.length * ARCHIVE_INTERVALS.length);
+      assert.strictEqual(series[0]?.total, COINS.length * ARCHIVE_INTERVALS.length);
 
       const funding = db.all<{ total: number }>("SELECT COUNT(*) AS total FROM funding");
-      assert.strictEqual(funding[0]?.total, ARCHIVE_COINS.length);
+      assert.strictEqual(funding[0]?.total, COINS.length);
       db.close();
     });
   });
@@ -181,9 +198,9 @@ describe("runArchiver", () => {
       // Three ticks with no waiting all land in the same wall-clock minute, so
       // the minute-aligned key collapses them onto one sample per coin.
       const contexts = db.all<{ total: number }>("SELECT COUNT(*) AS total FROM asset_ctx");
-      assert.strictEqual(contexts[0]?.total, ARCHIVE_COINS.length);
+      assert.strictEqual(contexts[0]?.total, COINS.length);
       const books = db.all<{ total: number }>("SELECT COUNT(*) AS total FROM book_summary");
-      assert.strictEqual(books[0]?.total, ARCHIVE_COINS.length);
+      assert.strictEqual(books[0]?.total, COINS.length);
 
       const sampled = db.all<{ ts: number }>("SELECT DISTINCT ts FROM asset_ctx");
       assert.strictEqual(sampled[0]?.ts, alignToMinute(sampled[0]?.ts ?? 0));
@@ -258,6 +275,78 @@ describe("runArchiver", () => {
         db.all<{ total: number }>("SELECT COUNT(*) AS total FROM candles")[0]?.total,
         0,
       );
+      db.close();
+    });
+  });
+
+  it("skips the candle poll for series the feed vouches for", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const info = fakeInfo();
+      const polled: Array<string> = [];
+      const healthy: CandleFeed = {
+        setCoins: () => undefined,
+        shouldPoll: () => false,
+        markPolled: (coin, interval) => polled.push(`${coin} ${interval}`),
+        close: () => undefined,
+      };
+      await runTicks(db, info, 2, () => healthy);
+
+      // The backfill still fetched every series once; the two ticks added no
+      // candleSnapshot calls because the feed vouched for every series.
+      const snapshots = info.calls.filter((call) => call === "candleSnapshot").length;
+      assert.strictEqual(snapshots, COINS.length * ARCHIVE_INTERVALS.length);
+      assert.deepStrictEqual(polled, []);
+      db.close();
+    });
+  });
+
+  it("polls exactly the series the feed cannot vouch for, and reports them back", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const info = fakeInfo();
+      const polled: Array<string> = [];
+      const feed: CandleFeed = {
+        setCoins: () => undefined,
+        // One unhealthy series; everything else rides the socket.
+        shouldPoll: (coin, interval) => coin === "ETH" && interval === "5m",
+        markPolled: (coin, interval) => polled.push(`${coin} ${interval}`),
+        close: () => undefined,
+      };
+      const backfillCalls = COINS.length * ARCHIVE_INTERVALS.length;
+      await runTicks(db, info, 1, () => feed);
+
+      const snapshots = info.calls.filter((call) => call === "candleSnapshot").length;
+      assert.strictEqual(snapshots, backfillCalls + 1);
+      assert.deepStrictEqual(polled, ["ETH 5m"]);
+      db.close();
+    });
+  });
+
+  it("feeds the WS candles into the same table the poller writes", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      let deliver: ((row: CandleRow) => void) | null = null;
+      const feed: CandleFeed = {
+        setCoins: () => undefined,
+        shouldPoll: () => false,
+        markPolled: () => undefined,
+        close: () => undefined,
+      };
+      const dead: InfoClient = {
+        stats: { requests: 0, failures: 0, retries: 0, paceMs: 200 },
+        post: () => Promise.resolve(null),
+      };
+      await runTicks(db, dead, 1, (onCandle) => {
+        deliver = onCandle;
+        return feed;
+      });
+      // The loop has ended, but the wiring is what is under test: a candle
+      // handed to the feed's callback lands as an ordinary upsert.
+      assert.isNotNull(deliver);
+      (deliver as unknown as (row: CandleRow) => void)({ ...bar("1m"), t: 60_000 });
+      const rows = db.all<{ total: number }>("SELECT COUNT(*) AS total FROM candles");
+      assert.strictEqual(rows[0]?.total, 1);
       db.close();
     });
   });

@@ -25,7 +25,7 @@
  *
  * @module trading/archive/derived
  */
-import { INTERVAL_MS } from "./config.ts";
+import { ARCHIVE_VENUE, INTERVAL_MS } from "./config.ts";
 import type { CandleRow } from "./candles.ts";
 import type { ArchiveDatabase } from "./db.ts";
 import { candlesInRange, fundingInRange, knownGaps } from "./read.ts";
@@ -101,7 +101,8 @@ function lastCandles(
       n: number;
     }>(
       `SELECT ${CANDLE_COLUMNS} FROM candles ` +
-        "WHERE coin = ? AND interval = ? ORDER BY t DESC LIMIT ?",
+        "WHERE venue = ? AND coin = ? AND interval = ? ORDER BY t DESC LIMIT ?",
+      ARCHIVE_VENUE,
       coin,
       interval,
       limit,
@@ -124,7 +125,8 @@ function lastCandles(
 /** Total bars stored for a series — the "does the archive hold it at all" check. */
 function candleCount(db: ArchiveDatabase, coin: string, interval: string): number {
   const rows = db.all<{ total: number }>(
-    "SELECT COUNT(*) AS total FROM candles WHERE coin = ? AND interval = ?",
+    "SELECT COUNT(*) AS total FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
+    ARCHIVE_VENUE,
     coin,
     interval,
   );
@@ -146,7 +148,8 @@ function candlesClosedAfter(
 /** The earliest funding timestamp recorded for a coin, or `null` when none. */
 function earliestFundingTime(db: ArchiveDatabase, coin: string): number | null {
   const rows = db.all<{ earliest: number | null }>(
-    "SELECT MIN(time) AS earliest FROM funding WHERE coin = ?",
+    "SELECT MIN(time) AS earliest FROM funding WHERE venue = ? AND coin = ?",
+    ARCHIVE_VENUE,
     coin,
   );
   return rows[0]?.earliest ?? null;
@@ -168,7 +171,8 @@ function assetCtxInRange(
   return db
     .all<CtxSampleColumns>(
       "SELECT ts, open_interest, premium FROM asset_ctx " +
-        "WHERE coin = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+        "WHERE venue = ? AND coin = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+      ARCHIVE_VENUE,
       coin,
       fromT,
       toT,
@@ -192,7 +196,8 @@ function bookSamplesInRange(
   return db
     .all<BookSampleColumns>(
       "SELECT ts, bid_depth5, ask_depth5 FROM book_summary " +
-        "WHERE coin = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+        "WHERE venue = ? AND coin = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+      ARCHIVE_VENUE,
       coin,
       fromT,
       toT,
@@ -238,7 +243,8 @@ function returnsOf(closes: ReadonlyArray<number>): ReadonlyArray<number> {
 /** The close time of the newest stored bar for a series, or `null` when none. */
 function lastCandleClose(db: ArchiveDatabase, coin: string, interval: string): number | null {
   const rows = db.all<{ latest: number | null }>(
-    "SELECT MAX(t_close) AS latest FROM candles WHERE coin = ? AND interval = ?",
+    "SELECT MAX(t_close) AS latest FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
+    ARCHIVE_VENUE,
     coin,
     interval,
   );

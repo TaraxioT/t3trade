@@ -18,6 +18,7 @@ import { archiveDatabasePath } from "./config.ts";
 import { openArchiveDatabase } from "./db.ts";
 import { makeInfoClient } from "./info.ts";
 import { describeError, logInfo, logWarn } from "./log.ts";
+import { startCandleFeed } from "./ws.ts";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
       info: makeInfoClient(),
       shouldContinue: () => running,
       sleep,
+      makeFeed: (onCandle) => startCandleFeed({ onCandle }),
     });
   } finally {
     db.close();

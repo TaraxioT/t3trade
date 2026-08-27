@@ -9,6 +9,7 @@
  *
  * @module trading/archive/bookSummary
  */
+import { ARCHIVE_VENUE } from "./config.ts";
 import type { ArchiveDatabase } from "./db.ts";
 import { asArray, asNumber, asRecord } from "./wire.ts";
 
@@ -79,9 +80,9 @@ export function summariseBook(raw: unknown, coin: string, ts: number): BookSumma
 
 const UPSERT_BOOK_SQL =
   "INSERT INTO book_summary " +
-  "(coin, ts, bid_px, bid_sz, ask_px, ask_sz, bid_depth5, ask_depth5) " +
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
-  "ON CONFLICT(coin, ts) DO UPDATE SET " +
+  "(venue, coin, ts, bid_px, bid_sz, ask_px, ask_sz, bid_depth5, ask_depth5) " +
+  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+  "ON CONFLICT(venue, coin, ts) DO UPDATE SET " +
   "bid_px = excluded.bid_px, bid_sz = excluded.bid_sz, " +
   "ask_px = excluded.ask_px, ask_sz = excluded.ask_sz, " +
   "bid_depth5 = excluded.bid_depth5, ask_depth5 = excluded.ask_depth5";
@@ -97,6 +98,7 @@ export function upsertBookSummaries(
     for (const row of rows) {
       db.run(
         UPSERT_BOOK_SQL,
+        ARCHIVE_VENUE,
         row.coin,
         row.ts,
         row.bidPx,

@@ -6,7 +6,7 @@
  * bars, so a 1m series reaches back about three and a half days and nothing
  * older is ever served again. The only way the lab owns that history is to
  * write it down as it goes by. Everything here is a value, not an operator
- * knob — adding a coin is a one-line edit to `ARCHIVE_COINS`.
+ * knob — the coins recorded come from the server's follow set.
  *
  * Mainnet only, public reads only. The archiver never authenticates, never
  * sees a key, and never touches an order endpoint.
@@ -21,15 +21,21 @@ import { T3_HOME_DIR_NAME } from "@t3tools/shared/forkPaths";
 import * as NodePath from "node:path";
 
 /**
- * Coins recorded when nothing says otherwise — a fresh install with no
- * positions, no watches and no watchlist.
+ * Coins recorded before the server has ever written a follow set — a fresh
+ * install with no positions, no watches and no watchlist.
  *
- * The list used to be the whole of what the archiver tracked. It is now only
- * the floor: the server publishes a follow set derived from what the user is
- * actually paying attention to, and the archiver records the union.
+ * This is only the cold-start floor, so a brand-new archive is not empty.
+ * Once a follow file exists, it is the sole source of coins and this list is
+ * never consulted again.
  */
-export const ARCHIVE_COINS = ["BTC", "ETH", "SOL"] as const;
-export type ArchiveCoin = (typeof ARCHIVE_COINS)[number];
+export const DEFAULT_SEED_COINS = ["BTC", "ETH"] as const;
+
+/**
+ * The venue every row in the archive is recorded from today. The schema is
+ * (venue, coin)-keyed since v2 so a second venue is a new writer, not a new
+ * schema; until one exists, every read and write pins this value.
+ */
+export const ARCHIVE_VENUE = "hyperliquid";
 
 /**
  * How many coins are deeply recorded at once.
@@ -51,28 +57,32 @@ export function followSetPath(): string {
 }
 
 /**
- * The coins to record this tick: the defaults, plus whatever the server says
- * attention is on.
+ * The coins to record this tick: the follow set verbatim, capped at
+ * `MAX_ARCHIVE_COINS`.
  *
- * A missing, unreadable, or malformed control file yields the defaults. The
- * archiver is the process that must not stop, and "the server has not written
- * its file yet" is the ordinary state of a fresh install.
+ * A missing, unreadable, malformed, or empty control file yields the seed
+ * coins instead. The archiver is the process that must not stop, and "the
+ * server has not written its file yet" is the ordinary state of a fresh
+ * install — an archive recording nothing at all would be a dead archive.
  */
 export function readArchiveCoins(readFile: (path: string) => string): ReadonlyArray<string> {
-  const coins = new Set<string>(ARCHIVE_COINS);
   try {
     const parsed: unknown = JSON.parse(readFile(followSetPath()));
     const followed = (parsed as { followed?: unknown } | null)?.followed;
     if (Array.isArray(followed)) {
+      const coins = new Set<string>();
       for (const entry of followed) {
         const asset = (entry as { asset?: unknown } | null)?.asset;
         if (typeof asset === "string" && asset.length > 0) coins.add(asset);
       }
+      if (coins.size > 0) {
+        return [...coins].slice(0, MAX_ARCHIVE_COINS);
+      }
     }
   } catch {
-    // No file, bad file, no matter — the defaults are always recorded.
+    // No file, bad file, no matter — the seeds keep the recorder recording.
   }
-  return [...coins].slice(0, MAX_ARCHIVE_COINS);
+  return [...DEFAULT_SEED_COINS];
 }
 
 /**
@@ -114,6 +124,16 @@ export const POLL_TAIL_BARS: Record<ArchiveInterval, number> = {
 
 /** Public mainnet Info endpoint. The archiver posts nothing else, anywhere. */
 export const MAINNET_INFO_URL = "https://api.hyperliquid.xyz/info";
+
+/** Public mainnet WebSocket endpoint — the candle feed's counterpart to the Info URL. */
+export const MAINNET_WS_URL = "wss://api.hyperliquid.xyz/ws";
+
+/**
+ * How often the candle feed pings the socket. Hyperliquid closes a connection
+ * it has heard nothing from for about a minute, and inbound candles do not
+ * count — the client has to speak.
+ */
+export const WS_PING_INTERVAL_MS = 45_000;
 
 /**
  * Bars the exchange will serve for one (coin, interval). Measured, not

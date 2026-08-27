@@ -13,6 +13,7 @@
  *
  * @module trading/archive/assetCtx
  */
+import { ARCHIVE_VENUE } from "./config.ts";
 import type { ArchiveDatabase } from "./db.ts";
 import { asArray, asNumber, asRecord, asString } from "./wire.ts";
 
@@ -88,9 +89,9 @@ export function parseAssetContexts(
 
 const UPSERT_ASSET_CTX_SQL =
   "INSERT INTO asset_ctx " +
-  "(coin, ts, open_interest, premium, oracle_px, mark_px, day_ntl_volume, funding) " +
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
-  "ON CONFLICT(coin, ts) DO UPDATE SET " +
+  "(venue, coin, ts, open_interest, premium, oracle_px, mark_px, day_ntl_volume, funding) " +
+  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+  "ON CONFLICT(venue, coin, ts) DO UPDATE SET " +
   "open_interest = excluded.open_interest, premium = excluded.premium, " +
   "oracle_px = excluded.oracle_px, mark_px = excluded.mark_px, " +
   "day_ntl_volume = excluded.day_ntl_volume, funding = excluded.funding";
@@ -103,6 +104,7 @@ export function upsertAssetContexts(db: ArchiveDatabase, rows: ReadonlyArray<Ass
     for (const row of rows) {
       db.run(
         UPSERT_ASSET_CTX_SQL,
+        ARCHIVE_VENUE,
         row.coin,
         row.ts,
         row.openInterest,

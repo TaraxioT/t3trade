@@ -8,10 +8,12 @@
  * smallest thing that does it. The app's `state.sqlite` and its migrations
  * (067-072 and counting) are untouched and unaware.
  *
- * Versioning is one row in `meta`. When the schema changes, bump
- * `ARCHIVE_SCHEMA_VERSION` and add the statement to `SCHEMA_STATEMENTS` —
- * every one of them is `IF NOT EXISTS`, so applying the list to an existing
- * file is a no-op and applying it to a new one builds it whole.
+ * Versioning is one row in `meta`. A fresh file is built whole at the current
+ * version; an older file is migrated in place inside `applySchema` before
+ * anything reads or writes it. v1 → v2 added a `venue` column to every
+ * asset-keyed table, backfilled `'hyperliquid'` — the only venue v1 ever
+ * recorded — and re-keyed the primary keys to lead with it. This chain is the
+ * archive's own and must never join the app's `state.sqlite` migrations.
  *
  * Everything goes through prepared statements, including the DDL. That is
  * partly for the statement cache and partly because `ProviderBoundary.test.ts`
@@ -26,6 +28,8 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+
+import { ARCHIVE_VENUE } from "./config.ts";
 
 /** Values SQLite accepts as a bound parameter. */
 export type SqlValue = string | number | null;
@@ -44,11 +48,19 @@ export interface ArchiveDatabase {
   readonly close: () => void;
 }
 
-/** Bumped whenever `SCHEMA_STATEMENTS` gains a table or column. */
-export const ARCHIVE_SCHEMA_VERSION = 1;
+/** Bumped whenever the schema changes; `applySchema` migrates older files. */
+export const ARCHIVE_SCHEMA_VERSION = 2;
+
+const META_TABLE_SQL = `CREATE TABLE IF NOT EXISTS meta (
+   key   TEXT PRIMARY KEY,
+   value TEXT NOT NULL
+ ) WITHOUT ROWID`;
 
 /**
- * The whole schema, one statement per entry.
+ * Every asset-keyed table: its current DDL (parameterised on the table name so
+ * the migration can build a shadow copy), and its v1 column list for the
+ * migration's copy step. `venue` leads each primary key, so single-venue reads
+ * must always filter `venue = ?` first to stay on the index.
  *
  * Prices and sizes are stored as REAL rather than the exchange's decimal
  * strings: everything downstream does arithmetic on them, and a float is
@@ -57,72 +69,146 @@ export const ARCHIVE_SCHEMA_VERSION = 1;
  * The candle close time is `t_close`, not `T` as the wire calls it — SQLite
  * identifiers are case-insensitive, so `t` and `T` would be one column.
  */
-const SCHEMA_STATEMENTS: ReadonlyArray<string> = [
-  `CREATE TABLE IF NOT EXISTS meta (
-     key   TEXT PRIMARY KEY,
-     value TEXT NOT NULL
-   ) WITHOUT ROWID`,
-
-  `CREATE TABLE IF NOT EXISTS candles (
-     coin     TEXT    NOT NULL,
-     interval TEXT    NOT NULL,
-     t        INTEGER NOT NULL,
-     t_close  INTEGER NOT NULL,
-     o        REAL    NOT NULL,
-     h        REAL    NOT NULL,
-     l        REAL    NOT NULL,
-     c        REAL    NOT NULL,
-     v        REAL    NOT NULL,
-     n        INTEGER NOT NULL,
-     PRIMARY KEY (coin, interval, t)
-   ) WITHOUT ROWID`,
-
-  `CREATE TABLE IF NOT EXISTS funding (
-     coin         TEXT    NOT NULL,
-     time         INTEGER NOT NULL,
-     funding_rate REAL    NOT NULL,
-     premium      REAL    NOT NULL,
-     PRIMARY KEY (coin, time)
-   ) WITHOUT ROWID`,
-
-  `CREATE TABLE IF NOT EXISTS asset_ctx (
-     coin           TEXT    NOT NULL,
-     ts             INTEGER NOT NULL,
-     open_interest  REAL    NOT NULL,
-     premium        REAL    NOT NULL,
-     oracle_px      REAL    NOT NULL,
-     mark_px        REAL    NOT NULL,
-     day_ntl_volume REAL    NOT NULL,
-     funding        REAL    NOT NULL,
-     PRIMARY KEY (coin, ts)
-   ) WITHOUT ROWID`,
-
-  `CREATE TABLE IF NOT EXISTS book_summary (
-     coin       TEXT    NOT NULL,
-     ts         INTEGER NOT NULL,
-     bid_px     REAL    NOT NULL,
-     bid_sz     REAL    NOT NULL,
-     ask_px     REAL    NOT NULL,
-     ask_sz     REAL    NOT NULL,
-     bid_depth5 REAL    NOT NULL,
-     ask_depth5 REAL    NOT NULL,
-     PRIMARY KEY (coin, ts)
-   ) WITHOUT ROWID`,
-
-  `CREATE TABLE IF NOT EXISTS known_gaps (
-     coin        TEXT    NOT NULL,
-     interval    TEXT    NOT NULL,
-     from_t      INTEGER NOT NULL,
-     to_t        INTEGER NOT NULL,
-     recorded_at INTEGER NOT NULL,
-     PRIMARY KEY (coin, interval, from_t, to_t)
-   ) WITHOUT ROWID`,
+const VENUE_TABLES: ReadonlyArray<{
+  readonly name: string;
+  readonly createSql: (tableName: string) => string;
+  readonly v1Columns: string;
+}> = [
+  {
+    name: "candles",
+    v1Columns: "coin, interval, t, t_close, o, h, l, c, v, n",
+    createSql: (tableName) =>
+      `CREATE TABLE IF NOT EXISTS ${tableName} (
+         venue    TEXT    NOT NULL,
+         coin     TEXT    NOT NULL,
+         interval TEXT    NOT NULL,
+         t        INTEGER NOT NULL,
+         t_close  INTEGER NOT NULL,
+         o        REAL    NOT NULL,
+         h        REAL    NOT NULL,
+         l        REAL    NOT NULL,
+         c        REAL    NOT NULL,
+         v        REAL    NOT NULL,
+         n        INTEGER NOT NULL,
+         PRIMARY KEY (venue, coin, interval, t)
+       ) WITHOUT ROWID`,
+  },
+  {
+    name: "funding",
+    v1Columns: "coin, time, funding_rate, premium",
+    createSql: (tableName) =>
+      `CREATE TABLE IF NOT EXISTS ${tableName} (
+         venue        TEXT    NOT NULL,
+         coin         TEXT    NOT NULL,
+         time         INTEGER NOT NULL,
+         funding_rate REAL    NOT NULL,
+         premium      REAL    NOT NULL,
+         PRIMARY KEY (venue, coin, time)
+       ) WITHOUT ROWID`,
+  },
+  {
+    name: "asset_ctx",
+    v1Columns: "coin, ts, open_interest, premium, oracle_px, mark_px, day_ntl_volume, funding",
+    createSql: (tableName) =>
+      `CREATE TABLE IF NOT EXISTS ${tableName} (
+         venue          TEXT    NOT NULL,
+         coin           TEXT    NOT NULL,
+         ts             INTEGER NOT NULL,
+         open_interest  REAL    NOT NULL,
+         premium        REAL    NOT NULL,
+         oracle_px      REAL    NOT NULL,
+         mark_px        REAL    NOT NULL,
+         day_ntl_volume REAL    NOT NULL,
+         funding        REAL    NOT NULL,
+         PRIMARY KEY (venue, coin, ts)
+       ) WITHOUT ROWID`,
+  },
+  {
+    name: "book_summary",
+    v1Columns: "coin, ts, bid_px, bid_sz, ask_px, ask_sz, bid_depth5, ask_depth5",
+    createSql: (tableName) =>
+      `CREATE TABLE IF NOT EXISTS ${tableName} (
+         venue      TEXT    NOT NULL,
+         coin       TEXT    NOT NULL,
+         ts         INTEGER NOT NULL,
+         bid_px     REAL    NOT NULL,
+         bid_sz     REAL    NOT NULL,
+         ask_px     REAL    NOT NULL,
+         ask_sz     REAL    NOT NULL,
+         bid_depth5 REAL    NOT NULL,
+         ask_depth5 REAL    NOT NULL,
+         PRIMARY KEY (venue, coin, ts)
+       ) WITHOUT ROWID`,
+  },
+  {
+    name: "known_gaps",
+    v1Columns: "coin, interval, from_t, to_t, recorded_at",
+    createSql: (tableName) =>
+      `CREATE TABLE IF NOT EXISTS ${tableName} (
+         venue       TEXT    NOT NULL,
+         coin        TEXT    NOT NULL,
+         interval    TEXT    NOT NULL,
+         from_t      INTEGER NOT NULL,
+         to_t        INTEGER NOT NULL,
+         recorded_at INTEGER NOT NULL,
+         PRIMARY KEY (venue, coin, interval, from_t, to_t)
+       ) WITHOUT ROWID`,
+  },
 ];
 
-/** Create every table and stamp the schema version. Safe to run on each boot. */
+/** The stamped schema version, or `null` on a file that has never been stamped. */
+function readSchemaVersion(db: ArchiveDatabase): number | null {
+  const rows = db.all<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
+  const value = rows[0]?.value;
+  if (value === undefined) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+/**
+ * Rebuild every asset-keyed v1 table with the venue column, in one
+ * transaction. SQLite cannot alter a WITHOUT ROWID primary key in place, so
+ * each table is copied into a shadow built at the current DDL — every v1 row
+ * backfilled with the only venue v1 ever recorded — then swapped in.
+ */
+function migrateV1ToV2(db: ArchiveDatabase): void {
+  db.transaction(() => {
+    for (const table of VENUE_TABLES) {
+      const shadow = `${table.name}_v2`;
+      db.run(table.createSql(shadow));
+      db.run(
+        `INSERT INTO ${shadow} (venue, ${table.v1Columns}) ` +
+          `SELECT ?, ${table.v1Columns} FROM ${table.name}`,
+        ARCHIVE_VENUE,
+      );
+      db.run(`DROP TABLE ${table.name}`);
+      db.run(`ALTER TABLE ${shadow} RENAME TO ${table.name}`);
+    }
+  });
+}
+
+/**
+ * Bring the file to the current schema and stamp it. Safe to run on each
+ * boot: a fresh file is built whole, a v1 file is migrated in place, a
+ * current file is a no-op, and a file from a future version is refused
+ * rather than half-understood.
+ */
 export function applySchema(db: ArchiveDatabase): void {
-  for (const statement of SCHEMA_STATEMENTS) {
-    db.run(statement);
+  db.run(META_TABLE_SQL);
+  const version = readSchemaVersion(db);
+  if (version !== null && version !== 1 && version !== ARCHIVE_SCHEMA_VERSION) {
+    throw new Error(
+      `archive schema version ${version} is newer than this build understands (${ARCHIVE_SCHEMA_VERSION})`,
+    );
+  }
+  if (version === 1) {
+    migrateV1ToV2(db);
+  } else {
+    for (const table of VENUE_TABLES) {
+      db.run(table.createSql(table.name));
+    }
   }
   db.run(
     "INSERT INTO meta (key, value) VALUES ('schema_version', ?) " +

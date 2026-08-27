@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import { foldFollowSet, watchMarket, type FollowedMarket } from "./FollowSetRegistry.ts";
-import { ARCHIVE_COINS, readArchiveCoins } from "./archive/config.ts";
 
 const market = (asset: string, reason: FollowedMarket["reason"]): FollowedMarket => ({
   venue: "hyperliquid",
@@ -47,39 +46,5 @@ describe("watchMarket", () => {
     assert.isNull(watchMarket("not json"));
     assert.isNull(watchMarket("{}"));
     assert.isNull(watchMarket('{"market":""}'));
-  });
-});
-
-describe("readArchiveCoins", () => {
-  const read = (contents: string) => () => contents;
-
-  it("records the defaults plus whatever the server is following", () => {
-    const coins = readArchiveCoins(
-      read(
-        '{"followed":[{"venue":"hyperliquid","asset":"SOL"},{"venue":"hyperliquid","asset":"HYPE"}]}',
-      ),
-    );
-    for (const coin of ARCHIVE_COINS) assert.include(coins, coin);
-    assert.include(coins, "HYPE");
-  });
-
-  // The archiver is the process that must not stop, and a fresh install has no
-  // control file at all — that is the ordinary state, not an error.
-  it("falls back to the defaults for a missing or broken file", () => {
-    const missing = () => {
-      throw new Error("ENOENT");
-    };
-    assert.deepEqual([...readArchiveCoins(missing)], [...ARCHIVE_COINS]);
-    assert.deepEqual([...readArchiveCoins(read("{"))], [...ARCHIVE_COINS]);
-    assert.deepEqual([...readArchiveCoins(read('{"followed":"everything"}'))], [...ARCHIVE_COINS]);
-  });
-
-  it("does not deep-record more than the archiver's own ceiling", () => {
-    const followed = Array.from({ length: 100 }, (_, index) => ({
-      venue: "hyperliquid",
-      asset: `ALT${index}`,
-    }));
-    const coins = readArchiveCoins(read(JSON.stringify({ followed })));
-    assert.isAtMost(coins.length, 24);
   });
 });
