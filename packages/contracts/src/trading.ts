@@ -16,8 +16,10 @@
  * @module TradingOrchestration
  */
 import {
+  MarketRef,
   MarketWatch,
   TradingMarket,
+  TradingVenue,
   TradingPlanState,
   PublishTradingPlanBody,
   PublishTradingPlanRejection,
@@ -400,6 +402,125 @@ export const TradingUniverseView = Schema.Struct({
   observedAt: IsoDateTime,
 });
 export type TradingUniverseView = typeof TradingUniverseView.Type;
+
+// -- account read model (final-form phase 3) ---------------------------------
+
+/**
+ * How a protective order is enforced — the D5 provenance label.
+ *
+ * `resting_on_exchange`: a trigger order rests on the venue and fires without
+ * T3 being up. `server_executed`: the server watches the level and submits the
+ * close itself. Everything today is `resting_on_exchange` — Hyperliquid trigger
+ * orders rest on the exchange — but the UI has to be able to say which promise
+ * it is showing, so the label travels from birth.
+ */
+export const TradingProtectionProvenance = Schema.Literals([
+  "resting_on_exchange",
+  "server_executed",
+]);
+export type TradingProtectionProvenance = typeof TradingProtectionProvenance.Type;
+
+/**
+ * Who is allowed to act on a position or order — the D4 owning authority.
+ *
+ * Today every row in the reconciled tables belongs to a mission, so `mission`
+ * is the only kind the server emits; `manual` exists so Phase 7's guarded
+ * manual execution is a data change, not a schema change.
+ */
+export const TradingOwningAuthority = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("mission"),
+    missionId: TradingMissionId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("manual"),
+  }),
+]);
+export type TradingOwningAuthority = typeof TradingOwningAuthority.Type;
+
+/**
+ * One open position as the account view carries it: market identity as a
+ * `MarketRef`, the reconciled figures, plus provenance and authority. The
+ * per-mission `TradingPositionView` stays for the mission surfaces; this row
+ * is the account-addressed reading of the same reconciled snapshot.
+ */
+export const TradingAccountPosition = Schema.Struct({
+  market: MarketRef,
+  size: Schema.Number,
+  entryPrice: Schema.optional(Schema.Number),
+  markPrice: Schema.optional(Schema.Number),
+  unrealisedPnl: Schema.Number,
+  marginUsed: Schema.Number,
+  protectedSize: Schema.Number,
+  /** Null when nothing protects the position (protected size is zero). */
+  protection: Schema.NullOr(TradingProtectionProvenance),
+  authority: TradingOwningAuthority,
+  liquidationPrice: Schema.optional(Schema.Number),
+  observedAt: IsoDateTime,
+});
+export type TradingAccountPosition = typeof TradingAccountPosition.Type;
+
+/** One reconciled open order, addressed by account rather than mission. */
+export const TradingAccountOpenOrder = Schema.Struct({
+  market: MarketRef,
+  cloid: TrimmedNonEmptyString,
+  orderId: Schema.Number,
+  side: Schema.Literals(["buy", "sell"]),
+  limitPrice: Schema.Number,
+  remainingSize: Schema.Number,
+  reduceOnly: Schema.Boolean,
+  authority: TradingOwningAuthority,
+  observedAt: IsoDateTime,
+});
+export type TradingAccountOpenOrder = typeof TradingAccountOpenOrder.Type;
+
+/**
+ * One trading account on one venue: its balance as last reconciled, and the
+ * positions and open orders that belong to it.
+ *
+ * `balanceUsd` is null until a reconcile has observed the account;
+ * `withdrawableUsd` is null today because no reconciled table persists it —
+ * a null is honest where a stale or invented number would not be.
+ */
+export const TradingAccountState = Schema.Struct({
+  accountId: TrimmedNonEmptyString,
+  venue: TradingVenue,
+  balanceUsd: Schema.NullOr(Schema.Number),
+  withdrawableUsd: Schema.NullOr(Schema.Number),
+  /** When the balance was last reconciled. Null when it never was. */
+  balanceObservedAt: Schema.NullOr(IsoDateTime),
+  positions: Schema.Array(TradingAccountPosition),
+  openOrders: Schema.Array(TradingAccountOpenOrder),
+});
+export type TradingAccountState = typeof TradingAccountState.Type;
+
+/**
+ * The account read model: trading state addressed by account and market
+ * rather than by mission. Derived on read from the reconciled tables — there
+ * is no projection table behind it to go stale.
+ */
+export const TradingAccountView = Schema.Struct({
+  snapshotSequence: NonNegativeInt,
+  accounts: Schema.Array(TradingAccountState),
+  updatedAt: IsoDateTime,
+  /** Same rider as on `TradingMissionSnapshot`, for the same reason. */
+  archive: Schema.optional(TradingArchiveHealth),
+});
+export type TradingAccountView = typeof TradingAccountView.Type;
+
+/**
+ * The push half of the account read model: the server says "something you
+ * derived from the trading tables changed", the client refetches. The event
+ * deliberately carries no data — the view is derived on read, so the fetch is
+ * the truth and the event is only the doorbell.
+ */
+export const TradingAccountStreamEvent = Schema.Struct({
+  kind: Schema.Literal("invalidated"),
+  /** Monotonic per server process, so a client can dedupe replays. */
+  revision: NonNegativeInt,
+  occurredAt: IsoDateTime,
+});
+export type TradingAccountStreamEvent = typeof TradingAccountStreamEvent.Type;
 
 // -- client-dispatchable commands -------------------------------------------
 

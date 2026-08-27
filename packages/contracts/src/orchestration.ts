@@ -33,6 +33,8 @@ import {
   TradingMissionRunStartedPayload,
   TradingMissionSnapshot,
   TradingUniverseView,
+  TradingAccountView,
+  TradingAccountStreamEvent,
   TradingMissionStatusChangedPayload,
   TradingMissionStrategyPublishedPayload,
   TradingMissionWatchCancelledPayload,
@@ -54,10 +56,12 @@ export const ORCHESTRATION_WS_METHODS = {
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getTradingMissionSnapshot: "orchestration.getTradingMissionSnapshot",
   getTradingUniverse: "orchestration.getTradingUniverse",
+  getTradingAccountView: "orchestration.getTradingAccountView",
   getTradingMarketChart: "orchestration.getTradingMarketChart",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
+  subscribeTradingAccount: "orchestration.subscribeTradingAccount",
 } as const;
 
 export const ProviderApprovalPolicy = Schema.Literals([
@@ -1828,6 +1832,10 @@ export const OrchestrationRpcSchemas = {
     input: Schema.Struct({}),
     output: TradingUniverseView,
   },
+  getTradingAccountView: {
+    input: Schema.Struct({}),
+    output: TradingAccountView,
+  },
   getTradingMarketChart: {
     input: OrchestrationGetTradingMarketChartInput,
     output: TradingMarketChartView,
@@ -1843,6 +1851,10 @@ export const OrchestrationRpcSchemas = {
   subscribeShell: {
     input: OrchestrationSubscribeShellInput,
     output: OrchestrationShellStreamItem,
+  },
+  subscribeTradingAccount: {
+    input: Schema.Struct({}),
+    output: TradingAccountStreamEvent,
   },
 } as const;
 

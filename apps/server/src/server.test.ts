@@ -118,6 +118,7 @@ import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
 import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
+import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
 import { TradingMissionServiceLive } from "./trading/TradingMissionService.ts";
@@ -859,6 +860,9 @@ const buildAppUnderTest = (options?: {
       // persisted mission state, so the routes layer now genuinely needs the
       // trading projection and a database to build.
       Layer.provide(TradingMissionProjectionLive),
+      // The account view RPC and its invalidation subscription (final-form
+      // Phase 3) ride the same routes layer.
+      Layer.provide(TradingAccountProjectionLive),
       // The mission snapshot quotes each live mission's market. These tests
       // have no exchange to ask, and a snapshot without a price is a valid one.
       Layer.provide(

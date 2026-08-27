@@ -21,6 +21,7 @@ import {
 } from "@t3tools/hyperliquid";
 import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.ts";
 import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
+import { TradingAccountProjectionLive } from "./TradingAccountProjection.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingExecutionOutcomeLive } from "./TradingExecutionOutcome.ts";
@@ -153,7 +154,13 @@ const TradingExecutionCore = Layer.mergeAll(
   HyperliquidExecutionServiceLive,
   // The reconciler writes an inbox event when the exchange moved a position no
   // order of T3's explains, so it needs the inbox at build.
-  HyperliquidReconcilerLive.pipe(Layer.provide(TradingEventInboxLive)),
+  // It also rings the account-view doorbell at the end of every pass; the
+  // same layer instance is memoized into the projection pipeline and the WS
+  // read path, so one bus serves all three.
+  HyperliquidReconcilerLive.pipe(
+    Layer.provide(TradingEventInboxLive),
+    Layer.provide(TradingAccountProjectionLive),
+  ),
 ).pipe(Layer.provideMerge(TradingWithPreview));
 
 const TradingProtectionLayerLive = TradingProtectionServiceLive.pipe(
@@ -268,4 +275,8 @@ export const TradingLayerLive = Layer.mergeAll(
   FollowSetRegistryLive,
   TradingExecutionLayerLive,
   HyperliquidWsLayerLive,
+  // The account read model + invalidation bus (final-form Phase 3). Merged so
+  // `ws.ts` can serve the view and its subscription off the same instance the
+  // reconciler and the projection pipeline publish into.
+  TradingAccountProjectionLive,
 ).pipe(Layer.provideMerge(infoWithHttp));

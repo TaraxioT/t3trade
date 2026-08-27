@@ -934,6 +934,25 @@ export const WsOrchestrationGetTradingUniverseRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationGetTradingAccountViewRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getTradingAccountView,
+  {
+    payload: OrchestrationRpcSchemas.getTradingAccountView.input,
+    success: OrchestrationRpcSchemas.getTradingAccountView.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationSubscribeTradingAccountRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.subscribeTradingAccount,
+  {
+    payload: OrchestrationRpcSchemas.subscribeTradingAccount.input,
+    success: OrchestrationRpcSchemas.subscribeTradingAccount.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
 export const WsOrchestrationGetTradingMarketChartRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.getTradingMarketChart,
   {
@@ -1119,7 +1138,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTradingMissionSnapshotRpc,
   WsOrchestrationGetTradingMarketChartRpc,
   WsOrchestrationGetTradingUniverseRpc,
+  WsOrchestrationGetTradingAccountViewRpc,
   WsOrchestrationReviseTradingPlanRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
+  WsOrchestrationSubscribeTradingAccountRpc,
 );

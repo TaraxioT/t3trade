@@ -38,6 +38,10 @@ import {
   TradingMissionProjection,
   TradingMissionProjectionLive,
 } from "../../trading/TradingMissionProjection.ts";
+import {
+  TradingAccountProjection,
+  TradingAccountProjectionLive,
+} from "../../trading/TradingAccountProjection.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
@@ -73,6 +77,9 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   // ProjectionSnapshotQuery: the orchestration read model does not contain
   // missions, so its snapshot must not wait on this projector.
   tradingMissions: "projection.trading-missions",
+  // Same posture as trading-missions: absent from REQUIRED_SNAPSHOT_PROJECTORS,
+  // because the orchestration snapshot does not contain trading accounts.
+  tradingAccount: "projection.trading-account",
 } as const;
 
 type ProjectorName =
@@ -481,6 +488,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const eventStore = yield* OrchestrationEventStore;
     const projectionStateRepository = yield* ProjectionStateRepository;
     const tradingMissionProjection = yield* TradingMissionProjection;
+    const tradingAccountProjection = yield* TradingAccountProjection;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
@@ -1645,10 +1653,44 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
+    /**
+     * The account read model is derived on read, so this projector persists
+     * nothing: every trading event is a moment the reconciled tables may have
+     * moved, and the invalidation is the doorbell that makes clients re-read
+     * them. Requested events count too — an execution request is followed by
+     * table writes the event stream never narrates.
+     */
+    const applyTradingAccountProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyTradingAccountProjection",
+    )(function* (event: OrchestrationEvent) {
+      switch (event.type) {
+        case "trading.mission-create-requested":
+        case "trading.mission-control-requested":
+        case "trading.mission-risk-control-requested":
+        case "trading.mission-status-changed":
+        case "trading.mission-strategy-published":
+        case "trading.mission-watch-registered":
+        case "trading.mission-watch-cancelled":
+        case "trading.mission-watch-fired":
+        case "trading.mission-run-started":
+        case "trading.mission-stop-adjusted":
+        case "trading.execution-requested":
+          yield* tradingAccountProjection.invalidate({ reason: event.type });
+          return;
+
+        default:
+          return;
+      }
+    });
+
     const projectors: ReadonlyArray<ProjectorDefinition> = [
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.tradingMissions,
         apply: applyTradingMissionsProjection,
+      },
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.tradingAccount,
+        apply: applyTradingAccountProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.projects,
@@ -1781,6 +1823,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   makeOrchestrationProjectionPipeline(),
 ).pipe(
   Layer.provideMerge(TradingMissionProjectionLive),
+  Layer.provideMerge(TradingAccountProjectionLive),
   Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),

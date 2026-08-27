@@ -86,6 +86,7 @@ import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { marketRef } from "@t3tools/trading-contracts/primitives";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
+import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 
@@ -403,6 +404,7 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
+      const tradingAccountProjection = yield* TradingAccountProjection;
       const archiveSupervisor = yield* ArchiveSupervisor;
       const followSetRegistry = yield* FollowSetRegistry;
       const tradingUniverse = yield* TradingUniverse;
@@ -1497,6 +1499,53 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTradingAccountView]: () =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingAccountView,
+            Effect.gen(function* () {
+              const assembled = yield* tradingAccountProjection.view();
+              // Same riders as the mission snapshot, for the same reasons: the
+              // sequence dates the read against the event stream, and archiver
+              // health is what says whether derived numbers are real.
+              const snapshotSequence = yield* orchestrationEngine.latestSequence;
+              const archive = yield* archiveSupervisor.health;
+              return {
+                snapshotSequence,
+                accounts: assembled.accounts,
+                updatedAt: assembled.updatedAt,
+                archive: {
+                  running: archive.running,
+                  lastHeartbeat: archive.lastHeartbeat,
+                  lastHeartbeatAt:
+                    archive.lastHeartbeatAt === null
+                      ? null
+                      : DateTime.formatIso(DateTime.makeUnsafe(archive.lastHeartbeatAt)),
+                  restarts: archive.restarts,
+                  stoppedReason: archive.stoppedReason,
+                },
+              };
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("trading account view load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load the trading account view",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.subscribeTradingAccount]: (_input) =>
+          observeRpcStreamEffect(
+            ORCHESTRATION_WS_METHODS.subscribeTradingAccount,
+            // Doorbell-only: each event tells the client to refetch the view.
+            // No snapshot rides the stream — the view RPC is the snapshot.
+            Effect.succeed(tradingAccountProjection.changes),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getTradingMarketChart]: (input) =>

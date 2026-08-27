@@ -7,6 +7,7 @@ import {
   createEnvironmentCommand,
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
+  createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 import {
   type TradingMissionControlInput,
@@ -64,6 +65,20 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-universe",
       tag: ORCHESTRATION_WS_METHODS.getTradingUniverse,
       staleTimeMs: 60_000,
+    }),
+    // The account read model (final-form Phase 3): venue-keyed accounts with
+    // positions, open orders and balance. Push-invalidated — consumers refresh
+    // it when `tradingAccountInvalidations` emits, so no poll interval here.
+    tradingAccountView: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-account-view",
+      tag: ORCHESTRATION_WS_METHODS.getTradingAccountView,
+    }),
+    // The doorbell stream behind the account view and the mission snapshot:
+    // the atom's value is the latest invalidation event, so a consumer that
+    // watches it refetches once per server-side change instead of polling.
+    tradingAccountInvalidations: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-account-invalidations",
+      tag: ORCHESTRATION_WS_METHODS.subscribeTradingAccount,
     }),
 
     // §14.7's deterministic controls. Ordinary environment commands: a

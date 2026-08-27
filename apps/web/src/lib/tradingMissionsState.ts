@@ -11,20 +11,25 @@ function tradingMissionSnapshotAtom(environmentId: EnvironmentId) {
   return orchestrationEnvironment.tradingMissionSnapshot({ environmentId, input: {} });
 }
 
+function tradingAccountInvalidationsAtom(environmentId: EnvironmentId) {
+  return orchestrationEnvironment.tradingAccountInvalidations({ environmentId, input: {} });
+}
+
 export function refreshTradingMissions(environmentId: EnvironmentId): void {
   appAtomRegistry.refresh(tradingMissionSnapshotAtom(environmentId));
 }
 
 /**
- * How often a mounted mission surface re-reads the projection.
+ * The slow fallback re-read for a mounted mission surface.
  *
- * The projection is pull-only: no server push invalidates it, so without a poll
- * a mission created, advanced, or revoked while the view is open stays frozen
- * at whatever the first read returned. Three seconds sits under the 5s account
- * window `isPositionDataStale` measures against, so the staleness banner
- * reflects the exchange read rather than this timer.
+ * The projection is push-invalidated now: the server publishes an invalidation
+ * on every trading event and every reconcile pass, and the subscription below
+ * refetches on each one — that is what replaced the old 3s poll. This interval
+ * survives only as a backstop for the cases push cannot cover: an older server
+ * without the subscription RPC, or a subscription that failed without a
+ * session change to restart it.
  */
-const MISSION_POLL_INTERVAL_MS = 3_000;
+const MISSION_FALLBACK_POLL_INTERVAL_MS = 30_000;
 
 export interface TradingMissionsState {
   readonly missions: ReadonlyArray<OrchestrationTradingMission>;
@@ -48,8 +53,20 @@ export function useTradingMissions(environmentId: EnvironmentId): TradingMission
     refreshTradingMissions(environmentId);
   }, [environmentId]);
 
+  // Push: the server's invalidation doorbell. The atom's value is the latest
+  // stream event, so a new revision means "the trading tables moved" — a fill,
+  // a status change, a reconcile pass — and one refetch answers it.
+  const invalidation = useAtomValue(tradingAccountInvalidationsAtom(environmentId));
+  const revision = Option.getOrNull(AsyncResult.value(invalidation))?.revision ?? null;
   useEffect(() => {
-    const id = window.setInterval(refresh, MISSION_POLL_INTERVAL_MS);
+    if (revision === null) {
+      return;
+    }
+    refresh();
+  }, [revision, refresh]);
+
+  useEffect(() => {
+    const id = window.setInterval(refresh, MISSION_FALLBACK_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [refresh]);
 

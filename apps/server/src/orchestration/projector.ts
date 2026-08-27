@@ -802,7 +802,8 @@ export function projectEvent(
 
     // Trading events advance the stream but carry no thread or project state.
     // The mission read model is maintained by the trading projector in
-    // ProjectionPipeline, against its own projection table.
+    // ProjectionPipeline, against its own projection table; the same events
+    // invalidate the derived-on-read account view there.
     case "trading.mission-create-requested":
     case "trading.mission-control-requested":
     case "trading.mission-risk-control-requested":

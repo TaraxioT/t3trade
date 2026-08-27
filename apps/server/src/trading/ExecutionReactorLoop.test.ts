@@ -38,6 +38,7 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 import { HyperliquidNonceCoordinatorLive } from "@t3tools/hyperliquid/NonceCoordinator";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
+import { TradingAccountProjectionLive } from "./TradingAccountProjection.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { addressFromPrivateKey } from "@t3tools/hyperliquid/Signing";
 import type {
@@ -267,6 +268,7 @@ const coreLayer = Layer.mergeAll(HyperliquidExecutionServiceLive, HyperliquidRec
   Layer.provideMerge(armedSignerConfig),
   Layer.provideMerge(IocSlippageConfigLive),
   Layer.provideMerge(TradingEventInboxLive),
+  Layer.provideMerge(TradingAccountProjectionLive),
   Layer.provideMerge(HyperliquidNonceCoordinatorLive()),
   Layer.provideMerge(NodeCrypto.layer),
   Layer.provideMerge(NodeSqliteClient.layerMemory()),

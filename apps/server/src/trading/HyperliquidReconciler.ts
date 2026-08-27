@@ -39,6 +39,7 @@ import {
   persistClosedTradeReview,
   type PreviousPositionRow,
 } from "./TradingClosedTradeReview.ts";
+import { TradingAccountProjection } from "./TradingAccountProjection.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { readTakeProfitOrders } from "./TradingProtectionLedger.ts";
@@ -788,6 +789,10 @@ const TRANSFER_TOLERANCE_USD = 1;
 
 export const makeHyperliquidReconciler = Effect.gen(function* () {
   const inbox = yield* TradingEventInbox;
+  // Captured at construction so `reconcile`'s requirements stay unchanged: the
+  // account view is derived from the tables this service writes, so the end of
+  // a pass is the one moment clients should re-read them.
+  const accountProjection = yield* TradingAccountProjection;
 
   /**
    * The snapshot row the previous pass left behind.
@@ -1200,6 +1205,9 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       yield* trigger === "periodic_while_position_open" && externalChanges.length === 0
         ? Effect.logDebug("trading reconciled", summary)
         : Effect.logInfo("trading reconciled", summary);
+      // The pass just rewrote positions, orders, fills, and the balance
+      // observation — the exact tables the account view derives from.
+      yield* accountProjection.invalidate({ reason: `reconcile:${trigger}` });
       return {
         position,
         openOrders,

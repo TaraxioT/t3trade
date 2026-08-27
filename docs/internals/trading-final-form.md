@@ -145,17 +145,24 @@ Upstream touches: `packages/contracts/src/trading.ts`, `orchestration.ts`, `ws.t
 
 Requires 0.1. Migrations: archive DB own chain only.
 
-### Phase 3 — Account read model + push
+### Phase 3 — Account read model + push _(landed)_
 
-- [ ] `TradingAccountView` in contracts: venue-keyed accounts, positions
+- [x] `TradingAccountView` in contracts: venue-keyed accounts, positions
       carrying `MarketRef` + provenance + owning authority, open orders, balance,
-      archiver health; plus a push invalidation event.
-- [ ] `TradingAccountProjection.ts` registered in `ProjectionPipeline.ts`;
-      `projector.ts` trading no-ops become invalidations. Derived-on-read.
-- [ ] `ws.ts` read handler; client-runtime atoms; `tradingMissionsState.ts`
-      consumes push and retires the 3s poll.
+      archiver health; plus a data-free invalidation stream
+      (`subscribeTradingAccount` — the view RPC is the snapshot, the stream is
+      the doorbell).
+- [x] `TradingAccountProjection.ts` registered in `ProjectionPipeline.ts`; the
+      trading event types invalidate there, and the reconciler rings the same
+      bus after every successful pass (that is what makes a fill land in ~1s).
+      Derived-on-read, no new table.
+- [x] `ws.ts` read handler; client-runtime atoms; `tradingMissionsState.ts`
+      consumes push. The 3s poll is retired; a 30s fallback poll remains as a
+      backstop for older servers without the subscription RPC.
 
 After Phase 1. **Accept:** a fill updates positions within ~1s with no polling.
+Notes: `withdrawableUsd` is `null` — nothing persists it today, and a null is
+honest; the `manual` authority arm is reserved for Phase 7.
 
 ### Phase 4 — Watchlist + trading-first home
 

@@ -20,7 +20,9 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -39,6 +41,10 @@ import type {
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import {
+  TradingAccountProjection,
+  TradingAccountProjectionLive,
+} from "./TradingAccountProjection.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import {
   HyperliquidReconciler,
@@ -364,6 +370,7 @@ const layer = it.layer(
     Layer.provideMerge(makeMutableGateway(stateRef)),
     Layer.provideMerge(makeMutableInfo(stateRef)),
     Layer.provideMerge(TradingEventInboxLive),
+    Layer.provideMerge(TradingAccountProjectionLive),
     Layer.provideMerge(NodeCrypto.layer),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
   ),
@@ -428,6 +435,37 @@ layer("HyperliquidReconciler", (it) => {
       // Two attempts, not five. One retry is the difference between a blip and
       // a problem; two would be a policy that hides an outage.
       assert.strictEqual(accountReads, 2);
+      resetAccountReads();
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // 0b. Phase 3 push: a reconcile pass (a fill arriving is one) rings the
+  // account-view doorbell, so clients refetch instead of polling.
+  // -------------------------------------------------------------------------
+  it.effect("publishes an account-view invalidation when a pass completes", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetAccountReads();
+      yield* seedMission(500);
+      yield* setState({
+        account: snapshotFromClearinghouse(longClearinghouse),
+        orders: [],
+        fills: [fillAt(1_000, "a".repeat(32), "2")],
+      });
+
+      const projection = yield* TradingAccountProjection;
+      // Subscribe before the pass runs: the doorbell is fire-and-forget, so a
+      // listener that arrives late hears nothing.
+      const first = yield* projection.changes.pipe(Stream.runHead, Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const event = yield* Fiber.join(first);
+      assert.isTrue(Option.isSome(event));
+      assert.strictEqual(Option.getOrThrow(event).kind, "invalidated");
       resetAccountReads();
     }),
   );
