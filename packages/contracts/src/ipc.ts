@@ -1085,6 +1085,15 @@ export interface DesktopBridge {
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
+  /**
+   * T3 Trade (final-form Phase 5): raise an OS notification for a fired
+   * trading alert. Optional — older desktop builds lack it, and web callers
+   * have no bridge at all, so every caller feature-detects.
+   */
+  showTradingNotification?: (input: {
+    readonly title: string;
+    readonly body: string;
+  }) => Promise<void>;
   getConnectionCatalog?: () => Promise<string | null>;
   setConnectionCatalog?: (catalog: string) => Promise<boolean>;
   clearConnectionCatalog?: () => Promise<void>;

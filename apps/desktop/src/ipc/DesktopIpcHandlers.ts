@@ -44,6 +44,7 @@ import {
   showContextMenu,
 } from "./methods/window.ts";
 import * as PreviewIpc from "./methods/preview.ts";
+import { showTradingNotification } from "./methods/tradingNotification.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
@@ -57,6 +58,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getLocalEnvironmentBearerToken);
 
   yield* ipc.handle(getClientSettings);
+  yield* ipc.handle(showTradingNotification);
   yield* ipc.handle(setClientSettings);
   yield* ipc.handle(getConnectionCatalog);
   yield* ipc.handle(setConnectionCatalog);

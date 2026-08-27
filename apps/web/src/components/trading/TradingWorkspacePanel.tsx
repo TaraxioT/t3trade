@@ -5,11 +5,13 @@ import { useRouter } from "@tanstack/react-router";
 import { HistoryIcon, RefreshCwIcon, TrendingUpIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
 import { useTradingMissions } from "../../lib/tradingMissionsState";
 import { useProjects } from "../../state/entities";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { SettingsPageContainer, SettingsSection } from "../settings/settingsLayout";
+import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
 import { MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import { useMissionControls, type MissionControls } from "./useMissionControls";
@@ -396,6 +398,32 @@ function MissionView({
   );
 }
 
+/**
+ * The default-view toggle (final-form Phase 4). Client-side — each device
+ * chooses where its own first screen lands — so it works with no environment
+ * connected, which is why it renders outside the environment gate below.
+ */
+function TradeHomeDefaultSection() {
+  const openOnTradeHome = useClientSettings((settings) => settings.openOnTradeHome);
+  const updateSettings = useUpdateClientSettings();
+
+  return (
+    <SettingsSection title="Trade home">
+      <SettingsRow
+        title="Open on the trade home"
+        description="Opening the app lands on the trading workspace (watchlist, positions, alerts). Turn off to land on a coding draft instead; threads stay reachable from the sidebar either way."
+        control={
+          <Switch
+            checked={openOnTradeHome}
+            onCheckedChange={(checked) => updateSettings({ openOnTradeHome: Boolean(checked) })}
+            aria-label="Open on the trade home"
+          />
+        }
+      />
+    </SettingsSection>
+  );
+}
+
 export function TradingWorkspacePanel() {
   const projects = useProjects();
   const environmentId = useMemo<EnvironmentId | null>(
@@ -406,6 +434,7 @@ export function TradingWorkspacePanel() {
   if (environmentId === null) {
     return (
       <SettingsPageContainer>
+        <TradeHomeDefaultSection />
         <SettingsSection title="Trading" icon={<TrendingUpIcon className="size-4" />}>
           <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
             Connect an environment to see its trading missions.
@@ -423,6 +452,7 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
 
   return (
     <SettingsPageContainer>
+      <TradeHomeDefaultSection />
       <SettingsSection
         title="Trading"
         icon={<TrendingUpIcon className="size-4" />}

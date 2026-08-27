@@ -80,6 +80,39 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-account-invalidations",
       tag: ORCHESTRATION_WS_METHODS.subscribeTradingAccount,
     }),
+    // The trade home's three lists (final-form Phases 4+5). All ride the same
+    // doorbell as the account view — no poll interval on any of them.
+    tradingWatchlist: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-watchlist",
+      tag: ORCHESTRATION_WS_METHODS.listTradingWatchlist,
+    }),
+    tradingWatches: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-watches",
+      tag: ORCHESTRATION_WS_METHODS.listTradingWatches,
+    }),
+    tradingAlerts: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-alerts",
+      tag: ORCHESTRATION_WS_METHODS.listTradingAlerts,
+    }),
+    // Watch + watchlist mutations. RPC commands rather than dispatched
+    // orchestration commands for the same reason `reviseTradingPlan` is one:
+    // the user needs the refusal reason on screen, not an acknowledgement.
+    armTradingWatch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:arm-watch",
+      tag: ORCHESTRATION_WS_METHODS.armTradingWatch,
+    }),
+    cancelTradingWatch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:cancel-watch",
+      tag: ORCHESTRATION_WS_METHODS.cancelTradingWatch,
+    }),
+    addTradingWatchlistEntry: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:watchlist-add",
+      tag: ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry,
+    }),
+    removeTradingWatchlistEntry: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:watchlist-remove",
+      tag: ORCHESTRATION_WS_METHODS.removeTradingWatchlistEntry,
+    }),
 
     // §14.7's deterministic controls. Ordinary environment commands: a
     // workspace button dispatches straight to the server, which is the whole

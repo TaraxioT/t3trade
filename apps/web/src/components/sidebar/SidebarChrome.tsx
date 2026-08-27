@@ -3,6 +3,7 @@ import {
   ChartNoAxesColumnIcon,
   GitPullRequestIcon,
   SettingsIcon,
+  TrendingUpIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
@@ -184,6 +185,12 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     void navigate({ to: "/usage" });
   }, [isMobile, navigate, setOpenMobile]);
 
+  // T3 Trade mount point (final-form Phase 4): the trading home.
+  const handleTradeClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/trade" });
+  }, [closeMobileSidebar, navigate]);
+
   const handleBackClick = useCallback(() => {
     closeMobileSidebar();
     if (canGoBack) {
@@ -204,6 +211,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
         </SidebarMenuItem>
       ) : (
         <>
+          <SidebarUtilityItem icon={<TrendingUpIcon />} label="Trade" onClick={handleTradeClick} />
           <SidebarUtilityItem
             icon={<SettingsIcon />}
             label="Settings"

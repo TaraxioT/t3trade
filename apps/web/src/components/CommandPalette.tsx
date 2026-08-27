@@ -45,6 +45,7 @@ import {
   SettingsIcon,
   SquarePenIcon,
   TextSearchIcon,
+  TrendingUpIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -1611,6 +1612,18 @@ function OpenCommandPaletteDialog(props: {
         themeHalves,
         initialAppearance: resolvedTheme,
       });
+    },
+  });
+
+  // T3 Trade mount point (final-form Phase 4): the trading home.
+  actionItems.push({
+    kind: "action",
+    value: "action:trade-home",
+    searchTerms: ["trade", "trading", "watchlist", "alerts", "positions", "chart", "market"],
+    title: "Open trade home",
+    icon: <TrendingUpIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/trade" });
     },
   });
 

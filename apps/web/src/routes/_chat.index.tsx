@@ -1,5 +1,5 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, Navigate } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -10,6 +10,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
+import { useClientSettings, useClientSettingsHydrated } from "../hooks/useSettings";
 import {
   useAllEnvironmentShellsBootstrapped,
   useProjects,
@@ -23,8 +24,23 @@ function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
   const { environments } = useEnvironments();
 
+  // T3 Trade mount point (final-form Phase 4): the app opens onto the trading
+  // home unless the Settings → Trading toggle turned it off. Gated on
+  // hydration so a persisted opt-out is honoured — the pre-hydration snapshot
+  // is the schema default (on), and starting the draft landing first would
+  // spend a draft thread on a screen about to be replaced.
+  const settingsHydrated = useClientSettingsHydrated();
+  const openOnTradeHome = useClientSettings((settings) => settings.openOnTradeHome);
+
   if (authGateState.status === "hosted-static" && environments.length === 0) {
     return <HostedStaticOnboardingState />;
+  }
+
+  if (!settingsHydrated) {
+    return null;
+  }
+  if (openOnTradeHome) {
+    return <Navigate to="/trade" replace />;
   }
 
   return <IndexDraftLanding />;
