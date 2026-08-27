@@ -324,3 +324,137 @@ silently mixes mainnet price history with the testnet market being traded,
 which is a correctness problem for every derived line and level the trader
 reads. Phase 6's checklist is done; its two promises that matter most to a
 trader — honest data and arm-at-price — are the two that don't hold.
+
+## Round 6 — 2026-08-27 — Guarded manual execution (Phase 7)
+
+Preconditions rebuilt for this round: the Luna mission was settled (status
+`revoked`, codex app-server gone — "every agent CLI stopped" verified via
+`pgrep`), the server still has auto-mission armed, and the account is the
+shared interim testnet wallet. The hand-cancel was performed the way an
+operator would: a signed `cancelByCloid` built with the fork's own
+`signL1ActionForWire` + nonce lane semantics (`/tmp/handcancel2.ts` pattern;
+key from `~/.t3trade/secrets`), submitted straight to the testnet exchange.
+
+| Acceptance | Result | Evidence |
+| --- | --- | --- |
+| Preview + place a stop-attached entry with agents stopped | Pass | ticket preview live ("size 0.3 · $18 @ ~60.3, max feasible 3.97, loss at stop $4.50"); order wire log 19:21:52 `actionType open, size 0.3, ioc, linkedStopPrice 45, status filled`; position + outcome alert pushed within the same reconcile pass |
+| The stop rests on Hyperliquid | Pass | `frontendOpenOrders`: `HYPE Sell 0.3 'Price below 45' Stop Market reduce-only`; UI Open orders mirrored it |
+| Hand-cancel the stop → watchdog re-places | Pass | signed cancel accepted 19:25:07 (`{"type":"cancel","statuses":["success"]}`); 19:25:19 WARN `trading protection watchdog found an uncovered manual position`; stop re-resting on the exchange by the next read; alert feed 19:25:22 "Manual HYPE stop was missing and was re-placed at 45" |
+| Stop-less submission refuses at preview | Pass | size + side set, stop empty → `Place buy` disabled with "Every entry carries a stop — set one to price the ticket" |
+| Mission on one market coexists with manual on another | Pass (structural + observed) | exclusivity is the partial unique index `idx_trading_missions_one_active_per_market (user_id, venue, market) WHERE status NOT IN ('revoked','completed')`; while the ETH mission was live the HYPE ticket priced freely and the ETH ticket was the only one refused; the whole session traded HYPE manually around the ETH mission |
+| Both exclusivity refusals with visible reasons | **Partial** | (a) ticket refusal visible and verbatim: `market_owned_by_mission — mission 33449a16… (waiting) holds the ETH authority; pause or revoke it before trading this market by hand`. (b) fires correctly server-side (reactor WARN: "HYPE has manual exposure (open position); close it or cancel it before a mission can take this market") **but nothing surfaces to the user** — see R6-1 |
+| Migration 075 over the seeded state | Pass | ran cleanly at first boot over the Aug-22 seed (dev log 17:56:37); rebuilt tables carry `venue='hyperliquid'` + `asset` on every row (fills 500, execution records 78, position snapshots 17), manual rows have `mission_id NULL` (5 fills, 3 records, 1 snapshot from this session), and the per-market partial unique index exists exactly as the ledger describes |
+
+### Findings
+
+- **[High] R6-1 — a refused mission-create is invisible, and the thread
+  falls through to a coding turn.** Sending a trading instruction for a
+  manually-held market: the auto-mission intent
+  (`trading.mission-create-requested`) is refused with a good reason in the
+  server log, no mission is created — and the user sees nothing. The
+  thread's first message instead runs as an ordinary full-access **coding**
+  turn ("Thinking" for minutes in an empty workspace, burning agent time on
+  a trade request). Refusal (a) is right there on the ticket; refusal (b)
+  needs the same treatment (a blocked-notice on the thread, or refuse the
+  send).
+- **[High] R6-2 (pins R2-5) — entries inherit isolated 10x and stops are
+  never checked against the liquidation price.** The account's HYPE margin
+  mode is isolated ×10 from its mission era; both manual entries inherited
+  it ($4.11 margin on $18 notional). Entry 1 tonight: stop 38, exchange
+  liquidation 38.87 — **the stop sat below liquidation and could never
+  protect** (Round 2's position died exactly this way). Entry 2: stop 45,
+  liq 39.04 — valid, and this time the watchdog-protected stop was real.
+  Neither the ticket preview nor `accountPolicy.ts` knows margin mode
+  exists; "every entry carries a stop" is untrue on this account until the
+  mode is cross or the stop-liq ordering is checked at preview.
+- **[Info] R6-3 — the guard races the entry's own stop placement.** Five
+  seconds after the entry filled (before/as its own stop landed), the
+  manual protection guard logged "found an uncovered manual position" and
+  re-placed, producing a "stop was missing and was re-placed" alert
+  (19:21:57) one second after the entry alert. Benign outcome, noisy
+  signal.
+- **[Info] R6-4 — amending R2-2's mechanism.** The identical close flow
+  (resting stop + reduce-only IOC sells) **filled** in this round
+  (19:19:39, `outcomes: ['filled']`, position flat, stop cleaned up, then
+  again at close-out). The Round-2 rejection was therefore not the
+  stop-aggregate rule I hypothesized; the likeliest cause is the reduce-only
+  IOC failing to cross the ~$4K testnet HYPE book at its buffered limit
+  price. R2-2's core defects stand unchanged: exchange rejection reasons
+  are discarded (R2-3) and a failed close reports "Position partly closed"
+  as if it succeeded.
+- **[Info] R6-5 — environmental, for the record.** Testnet HYPE's book,
+  mark, and oracle disagree wildly during this window (fills at 60.0, mark
+  41→56, oracle 36; buys at 60, close at 41). Every mark/PnL number the app
+  displayed was "true" per its source and still bewildering. Not a fork
+  defect; it is the venue the fork chose, and it stress-tested every number
+  honestly.
+
+### Verdict
+
+Phase 7's machinery is genuinely good: the mandatory-stop ticket with live
+feasibility economics, stops that actually rest on the exchange, a
+protection watchdog that catches a hand-cancel in ~12 seconds and re-places
+with an alert, per-market exclusivity backed by a real unique index, and a
+clean 075 migration over live seeded data. The two failures are at the
+seams the plan's own doctrine cares about most: the refusal the trader
+cannot see (R6-1), and margin-mode blindness that can place the mandatory
+stop below the liquidation price — a stop that protects nothing (R6-2),
+which is the same defect that liquidated Round 2's position.
+
+## Final verdict — 2026-08-27
+
+One paragraph per round, then the whole picture.
+
+**R1 — archiver v2:** solid. Supervision, 2s-base backoff after a healthy
+run, WS-first collection, 30s follow-set publish with sub-minute full
+backfill, and a v2 schema with venue populated everywhere. The one gap:
+archiver health changes never ring the account doorbell, so the health line
+is only as fresh as the last trading event (R1-1).
+
+**R2 — account push:** the mechanism passes — doorbell, one refetch per
+ring, sub-second fill visibility, zero polling on the account view — but
+the edges rot for the missionless trader: the balance is frozen at the last
+mission-era observation (R2-4, confirmed live when it unfroze the moment a
+mission went active), the mission snapshot is still 3s-polled by the
+sidebar (R2-1), and manual close can fail with a lying "partly closed"
+message while the exchange's rejection reason is thrown away (R2-2/R2-3,
+mechanism amended in R6-4).
+
+**R3 — trade home:** the landing, watchlist, universe search, recording
+follow-through, palette integration, and both themes are right — but the
+round surfaced the most severe defect of the verification: the classic
+draft landing and all new-thread creation hard-crash on main (R3-1), which
+also broke this loop's mission-creation path until a worktree-only patch.
+Phase 4's own toggle-off acceptance path cannot be walked.
+
+**R4 — alerts:** passes end to end. Arming without a mission, firing into
+the pushed feed, once vs repeat-with-cooldown (re-fired exactly one
+cooldown apart), derived-refusal semantics verified in code and 58 tests
+(no user surface exists for them yet), and the crown jewel: a real
+gpt-5.6-luna / medium / standard mission that woke on its own watch,
+re-analyzed, and re-armed with the model stable across wakes.
+
+**R5 — chart:** a real chart — candles, EMAs, volume, session levels,
+seven intervals, mission overlays, quiet rendering — undermined by two High
+defects: the archive deliberately records **mainnet** data while the app
+trades testnet, so divergent assets get an unreadable mixed-source canvas
+(R5-1), and the arm-at-price chip is unclickable because the price gutter
+steals its pointer events (R5-2).
+
+**R6 — manual execution:** the guarded-execution machinery works — stops
+rest, the watchdog re-places a hand-cancelled stop in ~12s with an alert,
+per-market exclusivity holds both directions at the data layer, and 075
+migrated the live seed cleanly. But the mission-create refusal is invisible
+and degrades into a full-access coding turn (R6-1), and margin-mode
+blindness can push the mandatory stop below the liquidation price (R6-2) —
+the exact failure that liquidated a position in Round 2.
+
+**The whole picture:** the server-side core — event sourcing, push,
+supervision, exclusivity, watchdogs, migrations — is in genuinely good
+shape, and the wake path is excellent. What stands between this and the
+final form it describes is almost entirely at the human's edge: a crashed
+draft landing (R3-1), a frozen balance (R2-4), a dead arm-chip (R5-2), a
+silent mission refusal (R6-1), margin-mode-blind stops (R6-2), and one
+canvas quietly mixing two exchanges (R5-1). Phases 8–9 are unstarted; the
+verification environment (worktree `t3trade-verify-main`, its `.t3`, the
+findings file) is retained for re-runs when they land.
