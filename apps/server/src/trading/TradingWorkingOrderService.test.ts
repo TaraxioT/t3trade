@@ -193,7 +193,6 @@ const executionLayer = (fake: FakeExchange) =>
     submitOrder: () => Effect.die("the working loop must never use the preview path"),
     submitProtectiveStop: () => Effect.die("not used"),
     submitReduceOnlyIoc: () => Effect.die("not used"),
-    submitReduceOnlyAlo: () => Effect.die("not used"),
   } as unknown as HyperliquidExecutionService["Service"]);
 
 /** Seed one execution record; `ageMsAgo` and `movedMsAgo` set the timestamps. */
@@ -1072,9 +1071,8 @@ it.effect("the exit wait accumulates through re-prices instead of resetting", ()
 
 it.effect("a take-profit-shaped record is not this lane's and is never touched", () =>
   Effect.gen(function* () {
-    // The take-profit loop owns the other kind of resting reduce-only ALO.
-    // Its orders never become execution records (submitReduceOnlyAlo writes
-    // none), but if one ever did — action type take_profit_<price> — this
+    // Server-rested take-profits (retired lane) never became execution
+    // records, but if one ever did — action type take_profit_<price> — this
     // lane must not pick it up, work it, or cancel it.
     const fake = makeFake();
     const outcome = yield* runReconcile(

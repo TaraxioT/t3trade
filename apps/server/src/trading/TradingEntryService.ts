@@ -61,6 +61,7 @@ import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { readActiveRun } from "./TradingRunTelemetry.ts";
 import { previewOrder } from "./TradingPreviewService.ts";
 import { allocateExecutionSequence } from "./TradingExecutionSequence.ts";
 
@@ -180,22 +181,8 @@ export const makeTradingEntryService = Effect.gen(function* () {
   const budgetReader = yield* TradingBudgetReader;
   const estimator = yield* TradingCostEstimator;
 
-  /**
-   * The harness run that currently holds the mission's decision lease, read
-   * from the table the lease actually lives in.
-   *
-   * The old execute path took `activeHarnessRunId` as an argument and preview
-   * only checked it was non-null — so a run id the harness invented, or one
-   * belonging to a turn that had already ended, passed. This is the ownership
-   * check the checklist item was named for.
-   */
-  const readActiveRun = (missionId: string) =>
-    sql<{ readonly run_id: string }>`
-      SELECT run_id FROM trading_harness_runs
-      WHERE mission_id = ${missionId} AND status NOT IN ('completed', 'failed')
-      ORDER BY started_at DESC
-      LIMIT 1
-    `.pipe(Effect.map((rows) => rows[0]?.run_id ?? null));
+  /** The run holding the decision lease — the shared read in TradingRunTelemetry. */
+  const readActiveRunForMission = (missionId: string) => readActiveRun(sql, missionId);
 
   /**
    * The published plan's target: the USD rung and the price it aims at, when
@@ -243,7 +230,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
         );
       }
 
-      const harnessRunId = yield* readActiveRun(request.missionId);
+      const harnessRunId = yield* readActiveRunForMission(request.missionId);
       if (harnessRunId === null) {
         return refused(
           "harness_run_owns_lease",

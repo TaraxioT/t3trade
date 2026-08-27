@@ -1326,21 +1326,6 @@ export function backedOffFloorMillis(baseMillis: number, consecutiveNoOps: numbe
   return Math.max(baseMillis, Math.min(stretched, NO_OP_BACKOFF_CAP_MILLIS));
 }
 
-/**
- * The slow sanity interval for a position that *is* covered on both sides.
- *
- * The tight holding floor above exists for the deaf case: nothing armed can
- * wake the mission, so it must be woken on time alone. A position with a level
- * or a PnL line armed on each side, or a confirmed exchange stop, is not that
- * case — waking it every three bars spends a full harness turn to conclude
- * "hold". It still deserves a periodic look at whether the thesis itself is
- * still true, so this is 10× the tight floor, clamped to [15 min, 2 h].
- */
-export function watchSanityBackstopMillis(timeframe: TradingTimeframe): number {
-  const tight = watchCoverageFloorMillis({ timeframe, holdingPosition: true });
-  return Math.min(Math.max(10 * tight, 15 * MINUTE), 120 * MINUTE);
-}
-
 /** Which directions a mission's armed watches can actually fire in. */
 export interface WatchCoverage {
   /** An armed watch that fires if price rises from here. */

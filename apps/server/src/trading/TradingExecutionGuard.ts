@@ -19,11 +19,12 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { isPermittedUnderExhaustion } from "@t3tools/trading-contracts/loss-accounting";
 import type { TradingLossBudget } from "@t3tools/trading-contracts/execution";
-import { EXPOSURE_REDUCING_ACTION_TYPES } from "@t3tools/trading-contracts/protection";
+import { DEFAULT_TRADING_MARKET } from "@t3tools/trading-contracts/primitives";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { cancelOrdersBestEffort, readRestingIncreasingOrders } from "./RestingIncreasingOrders.ts";
 import {
   HyperliquidExecutionService,
   TradingExecutionError,
@@ -184,24 +185,9 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
     SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
   > =>
     Effect.gen(function* () {
-      // §16.4 item 1: cancel mission-owned position-increasing resting orders.
-      // Identify "increasing" from the execution record's action_type (not
-      // trading_orders.reduce_only — the reconciler hardcodes that to false;
-      // PROMPT-05 fixes the column). Anything outside the exposure-reducing set
-      // is position-increasing — the same rule `isPositionIncreasing` applies in
-      // TypeScript, read from the same contract list rather than spelled out
-      // again in SQL.
-      //
-      // Protection preservation is vacuous until PROMPT-05 places protection
-      // orders; this cancel path only targets increasing orders today.
-      const sql = yield* SqlClient.SqlClient;
-      const increasing = yield* sql<{ readonly cloid: string; readonly market: string }>`
-        SELECT DISTINCT o.cloid, o.market
-        FROM trading_orders o
-        JOIN trading_execution_records e ON e.cloid = o.cloid
-        WHERE o.mission_id = ${missionId}
-          AND NOT ${sql.in("e.action_type", EXPOSURE_REDUCING_ACTION_TYPES)}
-      `.pipe(
+      // §16.4 item 1: cancel mission-owned position-increasing resting orders
+      // — the shared read + best-effort cancel in `RestingIncreasingOrders`.
+      const increasing = yield* readRestingIncreasingOrders(missionId).pipe(
         Effect.mapError(
           // A SQL read that failed is not the budget saying no. Labelling it
           // `budget_exhausted` sent the harness down a recovery path — wait for
@@ -214,24 +200,9 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
             }),
         ),
       );
-      // Submit a cancel-by-cloid per increasing order. A failed cancel does not
-      // abort the block — the mission still reads blocked; the reconciler will
-      // catch a still-resting order on the next convergence. But a silently
-      // swallowed cancel leaves exposure live on a mission reading "blocked",
-      // so log at warn with the cloid and the exchange's reason before
-      // continuing, rather than discarding the failure entirely.
-      for (const order of increasing) {
-        yield* execution
-          .submitCancel({ market: order.market, cloid: order.cloid })
-          .pipe(
-            Effect.catchTag("TradingExecutionError", (cause) =>
-              Effect.logWarning(
-                `blockForExhaustion: cancel-by-cloid failed (cloid=${order.cloid}, market=${order.market}); ` +
-                  `mission still transitions to blocked. reason: ${cause.stage}: ${cause.detail ?? ""}`,
-              ),
-            ),
-          );
-      }
+      yield* cancelOrdersBestEffort({ orders: increasing, logContext: "blockForExhaustion" }).pipe(
+        Effect.provideService(HyperliquidExecutionService, execution),
+      );
 
       yield* missions
         .transition({
@@ -258,7 +229,7 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
       // than skipping the reconcile.
       const market = yield* missions.getMission(missionId).pipe(
         Effect.map((mission) => mission.market),
-        Effect.orElseSucceed(() => "ETH" as const),
+        Effect.orElseSucceed(() => DEFAULT_TRADING_MARKET),
       );
       yield* reconciler
         .reconcile(

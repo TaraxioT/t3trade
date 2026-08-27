@@ -15,7 +15,6 @@ import {
   ThreadId,
   TradingMissionId,
 } from "@t3tools/contracts";
-import { POC_STANDING_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -39,11 +38,9 @@ import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
 import {
   LOCAL_TRADING_USER_ID,
-  moduleReadPlanTarget,
   TradingMissionReactor,
   TradingMissionReactorLive,
 } from "./TradingMissionReactor.ts";
-import { TradingAutoMission } from "./TradingAutoMission.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import {
   HyperliquidReconciler,
@@ -270,49 +267,6 @@ const started = Effect.gen(function* () {
 });
 
 /**
- * The auto-mission shortcut (`AutoMissionConfig`): a new thread gets a mission
- * without anyone visiting Settings.
- *
- * The env is set inside the test rather than around the layer because
- * `AutoMissionConfigLive` reads `process.env` on every resolve, not at build
- * time — and because `started` creates its own thread, which must be drained
- * before the shortcut is armed or it would claim the slot first.
- *
- * The explicit knob rather than an armed signer: these tests are about which
- * threads the shortcut claims, and the test server has no signer to arm.
- * `T3_TRADES_AUTO_MISSION_WORKSPACE` narrows it to the lab project so the
- * suite's own thread (at `process.cwd()`) stays outside it.
- */
-const LAB_ROOT = "/tmp/t3-trading-reactor-lab";
-const LAB_PROJECT_ID = ProjectId.make("project-trading-reactor-lab");
-
-const AUTO_MISSION_ENV = ["T3_TRADES_AUTO_MISSION", "T3_TRADES_AUTO_MISSION_WORKSPACE"] as const;
-
-const withAutoMissionArmed = <A, E, R>(body: Effect.Effect<A, E, R>) =>
-  Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const previous = AUTO_MISSION_ENV.map((name) => [name, process.env[name]] as const);
-      process.env.T3_TRADES_AUTO_MISSION = "1";
-      process.env.T3_TRADES_AUTO_MISSION_WORKSPACE = LAB_ROOT;
-      return previous;
-    }),
-    () => body,
-    (previous) =>
-      Effect.sync(() => {
-        for (const [name, value] of previous) {
-          if (value === undefined) delete process.env[name];
-          else process.env[name] = value;
-        }
-      }),
-  );
-
-/** Ask the auto-mission path whether this message starts a mission. */
-const claimFirstMessage = (threadId: ThreadId, text: string) =>
-  TradingAutoMission.pipe(
-    Effect.flatMap((autoMission) => autoMission.claimFirstMessage({ threadId, text })),
-  );
-
-/**
  * A live mission bound to `threadId`, written straight to the domain.
  *
  * Stands in for the row a restart inherits: the mission survives in SQLite, but
@@ -335,146 +289,6 @@ const seedMissionOnThread = (threadId: ThreadId) =>
       },
     });
   });
-
-/** Open a thread in the lab project, creating the project on first use. */
-const openLabThread = (threadId: ThreadId) =>
-  Effect.gen(function* () {
-    const engine = yield* OrchestrationEngineService;
-    const modelSelection = {
-      instanceId: ProviderInstanceId.make("claude"),
-      model: "sonnet",
-    };
-    yield* engine
-      .dispatch({
-        type: "project.create",
-        commandId: yield* commandId,
-        projectId: LAB_PROJECT_ID,
-        title: "Lab",
-        workspaceRoot: LAB_ROOT,
-        defaultModelSelection: modelSelection,
-        createdAt: NOW,
-      })
-      .pipe(Effect.ignore);
-    yield* engine
-      .dispatch({
-        type: "thread.create",
-        commandId: yield* commandId,
-        threadId,
-        projectId: LAB_PROJECT_ID,
-        title: "Lab thread",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-        createdAt: NOW,
-      })
-      .pipe(Effect.ignore);
-    yield* settle;
-  });
-
-it.layer(TestLayer)("auto-mission on the first message", (it) => {
-  // Creation moved off `thread.created`: the harness used to be analysing a
-  // market before the user had typed anything, against a static instruction
-  // nobody wrote. The first message IS the mandate.
-  it.effect("creates a mission whose instruction is the thread's first message", () =>
-    Effect.gen(function* () {
-      yield* started;
-      yield* settle;
-
-      const labThread = ThreadId.make("thread-trading-reactor-lab");
-      yield* openLabThread(labThread);
-      const claim = yield* withAutoMissionArmed(
-        claimFirstMessage(labThread, "Scalp ETH on the 1m and tell me before you enter."),
-      );
-      assert.equal(claim.kind, "mission_created");
-      yield* settle;
-
-      const projection = yield* TradingMissionProjection;
-      const mission = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
-      assert.ok(Option.isSome(mission), "the first message should have created a mission");
-      // The message is the mandate and comes first; the standing operating note
-      // is appended behind it. Before this the note was resolved and then never
-      // read, so the documented default reached no mission at all.
-      assert.ok(
-        mission.value.instruction.startsWith("Scalp ETH on the 1m and tell me before you enter."),
-        "the mandate is the user's own words, unaltered and first",
-      );
-      assert.include(mission.value.instruction, POC_STANDING_INSTRUCTION);
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("leaves a thread outside the lab workspace alone", () =>
-    Effect.gen(function* () {
-      yield* started;
-      yield* settle;
-
-      // `started`'s thread lives at process.cwd(), not LAB_ROOT.
-      const claim = yield* withAutoMissionArmed(claimFirstMessage(THREAD_ID, "hello"));
-      assert.equal(claim.kind, "not_applicable");
-      yield* settle;
-
-      const projected = yield* projectedMission;
-      assert.ok(Option.isNone(projected), "a thread outside the lab must not get a mission");
-    }).pipe(Effect.scoped),
-  );
-
-  // The safety rule. One active mission per user (§10.1) means claiming the slot
-  // retires the incumbent — and revoking a mission that still holds exposure
-  // would strand a live position behind a mission with no authority to manage
-  // it. A position-holding incumbent keeps the slot; the new thread gets nothing
-  // and the user is told why.
-  it.effect("refuses to take the slot from a mission that still holds a position", () =>
-    Effect.gen(function* () {
-      yield* started;
-      yield* createMission;
-      yield* settle;
-
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`
-        INSERT INTO trading_position_snapshots (
-          mission_id, market, size, entry_price, unrealised_pnl,
-          margin_used, protected_size, observed_at
-        ) VALUES (${MISSION_ID}, 'ETH', 0.03, 1882.7, 0, 20, 0.03, 0)
-      `;
-
-      const labThread = ThreadId.make("thread-trading-reactor-lab-blocked");
-      yield* openLabThread(labThread);
-      const claim = yield* withAutoMissionArmed(claimFirstMessage(labThread, "trade for me"));
-      assert.equal(claim.kind, "slot_held");
-      yield* settle;
-
-      const projection = yield* TradingMissionProjection;
-      const claimed = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
-      assert.ok(Option.isNone(claimed), "the lab thread must not get a mission");
-
-      const incumbent = yield* projectedMission;
-      assert.ok(Option.isSome(incumbent));
-      assert.notEqual(incumbent.value.status, "revoked", "the incumbent must keep its authority");
-    }).pipe(Effect.scoped),
-  );
-
-  // An old thread with history that is typed into again is an ordinary
-  // conversation, not a fresh mandate.
-  it.effect("leaves a thread that has already run turns alone", () =>
-    Effect.gen(function* () {
-      yield* started;
-      yield* settle;
-
-      const labThread = ThreadId.make("thread-trading-reactor-lab-used");
-      yield* openLabThread(labThread);
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`
-        INSERT INTO projection_turns (
-          thread_id, turn_id, state, requested_at, checkpoint_files_json
-        ) VALUES (${labThread}, 'turn-1', 'completed', ${NOW}, '[]')
-      `;
-
-      const claim = yield* withAutoMissionArmed(claimFirstMessage(labThread, "another message"));
-      assert.equal(claim.kind, "not_applicable");
-    }).pipe(Effect.scoped),
-  );
-});
 
 /**
  * Create the mission without starting its first run.
@@ -1043,7 +857,7 @@ it.live("reconciles before resuming a paused mission", () =>
  * The mandate's size comes from the account, not from a constant.
  *
  * A create request that states no capital is the ordinary case — the form's
- * capital field left empty, or `T3_TRADES_AUTO_MISSION_CAPITAL_USD` unset. The
+ * capital field left empty. The
  * reactor resolves it from the live account value at creation time, and the
  * whole §10.4 envelope scales from what it resolved: a $1,000 account yields a
  * $350 cumulative loss budget rather than the $17.50 a hardcoded $50 produced.
@@ -1498,51 +1312,3 @@ it.live(
     }),
   { timeout: 30_000 },
 );
-
-// ---------------------------------------------------------------------------
-// The plan target the take-profit reconcile reads (plan 29 steps 2.5 and 4.1)
-// ---------------------------------------------------------------------------
-
-const sqliteLayer = it.layer(Layer.provideMerge(SqlitePersistenceMemory, NodeServices.layer));
-
-sqliteLayer("moduleReadPlanTarget", (it) => {
-  // Plan 29 step 4.1: the stand-down of the old schema is `intent:
-  // "stand_aside"`, and the take-profit reconcile must read it as "no target"
-  // exactly as the stand-down was read — a plan that declined to trade does
-  // not rest a reduce-only take-profit against a target it is not aiming at.
-  it.effect("reads the reshaped target legs, and skips a stand-aside plan", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const planJson = (intent: "long" | "stand_aside") =>
-        `{"market":"ETH","intent":"${intent}","entry":{"triggers":[],"urgency":"now"},` +
-        `"stop":{"method":"swing low"},"target":{"profitUsd":25,"price":3652},` +
-        `"invalidation":[],"reassess":{"afterMinutes":90},"because":"x","updatedAt":1000}`;
-
-      yield* sql`
-        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
-        VALUES ('mission-tp', 1, ${planJson("long")}, 1000)
-      `;
-      yield* sql`
-        INSERT INTO trading_missions (
-          mission_id, user_id, trading_account_id, instruction, market,
-          harness_json, status, control_json, authority_version, version,
-          created_at, updated_at
-        ) VALUES (
-          'mission-tp', 'local', 'acct_1', 'Trade ETH', 'ETH',
-          '{}', 'waiting', '{}', 1, 1, 1000, 1000
-        )
-      `;
-
-      const long = yield* moduleReadPlanTarget(TradingMissionId.make("mission-tp"));
-      assert.deepStrictEqual(long, { takeProfitPrice: 3_652, targetProfitUsd: 25 });
-
-      // Same target fields, standing aside: the skip, not the numbers.
-      yield* sql`
-        UPDATE trading_plan_history SET strategy_json = ${planJson("stand_aside")}
-        WHERE mission_id = 'mission-tp' AND version = 1
-      `;
-      const aside = yield* moduleReadPlanTarget(TradingMissionId.make("mission-tp"));
-      assert.strictEqual(aside, null);
-    }),
-  );
-});

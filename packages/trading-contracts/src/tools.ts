@@ -17,25 +17,12 @@
  * @module TradingTools
  */
 import { Schema } from "effect";
-import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./account-snapshot.ts";
-import {
-  AgentMarketSnapshot,
-  MarketCandleInterval,
-  MarketHistory,
-  MarketHistoryRequest,
-  OrderBook,
-  ResolvedMarket,
-} from "./market.ts";
-import type { TradingCostEstimate } from "./costs.ts";
-import type { MarketStructure } from "./marketStructure.ts";
-import type { TradingTradeHistory } from "./history.ts";
 import { TargetCalibration } from "./calibration.ts";
 import { TradingJournalEntry } from "./journal.ts";
 import { TradingMissionModeState } from "./mode.ts";
-import { ObservedVolatility } from "./volatility.ts";
 import { TradingMission } from "./mission.ts";
-import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
-import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
+import { TradingId, UnixMillis } from "./primitives.ts";
+import { StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
 import { TradingOrderTimeInForce } from "./execution.ts";
 import { EntrySizeConstraint } from "./entry.ts";
 import { TradingExitRefusalCode } from "./exit.ts";
@@ -48,7 +35,7 @@ import {
   WatchCondition,
   WatchRefusalCode,
 } from "./watch.ts";
-import { Playbook, TradingPlaybookName } from "./playbook.ts";
+import { TradingPlaybookName } from "./playbook.ts";
 
 // Renamed from `trading_plan` — plan 29 step 6.5. The behaviour is
 // unchanged: the same eight authored fields, the same mission-version guard,
@@ -95,8 +82,6 @@ export const TradingToolRejectionReason = Schema.Literals([
   /** A required exchange read failed. The tool has nothing to answer with, and
       saying so is better than the opaque crash a defect produces. */
   "market_data_unavailable",
-  /** `trading_look` was passed `scope` and `fetch` together (plan 38 §2.1). */
-  "scope_and_fetch_conflict",
   /** A `fetch` key that is not in the catalog — the detail names the nearest
       valid key (plan 38 §2.3 rule 4). */
   "unknown_fetch_key",
@@ -364,14 +349,8 @@ export const TradingPublishPlanResult = Schema.Union([
 ]);
 export type TradingPublishPlanResult = typeof TradingPublishPlanResult.Type;
 
-// -- §14.2 read-only market-data tools (Phase 2) -----------------------------
-//
-// Every read tool takes a `missionId` so the handler can authorize the call
-// against the mission bound to the calling thread (the same `resolveBoundCall`
-// path the §14.3 tools use). The master-wallet address used for account reads
-// comes from the mission's trading account — the harness never supplies it.
-// Market-symbol inputs reuse the POC `TradingMarket` literal ("ETH"); when the
-// POC widens to more markets, the literal widens with it.
+// The §14.2 read-tool input/result schemas that used to live here retired
+// with `trading_look`'s fetch catalog — the one read answers them all.
 
 /**
  * Shared mission-binding field on every read tool input.
@@ -535,32 +514,6 @@ export const TradingAdjustStopRefusalContext = Schema.Literals([
 ]);
 export type TradingAdjustStopRefusalContext = typeof TradingAdjustStopRefusalContext.Type;
 
-/**
- * Move the stop on an open position, inside the policy.
- *
- * The same `replaceProtection` path `trading_execute` `modify_stop` takes, with
- * `checkStopAdjustment`'s rules in front of it: the risk envelope the entry was
- * approved with, a per-call step cap measured in ATR, a noise floor, the
- * breakeven ratchet, and a rate limit. Everything the server needs to check
- * those — the ATR included — it measures itself.
- */
-export const TradingAdjustStopInput = Schema.Struct({
-  ...missionBound,
-  market: TradingMarket,
-  newStopPrice: Price,
-  justification: StopAdjustmentJustification,
-  /**
-   * The `updatedAt` of the plan the harness last read (plan 29 step 4.2
-   * re-keyed this staleness guard off the retired strategy-version counter).
-   * A move asked against a plan the server has since revised is refused — the
-   * revision may itself have moved the stop.
-   */
-  expectedPlanUpdatedAt: UnixMillis,
-  // Execution identity is allocated from current server state after the
-  // adjustment policy accepts; the harness supplies none of it.
-});
-export type TradingAdjustStopInput = typeof TradingAdjustStopInput.Type;
-
 export const TradingAdjustStopResult = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("adjusted"),
@@ -606,135 +559,6 @@ export const TradingExitResult = Schema.Union([
 ]);
 export type TradingExitResult = typeof TradingExitResult.Type;
 
-export const TradingResolveMarketInput = Schema.Struct({
-  ...missionBound,
-  market: Schema.String,
-});
-export type TradingResolveMarketInput = typeof TradingResolveMarketInput.Type;
-
-export const TradingGetMarketSnapshotInput = Schema.Struct({
-  ...missionBound,
-  market: Schema.String,
-});
-export type TradingGetMarketSnapshotInput = typeof TradingGetMarketSnapshotInput.Type;
-
-export const TradingGetMarketHistoryInput = Schema.Struct({
-  ...missionBound,
-  ...MarketHistoryRequest.fields,
-});
-export type TradingGetMarketHistoryInput = typeof TradingGetMarketHistoryInput.Type;
-
-export const TradingGetOrderBookInput = Schema.Struct({
-  ...missionBound,
-  market: Schema.String,
-});
-export type TradingGetOrderBookInput = typeof TradingGetOrderBookInput.Type;
-
-/**
- * Measure the fluctuation a market is producing, on any interval.
- *
- * The wakeup already carries this for the mission's primary timeframe; the tool
- * exists for the other two questions — a different interval, or a longer
- * lookback than the wakeup's window.
- */
-export const TradingMeasureVolatilityInput = Schema.Struct({
-  ...missionBound,
-  // The measurement reads candles, so the symbol is the one a history request
-  // takes — the POC `TradingMarket` literal, not a free-form string.
-  market: TradingMarket,
-  interval: MarketCandleInterval,
-  /** Bars to measure over. Defaults to `VOLATILITY_LOOKBACK_BARS`, capped at the §13 500. */
-  lookbackBars: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
-  /** Holding periods, in bars, to report the move distribution for. */
-  holdBars: Schema.optional(Schema.Array(Schema.Number.check(Schema.isGreaterThan(0)))),
-});
-export type TradingMeasureVolatilityInput = typeof TradingMeasureVolatilityInput.Type;
-
-export type TradingMeasureVolatilityResult = ObservedVolatility;
-
-/**
- * Cost a round trip before committing to a target or a size.
- *
- * Exactly one of `sizeEth` / `notionalUsd` names the position to cost; giving
- * both is accepted and `sizeEth` wins, since the size is what the book is
- * actually walked for.
- */
-export const TradingEstimateCostsInput = Schema.Struct({
-  ...missionBound,
-  market: TradingMarket,
-  /** Position size in base units (ETH). */
-  sizeEth: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
-  /** Position size in USD of notional — converted at the current mark. */
-  notionalUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
-});
-export type TradingEstimateCostsInput = typeof TradingEstimateCostsInput.Type;
-
-export type TradingEstimateCostsResult = TradingCostEstimate;
-
-/**
- * Read the directional structure across several timeframes at once.
- *
- * Volatility says how far this market moves; this says which way, whether the
- * range is expanding, where the last leg started, and what structure the next
- * one runs into. Defaults to `MOMENTUM_TIMEFRAMES` — asking for one timeframe
- * is allowed and defeats the point, since the answer worth having is whether
- * they agree.
- */
-export const TradingGetMarketStructureInput = Schema.Struct({
-  ...missionBound,
-  market: TradingMarket,
-  /** Intervals to measure. Defaults to 1m, 5m, 15m, and 1h. */
-  intervals: Schema.optional(Schema.Array(MarketCandleInterval)),
-  /** Bars per interval. Defaults to `MOMENTUM_LOOKBACK_BARS`, capped at the §13 500. */
-  lookbackBars: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
-});
-export type TradingGetMarketStructureInput = typeof TradingGetMarketStructureInput.Type;
-
-export type TradingGetMarketStructureResult = MarketStructure;
-
-/**
- * Read this mission's own completed orders and what they were worth.
- *
- * The mission's fills were persisted from the start and readable only by the
- * workspace; the harness could not see the trades it had already made. Without
- * that it has no way to score a thesis against its outcome, which is the whole
- * of the cooldown step.
- */
-export const TradingGetTradeHistoryInput = Schema.Struct({
-  ...missionBound,
-  /** Completed orders to return, newest first. Defaults to 20, capped at 100. */
-  limit: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
-});
-export type TradingGetTradeHistoryInput = typeof TradingGetTradeHistoryInput.Type;
-
-export type TradingGetTradeHistoryResult = TradingTradeHistory;
-
-/**
- * Score the targets this mission published against what its trades actually
- * reached.
- *
- * The one read that can tell the harness its own habit is wrong: a p50 target
- * reached a fifth of the time is not bad luck, it is a target read off the
- * wrong rung.
- */
-export const TradingGetTargetCalibrationInput = Schema.Struct({ ...missionBound });
-export type TradingGetTargetCalibrationInput = typeof TradingGetTargetCalibrationInput.Type;
-
-export type TradingGetTargetCalibrationResult = TargetCalibration;
-
-/** Account-state and position tools take only the missionId; the address is server-resolved. */
-export const TradingGetAccountStateInput = Schema.Struct({ ...missionBound });
-export type TradingGetAccountStateInput = typeof TradingGetAccountStateInput.Type;
-
-export const TradingGetPositionInput = Schema.Struct({
-  ...missionBound,
-  market: Schema.String,
-});
-export type TradingGetPositionInput = typeof TradingGetPositionInput.Type;
-
-export const TradingGetOpenOrdersInput = Schema.Struct({ ...missionBound });
-export type TradingGetOpenOrdersInput = typeof TradingGetOpenOrdersInput.Type;
-
 /**
  * Read one named playbook.
  *
@@ -748,17 +572,6 @@ export const TradingGetPlaybookInput = Schema.Struct({
   name: TradingPlaybookName,
 });
 export type TradingGetPlaybookInput = typeof TradingGetPlaybookInput.Type;
-
-export type TradingGetPlaybookResult = Playbook;
-
-// Result types are the §10.6 read contracts verbatim — no wrapper.
-export type TradingResolveMarketResult = ResolvedMarket;
-export type TradingGetMarketSnapshotResult = AgentMarketSnapshot;
-export type TradingGetMarketHistoryResult = MarketHistory;
-export type TradingGetOrderBookResult = OrderBook;
-export type TradingGetAccountStateResult = AgentAccountSnapshot;
-export type TradingGetPositionResult = AgentNetPosition;
-export type TradingGetOpenOrdersResult = ReadonlyArray<AgentOpenOrder>;
 
 // -- §14.4 watch tools (Phase 3) ---------------------------------------------
 //

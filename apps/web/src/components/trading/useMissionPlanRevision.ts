@@ -57,13 +57,6 @@ export interface PlanRevisionState {
    * stop. The rule stays where the stop rests; this is what the plan now says.
    */
   readonly refusedStop: { readonly planPrice: number; readonly detail: string } | null;
-  /**
-   * Set when the publish was accepted and the take-profit could not be
-   * confirmed. Nothing was cancelled, so the order the exchange holds is the
-   * previous one; the watchdog converges it on its next pass, and until then
-   * the panel must not draw a target that is not there.
-   */
-  readonly unconfirmedTarget: { readonly planPrice: number | null; readonly detail: string } | null;
 }
 
 /** The eight authored fields, with exactly one leaf replaced. */
@@ -91,7 +84,6 @@ export function useMissionPlanRevision(
     lockLost: false,
     error: null,
     refusedStop: null,
-    unconfirmedTarget: null,
   });
 
   const revise = useCallback<MissionPlanRevision["revise"]>(
@@ -101,7 +93,6 @@ export function useMissionPlanRevision(
         lockLost: false,
         error: null,
         refusedStop: null,
-        unconfirmedTarget: null,
       });
       const { updatedAt: _updatedAt, ...authored } = applyPlanDrag(plan, drag);
       void dispatch({
@@ -116,7 +107,6 @@ export function useMissionPlanRevision(
               lockLost: false,
               error: failure,
               refusedStop: null,
-              unconfirmedTarget: null,
             });
             return;
           }
@@ -133,12 +123,10 @@ export function useMissionPlanRevision(
                   ? null
                   : (revision.detail ?? "The mission is no longer taking revisions."),
               refusedStop: null,
-              unconfirmedTarget: null,
             });
             return;
           }
           const stop = revision.stop;
-          const target = revision.target;
           setState({
             isBusy: false,
             lockLost: false,
@@ -148,15 +136,6 @@ export function useMissionPlanRevision(
                 ? {
                     planPrice: stop.planStopPrice,
                     detail: stop.refusal ?? "the exchange stop was left where it is",
-                  }
-                : null,
-            unconfirmedTarget:
-              target !== null && target.status === "failed"
-                ? {
-                    planPrice: target.targetPrice,
-                    detail:
-                      target.detail ??
-                      "the take-profit could not be confirmed; the previous one is still resting",
                   }
                 : null,
           });
@@ -170,7 +149,6 @@ export function useMissionPlanRevision(
             lockLost: false,
             error: "The revision could not be sent.",
             refusedStop: null,
-            unconfirmedTarget: null,
           });
         });
     },
@@ -183,7 +161,6 @@ export function useMissionPlanRevision(
       lockLost: false,
       error: null,
       refusedStop: null,
-      unconfirmedTarget: null,
     });
   }, []);
 

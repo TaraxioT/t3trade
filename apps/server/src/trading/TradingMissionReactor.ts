@@ -99,8 +99,8 @@ type TradingRequestEvent = Extract<
   | { type: "trading.execution-requested" }
   | { type: "trading.order-place-requested" }
   // Not trading intents: settling a thread is what ends its mission, and
-  // deleting one ends it just as finally. Starting a mission is the first
-  // message's job — see `TradingAutoMission`.
+  // deleting one ends it just as finally. Starting a mission is the trade
+  // home's explicit form (`trading.mission.create`), never a thread event.
   | { type: "thread.settled" }
   | { type: "thread.deleted" }
 >;
@@ -223,46 +223,11 @@ const primaryTimeframeFromMission = (missionId: TradingMissionId) =>
   });
 
 /**
- * The active plan's target, read as numbers rather than through the strategy
- * decoder — a reconciliation that refused to act because a historical prose
- * field stopped decoding would leave a take-profit resting against a plan that
- * had withdrawn it.
- *
- * Null when the mission has published nothing or stood aside
- * (`intent: "stand_aside"` — the stand-down of the old schema, and the same
- * skip it performed); the price rung is null when the plan published neither a
- * take-profit price nor a target. Hoisted to module scope so the stand-aside
- * skip is testable without the whole reactor layer.
- */
-export const moduleReadPlanTarget = (missionId: TradingMissionId) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql<{
-      readonly take_profit_price: number | null;
-      readonly target_profit_usd: number | null;
-      readonly stand_aside: number | null;
-    }>`
-      SELECT
-        json_extract(s.strategy_json, '$.target.price') AS take_profit_price,
-        json_extract(s.strategy_json, '$.target.profitUsd') AS target_profit_usd,
-        json_extract(s.strategy_json, '$.intent') = 'stand_aside' AS stand_aside
-      FROM trading_plan_history s
-      WHERE s.mission_id = ${missionId}
-      ORDER BY s.version DESC
-      LIMIT 1
-    `;
-    const row = rows[0];
-    if (row === undefined || row.stand_aside === 1) return null;
-    return {
-      takeProfitPrice: row.take_profit_price,
-      targetProfitUsd: row.target_profit_usd,
-    };
-  });
-
-/**
  * The current plan's publication facts for the working-order backstop: when it
  * was published and whether it stood aside. Read as numbers and a flag rather
- * than through the plan decoder — the same posture as `moduleReadPlanTarget`.
+ * than through the plan decoder — a reconciliation that refused to act
+ * because a historical prose field stopped decoding would act on a plan it
+ * cannot see.
  * Null when the mission has published nothing.
  */
 export const moduleReadPlanPublication = (missionId: TradingMissionId) =>
@@ -1133,13 +1098,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  // --- plan 29 step 2.5: keep a resting reduce-only take-profit on the book --
-
-  /**
-   * The active plan's target — see the module-scope `moduleReadPlanTarget` for
-   * what it reads and why it is not decoded through the strategy schema.
-   */
-  const readPlanTarget = moduleReadPlanTarget;
+  // --- the retired take-profit lane: withdraw what older builds rested -------
 
   /**
    * The cloids of reduce-only orders the HARNESS itself rested — a `patient`
@@ -1176,38 +1135,31 @@ const make = Effect.gen(function* () {
       readonly missionId: TradingMissionId;
       readonly market: TradingMarket;
       readonly masterAddress: string;
-      /** Varies the placement cloid across passes; watchdog passes use epoch seconds. */
-      readonly executionSequence: number;
     }) {
-      const target = yield* readPlanTarget(input.missionId);
       const preserveCloids = yield* readHarnessRestingExitCloids({
         missionId: input.missionId,
         market: input.market,
       });
       const outcome = yield* protection.reconcileTakeProtection({
         missionId: input.missionId,
-        executionSequence: input.executionSequence,
         masterAddress: input.masterAddress,
         market: input.market,
-        target,
         preserveCloids,
       });
-      // The order the pass rested exists nowhere else on this side of the
+      // Orders an older build rested exist nowhere else on this side of the
       // wire (plan 34 step 5.2). The ledger is what lets the fill reconciler
-      // recognise its fill as the server's own profit-taking rather than
-      // leaving the position to shrink unexplained between two wakes.
+      // recognise a fill against one as the server's own profit-taking rather
+      // than leaving the position to shrink unexplained between two wakes;
+      // this pass only retires rows.
       yield* recordTakeProfitOutcome({
         missionId: input.missionId,
         market: input.market,
-        ...(outcome.placedCloid === undefined ? {} : { placedCloid: outcome.placedCloid }),
-        targetPrice: outcome.targetPrice,
         positionSize: outcome.positionSize,
         cancelledCloids: outcome.cancelledCloids,
       });
       yield* Effect.logInfo("trading take-profit reconciled", {
         missionId: input.missionId,
         status: outcome.status,
-        targetPrice: outcome.targetPrice,
         positionSize: outcome.positionSize,
         cancelledCloids: outcome.cancelledCloids,
         ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
@@ -1221,7 +1173,6 @@ const make = Effect.gen(function* () {
     readonly missionId: TradingMissionId;
     readonly market: TradingMarket;
     readonly masterAddress: string;
-    readonly executionSequence: number;
   }) =>
     reconcileTakeProtectionFor(input).pipe(
       Effect.catchCause((cause) =>
@@ -1275,15 +1226,14 @@ const make = Effect.gen(function* () {
         market: intent.market,
         stopPrice: stop.stopPrice,
       });
-      // The entry that opened the position also banks its profit target: the
-      // plan's take-profit goes from published to resting here (plan 29 step
-      // 2.5). Quietly — a take-profit that cannot rest never fails the
-      // execution that just confirmed the stop.
+      // The entry that opened the position also sweeps the retired take-profit
+      // lane: any reduce-only limit an older build left resting is withdrawn
+      // (the target is a wake now, not an order). Quietly — a sweep that
+      // cannot run never fails the execution that just confirmed the stop.
       yield* reconcileTakeProtectionQuietly({
         missionId,
         market: intent.market,
         masterAddress,
-        executionSequence: intent.executionSequence,
       });
       return;
     }
@@ -2081,14 +2031,10 @@ const make = Effect.gen(function* () {
     // the belt. The stop path is deliberately not touched here — withdrawing
     // stops is not this loop's invariant to own.
     const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
     yield* reconcileTakeProtectionQuietly({
       missionId,
       market: mission.market,
       masterAddress,
-      // No harness execution to borrow a sequence from; epoch seconds keep
-      // this pass's cloid distinct, the same trick the stop watchdog uses.
-      executionSequence: Math.floor(occurredAt / 1000),
     });
   });
 
@@ -2351,15 +2297,10 @@ const make = Effect.gen(function* () {
 
       const missionId = TradingMissionId.make(mission.id);
       const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       yield* reconcileTakeProtectionFor({
         missionId,
         market: mission.market,
         masterAddress,
-        // Not a harness execution, so there is no sequence to borrow; epoch
-        // seconds keep each pass's cloid distinct — the same trick the stop
-        // watchdog uses.
-        executionSequence: Math.floor(occurredAt / 1000),
       });
     },
   );

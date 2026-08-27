@@ -28,8 +28,9 @@ protection reconciliation, and deterministic user controls on top of these.
   confirmation step.
 - **`TradingExecutionGuard`** — `guardAction` (exhaustion gate),
   `blockForExhaustion` (block + cancel increasing orders), `reduceOnlyClose`,
-  `guardResume`. PROMPT-05's `trading_control_*` tools add deterministic
-  pause/resume/revoke on top of these primitives.
+  `guardResume`. `TradingControlService` builds the deterministic §14.7
+  controls (pause/resume/reduce/close/revoke) on top of these primitives —
+  they are service methods behind the workspace's WS RPC, not MCP tools.
 - **`TradingPreviewService.previewOrder`** — the 14-item entry checklist (the
   exit checklist is unchanged) + Eq-4 reservation. PROMPT-05 adds
   protection-placement validation.

@@ -72,18 +72,15 @@ interface FakeExchange {
   orders: AgentOpenOrder[];
   /** replaceProtection calls, with the stop price each was asked to rest at. */
   replacements: Array<{ readonly stopPrice: number }>;
-  /** reconcileTakeProtection calls, with the target each was handed. */
-  takeTargets: Array<{
-    readonly takeProfitPrice: number | null;
-    readonly targetProfitUsd: number | null;
-  }>;
+  /** reconcileTakeProtection calls — the sweep runs once per reconcile. */
+  takeSweeps: number;
 }
 
 const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
   positionSize: LONG_SIZE,
   orders: [restingStop(2_950)],
   replacements: [],
-  takeTargets: [],
+  takeSweeps: 0,
   ...overrides,
 });
 
@@ -132,22 +129,13 @@ const protectionLayer = (fake: FakeExchange) =>
           replacedCloids: [],
         };
       }),
-    // The target leg. The fake records the plan-derived target it was handed.
-    reconcileTakeProtection: (input: {
-      readonly target: {
-        readonly takeProfitPrice: number | null;
-        readonly targetProfitUsd: number | null;
-      } | null;
-    }) =>
+    // The target leg — a withdraw-only sweep since plan 36 item 6.
+    reconcileTakeProtection: () =>
       Effect.sync(() => {
-        fake.takeTargets.push({
-          takeProfitPrice: input.target?.takeProfitPrice ?? null,
-          targetProfitUsd: input.target?.targetProfitUsd ?? null,
-        });
+        fake.takeSweeps += 1;
         return {
-          status: "unchanged",
+          status: "withdrawn",
           positionSize: fake.positionSize,
-          targetPrice: null,
           cancelledCloids: [],
         };
       }),
@@ -348,21 +336,12 @@ describe("TradingPlanProtectionService (plan 29 step 4.5)", () => {
     }),
   );
 
-  it.effect("hands the take-profit leg the plan's own target fields", () =>
+  it.effect("runs the take-profit sweep once per reconcile", () =>
     Effect.gen(function* () {
       const fake = makeFake();
       yield* reconcile(fake, plan(2_970, { target: { price: 3_100, profitUsd: 40 } }));
 
-      assert.deepEqual(fake.takeTargets, [{ takeProfitPrice: 3_100, targetProfitUsd: 40 }]);
-    }),
-  );
-
-  it.effect("a stand-aside plan withdraws the resting target", () =>
-    Effect.gen(function* () {
-      const fake = makeFake();
-      yield* reconcile(fake, plan(2_970, { intent: "stand_aside", target: {} }));
-
-      assert.deepEqual(fake.takeTargets, [{ takeProfitPrice: null, targetProfitUsd: null }]);
+      assert.equal(fake.takeSweeps, 1);
     }),
   );
 

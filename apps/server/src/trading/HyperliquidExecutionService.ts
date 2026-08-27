@@ -43,6 +43,7 @@ import { readExchangeResponse } from "@t3tools/hyperliquid/ExchangeResponse";
 import { formatPrice, formatSize } from "@t3tools/hyperliquid/Precision";
 import { deriveCloid, deriveManualCloid } from "@t3tools/hyperliquid/Cloid";
 import { HyperliquidExchangeClient, type SignedAction } from "@t3tools/hyperliquid/ExchangeClient";
+import { HyperliquidEndpoints, isTestnetEndpoints } from "@t3tools/hyperliquid/config";
 import { HyperliquidNonceCoordinator } from "@t3tools/hyperliquid/NonceCoordinator";
 import { signL1ActionForWire } from "@t3tools/hyperliquid/Signing";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
@@ -180,33 +181,6 @@ export class HyperliquidExecutionService extends Context.Service<
       readonly referencePrice: number;
       /** Distinguishes repeated attempts so each carries its own cloid. */
       readonly attempt: number;
-    }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
-
-    /**
-     * Place one resting reduce-only post-only (ALO) limit at a stated price
-     * (plan 29 step 2.5 — the take-profit), WITHOUT a preview context.
-     *
-     * Same §14.7 reasoning as `submitReduceOnlyIoc`: a reduce-only order cannot
-     * open or extend exposure, so the §16.3 checklist that gates risk-taking
-     * does not apply, and the take-profit is reconciled by the protection
-     * watchdog — outside any harness turn, where the checklist's
-     * lease-owning-run requirement could never be satisfied. What is NOT
-     * bypassed: the signer, the nonce lane, and precision.
-     *
-     * ALO means the exchange itself refuses the order if the limit would cross
-     * the book — the take-profit never takes liquidity and never pays taker.
-     * That refusal is a normal outcome the caller reports, not an error to
-     * retry harder: a target the market has already run through is a decision
-     * for the wake that the profit armed, not for this path.
-     */
-    readonly submitReduceOnlyAlo: (input: {
-      readonly market: string;
-      /** Deterministic cloid; the caller owns retry/replacement identity. */
-      readonly cloid: string;
-      /** Signed canonical position size; positive long, negative short. */
-      readonly positionSize: number;
-      /** The limit price to rest at — the plan's derived target price. */
-      readonly limitPrice: number;
     }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
 
     /**
@@ -519,6 +493,60 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
   const exchange = yield* HyperliquidExchangeClient;
   const crypto = yield* Crypto.Crypto;
   const iocSlippage = yield* IocSlippageConfig;
+  // Derived from the endpoints so the signature domain can never disagree
+  // with the exchange the signed action is sent to.
+  const isTestnet = isTestnetEndpoints(yield* HyperliquidEndpoints);
+
+  /**
+   * Resolve the signer, fail-closed: no armed signer means no signed action,
+   * reported as `signer_not_configured` rather than a defect. Every wire path
+   * runs through this — the resolution used to be pasted at six call sites.
+   */
+  const resolveSigner = Effect.gen(function* () {
+    const signerOpt = yield* signerConfig.resolve.pipe(
+      Effect.mapError(
+        (e: InterimSignerError) =>
+          new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
+      ),
+    );
+    if (signerOpt._tag === "None") {
+      return yield* new TradingExecutionError({ stage: "signer_not_configured" });
+    }
+    return signerOpt.value;
+  });
+
+  /**
+   * Sign one action inside the serialized nonce lane (§15.6). The lane is what
+   * keeps nonces strictly monotonic across orders, cancels and stops, so every
+   * signature is taken here — a second copy of this block would be a second
+   * chance to sign outside the lane.
+   */
+  const signInNonceLane = (
+    action: SignedAction["action"],
+    signer: { readonly privateKeyBytes: Uint8Array },
+  ): Effect.Effect<SignedAction, TradingExecutionError> =>
+    nonceCoord
+      .runWithNonce((nonce) =>
+        Effect.succeed({
+          action,
+          nonce,
+          signature: signL1ActionForWire({
+            action,
+            nonce,
+            privateKey: signer.privateKeyBytes,
+            isTestnet,
+          }),
+        } satisfies SignedAction),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingExecutionError({
+              stage: "sign_failed",
+              detail: cause instanceof Error ? cause.message : String(cause),
+            }),
+        ),
+      );
 
   /**
    * Everything a submission does after its gate has spoken (§17.2 steps 4–9).
@@ -764,27 +792,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       linkedStop === undefined
         ? buildOrderAction(wireOrder, market.assetIndex)
         : buildGroupedEntryWithStopAction(wireOrder, linkedStop, market.assetIndex);
-    const signed = yield* nonceCoord
-      .runWithNonce((nonce) =>
-        Effect.gen(function* () {
-          const signature = signL1ActionForWire({
-            action,
-            nonce,
-            privateKey: signer.privateKeyBytes,
-            isTestnet: true,
-          });
-          return { action, nonce, signature } satisfies SignedAction;
-        }),
-      )
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new TradingExecutionError({
-              stage: "sign_failed",
-              detail: cause instanceof Error ? cause.message : String(cause),
-            }),
-        ),
-      );
+    const signed = yield* signInNonceLane(action, signer);
 
     // Mark the record as submitted.
     yield* updateExecutionRecord(persistedExecutionId, "submitted", [], yield* now());
@@ -857,16 +865,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       const nowMs = yield* now();
 
       // --- 1. resolve the signer (fail-closed) -------------------------------
-      const signerOpt = yield* signerConfig.resolve.pipe(
-        Effect.mapError(
-          (e: InterimSignerError) =>
-            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-        ),
-      );
-      if (signerOpt._tag === "None") {
-        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-      }
-      const signer = signerOpt.value;
+      const signer = yield* resolveSigner;
 
       // --- 2. resolve market metadata (asset index) + fresh BBO --------------
       const market = yield* gateway
@@ -915,16 +914,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       const { intent, allowedSlippageBps } = input;
       const nowMs = yield* now();
 
-      const signerOpt = yield* signerConfig.resolve.pipe(
-        Effect.mapError(
-          (e: InterimSignerError) =>
-            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-        ),
-      );
-      if (signerOpt._tag === "None") {
-        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-      }
-      const signer = signerOpt.value;
+      const signer = yield* resolveSigner;
 
       const market = yield* gateway
         .resolveMarket(intent.market)
@@ -955,16 +945,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       const { intent, allowedSlippageBps } = input;
       const nowMs = yield* now();
 
-      const signerOpt = yield* signerConfig.resolve.pipe(
-        Effect.mapError(
-          (e: InterimSignerError) =>
-            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-        ),
-      );
-      if (signerOpt._tag === "None") {
-        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-      }
-      const signer = signerOpt.value;
+      const signer = yield* resolveSigner;
 
       const market = yield* gateway
         .resolveMarket(intent.market)
@@ -991,43 +972,14 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
   // after to confirm the cancel landed.
   const submitCancel: HyperliquidExecutionService["Service"]["submitCancel"] = (input) =>
     Effect.gen(function* () {
-      const signerOpt = yield* signerConfig.resolve.pipe(
-        Effect.mapError(
-          (e: InterimSignerError) =>
-            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-        ),
-      );
-      if (signerOpt._tag === "None") {
-        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-      }
-      const signer = signerOpt.value;
+      const signer = yield* resolveSigner;
       // Resolve the asset index from live metadata, mirroring the order path —
       // a cancel leg is keyed by the numeric asset index, not the coin symbol.
       const market = yield* gateway
         .resolveMarket(input.market)
         .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
       const action = buildCancelByCloidAction(market.assetIndex, input.cloid);
-      const signed = yield* nonceCoord
-        .runWithNonce((nonce) =>
-          Effect.gen(function* () {
-            const signature = signL1ActionForWire({
-              action,
-              nonce,
-              privateKey: signer.privateKeyBytes,
-              isTestnet: true,
-            });
-            return { action, nonce, signature } satisfies SignedAction;
-          }),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TradingExecutionError({
-                stage: "sign_failed",
-                detail: cause instanceof Error ? cause.message : String(cause),
-              }),
-          ),
-        );
+      const signed = yield* signInNonceLane(action, signer);
       yield* exchange.submit(signed).pipe(
         Effect.mapError(
           (cause) =>
@@ -1050,16 +1002,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     input,
   ) =>
     Effect.gen(function* () {
-      const signerOpt = yield* signerConfig.resolve.pipe(
-        Effect.mapError(
-          (e: InterimSignerError) =>
-            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-        ),
-      );
-      if (signerOpt._tag === "None") {
-        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-      }
-      const signer = signerOpt.value;
+      const signer = yield* resolveSigner;
 
       const market = yield* gateway
         .resolveMarket(input.market)
@@ -1082,28 +1025,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       );
 
       const action = buildProtectiveStopAction(stop, market.assetIndex);
-      const signed = yield* nonceCoord
-        .runWithNonce((nonce) =>
-          Effect.succeed({
-            action,
-            nonce,
-            signature: signL1ActionForWire({
-              action,
-              nonce,
-              privateKey: signer.privateKeyBytes,
-              isTestnet: true,
-            }),
-          } satisfies SignedAction),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TradingExecutionError({
-                stage: "sign_failed",
-                detail: cause instanceof Error ? cause.message : String(cause),
-              }),
-          ),
-        );
+      const signed = yield* signInNonceLane(action, signer);
 
       const response = yield* exchange.submit(signed).pipe(
         Effect.mapError(
@@ -1159,16 +1081,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     const size = Math.abs(input.positionSize);
     if (size <= 0) return [];
 
-    const signerOpt = yield* signerConfig.resolve.pipe(
-      Effect.mapError(
-        (e: InterimSignerError) =>
-          new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-      ),
-    );
-    if (signerOpt._tag === "None") {
-      return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-    }
-    const signer = signerOpt.value;
+    const signer = yield* resolveSigner;
 
     const market = yield* gateway
       .resolveMarket(input.market)
@@ -1198,28 +1111,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       market.assetIndex,
     );
 
-    const signed = yield* nonceCoord
-      .runWithNonce((nonce) =>
-        Effect.succeed({
-          action,
-          nonce,
-          signature: signL1ActionForWire({
-            action,
-            nonce,
-            privateKey: signer.privateKeyBytes,
-            isTestnet: true,
-          }),
-        } satisfies SignedAction),
-      )
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new TradingExecutionError({
-              stage: "sign_failed",
-              detail: cause instanceof Error ? cause.message : String(cause),
-            }),
-        ),
-      );
+    const signed = yield* signInNonceLane(action, signer);
 
     const response = yield* exchange.submit(signed).pipe(
       Effect.mapError(
@@ -1291,118 +1183,11 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         logOwner: { manualAccountId: input.accountId },
       });
 
-  // Plan 29 step 2.5: the preview-free resting take-profit. Same §14.7
-  // rationale as submitReduceOnlyIoc above; the one difference is the order's
-  // shape — it rests at the caller's stated price as a post-only ALO instead
-  // of crossing at a BBO-derived limit.
-  const submitReduceOnlyAlo: HyperliquidExecutionService["Service"]["submitReduceOnlyAlo"] = (
-    input,
-  ) =>
-    Effect.gen(function* () {
-      const size = Math.abs(input.positionSize);
-      if (size <= 0) return [];
-
-      const signerOpt = yield* signerConfig.resolve.pipe(
-        Effect.mapError(
-          (e: InterimSignerError) =>
-            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-        ),
-      );
-      if (signerOpt._tag === "None") {
-        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-      }
-      const signer = signerOpt.value;
-
-      const market = yield* gateway
-        .resolveMarket(input.market)
-        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
-
-      // Bank the position by exiting the way it was entered: a sell above the
-      // market for a long, a buy below it for a short. Reduce-only clamps the
-      // fill to the position, so the size can never cross through flat.
-      const isLong = input.positionSize > 0;
-      const side = isLong ? ("sell" as const) : ("buy" as const);
-
-      const action = buildOrderAction(
-        {
-          cloid: input.cloid,
-          coin: input.market as TradingWireOrder["coin"],
-          side,
-          limitPrice: formatPrice(input.limitPrice),
-          size: formatSize(size, market.szDecimals),
-          timeInForce: "alo",
-          reduceOnly: true,
-        },
-        market.assetIndex,
-      );
-
-      const signed = yield* nonceCoord
-        .runWithNonce((nonce) =>
-          Effect.succeed({
-            action,
-            nonce,
-            signature: signL1ActionForWire({
-              action,
-              nonce,
-              privateKey: signer.privateKeyBytes,
-              isTestnet: true,
-            }),
-          } satisfies SignedAction),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TradingExecutionError({
-                stage: "sign_failed",
-                detail: cause instanceof Error ? cause.message : String(cause),
-              }),
-          ),
-        );
-
-      const response = yield* exchange.submit(signed).pipe(
-        Effect.mapError(
-          (cause) =>
-            new TradingExecutionError({
-              stage: "submit_failed",
-              detail: cause instanceof Error ? cause.message : String(cause),
-            }),
-        ),
-      );
-
-      const outcome = readExchangeResponse(response);
-      if (outcome.actionError !== undefined) {
-        return yield* new TradingExecutionError({
-          stage: "inspect_failed",
-          detail: `reduce-only take-profit rejected by the exchange: ${outcome.actionError}`,
-        });
-      }
-      yield* Effect.logInfo("trading reduce-only take-profit hit the wire", {
-        market: input.market,
-        cloid: input.cloid,
-        side,
-        limitPrice: input.limitPrice,
-        size,
-        outcomes: outcome.statuses.map((row) => row.outcome),
-      });
-      return outcome.statuses.map(
-        (row) =>
-          ({
-            cloid: input.cloid,
-            status: row.outcome,
-            orderId: row.orderId,
-            filledSize: row.filledSize,
-            reason: row.reason,
-            role: "protection",
-          }) satisfies TradingOrderResult,
-      );
-    });
-
   return HyperliquidExecutionService.of({
     submitOrder,
     submitCancel,
     submitProtectiveStop,
     submitReduceOnlyIoc,
-    submitReduceOnlyAlo,
     submitWorkingEntry,
     submitManualOrder,
     submitManualReduceOnlyIoc,

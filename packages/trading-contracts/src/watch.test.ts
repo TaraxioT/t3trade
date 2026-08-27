@@ -23,7 +23,6 @@ import {
   WATCH_HANDLE_CHARS,
   watchHandle,
   toWatchRow,
-  watchSanityBackstopMillis,
   WATCH_COVERAGE_FLOOR_MILLIS,
   type MarketWatch,
   type PersistedWatch,
@@ -326,27 +325,6 @@ describe("findUnarmedEntryConditions", () => {
       watches: [],
     });
     assert.equal(unarmed[0]?.timeframe, "5m");
-  });
-});
-
-describe("watchSanityBackstopMillis", () => {
-  const MINUTE = 60_000;
-
-  it("stretches a 1m holder from 3 minutes to 30", () => {
-    assert.equal(watchSanityBackstopMillis("1m"), 30 * MINUTE);
-  });
-
-  it("clamps a 5m holder to the 2-hour cap rather than 150 minutes", () => {
-    assert.equal(watchSanityBackstopMillis("5m"), 120 * MINUTE);
-  });
-
-  it("is always well beyond the tight floor it replaces", () => {
-    for (const timeframe of ["1m", "3m", "5m", "15m", "1h"] as const) {
-      assert.isAbove(
-        watchSanityBackstopMillis(timeframe),
-        watchCoverageFloorMillis({ timeframe, holdingPosition: true }),
-      );
-    }
   });
 });
 

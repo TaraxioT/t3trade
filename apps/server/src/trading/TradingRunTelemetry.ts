@@ -133,6 +133,24 @@ export const recordToolCall = (
     `;
   });
 
+/**
+ * The harness run that currently holds the mission's decision lease, read
+ * from the table the lease actually lives in.
+ *
+ * The old execute path took `activeHarnessRunId` as an argument and preview
+ * only checked it was non-null — so a run id the harness invented, or one
+ * belonging to a turn that had already ended, passed. This read is the
+ * ownership check that checklist item was named for, shared by the entry and
+ * exit services.
+ */
+export const readActiveRun = (sql: Sql, missionId: string) =>
+  sql<{ readonly run_id: string }>`
+    SELECT run_id FROM trading_harness_runs
+    WHERE mission_id = ${missionId} AND status NOT IN ('completed', 'failed')
+    ORDER BY started_at DESC
+    LIMIT 1
+  `.pipe(Effect.map((rows) => rows[0]?.run_id ?? null));
+
 /** Record the gate's answer when an execution attempt was refused. */
 export const recordExecutionRefusal = (
   sql: Sql,

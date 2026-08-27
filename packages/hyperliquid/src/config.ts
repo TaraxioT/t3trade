@@ -33,3 +33,12 @@ export const HyperliquidEndpoints = Context.Reference<HyperliquidEndpoints>(
     defaultValue: () => TESTNET_ENDPOINTS,
   },
 );
+
+/**
+ * Whether an endpoint set points at testnet — derived from the URLs rather
+ * than carried as a second flag beside them, so the signature domain
+ * (`source: "a" | "b"` in the L1 action hash) can never disagree with the
+ * exchange the signed action is sent to.
+ */
+export const isTestnetEndpoints = (endpoints: HyperliquidEndpoints): boolean =>
+  endpoints.exchangeHttpUrl.includes("hyperliquid-testnet");

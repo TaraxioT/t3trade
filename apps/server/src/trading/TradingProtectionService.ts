@@ -31,13 +31,13 @@
  * keep trying — it reports `escalate`, and §17.5's bounded emergency close
  * takes over.
  *
- * Alongside the stop invariant, `reconcileTakeProtection` (plan 29 step 2.5)
- * holds the plan's profit-taking on the exchange: exactly one resting
- * reduce-only ALO at the plan's derived target price while a position is
- * open, withdrawn when the position is flat or the plan has no target. It
- * shares the confirm-before-cancel ordering, never touches a stop, and never
- * touches a reduce-only order the harness rested itself (a `patient` exit —
- * the caller names those in `preserveCloids`).
+ * Alongside the stop invariant, `reconcileTakeProtection` retires what is
+ * left of the retired server-side take-profit lane (plan 36 item 6 made the
+ * target a wake, not an order): it withdraws any resting take-profit an
+ * earlier build placed, and leftover reduce-only limits on a flat position.
+ * It never places anything, never touches a stop, and never touches a
+ * reduce-only order the harness rested itself (a `patient` exit — the caller
+ * names those in `preserveCloids`).
  *
  * @module TradingProtectionService
  */
@@ -113,21 +113,9 @@ export interface ProtectionOutcome {
 /** What the take-profit reconciliation needs to know for one mission. */
 export interface TakeProfitInput {
   readonly missionId: string;
-  /** Varies the cloid across passes; the derived target price also does. */
-  readonly executionSequence: number;
   /** The master-wallet address (§10.6) — canonical reads use it. */
   readonly masterAddress: string;
   readonly market: string;
-  /**
-   * The active plan's target — its take-profit price when it published one,
-   * else the USD rung priced off the position's entry — or `null` when the
-   * plan published no usable target (nothing published, or a stand-down). The
-   * caller reads the plan; this service owns only the exchange convergence.
-   */
-  readonly target: {
-    readonly takeProfitPrice: number | null;
-    readonly targetProfitUsd: number | null;
-  } | null;
   /**
    * Cloids of resting reduce-only orders the HARNESS placed itself — a
    * `patient` exit (plan 29 step 2.3) is one, and it is a reduce-only limit
@@ -145,33 +133,17 @@ export interface TakeProfitInput {
 export type TakeProfitOutcomeStatus =
   /** The position is flat; any leftover resting take-profit was withdrawn. */
   | "flat"
-  /** The plan has no usable target; resting take-profits were withdrawn. */
-  | "withdrawn"
-  /** A take-profit at the target already covered the position. */
-  | "unchanged"
-  /** A take-profit was placed and confirmed; nothing was superseded. */
-  | "placed"
-  /** A take-profit was placed and confirmed, superseding older ones. */
-  | "replaced"
-  /**
-   * A placement could not be confirmed inside the window. Nothing was
-   * cancelled — a replacement that cannot confirm leaves the old take-profit
-   * resting (the same ordering rule the stop replacement follows).
-   */
-  | "failed";
+  /** Resting take-profits an earlier build placed were withdrawn. */
+  | "withdrawn";
 
 /** The result of one take-profit reconciliation pass. */
 export interface TakeProfitOutcome {
   readonly status: TakeProfitOutcomeStatus;
   /** Signed canonical position size at the start of the pass. */
   readonly positionSize: number;
-  /** The target price the pass derived, when the plan produced one. */
-  readonly targetPrice: number | null;
-  /** Cloid of the take-profit this pass placed and confirmed, when it did. */
-  readonly placedCloid?: string | undefined;
   /** Cloids of resting take-profits this pass cancelled. */
   readonly cancelledCloids: ReadonlyArray<string>;
-  /** Why the pass failed, when it did. */
+  /** What was withdrawn, when anything was. */
   readonly detail?: string | undefined;
 }
 
@@ -223,17 +195,15 @@ export class TradingProtectionService extends Context.Service<
     ) => Effect.Effect<ProtectionOutcome, TradingProtectionError>;
 
     /**
-     * Reconcile the resting take-profit against the plan and the position
-     * (plan 29 step 2.5).
+     * Withdraw whatever the retired server-side take-profit lane left resting
+     * (plan 36 item 6 made the target a wake, not an order).
      *
      * Where `reconcileProtection` is a safety invariant — an uncovered
-     * position escalates to §17.5 — this one is an economic concern: the
-     * published plan says where profit is taken, and the exchange should hold
-     * exactly one resting reduce-only ALO at that price while the position is
-     * open. When the position is flat, or the plan has no usable target, any
-     * resting take-profit is withdrawn. A pass that cannot place or confirm a
-     * take-profit reports `failed` and does nothing else — the stop is
-     * untouched either way, and a missing take-profit is never an emergency.
+     * position escalates to §17.5 — this one is bookkeeping: it places
+     * nothing, and only cancels resting take-profits an earlier build placed
+     * (holding) or leftover reduce-only limits (flat). A cancel that fails is
+     * logged and retried by the next pass — a resting reduce-only order is
+     * never an emergency.
      *
      * Stops are not this method's business. Its predicate matches resting
      * reduce-only limits only; trigger orders (the stop's wire shape) are
@@ -775,7 +745,6 @@ export const makeTradingProtectionService = Effect.gen(function* () {
         return {
           status: "flat",
           positionSize: 0,
-          targetPrice: null,
           cancelledCloids: cancelled,
           ...(cancelled.length === 0
             ? {}
@@ -811,7 +780,6 @@ export const makeTradingProtectionService = Effect.gen(function* () {
       return {
         status: "withdrawn",
         positionSize: view.positionSize,
-        targetPrice: null,
         cancelledCloids: cancelled,
         ...(cancelled.length === 0
           ? {}

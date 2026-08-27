@@ -2,7 +2,7 @@ import { Duration, Effect } from "effect";
 import { describe, expect, it } from "@effect/vitest";
 import * as TestClock from "effect/testing/TestClock";
 
-import { makeNonceCoordinator, NonceRecoveryHint } from "./NonceCoordinator.ts";
+import { makeNonceCoordinator } from "./NonceCoordinator.ts";
 
 /**
  * TestClock starts at epoch 0 and only advances on `adjust`. Every concurrent
@@ -41,25 +41,22 @@ describe("HyperliquidNonceCoordinator", () => {
 
   it.effect("commits the nonce only after the signed effect succeeds", () =>
     Effect.gen(function* () {
-      const committed: number[] = [];
-      const persist = (n: number): Effect.Effect<void> =>
-        Effect.sync(() => {
-          committed.push(n);
-        });
-      const coord = yield* makeNonceCoordinator(undefined, persist);
+      const coord = yield* makeNonceCoordinator();
+      yield* TestClock.adjust(Duration.millis(5_000));
 
-      // A failing submission must not commit its nonce.
+      // A failing submission must not commit its nonce: the next issue may
+      // reuse the same millisecond.
       const failure = yield* coord
         .runWithNonce(() => Effect.fail("submit_failed"))
         .pipe(Effect.flip);
-
       expect(failure).toBe("submit_failed");
-      expect(committed).toEqual([]);
+      expect(yield* coord.nextNonce).toBe(5_000);
 
-      // A succeeding one commits.
+      // A succeeding one commits, so the next issue moves past it.
       const ok = yield* coord.runWithNonce((n) => Effect.succeed(n));
-      expect(ok).toBe(committed[0]);
-    }),
+      expect(ok).toBe(5_000);
+      expect(yield* coord.nextNonce).toBe(5_001);
+    }).pipe(Effect.provide(testClock)),
   );
 
   it.effect("produces strictly increasing nonces with no duplicates under concurrency", () =>
@@ -87,27 +84,5 @@ describe("HyperliquidNonceCoordinator", () => {
         }
       }
     }).pipe(Effect.provide(testClock)),
-  );
-
-  it.effect("exposes the last-issued nonce as a recovery hint", () =>
-    Effect.gen(function* () {
-      const coord = yield* makeNonceCoordinator();
-      yield* TestClock.adjust(Duration.millis(12_000));
-      yield* coord.runWithNonce((n) => Effect.succeed(n));
-
-      const hint = yield* coord.recoveryHint;
-      expect(hint.lastIssuedNonce).toBe(12_000);
-    }).pipe(Effect.provide(testClock)),
-  );
-
-  it.effect("seeds from a recovery hint so a restart never duplicates a nonce", () =>
-    Effect.gen(function* () {
-      const restart = new NonceRecoveryHint({ lastIssuedNonce: 9_999 });
-      const coord = yield* makeNonceCoordinator(restart);
-      // Wall clock (epoch 0) below the hint — coordinator must still issue
-      // past it, never colliding with the pre-restart 9_999.
-      const next = yield* coord.nextNonce;
-      expect(next).toBe(10_000);
-    }),
   );
 });

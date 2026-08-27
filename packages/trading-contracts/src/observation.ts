@@ -17,7 +17,7 @@ import { Schema } from "effect";
 import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./account-snapshot.ts";
 import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { TradingTradeHistory } from "./history.ts";
-import { IndicatorReading, IndicatorRequest } from "./indicators.ts";
+import { IndicatorReading } from "./indicators.ts";
 import { AgentMarketSnapshot, MarketCandleSeries, OrderBook, ResolvedMarket } from "./market.ts";
 import {
   ObservedMarketStructure,
@@ -35,109 +35,13 @@ import { TradingGetMissionResult } from "./tools.ts";
 export const TRADING_LOOK_TOOL = "trading_look";
 
 /**
- * The parts of a look, so a turn can ask for the one it needs.
- *
- * The full read answers what twelve tools used to and is the right shape for
- * an assessment turn. It is the wrong shape for a reaction: a run woken by a
- * fired level wants the last few bars, or the position, or the structure — and
- * paying for the account, the trade history and a multi-timeframe structure
- * read to get one of them is how a mission's context fills up in a handful of
- * wakes.
- *
- * - `market`: the resolved market, the snapshot, the book, microstructure.
- * - `candles`: recent bars and the volatility measured on them.
- * - `structure`: the multi-timeframe read with its scored `candidates[]`.
- * - `position`: what is held, the account behind it, resting orders, and what
- *   closing it costs.
- * - `mission`: mandate, authority, plan, watches, pending executions.
- * - `retrospect`: what the mission has BELIEVED — plan history, journal,
- *   target calibration. Split out of `mission` because it is the half that
- *   grows: a turn reacting to a level that just fired was paying for its own
- *   back-catalogue on every read.
- * - `trades`: this mission's completed orders and round trips.
- */
-export const TradingLookScope = Schema.Literals([
-  "market",
-  "candles",
-  "structure",
-  "position",
-  "mission",
-  "retrospect",
-  "trades",
-]);
-export type TradingLookScope = typeof TradingLookScope.Type;
-
-/** Every scope, which is what an omitted `scope` means. */
-export const TRADING_LOOK_SCOPES: ReadonlyArray<TradingLookScope> = [
-  "market",
-  "candles",
-  "structure",
-  "position",
-  "mission",
-  "retrospect",
-  "trades",
-];
-
-/**
- * The most bars a scoped candle read will return.
+ * The most bars a `candles:<interval>:<n>` fetch will return.
  *
  * The cap is the schema's, not the caller's: a bounded response is the point,
  * and a bound the model can raise is not a bound. Above this the answer is a
  * chart, and a chart is not something to put in a context window.
  */
 export const TRADING_LOOK_MAX_BARS = 200;
-
-/**
- * The bars a `candles` scope echoes when the call named neither `bars` nor
- * `indicators`.
- *
- * Enough chart to see the last few prints; not the whole lookback the
- * measurements were taken over. The lookback is still fetched and still
- * measured — this bounds only what rides back.
- */
-export const TRADING_LOOK_DEFAULT_BARS = 20;
-
-/**
- * The most bars a look echoes while the mission holds no position.
- *
- * A stand-aside turn asked for 120 bars and used them to recompute the EMA
- * pair — readings the server had already computed and sent. Across one
- * 23-minute mission that was 293,500 characters of `trading_look`, 82% of the
- * model's entire context, to reach the same "no setup" thirteen times.
- *
- * Flat only. Entry and management turns keep whatever they asked for: the
- * shape of the chart is what a trade is contemplated and managed against.
- *
- * Safe by construction — the measurements and the indicator readings are
- * computed over the full fetched lookback, and only the echoed table is
- * trimmed, so the 21-period EMA the `ema_cross` gates read is unaffected by a
- * 60-bar echo.
- */
-export const TRADING_LOOK_FLAT_BAR_CAP = 60;
-
-/**
- * How many bars of chart one look echoes back.
- *
- * Three inputs and one rule. A call that named `bars` gets that many; one that
- * named indicators and no bars gets the readings and no chart (the reading is
- * 140 characters where the window it came from is 18,000); anything else gets
- * a short tail. Then, flat, the answer is capped — see
- * {@link TRADING_LOOK_FLAT_BAR_CAP}.
- */
-export function echoedBarsForLook(input: {
-  readonly bars?: number | undefined;
-  readonly indicators?: ReadonlyArray<unknown> | undefined;
-  /** Whether the mission holds a position right now. */
-  readonly holdingPosition?: boolean | undefined;
-}): number {
-  const asked =
-    input.bars !== undefined
-      ? input.bars
-      : (input.indicators ?? []).length > 0
-        ? 0
-        : TRADING_LOOK_DEFAULT_BARS;
-  return input.holdingPosition === true ? asked : Math.min(asked, TRADING_LOOK_FLAT_BAR_CAP);
-}
 
 /**
  * How many book levels a side a look echoes.
@@ -152,16 +56,11 @@ export const TRADING_LOOK_BOOK_LEVELS = 10;
 /**
  * `market` defaults to the mission's own market. A thread with no live mission
  * may still look at a market — the read is the same answer whoever asks — and
- * gets the market half of the observation with `mission.bound: false`.
+ * fetches the market-side keys; the mission-side keys refuse with a reason.
  */
 export const TradingLookInput = Schema.Struct({
   missionId: Schema.optional(TradingId),
   market: Schema.optional(TradingMarket),
-  /**
-   * Which parts to read. Omit for all of them — the assessment read. Name one
-   * or two to answer a specific question cheaply.
-   */
-  scope: Schema.optional(Schema.Array(TradingLookScope)),
   /**
    * Catalog keys to fetch by name, each at its published size (plan 38 §2.1).
    *
@@ -174,46 +73,13 @@ export const TradingLookInput = Schema.Struct({
    * ({@link renderTradingLookMenu}).
    */
   fetch: Schema.optional(Schema.Array(Schema.String)),
-  /** The bar interval for the `candles` scope. Defaults to the mission's own. */
+  /**
+   * The bar interval the interval-less fetch keys measure on (`volatility`,
+   * `microstructure`, `indicators:<spec>`). Defaults to the mission's own.
+   */
   interval: Schema.optional(TradingTimeframe),
-  /**
-   * How many bars of raw chart the `candles` scope echoes back, newest last.
-   * Clamped to {@link TRADING_LOOK_MAX_BARS}. `0` returns no bars at all —
-   * the volatility, the freshness and the indicators, and none of the chart.
-   *
-   * Omitted, the default is {@link TRADING_LOOK_DEFAULT_BARS} — or none, when
-   * the call named `indicators`. A call that said what it wanted read off the
-   * bars has already read them; echoing the window as well was 18k characters
-   * of context nobody asked for (plan 34 step 1.1). The measurements are
-   * always taken over the full fetched lookback whatever this says.
-   */
-  bars: Schema.optional(
-    Schema.Number.check(
-      Schema.isInt(),
-      Schema.isBetween({ minimum: 0, maximum: TRADING_LOOK_MAX_BARS }),
-    ),
-  ),
-  /**
-   * Indicator readings computed server-side on the `candles` scope's bars —
-   * the model pulls `ema(9)` instead of deriving it from raw bars in context.
-   * Each reading returns `value` and `previous` (one bar back), the pair a
-   * cross or slope check needs. At most {@link INDICATOR_MAX_REQUESTS} per
-   * look. The `ema_cross` pair (9/21) needs none of them: the structure read
-   * serves it whole, and `ema` here defaults to 20 — a generic trend read the
-   * doctrine has no gate for.
-   */
-  indicators: Schema.optional(Schema.Array(IndicatorRequest)),
 });
 export type TradingLookInput = typeof TradingLookInput.Type;
-
-/** The scopes this call asks for — every one, when it named none. */
-export function resolveLookScopes(
-  input: Pick<TradingLookInput, "scope">,
-): ReadonlySet<TradingLookScope> {
-  return new Set(
-    input.scope === undefined || input.scope.length === 0 ? TRADING_LOOK_SCOPES : input.scope,
-  );
-}
 
 // -- the fetch catalog (plan 38 §2.2) -----------------------------------------
 
@@ -240,7 +106,7 @@ export interface TradingLookCatalogEntry {
  * size drifts past it is a failing test, not a surprise.
  *
  * `cost` is not in the plan's §2.2 table but §4.2's "nothing is deleted
- * outright" invariant keeps the market scope's 101-char cost line reachable
+ * outright" invariant keeps the retired market read's 101-char cost line reachable
  * (plan §4.2).
  */
 export const TRADING_LOOK_CATALOG: ReadonlyArray<TradingLookCatalogEntry> = [
@@ -289,7 +155,11 @@ export const TRADING_LOOK_CATALOG: ReadonlyArray<TradingLookCatalogEntry> = [
   { key: "trades", chars: 1173 },
   { key: "calibration", chars: 1047 },
   { key: "plan_history", chars: 3342 },
-  { key: "cost", chars: 101, note: "plan §4.2 — the market scope's cost line stays reachable" },
+  {
+    key: "cost",
+    chars: 101,
+    note: "plan §4.2 — the retired market read's cost line stays reachable",
+  },
 ];
 
 /** The catalog's fixed (non-parameterized) keys, as a type. */
@@ -331,7 +201,7 @@ const TRADING_LOOK_INTERVALS: ReadonlyArray<TradingTimeframe> = ["1m", "3m", "5m
 
 /**
  * The menu the catalog call returns — `trading_look` with no `fetch` and no
- * `scope` (plan 38 §2.3 rule 3). `key=chars` entries, the four archive keys
+ * (plan 38 §2.3 rule 3). `key=chars` entries, the four archive keys
  * starred, and one legend clause. No descriptions, no prose beyond the legend:
  * the model budgets its own context off this blob (rule 1).
  */
@@ -500,10 +370,11 @@ function levenshtein(a: string, b: string): number {
 /**
  * Everything one look answers.
  *
- * The market half is always present. The mission half is present whenever the
- * calling thread holds a live mission; `mission.bound` discriminates, and an
- * unbound look still reports the last mission the thread held rather than
- * failing, so a model whose mission just ended can read why.
+ * Every section is a fetch key's answer, so everything below `observedAt` and
+ * `market` is optional: a call carries exactly what its keys named. The
+ * mission half rides only when a mission-side key was named and the calling
+ * thread holds a live mission; without one, those keys come back in
+ * `unavailable` with a reason.
  */
 export const TradingObservation = Schema.Struct({
   observedAt: UnixMillis,
@@ -520,7 +391,7 @@ export const TradingObservation = Schema.Struct({
   /**
    * The book, bounded to {@link TRADING_LOOK_BOOK_LEVELS} a side — the depth
    * `microstructure` measures its readings over. Twenty levels rode every
-   * market-scope look and no turn ever quoted one (plan 35 phase 3).
+   * full-book look and no turn ever quoted one (plan 35 phase 3).
    */
   orderBook: Schema.optional(OrderBook),
   /**
@@ -531,8 +402,9 @@ export const TradingObservation = Schema.Struct({
   /** Fluctuation on the mission's runtime timeframe. Gross of costs. */
   volatility: Schema.optional(ObservedVolatility),
   /**
-   * The indicator readings this look asked for, computed on the same bars the
-   * candle read fetched. Present only when the call named `indicators`.
+   * The indicator readings this look asked for (`indicators:<spec>` keys),
+   * computed server-side over the full fetched window. Present only when the
+   * call named indicator keys.
    */
   indicators: Schema.optional(Schema.Array(IndicatorReading)),
   /** The same measurement one interval up; absent on the highest interval. */
@@ -544,7 +416,7 @@ export const TradingObservation = Schema.Struct({
    * B1, grouped with an ATR-scaled tolerance so 1899.7 and 1900.2 are one
    * level.
    *
-   * Rides the structure scope because it is read at the same moment as the
+   * Rides the `levels` key because it is read at the same moment as the
    * boundary it qualifies: the `range_reversion` doctrine says a level with
    * two `closedThrough` events is one the market has already gone through
    * twice, and one with a `stopOuts` entry has already ended a trade of this
@@ -595,19 +467,16 @@ export const TradingObservation = Schema.Struct({
   /**
    * Mandate, authority, plan, watches, and pending executions.
    *
-   * Optional since plan 38's fetch path: a catalog call or a fetch that named
-   * no mission-side key carries no mission half, because the mission row is
-   * itself a priced bundle. The scope path always sets it.
+   * Optional: a catalog call or a fetch that named no mission-side key
+   * carries no mission half, because the mission row is itself a priced
+   * bundle.
    */
   mission: Schema.optional(TradingGetMissionResult),
 
   // -- the fetch path (plan 38 §2) ---------------------------------------------
-  //
-  // All optional: the scope path (phases 1–3) never sets them, and the
-  // fixture trap in §5.2 only bites required fields.
   /**
    * The menu itself, when this call was the catalog call (`fetch` absent or
-   * empty, `scope` absent). The cheapest possible answer to "what can I ask
+   * empty). The cheapest possible answer to "what can I ask
    * for?" — paid once per mission, not once per wake (§1.5).
    */
   menu: Schema.optional(Schema.String),
@@ -650,9 +519,9 @@ export const TradingObservation = Schema.Struct({
     }),
   ),
   /**
-   * `events`: the mission's pending-event tail, newest last, uncapped by the
-   * scope path. `deduplicationKey` is omitted — the summary and the moment are
-   * what a turn reads.
+   * `events`: the mission's pending-event tail, newest last.
+   * `deduplicationKey` is omitted — the summary and the moment are what a
+   * turn reads.
    */
   events: Schema.optional(
     Schema.Array(

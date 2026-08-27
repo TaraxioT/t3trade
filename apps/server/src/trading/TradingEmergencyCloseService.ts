@@ -39,12 +39,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
-import {
-  isPositionIncreasing,
-  PROTECTION_SIZE_EPSILON,
-} from "@t3tools/trading-contracts/protection";
+import { PROTECTION_SIZE_EPSILON } from "@t3tools/trading-contracts/protection";
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
+import { cancelOrdersBestEffort, readRestingIncreasingOrders } from "./RestingIncreasingOrders.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 
@@ -130,38 +128,22 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
 
   /**
    * §17.5 step 2: cancel mission-owned orders that could INCREASE the
-   * position. Reduce-only orders stay: they are the protection, and cancelling
-   * them is the opposite of what a safety action should do.
+   * position — the shared read + best-effort cancel in
+   * `RestingIncreasingOrders`. Reduce-only orders stay: they are the
+   * protection, and cancelling them is the opposite of what a safety action
+   * should do. A failed read degrades to "nothing to cancel" — an emergency
+   * close must never die on a SQL error before it has flattened anything.
    */
   const cancelIncreasingOrders = (
     input: EmergencyCloseInput,
   ): Effect.Effect<void, never, SqlClient.SqlClient> =>
     Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const rows = yield* sql<{
-        readonly cloid: string;
-        readonly market: string;
-        readonly action_type: string;
-      }>`
-        SELECT DISTINCT o.cloid, o.market, e.action_type
-        FROM trading_orders o
-        JOIN trading_execution_records e ON e.cloid = o.cloid
-        WHERE o.mission_id = ${input.missionId}
-          AND o.reduce_only = 0
-      `.pipe(Effect.orElseSucceed(() => []));
-
-      for (const row of rows) {
-        if (!isPositionIncreasing(row.action_type)) continue;
-        yield* execution
-          .submitCancel({ market: row.market, cloid: row.cloid })
-          .pipe(
-            Effect.catchTag("TradingExecutionError", (cause) =>
-              Effect.logWarning(
-                `emergency close: could not cancel increasing order ${row.cloid}: ${cause.message}`,
-              ),
-            ),
-          );
-      }
+      const orders = yield* readRestingIncreasingOrders(input.missionId).pipe(
+        Effect.orElseSucceed(() => []),
+      );
+      yield* cancelOrdersBestEffort({ orders, logContext: "emergency close" }).pipe(
+        Effect.provideService(HyperliquidExecutionService, execution),
+      );
     });
 
   const emergencyClose: TradingEmergencyCloseService["Service"]["emergencyClose"] = (input) =>

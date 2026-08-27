@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
+import { DEFAULT_TRADING_MARKET } from "@t3tools/trading-contracts/primitives";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
@@ -602,7 +603,7 @@ const makeTradingMissionService = Effect.gen(function* () {
 
   const createMission: TradingMissionServiceShape["createMission"] = (input) =>
     Effect.gen(function* () {
-      const market = input.market ?? "ETH";
+      const market = input.market ?? DEFAULT_TRADING_MARKET;
       // D4: at most one authority per {venue, market}. Mission-vs-mission is
       // also enforced by the 075 partial unique index; checking here first is
       // what turns a constraint violation into a named refusal.

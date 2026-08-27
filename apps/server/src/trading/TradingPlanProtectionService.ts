@@ -2,16 +2,16 @@
  * TradingPlanProtectionService — plan 29 step 4.5: the plan writes protection.
  *
  * The plan is the position's declared state; writing it reconciles the
- * exchange to it. The reactor's watchdog converges stop coverage and the
- * resting take-profit to the CURRENT plan every ~5s; this service is the
- * immediate half, run from the publish aftermath so the stop and target move
- * at publish time rather than a watchdog pass later. This is why a separate
- * `protect` tool is unnecessary.
+ * exchange to it. The reactor's watchdog converges stop coverage to the
+ * CURRENT plan every ~5s; this service is the immediate half, run from the
+ * publish aftermath so the stop moves at publish time rather than a watchdog
+ * pass later. This is why a separate `protect` tool is unnecessary.
  *
  * Division of labour with the watchdog, stated once:
- * - Target side: both this and `guardTakeProfit` run the same
- *   `reconcileTakeProtection` against the plan's own target fields, so the
- *   resting reduce-only ALO follows the plan either way.
+ * - Target side: the target is a wake, never a resting order (plan 36 item
+ *   6). Both this and `guardTakeProfit` run the same
+ *   `reconcileTakeProtection`, whose only remaining job is withdrawing
+ *   take-profits an older build rested.
  * - Stop side: this service MOVES the resting stop to the plan's stop price,
  *   inside the hard constraint below. `guardProtection` remains the coverage
  *   backstop — it re-places a stop that vanished, at the last price anyone
@@ -96,8 +96,8 @@ export interface PlanProtectionOutcome {
    */
   readonly restingStopPrice?: number | null | undefined;
   readonly stopOutcome?: ProtectionOutcome | undefined;
-  /** The take-profit half's own outcome, verbatim. */
-  readonly target: TakeProfitOutcome;
+  /** The take-profit half's own outcome, or null when the leg could not run. */
+  readonly target: TakeProfitOutcome | null;
 }
 
 /**
@@ -193,7 +193,8 @@ export class TradingPlanProtectionService extends Context.Service<
   TradingPlanProtectionService,
   {
     /**
-     * Reconcile the exchange's stop and resting target to the plan, now.
+     * Reconcile the exchange's stop to the plan, now — and sweep any resting
+     * take-profit the retired lane left behind.
      *
      * Only the canonical reads fail the effect. The protection legs' own
      * failures surface in the outcome (a refused/widening stop leaves the
@@ -268,27 +269,16 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
       const { snapshot, openOrders } = yield* readCanonical(input);
       const position = snapshot.positions.find((p) => p.market === plan.market);
 
-      // --- the take half: the resting target follows the plan, flat or not.
-      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      // --- the take half: withdraw anything the retired lane left resting.
       const preserveCloids = yield* readHarnessRestingExitCloids(sql)({
         missionId: input.missionId,
         market: plan.market,
       });
-      const target = yield* protection
+      const target: TakeProfitOutcome | null = yield* protection
         .reconcileTakeProtection({
           missionId: input.missionId,
-          // Not a harness execution: epoch seconds keep this pass's cloid
-          // distinct, the same trick the watchdog passes use.
-          executionSequence: Math.floor(occurredAt / 1000),
           masterAddress: input.masterAddress,
           market: plan.market,
-          target:
-            plan.intent === "stand_aside"
-              ? null
-              : {
-                  takeProfitPrice: plan.target.price ?? null,
-                  targetProfitUsd: plan.target.profitUsd ?? null,
-                },
           ...(preserveCloids.length === 0 ? {} : { preserveCloids }),
         })
         .pipe(
@@ -296,14 +286,7 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
             Effect.logWarning(
               "trading plan protection: the take-profit leg could not run; the watchdog pass retries it",
               { missionId: input.missionId, cause: String(cause) },
-            ).pipe(
-              Effect.as({
-                status: "failed",
-                positionSize: position?.size ?? 0,
-                targetPrice: null,
-                cancelledCloids: [],
-              } satisfies TakeProfitOutcome),
-            ),
+            ).pipe(Effect.as(null)),
           ),
         );
 
@@ -392,6 +375,9 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
         } satisfies PlanProtectionOutcome;
       }
 
+      // Not a harness execution: epoch seconds keep this pass's cloid
+      // distinct, the same trick the watchdog passes use.
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       const stopOutcome = yield* (
         fullyCovered ? protection.replaceProtection : protection.reconcileProtection
       )({

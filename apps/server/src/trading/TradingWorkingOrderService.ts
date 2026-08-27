@@ -566,16 +566,14 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
    *  - the exit tool records exactly `close` or `reduce` through the full
    *    preview → submit path, so those two action types ARE the
    *    model-initiated exits;
-   *  - the take-profit's resting reduce-only ALOs are placed through
-   *    `submitReduceOnlyAlo`, which never writes an execution record — its
-   *    cloid embeds `take_profit_<price>` but that exists only in the
-   *    exchange's order list, not in this table — so they cannot reach this
-   *    reader at all;
+   *  - the server no longer rests take-profits at all (plan 36 item 6 made
+   *    the target a wake, not an order), and the ones older builds rested
+   *    never wrote an execution record, so they cannot reach this reader;
    *  - the `IN ('close','reduce')` filter is the belt for the day that
-   *    changes: a `take_profit_<price>`-shaped record can never be picked up
-   *    as a patient exit. The take-profit reconcile owns its own orders and
-   *    explicitly preserves ours (its `preserveCloids`, commit 580c788b6);
-   *    this lane returns the courtesy by scope rather than by cloid list.
+   *    changes: a take-profit-shaped record can never be picked up as a
+   *    patient exit. The take-profit sweep owns the leftovers and explicitly
+   *    preserves ours (its `preserveCloids`, commit 580c788b6); this lane
+   *    returns the courtesy by scope rather than by cloid list.
    */
   const readNewestAcceptedExit = (input: {
     readonly missionId: string;

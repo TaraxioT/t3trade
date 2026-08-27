@@ -37,16 +37,10 @@ const INPUT: ProtectionInput = {
   stopPrice: 2_950,
 };
 
-/**
- * The plan's target for a long: a $100 rung on the 0.5 ETH the fake holds,
- * entry 3000 → a move of 200 → TP at 3200.
- */
 const TP_INPUT: TakeProfitInput = {
   missionId: "mission_protect",
-  executionSequence: 0,
   masterAddress: MASTER,
   market: "ETH",
-  target: { takeProfitPrice: null, targetProfitUsd: 100 },
 };
 
 /** A resting reduce-only stop below a long. */
@@ -99,16 +93,13 @@ interface FakeExchange {
   orders: AgentOpenOrder[];
   placements: Array<{ cloid: string; positionSize: number }>;
   /** Take-profit placements, with the limit price each was asked to rest at. */
-  aloPlacements: Array<{ cloid: string; limitPrice: number; positionSize: number }>;
   cancels: string[];
   /** When set, stop placements fail with this message instead of resting. */
   placementFailure: string | undefined;
   /** When set, take-profit placements fail with this message instead of resting. */
-  aloFailure: string | undefined;
   /** When true, a stop placement is accepted but never appears in canonical state. */
   swallowPlacements: boolean;
   /** When true, a take-profit placement is accepted but never appears in canonical state. */
-  swallowAlo: boolean;
   /** Every placement and cancel, in the order they happened. */
   log: Array<"place" | "cancel">;
 }
@@ -118,12 +109,9 @@ const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
   markPrice: 3_000,
   orders: [],
   placements: [],
-  aloPlacements: [],
   cancels: [],
   placementFailure: undefined,
-  aloFailure: undefined,
   swallowPlacements: false,
-  swallowAlo: false,
   log: [],
   ...overrides,
 });
@@ -186,42 +174,6 @@ const executionLayer = (fake: FakeExchange) =>
         fake.log.push("cancel");
         fake.cancels.push(input.cloid);
         fake.orders = fake.orders.filter((o) => o.cloid !== input.cloid);
-      }),
-    submitReduceOnlyAlo: (input: {
-      cloid: string;
-      positionSize: number;
-      limitPrice: number;
-    }): Effect.Effect<ReadonlyArray<TradingOrderResult>, never> =>
-      Effect.sync(() => {
-        fake.log.push("place");
-        fake.aloPlacements.push({
-          cloid: input.cloid,
-          limitPrice: input.limitPrice,
-          positionSize: input.positionSize,
-        });
-        if (fake.aloFailure !== undefined) {
-          return [
-            {
-              cloid: input.cloid,
-              status: "error",
-              reason: fake.aloFailure,
-              role: "protection",
-            },
-          ] satisfies ReadonlyArray<TradingOrderResult>;
-        }
-        if (!fake.swallowAlo) {
-          fake.orders.push(
-            restingTakeProfit(
-              input.cloid,
-              Math.abs(input.positionSize),
-              input.limitPrice,
-              input.positionSize > 0 ? "sell" : "buy",
-            ),
-          );
-        }
-        return [
-          { cloid: input.cloid, status: "resting", orderId: 2, role: "protection" },
-        ] satisfies ReadonlyArray<TradingOrderResult>;
       }),
     submitOrder: () => Effect.die("not used"),
   } as unknown as HyperliquidExecutionService["Service"]);
@@ -519,16 +471,13 @@ it.effect("has nothing to move on a flat position", () =>
 // The stop tests above stay exactly as they were: the stop is protection and
 // must work while nobody is looking, which is precisely what a target is not.
 
-it.effect("places nothing, whatever target the plan names", () =>
+it.effect("places nothing while a position is open", () =>
   Effect.gen(function* () {
-    // Long 0.5 at mark 3000 with a $100 target — the input that used to rest a
-    // sell at 3200.
+    // Long 0.5 at mark 3000 — the shape that used to rest a take-profit.
     const fake = makeFake();
     const outcome = yield* runTakeProfit(fake);
 
     assert.equal(outcome.status, "withdrawn");
-    assert.equal(outcome.targetPrice, null);
-    assert.deepEqual(fake.aloPlacements, []);
     assert.deepEqual(fake.cancels, []);
   }),
 );
@@ -537,28 +486,6 @@ it.effect("withdraws a take-profit an earlier build rested", () =>
   Effect.gen(function* () {
     const fake = makeFake({ orders: [restingTakeProfit("0xoldtp", 0.5, 3_100)] });
     const outcome = yield* runTakeProfit(fake);
-
-    assert.equal(outcome.status, "withdrawn");
-    assert.deepEqual(fake.cancels, ["0xoldtp"]);
-    assert.deepEqual(fake.aloPlacements, []);
-  }),
-);
-
-it.effect("places nothing and cancels nothing without a usable target", () =>
-  Effect.gen(function* () {
-    const fake = makeFake();
-    const outcome = yield* runTakeProfit(fake, { ...TP_INPUT, target: null });
-
-    assert.equal(outcome.status, "withdrawn");
-    assert.deepEqual(fake.aloPlacements, []);
-    assert.deepEqual(fake.cancels, []);
-  }),
-);
-
-it.effect("withdraws resting take-profits when the plan removes its target", () =>
-  Effect.gen(function* () {
-    const fake = makeFake({ orders: [restingTakeProfit("0xoldtp", 0.5, 3_100)] });
-    const outcome = yield* runTakeProfit(fake, { ...TP_INPUT, target: null });
 
     assert.equal(outcome.status, "withdrawn");
     assert.deepEqual(fake.cancels, ["0xoldtp"]);

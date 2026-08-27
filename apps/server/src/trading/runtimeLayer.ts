@@ -32,7 +32,6 @@ import { TradingExecutionReceiptsLive } from "./TradingExecutionReceipts.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
-import { AutoMissionConfigLive } from "./AutoMissionConfig.ts";
 import { ArchiveSupervisorLive } from "./ArchiveSupervisor.ts";
 import { FollowSetRegistryLive } from "./FollowSetRegistry.ts";
 import { TradingMarketChartLive } from "./TradingMarketChart.ts";
@@ -40,7 +39,6 @@ import { TradingUniverseLive } from "./TradingUniverse.ts";
 import { TradingMarketPriceLive } from "./TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
-import { TradingAutoMissionLive } from "./TradingAutoMission.ts";
 import { TradingMissionSweepLive } from "./TradingMissionSweep.ts";
 import { TradingRuntimeLeaseLive } from "./TradingRuntimeLease.ts";
 import { TradingPreviewServiceLive } from "./TradingPreviewService.ts";
@@ -138,9 +136,6 @@ const TradingFoundation = Layer.mergeAll(
   InterimSignerConfigLive,
   // Both IOC crossing allowances, read per call so a testnet run can move them.
   IocSlippageConfigLive,
-  // The shortcut reads the signer to decide whether this checkout is a trading
-  // lab, so it is built on top of the signer rather than beside it.
-  AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   exchangeWithHttp,
   // One shared set of execution latches: the reactor opens them, the tool
   // waiting on `trading_enter` blocks on them. Built here so both sides see
@@ -275,12 +270,6 @@ export const TradingLayerLive = Layer.mergeAll(
     Layer.provide(TradingProtectionLayerLive),
   ),
   coordinatorWithDeps,
-  // A thread's first message is what creates its mission, so the decision sits
-  // on the dispatch path in `ws.ts` rather than in the reactor.
-  TradingAutoMissionLive.pipe(
-    Layer.provide(TradingMissionServiceLive),
-    Layer.provide(AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive))),
-  ),
   // The market archiver, supervised: spawned while this process holds the
   // trading lease, restarted with backoff, its heartbeat read off stdout.
   ArchiveSupervisorLive,

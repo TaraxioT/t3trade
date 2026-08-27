@@ -1228,30 +1228,19 @@ export const TradingPlanStopReconcileView = Schema.Struct({
 export type TradingPlanStopReconcileView = typeof TradingPlanStopReconcileView.Type;
 
 /** Mirrors the server's `TakeProfitOutcomeStatus`, one literal for one literal. */
-export const TradingPlanTargetReconcileStatus = Schema.Literals([
-  "flat",
-  "withdrawn",
-  "unchanged",
-  "placed",
-  "replaced",
-  "failed",
-]);
+export const TradingPlanTargetReconcileStatus = Schema.Literals(["flat", "withdrawn"]);
 export type TradingPlanTargetReconcileStatus = typeof TradingPlanTargetReconcileStatus.Type;
 
 /**
- * What the exchange did with the revised plan's take-profit.
+ * What the take-profit sweep did alongside the revision.
  *
- * Same reason the stop half is carried back: on `failed` the placement could
- * not be confirmed inside the window and nothing was cancelled, so the chart
- * would be drawing a target the exchange does not hold. It self-heals — the
- * watchdog reconciles the same target every ~5s — but a panel that says
- * nothing for the seconds in between is telling the operator something untrue.
+ * The target is a wake, never a resting order, so the sweep only ever
+ * withdraws what an older build rested; `detail` says what was withdrawn,
+ * when anything was.
  */
 export const TradingPlanTargetReconcileView = Schema.Struct({
   status: TradingPlanTargetReconcileStatus,
-  /** The target price the pass derived, when the plan produced one. */
-  targetPrice: Schema.NullOr(Schema.Number),
-  /** Why the pass failed, when it did. */
+  /** What was withdrawn, when anything was. */
   detail: Schema.optional(TrimmedNonEmptyString),
 });
 export type TradingPlanTargetReconcileView = typeof TradingPlanTargetReconcileView.Type;

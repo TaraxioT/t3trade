@@ -618,13 +618,13 @@ const make = Effect.gen(function* () {
    *  1. While holding a position with a live strategy, arm a `pnl_above` watch
    *     at the strategy's declared profit target — the win worth banking. This
    *     runs in addition to the coverage logic, before it.
-   *  2. The coverage floor: if the run left nothing that can fire on one of the
-   *     two sides the mark can move — a price level, a PnL line, or a confirmed
-   *     exchange stop — a reassessment is registered at the tight floor so the
-   *     mission gets at least one more turn. A mission that *is* covered gets
-   *     the slow sanity backstop instead, because it will be woken by a real
-   *     event and a three-bar metronome only buys turns that conclude "hold".
-   *     Both intervals scale with the strategy's primary timeframe.
+   *  2. The staleness floor: unless the run already left a reassessment inside
+   *     the window, one is registered at the holding floor so the mission gets
+   *     at least one more turn on a clock. Unconditionally — coverage no
+   *     longer buys a slower cadence (levels are alerts, cadence is a separate
+   *     question; see the note at the floor itself), and coverage is now only
+   *     measured to say in the log whether the mission would otherwise have
+   *     been deaf. The interval scales with the strategy's primary timeframe.
    *
    * It never blocks the settlement. The lease is already released by the time
    * this runs, and a mission that could not be given a watch is still better

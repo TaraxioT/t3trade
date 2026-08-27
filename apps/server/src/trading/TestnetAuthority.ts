@@ -3,10 +3,10 @@
  *
  * `testnetAuthorityDefaults` carries the reasoning about the numbers; this
  * module is only the seam where an operator can move them without a rebuild.
- * It follows `AutoMissionConfig`'s shape deliberately — a pure function over an
- * env bag, so the resolution is testable without a process — and its rule for
- * bad input is the same: a value that is not a positive finite number falls
- * back to the default rather than failing. A typo'd risk ceiling must not be
+ * It is a pure function over an env bag, so the resolution is testable
+ * without a process, and its rule for bad input is simple: a value that is
+ * not a positive finite number falls back to the default rather than
+ * failing. A typo'd risk ceiling must not be
  * the thing that stops a mission from being created; the documented default is
  * the safer answer.
  *

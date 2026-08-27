@@ -122,8 +122,6 @@ it("points the one read at the fields that carry the answers", () => {
   // Cost survived the un-gating as context only (plan 29 step 3.1).
   expect(look).toContain("never a gate");
   expect(look).not.toContain("minimumViableTargetUsd");
-  // An ended mission is reported, not hidden.
-  expect(look).toContain("lastMission");
 });
 
 // The two learning reads: what the mission believed before, and whether any of

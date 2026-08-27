@@ -101,7 +101,6 @@ import {
   type WatchlistEntry,
   type WatchlistMutationResult,
 } from "./trading/TradingWatchlistService.ts";
-import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 
 /** The `updatedAt` an empty mission snapshot reports. */
@@ -459,7 +458,6 @@ const makeWsRpcLayer = (
       const tradingMarketPrice = yield* TradingMarketPrice;
       const tradingMarketChart = yield* TradingMarketChart;
       const tradingTurnCoordinator = yield* TradingTurnCoordinator;
-      const tradingAutoMission = yield* TradingAutoMission;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
@@ -1073,9 +1071,7 @@ const makeWsRpcLayer = (
 
             yield* runSetupProgram();
 
-            // The thread exists now, so this message is its first — which is
-            // where a trading mission is born, if this machine makes them.
-            return yield* dispatchTradingAwareTurnStart(finalTurnStartCommand, targetProjectId);
+            return yield* dispatchTradingAwareTurnStart(finalTurnStartCommand);
           });
 
           return yield* bootstrapProgram.pipe(
@@ -1090,50 +1086,35 @@ const makeWsRpcLayer = (
         });
 
       /**
-       * Route a turn start past the two trading paths that may own it.
+       * Route a turn start past the trading path that may own it.
        *
-       * A thread's FIRST message starts a mission whose instruction is that
-       * message (`TradingAutoMission`); the `mission_created` bootstrap run is
-       * that message's turn, so the ordinary dispatch is skipped.
+       * A message on a thread bound to a live mission goes through the wake
+       * path, so the operator's message arrives with a fresh mission snapshot
+       * and holds the decision lease rather than racing a watch-fired run.
+       * (Missions themselves are created explicitly from the trade home's
+       * mission form via `trading.mission.create` — a first message never
+       * becomes one.)
        *
-       * Every later message on a thread bound to a live mission goes through
-       * the wake path instead, so the operator's message arrives with a fresh
-       * mission snapshot and holds the decision lease rather than racing a
-       * watch-fired run.
-       *
-       * Both answer "not mine" for anything else, and the ordinary dispatch
-       * runs — including when the mission slot is held, which comes back as a
-       * `notice` the composer shows.
+       * The coordinator answers "not mine" for anything else, and the
+       * ordinary dispatch runs.
        */
       const dispatchTradingAwareTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
-        projectId: string | undefined,
       ) =>
         Effect.gen(function* () {
-          const claim = yield* tradingAutoMission.claimFirstMessage({
-            threadId: command.threadId,
-            text: command.message.text,
-            ...(projectId === undefined ? {} : { projectId }),
-            ...(command.tradingMarket === undefined ? {} : { market: command.tradingMarket }),
-          });
-          if (claim.kind === "mission_created") {
-            return { sequence: yield* orchestrationEngine.latestSequence };
-          }
-
           const routed = yield* tradingTurnCoordinator.requestUserMessageRun({
             threadId: command.threadId,
             text: command.message.text,
           });
           if (routed) return { sequence: yield* orchestrationEngine.latestSequence };
 
-          const dispatched = yield* orchestrationEngine
+          return yield* orchestrationEngine
             .dispatch(command)
             .pipe(
               Effect.mapError((cause) =>
                 toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
               ),
             );
-          return claim.kind === "slot_held" ? { ...dispatched, notice: claim.message } : dispatched;
         });
 
       const dispatchTurnStart = (
@@ -1141,7 +1122,7 @@ const makeWsRpcLayer = (
       ) =>
         command.bootstrap
           ? dispatchBootstrapTurnStart(command)
-          : dispatchTradingAwareTurnStart(command, undefined);
+          : dispatchTradingAwareTurnStart(command);
 
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
@@ -1987,16 +1968,14 @@ const makeWsRpcLayer = (
                           ? {}
                           : { refusal: reconciled.refusal }),
                       },
-                // The target half was being dropped on the floor: a drag that
-                // moved the take-profit could fail to confirm and the panel
-                // would redraw the line anyway, showing an order the exchange
-                // does not hold until the watchdog's next pass repairs it.
+                // The take-profit sweep's outcome, when the leg ran: since the
+                // target became a wake this only ever reports what leftover
+                // resting orders were withdrawn.
                 target:
-                  reconciled === null
+                  reconciled === null || reconciled.target === null
                     ? null
                     : {
                         status: reconciled.target.status,
-                        targetPrice: reconciled.target.targetPrice,
                         ...(reconciled.target.detail === undefined
                           ? {}
                           : { detail: reconciled.target.detail }),

@@ -194,11 +194,12 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
       // loss budget already aggregates these through their reservations;
       // this is the notional view the exposure caps read.
       //
-      // Take-profit ALOs are excluded twice over: the take-profit path places
-      // through `submitReduceOnlyAlo`, which never writes an execution record,
-      // and the `NOT LIKE` keeps a take-profit-shaped record out of this sum
-      // even if a future change starts recording one — the exposure caps must
-      // not double-count a reduce-only order that removes notional.
+      // Take-profit ALOs are excluded twice over: the server no longer rests
+      // them at all (the target is a wake, not an order), the ones older
+      // builds rested never wrote an execution record, and the `NOT LIKE`
+      // keeps a take-profit-shaped record out of this sum even if a future
+      // change starts recording one — the exposure caps must not double-count
+      // a reduce-only order that removes notional.
       const pendingNotional = yield* sql<{ readonly pending_entry_notional_usd: number }>`
         SELECT COALESCE(SUM(size * limit_price), 0) AS pending_entry_notional_usd
         FROM trading_execution_records

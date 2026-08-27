@@ -23,15 +23,10 @@
  * reconciliation, so cancelling entries cannot strip a partial fill of its
  * stop.
  *
- * The seven map to §14.7's names:
- *
- *   trading_control_pause            → pause
- *   trading_control_resume           → resume
- *   trading_control_cancel_entries   → cancelEntries
- *   trading_control_reduce_position  → reducePosition (25/50/75/100%)
- *   trading_control_close_position   → closePosition
- *   trading_control_revoke           → revoke
- *   trading_control_close_and_revoke → closeAndRevoke
+ * The §14.7 controls: pause, resume, cancelEntries, reducePosition
+ * (25/50/75/100%), closePosition, revoke, closeAndRevoke — reached from the
+ * workspace's buttons over WS RPC. No MCP tools carry these names: the
+ * harness's own way out is `trading_exit`.
  *
  * @module TradingControlService
  */
@@ -41,13 +36,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
-import {
-  isPositionIncreasing,
-  PROTECTION_SIZE_EPSILON,
-} from "@t3tools/trading-contracts/protection";
+import { PROTECTION_SIZE_EPSILON } from "@t3tools/trading-contracts/protection";
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
+import { cancelOrdersBestEffort, readRestingIncreasingOrders } from "./RestingIncreasingOrders.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 
@@ -239,17 +232,32 @@ export const makeTradingControlService = Effect.gen(function* () {
     );
 
   /**
-   * Submit reduce-only IOCs until the target size is gone or the attempts run
-   * out, re-reading canonical state between attempts.
+   * The one bounded reduce loop: submit reduce-only IOCs until the target
+   * size is gone or the attempts run out, re-reading canonical state between
+   * attempts. The mission and manual lanes were two copies of this loop
+   * differing only in which submit primitive they used and whether a
+   * mission-scoped reconcile runs between attempts — so those two seams are
+   * the parameters, and everything else is shared.
    *
    * Bounded for the same reason the emergency close is: an IOC fills what the
    * book will take and cancels the rest, so a button that loops until flat
    * could loop for a long time paying fees. Two attempts, then an honest
    * report of what is left.
    */
-  const reduceBy = (input: ExchangeControlInput & { readonly targetSize: number }) =>
+  const reduceLoop = (input: {
+    readonly exchangeInput: ExchangeControlInput;
+    readonly targetSize: number;
+    readonly submit: (
+      attempt: number,
+      signedSize: number,
+      referencePrice: number,
+    ) => Effect.Effect<unknown, TradingControlError>;
+    /** Runs after each submit; the mission lane reconciles, the manual one waits on the reconciler's own cadence. */
+    readonly betweenAttempts: Effect.Effect<void>;
+    readonly logContext: string;
+  }) =>
     Effect.gen(function* () {
-      let position = yield* readPosition(input);
+      let position = yield* readPosition(input.exchangeInput);
       let remainingToClose = Math.min(input.targetSize, Math.abs(position.size));
 
       for (let attempt = 0; attempt < REDUCTION_ATTEMPTS; attempt++) {
@@ -257,31 +265,52 @@ export const makeTradingControlService = Effect.gen(function* () {
         if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) break;
 
         const signed = position.size > 0 ? remainingToClose : -remainingToClose;
-        yield* execution
-          .submitReduceOnlyIoc({
-            missionId: input.missionId,
-            market: input.market,
-            positionSize: signed,
-            referencePrice: position.crossingPrice,
-            attempt,
-          })
+        yield* input
+          .submit(attempt, signed, position.crossingPrice)
           .pipe(
-            Effect.catchTag("TradingExecutionError", (cause) =>
+            Effect.catch((cause) =>
               Effect.logWarning(
-                `control: reduce attempt ${attempt} did not submit: ${cause.message}`,
-              ).pipe(Effect.as([])),
+                `${input.logContext}: reduce attempt ${attempt} did not submit: ${cause.message}`,
+              ),
             ),
           );
 
-        yield* reconcileNow(input);
+        yield* input.betweenAttempts;
 
         const before = Math.abs(position.size);
-        position = yield* readPosition(input);
+        position = yield* readPosition(input.exchangeInput);
         const closed = before - Math.abs(position.size);
         remainingToClose = Math.max(0, remainingToClose - closed);
       }
 
       return position.size;
+    });
+
+  /** The mission lane of {@link reduceLoop}. */
+  const reduceBy = (input: ExchangeControlInput & { readonly targetSize: number }) =>
+    reduceLoop({
+      exchangeInput: input,
+      targetSize: input.targetSize,
+      submit: (attempt, signedSize, referencePrice) =>
+        execution
+          .submitReduceOnlyIoc({
+            missionId: input.missionId,
+            market: input.market,
+            positionSize: signedSize,
+            referencePrice,
+            attempt,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new TradingControlError({
+                  reason: "exchange_action_failed",
+                  detail: cause.message,
+                }),
+            ),
+          ),
+      betweenAttempts: reconcileNow(input),
+      logContext: "control",
     });
 
   const pause: TradingControlService["Service"]["pause"] = (input) =>
@@ -325,19 +354,12 @@ export const makeTradingControlService = Effect.gen(function* () {
 
   const cancelEntries: TradingControlService["Service"]["cancelEntries"] = (input) =>
     Effect.gen(function* () {
-      const rows = yield* sql<{
-        readonly cloid: string;
-        readonly action_type: string;
-        readonly stop_price: number | null;
-      }>`
-        SELECT DISTINCT o.cloid, e.action_type, e.stop_price
-        FROM trading_orders o
-        JOIN trading_execution_records e ON e.cloid = o.cloid
-        WHERE o.mission_id = ${input.missionId}
-          AND o.reduce_only = 0
-      `.pipe(Effect.orElseSucceed(() => []));
-
-      const increasing = rows.filter((row) => isPositionIncreasing(row.action_type));
+      // The shared read in `RestingIncreasingOrders` — the same rows §16.4
+      // exhaustion and the §17.5 emergency close cancel.
+      const increasing = yield* readRestingIncreasingOrders(input.missionId).pipe(
+        Effect.orElseSucceed(() => []),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
       if (increasing.length === 0) {
         const position = yield* readPosition(input);
         return {
@@ -357,11 +379,9 @@ export const makeTradingControlService = Effect.gen(function* () {
       if (stopPrice === null) {
         // No recorded stop to reconcile against; cancel plainly. This is the
         // pre-Phase-5 record shape, not a new state.
-        for (const cloid of cloids) {
-          yield* execution
-            .submitCancel({ market: input.market, cloid })
-            .pipe(Effect.catch(() => Effect.void));
-        }
+        yield* cancelOrdersBestEffort({ orders: increasing, logContext: "cancel entries" }).pipe(
+          Effect.provideService(HyperliquidExecutionService, execution),
+        );
         const position = yield* readPosition(input);
         return {
           positionSize: position.size,
@@ -493,36 +513,32 @@ export const makeTradingControlService = Effect.gen(function* () {
       }
 
       const percent = input.percent ?? 100;
-      let remainingToClose = Math.abs(position.size) * (percent / 100);
-
-      for (let attempt = 0; attempt < REDUCTION_ATTEMPTS; attempt++) {
-        if (remainingToClose <= PROTECTION_SIZE_EPSILON) break;
-        if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) break;
-
-        const signed = position.size > 0 ? remainingToClose : -remainingToClose;
-        yield* execution
-          .submitManualReduceOnlyIoc({
-            accountId: input.accountId,
-            market: input.market,
-            positionSize: signed,
-            referencePrice: position.crossingPrice,
-            attempt,
-          })
-          .pipe(
-            Effect.catchTag("TradingExecutionError", (cause) =>
-              Effect.logWarning(
-                `manual close: reduce attempt ${attempt} did not submit: ${cause.message}`,
-              ).pipe(Effect.as([])),
+      const remaining = yield* reduceLoop({
+        exchangeInput,
+        targetSize: Math.abs(position.size) * (percent / 100),
+        submit: (attempt, signedSize, referencePrice) =>
+          execution
+            .submitManualReduceOnlyIoc({
+              accountId: input.accountId,
+              market: input.market,
+              positionSize: signedSize,
+              referencePrice,
+              attempt,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new TradingControlError({
+                    reason: "exchange_action_failed",
+                    detail: cause.message,
+                  }),
+              ),
             ),
-          );
-
-        const before = Math.abs(position.size);
-        position = yield* readPosition(exchangeInput);
-        const closed = before - Math.abs(position.size);
-        remainingToClose = Math.max(0, remainingToClose - closed);
-      }
-
-      const remaining = position.size;
+        // No mission to reconcile under; the account reconciler's own cadence
+        // picks the fills up.
+        betweenAttempts: Effect.void,
+        logContext: "manual close",
+      });
       return {
         outcome: "done",
         positionSize: remaining,

@@ -23,43 +23,27 @@ const migrated = Effect.gen(function* () {
 });
 
 /**
- * Plan 36 item 4. The pass that places a take-profit and then finds the
- * position gone reports the cloid it sent with a size of zero, and the ledger
- * wrote that down as a live order: the mission this was found on carries a
- * `take_profit` row of size 0.0 placed 280ms after its close, `retired_at`
- * still null.
+ * Plan 36 item 6 retired the placement lane, so the ledger only ever retires
+ * rows now. The rows themselves come from older builds; the tests seed them
+ * directly.
  */
 layer("TradingProtectionLedger", (it) => {
-  it.effect("records the order a pass rested on a live position", () =>
+  const seedRow = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_protection_orders (
+        cloid, mission_id, market, kind, size, limit_price, placed_at
+      ) VALUES (${CLOID}, ${MISSION}, 'ETH', 'take_profit', 0.01, 1896.75, 1000)
+    `;
+  });
+
+  it.effect("writes nothing of its own — a pass over a live position leaves the ledger alone", () =>
     Effect.gen(function* () {
       yield* migrated;
       yield* recordTakeProfitOutcome({
         missionId: MISSION,
         market: "ETH",
-        placedCloid: CLOID,
-        targetPrice: 1_896.75,
         positionSize: -0.01,
-        cancelledCloids: [],
-      });
-
-      const rows = yield* readTakeProfitOrders(MISSION);
-      assert.equal(rows.length, 1);
-      assert.equal(rows[0]?.size, 0.01);
-      assert.equal(rows[0]?.retired_at, null);
-    }),
-  );
-
-  it.effect("writes nothing for an order placed against a position that had gone", () =>
-    Effect.gen(function* () {
-      yield* migrated;
-      yield* recordTakeProfitOutcome({
-        missionId: MISSION,
-        market: "ETH",
-        placedCloid: CLOID,
-        targetPrice: 1_896.75,
-        // What the "the position left while the take-profit was landing"
-        // branch reports.
-        positionSize: 0,
         cancelledCloids: [],
       });
 
@@ -70,25 +54,34 @@ layer("TradingProtectionLedger", (it) => {
     }),
   );
 
+  it.effect("retires the rows a pass cancelled", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedRow;
+      yield* recordTakeProfitOutcome({
+        missionId: MISSION,
+        market: "ETH",
+        positionSize: -0.01,
+        cancelledCloids: [CLOID],
+      });
+
+      const rows = yield* readTakeProfitOrders(MISSION);
+      assert.equal(rows.length, 1);
+      assert.isNotNull(rows[0]?.retired_at);
+    }),
+  );
+
   it.effect("retires an order still standing when the position is observed flat", () =>
     Effect.gen(function* () {
       yield* migrated;
-      yield* recordTakeProfitOutcome({
-        missionId: MISSION,
-        market: "ETH",
-        placedCloid: CLOID,
-        targetPrice: 1_896.75,
-        positionSize: -0.01,
-        cancelledCloids: [],
-      });
+      yield* seedRow;
 
-      // A later pass finds the mission flat. It cancelled nothing — the
-      // exchange retires reduce-only orders with the position — but the row
-      // must not go on claiming the order is resting.
+      // A pass finds the mission flat. It cancelled nothing — the exchange
+      // retires reduce-only orders with the position — but the row must not
+      // go on claiming the order is resting.
       yield* recordTakeProfitOutcome({
         missionId: MISSION,
         market: "ETH",
-        targetPrice: null,
         positionSize: 0,
         cancelledCloids: [],
       });

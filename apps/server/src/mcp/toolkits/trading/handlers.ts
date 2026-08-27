@@ -36,16 +36,12 @@ import {
   type TradingJournalEntry,
 } from "@t3tools/trading-contracts/journal";
 import {
-  resolveLookScopes,
   parseTradingLookFetchKey,
   nearestTradingLookKey,
   renderTradingLookMenu,
   TRADING_LOOK_BOOK_LEVELS,
-  TRADING_LOOK_FLAT_BAR_CAP,
-  echoedBarsForLook,
   type TradingLookFetchParse,
   type TradingLookInput,
-  type TradingLookScope,
   type TradingObservation,
 } from "@t3tools/trading-contracts/observation";
 import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
@@ -108,7 +104,6 @@ import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
 import {
   computeIndicator,
   indicatorLookbackBars,
-  INDICATOR_MAX_REQUESTS,
   type IndicatorRequest,
 } from "@t3tools/trading-contracts/indicators";
 import {
@@ -145,7 +140,6 @@ const rejectCall = (input: {
     | "capability_not_granted"
     | "thread_not_bound_to_mission"
     | "mission_not_bound_to_thread"
-    | "scope_and_fetch_conflict"
     | "unknown_fetch_key"
     | "fetch_key_params_invalid";
   readonly threadId: string;
@@ -245,113 +239,6 @@ const resolveReadCall = Effect.fn("TradingToolkit.resolveReadCall")(function* (
   return { threadId: scope.threadId, mission: Option.isNone(bound) ? null : bound.value };
 });
 
-/**
- * What `trading_look` answers when the thread has no live mission: the
- * last one it held and, if the slot has moved on, who holds it now.
- */
-const readUnboundMission = Effect.fn("TradingToolkit.readUnboundMission")(function* (
-  threadId: string,
-) {
-  const missions = yield* TradingMissionService;
-  const last = yield* missions.findLastMissionByThreadId(threadId).pipe(Effect.orDie);
-  if (Option.isNone(last)) return { bound: false as const };
-
-  const active = yield* missions.findActiveMission(last.value.userId).pipe(Effect.orDie);
-  return {
-    bound: false as const,
-    lastMission: last.value,
-    ...(Option.isSome(active) && active.value.id !== last.value.id
-      ? { activeMissionId: active.value.id }
-      : {}),
-  };
-});
-
-/**
- * The mission half of a look.
- *
- * `withRetrospect` is the `retrospect` scope: the plan history, the notes, and
- * the target calibration are what the mission has BELIEVED, and a run reacting
- * to a fired level does not need its own back-catalogue to answer what just
- * happened. It used to ride on `mission`, which meant a model scoping
- * correctly still paid for it.
- *
- * Everything else here is live state and is always read — a scoped look that
- * hid the armed watches or the pending executions would be a cheaper read that
- * is also a blind one.
- */
-const readMission = Effect.fn("TradingToolkit.readMission")(function* (
-  mission: TradingMission,
-  withRetrospect: boolean,
-) {
-  const strategies = yield* TradingStrategyService;
-  const strategy = yield* strategies.getCurrentStrategy(mission.id).pipe(Effect.orDie);
-  // Bounded (plan 29 step 6.3): every live watch, plus a capped tail of
-  // settled ones. The settled tail is retrospect — a watch that fired arrived
-  // as the wake's own `triggeringWatch`, and no turn of the mission this was
-  // measured on ever referred back to a retired one, while they were 46% of
-  // the registry a hot-path read carried (plan 35 phase 2).
-  const allWatches = yield* strategies.listWatchesForRead(mission.id).pipe(Effect.orDie);
-  const watches = withRetrospect
-    ? allWatches
-    : allWatches.filter((watch) => watch.status === "active");
-  const missions = yield* TradingMissionService;
-  // The same set preview item 16 refuses against, so a harness told
-  // `no_conflicting_execution_pending` can read what is holding the lock.
-  const pendingExecutions = yield* missions.listPendingExecutions(mission.id).pipe(Effect.orDie);
-  // What the mission has believed, not only what it believes now. A harness
-  // that has republished three times cannot otherwise see the targets it set
-  // before this one.
-  const strategyHistory = withRetrospect
-    ? yield* strategies.listStrategyVersions(mission.id).pipe(Effect.orDie)
-    : null;
-
-  // What the mission has told itself, across the revisions that replaced the
-  // plan it was written beside (plan 29 step 6.4). Short — the working set, not
-  // the session; `trading_journal` reads the longer tail deliberately.
-  const journals = yield* TradingJournalService;
-  const journal = withRetrospect
-    ? yield* journals
-        .list({ missionId: mission.id, limit: TRADING_JOURNAL_TURN_READ_LIMIT })
-        .pipe(Effect.orDie)
-    : null;
-
-  // The optimistic-lock version a publish must quote (`expectedMissionVersion`)
-  // — the mission contract itself no longer carries a version number.
-  const missionVersion = yield* missions.getMissionVersion(mission.id).pipe(Effect.orDie);
-
-  // The retired calibration tool's read, off the hot path (plan 29 step 6.5).
-  // Omitted entirely until there is a closed trade to grade — a mission that
-  // has not traded should not be handed an empty verdict every turn.
-  const calibration = withRetrospect
-    ? yield* (yield* TradingCalibrationService).read({ missionId: mission.id }).pipe(Effect.orDie)
-    : null;
-
-  // Plan 29 step 9.1. Derived from the mandate on every read, never stored: a
-  // column would be a second copy of a fact `mission.instruction` already
-  // states, and the instruction is what the model reads. The two cannot
-  // disagree if there is only one of them.
-  const mode = readMissionMode(mission.instruction);
-
-  return {
-    bound: true,
-    mission: withRetrospect ? mission : withMandatePointer(mission),
-    mode,
-    ...(Option.isNone(strategy) ? {} : { strategy: strategy.value }),
-    missionVersion,
-    // Plan 33 fix B: the rows the model reads, not the rows the table stores.
-    watches: watches.map((watch) => {
-      const row = toWatchRow(watch);
-      return { ...row, id: watchHandle(row.id) };
-    }),
-    pendingExecutions,
-    ...(strategyHistory === null ? {} : { strategyHistory }),
-    ...(journal === null ? {} : { journal }),
-    ...(calibration === null || calibration.tradeCount === 0
-      ? {}
-      : { targetCalibration: calibration }),
-  } satisfies TradingGetMissionResult;
-});
-
 // The position's high-water mark used to be attached here. Since step 6.1 the
 // look reads the market half through `TradingWakeupComposer.observe`, which
 // attaches `peakUnrealisedPnl` and `drawdownFromPeakUsd` itself — so a look and
@@ -359,28 +246,26 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (
 // same arithmetic agreeing.
 
 /**
- * How much of the mandate a scoped look carries — plan 34 step 1.3.
+ * How much of the mandate a look carries — plan 34 step 1.3.
  *
  * Enough to recognise which mandate it is, and not the thousand characters of
  * it. The mandate does not change for a mission's life, so re-reading it on
- * every wake-turn buys nothing; the full text is one scope away.
+ * every wake-turn buys nothing.
  */
 const MANDATE_PREVIEW_CHARS = 120;
 
 /**
  * The mission row with its mandate cut to a pointer.
  *
- * The `retrospect` scope — and so any unscoped assessment look — still carries
- * the whole instruction. A run reacting to a level that fired does not: it
- * already knows what it is doing, and the mandate was 1,050 characters of
- * every look it took.
+ * A run reacting to a level that fired already knows what it is doing, and
+ * the mandate was 1,050 characters of every look it took.
  */
 const withMandatePointer = (mission: TradingMission): TradingMission =>
   mission.instruction.length <= MANDATE_PREVIEW_CHARS
     ? mission
     : {
         ...mission,
-        instruction: `${mission.instruction.slice(0, MANDATE_PREVIEW_CHARS)}… (mandate abridged — read it in full with scope "retrospect")`,
+        instruction: `${mission.instruction.slice(0, MANDATE_PREVIEW_CHARS)}… (mandate abridged)`,
       };
 
 const announceWatchRegistered = Effect.fn("TradingToolkit.announceWatchRegistered")(
@@ -789,10 +674,10 @@ const readMarketStructure = Effect.fn("TradingToolkit.readMarketStructure")(func
  * "what does the model need to know". This is the surviving one: the composer's
  * own gather step, returned as a structure instead of rendered into a wakeup.
  *
- * An unbound thread still gets the market half. Market data is the same answer
- * whoever asks, and a mission that has just ended is exactly when the model
- * most needs to be able to read why — so `mission.bound: false` is an answer,
- * not a refusal.
+ * A call with no `fetch` (absent or empty) is the catalog call and gets the
+ * menu (plan 38 §2.3 rule 3); everything else names catalog keys. An unbound
+ * thread still gets the market-side keys — market data is the same answer
+ * whoever asks — while the mission-side keys refuse with a reason.
  */
 const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
   input: TradingLookInput,
@@ -816,95 +701,21 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
   const market = input.market ?? mission?.market ?? DEFAULT_TRADING_MARKET;
   const observedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
 
-  // Plan 38 §2.1: `fetch[]` ships alongside `scope[]`, and one call names one
-  // of them. `scope` keeps the pre-phase behaviour byte for byte (the golden
-  // pins in handlers.test.ts are that guarantee); with neither, the call is
-  // the catalog call and gets the menu (§2.3 rule 3) — the old
-  // omit-scope-means-everything behaviour is what the menu replaces.
-  if (input.scope !== undefined && input.fetch !== undefined) {
-    return yield* rejectCall({
-      reason: "scope_and_fetch_conflict",
-      threadId: call.threadId,
-      missionId: input.missionId,
-      detail:
-        "pass scope or fetch, not both — scope[] is the legacy bundle, fetch[] names catalog keys",
-    });
+  // With no keys, the call is the catalog call and gets the menu (§2.3
+  // rule 3) — the cheapest possible answer to "what can I ask for?".
+  if ((input.fetch ?? []).length === 0) {
+    const menu = renderTradingLookMenu();
+    yield* Effect.logInfo("trading_look: menu call", { market, menuChars: menu.length });
+    return { observedAt, market, menu } satisfies TradingObservation;
   }
-  if (input.scope === undefined) {
-    if ((input.fetch ?? []).length === 0) {
-      const menu = renderTradingLookMenu();
-      yield* Effect.logInfo("trading_look: menu call", { market, menuChars: menu.length });
-      return { observedAt, market, menu } satisfies TradingObservation;
-    }
-    return yield* readFetchedObservation({
-      threadId: call.threadId,
-      mission,
-      market,
-      observedAt,
-      keys: input.fetch ?? [],
-      ...(input.interval === undefined ? {} : { interval: input.interval }),
-    });
-  }
-
-  const scopes = resolveLookScopes(input);
-
-  // The mission half first, and never conditional on the exchange. A look that
-  // failed because Hyperliquid was unreachable would go dark at exactly the
-  // moment the model most needs to read what it holds and what it is allowed
-  // to do — so the market half below is best-effort, and its failure costs the
-  // fields it would have filled and nothing else.
-  //
-  // `mission` is the one part that is answered even when it was not asked for:
-  // `mission.bound` is what tells the caller whether anything else in the
-  // response is about its own mission, so a look without it is ambiguous.
-  const missionResult =
-    mission === null
-      ? yield* readUnboundMission(call.threadId)
-      : yield* readMission(mission, scopes.has("retrospect"));
-
-  const marketHalf = yield* readMarketHalf({
-    market,
+  return yield* readFetchedObservation({
+    threadId: call.threadId,
     mission,
-    scopes,
-    ...(input.interval === undefined ? {} : { interval: input.interval }),
-    ...(input.bars === undefined ? {} : { bars: input.bars }),
-    ...(input.indicators === undefined ? {} : { indicators: input.indicators }),
-  }).pipe(
-    Effect.catchCause((cause) =>
-      Effect.logWarning("trading_look: the market half could not be read", {
-        market,
-        missionId: mission?.id,
-        cause,
-      }).pipe(Effect.as({ marketReadFailed: describeMarketReadFailure(market, cause) })),
-    ),
-  );
-
-  const trades =
-    mission === null || !scopes.has("trades")
-      ? null
-      : yield* Effect.gen(function* () {
-          const history = yield* TradingTradeHistoryService;
-          return yield* history.read({ missionId: mission.id });
-        }).pipe(Effect.catchCause(() => Effect.succeed(null)));
-
-  const observation = {
-    observedAt,
     market,
-    ...marketHalf,
-    ...(trades === null ? {} : { trades }),
-    mission: missionResult,
-  } satisfies TradingObservation;
-
-  // Plan 33 fix 2.3: which part of a look is actually expensive, measured
-  // rather than eyeballed off a transcript. The next thing to trim gets chosen
-  // from this.
-  yield* Effect.logInfo("trading_look: response size", {
-    missionId: mission?.id,
-    scopes: [...scopes],
-    ...measurePartChars(observation),
+    observedAt,
+    keys: input.fetch ?? [],
+    ...(input.interval === undefined ? {} : { interval: input.interval }),
   });
-
-  return observation;
 });
 
 /**
@@ -944,13 +755,6 @@ const describeMarketReadFailure = (market: string, cause: Cause.Cause<unknown>):
   return `the ${market} exchange read failed: ${detail.slice(0, MARKET_READ_FAILURE_CHARS)}`;
 };
 
-/**
- * Everything a look reports about the market and the position in it.
- *
- * With a mission, this IS the composer's `observe` — the same snapshots, the
- * same volatility pair, the same cost line — so what a look reports and what a
- * wake carries can never drift apart. Without one, it is the market alone.
- */
 /**
  * The book readings, or nothing — never a `microstructure: null` field.
  *
@@ -1031,233 +835,11 @@ const boundOrderBook = (book: OrderBook): OrderBook => ({
   asks: book.asks.slice(0, TRADING_LOOK_BOOK_LEVELS),
 });
 
-/**
- * How much of the chart this call gets echoed back — plan 34 step 1.1.
- *
- * A look that named `indicators` said what it wanted read off the bars, and
- * the reading is 140 characters where the window it was read from is 18,000.
- * Sending both is how one look became a third of a context window, so naming
- * indicators without naming `bars` means the readings and no chart. `bars: 0`
- * asks for the same thing outright; everything else is the number asked for,
- * or a short tail when nothing was.
- */
-const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (input: {
-  readonly market: TradingMarket;
-  readonly mission: TradingMission | null;
-  readonly scopes: ReadonlySet<TradingLookScope>;
-  readonly interval?: TradingTimeframe;
-  readonly bars?: number;
-  readonly indicators?: ReadonlyArray<IndicatorRequest>;
-}) {
-  const { market, mission, scopes } = input;
-  // A mission-less call has no position by definition; the mission branch below
-  // re-resolves this once the canonical position is in hand.
-  const echoedBars = echoedBarsForLook(input);
-
-  const gateway = yield* HyperliquidGateway;
-
-  // The indicator readings this call asked for — the model pulls `ema(9)`
-  // instead of deriving it from raw bars in context. The `ema_cross` pair
-  // (9/21) is served by the structure read; these are for what it does not.
-  //
-  // Computed on the FULL window, never the bounded slice riding back, so a
-  // 50-period read works beside `bars: 20`. When the window in hand is shorter
-  // than the reading needs, the bars are fetched again at the depth
-  // `indicatorLookbackBars` asks for: everything else here is measured over the
-  // runtime's 120-bar lookback, and at 120 bars an `ema(50)` still carries its
-  // SMA seed — enough to report the wrong side of a two-EMA spread on 1.1% of
-  // ETH 1m bars. Only the indicator input widens, and only backwards —
-  // volatility, structure and the echoed chart keep the window they have always
-  // used, and the bars they share stay the ones they were observed as.
-  const indicatorReadings = Effect.fn("TradingToolkit.indicatorReadings")(function* (
-    history: MarketHistory,
-  ) {
-    const requests = (input.indicators ?? []).slice(0, INDICATOR_MAX_REQUESTS);
-    if (requests.length === 0) return {};
-    const needed = indicatorLookbackBars(requests);
-    if (history.candles.length >= needed) {
-      return { indicators: requests.map((request) => computeIndicator(request, history.candles)) };
-    }
-    const deeper = yield* gateway
-      .getMarketHistory({ market: history.market, interval: history.interval, maxBars: needed })
-      .pipe(Effect.catchCause(() => Effect.succeed(null)));
-    return {
-      indicators: requests.map((request) =>
-        computeIndicator(request, extendHistoryBackwards(history, deeper)),
-      ),
-    };
-  });
-  const wantsMarket = scopes.has("market");
-  const wantsCandles = scopes.has("candles");
-  const wantsStructure = scopes.has("structure");
-
-  if (mission === null) {
-    // No mission means no position and no history, so the market scopes are
-    // the only ones with anything to answer here.
-    const interval = input.interval ?? POC_DEFAULT_TIMEFRAME;
-    const needsBars = wantsCandles || wantsMarket;
-    const [resolvedMarket, snapshot, orderBook, candles, structure] = yield* Effect.all(
-      [
-        wantsMarket ? gateway.resolveMarket(market) : Effect.succeed(null),
-        wantsMarket ? gateway.getMarketSnapshot(market) : Effect.succeed(null),
-        wantsMarket ? gateway.getOrderBook(market) : Effect.succeed(null),
-        needsBars
-          ? gateway.getMarketHistory({ market, interval, maxBars: VOLATILITY_LOOKBACK_BARS })
-          : Effect.succeed(null),
-        wantsStructure ? readMarketStructure({ market, mission: null }) : Effect.succeed(null),
-      ],
-      { concurrency: "unbounded" },
-    );
-    const readings = candles === null || !wantsCandles ? {} : yield* indicatorReadings(candles);
-    return {
-      ...(resolvedMarket === null ? {} : { resolvedMarket }),
-      ...(snapshot === null ? {} : { snapshot }),
-      ...(orderBook === null ? {} : { orderBook: boundOrderBook(orderBook) }),
-      ...(candles === null || !wantsCandles
-        ? {}
-        : {
-            candles: boundCandles(candles, echoedBars),
-            volatility: roundObservedVolatility(
-              measureVolatility({
-                market,
-                interval,
-                candles: candles.candles,
-                measuredAt: candles.freshness.observedAt,
-              }),
-            ),
-            ...readings,
-          }),
-      ...(orderBook === null || candles === null || snapshot === null
-        ? {}
-        : withMicrostructure(orderBook, candles.candles, snapshot)),
-      // No mandate to read a thesis timeframe from, so the interval this call
-      // named (or the 5m base default above) is the frame it is about.
-      ...(structure === null ? {} : { structure: digestMarketStructure(structure, interval) }),
-    };
-  }
-
-  const wantsPosition = scopes.has("position");
-
-  const composer = yield* TradingWakeupComposer;
-  const strategies = yield* TradingStrategyService;
-  const plan = yield* strategies
-    .getCurrentStrategy(mission.id)
-    .pipe(Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())));
-  // One observation covers all four market scopes: `observe` is the composer's
-  // own gather step, and splitting it apart per scope would be a second
-  // implementation of the read the shared market half exists to prevent. What
-  // scope decides is which of its answers ride back in the response.
-  const facts = yield* composer.observe({
-    mission,
-    occurredAt: yield* Effect.clockWith((clock) => clock.currentTimeMillis),
-    market,
-    ...(Option.isNone(plan) ? {} : { activeStrategy: plan.value }),
-  });
-
-  // `observe` measures on the mission's runtime timeframe. A call that names a
-  // different interval is asking a question that read cannot answer, so it
-  // gets its own bounded history — and the volatility beside it stays the
-  // runtime one, which is what every other cadence in the mission is measured
-  // on and what the plan's levels mean.
-  const namedInterval =
-    input.interval !== undefined && input.interval !== facts.history.interval
-      ? input.interval
-      : null;
-  const namedHistory =
-    wantsCandles && namedInterval !== null
-      ? yield* gateway
-          .getMarketHistory({
-            market,
-            interval: namedInterval,
-            maxBars: VOLATILITY_LOOKBACK_BARS,
-          })
-          .pipe(Effect.catchCause(() => Effect.succeed(null)))
-      : null;
-
-  // What the chart costs depends on whether there is a trade to manage. Flat,
-  // it is capped; holding, the call gets the window it asked for.
-  const holdingPosition = (facts.position?.size ?? 0) !== 0;
-  // The close review is a flat turn that is nevertheless about a trade: the
-  // playbook sends it to the `retrospect` scope to grade the hold it just
-  // finished, and a chart capped to sixty bars there would hide the very hold
-  // being graded.
-  const readsFullChart = holdingPosition || scopes.has("retrospect");
-  const heldBars = echoedBarsForLook({ ...input, holdingPosition: readsFullChart });
-  // Said where the shortened table is, so the cap is a fact the model can act
-  // on rather than a silent truncation it reads as the whole chart.
-  const barsNote =
-    !readsFullChart && (input.bars ?? 0) > heldBars
-      ? `flat: the chart is capped at ${TRADING_LOOK_FLAT_BAR_CAP} bars (you asked for ` +
-        `${input.bars}). Every measurement and indicator here was still computed over the full ` +
-        `lookback. Ask again while holding a position, or name indicators, to read further back`
-      : undefined;
-
-  // The book is NOT re-read here. `observe` already took it, and a second read
-  // would let a look and a wake quote two different books — the drift the
-  // shared market half exists to prevent.
-  const [resolvedMarket, structure, openOrders] = yield* Effect.all(
-    [
-      wantsMarket ? gateway.resolveMarket(market) : Effect.succeed(null),
-      wantsStructure ? readMarketStructure({ market, mission }) : Effect.succeed(null),
-      wantsPosition ? gateway.getOpenOrders(facts.address as `0x${string}`) : Effect.succeed(null),
-    ],
-    { concurrency: "unbounded" },
-  );
-
-  const readings = wantsCandles ? yield* indicatorReadings(namedHistory ?? facts.history) : {};
-
-  return {
-    ...(resolvedMarket === null ? {} : { resolvedMarket }),
-    ...(wantsMarket
-      ? {
-          snapshot: facts.marketSnapshot,
-          ...(facts.orderBook === null ? {} : { orderBook: boundOrderBook(facts.orderBook) }),
-          ...(facts.microstructure === null ? {} : { microstructure: facts.microstructure }),
-          ...(facts.costContext === null ? {} : { cost: facts.costContext }),
-        }
-      : {}),
-    ...(wantsCandles
-      ? {
-          candles: boundCandles(namedHistory ?? facts.history, heldBars, barsNote),
-          volatility: facts.observedVolatility,
-          ...(facts.higherTimeframeVolatility === null
-            ? {}
-            : { higherTimeframeVolatility: facts.higherTimeframeVolatility }),
-          ...readings,
-        }
-      : {}),
-    // The frame this call is about: the one it named, else the mission's own.
-    ...(structure === null
-      ? {}
-      : { structure: digestMarketStructure(structure, namedInterval ?? facts.primaryTimeframe) }),
-    // What this mission's own levels have already done, and what its last read
-    // measured. `observe` has gathered both since plan 27, and neither exit
-    // carried them — so the `range_reversion` doctrine that says to read them
-    // before arming was pointing at fields nothing returned. They ride the
-    // structure scope because they qualify the boundary read at the same
-    // moment, and only when there is a mission whose memory it is.
-    ...(!wantsStructure || facts.levelHistory.length === 0
-      ? {}
-      : { levelHistory: facts.levelHistory }),
-    ...(!wantsStructure || facts.previousStructureRead === undefined
-      ? {}
-      : { previousStructureRead: facts.previousStructureRead }),
-    ...(wantsPosition
-      ? {
-          account: facts.accountSnapshot,
-          position: facts.position,
-          openOrders: openOrders ?? [],
-          ...(facts.positionCosts === null ? {} : { positionCosts: facts.positionCosts }),
-        }
-      : {}),
-  };
-});
-
 // -- the fetch path (plan 38 §2) -----------------------------------------------
 //
 // One key, one section, one published price. Nothing a call did not name rides
-// back (§2.3 rule 2) — the sections land in the same TradingObservation fields
-// the scope path uses wherever the shapes coincide, so the encoding stays
+// back (§2.3 rule 2) — the sections land in the TradingObservation fields the
+// read has always used wherever the shapes coincide, so the encoding stays
 // familiar, and every key that could not be served is named in `unavailable[]`
 // with a reason rather than degrading to a zero or an empty array (§2.4).
 
@@ -1441,8 +1023,8 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
     //
     // Carried only when a mission-side key was named: the mission row is itself
     // a priced bundle, and a fetch for `candles:5m:20` carries no mission half at
-    // all. The mission-side keys land in the same `mission.*` siblings the scope
-    // path uses, so the encoding is familiar.
+    // all. The mission-side keys land in the `mission.*` siblings the mission
+    // read has always used, so the encoding is familiar.
     const wantsMissionHalf =
       wants("plan") ||
       wants("watches") ||
@@ -1498,8 +1080,8 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
           }
         }
         if (wants("watches")) {
-          // The armed set in full — the `retrospect` shape, because the key is
-          // the model asking to read its registry, not its hot path.
+          // The registry in full, settled watches included — the key is the
+          // model asking to read its registry, not its hot path.
           half.watches = (yield* strategies.listWatchesForRead(mission.id).pipe(Effect.orDie)).map(
             (watch) => {
               const row = toWatchRow(watch);
@@ -1560,7 +1142,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
 
     // -- the market half ----------------------------------------------------------
     //
-    // Best-effort, exactly like the scope path: an exchange that cannot be read
+    // Best-effort: an exchange that cannot be read
     // costs the fields it would have filled and nothing else, while the mission
     // half above still answers.
     const marketHalf: FetchMarketSections | { readonly marketReadFailed: string } =
@@ -1570,8 +1152,8 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
 
         // A bound call reuses `composer.observe` — one gather, the same numbers a
         // wake quotes — wherever any live-market key was named. The gather is
-        // all-or-nothing (that is the drift guarantee), so the saving versus the
-        // scope path is in the response, not the gather.
+        // all-or-nothing (that is the drift guarantee), so what a call saves is
+        // in the response, not the gather.
         const needsObserve =
           mission !== null &&
           (wants("snapshot") ||
@@ -1652,7 +1234,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
         }
 
         // Volatility on the frame the mission works (bound) or the interval the
-        // call named, defaulting to the 5m base (unbound) — the unbound scope path's rule.
+        // call named, defaulting to the 5m base (unbound).
         if (wants("volatility")) {
           if (facts !== null) {
             sections.volatility = facts.observedVolatility;
@@ -1788,8 +1370,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
         }
 
         // The indicator readings: computed on the full window, deepened backwards
-        // when the window in hand is shorter than the reading needs — the same
-        // machinery the scope path's `indicators` parameter uses.
+        // when the window in hand is shorter than the reading needs.
         if (indicatorRequests.length > 0) {
           const interval =
             input.interval ??
@@ -1824,8 +1405,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
           if (wants("structure")) {
             sections.structure = digested;
             // Plan 38 §4.2: nothing is deleted outright from the read. The
-            // scope path attaches the mission's previous structure read to its
-            // structure scope, so the fetch key carries it too — from the
+            // mission's previous structure read rides the structure key — from the
             // observed facts when a gather already happened, else read
             // directly (one SQL row, no exchange gather).
             const previous =

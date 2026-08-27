@@ -29,6 +29,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { retryTransientRead } from "./RetryTransient.ts";
 import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { readActiveRun } from "./TradingRunTelemetry.ts";
 import { allocateExecutionSequence } from "./TradingExecutionSequence.ts";
 
 /** Which of the three exits was asked for. */
@@ -85,14 +86,8 @@ export const makeTradingExitService = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const iocSlippage = yield* IocSlippageConfig;
 
-  /** The run holding the mission's decision lease, read from the lease's table. */
-  const readActiveRun = (missionId: string) =>
-    sql<{ readonly run_id: string }>`
-      SELECT run_id FROM trading_harness_runs
-      WHERE mission_id = ${missionId} AND status NOT IN ('completed', 'failed')
-      ORDER BY started_at DESC
-      LIMIT 1
-    `.pipe(Effect.map((rows) => rows[0]?.run_id ?? null));
+  /** The run holding the decision lease — the shared read in TradingRunTelemetry. */
+  const readActiveRunForMission = (missionId: string) => readActiveRun(sql, missionId);
 
   const prepare: TradingExitService["Service"]["prepare"] = (request) =>
     Effect.gen(function* () {
@@ -118,7 +113,7 @@ export const makeTradingExitService = Effect.gen(function* () {
         );
       }
 
-      const harnessRunId = yield* readActiveRun(request.missionId);
+      const harnessRunId = yield* readActiveRunForMission(request.missionId);
       if (harnessRunId === null) {
         return refused(
           "harness_run_owns_lease",

@@ -85,40 +85,6 @@ export function runtimeTimeframe(instruction: string): TradingTimeframe {
 }
 
 /**
- * The operating note every auto-created mission carries alongside its mandate.
- *
- * This used to be `POC_DEFAULT_INSTRUCTION`, a whole mandate ("Trade ETH on
- * testnet using 1m candles…") that `AutoMissionConfig` resolved as the default
- * instruction and `TradingAutoMission` then never read — the first message on a
- * thread is the mandate, so the configured instruction reached no mission and
- * the knob that set it did nothing. Two things had drifted at once: the
- * documented default was not in force, and the sentence that WAS documented
- * told every mission to arm candle-close watches, which the range playbook
- * explicitly flags as misarmed at a boundary.
- *
- * What is left is the part a user's own mandate will never state and the
- * playbooks elaborate on: which interval the loop turns on, and the one gate
- * every trade answers to — whether the expected move over the intended hold is
- * bigger than the round trip is worth. It names the timeframe
- * even though every wakeup already carries `defaultTimeframe`, because a
- * harness weighs a direct instruction more heavily than a field in a snapshot,
- * and the two agreeing is what keeps the loop turning at the cadence the
- * runtime is actually feeding it rather than once every fifteen.
- *
- * It defers to the mandate on the interval, because this note is APPENDED to
- * the mandate and {@link runtimeTimeframe} reads the mandate: a mission told
- * "scalp ETH on the 5m" gets 5m bars, a 5m paired higher read and a 30-minute
- * flat wake floor, and a note that said "work on 1m candles" was the one thing
- * in front of it pointing the other way.
- *
- * It names no market and no direction: those belong to the mandate the user
- * writes, and a standing note that contradicted it would be the same drift
- * again in the other direction.
- */
-export const POC_STANDING_INSTRUCTION =
-  "Work the interval your mandate names, else 5m candles, and arm each watch on THAT interval so a run wakes on its cadence — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth — priced at the execution you intend? An entry resting at a level you armed (`urgency: patient`) pays the maker legs of the cost line, not the crossing ones. If the move cannot pay even that, stand down and say so in one line. The reading that answers it is `microstructure.volatilityRatio`: the recent pace against the whole window's, so 0.4 means the last twenty minutes have moved at 40% of the two-hour pace and the move you need is probably not there. Time the entry with `bookImbalance` (positive is bid-heavy, over the same levels a side) and `aggressorFlow` (the share of volume closing near bar highs, over `bars` that actually traded), and read both against `liquidity` — a lopsided ratio across a thin book is where a crossing order walks.";
-
-/**
  * Prose the harness may leave out, decoded as an empty string.
  *
  * A required key the harness omits is not a smaller mistake than a wrong value:

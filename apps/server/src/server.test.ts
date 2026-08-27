@@ -133,7 +133,6 @@ import { TradingJournalServiceLive } from "./trading/TradingJournalService.ts";
 import { TradingWatchServiceLive } from "./trading/TradingWatchService.ts";
 import { TradingPlanProtectionService } from "./trading/TradingPlanProtectionService.ts";
 import { TradingWorkingOrderService } from "./trading/TradingWorkingOrderService.ts";
-import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
@@ -430,7 +429,6 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     tradingTurnCoordinator?: Partial<TradingTurnCoordinator["Service"]>;
-    tradingAutoMission?: Partial<TradingAutoMission["Service"]>;
     tradingMarketPrice?: Partial<TradingMarketPrice["Service"]>;
     tradingMarketChart?: Partial<TradingMarketChart["Service"]>;
     tradingUniverse?: Partial<TradingUniverse["Service"]>;
@@ -959,15 +957,6 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.tradingTurnCoordinator,
           }),
         ),
-        // The same path asks whether this message is the one that starts a
-        // mission. These tests run without the auto-mission shortcut, so it never
-        // claims one.
-        Layer.provide(
-          Layer.mock(TradingAutoMission)({
-            claimFirstMessage: () => Effect.succeed({ kind: "not_applicable" as const }),
-            ...options?.layers?.tradingAutoMission,
-          }),
-        ),
         // Plan 29 step 8.4: the plan-revision RPC publishes through the same
         // path `trading_plan` does, so the routes layer now needs the five
         // services that path touches. The four SQL-only ones are live — a mock
@@ -988,7 +977,6 @@ const buildAppUnderTest = (options?: {
                 target: {
                   status: "flat" as const,
                   positionSize: 0,
-                  targetPrice: null,
                   cancelledCloids: [],
                 },
               }),

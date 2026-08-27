@@ -1,11 +1,9 @@
 /**
  * The start-page asset picker.
  *
- * A mission's market is fixed at creation (§10.1), so the only moment the user
- * can choose it is before the first message is sent. The picker therefore lives
- * in the draft composer's footer, beside the other pre-send choices, and the
- * selected market rides the first turn's `tradingMarket` field into the
- * auto-mission create path.
+ * A mission's market is fixed at creation (§10.1), so the picker lives in the
+ * mission create form (`MissionCreateForm`), and the selected market goes out
+ * with the form's `trading.mission.create` dispatch.
  *
  * It searches the venue's live universe. It used to be two buttons — BTC and
  * ETH — because those were the only two assets the contracts admitted; now that

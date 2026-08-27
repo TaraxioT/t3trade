@@ -9,8 +9,8 @@
  * server's own profit-taking to the give-back watch it had armed itself.
  *
  * Plan 36 item 6 stopped resting them: a target is a wake now, not an order,
- * so nothing new is placed and the insert below is reached only by a build
- * that still did. What remains is the retirement half — a pass that cancels a
+ * so nothing new is placed and the ledger no longer inserts. What remains is
+ * the retirement half — a pass that cancels a
  * leftover, or observes the position flat, writes that down — and
  * {@link readTakeProfitOrders}, which tells the fill reconciler which cloids
  * were the server's, so a fill against one an older build rested still becomes
@@ -40,27 +40,18 @@ export interface ProtectionOrderRow {
 export interface TakeProfitLedgerInput {
   readonly missionId: string;
   readonly market: string;
-  /** The order this pass placed and confirmed, when it placed one. */
-  readonly placedCloid?: string | undefined;
-  readonly targetPrice: number | null;
-  /** Signed canonical position size the order covers. */
+  /** Signed canonical position size at the start of the pass. */
   readonly positionSize: number;
   /** Orders this pass withdrew or superseded. */
   readonly cancelledCloids: ReadonlyArray<string>;
 }
 
 /**
- * Record a reconcile pass: the order it rested, and the ones it retired.
+ * Record a reconcile pass: the rows it retired.
  *
- * Idempotent on the cloid, because the pass is: a retry of the same target
- * reuses the cloid deliberately.
- *
- * Nothing is recorded against a flat position. The pass that places a
- * take-profit and then finds the position gone reports the cloid it sent with
- * a size of zero, and the ledger wrote that down as a live order: one mission
- * carries a `take_profit` row of size 0.0 placed 280ms after its close, never
- * retired. An order on nothing is not protection, and a row saying otherwise
- * is read by the fill reconciler as an order still standing.
+ * Only retirement — the pass places nothing, so the ledger writes nothing
+ * new. A pass that observed the position flat retires every live row; one
+ * that cancelled leftovers retires exactly those cloids.
  */
 export const recordTakeProfitOutcome = (
   input: TakeProfitLedgerInput,
@@ -69,21 +60,7 @@ export const recordTakeProfitOutcome = (
     const sql = yield* SqlClient.SqlClient;
     const at = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
 
-    const size = Math.abs(input.positionSize);
-    const flat = size <= PROTECTION_SIZE_EPSILON;
-
-    if (input.placedCloid !== undefined && input.targetPrice !== null && !flat) {
-      yield* sql`
-        INSERT INTO trading_protection_orders (
-          cloid, mission_id, market, kind, size, limit_price, placed_at
-        ) VALUES (
-          ${input.placedCloid}, ${input.missionId}, ${input.market}, 'take_profit',
-          ${size}, ${input.targetPrice}, ${at}
-        )
-        ON CONFLICT(cloid) DO UPDATE SET
-          size = ${size}, limit_price = ${input.targetPrice}, retired_at = NULL
-      `;
-    }
+    const flat = Math.abs(input.positionSize) <= PROTECTION_SIZE_EPSILON;
 
     // The position is gone, so every order the server was resting on it is
     // gone with it — whether this pass managed to cancel it or the exchange
@@ -107,7 +84,6 @@ export const recordTakeProfitOutcome = (
     Effect.catchCause((cause) =>
       Effect.logWarning("could not record a take-profit in the protection ledger", {
         missionId: input.missionId,
-        cloid: input.placedCloid,
         cause,
       }),
     ),

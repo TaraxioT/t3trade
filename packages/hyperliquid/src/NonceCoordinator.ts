@@ -7,9 +7,9 @@
  *  - nonces are strictly monotonic (never duplicated);
  *  - the next nonce is fast-forwarded to current Unix milliseconds when the
  *    wall clock has moved past the last-issued value (the exchange accepts
- *    a current-or-future ms nonce and rejects stale ones);
- *  - the last-issued nonce is exposed as a recovery hint so a restart can
- *    rehydrate before submitting again.
+ *    a current-or-future ms nonce and rejects stale ones). A restart
+ *    therefore needs no persisted state: real time has always moved past
+ *    anything signed before it.
  *
  * The lane serializes the whole "assign nonce → sign → submit" critical
  * section so two harness-requested actions can never race for the same
@@ -19,7 +19,7 @@
  *
  * @module HyperliquidNonceCoordinator
  */
-import { Context, Data, Effect, Ref, Schema } from "effect";
+import { Context, Effect, Ref, Schema } from "effect";
 import * as Clock from "effect/Clock";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
@@ -36,14 +36,6 @@ export class HyperliquidNonceError extends Schema.TaggedErrorClass<HyperliquidNo
     return `HyperliquidNonceError(${this.reason}): lastIssued=${this.lastIssued ?? "-"}`;
   }
 }
-
-/**
- * A recovery hint snapshot. A restart rehydrates `lastIssuedNonce` so the next
- * issued nonce is strictly greater than anything signed before the restart.
- */
-export class NonceRecoveryHint extends Data.Class<{
-  readonly lastIssuedNonce: number;
-}> {}
 
 /**
  * The serialized nonce lane. One instance per execution wallet.
@@ -72,38 +64,20 @@ export class HyperliquidNonceCoordinator extends Context.Service<
     readonly runWithNonce: <A, E, R>(
       effect: (nonce: number) => Effect.Effect<A, E, R>,
     ) => Effect.Effect<A, E | HyperliquidNonceError, R>;
-
-    /** The recovery hint (last-issued nonce). */
-    readonly recoveryHint: Effect.Effect<NonceRecoveryHint>;
   }
 >()("@t3tools/hyperliquid/NonceCoordinator/HyperliquidNonceCoordinator") {}
 
 /**
- * Build a coordinator that seeds its last-issued nonce from a recovery hint
- * and persists each new high-water mark through `persist`.
- *
- * `persist` is invoked for every committed nonce; it should be idempotent.
- * Failures to persist are surfaced as `clock_before_last`/`persist_failed`
- * errors so the caller never signs with a nonce it cannot remember.
+ * Build a coordinator. In-memory only: the clock fast-forward above makes a
+ * fresh process's first nonce (current ms) strictly greater than anything a
+ * previous process signed, so there is nothing to rehydrate.
  */
-export const makeNonceCoordinator = Effect.fn("makeNonceCoordinator")(function* (
-  initial?: NonceRecoveryHint,
-  persist: (nonce: number) => Effect.Effect<void> = () => Effect.void,
-) {
-  const lastRef = yield* Ref.make<number>(initial?.lastIssuedNonce ?? 0);
+export const makeNonceCoordinator = Effect.fn("makeNonceCoordinator")(function* () {
+  const lastRef = yield* Ref.make<number>(0);
   const lane = yield* Semaphore.make(1);
 
-  const commit = (nonce: number): Effect.Effect<void, HyperliquidNonceError> =>
-    Effect.gen(function* () {
-      yield* Ref.update(lastRef, (prev) => (nonce > prev ? nonce : prev));
-      // A persist failure must never let a signed nonce be forgotten. Catch
-      // any defect and surface it as a typed persist_failed error.
-      yield* persist(nonce).pipe(
-        Effect.catchDefect(
-          () => new HyperliquidNonceError({ reason: "persist_failed", lastIssued: nonce }),
-        ),
-      );
-    });
+  const commit = (nonce: number): Effect.Effect<void> =>
+    Ref.update(lastRef, (prev) => (nonce > prev ? nonce : prev));
 
   const issueNext: Effect.Effect<number, HyperliquidNonceError> = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
@@ -127,23 +101,9 @@ export const makeNonceCoordinator = Effect.fn("makeNonceCoordinator")(function* 
           return result;
         }),
       ),
-
-    recoveryHint: Effect.gen(function* () {
-      const lastIssuedNonce = yield* Ref.get(lastRef);
-      return new NonceRecoveryHint({ lastIssuedNonce });
-    }),
   });
 });
 
-/**
- * A live layer that seeds from a recovery hint and persists each committed
- * nonce through the supplied effectful sink (no-op by default).
- */
-export const HyperliquidNonceCoordinatorLive = (options?: {
-  initial?: NonceRecoveryHint;
-  persist?: (nonce: number) => Effect.Effect<void>;
-}) =>
-  Layer.effect(
-    HyperliquidNonceCoordinator,
-    makeNonceCoordinator(options?.initial, options?.persist),
-  );
+/** The live layer. */
+export const HyperliquidNonceCoordinatorLive = () =>
+  Layer.effect(HyperliquidNonceCoordinator, makeNonceCoordinator());

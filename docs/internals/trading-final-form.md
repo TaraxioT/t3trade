@@ -301,17 +301,52 @@ widened to both kinds.
 
 ### Phase 9 — Deletions and consolidation
 
-- [ ] Delete: the `scope[]` read path in `trading_look`; the ~13 dead contract
-      schemas in `tools.ts`; `submitReduceOnlyAlo`; the unreachable take-profit
-      decoration; `missionHeartbeat.ts` and dead presentation exports; the
-      unreachable nonce-recovery surface; `watchSanityBackstopMillis`; the
-      `collapsedMissions` module-level leak; surviving `TradingMarket` remnants.
-- [ ] Consolidate: the 5× signer-resolution and nonce-lane blocks; `isTestnet`
-      derived from endpoints; one cancel-increasing-orders helper; one
-      `readActiveRun`; one exit implementation shared by `TradingExitService` and
-      `TradingControlService`; split `MissionLivePanel.tsx` and
-      `tradingPresentation.ts` along existing seams.
-- [ ] Repair the six stale doc comments the audit catalogued.
+- [x] Delete: the `scope[]` read path in `trading_look` (fetch[] is the sole
+      survivor; the tests that pinned surviving behavior were re-pinned on
+      fetch keys first, and the scope-only behaviors — flat bar cap, `bars`/
+      `indicators` inputs, the unbound `lastMission` answer, the retrospect
+      full-mandate — died with it); 26 dead contract schemas/aliases in
+      `tools.ts`; `submitReduceOnlyAlo`; the unreachable take-profit
+      decoration (statuses trimmed to `flat`/`withdrawn`, `placedCloid`/
+      `targetPrice` and the ledger INSERT gone, the ignored `target` and
+      `executionSequence` inputs gone with `moduleReadPlanTarget`; the
+      withdraw-only sweep and the ledger's retirement half stay — Phase 7's
+      `guardTakeProfit` reaches exactly those); `missionHeartbeat.ts` and the
+      dead presentation exports; the nonce-recovery surface (deleted, not
+      wired — the wall-clock fast-forward makes a fresh process's first nonce
+      strictly newer than anything signed before it; `HyperliquidNonceError`
+      itself stays, `classifyFailure` names its tag);
+      `watchSanityBackstopMillis`; the `collapsedMissions` leak (now a
+      50-entry bounded Map, same UX); `TradingMarket` remnants (the two bare
+      `"ETH"` fallbacks route through `DEFAULT_TRADING_MARKET`;
+      `DEFAULT_SEED_COINS` and the picker's offline fallback stay). Also the
+      Phase 8 leftovers: the whole auto-mission machinery
+      (`TradingAutoMission`, `AutoMissionConfig`, the env gate, the
+      `tradingMarket` turn-start field, `POC_STANDING_INSTRUCTION`) — nothing
+      but the retired draft-hero path fed it; the assetPicker composer prop
+      was already gone.
+- [x] Consolidate: `resolveSigner` + `signInNonceLane` in
+      `HyperliquidExecutionService` (six pasted blocks each);
+      `isTestnetEndpoints` derived from the endpoint URLs (no literals left);
+      `RestingIncreasingOrders.ts` (the guard, the emergency close and
+      cancel-entries share one read + one best-effort cancel); one
+      `readActiveRun` in `TradingRunTelemetry`; the control service's mission
+      and manual reduce lanes share one bounded `reduceLoop` — full
+      `TradingExitService`/`TradingControlService` unification was declined
+      and documented: the exit runs inside a lease-owning turn through the
+      record/receipt path, the controls are deliberately preview- and
+      lease-free (§14.7), and they already share the reduce-only submit
+      primitives; `MissionLivePanel.tsx` (131→37KB, three siblings) and
+      `tradingPresentation.ts` (124→29KB, six siblings) split along component
+      seams with re-exports keeping every import path.
+- [x] Repair the stale doc comments: the phantom `trading_control_*` tool
+      names (service header + `docs/architecture/trading-execution.md`); the
+      take-profit premises in `TradingWorkingOrderService`,
+      `TradingBudgetReader`, `TradingPlanProtectionService` and the
+      `TradingPlanTargetReconcileView` contract; the coordinator's
+      `ensureNotDeaf` doc still describing the removed covered-gets-backstop
+      branch; the `VISIBLE_BARS`/geometry drift (the constant is now the
+      imported `MIN_VISIBLE_BARS` the geometry actually floors at).
 
 ## 5 · Migration ledger
 
