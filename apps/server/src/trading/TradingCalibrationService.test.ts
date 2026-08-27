@@ -34,7 +34,7 @@ const MISSION = "mission_calibration";
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // 60 adds the stop-placement columns the read now selects.
-  yield* runMigrations({ toMigrationInclusive: 69 });
+  yield* runMigrations({});
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
@@ -87,7 +87,7 @@ const insertTrade = (input: {
         peak_unrealised_pnl, trough_unrealised_pnl, giveback_from_peak,
         fill_count, strategy_version, target_profit_usd, stop_noise_floor_multiple
       ) VALUES (
-        ${input.missionId ?? MISSION}, 'ETH', 0, ${input.closedAt}, 60000, 'long', 1,
+        ${input.missionId ?? MISSION}, 'ETH', ${input.closedAt}, ${input.closedAt}, 60000, 'long', 1,
         3000, 3010, ${input.netPnl + 1}, 1, ${input.netPnl},
         ${input.peak}, -2, 0, 2, ${input.strategyVersion}, ${input.targetProfitUsd},
         ${input.stopNoiseFloorMultiple ?? null}

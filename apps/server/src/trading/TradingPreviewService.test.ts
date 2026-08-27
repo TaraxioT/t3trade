@@ -816,3 +816,114 @@ describe("the budget gate measures the whole reservation", () => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// previewManualOrder — the manual checklist (final-form Phase 7)
+// ---------------------------------------------------------------------------
+
+import { accountPolicyDefaults } from "@t3tools/trading-contracts/accountPolicy";
+
+import { previewManualOrder, type ManualPreviewContext } from "./TradingPreviewService.ts";
+
+const manualCtx = (
+  now: number,
+  overrides: Partial<ManualPreviewContext> = {},
+): ManualPreviewContext => ({
+  policy: accountPolicyDefaults(1_000),
+  approvedExecutionWalletAddress: "0xapproved",
+  bbo: freshBbo(now),
+  accountObservedAt: now,
+  pendingExecution: null,
+  existingNotionalUsd: 0,
+  takerFeeRateBps: 5,
+  stopSlippageReserveBps: 25,
+  nowMs: now,
+  ...overrides,
+});
+
+const manualRejectionItem = (intent: TradingOrderIntent, ctx: ManualPreviewContext) =>
+  previewManualOrder(intent, ctx).pipe(
+    Effect.flip,
+    Effect.map((r) => r.item),
+  );
+
+describe("previewManualOrder — the manual checklist", () => {
+  const now = 1_700_000_000_000;
+
+  it.effect("passes a well-formed manual intent and reserves Eq 4", () =>
+    Effect.gen(function* () {
+      const preview = yield* previewManualOrder(goodIntent(), manualCtx(now));
+      // plannedLoss 12 + notional(187.5) × 10bps fees + notional × 25bps
+      expect(preview.reservedRiskUsd).toBeCloseTo(12 + 187.5 * 0.001 + 187.5 * 0.0025, 6);
+    }),
+  );
+
+  it.effect("REQUIRES a stop: no exception, no reduce-only exemption", () =>
+    Effect.gen(function* () {
+      const item = yield* manualRejectionItem(goodIntent({ stop: undefined }), manualCtx(now));
+      expect(item).toBe("valid_stop_defined");
+    }),
+  );
+
+  it.effect("holds the account notional cap, existing exposure counted", () =>
+    Effect.gen(function* () {
+      // 8×C = $8,000 cap; $7,900 already open, and this ticket adds ~$187.5.
+      const item = yield* manualRejectionItem(
+        goodIntent(),
+        manualCtx(now, { existingNotionalUsd: 7_900 }),
+      );
+      expect(item).toBe("gross_notional_within_authority");
+    }),
+  );
+
+  it.effect("holds the per-trade loss budget", () =>
+    Effect.gen(function* () {
+      // 7% of $1,000 = $70; a $500 planned loss is refused.
+      const item = yield* manualRejectionItem(
+        goodIntent({ stop: { stopPrice: 3_700, plannedLossAtStopUsd: 500 } }),
+        manualCtx(now),
+      );
+      expect(item).toBe("planned_loss_within_per_position_ceiling");
+    }),
+  );
+
+  it.effect("holds the exchange minimum and BBO freshness like the mission list", () =>
+    Effect.gen(function* () {
+      const tooSmall = yield* manualRejectionItem(goodIntent({ size: 0.001 }), manualCtx(now));
+      expect(tooSmall).toBe("exchange_minimum_met");
+
+      const stale = yield* manualRejectionItem(
+        goodIntent(),
+        manualCtx(now, { bbo: freshBbo(now - 10_000) }),
+      );
+      expect(stale).toBe("account_and_bbo_fresh");
+    }),
+  );
+
+  it.effect("refuses while a manual submission is already in flight", () =>
+    Effect.gen(function* () {
+      const item = yield* manualRejectionItem(
+        goodIntent(),
+        manualCtx(now, {
+          pendingExecution: {
+            cloid: "0xabc",
+            actionType: "open",
+            status: "submitted",
+            ageMillis: 3_000,
+          },
+        }),
+      );
+      expect(item).toBe("no_conflicting_execution_pending");
+    }),
+  );
+
+  it.effect("fail-closes on an unarmed signer", () =>
+    Effect.gen(function* () {
+      const item = yield* manualRejectionItem(
+        goodIntent(),
+        manualCtx(now, { approvedExecutionWalletAddress: null }),
+      );
+      expect(item).toBe("execution_wallet_approved");
+    }),
+  );
+});

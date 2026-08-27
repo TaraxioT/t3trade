@@ -22,7 +22,7 @@ const layer = it.layer(
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 68 });
+  yield* runMigrations({});
   yield* sql`DELETE FROM trading_market_samples`;
 });
 

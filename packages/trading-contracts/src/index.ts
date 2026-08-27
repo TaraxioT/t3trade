@@ -1,6 +1,7 @@
 export * from "./primitives.ts";
 export * from "./account.ts";
 export * from "./authority.ts";
+export * from "./accountPolicy.ts";
 export * from "./strategy.ts";
 export * from "./mission.ts";
 export * from "./watch.ts";

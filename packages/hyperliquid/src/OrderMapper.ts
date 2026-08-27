@@ -52,6 +52,16 @@ export interface OrderMappingInput {
   readonly allowedSlippageBps: number;
   /** Current time in ms, to test BBO freshness against §13's 2s window. */
   readonly nowMs: number;
+  /**
+   * Owner-derived cloid to use instead of the default mission derivation.
+   *
+   * The mapper's own derivation hashes `intent.missionId`, which is right for
+   * every mission order and wrong for a manual one — a manual order's owner is
+   * the trading account (`deriveManualCloid`). The caller that knows the owner
+   * passes the cloid; absent, the mission derivation applies byte-for-byte as
+   * it always has.
+   */
+  readonly cloidOverride?: string | undefined;
 }
 
 const bps = (basisPoints: number): number => basisPoints / 10_000;
@@ -216,11 +226,13 @@ export const mapOrder = (
       });
     }
 
-    const cloid = deriveCloid({
-      missionId: intent.missionId,
-      executionSequence: intent.executionSequence,
-      actionType: intent.actionType,
-    });
+    const cloid =
+      input.cloidOverride ??
+      deriveCloid({
+        missionId: intent.missionId,
+        executionSequence: intent.executionSequence,
+        actionType: intent.actionType,
+      });
 
     return yield* Effect.succeed({
       cloid,

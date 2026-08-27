@@ -18,17 +18,42 @@ export class TradingMissionNotFoundError extends Schema.TaggedErrorClass<Trading
   }
 }
 
-/** Only one active autonomous mission may exist at a time. */
+/** D4: only one active mission may hold a `{venue, market}` at a time. */
 export class TradingMissionAlreadyActiveError extends Schema.TaggedErrorClass<TradingMissionAlreadyActiveError>()(
   "TradingMissionAlreadyActiveError",
   {
     userId: Schema.String,
     activeMissionId: Schema.String,
     activeStatus: TradingMissionStatus,
+    /** The market the existing mission holds. */
+    market: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
-    return `User ${this.userId} already has an active mission ${this.activeMissionId} (${this.activeStatus})`;
+    return (
+      `User ${this.userId} already has an active mission ${this.activeMissionId} ` +
+      `(${this.activeStatus})${this.market === undefined ? "" : ` on ${this.market}`}`
+    );
+  }
+}
+
+/**
+ * D4, the other direction: the market has MANUAL exposure — an open manual
+ * position, a resting manual order, or a manual submission in flight — so a
+ * mission may not take authority over it until the user is out.
+ */
+export class TradingMarketManualExposureError extends Schema.TaggedErrorClass<TradingMarketManualExposureError>()(
+  "TradingMarketManualExposureError",
+  {
+    market: Schema.String,
+    exposure: Schema.Literals(["open_position", "resting_order", "pending_execution"]),
+  },
+) {
+  override get message(): string {
+    return (
+      `${this.market} has manual exposure (${this.exposure.replace("_", " ")}); ` +
+      "close it or cancel it before a mission can take this market"
+    );
   }
 }
 

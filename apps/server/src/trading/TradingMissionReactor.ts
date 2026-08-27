@@ -52,7 +52,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { setSessionProfile, clearSessionProfile } from "../provider/SessionProfile.ts";
-import type { PersistedWatch, TradingHarnessRunCause } from "./Schemas.ts";
+import type { PersistedWatch, TradingHarnessRunCause, TradingMission } from "./Schemas.ts";
 import {
   executionRefusedKey,
   executionSettledKey,
@@ -69,7 +69,10 @@ import {
   HyperliquidExecutionService,
   TradingExecutionError,
 } from "./HyperliquidExecutionService.ts";
-import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
+import { HyperliquidReconciler, reconcileManualExposure } from "./HyperliquidReconciler.ts";
+import { TradingAlertService } from "./TradingAlertService.ts";
+import { manualOwnerMissionToken, TradingManualEntryService } from "./TradingManualEntryService.ts";
+import { LOCAL_TRADING_ACCOUNT_ID } from "./TradingAccountBootstrap.ts";
 import { recordTakeProfitOutcome } from "./TradingProtectionLedger.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 import { TradingWorkingOrderService } from "./TradingWorkingOrderService.ts";
@@ -94,6 +97,7 @@ type TradingRequestEvent = Extract<
   | { type: "trading.mission-risk-control-requested" }
   | { type: "trading.mission-watch-fired" }
   | { type: "trading.execution-requested" }
+  | { type: "trading.order-place-requested" }
   // Not trading intents: settling a thread is what ends its mission, and
   // deleting one ends it just as finally. Starting a mission is the first
   // message's job — see `TradingAutoMission`.
@@ -107,6 +111,7 @@ const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "trading.mission-risk-control-requested",
   "trading.mission-watch-fired",
   "trading.execution-requested",
+  "trading.order-place-requested",
   "thread.settled",
   "thread.deleted",
 ]);
@@ -327,6 +332,8 @@ const make = Effect.gen(function* () {
   const emergency = yield* TradingEmergencyCloseService;
   const controls = yield* TradingControlService;
   const iocSlippage = yield* IocSlippageConfig;
+  const manualEntry = yield* TradingManualEntryService;
+  const alerts = yield* TradingAlertService;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -566,6 +573,138 @@ const make = Effect.gen(function* () {
         reason: "first_run_started",
       });
     }
+  });
+
+  /**
+   * One line in the alert feed for a manual-order outcome. The feed is the
+   * ticket's asynchronous answer surface: the place command was acknowledged
+   * the moment it dispatched, so a refusal or a fill that happens after the
+   * acknowledgement has to land somewhere the user is already looking.
+   */
+  const appendManualOrderAlert = (input: {
+    readonly accountId: string;
+    readonly market: string;
+    readonly summary: string;
+    readonly payload: unknown;
+  }) =>
+    Effect.gen(function* () {
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* alerts.append({
+        venue: "hyperliquid",
+        asset: input.market,
+        accountId: input.accountId,
+        watchId: "manual_order",
+        firedAt: occurredAt,
+        summary: input.summary,
+        payload: input.payload,
+      });
+    }).pipe(Effect.ignore);
+
+  /**
+   * Final-form Phase 7: the manual write side. A `trading.order.place` command
+   * passed the decider's shape invariants; this prepares it against live state
+   * (the manual checklist, the account envelope, D4 exclusivity), submits it
+   * under the manual cloid namespace, converges the manual rows, and reports
+   * the outcome — prepared or refused — into the alert feed verbatim.
+   */
+  const processOrderPlaceRequested = Effect.fn("TradingMissionReactor.orderPlace")(function* (
+    event: Extract<TradingRequestEvent, { type: "trading.order-place-requested" }>,
+  ) {
+    const payload = event.payload;
+    const accountId = payload.accountId ?? LOCAL_TRADING_ACCOUNT_ID;
+
+    const preparation = yield* manualEntry.prepare(
+      {
+        accountId,
+        market: payload.market,
+        side: payload.side,
+        stopPrice: payload.stopPrice,
+        sizeEth: payload.sizeEth,
+        notionalUsd: payload.notionalUsd,
+        urgency: payload.urgency,
+      },
+      { allocateSequence: true },
+    );
+
+    if (preparation.outcome === "refused") {
+      yield* Effect.logWarning("trading manual order refused at prepare", {
+        accountId,
+        market: payload.market,
+        reason: preparation.reason,
+        detail: preparation.detail,
+      });
+      yield* appendManualOrderAlert({
+        accountId,
+        market: payload.market,
+        summary: `Manual ${payload.side} ${payload.market} refused: ${preparation.reason} — ${preparation.detail}`,
+        payload: { reason: preparation.reason, detail: preparation.detail },
+      });
+      return;
+    }
+
+    const submitted = yield* execution
+      .submitManualOrder({
+        intent: preparation.intent,
+        accountId,
+        reservedRiskUsd: preparation.reservedRiskUsd,
+        allowedSlippageBps: (yield* iocSlippage.resolve).entryBps,
+      })
+      .pipe(
+        Effect.matchEffect({
+          onSuccess: (record) => Effect.succeed(record),
+          onFailure: (cause: TradingExecutionError) =>
+            Effect.logWarning("trading manual order failed to submit", {
+              accountId,
+              market: payload.market,
+              stage: cause.stage,
+              detail: cause.detail,
+            }).pipe(
+              Effect.andThen(
+                appendManualOrderAlert({
+                  accountId,
+                  market: payload.market,
+                  summary: `Manual ${payload.side} ${payload.market} failed: ${cause.stage}${cause.detail === undefined ? "" : ` — ${cause.detail}`}`,
+                  payload: { stage: cause.stage, detail: cause.detail },
+                }),
+              ),
+              Effect.as(null),
+            ),
+        }),
+      );
+    if (submitted === null) return;
+
+    yield* appendManualOrderAlert({
+      accountId,
+      market: payload.market,
+      summary:
+        `Manual ${payload.side} ${submitted.size} ${payload.market} ${submitted.status} ` +
+        `@ ${submitted.limitPrice} (stop ${payload.stopPrice})`,
+      payload: {
+        cloid: submitted.cloid,
+        status: submitted.status,
+        size: submitted.size,
+        limitPrice: submitted.limitPrice,
+        stopPrice: payload.stopPrice,
+      },
+    });
+
+    // Converge the manual rows now rather than on the next 5s pass: the
+    // position and order the ticket just created should be on screen by the
+    // time the doorbell-triggered refetch lands.
+    const masterAddress = yield* missions.getMasterWalletAddress(accountId);
+    yield* reconcileManualExposure({
+      accountId,
+      masterAddress,
+      market: payload.market,
+    }).pipe(
+      Effect.catchCause((cause) =>
+        warnWithCause(
+          "trading manual reconcile after placement failed",
+          { accountId, market: payload.market },
+          cause,
+        ),
+      ),
+    );
   });
 
   /** Whether a mission still holds exchange exposure, per the reconciled snapshots. */
@@ -1736,6 +1875,8 @@ const make = Effect.gen(function* () {
         yield* processWatchFired(event);
       } else if (event.type === "thread.settled" || event.type === "thread.deleted") {
         yield* processThreadEnded(event);
+      } else if (event.type === "trading.order-place-requested") {
+        yield* processOrderPlaceRequested(event);
       } else {
         yield* processExecutionRequested(event).pipe(
           Effect.tapCause((cause) =>
@@ -1796,16 +1937,26 @@ const make = Effect.gen(function* () {
   // here (not in `start`) so its read/SQL requirements resolve from the services
   // this layer already captured, keeping `start`'s context narrow (Scope only).
   /**
-   * The mission `follow` is currently subscribed for, with the scope that owns
-   * its fibers. Held outside the loop so the layer's own teardown can close it.
+   * The missions `follow` is currently subscribed for, one scope each. D4 made
+   * authority per-market, so several missions can be live at once and every
+   * one of them needs §18.2 — its own fill subscription, reconnect
+   * convergence, and periodic backstop. Held outside the loop so the layer's
+   * own teardown can close them all.
    */
-  let followed: { readonly missionId: string; readonly scope: Scope.Scope } | null = null;
+  const followedMissions = new Map<string, Scope.Scope>();
+
+  const stopFollowingMission = (missionId: string) =>
+    Effect.suspend(() => {
+      const scope = followedMissions.get(missionId);
+      if (scope === undefined) return Effect.void;
+      followedMissions.delete(missionId);
+      return Scope.close(scope, Exit.void).pipe(Effect.ignore);
+    });
 
   const stopFollowing = Effect.suspend(() => {
-    if (followed === null) return Effect.void;
-    const closing = Scope.close(followed.scope, Exit.void);
-    followed = null;
-    return closing.pipe(Effect.ignore);
+    // Snapshot the keys first: stopFollowingMission deletes as it goes.
+    const missionIds = Array.from(followedMissions.keys());
+    return Effect.forEach(missionIds, stopFollowingMission, { discard: true });
   });
 
   yield* Effect.gen(function* () {
@@ -1827,37 +1978,42 @@ const make = Effect.gen(function* () {
     // process, and the loop below then stops following and stays stopped.
     const lease = yield* TradingRuntimeLease;
 
-    // One pass: retarget `follow` if the active mission changed. Failures here
-    // are logged and retried on the next tick — a transient read error must not
-    // leave the server permanently unsubscribed.
-    const syncFollowedMission = Effect.gen(function* () {
-      const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
-      const activeId = Option.isSome(active) ? active.value.id : null;
+    // One pass: retarget the follow set to the missions active *right now*.
+    // Failures here are logged and retried on the next tick — a transient read
+    // error must not leave the server permanently unsubscribed.
+    const syncFollowedMissions = Effect.gen(function* () {
+      const active = yield* missions.findActiveMissions(LOCAL_TRADING_USER_ID);
+      const activeIds = new Set(active.map((mission) => mission.id));
 
-      if (followed !== null && followed.missionId !== activeId) {
-        yield* stopFollowing;
+      // Snapshot first: stopFollowingMission deletes entries as it goes.
+      const followedIds = Array.from(followedMissions.keys());
+      for (const missionId of followedIds) {
+        if (!activeIds.has(missionId)) {
+          yield* stopFollowingMission(missionId);
+        }
       }
-      if (Option.isNone(active) || followed !== null) return;
 
-      const mission = active.value;
-      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      const input = { missionId: mission.id, masterAddress, market: mission.market };
-      yield* reconciler.reconcile(input, "server_startup").pipe(Effect.catch(() => Effect.void));
-      const scope = yield* Scope.make("sequential");
-      yield* fillReconciler.follow(input).pipe(Scope.provide(scope), Effect.forkScoped);
-      followed = { missionId: mission.id, scope };
-      yield* Effect.logInfo("trading following mission", { missionId: mission.id });
+      for (const mission of active) {
+        if (followedMissions.has(mission.id)) continue;
+        const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+        const input = { missionId: mission.id, masterAddress, market: mission.market };
+        yield* reconciler.reconcile(input, "server_startup").pipe(Effect.catch(() => Effect.void));
+        const scope = yield* Scope.make("sequential");
+        yield* fillReconciler.follow(input).pipe(Scope.provide(scope), Effect.forkScoped);
+        followedMissions.set(mission.id, scope);
+        yield* Effect.logInfo("trading following mission", { missionId: mission.id });
+      }
     }).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
-        return warnWithCause("trading could not follow the active mission", {}, cause);
+        return warnWithCause("trading could not follow the active missions", {}, cause);
       }),
     );
 
     while (true) {
       if (lease.held) {
-        yield* syncFollowedMission;
-      } else if (followed !== null) {
+        yield* syncFollowedMissions;
+      } else if (followedMissions.size > 0) {
         yield* stopFollowing;
       }
       yield* Effect.sleep("5 seconds");
@@ -1881,9 +2037,15 @@ const make = Effect.gen(function* () {
    * `position_open` — an execution in progress owns the status until it settles.
    */
   const settleFlatPosition = Effect.fn("TradingMissionReactor.settleFlatPosition")(function* () {
-    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
-    if (Option.isNone(active)) return;
-    const mission = active.value;
+    const active = yield* missions.findActiveMissions(LOCAL_TRADING_USER_ID);
+    for (const mission of active) {
+      yield* settleFlatPositionFor(mission).pipe(Effect.catchCause(() => Effect.void));
+    }
+  });
+
+  const settleFlatPositionFor = Effect.fn("TradingMissionReactor.settleFlatPositionFor")(function* (
+    mission: TradingMission,
+  ) {
     if (mission.status !== "position_open") return;
 
     const missionId = TradingMissionId.make(mission.id);
@@ -1936,87 +2098,225 @@ const make = Effect.gen(function* () {
    * applies when it cannot confirm a replacement.
    */
   const guardProtection = Effect.fn("TradingMissionReactor.guardProtection")(function* () {
-    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
-    if (Option.isNone(active)) return;
-    const mission = active.value;
-    // Only while the mission is simply holding a position. An execution in
-    // progress owns protection for the duration and reconciles it itself.
-    if (mission.status !== "position_open") return;
+    // Per-position, per-market (D4): every active mission's position is
+    // guarded, and so is every MANUAL position — the watchdog walks the
+    // account's exposure, not "the one mission".
+    const active = yield* missions.findActiveMissions(LOCAL_TRADING_USER_ID);
+    for (const mission of active) {
+      yield* guardMissionProtection(mission).pipe(Effect.catchCause(() => Effect.void));
+    }
+    yield* guardManualProtection().pipe(Effect.catchCause(() => Effect.void));
+  });
 
-    const missionId = TradingMissionId.make(mission.id);
-    const threadId = mission.harness.threadId as ThreadId;
-    const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql<{ readonly size: number; readonly protected_size: number }>`
+  const guardMissionProtection = Effect.fn("TradingMissionReactor.guardMissionProtection")(
+    function* (mission: TradingMission) {
+      // Only while the mission is simply holding a position. An execution in
+      // progress owns protection for the duration and reconciles it itself.
+      if (mission.status !== "position_open") return;
+
+      const missionId = TradingMissionId.make(mission.id);
+      const threadId = mission.harness.threadId as ThreadId;
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly size: number; readonly protected_size: number }>`
       SELECT size, protected_size FROM trading_position_snapshots
       WHERE mission_id = ${missionId} AND market = ${mission.market}
     `;
-    const snapshot = rows[0];
-    if (snapshot === undefined) return;
+      const snapshot = rows[0];
+      if (snapshot === undefined) return;
 
-    const exposed = Math.abs(snapshot.size);
-    if (exposed === 0) return;
-    if (snapshot.protected_size >= exposed - PROTECTION_SIZE_EPSILON) return;
+      const exposed = Math.abs(snapshot.size);
+      if (exposed === 0) return;
+      if (snapshot.protected_size >= exposed - PROTECTION_SIZE_EPSILON) return;
 
-    // The price the last approved stop was set at. Without one there is nothing
-    // to re-place — a position that never had a stop is not this loop's problem.
-    const stops = yield* sql<{ readonly stop_price: number }>`
+      // The price the last approved stop was set at. Without one there is nothing
+      // to re-place — a position that never had a stop is not this loop's problem.
+      const stops = yield* sql<{ readonly stop_price: number }>`
       SELECT stop_price FROM trading_execution_records
       WHERE mission_id = ${missionId} AND stop_price IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 1
     `;
-    const stopPrice = stops[0]?.stop_price;
-    if (stopPrice === undefined) return;
+      const stopPrice = stops[0]?.stop_price;
+      if (stopPrice === undefined) return;
 
-    const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-    const summary =
-      `protection_lost: ${exposed} of ${mission.market} is open with only ` +
-      `${snapshot.protected_size} confirmed protected; re-placing the stop at ${stopPrice}`;
-    yield* inbox
-      .persist({
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const summary =
+        `protection_lost: ${exposed} of ${mission.market} is open with only ` +
+        `${snapshot.protected_size} confirmed protected; re-placing the stop at ${stopPrice}`;
+      yield* inbox
+        .persist({
+          missionId,
+          category: "exchange",
+          deduplicationKey: `protection_lost:${occurredAt}`,
+          payload: { size: snapshot.size, protectedSize: snapshot.protected_size, stopPrice },
+          occurredAt,
+          summary,
+        })
+        .pipe(Effect.ignore);
+      yield* Effect.logWarning("trading protection watchdog found an uncovered position", {
         missionId,
-        category: "exchange",
-        deduplicationKey: `protection_lost:${occurredAt}`,
-        payload: { size: snapshot.size, protectedSize: snapshot.protected_size, stopPrice },
-        occurredAt,
-        summary,
-      })
-      .pipe(Effect.ignore);
-    yield* Effect.logWarning("trading protection watchdog found an uncovered position", {
-      missionId,
-      size: snapshot.size,
-      protectedSize: snapshot.protected_size,
-    });
-
-    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    const outcome = yield* protection.reconcileProtection({
-      missionId,
-      // Not a harness execution, so there is no sequence to borrow. Epoch
-      // seconds keeps each watchdog placement's cloid distinct from the last
-      // one's and from every harness sequence, which are small counters.
-      executionSequence: Math.floor(occurredAt / 1000),
-      masterAddress,
-      market: mission.market,
-      stopPrice,
-    });
-
-    if (outcome.status === "escalate") {
-      yield* Effect.logError("trading protection watchdog could not re-place the stop; §17.5", {
-        missionId,
-        reason: outcome.escalationReason,
+        size: snapshot.size,
+        protectedSize: snapshot.protected_size,
       });
-      yield* emergency.emergencyClose({
+
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      const outcome = yield* protection.reconcileProtection({
         missionId,
+        // Not a harness execution, so there is no sequence to borrow. Epoch
+        // seconds keeps each watchdog placement's cloid distinct from the last
+        // one's and from every harness sequence, which are small counters.
+        executionSequence: Math.floor(occurredAt / 1000),
         masterAddress,
         market: mission.market,
-        reason: outcome.escalationReason ?? "protection was removed and could not be re-placed",
+        stopPrice,
       });
-      yield* announceStatus({ missionId, threadId, status: "blocked" });
-    }
 
-    // Either way the harness is told: its stop was pulled out from under it.
-    yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
-  });
+      if (outcome.status === "escalate") {
+        yield* Effect.logError("trading protection watchdog could not re-place the stop; §17.5", {
+          missionId,
+          reason: outcome.escalationReason,
+        });
+        yield* emergency.emergencyClose({
+          missionId,
+          masterAddress,
+          market: mission.market,
+          reason: outcome.escalationReason ?? "protection was removed and could not be re-placed",
+        });
+        yield* announceStatus({ missionId, threadId, status: "blocked" });
+      }
+
+      // Either way the harness is told: its stop was pulled out from under it.
+      yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
+    },
+  );
+
+  /**
+   * The manual half of the protection watchdog. A manual entry always went out
+   * with a stop; a stop cancelled by hand in the exchange UI leaves the
+   * position naked exactly as it did for missions, and there is no harness to
+   * notice. Re-place from the latest manual record's stop; when the window
+   * closes uncovered, flatten — a manual position with no stop and no way to
+   * get one is the §17.5 answer with nobody watching.
+   */
+  const guardManualProtection = Effect.fn("TradingMissionReactor.guardManualProtection")(
+    function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly account_id: string;
+        readonly market: string;
+        readonly size: number;
+        readonly protected_size: number;
+      }>`
+        SELECT account_id, market, size, protected_size
+        FROM trading_position_snapshots
+        WHERE mission_id IS NULL AND size != 0
+      `;
+      for (const row of rows) {
+        const exposed = Math.abs(row.size);
+        if (row.protected_size >= exposed - PROTECTION_SIZE_EPSILON) continue;
+
+        const stops = yield* sql<{ readonly stop_price: number }>`
+          SELECT stop_price FROM trading_execution_records
+          WHERE mission_id IS NULL AND account_id = ${row.account_id}
+            AND market = ${row.market} AND stop_price IS NOT NULL
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `;
+        const stopPrice = stops[0]?.stop_price;
+        if (stopPrice === undefined) continue;
+
+        yield* Effect.logWarning("trading protection watchdog found an uncovered manual position", {
+          accountId: row.account_id,
+          market: row.market,
+          size: row.size,
+          protectedSize: row.protected_size,
+        });
+
+        const masterAddress = yield* missions.getMasterWalletAddress(row.account_id);
+        const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+        const outcome = yield* protection.reconcileProtection({
+          // Cloid namespace only — the protection service is database-free and
+          // reads nothing by this id; the manual token keeps its placements out
+          // of every real mission's cloid space.
+          missionId: manualOwnerMissionToken(row.account_id),
+          executionSequence: Math.floor(occurredAt / 1000),
+          masterAddress,
+          market: row.market,
+          stopPrice,
+        });
+
+        if (outcome.status === "escalate") {
+          yield* Effect.logError(
+            "trading protection watchdog could not re-place the manual stop; flattening",
+            { accountId: row.account_id, market: row.market, reason: outcome.escalationReason },
+          );
+          const closed = yield* controls
+            .closeManualPosition({
+              accountId: row.account_id,
+              masterAddress,
+              market: row.market,
+            })
+            .pipe(Effect.orElseSucceed(() => null));
+          yield* appendManualOrderAlert({
+            accountId: row.account_id,
+            market: row.market,
+            summary:
+              `Manual ${row.market} position lost its stop and a replacement could not be ` +
+              `confirmed; ${closed !== null && closed.outcome === "done" ? closed.summary : "the emergency close also failed — check the exchange"}`,
+            payload: { reason: outcome.escalationReason ?? null },
+          });
+        } else {
+          yield* appendManualOrderAlert({
+            accountId: row.account_id,
+            market: row.market,
+            summary: `Manual ${row.market} stop was missing and was re-placed at ${stopPrice}`,
+            payload: { stopPrice, status: outcome.status },
+          });
+        }
+
+        yield* reconcileManualExposure({
+          accountId: row.account_id,
+          masterAddress,
+          market: row.market,
+        }).pipe(Effect.catchCause(() => Effect.void));
+      }
+    },
+  );
+
+  /**
+   * The manual convergence backstop: every 5s, converge each market the
+   * account has manual exposure on — an open manual position, a resting manual
+   * order, or a manual record not yet terminal. The mirror of the mission
+   * fill-reconciler's periodic pass; cheap local reads gate it, so an account
+   * with no manual exposure costs nothing.
+   */
+  const reconcileManualMarkets = Effect.fn("TradingMissionReactor.reconcileManualMarkets")(
+    function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly account_id: string; readonly market: string }>`
+        SELECT DISTINCT account_id, market FROM trading_position_snapshots
+        WHERE mission_id IS NULL AND size != 0
+        UNION
+        SELECT DISTINCT account_id, market FROM trading_orders
+        WHERE mission_id IS NULL
+        UNION
+        SELECT DISTINCT account_id, market FROM trading_execution_records
+        WHERE mission_id IS NULL
+          AND status IN ('previewed', 'reserved', 'signed', 'submitted', 'accepted')
+      `;
+      for (const row of rows) {
+        const masterAddress = yield* missions
+          .getMasterWalletAddress(row.account_id)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (masterAddress === null) continue;
+        yield* reconcileManualExposure({
+          accountId: row.account_id,
+          masterAddress,
+          market: row.market,
+        }).pipe(Effect.catchCause(() => Effect.void));
+      }
+    },
+  );
 
   /**
    * Keep the resting take-profit converged to the plan (plan 29 step 2.5).
@@ -2028,24 +2328,30 @@ const make = Effect.gen(function* () {
    * execution in progress reconciles the take-profit itself.
    */
   const guardTakeProfit = Effect.fn("TradingMissionReactor.guardTakeProfit")(function* () {
-    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
-    if (Option.isNone(active)) return;
-    const mission = active.value;
-    if (mission.status !== "position_open") return;
-
-    const missionId = TradingMissionId.make(mission.id);
-    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-    yield* reconcileTakeProtectionFor({
-      missionId,
-      market: mission.market,
-      masterAddress,
-      // Not a harness execution, so there is no sequence to borrow; epoch
-      // seconds keep each pass's cloid distinct — the same trick the stop
-      // watchdog uses.
-      executionSequence: Math.floor(occurredAt / 1000),
-    });
+    const active = yield* missions.findActiveMissions(LOCAL_TRADING_USER_ID);
+    for (const mission of active) {
+      yield* guardMissionTakeProfit(mission).pipe(Effect.catchCause(() => Effect.void));
+    }
   });
+
+  const guardMissionTakeProfit = Effect.fn("TradingMissionReactor.guardMissionTakeProfit")(
+    function* (mission: TradingMission) {
+      if (mission.status !== "position_open") return;
+
+      const missionId = TradingMissionId.make(mission.id);
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* reconcileTakeProtectionFor({
+        missionId,
+        market: mission.market,
+        masterAddress,
+        // Not a harness execution, so there is no sequence to borrow; epoch
+        // seconds keep each pass's cloid distinct — the same trick the stop
+        // watchdog uses.
+        executionSequence: Math.floor(occurredAt / 1000),
+      });
+    },
+  );
 
   /**
    * Own the resting patient entry (plan 29 step 2.4).
@@ -2058,82 +2364,87 @@ const make = Effect.gen(function* () {
    * a terminal outcome did.
    */
   const guardWorkingOrder = Effect.fn("TradingMissionReactor.guardWorkingOrder")(function* () {
-    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
-    if (Option.isNone(active)) return;
-    const mission = active.value;
+    const active = yield* missions.findActiveMissions(LOCAL_TRADING_USER_ID);
+    for (const mission of active) {
+      yield* guardMissionWorkingOrder(mission).pipe(Effect.catchCause(() => Effect.void));
+    }
+  });
 
-    const missionId = TradingMissionId.make(mission.id);
-    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+  const guardMissionWorkingOrder = Effect.fn("TradingMissionReactor.guardMissionWorkingOrder")(
+    function* (mission: TradingMission) {
+      const missionId = TradingMissionId.make(mission.id);
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
 
-    const outcome = yield* workingOrders.reconcile({
-      missionId,
-      masterAddress,
-      market: mission.market,
-      missionStatus: mission.status,
-      plan: yield* moduleReadPlanPublication(missionId),
-      nowMs,
-      allowedSlippageBps: (yield* iocSlippage.resolve).entryBps,
-    });
-
-    yield* Effect.logDebug("trading working order pass", {
-      missionId,
-      status: outcome.status,
-      cloid: outcome.cloid,
-      waitMillis: outcome.waitMillis,
-      repriceCount: outcome.repriceCount,
-      ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
-    });
-    if (outcome.status !== "crossed" && outcome.status !== "abandoned") return;
-
-    // Terminal outcomes are the model's business: one plain line, pending in
-    // the inbox, and a wake to let it re-decide. Keyed by the record's cloid
-    // so the reconciler's settle grace cannot queue the same line twice.
-    yield* inbox
-      .persist({
+      const outcome = yield* workingOrders.reconcile({
         missionId,
-        category: "exchange",
-        deduplicationKey: workingOrderOutcomeKey(outcome.status, outcome.cloid ?? "unknown"),
-        payload: { status: outcome.status, cloid: outcome.cloid },
-        occurredAt: nowMs,
-        summary: outcome.summary ?? `patient entry ${outcome.status}`,
-      })
-      .pipe(Effect.ignore);
-
-    // A cross opened a position outside any turn, so the post-fill steps the
-    // wake's own execution path runs are this pass's to run: confirm the stop
-    // against canonical state (§17.5 escalates if it cannot — the grouped
-    // stop child went out with the entry, but §17.1 says a submission proves
-    // nothing), then arm the proximity wake and the take-profit. The mission
-    // then walks the same two legal edges an execution walks, so the
-    // position_open guards start watching what the cross opened.
-    if (outcome.status === "crossed" && outcome.placedIntent !== undefined) {
-      yield* protectIncrease({
-        missionId,
-        threadId: mission.harness.threadId as ThreadId,
-        intent: outcome.placedIntent,
         masterAddress,
+        market: mission.market,
+        missionStatus: mission.status,
+        plan: yield* moduleReadPlanPublication(missionId),
+        nowMs,
+        allowedSlippageBps: (yield* iocSlippage.resolve).entryBps,
       });
-      const wentExecuting = yield* advance({
+
+      yield* Effect.logDebug("trading working order pass", {
         missionId,
-        threadId: mission.harness.threadId as ThreadId,
-        from: ["waiting", "analysing"],
-        to: "executing",
-        reason: "working_order_crossed",
+        status: outcome.status,
+        cloid: outcome.cloid,
+        waitMillis: outcome.waitMillis,
+        repriceCount: outcome.repriceCount,
+        ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
       });
-      if (wentExecuting) {
-        yield* advance({
+      if (outcome.status !== "crossed" && outcome.status !== "abandoned") return;
+
+      // Terminal outcomes are the model's business: one plain line, pending in
+      // the inbox, and a wake to let it re-decide. Keyed by the record's cloid
+      // so the reconciler's settle grace cannot queue the same line twice.
+      yield* inbox
+        .persist({
+          missionId,
+          category: "exchange",
+          deduplicationKey: workingOrderOutcomeKey(outcome.status, outcome.cloid ?? "unknown"),
+          payload: { status: outcome.status, cloid: outcome.cloid },
+          occurredAt: nowMs,
+          summary: outcome.summary ?? `patient entry ${outcome.status}`,
+        })
+        .pipe(Effect.ignore);
+
+      // A cross opened a position outside any turn, so the post-fill steps the
+      // wake's own execution path runs are this pass's to run: confirm the stop
+      // against canonical state (§17.5 escalates if it cannot — the grouped
+      // stop child went out with the entry, but §17.1 says a submission proves
+      // nothing), then arm the proximity wake and the take-profit. The mission
+      // then walks the same two legal edges an execution walks, so the
+      // position_open guards start watching what the cross opened.
+      if (outcome.status === "crossed" && outcome.placedIntent !== undefined) {
+        yield* protectIncrease({
           missionId,
           threadId: mission.harness.threadId as ThreadId,
-          from: ["executing"],
-          to: "position_open",
+          intent: outcome.placedIntent,
+          masterAddress,
+        });
+        const wentExecuting = yield* advance({
+          missionId,
+          threadId: mission.harness.threadId as ThreadId,
+          from: ["waiting", "analysing"],
+          to: "executing",
           reason: "working_order_crossed",
         });
+        if (wentExecuting) {
+          yield* advance({
+            missionId,
+            threadId: mission.harness.threadId as ThreadId,
+            from: ["executing"],
+            to: "position_open",
+            reason: "working_order_crossed",
+          });
+        }
       }
-    }
 
-    yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
-  });
+      yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
+    },
+  );
 
   /**
    * Withdraw a mission's resting working entries when its authority ends.
@@ -2215,6 +2526,13 @@ const make = Effect.gen(function* () {
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
             : warnWithCause("trading working-order watchdog pass failed", {}, cause),
+        ),
+      );
+      yield* reconcileManualMarkets().pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : warnWithCause("trading manual reconcile pass failed", {}, cause),
         ),
       );
     }

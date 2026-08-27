@@ -25,9 +25,14 @@ import { useRouter } from "@tanstack/react-router";
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { Button } from "../ui/button";
+import { useState } from "react";
+
+import { refreshTradingAccountView } from "../../lib/tradingAccountState";
+import { orchestrationEnvironment } from "../../state/orchestration";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { describeProtection } from "./tradeHomePresentation";
 import { formatPrice, formatSignedUsd, formatUsd } from "./tradingPresentation";
-import { useMissionControls } from "./useMissionControls";
+import { describeControlFailure, useMissionControls } from "./useMissionControls";
 
 function missionForAuthority(
   position: TradingAccountPosition,
@@ -36,6 +41,63 @@ function missionForAuthority(
   if (position.authority.kind !== "mission") return null;
   const missionId = position.authority.missionId;
   return missions.find((mission) => mission.id === missionId) ?? null;
+}
+
+/**
+ * The account-scoped way out of a MANUAL position (final-form Phase 7): the
+ * same reduce/close pair the mission rows get, through
+ * `closeTradingManualPosition`. A refusal — a mission has since taken the
+ * market, the exchange refused — renders verbatim beside the buttons.
+ */
+function ManualPositionControls({
+  position,
+  environmentId,
+}: {
+  position: TradingAccountPosition;
+  environmentId: EnvironmentId;
+}) {
+  const close = useAtomCommand(orchestrationEnvironment.closeTradingManualPosition);
+  const [isBusy, setIsBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const run = (percent?: 25 | 50 | 75 | 100) => {
+    setIsBusy(true);
+    setNote(null);
+    void close({
+      environmentId,
+      input: {
+        market: position.market,
+        ...(percent === undefined ? {} : { percent }),
+      },
+    }).then((result) => {
+      setIsBusy(false);
+      const failure = describeControlFailure(result);
+      if (failure !== null) {
+        setNote(failure);
+        return;
+      }
+      if (result._tag === "Success") {
+        setNote(
+          result.value.outcome === "refused"
+            ? `${result.value.reason} — ${result.value.detail}`
+            : result.value.summary,
+        );
+      }
+      refreshTradingAccountView(environmentId);
+    });
+  };
+
+  return (
+    <span className="flex items-center gap-1.5">
+      <Button size="sm" variant="secondary" disabled={isBusy} onClick={() => run(50)}>
+        Reduce 50%
+      </Button>
+      <Button size="sm" variant="secondary" disabled={isBusy} onClick={() => run()}>
+        Close
+      </Button>
+      {note === null ? null : <span className="text-xs text-muted-foreground">{note}</span>}
+    </span>
+  );
 }
 
 /** The compact §14.7 way out, only where a mission owns the position. */
@@ -153,9 +215,11 @@ function PositionRow({
         </span>
       )}
       <span className="ml-auto">
-        {mission === null ? null : (
+        {mission !== null ? (
           <PositionMissionControls mission={mission} environmentId={environmentId} />
-        )}
+        ) : position.authority.kind === "manual" ? (
+          <ManualPositionControls position={position} environmentId={environmentId} />
+        ) : null}
       </span>
     </li>
   );

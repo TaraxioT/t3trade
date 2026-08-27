@@ -20,6 +20,10 @@
       "types": "./src/authority.ts",
       "import": "./src/authority.ts"
     },
+    "./accountPolicy": {
+      "types": "./src/accountPolicy.ts",
+      "import": "./src/accountPolicy.ts"
+    },
     "./mission": {
       "types": "./src/mission.ts",
       "import": "./src/mission.ts"

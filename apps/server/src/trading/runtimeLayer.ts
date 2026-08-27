@@ -61,6 +61,7 @@ import { TradingCalibrationServiceLive } from "./TradingCalibrationService.ts";
 import { TradingStopAdjustmentServiceLive } from "./TradingStopAdjustmentService.ts";
 import { TradingExitServiceLive } from "./TradingExitService.ts";
 import { TradingEntryServiceLive } from "./TradingEntryService.ts";
+import { TradingManualEntryServiceLive } from "./TradingManualEntryService.ts";
 import { TradingMarketArchiveLive } from "./TradingMarketArchive.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
@@ -244,6 +245,15 @@ export const TradingLayerLive = Layer.mergeAll(
     Layer.provide(TradingMissionServiceLive),
     Layer.provide(IocSlippageConfigLive),
     Layer.provide(TradingBudgetReaderLive),
+    Layer.provide(costEstimatorWithGateway),
+    Layer.provide(HyperliquidReadLayerLive),
+  ),
+  // The manual order ticket (final-form Phase 7): prices and pre-checks a
+  // user-placed entry against the account envelope and the live book — the
+  // mirror of `trading_enter` with the mission machinery removed.
+  TradingManualEntryServiceLive.pipe(
+    Layer.provide(TradingMissionServiceLive),
+    Layer.provide(IocSlippageConfigLive),
     Layer.provide(costEstimatorWithGateway),
     Layer.provide(HyperliquidReadLayerLive),
   ),

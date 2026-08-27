@@ -85,6 +85,21 @@ export interface ReconcileInput {
   readonly market: string;
 }
 
+/** Inputs for the MANUAL convergence pass (final-form Phase 7). */
+export interface ManualReconcileInput {
+  readonly accountId: string;
+  /** The master-wallet address (§10.6 identity — never the execution wallet). */
+  readonly masterAddress: string;
+  readonly market: string;
+}
+
+/** What a manual pass observed and persisted. */
+export interface ManualReconciledState {
+  /** Signed canonical position size on the market; 0 when flat. */
+  readonly positionSize: number;
+  readonly observedAt: number;
+}
+
 /** A reconciled snapshot of all canonical state for a mission. */
 export interface ReconciledState {
   readonly position: TradingPositionSnapshot | null;
@@ -228,6 +243,11 @@ function readCanonicalOpenOrders(
  * Narrow the canonical orders to the rows T3 persists — its own, keyed by
  * cloid — carrying the reduce-only flag the exchange reported rather than a
  * hardcoded `false`.
+ *
+ * Narrowed to the mission's own MARKET as well (Phase 7): the open-orders read
+ * is account-wide, and under per-market authority another mission's — or the
+ * user's own — resting orders on other markets are not this mission's to
+ * adopt. D4 guarantees everything on the mission's market is the mission's.
  */
 function toOpenOrderRecords(
   orders: ReadonlyArray<AgentOpenOrder>,
@@ -235,7 +255,7 @@ function toOpenOrderRecords(
   observedAt: number,
 ): ReadonlyArray<TradingOpenOrderRecord> {
   return orders
-    .filter((o) => o.cloid !== undefined)
+    .filter((o) => o.cloid !== undefined && o.market === input.market)
     .map(
       (o) =>
         ({
@@ -304,6 +324,24 @@ function readMissionStartedAt(
     `;
     return rows[0]?.created_at ?? 0;
   }).pipe(Effect.orElseSucceed(() => 0));
+}
+
+/**
+ * The account a mission settles against, for the 075 ownership columns.
+ * `'unattributed'` for a mission the table does not know — the same sentinel
+ * the migration backfilled orphans with, so a mid-create race cannot fail a
+ * whole reconcile pass.
+ */
+function readMissionAccountId(
+  missionId: string,
+): Effect.Effect<string, never, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly trading_account_id: string }>`
+      SELECT trading_account_id FROM trading_missions WHERE mission_id = ${missionId}
+    `;
+    return rows[0]?.trading_account_id ?? "unattributed";
+  }).pipe(Effect.orElseSucceed(() => "unattributed"));
 }
 
 /**
@@ -391,6 +429,7 @@ function readCanonicalFills(
 function persistPosition(
   position: TradingPositionSnapshot | null,
   input: ReconcileInput,
+  accountId: string,
 ): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -416,16 +455,17 @@ function persistPosition(
       INSERT INTO trading_position_snapshots (
         mission_id, market, size, entry_price, unrealised_pnl, margin_used,
         protected_size, liquidation_price, mark_px, leverage, peak_unrealised_pnl,
-        trough_unrealised_pnl, opened_at, observed_at
+        trough_unrealised_pnl, opened_at, observed_at, account_id, venue, asset
       ) VALUES (
         ${position.missionId}, ${position.market}, ${position.size},
         ${position.entryPrice ?? null}, ${position.unrealisedPnl},
         ${position.marginUsed}, ${position.protectedSize},
         ${position.liquidationPrice ?? null}, ${position.markPx ?? null},
         ${position.leverage ?? null},
-        ${peak}, ${trough}, ${position.observedAt}, ${position.observedAt}
+        ${peak}, ${trough}, ${position.observedAt}, ${position.observedAt},
+        ${accountId}, 'hyperliquid', ${position.market}
       )
-      ON CONFLICT(mission_id, market) DO UPDATE SET
+      ON CONFLICT(mission_id, market) WHERE mission_id IS NOT NULL DO UPDATE SET
         size = ${position.size}, entry_price = ${position.entryPrice ?? null},
         unrealised_pnl = ${position.unrealisedPnl}, margin_used = ${position.marginUsed},
         protected_size = ${position.protectedSize},
@@ -469,6 +509,7 @@ const crossedBit = (crossed: boolean | undefined): number | null =>
  */
 function persistFills(
   fills: ReadonlyArray<ReconciledFill>,
+  accountId: string,
 ): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
   return Effect.gen(function* () {
     if (fills.length === 0) return;
@@ -478,12 +519,13 @@ function persistFills(
         INSERT INTO trading_fills (
           fill_id, mission_id, execution_id, cloid, order_id, market, side,
           filled_size, avg_fill_price, fee_usd, fee_token, closed_pnl,
-          direction, crossed, traded_at, observed_at
+          direction, crossed, traded_at, observed_at, account_id, venue, asset
         ) VALUES (
           ${f.fillId}, ${f.missionId}, ${f.executionId ?? null}, ${f.cloid ?? null},
           ${f.orderId}, ${f.market}, ${f.side}, ${f.filledSize}, ${f.avgFillPrice},
           ${f.feeUsd}, ${f.feeToken}, ${f.closedPnl}, ${f.direction ?? null},
-          ${crossedBit(f.crossed)}, ${f.tradedAt}, ${f.observedAt}
+          ${crossedBit(f.crossed)}, ${f.tradedAt}, ${f.observedAt},
+          ${accountId}, 'hyperliquid', ${f.market}
         )
         ON CONFLICT(fill_id) DO UPDATE SET
           filled_size = ${f.filledSize}, avg_fill_price = ${f.avgFillPrice},
@@ -548,6 +590,7 @@ function dropPreMissionFills(
 function persistOpenOrders(
   openOrders: ReadonlyArray<TradingOpenOrderRecord>,
   input: ReconcileInput,
+  accountId: string,
 ): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -558,12 +601,13 @@ function persistOpenOrders(
       yield* sql`
         INSERT INTO trading_orders (
           mission_id, cloid, order_id, market, side, limit_price,
-          remaining_size, reduce_only, observed_at
+          remaining_size, reduce_only, observed_at, account_id, venue, asset
         ) VALUES (
           ${o.missionId}, ${o.cloid}, ${o.orderId}, ${o.market}, ${o.side},
-          ${o.limitPrice}, ${o.remainingSize}, ${o.reduceOnly ? 1 : 0}, ${o.observedAt}
+          ${o.limitPrice}, ${o.remainingSize}, ${o.reduceOnly ? 1 : 0}, ${o.observedAt},
+          ${accountId}, 'hyperliquid', ${o.market}
         )
-        ON CONFLICT(mission_id, cloid) DO UPDATE SET
+        ON CONFLICT(account_id, cloid) DO UPDATE SET
           order_id = ${o.orderId}, limit_price = ${o.limitPrice},
           remaining_size = ${o.remainingSize}, reduce_only = ${o.reduceOnly ? 1 : 0},
           observed_at = ${o.observedAt}
@@ -1064,6 +1108,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       const previousPosition = yield* readPreviousPosition(input);
       const previousAccountValue = yield* readPreviousAccountValue(input.missionId);
       const startedAt = yield* readMissionStartedAt(input.missionId);
+      const accountId = yield* readMissionAccountId(input.missionId);
 
       // Read all canonical state in parallel, then persist. Local state never
       // outranks Hyperliquid — the canonical reads are the source of truth.
@@ -1097,16 +1142,16 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
 
       const openOrders = toOpenOrderRecords(canonicalOrders, input, observedAt);
 
-      yield* persistPosition(position, input);
+      yield* persistPosition(position, input, accountId);
       // Fills append idempotently; open orders are replaced with the canonical
       // set. Local state never outranks Hyperliquid — both reach the 037 tables
       // here so the projection and loss-budget accounting read reconciled truth.
-      yield* persistFills(fills);
+      yield* persistFills(fills, accountId);
       // Heal rows an earlier build adopted from before this mission existed:
       // they are another mission's fills and would otherwise sit in this
       // thread's receipts and realised-result totals forever.
       yield* dropPreMissionFills(input.missionId, startedAt);
-      yield* persistOpenOrders(openOrders, input);
+      yield* persistOpenOrders(openOrders, input, accountId);
       // Before the release below, so a record settled here has its reservation
       // released in the same pass.
       yield* settleAbandonedExecutions(input, canonicalOrders, observedAt);
@@ -1226,3 +1271,296 @@ export const HyperliquidReconcilerLive = Layer.effect(
   HyperliquidReconciler,
   makeHyperliquidReconciler,
 );
+
+// ---------------------------------------------------------------------------
+// The MANUAL convergence pass (final-form Phase 7)
+// ---------------------------------------------------------------------------
+//
+// The mission pass narrates a mission's story — inbox events, closed-trade
+// reviews, level memory, external-change classification. A manual pass has no
+// mission to narrate to, so it converges only the facts: the position snapshot
+// (`mission_id NULL`), the resting orders, the fills since manual trading
+// began on the market, and the settlement of manual execution records and
+// their reservations. D4 exclusivity is what makes the market-scoped read
+// attributable: while manual authority holds a market, no mission trades it.
+//
+// A standalone function rather than a second service method: the reconciler
+// service's construction deliberately captures only the mission-storytelling
+// dependencies, and the manual pass needs none of them.
+
+/**
+ * When manual trading began on this market: the first manual execution
+ * record's write. Fills older than that belong to whatever mission last traded
+ * the market inside the `userFills` window, not to the user's hand. No record
+ * yet means no fills are adopted at all.
+ */
+function readManualStartedAt(
+  input: ManualReconcileInput,
+): Effect.Effect<number | null, never, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly started_at: number | null }>`
+      SELECT MIN(created_at) AS started_at FROM trading_execution_records
+      WHERE mission_id IS NULL AND account_id = ${input.accountId}
+        AND market = ${input.market}
+    `;
+    return rows[0]?.started_at ?? null;
+  }).pipe(Effect.orElseSucceed(() => null));
+}
+
+function persistManualPosition(
+  input: ManualReconcileInput,
+  position: TradingPositionSnapshot | null,
+  observedAt: number,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    if (position === null) {
+      yield* sql`
+        UPDATE trading_position_snapshots
+        SET size = 0, entry_price = NULL, unrealised_pnl = 0, margin_used = 0,
+            protected_size = 0, liquidation_price = NULL, mark_px = NULL,
+            peak_unrealised_pnl = NULL, trough_unrealised_pnl = NULL,
+            opened_at = NULL, observed_at = ${observedAt}
+        WHERE mission_id IS NULL AND account_id = ${input.accountId}
+          AND market = ${input.market}
+      `;
+      return;
+    }
+    const peak = Math.max(0, position.unrealisedPnl);
+    const trough = Math.min(0, position.unrealisedPnl);
+    yield* sql`
+      INSERT INTO trading_position_snapshots (
+        mission_id, market, size, entry_price, unrealised_pnl, margin_used,
+        protected_size, liquidation_price, mark_px, leverage,
+        peak_unrealised_pnl, trough_unrealised_pnl, opened_at, observed_at,
+        account_id, venue, asset
+      ) VALUES (
+        NULL, ${position.market}, ${position.size},
+        ${position.entryPrice ?? null}, ${position.unrealisedPnl},
+        ${position.marginUsed}, ${position.protectedSize},
+        ${position.liquidationPrice ?? null}, ${position.markPx ?? null},
+        ${position.leverage ?? null},
+        ${peak}, ${trough}, ${position.observedAt}, ${position.observedAt},
+        ${input.accountId}, 'hyperliquid', ${position.market}
+      )
+      ON CONFLICT(account_id, venue, market) WHERE mission_id IS NULL DO UPDATE SET
+        size = ${position.size}, entry_price = ${position.entryPrice ?? null},
+        unrealised_pnl = ${position.unrealisedPnl}, margin_used = ${position.marginUsed},
+        protected_size = ${position.protectedSize},
+        liquidation_price = ${position.liquidationPrice ?? null},
+        mark_px = ${position.markPx ?? null},
+        leverage = COALESCE(${position.leverage ?? null}, trading_position_snapshots.leverage),
+        peak_unrealised_pnl = MAX(COALESCE(trading_position_snapshots.peak_unrealised_pnl, 0), ${peak}),
+        trough_unrealised_pnl = MIN(COALESCE(trading_position_snapshots.trough_unrealised_pnl, 0), ${trough}),
+        opened_at = COALESCE(trading_position_snapshots.opened_at, ${position.observedAt}),
+        observed_at = ${position.observedAt}
+    `;
+  }).pipe(Effect.mapError(manualPersistFail));
+}
+
+function persistManualFills(
+  input: ManualReconcileInput,
+  fills: ReadonlyArray<ReconciledFill>,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (const f of fills) {
+      yield* sql`
+        INSERT INTO trading_fills (
+          fill_id, mission_id, execution_id, cloid, order_id, market, side,
+          filled_size, avg_fill_price, fee_usd, fee_token, closed_pnl,
+          direction, crossed, traded_at, observed_at, account_id, venue, asset
+        ) VALUES (
+          ${f.fillId}, NULL, ${f.executionId ?? null}, ${f.cloid ?? null},
+          ${f.orderId}, ${f.market}, ${f.side}, ${f.filledSize}, ${f.avgFillPrice},
+          ${f.feeUsd}, ${f.feeToken}, ${f.closedPnl}, ${f.direction ?? null},
+          ${crossedBit(f.crossed)}, ${f.tradedAt}, ${f.observedAt},
+          ${input.accountId}, 'hyperliquid', ${f.market}
+        )
+        ON CONFLICT(fill_id) DO UPDATE SET
+          filled_size = ${f.filledSize}, avg_fill_price = ${f.avgFillPrice},
+          closed_pnl = ${f.closedPnl}, fee_usd = ${f.feeUsd},
+          direction = ${f.direction ?? null}, crossed = ${crossedBit(f.crossed)},
+          observed_at = ${f.observedAt}
+      `;
+    }
+  }).pipe(Effect.mapError(manualPersistFail));
+}
+
+function persistManualOpenOrders(
+  input: ManualReconcileInput,
+  canonicalOrders: ReadonlyArray<AgentOpenOrder>,
+  observedAt: number,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      DELETE FROM trading_orders
+      WHERE mission_id IS NULL AND account_id = ${input.accountId}
+        AND market = ${input.market}
+    `;
+    const mine = canonicalOrders.filter(
+      (order) => order.cloid !== undefined && order.market === input.market,
+    );
+    for (const order of mine) {
+      yield* sql`
+        INSERT INTO trading_orders (
+          mission_id, cloid, order_id, market, side, limit_price,
+          remaining_size, reduce_only, observed_at, account_id, venue, asset
+        ) VALUES (
+          NULL, ${order.cloid ?? ""}, ${order.orderId}, ${order.market},
+          ${order.side}, ${order.limitPrice}, ${order.remainingSize},
+          ${order.reduceOnly ? 1 : 0}, ${observedAt},
+          ${input.accountId}, 'hyperliquid', ${order.market}
+        )
+        ON CONFLICT(account_id, cloid) DO UPDATE SET
+          order_id = ${order.orderId}, limit_price = ${order.limitPrice},
+          remaining_size = ${order.remainingSize},
+          reduce_only = ${order.reduceOnly ? 1 : 0},
+          observed_at = ${observedAt}
+      `;
+    }
+  }).pipe(Effect.mapError(manualPersistFail));
+}
+
+/**
+ * Settle manual execution records the same way the mission pass settles its
+ * own: canonical silence past the grace window fails an unanswered record,
+ * live-book absence plus a fill settles an accepted one, and terminal records
+ * release their reservations.
+ */
+function settleManualExecutions(
+  input: ManualReconcileInput,
+  canonicalOrders: ReadonlyArray<AgentOpenOrder>,
+  observedAt: number,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const resting = new Set(
+      canonicalOrders.flatMap((order) => (order.cloid === undefined ? [] : [order.cloid])),
+    );
+
+    const open = yield* sql<{
+      readonly execution_id: string;
+      readonly cloid: string;
+      readonly status: string;
+      readonly updated_at: number;
+    }>`
+      SELECT execution_id, cloid, status, updated_at
+      FROM trading_execution_records
+      WHERE mission_id IS NULL AND account_id = ${input.accountId}
+        AND market = ${input.market}
+        AND (${sql.in("status", PENDING_EXECUTION_STATUSES)} OR status = 'accepted')
+    `;
+    for (const record of open) {
+      if (resting.has(record.cloid)) continue;
+      const filled = yield* sql<{ readonly fill_id: string }>`
+        SELECT fill_id FROM trading_fills
+        WHERE mission_id IS NULL AND account_id = ${input.accountId}
+          AND cloid = ${record.cloid}
+        LIMIT 1
+      `;
+      if (filled.length > 0) {
+        yield* sql`
+          UPDATE trading_execution_records
+          SET status = 'filled', updated_at = ${observedAt}
+          WHERE execution_id = ${record.execution_id} AND status != 'filled'
+        `;
+        continue;
+      }
+      if (record.updated_at > observedAt - ABANDONED_EXECUTION_AFTER_MS) continue;
+      const settled = record.status === "accepted" ? "cancelled" : "failed";
+      yield* sql`
+        UPDATE trading_execution_records
+        SET status = ${settled}, updated_at = ${observedAt}
+        WHERE execution_id = ${record.execution_id}
+      `;
+      yield* Effect.logWarning("trading manual reconcile settled an execution record", {
+        accountId: input.accountId,
+        executionId: record.execution_id,
+        cloid: record.cloid,
+        status: settled,
+      });
+    }
+
+    yield* sql`
+      UPDATE trading_risk_reservations
+      SET status = 'released', released_at = ${observedAt}
+      WHERE mission_id IS NULL AND account_id = ${input.accountId}
+        AND status = 'reserved'
+        AND execution_id IN (
+          SELECT execution_id FROM trading_execution_records
+          WHERE status IN ('filled', 'rejected', 'cancelled', 'failed')
+        )
+    `;
+  }).pipe(Effect.mapError(manualPersistFail));
+}
+
+const manualPersistFail = (cause: unknown): TradingReconciliationError =>
+  new TradingReconciliationError({
+    reason: "persist_failed",
+    detail: cause instanceof Error ? cause.message : String(cause),
+  });
+
+/** Converge the MANUAL rows for one account + market. */
+export const reconcileManualExposure = (
+  input: ManualReconcileInput,
+): Effect.Effect<
+  ManualReconciledState,
+  TradingReconciliationError,
+  SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient | TradingAccountProjection
+> =>
+  Effect.gen(function* () {
+    const accountProjection = yield* TradingAccountProjection;
+    const observedAt = yield* now();
+    const readInput: ReconcileInput = {
+      // The mission id is only stamped into in-memory snapshots by the shared
+      // canonical readers; nothing manual persists it.
+      missionId: `manual:${input.accountId}`,
+      masterAddress: input.masterAddress,
+      market: input.market,
+    };
+    const startedAt = yield* readManualStartedAt(input);
+
+    const [account, canonicalOrders, fills] = yield* Effect.all(
+      [
+        readCanonicalAccount(readInput, observedAt),
+        readCanonicalOpenOrders(readInput),
+        startedAt === null
+          ? Effect.succeed([] as ReadonlyArray<ReconciledFill>)
+          : readCanonicalFills(readInput, observedAt, startedAt),
+      ],
+      { concurrency: "unbounded" },
+    );
+
+    const rawPosition = account.position;
+    const position =
+      rawPosition === null
+        ? null
+        : ({
+            ...rawPosition,
+            protectedSize: confirmedProtectedSize({
+              market: input.market,
+              positionSize: rawPosition.size,
+              referencePrice: rawPosition.markPx ?? rawPosition.entryPrice ?? 0,
+              openOrders: canonicalOrders,
+            }),
+          } satisfies TradingPositionSnapshot);
+
+    yield* persistManualPosition(input, position, observedAt);
+    yield* persistManualFills(input, fills);
+    yield* persistManualOpenOrders(input, canonicalOrders, observedAt);
+    yield* settleManualExecutions(input, canonicalOrders, observedAt);
+
+    yield* Effect.logDebug("trading manual reconciled", {
+      accountId: input.accountId,
+      market: input.market,
+      positionSize: position?.size ?? 0,
+    });
+    yield* accountProjection.invalidate({ reason: "reconcile:manual" });
+    return {
+      positionSize: position?.size ?? 0,
+      observedAt,
+    } satisfies ManualReconciledState;
+  });

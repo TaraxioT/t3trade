@@ -35,7 +35,7 @@ const layer = it.layer(
 /** Migrate the shared in-memory db, then truncate the tables the view reads. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 73 });
+  yield* runMigrations({});
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_orders`;
@@ -71,10 +71,10 @@ layer("TradingAccountProjection", (it) => {
       yield* sql`
         INSERT INTO trading_position_snapshots
           (mission_id, market, size, entry_price, unrealised_pnl, margin_used,
-           protected_size, liquidation_price, mark_px, observed_at)
+           protected_size, liquidation_price, mark_px, observed_at, account_id)
         VALUES
-          ('mission_1', 'ETH', 2, 3000, 20, 600, 2, 2500, 3010, 2000),
-          ('mission_2', 'BTC', -0.1, 60000, -5, 300, 0, NULL, 59950, 3000)
+          ('mission_1', 'ETH', 2, 3000, 20, 600, 2, 2500, 3010, 2000, 'account_a'),
+          ('mission_2', 'BTC', -0.1, 60000, -5, 300, 0, NULL, 59950, 3000, 'account_a')
       `;
 
       const projection = yield* TradingAccountProjection;
@@ -121,8 +121,8 @@ layer("TradingAccountProjection", (it) => {
       yield* sql`
         INSERT INTO trading_orders
           (mission_id, cloid, order_id, market, side, limit_price, remaining_size,
-           reduce_only, observed_at)
-        VALUES ('mission_1', ${"a".repeat(32)}, 42, 'ETH', 'buy', 2900, 1.5, 0, 2000)
+           reduce_only, observed_at, account_id)
+        VALUES ('mission_1', ${"a".repeat(32)}, 42, 'ETH', 'buy', 2900, 1.5, 0, 2000, 'account_a')
       `;
       // Two observations on account_a's mission history: the newer one wins.
       yield* sql`
@@ -155,6 +155,44 @@ layer("TradingAccountProjection", (it) => {
       assert.strictEqual(accountB.positions.length, 0);
       assert.strictEqual(accountB.openOrders.length, 0);
       assert.strictEqual(accountB.balanceUsd, 800);
+    }),
+  );
+
+  it.effect("carries MANUAL rows (mission_id NULL) under the manual authority", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      // No mission anywhere: the user's own position and resting order. The
+      // account row comes from trading_accounts, not from mission history.
+      yield* sql`DELETE FROM trading_accounts`;
+      yield* sql`
+        INSERT INTO trading_accounts (
+          account_id, user_id, environment, master_wallet_json,
+          execution_wallet_json, status, created_at, updated_at
+        ) VALUES ('account_m', 'local', 'testnet', '{}', '{}', 'active', 0, 0)
+      `;
+      yield* sql`
+        INSERT INTO trading_position_snapshots
+          (mission_id, market, size, entry_price, unrealised_pnl, margin_used,
+           protected_size, observed_at, account_id, venue, asset)
+        VALUES (NULL, 'SOL', 2, 150, 1, 30, 2, 1000, 'account_m', 'hyperliquid', 'SOL')
+      `;
+      yield* sql`
+        INSERT INTO trading_orders
+          (mission_id, cloid, order_id, market, side, limit_price, remaining_size,
+           reduce_only, observed_at, account_id)
+        VALUES (NULL, ${"b".repeat(32)}, 7, 'SOL', 'sell', 160, 2, 1, 1000, 'account_m')
+      `;
+
+      const projection = yield* TradingAccountProjection;
+      const view = yield* projection.view();
+      const account = view.accounts.find((a) => a.accountId === "account_m")!;
+      assert.ok(account, "the manual-only account must not vanish from its own view");
+      assert.strictEqual(account.positions.length, 1);
+      assert.deepStrictEqual(account.positions[0]?.authority, { kind: "manual" });
+      assert.strictEqual(account.positions[0]?.protection, "resting_on_exchange");
+      assert.strictEqual(account.openOrders.length, 1);
+      assert.deepStrictEqual(account.openOrders[0]?.authority, { kind: "manual" });
     }),
   );
 

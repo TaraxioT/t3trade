@@ -179,4 +179,89 @@ it.layer(NodeServices.layer)("trading decider", (it) => {
       expect("supersededWatchIds" in event.payload).toBe(false);
     }),
   );
+
+  // -- final-form Phase 7: the manual order ---------------------------------
+
+  it.effect("turns a manual order into a request under the per-account manual stream", () =>
+    Effect.gen(function* () {
+      const event = singleEvent(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "trading.order.place",
+            commandId: CommandId.make("cmd-place"),
+            accountId: "acct-1",
+            market: "ETH",
+            side: "buy",
+            stopPrice: 2950,
+            sizeEth: 0.1,
+            urgency: "now",
+            createdAt: NOW,
+          },
+          readModel: makeReadModel(),
+        }),
+      );
+
+      expect(event.type).toBe("trading.order-place-requested");
+      expect(event.aggregateKind).toBe("mission");
+      expect(event.aggregateId).toBe("manual:acct-1");
+      expect(event.payload).toMatchObject({
+        accountId: "acct-1",
+        market: "ETH",
+        side: "buy",
+        stopPrice: 2950,
+        sizeEth: 0.1,
+        requestedAt: NOW,
+      });
+    }),
+  );
+
+  it.effect("refuses a manual order without a positive stop — the doctrine's one rule", () =>
+    Effect.gen(function* () {
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "trading.order.place",
+          commandId: CommandId.make("cmd-no-stop"),
+          market: "ETH",
+          side: "buy",
+          stopPrice: 0,
+          sizeEth: 0.1,
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(String(result)).toContain("stopPrice");
+    }),
+  );
+
+  it.effect("refuses a manual order with zero or two size expressions", () =>
+    Effect.gen(function* () {
+      const neither = yield* decideOrchestrationCommand({
+        command: {
+          type: "trading.order.place",
+          commandId: CommandId.make("cmd-no-size"),
+          market: "ETH",
+          side: "sell",
+          stopPrice: 3100,
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(String(neither)).toContain("exactly one");
+
+      const both = yield* decideOrchestrationCommand({
+        command: {
+          type: "trading.order.place",
+          commandId: CommandId.make("cmd-two-sizes"),
+          market: "ETH",
+          side: "sell",
+          stopPrice: 3100,
+          sizeEth: 0.1,
+          notionalUsd: 250,
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(String(both)).toContain("exactly one");
+    }),
+  );
 });

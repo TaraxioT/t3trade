@@ -122,6 +122,10 @@ import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection
 import { TradingAlertService } from "./trading/TradingAlertService.ts";
 import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
+import { TradingManualEntryService } from "./trading/TradingManualEntryService.ts";
+import { TradingControlService } from "./trading/TradingControlService.ts";
+import { HyperliquidGateway } from "@t3tools/hyperliquid";
+import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
 import { TradingMissionServiceLive } from "./trading/TradingMissionService.ts";
 import { TradingJournalServiceLive } from "./trading/TradingJournalService.ts";
@@ -857,144 +861,173 @@ const buildAppUnderTest = (options?: {
       ),
     );
 
-    const appLayerWithTrading = servedRoutesLayer.pipe(
-      // The /mcp trading toolkit and the mission snapshot RPC both read
-      // persisted mission state, so the routes layer now genuinely needs the
-      // trading projection and a database to build.
-      Layer.provide(TradingMissionProjectionLive),
-      // The account view RPC and its invalidation subscription (final-form
-      // Phase 3) ride the same routes layer.
-      Layer.provide(TradingAccountProjectionLive),
-      // The mission snapshot quotes each live mission's market. These tests
-      // have no exchange to ask, and a snapshot without a price is a valid one.
-      Layer.provide(
-        Layer.mock(TradingMarketPrice)({
-          markPrice: () => Effect.succeed(null),
-          ...options?.layers?.tradingMarketPrice,
-        }),
-      ),
-      // The chart RPC reads OHLC + snapshot via this service. The default test
-      // state seeds no missions, so the handler's guard refuses the read before
-      // this mock is ever called; the null default keeps the surface honest for
-      // any test that does seed a mission.
-      Layer.provide(
-        Layer.mock(TradingMarketChart)({
-          read: () => Effect.succeed(null),
-          ...options?.layers?.tradingMarketChart,
-        }),
-      ),
-      // The mission snapshot reports whether the archiver is recording. No
-      // child process here, and "not running" is an honest answer.
-      Layer.provide(
-        Layer.mock(ArchiveSupervisor)({
-          start: () => Effect.void,
-          health: Effect.succeed({
-            running: false,
-            pid: null,
-            lastHeartbeatAt: null,
-            lastHeartbeat: null,
-            restarts: 0,
-            stoppedReason: "no archiver in tests",
+    const appLayerWithTrading = servedRoutesLayer
+      .pipe(
+        // The /mcp trading toolkit and the mission snapshot RPC both read
+        // persisted mission state, so the routes layer now genuinely needs the
+        // trading projection and a database to build.
+        Layer.provide(TradingMissionProjectionLive),
+        // The account view RPC and its invalidation subscription (final-form
+        // Phase 3) ride the same routes layer.
+        Layer.provide(TradingAccountProjectionLive),
+        // The mission snapshot quotes each live mission's market. These tests
+        // have no exchange to ask, and a snapshot without a price is a valid one.
+        Layer.provide(
+          Layer.mock(TradingMarketPrice)({
+            markPrice: () => Effect.succeed(null),
+            ...options?.layers?.tradingMarketPrice,
           }),
-        }),
-      ),
-      // Opening a chart tells the registry to follow that market. Nothing is
-      // recording in tests, so noting it is all there is to do.
-      Layer.provide(
-        Layer.mock(FollowSetRegistry)({
-          start: () => Effect.void,
-          list: Effect.succeed([]),
-          noteChartOpened: () => Effect.void,
-        }),
-      ),
-      // Account-scoped watches and the alert feed (final-form Phase 5), and
-      // the watchlist (Phase 4). Both validate assets against the exchange,
-      // which these tests do not have — a rejected arm/add is a real outcome.
-      Layer.provide(
-        Layer.mock(TradingAlertService)({
-          armWatch: () =>
-            Effect.succeed({ outcome: "rejected" as const, reason: "no exchange in tests" }),
-          cancelWatch: () => Effect.succeed(false),
-          listWatches: Effect.succeed([]),
-          append: () => Effect.void,
-          listAlerts: () => Effect.succeed([]),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TradingWatchlistService)({
-          add: () =>
-            Effect.succeed({ outcome: "rejected" as const, reason: "no exchange in tests" }),
-          remove: () => Effect.succeed({ outcome: "ok" as const, entries: [] }),
-          list: Effect.succeed([]),
-        }),
-      ),
-      // The universe RPC lists what the venue trades. No exchange here, and a
-      // client that gets an empty list simply has nothing to pick from.
-      Layer.provide(
-        Layer.mock(TradingUniverse)({
-          list: Effect.succeed([]),
-          ...options?.layers?.tradingUniverse,
-        }),
-      ),
-      // The WS turn-start path asks the coordinator whether the thread belongs
-      // to a live mission. These tests have no mission, so it never takes the
-      // turn.
-      Layer.provide(
-        Layer.mock(TradingTurnCoordinator)({
-          requestUserMessageRun: () => Effect.succeed(false),
-          ...options?.layers?.tradingTurnCoordinator,
-        }),
-      ),
-      // The same path asks whether this message is the one that starts a
-      // mission. These tests run without the auto-mission shortcut, so it never
-      // claims one.
-      Layer.provide(
-        Layer.mock(TradingAutoMission)({
-          claimFirstMessage: () => Effect.succeed({ kind: "not_applicable" as const }),
-          ...options?.layers?.tradingAutoMission,
-        }),
-      ),
-      // Plan 29 step 8.4: the plan-revision RPC publishes through the same
-      // path `trading_plan` does, so the routes layer now needs the five
-      // services that path touches. The four SQL-only ones are live — a mock
-      // would be a second definition of what a publish does. The two that
-      // reach the exchange are mocked flat: these tests seed no position, and
-      // an accepted publish with nothing to reconcile is a real outcome.
-      Layer.provide(TradingStrategyServiceLive),
-      Layer.provide(TradingMissionServiceLive),
-      Layer.provide(TradingJournalServiceLive),
-      // The fourth: an accepted publish arms its prediction's watches.
-      Layer.provide(TradingWatchServiceLive),
-      Layer.provide(
-        Layer.mock(TradingPlanProtectionService)({
-          reconcilePlan: () =>
-            Effect.succeed({
-              stopStatus: "no_position" as const,
-              stopPrice: null,
-              target: {
-                status: "flat" as const,
-                positionSize: 0,
-                targetPrice: null,
+        ),
+        // The chart RPC reads OHLC + snapshot via this service. The default test
+        // state seeds no missions, so the handler's guard refuses the read before
+        // this mock is ever called; the null default keeps the surface honest for
+        // any test that does seed a mission.
+        Layer.provide(
+          Layer.mock(TradingMarketChart)({
+            read: () => Effect.succeed(null),
+            ...options?.layers?.tradingMarketChart,
+          }),
+        ),
+        // The mission snapshot reports whether the archiver is recording. No
+        // child process here, and "not running" is an honest answer.
+        Layer.provide(
+          Layer.mock(ArchiveSupervisor)({
+            start: () => Effect.void,
+            health: Effect.succeed({
+              running: false,
+              pid: null,
+              lastHeartbeatAt: null,
+              lastHeartbeat: null,
+              restarts: 0,
+              stoppedReason: "no archiver in tests",
+            }),
+          }),
+        ),
+        // Opening a chart tells the registry to follow that market. Nothing is
+        // recording in tests, so noting it is all there is to do.
+        Layer.provide(
+          Layer.mock(FollowSetRegistry)({
+            start: () => Effect.void,
+            list: Effect.succeed([]),
+            noteChartOpened: () => Effect.void,
+          }),
+        ),
+        // Account-scoped watches and the alert feed (final-form Phase 5), and
+        // the watchlist (Phase 4). Both validate assets against the exchange,
+        // which these tests do not have — a rejected arm/add is a real outcome.
+        Layer.provide(
+          Layer.mock(TradingAlertService)({
+            armWatch: () =>
+              Effect.succeed({ outcome: "rejected" as const, reason: "no exchange in tests" }),
+            cancelWatch: () => Effect.succeed(false),
+            listWatches: Effect.succeed([]),
+            append: () => Effect.void,
+            listAlerts: () => Effect.succeed([]),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(TradingWatchlistService)({
+            add: () =>
+              Effect.succeed({ outcome: "rejected" as const, reason: "no exchange in tests" }),
+            remove: () => Effect.succeed({ outcome: "ok" as const, entries: [] }),
+            list: Effect.succeed([]),
+          }),
+        ),
+        // The universe RPC lists what the venue trades. No exchange here, and a
+        // client that gets an empty list simply has nothing to pick from.
+        Layer.provide(
+          Layer.mock(TradingUniverse)({
+            list: Effect.succeed([]),
+            ...options?.layers?.tradingUniverse,
+          }),
+        ),
+        // The WS turn-start path asks the coordinator whether the thread belongs
+        // to a live mission. These tests have no mission, so it never takes the
+        // turn.
+        Layer.provide(
+          Layer.mock(TradingTurnCoordinator)({
+            requestUserMessageRun: () => Effect.succeed(false),
+            ...options?.layers?.tradingTurnCoordinator,
+          }),
+        ),
+        // The same path asks whether this message is the one that starts a
+        // mission. These tests run without the auto-mission shortcut, so it never
+        // claims one.
+        Layer.provide(
+          Layer.mock(TradingAutoMission)({
+            claimFirstMessage: () => Effect.succeed({ kind: "not_applicable" as const }),
+            ...options?.layers?.tradingAutoMission,
+          }),
+        ),
+        // Plan 29 step 8.4: the plan-revision RPC publishes through the same
+        // path `trading_plan` does, so the routes layer now needs the five
+        // services that path touches. The four SQL-only ones are live — a mock
+        // would be a second definition of what a publish does. The two that
+        // reach the exchange are mocked flat: these tests seed no position, and
+        // an accepted publish with nothing to reconcile is a real outcome.
+        Layer.provide(TradingStrategyServiceLive),
+        Layer.provide(TradingMissionServiceLive),
+        Layer.provide(TradingJournalServiceLive),
+        // The fourth: an accepted publish arms its prediction's watches.
+        Layer.provide(TradingWatchServiceLive),
+        Layer.provide(
+          Layer.mock(TradingPlanProtectionService)({
+            reconcilePlan: () =>
+              Effect.succeed({
+                stopStatus: "no_position" as const,
+                stopPrice: null,
+                target: {
+                  status: "flat" as const,
+                  positionSize: 0,
+                  targetPrice: null,
+                  cancelledCloids: [],
+                },
+              }),
+            ...options?.layers?.tradingPlanProtection,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(TradingWorkingOrderService)({
+            abandon: () =>
+              Effect.succeed({
+                found: false,
                 cancelledCloids: [],
-              },
-            }),
-          ...options?.layers?.tradingPlanProtection,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TradingWorkingOrderService)({
-          abandon: () =>
-            Effect.succeed({
-              found: false,
-              cancelledCloids: [],
-              requestedSize: 0,
-              filledSize: 0,
-            }),
-          ...options?.layers?.tradingWorkingOrder,
-        }),
-      ),
-      Layer.provide(SqlitePersistenceMemory),
-    );
+                requestedSize: 0,
+                filledSize: 0,
+              }),
+            ...options?.layers?.tradingWorkingOrder,
+          }),
+        ),
+        Layer.provide(SqlitePersistenceMemory),
+      )
+      .pipe(
+        // Phase 7: the manual order ticket. No exchange in these tests, so the
+        // preview refuses and the close path is never reached; the gateway and
+        // info mocks exist only to satisfy the manual reconcile's requirements.
+        Layer.provide(
+          Layer.mock(TradingManualEntryService)({
+            prepare: () =>
+              Effect.succeed({
+                outcome: "refused" as const,
+                reason: "market_data_unavailable",
+                detail: "no exchange in tests",
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(TradingControlService)({
+            closeManualPosition: () =>
+              Effect.succeed({
+                outcome: "refused" as const,
+                reason: "exchange_action_failed",
+                detail: "no exchange in tests",
+              }),
+          }),
+        ),
+        Layer.provide(Layer.mock(HyperliquidGateway)({})),
+        Layer.provide(Layer.mock(HyperliquidInfoClient)({})),
+        Layer.provide(SqlitePersistenceMemory),
+      );
 
     const appLayer = appLayerWithTrading.pipe(
       Layer.provide(resourceTelemetryLayer),

@@ -195,6 +195,45 @@ export function requireTradingControlTarget(input: {
   );
 }
 
+/**
+ * The shape rules a manual order must satisfy before an event is worth raising
+ * (final-form Phase 7). The full pricing/sizing checklist runs in the reactor
+ * against live state; these are the invariants that need no state at all:
+ * a positive stop — the manual doctrine's one non-negotiable — and exactly one
+ * positive size expression.
+ */
+export function requireManualOrderPlacable(input: {
+  readonly command: OrchestrationCommand;
+  readonly stopPrice: number;
+  readonly sizeEth: number | undefined;
+  readonly notionalUsd: number | undefined;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (!Number.isFinite(input.stopPrice) || input.stopPrice <= 0) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        "A manual order requires a positive stopPrice; every entry carries a stop.",
+      ),
+    );
+  }
+  const sizes = [input.sizeEth, input.notionalUsd].filter((value) => value !== undefined);
+  if (sizes.length !== 1) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        "Give exactly one of sizeEth or notionalUsd for a manual order.",
+      ),
+    );
+  }
+  const size = sizes[0]!;
+  if (!Number.isFinite(size) || size <= 0) {
+    return Effect.fail(
+      invariantError(input.command.type, "The manual order's size must be a positive number."),
+    );
+  }
+  return Effect.void;
+}
+
 export function requireNonNegativeInteger(input: {
   readonly commandType: OrchestrationCommand["type"];
   readonly field: string;

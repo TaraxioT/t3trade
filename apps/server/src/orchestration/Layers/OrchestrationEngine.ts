@@ -4,7 +4,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { OrchestrationCommand, TradingMissionId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -59,8 +59,8 @@ interface CommandEnvelope {
 }
 
 function commandToAggregateRef(command: OrchestrationCommand): {
-  readonly aggregateKind: "project" | "thread";
-  readonly aggregateId: ProjectId | ThreadId;
+  readonly aggregateKind: "project" | "thread" | "mission";
+  readonly aggregateId: ProjectId | ThreadId | TradingMissionId;
 } {
   switch (command.type) {
     case "project.create":
@@ -69,6 +69,13 @@ function commandToAggregateRef(command: OrchestrationCommand): {
       return {
         aggregateKind: "project",
         aggregateId: command.projectId,
+      };
+    // The one command with no thread: a manual trading order belongs to the
+    // account, and its events stream under a per-account mission aggregate.
+    case "trading.order.place":
+      return {
+        aggregateKind: "mission",
+        aggregateId: TradingMissionId.make(`manual:${command.accountId ?? "local"}`),
       };
     default:
       return {

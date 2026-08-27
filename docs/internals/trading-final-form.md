@@ -219,23 +219,40 @@ the feed and as an OS notification; existing wake tests pass unchanged.
 
 After 1 (drawing) / 2.4 (depth). Upstream: contracts + `ws.ts` only.
 
-### Phase 7 — Guarded manual execution + per-market authority
+### Phase 7 — Guarded manual execution + per-market authority _(landed)_
 
-- [ ] Migration 075: the six execution tables rebuilt (nullable `mission_id`,
-      `account_id NOT NULL`, venue/asset); `trading_missions` gains `venue`; the
-      one-active-per-user index becomes a per-`{venue,asset}` exclusivity index.
-- [ ] `TradingManualEntryService.ts` mirroring `TradingEntryService` minus
-      harness lease/mandate; preview context variant; `accountPolicy.ts` risk
-      envelope.
-- [ ] `Cloid.ts` owner-id variant (mission cloids byte-stable);
-      `trading.order.place` command arm + invariants routed through the reactor.
-- [ ] Authority exclusivity both directions with named refusals; audit every
-      `WHERE mission_id = ?` for NULL handling; watchdog iterates account positions.
-- [ ] `OrderTicket.tsx` in the trade home with mandatory stop and live
-      `deriveFeasibleSize` readout.
+- [x] Migration 075: the six execution tables rebuilt (nullable `mission_id`,
+      `account_id NOT NULL DEFAULT 'unattributed'`, venue/asset);
+      `trading_missions` gains `venue`; the one-active-per-user index becomes
+      the per-`{venue,asset}` exclusivity index. Round-trip test over
+      v074-shaped rows plus the whole chain from empty.
+- [x] `TradingManualEntryService.ts` mirroring `TradingEntryService` minus
+      harness lease/mandate (stop mandatory at preview);
+      `previewManualOrder` in `TradingPreviewService`; `accountPolicy.ts`
+      account envelope (testnet-mandate ratios, env-overridable).
+- [x] `Cloid.ts` `deriveManualCloid` (mission derivation pinned byte-stable);
+      `trading.order.place` command arm + invariants, routed through the
+      reactor with a manual owner (`mission_id NULL`, manual idempotency
+      namespace); outcomes and refusals land in the alert feed.
+- [x] Authority exclusivity both directions with named refusals
+      (`market_owned_by_mission` on the ticket,
+      `TradingMarketManualExposureError` on mission create); every
+      mission-scoped query audited for the nullable `mission_id`; the
+      protection/take-profit/working-order watchdogs and the fill-reconciler
+      follow loop iterate every active mission, manual positions get their own
+      protection guard + 5s manual reconcile pass
+      (`reconcileManualExposure`), and the account view carries manual rows
+      under the `manual` authority.
+- [x] `OrderTicket.tsx` in the trade home with the mandatory stop, the live
+      `deriveFeasibleSize` readout, and refusals verbatim; manual reduce/close
+      from `AccountPositionsPanel` via `closeTradingManualPosition`.
 
-After 1 and 3; 075 after 074 is merged. Heaviest migration — round-trip test
-against a `VACUUM INTO` snapshot of real data.
+Notes: `blockedReason 'account_unavailable'` stays out — Phase 7 wrote no
+account gate that would set it, and dead enum members are not re-added.
+Upstream touches beyond the planned decider/invariants/contracts/`ws.ts`:
+one case in `OrchestrationEngine.commandToAggregateRef` (the first threadless
+command needs an aggregate ref). The live testnet smoke
+(`executionLive.test.ts` pattern) is deliberately left to the operator.
 
 ### Phase 8 — The LLM finds its place
 
@@ -264,11 +281,11 @@ After 5, 7, 0.3, 0.4.
 
 ## 5 · Migration ledger
 
-| Id  | Lands in   | Contents                                                                           | Risk                                                                                                 |
-| --- | ---------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| 074 | Phases 4+5 | `trading_watchlist`; `trading_watches` rebuild; `trading_alert_events`             | Recreate 035 indexes; backfill `deliver='wake'`, `venue='hyperliquid'`; wake behavior byte-identical |
-| 075 | Phase 7    | Six execution tables rebuilt; `trading_missions.venue`; per-market authority index | Heaviest rebuild; audit every `WHERE mission_id = ?`; round-trip test on a real snapshot             |
-| —   | Phase 2    | Archive DB v1→v2 (venue columns) via its own version row                           | Never joins the app chain                                                                            |
+| Id  | Lands in   | Contents                                                                           | Risk                                                                                                                                                                                                |
+| --- | ---------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 074 | Phases 4+5 | `trading_watchlist`; `trading_watches` rebuild; `trading_alert_events`             | Recreate 035 indexes; backfill `deliver='wake'`, `venue='hyperliquid'`; wake behavior byte-identical                                                                                                |
+| 075 | Phase 7    | Six execution tables rebuilt; `trading_missions.venue`; per-market authority index | Landed. `account_id` carries `DEFAULT 'unattributed'` (the orphan-backfill sentinel); the position/account-snapshot uniqueness moved onto partial indexes, so upserts name the index `WHERE` clause |
+| —   | Phase 2    | Archive DB v1→v2 (venue columns) via its own version row                           | Never joins the app chain                                                                                                                                                                           |
 
 ## 6 · Deliberately not doing
 

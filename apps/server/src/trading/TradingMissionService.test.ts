@@ -427,4 +427,79 @@ layer("TradingMissionService", (it) => {
       );
     }),
   );
+
+  // -- D4: per-market exclusivity (final-form Phase 7) ------------------------
+
+  it.effect("admits two active missions on DIFFERENT markets for one user", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+      yield* service.createMission(createInput());
+      const second = yield* service.createMission({
+        ...createInput({ missionId: "mission_btc" }),
+        market: "BTC",
+      });
+      assert.equal(second.market, "BTC");
+      const active = yield* service.findActiveMissions("user_1");
+      assert.equal(active.length, 2);
+
+      const onEth = yield* service.findActiveMissionOnMarket({
+        userId: "user_1",
+        venue: "hyperliquid",
+        market: "ETH",
+      });
+      assert.equal(Option.isSome(onEth) && onEth.value.id, "mission_1");
+    }),
+  );
+
+  it.effect("refuses a second active mission on the SAME market, naming it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+      yield* service.createMission({ ...createInput(), market: "SOL" });
+      const refusal = yield* service
+        .createMission({ ...createInput({ missionId: "mission_2" }), market: "SOL" })
+        .pipe(Effect.flip);
+      assert.equal(refusal._tag, "TradingMissionAlreadyActiveError");
+      assert.ok(String(refusal.message).includes("SOL"));
+    }),
+  );
+
+  it.effect("refuses a mission on a market with MANUAL exposure, naming the exposure", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TradingMissionService;
+
+      // An open manual position on SOL: the user is in this market by hand.
+      yield* sql`
+        INSERT INTO trading_position_snapshots (
+          mission_id, market, size, entry_price, unrealised_pnl, margin_used,
+          protected_size, observed_at, account_id, venue, asset
+        ) VALUES (NULL, 'SOL', 1.5, 150, 0, 20, 1.5, 1, 'acct_1', 'hyperliquid', 'SOL')
+      `;
+      const refusal = yield* service
+        .createMission({ ...createInput(), market: "SOL" })
+        .pipe(Effect.flip);
+      assert.equal(refusal._tag, "TradingMarketManualExposureError");
+      assert.ok(String(refusal.message).includes("open position"));
+
+      // A different market is untouched by the manual SOL exposure.
+      yield* service.createMission({ ...createInput({ missionId: "mission_eth" }) });
+
+      // A resting manual order alone also refuses.
+      yield* sql`DELETE FROM trading_position_snapshots`;
+      yield* sql`
+        INSERT INTO trading_orders (
+          mission_id, cloid, order_id, market, side, limit_price, remaining_size,
+          reduce_only, observed_at, account_id, venue, asset
+        ) VALUES (NULL, '0xmanual', 7, 'SOL', 'buy', 149, 1, 0, 1, 'acct_1', 'hyperliquid', 'SOL')
+      `;
+      const orderRefusal = yield* service
+        .createMission({ ...createInput({ missionId: "mission_3" }), market: "SOL" })
+        .pipe(Effect.flip);
+      assert.equal(orderRefusal._tag, "TradingMarketManualExposureError");
+      assert.ok(String(orderRefusal.message).includes("resting order"));
+    }),
+  );
 });

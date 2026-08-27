@@ -384,6 +384,40 @@ export const tradingMissionCreate: (input: TradingMissionCreateInput) => Command
   });
 });
 
+export interface TradingOrderPlaceInput {
+  /** Omit for the local testnet account. */
+  readonly accountId?: string | undefined;
+  readonly market: string;
+  readonly side: "buy" | "sell";
+  readonly stopPrice: number;
+  readonly sizeEth?: number | undefined;
+  readonly notionalUsd?: number | undefined;
+  readonly urgency?: "now" | "patient" | undefined;
+}
+
+/**
+ * Place a MANUAL order (final-form Phase 7). Dispatch is the acknowledgement;
+ * the outcome — a fill or a refusal, verbatim — lands in the alert feed and
+ * the account view over the doorbell.
+ */
+export const tradingOrderPlace: (input: TradingOrderPlaceInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.tradingOrderPlace",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata({});
+  return yield* dispatch({
+    type: "trading.order.place",
+    ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
+    market: input.market,
+    side: input.side,
+    stopPrice: input.stopPrice,
+    ...(input.sizeEth === undefined ? {} : { sizeEth: input.sizeEth }),
+    ...(input.notionalUsd === undefined ? {} : { notionalUsd: input.notionalUsd }),
+    ...(input.urgency === undefined ? {} : { urgency: input.urgency }),
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
 export interface TradingMissionControlInput {
   readonly type: "trading.mission.pause" | "trading.mission.resume" | "trading.mission.revoke";
   readonly threadId: ThreadId;

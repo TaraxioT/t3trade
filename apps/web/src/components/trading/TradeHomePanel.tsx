@@ -34,6 +34,7 @@ import { AccountPositionsPanel } from "./AccountPositionsPanel";
 import { AlertFeedPanel } from "./AlertFeedPanel";
 import { MarketChartPanel } from "./MarketChartPanel";
 import { MissionPriceChart } from "./MissionPriceChart";
+import { OrderTicket } from "./OrderTicket";
 import { describeArchiveHealth } from "./tradeHomePresentation";
 import { useTradingUniverseAssets } from "./UniverseAssetSearch";
 import { WatchlistPanel } from "./WatchlistPanel";
@@ -212,11 +213,18 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
                 Pick a watchlist market or open a position to chart it here.
               </div>
             ) : (
-              <TradeHomeChart
-                environmentId={environmentId}
-                asset={selectedAsset}
-                mission={mission}
-              />
+              <>
+                <TradeHomeChart
+                  environmentId={environmentId}
+                  asset={selectedAsset}
+                  mission={mission}
+                />
+                {/* Phase 7: the manual ticket. Rendered even when a mission
+                    owns the market — the server's market_owned_by_mission
+                    refusal in the preview is the honest explanation of why
+                    the ticket will not go through. */}
+                <OrderTicket environmentId={environmentId} asset={selectedAsset} />
+              </>
             )}
             <AccountPositionsPanel
               accounts={accounts}

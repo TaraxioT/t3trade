@@ -40,6 +40,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HyperliquidExchangeClient, type SignedAction } from "@t3tools/hyperliquid/ExchangeClient";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidNonceCoordinatorLive } from "@t3tools/hyperliquid/NonceCoordinator";
+import { deriveCloid, deriveManualCloid } from "@t3tools/hyperliquid/Cloid";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import { addressFromPrivateKey } from "@t3tools/hyperliquid/Signing";
 import type {
@@ -215,7 +216,7 @@ const armedSignerConfig = Layer.succeed(InterimSignerConfig, {
 /** Migrate the shared in-memory db to 040, then truncate the execution tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 73 });
+  yield* runMigrations({});
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_risk_reservations`;
   yield* sql`DELETE FROM trading_fills`;
@@ -516,6 +517,94 @@ layer("HyperliquidExecutionService", (it) => {
       assert.equal(record.status, "filled");
       assert.equal(record.stopPrice, undefined);
       assert.equal(recordingExchange.submitted.length, 1);
+    }),
+  );
+
+  // -- final-form Phase 7: the manual owner ---------------------------------
+
+  it.effect("submitManualOrder persists a NULL-mission row under the manual cloid namespace", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = OK_RESPONSE;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* HyperliquidExecutionService;
+
+      const intent = {
+        ...openIntent(3),
+        missionId: "manual:acct_1",
+      } as ExecutionInput["intent"];
+      const record = yield* service.submitManualOrder({
+        intent,
+        accountId: "acct_1",
+        reservedRiskUsd: 20,
+        allowedSlippageBps: 50,
+      });
+
+      assert.equal(record.status, "filled");
+      assert.equal(
+        record.cloid,
+        deriveManualCloid({ accountId: "acct_1", executionSequence: 3, actionType: "open" }),
+      );
+
+      const rows = yield* sql<{
+        readonly mission_id: string | null;
+        readonly account_id: string;
+        readonly venue: string;
+        readonly asset: string | null;
+        readonly idempotency_key: string;
+        readonly cloid: string;
+      }>`SELECT mission_id, account_id, venue, asset, idempotency_key, cloid
+         FROM trading_execution_records`;
+      assert.equal(rows.length, 1);
+      assert.isNull(rows[0]?.mission_id);
+      assert.equal(rows[0]?.account_id, "acct_1");
+      assert.equal(rows[0]?.venue, "hyperliquid");
+      assert.equal(rows[0]?.asset, "ETH");
+      assert.equal(rows[0]?.idempotency_key, "idem_manual_acct_1_3_open");
+      // The manual namespace, never the mission derivation of the token.
+      assert.notEqual(
+        rows[0]?.cloid,
+        deriveCloid({ missionId: "manual:acct_1", executionSequence: 3, actionType: "open" }),
+      );
+
+      const reservations = yield* sql<{
+        readonly mission_id: string | null;
+        readonly account_id: string;
+      }>`SELECT mission_id, account_id FROM trading_risk_reservations`;
+      assert.isNull(reservations[0]?.mission_id);
+      assert.equal(reservations[0]?.account_id, "acct_1");
+    }),
+  );
+
+  it.effect("the MISSION path's cloid and row shape are untouched by the manual arm", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = OK_RESPONSE;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* HyperliquidExecutionService;
+
+      const record = yield* service.submitOrder({
+        intent: openIntent(4),
+        previewContext,
+        allowedSlippageBps: 50,
+        masterAddress: SIGNER_ADDR,
+      });
+
+      // Byte-stable: the mission derivation, exactly as before Phase 7.
+      assert.equal(
+        record.cloid,
+        deriveCloid({ missionId: MISSION, executionSequence: 4, actionType: "open" }),
+      );
+      const rows = yield* sql<{
+        readonly mission_id: string | null;
+        readonly account_id: string;
+      }>`SELECT mission_id, account_id FROM trading_execution_records`;
+      assert.equal(rows[0]?.mission_id, MISSION);
+      // No trading_missions row exists in this harness, so the ownership
+      // column degrades to the migration's sentinel rather than failing.
+      assert.equal(rows[0]?.account_id, "unattributed");
     }),
   );
 });

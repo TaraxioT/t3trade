@@ -80,3 +80,48 @@ export function deriveCloid(input: CloidInput): string {
   // `0x`-prefix so the exchange records it rather than silently dropping it.
   return `0x${bytesToHex(full.subarray(0, 16))}`;
 }
+
+// ---------------------------------------------------------------------------
+// Manual owner namespace (final-form Phase 7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Inputs that fix a MANUAL order's cloid: the trading account is the owner
+ * where a mission would be.
+ */
+export interface ManualCloidInput {
+  readonly accountId: string;
+  readonly executionSequence: number;
+  readonly actionType: string;
+}
+
+/**
+ * The leading namespace field a manual cloid is hashed under.
+ *
+ * A manual derivation hashes FOUR fields — `"manual" ␟ accountId ␟ sequence ␟
+ * actionType` — where a mission derivation hashes three. The extra leading
+ * field is what keeps the two namespaces apart without touching the mission
+ * hash at all: mission cloids remain byte-for-byte what they were (pinned in
+ * `Cloid.test.ts`), and a mission whose id happened to be `"manual"` still
+ * cannot collide because its byte stream has one separator fewer.
+ */
+const MANUAL_NAMESPACE = "manual";
+
+/**
+ * Derive the deterministic cloid for a manual (user-placed) order. Same wire
+ * shape, same retry semantics as `deriveCloid`, distinct namespace.
+ */
+export function deriveManualCloid(input: ManualCloidInput): string {
+  const acc: number[] = [];
+  appendText(acc, MANUAL_NAMESPACE);
+  acc.push(...FIELD_SEPARATOR);
+  appendText(acc, input.accountId);
+  acc.push(...FIELD_SEPARATOR);
+  acc.push(...u32Be(input.executionSequence));
+  acc.push(...FIELD_SEPARATOR);
+  appendText(acc, input.actionType);
+
+  const bytes = new Uint8Array(acc);
+  const full = sha256(bytes);
+  return `0x${bytesToHex(full.subarray(0, 16))}`;
+}

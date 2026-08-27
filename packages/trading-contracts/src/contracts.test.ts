@@ -794,6 +794,7 @@ describe("subpath exports", () => {
         "./primitives",
         "./account",
         "./authority",
+        "./accountPolicy",
         "./mission",
         "./mode",
         "./strategy",

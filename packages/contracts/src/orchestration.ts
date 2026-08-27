@@ -42,6 +42,11 @@ import {
   TradingMissionWatchRegisteredPayload,
   TradingMissionStopAdjustedPayload,
   TradingExecutionRequestedPayload,
+  TradingOrderPlaceRequestedPayload,
+  TradingOrderPreviewInput,
+  TradingOrderPreviewResult,
+  TradingManualCloseInput,
+  TradingManualCloseResult,
   TradingChartInterval,
   TradingMarketChartView,
   OrchestrationReviseTradingPlanInput,
@@ -77,6 +82,8 @@ export const ORCHESTRATION_WS_METHODS = {
   addTradingWatchlistEntry: "orchestration.addTradingWatchlistEntry",
   removeTradingWatchlistEntry: "orchestration.removeTradingWatchlistEntry",
   listTradingWatchlist: "orchestration.listTradingWatchlist",
+  previewTradingOrder: "orchestration.previewTradingOrder",
+  closeTradingManualPosition: "orchestration.closeTradingManualPosition",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
   subscribeTradingAccount: "orchestration.subscribeTradingAccount",
@@ -1180,6 +1187,7 @@ export const OrchestrationEventType = Schema.Literals([
   "trading.mission-run-started",
   "trading.mission-stop-adjusted",
   "trading.execution-requested",
+  "trading.order-place-requested",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1636,6 +1644,11 @@ export const OrchestrationEvent = Schema.Union([
     type: Schema.Literal("trading.execution-requested"),
     payload: TradingExecutionRequestedPayload,
   }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.order-place-requested"),
+    payload: TradingOrderPlaceRequestedPayload,
+  }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;
 
@@ -1894,6 +1907,14 @@ export const OrchestrationRpcSchemas = {
   listTradingWatchlist: {
     input: Schema.Struct({}),
     output: TradingWatchlistView,
+  },
+  previewTradingOrder: {
+    input: TradingOrderPreviewInput,
+    output: TradingOrderPreviewResult,
+  },
+  closeTradingManualPosition: {
+    input: TradingManualCloseInput,
+    output: TradingManualCloseResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

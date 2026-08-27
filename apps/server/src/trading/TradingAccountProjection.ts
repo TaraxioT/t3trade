@@ -71,7 +71,7 @@ const toIso = (epochMillis: number): string => DateTime.formatIso(DateTime.makeU
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
 
 interface PositionRow {
-  readonly mission_id: string;
+  readonly mission_id: string | null;
   readonly trading_account_id: string;
   readonly market: string;
   readonly size: number;
@@ -85,7 +85,7 @@ interface PositionRow {
 }
 
 interface OpenOrderRow {
-  readonly mission_id: string;
+  readonly mission_id: string | null;
   readonly trading_account_id: string;
   readonly cloid: string;
   readonly order_id: number;
@@ -119,9 +119,11 @@ const toPosition = (row: PositionRow): TradingAccountPosition => ({
   // exchange; the server-executed arm exists in the schema for the day a
   // watcher-enforced stop ships. Null when nothing protects.
   protection: row.protected_size > 0 ? "resting_on_exchange" : null,
-  // D4: every reconciled row belongs to the mission that traded it. Manual
-  // rows arrive with Phase 7.
-  authority: { kind: "mission", missionId: TradingMissionId.make(row.mission_id) },
+  // D4: a NULL mission is the user's own hand (Phase 7's manual authority).
+  authority:
+    row.mission_id === null
+      ? { kind: "manual" }
+      : { kind: "mission", missionId: TradingMissionId.make(row.mission_id) },
   liquidationPrice: row.liquidation_price ?? undefined,
   observedAt: toIso(row.observed_at),
 });
@@ -134,7 +136,10 @@ const toOpenOrder = (row: OpenOrderRow): TradingAccountOpenOrder => ({
   limitPrice: row.limit_price,
   remainingSize: row.remaining_size,
   reduceOnly: row.reduce_only !== 0,
-  authority: { kind: "mission", missionId: TradingMissionId.make(row.mission_id) },
+  authority:
+    row.mission_id === null
+      ? { kind: "manual" }
+      : { kind: "mission", missionId: TradingMissionId.make(row.mission_id) },
   observedAt: toIso(row.observed_at),
 });
 
@@ -148,28 +153,33 @@ const makeTradingAccountProjection = Effect.gen(function* () {
 
   const view: TradingAccountProjectionShape["view"] = () =>
     Effect.gen(function* () {
-      // Every account any mission has named, so a flat account still shows its
-      // balance card rather than vanishing between trades.
+      // Every account row that exists, plus any account a mission ever named:
+      // a manual-only account must not vanish from its own home screen, and a
+      // pre-bootstrap database still surfaces its historic mission accounts.
       const accountIds = yield* sql<AccountIdRow>`
+        SELECT account_id AS trading_account_id FROM trading_accounts
+        UNION
         SELECT DISTINCT trading_account_id FROM trading_missions
         ORDER BY trading_account_id
       `.pipe(Effect.mapError(sqlFail("accounts")));
 
+      // Since 075 the rows carry their own account_id, so a manual row
+      // (mission_id NULL) is read exactly like a mission's — the old JOIN to
+      // trading_missions silently dropped it.
       const positions = yield* sql<PositionRow>`
-        SELECT p.mission_id, m.trading_account_id, p.market, p.size, p.entry_price,
-               p.unrealised_pnl, p.margin_used, p.protected_size,
+        SELECT p.mission_id, p.account_id AS trading_account_id, p.market, p.size,
+               p.entry_price, p.unrealised_pnl, p.margin_used, p.protected_size,
                p.liquidation_price, p.mark_px, p.observed_at
         FROM trading_position_snapshots p
-        JOIN trading_missions m ON m.mission_id = p.mission_id
         WHERE p.size != 0
         ORDER BY p.observed_at DESC
       `.pipe(Effect.mapError(sqlFail("positions")));
 
       const openOrders = yield* sql<OpenOrderRow>`
-        SELECT o.mission_id, m.trading_account_id, o.cloid, o.order_id, o.market,
-               o.side, o.limit_price, o.remaining_size, o.reduce_only, o.observed_at
+        SELECT o.mission_id, o.account_id AS trading_account_id, o.cloid, o.order_id,
+               o.market, o.side, o.limit_price, o.remaining_size, o.reduce_only,
+               o.observed_at
         FROM trading_orders o
-        JOIN trading_missions m ON m.mission_id = o.mission_id
         ORDER BY o.observed_at DESC
       `.pipe(Effect.mapError(sqlFail("orders")));
 

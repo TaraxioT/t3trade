@@ -40,7 +40,7 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 73 });
+  yield* runMigrations({});
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -57,7 +57,7 @@ const seedPosition = (size: number) =>
         (mission_id, market, size, entry_price, unrealised_pnl, margin_used,
          protected_size, observed_at, opened_at)
       VALUES ('mission_1', 'ETH', ${size}, 1_913.3, 0, 100, 0, 1_000, 900)
-      ON CONFLICT (mission_id, market) DO UPDATE SET size = ${size}
+      ON CONFLICT (mission_id, market) WHERE mission_id IS NOT NULL DO UPDATE SET size = ${size}
     `;
   });
 

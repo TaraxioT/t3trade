@@ -19,6 +19,7 @@
 import { Context, Effect, Schema } from "effect";
 import * as Layer from "effect/Layer";
 
+import type { AccountTradingPolicy } from "@t3tools/trading-contracts/accountPolicy";
 import type { TradingMission } from "@t3tools/trading-contracts/mission";
 import type { MarketBestBidOffer } from "@t3tools/trading-contracts/market";
 import { MARKET_FRESHNESS } from "@t3tools/trading-contracts/market";
@@ -597,6 +598,188 @@ export const previewOrder = (
     Effect.tapError((rejection) =>
       Effect.logInfo("trading preview rejected", {
         missionId: intent.missionId,
+        actionType: intent.actionType,
+        executionSequence: intent.executionSequence,
+        item: rejection.item,
+        detail: rejection.detail,
+      }),
+    ),
+  );
+
+// --- the manual checklist (final-form Phase 7) ------------------------------
+//
+// A manual order has no mission, no plan, no lease, and no harness — so the
+// four items that interrogate them (`mission_active`, `entries_allowed`,
+// `harness_run_owns_lease`, `direction_permitted`) have no question to ask.
+// Everything that is about the ORDER stays: the armed signer, freshness, size
+// and price, the exchange minimum, the mandatory stop, and the in-flight
+// conflict. The mandate ceilings are replaced by the account envelope
+// (`AccountTradingPolicy`): gross notional against the account's position cap,
+// leverage against the account's leverage cap, planned loss against the
+// per-trade budget. Margin capacity and the sizing arithmetic run in
+// `TradingManualEntryService` through `deriveFeasibleSize`, exactly as the
+// mission path runs them before ITS preview.
+
+/** State the manual checklist inspects. */
+export interface ManualPreviewContext {
+  /** The account-level risk envelope the ticket executes under. */
+  readonly policy: AccountTradingPolicy;
+  /** Same fail-closed armed-signer gate as the mission checklist. */
+  readonly approvedExecutionWalletAddress: string | null;
+  /** Fresh BBO for the market (§15.4: 2s window). */
+  readonly bbo: MarketBestBidOffer;
+  /** Account freshness observedAt (§13: 5s window). */
+  readonly accountObservedAt: number;
+  /** The mid-submission MANUAL execution blocking this one, when there is one. */
+  readonly pendingExecution: PendingExecution | null;
+  /** Gross open notional already on the account, every authority counted. */
+  readonly existingNotionalUsd: number;
+  readonly takerFeeRateBps: number;
+  readonly stopSlippageReserveBps: number;
+  readonly nowMs: number;
+}
+
+type ManualCheck = (
+  intent: TradingOrderIntent,
+  ctx: ManualPreviewContext,
+) => Effect.Effect<void, TradingPreviewRejection>;
+
+const manualWalletApproved: ManualCheck = (_intent, ctx) =>
+  ctx.approvedExecutionWalletAddress !== null
+    ? Effect.void
+    : reject(
+        "execution_wallet_approved",
+        "no armed execution wallet for this account (interim signer unresolved)",
+      );
+
+const manualFresh: ManualCheck = (_intent, ctx) => {
+  const bboAge = ctx.nowMs - ctx.bbo.freshness.observedAt;
+  if (bboAge > MARKET_FRESHNESS.bboStaleAfterMillis) {
+    return reject("account_and_bbo_fresh", `BBO aged ${bboAge}ms past the 2s window`);
+  }
+  const accountAge = ctx.nowMs - ctx.accountObservedAt;
+  if (accountAge > ACCOUNT_FRESHNESS.accountStateStaleAfterMillis) {
+    return reject("account_and_bbo_fresh", `account aged ${accountAge}ms past the 5s window`);
+  }
+  return Effect.void;
+};
+
+const manualSizeAndPrice: ManualCheck = (intent, _ctx) =>
+  intent.size > 0 && intent.limitPrice > 0
+    ? Effect.void
+    : reject("size_and_price_valid", "size and limit price must both be positive");
+
+const manualMinimum: ManualCheck = (intent, _ctx) => {
+  const notional = intent.size * intent.limitPrice;
+  return notional >= MIN_NOTIONAL_USD
+    ? Effect.void
+    : reject(
+        "exchange_minimum_met",
+        `notional $${notional.toFixed(2)} below the $${MIN_NOTIONAL_USD} minimum`,
+      );
+};
+
+const manualLeverage: ManualCheck = (intent, ctx) => {
+  const combined = ctx.existingNotionalUsd + intent.size * intent.limitPrice;
+  const accountValue = ctx.policy.accountValueUsd;
+  if (accountValue <= 0) {
+    return reject("leverage_within_limits", "no account value to measure leverage against");
+  }
+  const leverage = combined / accountValue;
+  return leverage <= ctx.policy.maximumLeverage
+    ? Effect.void
+    : reject(
+        "leverage_within_limits",
+        `${leverage.toFixed(2)}x combined exceeds the account cap ${ctx.policy.maximumLeverage}x`,
+      );
+};
+
+const manualGrossNotional: ManualCheck = (intent, ctx) => {
+  const combined = ctx.existingNotionalUsd + intent.size * intent.limitPrice;
+  return combined <= ctx.policy.maximumPositionNotionalUsd
+    ? Effect.void
+    : reject(
+        "gross_notional_within_authority",
+        `$${combined.toFixed(2)} combined exceeds the account cap ` +
+          `$${ctx.policy.maximumPositionNotionalUsd.toFixed(2)}`,
+      );
+};
+
+const manualPlannedLoss: ManualCheck = (intent, ctx) =>
+  plannedLossOf(intent) <= ctx.policy.perTradeLossBudgetUsd
+    ? Effect.void
+    : reject(
+        "planned_loss_within_per_position_ceiling",
+        `$${plannedLossOf(intent).toFixed(2)} planned loss exceeds the per-trade budget ` +
+          `$${ctx.policy.perTradeLossBudgetUsd.toFixed(2)}`,
+      );
+
+const manualNoConflict: ManualCheck = (_intent, ctx) => {
+  const blocking = ctx.pendingExecution;
+  if (blocking === null) return Effect.void;
+  return reject(
+    "no_conflicting_execution_pending",
+    `manual execution ${blocking.cloid} (${blocking.actionType}, ${blocking.status}) has been ` +
+      `in flight for ${Math.round(blocking.ageMillis / 1000)}s`,
+  );
+};
+
+/**
+ * The manual mandatory-stop gate: every manual ENTRY requires a stop, no
+ * exceptions and no reduce-only exemption — the exemption belongs to exits,
+ * which take the account-scoped exit path, never this checklist.
+ */
+const manualStopDefined: ManualCheck = (intent, _ctx) => {
+  const gateInput = {
+    actionType: intent.actionType,
+    side: intent.side,
+    referencePrice: intent.limitPrice,
+    stop: intent.stop,
+  };
+  if (intent.stop === undefined) {
+    return reject("valid_stop_defined", "a manual entry requires a stop price; none was given");
+  }
+  const defect = checkStopInformation(gateInput);
+  return defect === null
+    ? Effect.void
+    : reject("valid_stop_defined", describeStopGateDefect(defect, gateInput));
+};
+
+const MANUAL_ENTRY_CHECKS: ReadonlyArray<{ item: PreviewChecklistItem; run: ManualCheck }> = [
+  { item: "execution_wallet_approved", run: manualWalletApproved },
+  { item: "account_and_bbo_fresh", run: manualFresh },
+  { item: "size_and_price_valid", run: manualSizeAndPrice },
+  { item: "exchange_minimum_met", run: manualMinimum },
+  { item: "leverage_within_limits", run: manualLeverage },
+  { item: "gross_notional_within_authority", run: manualGrossNotional },
+  { item: "planned_loss_within_per_position_ceiling", run: manualPlannedLoss },
+  { item: "no_conflicting_execution_pending", run: manualNoConflict },
+  { item: "valid_stop_defined", run: manualStopDefined },
+];
+
+/** Eq 4 for a manual intent, off the manual context's rates. */
+const manualReservationUsd = (intent: TradingOrderIntent, ctx: ManualPreviewContext): number => {
+  const notional = intent.size * intent.limitPrice;
+  const rate = bps(ctx.takerFeeRateBps);
+  return plannedLossOf(intent) + notional * rate * 2 + notional * bps(ctx.stopSlippageReserveBps);
+};
+
+/**
+ * Pure manual preview — the nine checks above in order, then the reservation.
+ * Same return shape as `previewOrder`, so the submit tail is shared.
+ */
+export const previewManualOrder = (
+  intent: TradingOrderIntent,
+  ctx: ManualPreviewContext,
+): Effect.Effect<TradingPreview, TradingPreviewRejection> =>
+  Effect.gen(function* () {
+    for (const { run } of MANUAL_ENTRY_CHECKS) {
+      yield* run(intent, ctx);
+    }
+    return { intent, reservedRiskUsd: manualReservationUsd(intent, ctx) } as TradingPreview;
+  }).pipe(
+    Effect.tapError((rejection) =>
+      Effect.logInfo("trading manual preview rejected", {
         actionType: intent.actionType,
         executionSequence: intent.executionSequence,
         item: rejection.item,

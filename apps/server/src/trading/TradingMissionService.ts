@@ -20,6 +20,7 @@ import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
   TradingHarnessBindingImmutableError,
+  TradingMarketManualExposureError,
   TradingMissionAlreadyActiveError,
   TradingMissionNotFoundError,
   TradingMissionTransitionError,
@@ -103,7 +104,10 @@ export interface TradingMissionServiceShape {
     input: CreateTradingMissionInput,
   ) => Effect.Effect<
     TradingMission,
-    PersistenceSqlError | TradingMissionAlreadyActiveError | TradingMissionNotFoundError
+    | PersistenceSqlError
+    | TradingMissionAlreadyActiveError
+    | TradingMarketManualExposureError
+    | TradingMissionNotFoundError
   >;
 
   /** Move a mission to a new status, enforcing §11.1 and the row version. */
@@ -134,10 +138,29 @@ export interface TradingMissionServiceShape {
     missionId: string,
   ) => Effect.Effect<TradingMission, PersistenceSqlError | TradingMissionNotFoundError>;
 
-  /** The user's mission that still holds authority, if any. */
+  /**
+   * The user's NEWEST mission that still holds authority, if any.
+   *
+   * Since D4 made authority per-market, several missions can be active at
+   * once; callers that mean "is anything running?" (auto-mission's gate, the
+   * harness fallback) keep this read, and callers that act per mission use
+   * `findActiveMissions`.
+   */
   readonly findActiveMission: (
     userId: string,
   ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
+
+  /** Every mission of the user's that still holds authority, newest first. */
+  readonly findActiveMissions: (
+    userId: string,
+  ) => Effect.Effect<ReadonlyArray<TradingMission>, PersistenceSqlError>;
+
+  /** The active mission holding `{venue, market}`, if any — D4's per-market read. */
+  readonly findActiveMissionOnMarket: (input: {
+    readonly userId: string;
+    readonly venue: string;
+    readonly market: string;
+  }) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
 
   /**
    * The mission row's optimistic-locking version.
@@ -311,9 +334,10 @@ const toMission = (row: MissionRow, authorityJson: string): TradingMission => ({
   userId: row.user_id,
   tradingAccountId: row.trading_account_id,
   instruction: row.instruction,
-  // Rows written before the market column carried a real choice all say "ETH";
-  // anything unrecognised falls back rather than failing the whole hydrate.
-  market: row.market === "BTC" ? "BTC" : "ETH",
+  // The column is the venue-native asset id since Phase 1 made `TradingMarket`
+  // opaque. The old two-literal clamp here would have made the D4 per-market
+  // machinery guard the wrong market for anything that was not BTC or ETH.
+  market: row.market,
   harness: decodeHarnessJson(row.harness_json),
   authority: decodeAuthorityJson(authorityJson),
   status: decodeStatus(row.status),
@@ -367,11 +391,9 @@ const makeTradingMissionService = Effect.gen(function* () {
 
   const findActiveMission: TradingMissionServiceShape["findActiveMission"] = (userId) =>
     Effect.gen(function* () {
-      // The partial unique index (migration 035) makes at most one row match,
-      // so the ordering can never actually choose between two missions. It is
-      // here because "at most one" is a database guarantee and reading a row
-      // out of an unordered result set is a habit that outlives the guarantee:
-      // drop the index and this quietly starts picking a mission at random.
+      // Since 075 replaced the one-active-per-user index with the per-market
+      // exclusivity index, several rows can match; newest-first is the
+      // documented tie-break for callers that only ask "is anything running?".
       const rows = yield* sql<MissionRow>`
         SELECT * FROM trading_missions
         WHERE user_id = ${userId} AND status NOT IN ('revoked', 'completed')
@@ -379,6 +401,33 @@ const makeTradingMissionService = Effect.gen(function* () {
         LIMIT 1
       `.pipe(Effect.mapError(sqlFail("findActiveMission")));
 
+      const row = rows[0];
+      if (row === undefined) return Option.none();
+      return Option.some(yield* hydrate(row).pipe(Effect.orDie));
+    });
+
+  const findActiveMissions: TradingMissionServiceShape["findActiveMissions"] = (userId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<MissionRow>`
+        SELECT * FROM trading_missions
+        WHERE user_id = ${userId} AND status NOT IN ('revoked', 'completed')
+        ORDER BY created_at DESC
+      `.pipe(Effect.mapError(sqlFail("findActiveMissions")));
+      return yield* Effect.forEach(rows, (row) => hydrate(row).pipe(Effect.orDie));
+    });
+
+  const findActiveMissionOnMarket: TradingMissionServiceShape["findActiveMissionOnMarket"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      // The 075 exclusivity index guarantees at most one row matches.
+      const rows = yield* sql<MissionRow>`
+        SELECT * FROM trading_missions
+        WHERE user_id = ${input.userId} AND venue = ${input.venue}
+          AND market = ${input.market}
+          AND status NOT IN ('revoked', 'completed')
+        LIMIT 1
+      `.pipe(Effect.mapError(sqlFail("findActiveMissionOnMarket")));
       const row = rows[0];
       if (row === undefined) return Option.none();
       return Option.some(yield* hydrate(row).pipe(Effect.orDie));
@@ -506,14 +555,60 @@ const makeTradingMissionService = Effect.gen(function* () {
       return wallet.address;
     });
 
+  /**
+   * D4's manual half: whether the market carries exposure the USER owns —
+   * an open manual position, a resting manual order, or a manual submission
+   * still in flight. A mission may not take authority over a market the user
+   * is in by hand; the index cannot see this, so the service enforces it.
+   */
+  const readManualExposure = (market: string) =>
+    Effect.gen(function* () {
+      const positions = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_position_snapshots
+        WHERE mission_id IS NULL AND market = ${market} AND size != 0
+      `.pipe(Effect.mapError(sqlFail("readManualExposure:positions")));
+      if ((positions[0]?.n ?? 0) > 0) return "open_position" as const;
+
+      const orders = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_orders
+        WHERE mission_id IS NULL AND market = ${market}
+      `.pipe(Effect.mapError(sqlFail("readManualExposure:orders")));
+      if ((orders[0]?.n ?? 0) > 0) return "resting_order" as const;
+
+      const pending = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_execution_records
+        WHERE mission_id IS NULL AND market = ${market}
+          AND ${sql.in("status", PENDING_EXECUTION_STATUSES)}
+      `.pipe(Effect.mapError(sqlFail("readManualExposure:pending")));
+      if ((pending[0]?.n ?? 0) > 0) return "pending_execution" as const;
+
+      return null;
+    });
+
   const createMission: TradingMissionServiceShape["createMission"] = (input) =>
     Effect.gen(function* () {
-      const existing = yield* findActiveMission(input.userId);
+      const market = input.market ?? "ETH";
+      // D4: at most one authority per {venue, market}. Mission-vs-mission is
+      // also enforced by the 075 partial unique index; checking here first is
+      // what turns a constraint violation into a named refusal.
+      const existing = yield* findActiveMissionOnMarket({
+        userId: input.userId,
+        venue: "hyperliquid",
+        market,
+      });
       if (Option.isSome(existing)) {
         return yield* new TradingMissionAlreadyActiveError({
           userId: input.userId,
           activeMissionId: existing.value.id,
           activeStatus: existing.value.status,
+          market,
+        });
+      }
+      const manualExposure = yield* readManualExposure(market);
+      if (manualExposure !== null) {
+        return yield* new TradingMarketManualExposureError({
+          market,
+          exposure: manualExposure,
         });
       }
 
@@ -540,7 +635,7 @@ const makeTradingMissionService = Effect.gen(function* () {
           created_at, updated_at
         ) VALUES (
           ${input.missionId}, ${input.userId}, ${input.tradingAccountId},
-          ${input.instruction}, ${input.market ?? "ETH"},
+          ${input.instruction}, ${market},
           ${encodeHarnessJson(input.harness)}, 'initializing', NULL,
           ${encodeControlJson(control)}, 1, 1, NULL, ${now}, ${now}
         )
@@ -697,6 +792,8 @@ const makeTradingMissionService = Effect.gen(function* () {
     getMission,
     getMissionVersion,
     findActiveMission,
+    findActiveMissions,
+    findActiveMissionOnMarket,
     findMissionByThreadId,
     findLastMissionByThreadId,
     listPendingExecutions,

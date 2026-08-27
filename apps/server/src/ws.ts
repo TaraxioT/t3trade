@@ -80,6 +80,10 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { isChartReadEntitled } from "./trading/chartReadEntitlement.ts";
 import { TradingMissionService } from "./trading/TradingMissionService.ts";
+import { TradingManualEntryService } from "./trading/TradingManualEntryService.ts";
+import { TradingControlService } from "./trading/TradingControlService.ts";
+import { reconcileManualExposure } from "./trading/HyperliquidReconciler.ts";
+import { LOCAL_TRADING_ACCOUNT_ID } from "./trading/TradingAccountBootstrap.ts";
 import { TradingJournalService } from "./trading/TradingJournalService.ts";
 import { publishPlanWithAftermath } from "./trading/TradingPlanPublication.ts";
 import { composePlanRevisionNote } from "./trading/TradingPlanRevisionNote.ts";
@@ -444,6 +448,9 @@ const makeWsRpcLayer = (
       const tradingAccountProjection = yield* TradingAccountProjection;
       const tradingAlertService = yield* TradingAlertService;
       const tradingWatchlistService = yield* TradingWatchlistService;
+      const tradingManualEntry = yield* TradingManualEntryService;
+      const tradingControls = yield* TradingControlService;
+      const tradingMissionService = yield* TradingMissionService;
       const archiveSupervisor = yield* ArchiveSupervisor;
       const followSetRegistry = yield* FollowSetRegistry;
       const tradingUniverse = yield* TradingUniverse;
@@ -1716,6 +1723,93 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to list the watchlist",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.previewTradingOrder]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.previewTradingOrder,
+            tradingManualEntry
+              .prepare({
+                accountId: input.accountId ?? LOCAL_TRADING_ACCOUNT_ID,
+                market: input.market,
+                side: input.side,
+                stopPrice: input.stopPrice,
+                sizeEth: input.sizeEth,
+                notionalUsd: input.notionalUsd,
+                urgency: input.urgency,
+              })
+              .pipe(
+                Effect.map((preparation) =>
+                  preparation.outcome === "refused"
+                    ? {
+                        outcome: "refused" as const,
+                        reason: preparation.reason,
+                        detail: preparation.detail,
+                        ...(preparation.feasibleSize === undefined
+                          ? {}
+                          : { feasibleSize: preparation.feasibleSize }),
+                      }
+                    : {
+                        outcome: "prepared" as const,
+                        size: preparation.size,
+                        feasibleSize: preparation.feasibleSize,
+                        notionalUsd: preparation.notionalUsd,
+                        limitPrice: preparation.intent.limitPrice,
+                        plannedLossAtStopUsd: preparation.plannedLossAtStopUsd,
+                        estimatedRoundTripCostUsd: preparation.estimatedRoundTripCostUsd,
+                        constrainedBy: preparation.constrainedBy,
+                        notes: preparation.notes,
+                      },
+                ),
+                Effect.tapError((cause) =>
+                  Effect.logError("trading manual preview failed", { cause }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "Failed to preview the manual order",
+                      cause,
+                    }),
+                ),
+              ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.closeTradingManualPosition]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.closeTradingManualPosition,
+            Effect.gen(function* () {
+              const accountId = input.accountId ?? LOCAL_TRADING_ACCOUNT_ID;
+              const masterAddress = yield* tradingMissionService.getMasterWalletAddress(accountId);
+              const outcome = yield* tradingControls.closeManualPosition({
+                accountId,
+                masterAddress,
+                market: input.market.asset,
+                percent: input.percent,
+              });
+              // Converge the manual rows and ring the doorbell before the
+              // panel's refetch, so what closed is what renders.
+              yield* reconcileManualExposure({
+                accountId,
+                masterAddress,
+                market: input.market.asset,
+              }).pipe(Effect.catch(() => Effect.void));
+              return outcome.outcome === "refused"
+                ? { outcome: "refused" as const, reason: outcome.reason, detail: outcome.detail }
+                : {
+                    outcome: "done" as const,
+                    positionSize: outcome.positionSize,
+                    summary: outcome.summary,
+                  };
+            }).pipe(
+              Effect.tapError((cause) => Effect.logError("trading manual close failed", { cause })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to close the manual position",
                     cause,
                   }),
               ),

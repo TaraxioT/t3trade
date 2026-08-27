@@ -12,14 +12,21 @@ import {
 import {
   type TradingMissionControlInput,
   type TradingMissionCreateInput,
+  type TradingOrderPlaceInput,
   type TradingRiskControlInput,
   tradingMissionControl,
   tradingMissionCreate,
+  tradingOrderPlace,
   tradingRiskControl,
 } from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
-export type { TradingMissionControlInput, TradingMissionCreateInput, TradingRiskControlInput };
+export type {
+  TradingMissionControlInput,
+  TradingMissionCreateInput,
+  TradingOrderPlaceInput,
+  TradingRiskControlInput,
+};
 
 export function createOrchestrationEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
@@ -137,6 +144,21 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     missionCreate: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:mission-create",
       execute: (input: TradingMissionCreateInput) => tradingMissionCreate(input),
+    }),
+    // The manual order ticket (final-form Phase 7). Preview and the manual
+    // close are RPC commands — the user needs the refusal on screen; the
+    // place itself is an event-sourced dispatch, answered through the feed.
+    previewTradingOrder: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:preview-order",
+      tag: ORCHESTRATION_WS_METHODS.previewTradingOrder,
+    }),
+    closeTradingManualPosition: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:close-manual-position",
+      tag: ORCHESTRATION_WS_METHODS.closeTradingManualPosition,
+    }),
+    placeTradingOrder: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:trading:place-order",
+      execute: (input: TradingOrderPlaceInput) => tradingOrderPlace(input),
     }),
   };
 }

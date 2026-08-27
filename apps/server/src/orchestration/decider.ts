@@ -1,5 +1,6 @@
 import {
   EventId,
+  TradingMissionId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -18,6 +19,7 @@ import {
   requireThread,
   requireThreadArchived,
   requireThreadAbsent,
+  requireManualOrderPlacable,
   requireThreadNotArchived,
   requireTradingControlTarget,
 } from "./commandInvariants.ts";
@@ -1619,6 +1621,45 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           harnessRunId: command.harnessRunId,
           cause: command.cause,
           updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.order.place": {
+      // Final-form Phase 7: the manual order. The one trading command with no
+      // thread — a manual order belongs to the account, so its events stream
+      // under the account rather than under a mission's thread. The stateless
+      // shape invariants live here; pricing, sizing, the account envelope and
+      // D4 exclusivity run in the reactor against live state, and a refusal
+      // there lands in the alert feed with the server's reason.
+      yield* requireManualOrderPlacable({
+        command,
+        stopPrice: command.stopPrice,
+        sizeEth: command.sizeEth,
+        notionalUsd: command.notionalUsd,
+      });
+
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          // The manual stream id: per-account ordering, no mission anywhere.
+          // Branded as a mission id because the event base admits only the
+          // three aggregate id brands; the `manual:` prefix keeps it out of
+          // every real mission's namespace.
+          aggregateId: TradingMissionId.make(`manual:${command.accountId ?? "local"}`),
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.order-place-requested",
+        payload: {
+          ...(command.accountId === undefined ? {} : { accountId: command.accountId }),
+          market: command.market,
+          side: command.side,
+          stopPrice: command.stopPrice,
+          ...(command.sizeEth === undefined ? {} : { sizeEth: command.sizeEth }),
+          ...(command.notionalUsd === undefined ? {} : { notionalUsd: command.notionalUsd }),
+          ...(command.urgency === undefined ? {} : { urgency: command.urgency }),
+          requestedAt: command.createdAt,
         },
       };
     }

@@ -32,8 +32,10 @@ import {
   TradingMissionControl,
   TradingMissionStatus,
   TradingOrderIntent,
+  TradingOrderSide,
   TradingOrderTimeInForce,
   TradingUniverseEntry,
+  TradingUrgency,
   TradingWatchDeliver,
   TradingWatchRearm,
   WatchCondition,
@@ -747,12 +749,117 @@ export const TradingMissionRiskControlCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Final-form Phase 7: the user places a MANUAL order from the trade home's
+ * ticket.
+ *
+ * The one trading command with no `threadId` and no mission — a manual order
+ * belongs to the trading account. The decider validates the shape invariants
+ * (a positive stop, exactly one size expression) and raises the request event;
+ * `TradingMissionReactor` runs the manual write side — prepare, the manual
+ * checklist, submit under the manual cloid namespace — and a refusal lands in
+ * the alert feed with the server's own reason.
+ */
+export const TradingOrderPlaceCommand = Schema.Struct({
+  type: Schema.Literal("trading.order.place"),
+  commandId: CommandId,
+  /** Omit for the local testnet account. */
+  accountId: Schema.optional(TrimmedNonEmptyString),
+  market: TradingMarket,
+  side: TradingOrderSide,
+  /** Mandatory: a manual entry without a stop is refused, never defaulted. */
+  stopPrice: Schema.Number,
+  /** Size in base units, or the same request in USD of notional — one of them. */
+  sizeEth: Schema.optional(Schema.Number),
+  notionalUsd: Schema.optional(Schema.Number),
+  /** Mirrors the agent's entry: `now` crosses, `patient` rests post-only. */
+  urgency: Schema.optional(TradingUrgency),
+  createdAt: IsoDateTime,
+});
+export type TradingOrderPlaceCommand = typeof TradingOrderPlaceCommand.Type;
+
 export const DispatchableTradingCommand = Schema.Union([
   TradingMissionCreateCommand,
   TradingMissionControlCommand,
   TradingMissionRiskControlCommand,
+  TradingOrderPlaceCommand,
 ]);
 export type DispatchableTradingCommand = typeof DispatchableTradingCommand.Type;
+
+// -- the manual order ticket (final-form Phase 7) ----------------------------
+
+/**
+ * What the ticket asks the server to price and pre-check. Identical fields to
+ * `TradingOrderPlaceCommand` minus the command envelope — preview is an RPC so
+ * the refusal reason lands on screen, place is a command so the write is
+ * event-sourced.
+ */
+export const TradingOrderPreviewInput = Schema.Struct({
+  /** Omit for the local testnet account. */
+  accountId: Schema.optional(TrimmedNonEmptyString),
+  market: TradingMarket,
+  side: TradingOrderSide,
+  stopPrice: Schema.Number,
+  sizeEth: Schema.optional(Schema.Number),
+  notionalUsd: Schema.optional(Schema.Number),
+  urgency: Schema.optional(TradingUrgency),
+});
+export type TradingOrderPreviewInput = typeof TradingOrderPreviewInput.Type;
+
+/**
+ * The server's answer, verbatim: either the priced, sized, pre-checked ticket,
+ * or the refusal in the server's own words. `feasibleSize` is the live
+ * `deriveFeasibleSize` readout — the largest size every account ceiling allows.
+ */
+export const TradingOrderPreviewResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("prepared"),
+    size: Schema.Number,
+    feasibleSize: Schema.Number,
+    notionalUsd: Schema.Number,
+    limitPrice: Schema.Number,
+    plannedLossAtStopUsd: Schema.Number,
+    estimatedRoundTripCostUsd: Schema.Number,
+    constrainedBy: TrimmedNonEmptyString,
+    notes: Schema.Array(Schema.String),
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("refused"),
+    /** The server's rule name (`market_owned_by_mission`, a checklist item…). */
+    reason: TrimmedNonEmptyString,
+    detail: Schema.String,
+    feasibleSize: Schema.optional(Schema.Number),
+  }),
+]);
+export type TradingOrderPreviewResult = typeof TradingOrderPreviewResult.Type;
+
+/**
+ * Close or reduce a MANUAL position from the positions panel. Mission-owned
+ * positions refuse here — their way out is the mission's §14.7 controls.
+ */
+export const TradingManualCloseInput = Schema.Struct({
+  /** Omit for the local testnet account. */
+  accountId: Schema.optional(TrimmedNonEmptyString),
+  market: MarketRef,
+  /** Omit for a full close. */
+  percent: Schema.optional(TradingReductionPercent),
+});
+export type TradingManualCloseInput = typeof TradingManualCloseInput.Type;
+
+export const TradingManualCloseResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("done"),
+    /** Signed canonical position size after the control. */
+    positionSize: Schema.Number,
+    summary: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("refused"),
+    reason: TrimmedNonEmptyString,
+    detail: Schema.String,
+  }),
+]);
+export type TradingManualCloseResult = typeof TradingManualCloseResult.Type;
 
 // -- server-raised commands --------------------------------------------------
 
@@ -1017,6 +1124,22 @@ export const TradingExecutionRequestedPayload = Schema.Struct({
   requestedAt: IsoDateTime,
 });
 
+/**
+ * A user asked for a manual order. The request, not the outcome: the reactor
+ * prepares and submits it, and refusals ride the alert feed.
+ */
+export const TradingOrderPlaceRequestedPayload = Schema.Struct({
+  accountId: Schema.optional(TrimmedNonEmptyString),
+  market: TradingMarket,
+  side: TradingOrderSide,
+  stopPrice: Schema.Number,
+  sizeEth: Schema.optional(Schema.Number),
+  notionalUsd: Schema.optional(Schema.Number),
+  urgency: Schema.optional(TradingUrgency),
+  requestedAt: IsoDateTime,
+});
+export type TradingOrderPlaceRequestedPayload = typeof TradingOrderPlaceRequestedPayload.Type;
+
 export const TRADING_EVENT_TYPES = [
   "trading.mission-create-requested",
   "trading.mission-control-requested",
@@ -1029,6 +1152,7 @@ export const TRADING_EVENT_TYPES = [
   "trading.mission-run-started",
   "trading.mission-stop-adjusted",
   "trading.execution-requested",
+  "trading.order-place-requested",
 ] as const;
 
 // -- plan 29 step 8.4: the operator revises a plan by dragging a level -------

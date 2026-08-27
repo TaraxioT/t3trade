@@ -395,6 +395,7 @@ import { TradingProtectionServiceLive } from "../src/trading/TradingProtectionSe
 import { TradingWorkingOrderServiceLive } from "../src/trading/TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseServiceLive } from "../src/trading/TradingEmergencyCloseService.ts";
 import { TradingControlServiceLive } from "../src/trading/TradingControlService.ts";
+import { TradingManualEntryService } from "../src/trading/TradingManualEntryService.ts";
 import { TradingBudgetReaderLive } from "../src/trading/TradingBudgetReader.ts";
 import {
   TradingPreviewService,
@@ -503,6 +504,29 @@ const tradingLayerForTest = Layer.mergeAll(
 // (which the test starts) is.
 function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
   return TradingMissionReactorLive.pipe(
+    // Phase 7: the reactor consumes manual-order events and appends outcomes
+    // to the alert feed. This proof drives neither; inert stand-ins keep the
+    // layer honest.
+    Layer.provide(
+      Layer.mock(TradingAlertService)({
+        armWatch: () =>
+          Effect.succeed({ outcome: "rejected" as const, reason: "not in this proof" }),
+        cancelWatch: () => Effect.succeed(false),
+        listWatches: Effect.succeed([]),
+        append: () => Effect.void,
+        listAlerts: () => Effect.succeed([]),
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(TradingManualEntryService)({
+        prepare: () =>
+          Effect.succeed({
+            outcome: "refused" as const,
+            reason: "market_data_unavailable",
+            detail: "not in this proof",
+          }),
+      }),
+    ),
     Layer.provideMerge(tradingLayerForTest),
     Layer.provideMerge(
       WatchEvaluatorLive.pipe(

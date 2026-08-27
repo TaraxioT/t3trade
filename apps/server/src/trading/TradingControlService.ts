@@ -130,8 +130,39 @@ export class TradingControlService extends Context.Service<
     readonly closeAndRevoke: (
       input: ExchangeControlInput,
     ) => Effect.Effect<ControlOutcome, TradingControlError>;
+
+    /**
+     * Close or reduce a MANUAL position — the account-scoped §14.7 control
+     * (final-form Phase 7). Same bounded reduce-only IOC loop as the mission
+     * buttons, cloid in the manual namespace, no mission state touched.
+     *
+     * Refuses (in the outcome, so the panel shows the reason verbatim) when an
+     * active mission holds the market: a mission-owned position's way out is
+     * the mission's own controls, never this one.
+     *
+     * The caller runs the manual reconcile afterwards — this method moves the
+     * exchange and reports canonical truth; converging the local rows is the
+     * reconciler's job.
+     */
+    readonly closeManualPosition: (input: {
+      readonly accountId: string;
+      readonly masterAddress: string;
+      readonly market: string;
+      /** 25/50/75/100; omitted means a full close. */
+      readonly percent?: number | undefined;
+    }) => Effect.Effect<ManualCloseOutcome, TradingControlError>;
   }
 >()("t3/trading/TradingControlService") {}
+
+/** How an account-scoped manual close ended. */
+export type ManualCloseOutcome =
+  | {
+      readonly outcome: "done";
+      /** Signed canonical position size after the control. */
+      readonly positionSize: number;
+      readonly summary: string;
+    }
+  | { readonly outcome: "refused"; readonly reason: string; readonly detail: string };
 
 /** How many reduce-only attempts one button press makes before reporting back. */
 const REDUCTION_ATTEMPTS = 2;
@@ -427,6 +458,83 @@ export const makeTradingControlService = Effect.gen(function* () {
       } satisfies ControlOutcome;
     });
 
+  const closeManualPosition: TradingControlService["Service"]["closeManualPosition"] = (input) =>
+    Effect.gen(function* () {
+      // D4: a mission-owned market's exits belong to the mission's controls.
+      const owning = yield* sql<{ readonly mission_id: string; readonly status: string }>`
+        SELECT mission_id, status FROM trading_missions
+        WHERE venue = 'hyperliquid' AND market = ${input.market}
+          AND status NOT IN ('revoked', 'completed')
+        LIMIT 1
+      `.pipe(Effect.orElseSucceed(() => []));
+      const owner = owning[0];
+      if (owner !== undefined) {
+        return {
+          outcome: "refused",
+          reason: "market_owned_by_mission",
+          detail:
+            `mission ${owner.mission_id} (${owner.status}) holds the ${input.market} ` +
+            "authority; use the mission's own controls to reduce or close it",
+        } satisfies ManualCloseOutcome;
+      }
+
+      const exchangeInput = {
+        missionId: "",
+        masterAddress: input.masterAddress,
+        market: input.market,
+      };
+      let position = yield* readPosition(exchangeInput);
+      if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) {
+        return {
+          outcome: "done",
+          positionSize: 0,
+          summary: "Already flat.",
+        } satisfies ManualCloseOutcome;
+      }
+
+      const percent = input.percent ?? 100;
+      let remainingToClose = Math.abs(position.size) * (percent / 100);
+
+      for (let attempt = 0; attempt < REDUCTION_ATTEMPTS; attempt++) {
+        if (remainingToClose <= PROTECTION_SIZE_EPSILON) break;
+        if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) break;
+
+        const signed = position.size > 0 ? remainingToClose : -remainingToClose;
+        yield* execution
+          .submitManualReduceOnlyIoc({
+            accountId: input.accountId,
+            market: input.market,
+            positionSize: signed,
+            referencePrice: position.crossingPrice,
+            attempt,
+          })
+          .pipe(
+            Effect.catchTag("TradingExecutionError", (cause) =>
+              Effect.logWarning(
+                `manual close: reduce attempt ${attempt} did not submit: ${cause.message}`,
+              ).pipe(Effect.as([])),
+            ),
+          );
+
+        const before = Math.abs(position.size);
+        position = yield* readPosition(exchangeInput);
+        const closed = before - Math.abs(position.size);
+        remainingToClose = Math.max(0, remainingToClose - closed);
+      }
+
+      const remaining = position.size;
+      return {
+        outcome: "done",
+        positionSize: remaining,
+        summary:
+          Math.abs(remaining) <= PROTECTION_SIZE_EPSILON
+            ? "Position closed."
+            : percent === 100
+              ? `Position partly closed; ${Math.abs(remaining)} ${input.market} remains.`
+              : `Reduced by ${percent}%. ${Math.abs(remaining)} ${input.market} remains.`,
+      } satisfies ManualCloseOutcome;
+    });
+
   return TradingControlService.of({
     pause,
     resume,
@@ -435,6 +543,7 @@ export const makeTradingControlService = Effect.gen(function* () {
     closePosition,
     revoke,
     closeAndRevoke,
+    closeManualPosition,
   });
 });
 

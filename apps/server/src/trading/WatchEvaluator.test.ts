@@ -175,7 +175,7 @@ const migrated = Effect.gen(function* () {
   // `trading_orders` arrives in 038 (the `order_update` watch reads it),
   // `peak_unrealised_pnl` in 045 (the `pnl_giveback` watch reads it), and the
   // evaluator's tracked read selects the deliver/venue columns 074 adds.
-  yield* runMigrations({ toMigrationInclusive: 74 });
+  yield* runMigrations({});
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;

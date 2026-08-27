@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveCloid } from "./Cloid.ts";
+import { deriveCloid, deriveManualCloid } from "./Cloid.ts";
 
 describe("deriveCloid", () => {
   it("is deterministic for identical inputs", () => {
@@ -50,6 +50,57 @@ describe("deriveCloid", () => {
       actionType: "open",
     });
     expect(a).not.toBe(b);
+  });
+
+  describe("deriveManualCloid", () => {
+    it("has the wire shape and is deterministic", () => {
+      const input = { accountId: "acct_1", executionSequence: 0, actionType: "open" };
+      const cloid = deriveManualCloid(input);
+      expect(cloid).toMatch(/^0x[0-9a-f]{32}$/);
+      expect(cloid).toBe(deriveManualCloid(input));
+      expect(cloid).toBe("0xba5cfb64c739925a1316a0bfd36aab96");
+    });
+
+    it("occupies its own namespace: never equal to any mission derivation", () => {
+      // The obvious near-collisions: a mission literally named "manual", and a
+      // mission named with the manual byte stream's own prefix.
+      const manual = deriveManualCloid({
+        accountId: "acct_1",
+        executionSequence: 0,
+        actionType: "open",
+      });
+      expect(manual).not.toBe(
+        deriveCloid({ missionId: "manual", executionSequence: 0, actionType: "open" }),
+      );
+      expect(manual).not.toBe(
+        deriveCloid({ missionId: "acct_1", executionSequence: 0, actionType: "open" }),
+      );
+      // The one input that CAN collide is a mission id carrying the raw 0x1f
+      // field separator ("manual\x1facct_1") — out of domain: mission ids are
+      // UUID-derived and never contain control bytes. The printable neighbour
+      // must still differ.
+      expect(manual).not.toBe(
+        deriveCloid({ missionId: "manualacct_1", executionSequence: 0, actionType: "open" }),
+      );
+    });
+
+    it("changes when any input changes", () => {
+      const base = { accountId: "acct_1", executionSequence: 0, actionType: "open" };
+      const original = deriveManualCloid(base);
+      expect(deriveManualCloid({ ...base, accountId: "acct_2" })).not.toBe(original);
+      expect(deriveManualCloid({ ...base, executionSequence: 1 })).not.toBe(original);
+      expect(deriveManualCloid({ ...base, actionType: "close" })).not.toBe(original);
+    });
+  });
+
+  it("is byte-stable: the pinned mission vector never moves", () => {
+    // Phase 7 introduced the manual namespace beside this derivation. Every
+    // persisted execution record, fill join, and resting order on the exchange
+    // is keyed by cloids from THIS hash — if this pin ever fails, reconciliation
+    // of historical orders silently breaks.
+    expect(deriveCloid({ missionId: "mission_1", executionSequence: 0, actionType: "open" })).toBe(
+      "0x112f1bd8e6168f14596649c3fd34717c",
+    );
   });
 
   it("does not collide across a large batch of distinct inputs", () => {

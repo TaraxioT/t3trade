@@ -41,7 +41,7 @@ import {
 } from "@t3tools/hyperliquid/OrderMapper";
 import { readExchangeResponse } from "@t3tools/hyperliquid/ExchangeResponse";
 import { formatPrice, formatSize } from "@t3tools/hyperliquid/Precision";
-import { deriveCloid } from "@t3tools/hyperliquid/Cloid";
+import { deriveCloid, deriveManualCloid } from "@t3tools/hyperliquid/Cloid";
 import { HyperliquidExchangeClient, type SignedAction } from "@t3tools/hyperliquid/ExchangeClient";
 import { HyperliquidNonceCoordinator } from "@t3tools/hyperliquid/NonceCoordinator";
 import { signL1ActionForWire } from "@t3tools/hyperliquid/Signing";
@@ -88,6 +88,18 @@ export class TradingExecutionError extends Schema.TaggedErrorClass<TradingExecut
   override get message(): string {
     return `TradingExecutionError(${this.stage})${this.detail ? `: ${this.detail}` : ""}`;
   }
+}
+
+/**
+ * The manual owner of an execution — final-form Phase 7's second authority.
+ *
+ * Present, it moves the submission into the manual namespace: the cloid and
+ * idempotency key derive from the account rather than the mission, and the
+ * persisted rows carry `mission_id NULL` with the account as owner. Absent,
+ * every byte of the mission path is what it always was.
+ */
+export interface ManualExecutionOwner {
+  readonly accountId: string;
 }
 
 /** Inputs to a single execution attempt. */
@@ -235,6 +247,52 @@ export class HyperliquidExecutionService extends Context.Service<
       /** Allowed slippage in bps for marketable IOC pricing (§15.4). */
       readonly allowedSlippageBps: number;
     }) => Effect.Effect<TradingExecutionRecord, TradingExecutionError, SqlClient.SqlClient>;
+
+    /**
+     * Submit one MANUAL order — final-form Phase 7's user-owned execution.
+     *
+     * Shares `submitIntent`'s tail verbatim with the mission path — mapping,
+     * the mandatory-stop gate, persist-before-signing, the nonce lane,
+     * response inspection — with the owner moved to the trading account: the
+     * cloid and idempotency key come from the manual namespace and the
+     * persisted rows carry `mission_id NULL`.
+     *
+     * Like `submitWorkingEntry`, the §16.3 checklist is not run here: the
+     * caller is `TradingManualEntryService`, which ran the MANUAL checklist
+     * (stop required, account envelope, margin capacity, exclusivity) moments
+     * before and passes the reservation it computed. What is never bypassed:
+     * the signer, precision, the exchange minimum, and the stop gate's second
+     * evaluation against the wire price.
+     */
+    readonly submitManualOrder: (input: {
+      /**
+       * The prepared intent. Its `missionId` field carries the manual owner
+       * token for in-memory identity only — nothing persists it; the database
+       * row is owned by `accountId` with a NULL mission.
+       */
+      readonly intent: TradingOrderIntent;
+      readonly accountId: string;
+      /** The reservation the manual preview computed (§16.2 Eq 4 shape). */
+      readonly reservedRiskUsd: number;
+      /** Allowed slippage in bps for marketable IOC pricing (§15.4). */
+      readonly allowedSlippageBps: number;
+    }) => Effect.Effect<TradingExecutionRecord, TradingExecutionError, SqlClient.SqlClient>;
+
+    /**
+     * Reduce or close a MANUAL position via the same preview-free reduce-only
+     * IOC the mission controls use, with the cloid in the manual namespace.
+     * Reduce-only: the exchange itself will not let it open or extend.
+     */
+    readonly submitManualReduceOnlyIoc: (input: {
+      readonly accountId: string;
+      readonly market: string;
+      /** Signed canonical position size; positive long, negative short. */
+      readonly positionSize: number;
+      /** Price to cross from — the bid for a long exit, the ask for a short. */
+      readonly referencePrice: number;
+      /** Distinguishes repeated attempts so each carries its own cloid. */
+      readonly attempt: number;
+    }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
   }
 >()("t3/trading/HyperliquidExecutionService") {}
 
@@ -269,9 +327,23 @@ const PRE_SUBMISSION_STATUSES: ReadonlyArray<TradingExecutionRecord["status"]> =
   "signed",
 ];
 
+/**
+ * The persisted ownership columns of one execution attempt — migration 075's
+ * additions, resolved once per submission and written on both the record and
+ * its reservation. A mission owner carries its mission id; a manual owner
+ * persists `mission_id NULL`.
+ */
+interface OwnerColumns {
+  readonly missionId: string | null;
+  readonly accountId: string;
+  readonly venue: string;
+  readonly asset: string;
+}
+
 /** Persist the execution record BEFORE signing (§17.2 step 2). */
 function persistExecutionRecord(
   record: TradingExecutionRecord,
+  owner: OwnerColumns,
 ): Effect.Effect<void, TradingExecutionError, SqlClient.SqlClient> {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -280,15 +352,16 @@ function persistExecutionRecord(
         execution_id, mission_id, execution_sequence, action_type,
         cloid, idempotency_key, market, side, size, limit_price, time_in_force,
         reduce_only, signer_address, status, order_results_json, created_at, updated_at,
-        stop_price, planned_loss_at_stop_usd
+        stop_price, planned_loss_at_stop_usd, account_id, venue, asset
       ) VALUES (
-        ${record.executionId}, ${record.missionId},
+        ${record.executionId}, ${owner.missionId},
         ${record.executionSequence}, ${record.actionType}, ${record.cloid},
         ${record.idempotencyKey}, ${record.market}, ${record.side}, ${record.size},
         ${record.limitPrice}, ${record.timeInForce}, ${record.reduceOnly ? 1 : 0},
         ${record.signerAddress}, ${record.status}, ${encodeOrderResultsJson(record.orderResults)},
         ${record.createdAt}, ${record.updatedAt},
-        ${record.stopPrice ?? null}, ${record.plannedLossAtStopUsd ?? null}
+        ${record.stopPrice ?? null}, ${record.plannedLossAtStopUsd ?? null},
+        ${owner.accountId}, ${owner.venue}, ${owner.asset}
       )
       ON CONFLICT(idempotency_key) DO UPDATE SET updated_at = ${record.updatedAt}
     `;
@@ -306,17 +379,19 @@ function persistExecutionRecord(
 /** Persist a risk reservation alongside the execution record. */
 function persistReservation(
   reservation: TradingRiskReservation,
+  owner: OwnerColumns,
 ): Effect.Effect<void, TradingExecutionError, SqlClient.SqlClient> {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO trading_risk_reservations (
         reservation_id, mission_id, execution_id, cloid, action_type,
-        reserved_risk_usd, status, reserved_at
+        reserved_risk_usd, status, reserved_at, account_id, venue, asset
       ) VALUES (
-        ${reservation.reservationId}, ${reservation.missionId}, ${reservation.executionId},
+        ${reservation.reservationId}, ${owner.missionId}, ${reservation.executionId},
         ${reservation.cloid}, ${reservation.actionType}, ${reservation.reservedRiskUsd},
-        ${reservation.status}, ${reservation.reservedAt}
+        ${reservation.status}, ${reservation.reservedAt},
+        ${owner.accountId}, ${owner.venue}, ${owner.asset}
       )
       ON CONFLICT(execution_id) DO NOTHING
     `;
@@ -463,8 +538,10 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     readonly signer: InterimSigner;
     readonly market: ResolvedMarket;
     readonly bbo: MarketBestBidOffer;
+    /** Present only on the manual path; see `ManualExecutionOwner`. */
+    readonly manualOwner?: ManualExecutionOwner | undefined;
   }): Effect.fn.Return<TradingExecutionRecord, TradingExecutionError, SqlClient.SqlClient> {
-    const { intent, allowedSlippageBps, nowMs, signer, market, bbo } = input;
+    const { intent, allowedSlippageBps, nowMs, signer, market, bbo, manualOwner } = input;
 
     // --- 4. map the order (IOC/GTC/ALO, slippage, precision) ---------------
     const wireOrder = yield* mapOrder({
@@ -473,6 +550,17 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       szDecimals: market.szDecimals,
       allowedSlippageBps,
       nowMs,
+      // A manual order's identity is the account's, not the mission token the
+      // intent carries; the mission path passes nothing and keeps its bytes.
+      ...(manualOwner === undefined
+        ? {}
+        : {
+            cloidOverride: deriveManualCloid({
+              accountId: manualOwner.accountId,
+              executionSequence: intent.executionSequence,
+              actionType: intent.actionType,
+            }),
+          }),
     }).pipe(
       Effect.mapError(
         (e: HyperliquidOrderMapperError) =>
@@ -519,11 +607,18 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     const linkedStop =
       isPositionIncreasing(intent.actionType) && stop !== undefined
         ? yield* mapProtectiveStop({
-            cloid: deriveCloid({
-              missionId: intent.missionId,
-              executionSequence: intent.executionSequence,
-              actionType: `${intent.actionType}${PROTECTION_CLOID_SUFFIX}`,
-            }),
+            cloid:
+              manualOwner === undefined
+                ? deriveCloid({
+                    missionId: intent.missionId,
+                    executionSequence: intent.executionSequence,
+                    actionType: `${intent.actionType}${PROTECTION_CLOID_SUFFIX}`,
+                  })
+                : deriveManualCloid({
+                    accountId: manualOwner.accountId,
+                    executionSequence: intent.executionSequence,
+                    actionType: `${intent.actionType}${PROTECTION_CLOID_SUFFIX}`,
+                  }),
             coin: intent.market,
             positionSize: intent.side === "buy" ? intent.size : -intent.size,
             stopPrice: stop.stopPrice,
@@ -544,7 +639,44 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       Effect.mapError(() => new TradingExecutionError({ stage: "persist_failed", detail: "uuid" })),
     );
     const newExecutionId = `exec_${uuid}`;
-    const idempotencyKey = `idem_${intent.missionId}_${intent.executionSequence}_${intent.actionType}`;
+    const idempotencyKey =
+      manualOwner === undefined
+        ? `idem_${intent.missionId}_${intent.executionSequence}_${intent.actionType}`
+        : `idem_manual_${manualOwner.accountId}_${intent.executionSequence}_${intent.actionType}`;
+
+    const sql = yield* SqlClient.SqlClient;
+    // The 075 ownership columns. A mission row resolves its account through the
+    // mission; a row whose mission is unknown (a fixture, a mid-create race)
+    // carries the same sentinel the migration backfilled orphans with.
+    const owner: OwnerColumns = yield* manualOwner === undefined
+      ? sql<{ readonly trading_account_id: string }>`
+          SELECT trading_account_id FROM trading_missions
+          WHERE mission_id = ${intent.missionId}
+        `.pipe(
+          Effect.map(
+            (rows): OwnerColumns => ({
+              missionId: intent.missionId,
+              accountId: rows[0]?.trading_account_id ?? "unattributed",
+              venue: "hyperliquid",
+              asset: intent.market,
+            }),
+          ),
+          Effect.orElseSucceed(
+            (): OwnerColumns => ({
+              missionId: intent.missionId,
+              accountId: "unattributed",
+              venue: "hyperliquid",
+              asset: intent.market,
+            }),
+          ),
+        )
+      : Effect.succeed<OwnerColumns>({
+          missionId: null,
+          accountId: manualOwner.accountId,
+          venue: "hyperliquid",
+          asset: intent.market,
+        });
+
     const record: TradingExecutionRecord = {
       executionId: newExecutionId,
       missionId: intent.missionId,
@@ -566,9 +698,8 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       stopPrice: intent.stop?.stopPrice,
       plannedLossAtStopUsd: intent.stop?.plannedLossAtStopUsd,
     };
-    yield* persistExecutionRecord(record);
+    yield* persistExecutionRecord(record, owner);
 
-    const sql = yield* SqlClient.SqlClient;
     const persistedRows = yield* sql<{
       readonly execution_id: string;
       readonly status: TradingExecutionRecord["status"];
@@ -619,7 +750,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       status: "reserved",
       reservedAt: nowMs,
     };
-    yield* persistReservation(reservation);
+    yield* persistReservation(reservation, owner);
 
     // --- 6 + 7. sign in the nonce lane, then POST /exchange ----------------
     const legs: ReadonlyArray<SubmittedLeg> =
@@ -816,6 +947,44 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       });
     });
 
+  // Final-form Phase 7: the manual order. Same tail as every other submission;
+  // the manual checklist ran in TradingManualEntryService moments before, the
+  // way submitWorkingEntry's envelope constraint runs in its caller.
+  const submitManualOrder: HyperliquidExecutionService["Service"]["submitManualOrder"] = (input) =>
+    Effect.gen(function* () {
+      const { intent, allowedSlippageBps } = input;
+      const nowMs = yield* now();
+
+      const signerOpt = yield* signerConfig.resolve.pipe(
+        Effect.mapError(
+          (e: InterimSignerError) =>
+            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
+        ),
+      );
+      if (signerOpt._tag === "None") {
+        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
+      }
+      const signer = signerOpt.value;
+
+      const market = yield* gateway
+        .resolveMarket(intent.market)
+        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
+      const orderBook = yield* gateway
+        .getOrderBook(intent.market)
+        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
+
+      return yield* submitIntent({
+        intent,
+        reservedRiskUsd: input.reservedRiskUsd,
+        allowedSlippageBps,
+        nowMs,
+        signer,
+        market,
+        bbo: orderBook.bestBidOffer,
+        manualOwner: { accountId: input.accountId },
+      });
+    });
+
   // §16.4 exhaustion cancel: sign and submit a cancel-by-cloid for one resting
   // order. Reuses the same signer + nonce lane as submitOrder so cancels
   // serialize with orders and never race a nonce. The caller (guard) reconciles
@@ -974,118 +1143,153 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     });
 
   // §14.7 / §17.5: the preview-free reduce-only exit. See the interface for
-  // why the §16.3 checklist is not in this path.
-  const submitReduceOnlyIoc: HyperliquidExecutionService["Service"]["submitReduceOnlyIoc"] = (
-    input,
-  ) =>
-    Effect.gen(function* () {
-      const size = Math.abs(input.positionSize);
-      if (size <= 0) return [];
+  // why the §16.3 checklist is not in this path. The mission and manual entry
+  // points share this body verbatim — only the cloid namespace and the log's
+  // owner line differ.
+  const submitReduceOnlyIocWithCloid = Effect.fn(
+    "HyperliquidExecutionService.submitReduceOnlyIocWithCloid",
+  )(function* (input: {
+    readonly cloid: string;
+    readonly market: string;
+    readonly positionSize: number;
+    readonly referencePrice: number;
+    readonly attempt: number;
+    readonly logOwner: Record<string, unknown>;
+  }): Effect.fn.Return<ReadonlyArray<TradingOrderResult>, TradingExecutionError> {
+    const size = Math.abs(input.positionSize);
+    if (size <= 0) return [];
 
-      const signerOpt = yield* signerConfig.resolve.pipe(
-        Effect.mapError(
-          (e: InterimSignerError) =>
-            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
-        ),
-      );
-      if (signerOpt._tag === "None") {
-        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
-      }
-      const signer = signerOpt.value;
+    const signerOpt = yield* signerConfig.resolve.pipe(
+      Effect.mapError(
+        (e: InterimSignerError) =>
+          new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
+      ),
+    );
+    if (signerOpt._tag === "None") {
+      return yield* new TradingExecutionError({ stage: "signer_not_configured" });
+    }
+    const signer = signerOpt.value;
 
-      const market = yield* gateway
-        .resolveMarket(input.market)
-        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
+    const market = yield* gateway
+      .resolveMarket(input.market)
+      .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
 
-      // Exit the opposite way the position was entered, priced through the
-      // book so the IOC actually crosses.
-      const isLong = input.positionSize > 0;
-      const side = isLong ? ("sell" as const) : ("buy" as const);
-      const slippage = (yield* iocSlippage.resolve).exitBps / 10_000;
-      const rawLimit = isLong
-        ? input.referencePrice * (1 - slippage)
-        : input.referencePrice * (1 + slippage);
+    // Exit the opposite way the position was entered, priced through the
+    // book so the IOC actually crosses.
+    const isLong = input.positionSize > 0;
+    const side = isLong ? ("sell" as const) : ("buy" as const);
+    const slippage = (yield* iocSlippage.resolve).exitBps / 10_000;
+    const rawLimit = isLong
+      ? input.referencePrice * (1 - slippage)
+      : input.referencePrice * (1 + slippage);
 
-      const cloid = deriveCloid({
-        missionId: input.missionId,
-        executionSequence: input.attempt,
-        actionType: "reduce_only_exit",
-      });
+    const cloid = input.cloid;
 
-      const action = buildOrderAction(
-        {
-          cloid,
-          coin: input.market as TradingWireOrder["coin"],
-          side,
-          limitPrice: formatPrice(rawLimit),
-          size: formatSize(size, market.szDecimals),
-          timeInForce: "ioc",
-          reduceOnly: true,
-        },
-        market.assetIndex,
-      );
+    const action = buildOrderAction(
+      {
+        cloid,
+        coin: input.market as TradingWireOrder["coin"],
+        side,
+        limitPrice: formatPrice(rawLimit),
+        size: formatSize(size, market.szDecimals),
+        timeInForce: "ioc",
+        reduceOnly: true,
+      },
+      market.assetIndex,
+    );
 
-      const signed = yield* nonceCoord
-        .runWithNonce((nonce) =>
-          Effect.succeed({
+    const signed = yield* nonceCoord
+      .runWithNonce((nonce) =>
+        Effect.succeed({
+          action,
+          nonce,
+          signature: signL1ActionForWire({
             action,
             nonce,
-            signature: signL1ActionForWire({
-              action,
-              nonce,
-              privateKey: signer.privateKeyBytes,
-              isTestnet: true,
-            }),
-          } satisfies SignedAction),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TradingExecutionError({
-                stage: "sign_failed",
-                detail: cause instanceof Error ? cause.message : String(cause),
-              }),
-          ),
-        );
-
-      const response = yield* exchange.submit(signed).pipe(
+            privateKey: signer.privateKeyBytes,
+            isTestnet: true,
+          }),
+        } satisfies SignedAction),
+      )
+      .pipe(
         Effect.mapError(
           (cause) =>
             new TradingExecutionError({
-              stage: "submit_failed",
+              stage: "sign_failed",
               detail: cause instanceof Error ? cause.message : String(cause),
             }),
         ),
       );
 
-      const outcome = readExchangeResponse(response);
-      if (outcome.actionError !== undefined) {
-        return yield* new TradingExecutionError({
-          stage: "inspect_failed",
-          detail: `reduce-only exit rejected by the exchange: ${outcome.actionError}`,
-        });
-      }
-      yield* Effect.logInfo("trading reduce-only exit hit the wire", {
-        missionId: input.missionId,
-        market: input.market,
-        cloid,
-        side,
-        size,
-        attempt: input.attempt,
-        outcomes: outcome.statuses.map((row) => row.outcome),
+    const response = yield* exchange.submit(signed).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TradingExecutionError({
+            stage: "submit_failed",
+            detail: cause instanceof Error ? cause.message : String(cause),
+          }),
+      ),
+    );
+
+    const outcome = readExchangeResponse(response);
+    if (outcome.actionError !== undefined) {
+      return yield* new TradingExecutionError({
+        stage: "inspect_failed",
+        detail: `reduce-only exit rejected by the exchange: ${outcome.actionError}`,
       });
-      return outcome.statuses.map(
-        (row) =>
-          ({
-            cloid,
-            status: row.outcome,
-            orderId: row.orderId,
-            filledSize: row.filledSize,
-            reason: row.reason,
-            role: "entry",
-          }) satisfies TradingOrderResult,
-      );
+    }
+    yield* Effect.logInfo("trading reduce-only exit hit the wire", {
+      ...input.logOwner,
+      market: input.market,
+      cloid,
+      side,
+      size,
+      attempt: input.attempt,
+      outcomes: outcome.statuses.map((row) => row.outcome),
     });
+    return outcome.statuses.map(
+      (row) =>
+        ({
+          cloid,
+          status: row.outcome,
+          orderId: row.orderId,
+          filledSize: row.filledSize,
+          reason: row.reason,
+          role: "entry",
+        }) satisfies TradingOrderResult,
+    );
+  });
+
+  const submitReduceOnlyIoc: HyperliquidExecutionService["Service"]["submitReduceOnlyIoc"] = (
+    input,
+  ) =>
+    submitReduceOnlyIocWithCloid({
+      cloid: deriveCloid({
+        missionId: input.missionId,
+        executionSequence: input.attempt,
+        actionType: "reduce_only_exit",
+      }),
+      market: input.market,
+      positionSize: input.positionSize,
+      referencePrice: input.referencePrice,
+      attempt: input.attempt,
+      logOwner: { missionId: input.missionId },
+    });
+
+  const submitManualReduceOnlyIoc: HyperliquidExecutionService["Service"]["submitManualReduceOnlyIoc"] =
+    (input) =>
+      submitReduceOnlyIocWithCloid({
+        cloid: deriveManualCloid({
+          accountId: input.accountId,
+          executionSequence: input.attempt,
+          actionType: "reduce_only_exit",
+        }),
+        market: input.market,
+        positionSize: input.positionSize,
+        referencePrice: input.referencePrice,
+        attempt: input.attempt,
+        logOwner: { manualAccountId: input.accountId },
+      });
 
   // Plan 29 step 2.5: the preview-free resting take-profit. Same §14.7
   // rationale as submitReduceOnlyIoc above; the one difference is the order's
@@ -1200,6 +1404,8 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     submitReduceOnlyIoc,
     submitReduceOnlyAlo,
     submitWorkingEntry,
+    submitManualOrder,
+    submitManualReduceOnlyIoc,
   });
 });
 

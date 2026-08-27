@@ -1025,6 +1025,24 @@ export const WsOrchestrationListTradingWatchlistRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationPreviewTradingOrderRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.previewTradingOrder,
+  {
+    payload: OrchestrationRpcSchemas.previewTradingOrder.input,
+    success: OrchestrationRpcSchemas.previewTradingOrder.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationCloseTradingManualPositionRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.closeTradingManualPosition,
+  {
+    payload: OrchestrationRpcSchemas.closeTradingManualPosition.input,
+    success: OrchestrationRpcSchemas.closeTradingManualPosition.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationReviseTradingPlanRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.reviseTradingPlan,
   {
@@ -1209,6 +1227,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationAddTradingWatchlistEntryRpc,
   WsOrchestrationRemoveTradingWatchlistEntryRpc,
   WsOrchestrationListTradingWatchlistRpc,
+  WsOrchestrationPreviewTradingOrderRpc,
+  WsOrchestrationCloseTradingManualPositionRpc,
   WsOrchestrationReviseTradingPlanRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,

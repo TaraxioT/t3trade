@@ -1,0 +1,376 @@
+/**
+ * TradingManualEntryService — one manual entry, priced, sized and pre-checked
+ * (final-form Phase 7).
+ *
+ * The mirror of `TradingEntryService.prepare` with the mission machinery
+ * removed: no mandate, no decision lease, no plan target, no setup snapshot —
+ * the user at the ticket is the strategy. What stays is everything about the
+ * ORDER: the account envelope (`AccountTradingPolicy`), the margin-capacity
+ * bound, the feasible-size derivation, the manual §16.3 subset
+ * (`previewManualOrder`), and the rule with no exceptions — **every manual
+ * entry carries a stop**, refused at preview without one.
+ *
+ * D4 exclusivity, manual side: a market with an active mission refuses the
+ * ticket with `market_owned_by_mission`, named so the refusal reads as the
+ * rule it is. (The mission side of the same rule lives in
+ * `TradingMissionService.createMission`.)
+ *
+ * @module TradingManualEntryService
+ */
+import {
+  deriveFeasibleSize,
+  deriveEntryLimitPrice,
+  type EntrySizeConstraint,
+} from "@t3tools/trading-contracts/entry";
+import type { TradingOrderIntent, TradingOrderSide } from "@t3tools/trading-contracts/execution";
+import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
+import { urgencyToOrderPreference, type TradingUrgency } from "@t3tools/trading-contracts/strategy";
+import {
+  resolveAccountPolicy,
+  type AccountTradingPolicy,
+} from "@t3tools/trading-contracts/accountPolicy";
+import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
+import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { retryTransientRead } from "./RetryTransient.ts";
+import { IocSlippageConfig } from "./IocSlippageConfig.ts";
+import { TradingCostEstimator } from "./TradingCostEstimator.ts";
+import { TradingMissionService } from "./TradingMissionService.ts";
+import { previewManualOrder } from "./TradingPreviewService.ts";
+import { allocateManualExecutionSequence } from "./TradingExecutionSequence.ts";
+
+/**
+ * The in-memory owner token a manual intent carries in its `missionId` field.
+ *
+ * `TradingOrderIntent.missionId` is a required contract field and the manual
+ * path has no mission — this token fills it for in-memory identity and logs
+ * only. It is NEVER persisted: the execution service writes `mission_id NULL`
+ * for a manual owner, and the cloid comes from `deriveManualCloid`, not from
+ * this string.
+ */
+export const manualOwnerMissionToken = (accountId: string): string => `manual:${accountId}`;
+
+/** What the ticket asked for. */
+export interface ManualEntryRequest {
+  readonly accountId: string;
+  readonly market: string;
+  readonly side: TradingOrderSide;
+  /** Mandatory. A ticket without a stop is refused, never defaulted. */
+  readonly stopPrice: number;
+  readonly sizeEth?: number | undefined;
+  readonly notionalUsd?: number | undefined;
+  /** Same vocabulary the agent's entry offers: `now` crosses, `patient` rests. */
+  readonly urgency?: TradingUrgency | undefined;
+}
+
+/** A prepared manual entry, ready for `submitManualOrder`. */
+export interface PreparedManualEntry {
+  readonly outcome: "prepared";
+  readonly accountId: string;
+  readonly intent: TradingOrderIntent;
+  readonly size: number;
+  readonly constrainedBy: EntrySizeConstraint;
+  /** The largest size every account ceiling allows — the ticket's live readout. */
+  readonly feasibleSize: number;
+  readonly notionalUsd: number;
+  readonly plannedLossAtStopUsd: number;
+  readonly reservedRiskUsd: number;
+  readonly estimatedRoundTripCostUsd: number;
+  readonly notes: ReadonlyArray<string>;
+}
+
+/** Why no manual entry could be built. `reason` is the server's own rule name. */
+export interface RefusedManualEntry {
+  readonly outcome: "refused";
+  readonly reason: string;
+  readonly detail: string;
+  /** The largest size that would have cleared, when a smaller one would. */
+  readonly feasibleSize?: number | undefined;
+}
+
+export type ManualEntryPreparation = PreparedManualEntry | RefusedManualEntry;
+
+export class TradingManualEntryService extends Context.Service<
+  TradingManualEntryService,
+  {
+    /**
+     * Price, size and pre-check one manual entry. `allocateSequence: false`
+     * (the ticket's live preview) leaves the durable sequence counter alone
+     * and stamps sequence 0 on the returned intent; the place path passes
+     * `true` and gets a real, never-reused sequence.
+     */
+    readonly prepare: (
+      request: ManualEntryRequest,
+      options?: { readonly allocateSequence?: boolean },
+    ) => Effect.Effect<ManualEntryPreparation>;
+  }
+>()("t3/trading/TradingManualEntryService") {}
+
+const refused = (reason: string, detail: string, feasibleSize?: number): RefusedManualEntry => ({
+  outcome: "refused",
+  reason,
+  detail,
+  ...(feasibleSize === undefined ? {} : { feasibleSize }),
+});
+
+export const makeTradingManualEntryService = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const missions = yield* TradingMissionService;
+  const gateway = yield* HyperliquidGateway;
+  const iocSlippage = yield* IocSlippageConfig;
+  const estimator = yield* TradingCostEstimator;
+
+  /** The active mission holding this market, if any — the D4 refusal's input. */
+  const findActiveMissionOnMarket = (market: string) =>
+    sql<{ readonly mission_id: string; readonly status: string }>`
+      SELECT mission_id, status FROM trading_missions
+      WHERE venue = 'hyperliquid' AND market = ${market}
+        AND status NOT IN ('revoked', 'completed')
+      LIMIT 1
+    `.pipe(
+      Effect.map((rows) => rows[0] ?? null),
+      Effect.orElseSucceed(() => null),
+    );
+
+  /** The oldest mid-submission manual record for this account, if any. */
+  const readPendingManualExecution = (accountId: string) =>
+    Effect.gen(function* () {
+      const nowMs = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{
+        readonly cloid: string;
+        readonly action_type: string;
+        readonly status: string;
+        readonly updated_at: number;
+      }>`
+        SELECT cloid, action_type, status, updated_at FROM trading_execution_records
+        WHERE mission_id IS NULL AND account_id = ${accountId}
+          AND ${sql.in("status", PENDING_EXECUTION_STATUSES)}
+        ORDER BY updated_at ASC
+        LIMIT 1
+      `;
+      const row = rows[0];
+      if (row === undefined) return null;
+      return {
+        cloid: row.cloid,
+        actionType: row.action_type,
+        status: row.status,
+        ageMillis: Math.max(0, nowMs - row.updated_at),
+      };
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  const prepare: TradingManualEntryService["Service"]["prepare"] = (request, options) =>
+    Effect.gen(function* () {
+      // The stop is the contract. Checked first, before any network read.
+      if (!(request.stopPrice > 0)) {
+        return refused(
+          "valid_stop_defined",
+          "a manual entry requires a stop price; every position this ticket opens is protected or not placed",
+        );
+      }
+
+      // --- D4, manual side: a mission holds this market -------------------
+      const owningMission = yield* findActiveMissionOnMarket(request.market);
+      if (owningMission !== null) {
+        return refused(
+          "market_owned_by_mission",
+          `mission ${owningMission.mission_id} (${owningMission.status}) holds the ` +
+            `${request.market} authority; pause or revoke it before trading this market by hand`,
+        );
+      }
+
+      const masterAddress = yield* missions.getMasterWalletAddress(request.accountId);
+
+      // Canonical account state, read fresh: the policy scales off the live
+      // account value, and the margin bound and gross-notional aggregate both
+      // come from the same snapshot.
+      const snapshot = yield* retryTransientRead(
+        gateway.getAccountSnapshot(masterAddress),
+        "manualEntry.getAccountSnapshot",
+      );
+      const policy: AccountTradingPolicy = resolveAccountPolicy(process.env, snapshot.accountValue);
+      const existingNotionalUsd = snapshot.positions.reduce(
+        (sum, position) => sum + Math.abs(position.size) * position.entryPrice,
+        0,
+      );
+      // What the exchange account can fund: account value at the leverage this
+      // market is configured at (1x when it has never held the market — the
+      // floor no account is below, same reasoning as `AccountMarginCapacity`).
+      const marketLeverage =
+        snapshot.positions.find((position) => position.market === request.market)?.leverage ?? 1;
+      const accountMarginCapacityUsd =
+        snapshot.accountValue > 0 ? snapshot.accountValue * marketLeverage : null;
+
+      const fallbackFeeBps = policy.riskPolicy.fallbackTakerFeeBpsPerSide;
+      const feeRate = yield* gateway.getUserFeeRatesBps(masterAddress).pipe(
+        Effect.orElseSucceed(() => ({
+          takerFeeBps: fallbackFeeBps,
+          makerFeeBps: fallbackFeeBps,
+        })),
+      );
+
+      const orderBook = yield* retryTransientRead(
+        gateway.getOrderBook(request.market),
+        "manualEntry.getOrderBook",
+      );
+      const resolved = yield* retryTransientRead(
+        gateway.resolveMarket(request.market),
+        "manualEntry.resolveMarket",
+      );
+
+      const urgency = request.urgency ?? "now";
+      const orderPreference = urgencyToOrderPreference(urgency);
+      const bbo = orderBook.bestBidOffer;
+      const bestBid = bbo.bidPrice;
+      const bestAsk = bbo.askPrice;
+      if (bestBid === undefined || bestAsk === undefined) {
+        return refused(
+          "market_data_unavailable",
+          `${request.market} has no two-sided book right now; retry once`,
+        );
+      }
+      const limitPrice = deriveEntryLimitPrice({
+        side: request.side,
+        orderPreference,
+        bestBid,
+        bestAsk,
+        slippageBps: (yield* iocSlippage.resolve).entryBps,
+      });
+      const entryPrice = request.side === "buy" ? bestAsk : bestBid;
+      const requestedSize =
+        request.sizeEth ??
+        (request.notionalUsd === undefined ? undefined : request.notionalUsd / entryPrice);
+
+      const sizing = deriveFeasibleSize({
+        side: request.side,
+        entryPrice,
+        stopPrice: request.stopPrice,
+        requestedSize,
+        szDecimals: resolved.szDecimals,
+        existingNotionalUsd,
+        allocatedCapitalUsd: policy.accountValueUsd,
+        maximumLeverage: policy.maximumLeverage,
+        maximumGrossNotionalUsd: policy.maximumPositionNotionalUsd,
+        ...(accountMarginCapacityUsd === null ? {} : { accountMarginCapacityUsd }),
+        maximumPlannedRiskPerPositionUsd: policy.perTradeLossBudgetUsd,
+        // Manual trading carries no cumulative budget; the per-trade budget
+        // bounds the all-in reservation of THIS ticket instead.
+        remainingCumulativeLossUsd: policy.perTradeLossBudgetUsd,
+        takerFeeBpsPerSide: feeRate.takerFeeBps,
+        stopSlippageReserveBps: policy.riskPolicy.stopSlippageReserveBps,
+        minimumNotionalUsd: MIN_NOTIONAL_USD,
+      });
+
+      if (!sizing.feasible) {
+        return refused(sizing.constrainedBy, sizing.detail, sizing.size);
+      }
+
+      const executionSequence =
+        options?.allocateSequence === true
+          ? yield* allocateManualExecutionSequence(sql, request.accountId)
+          : 0;
+
+      const intent: TradingOrderIntent = {
+        missionId: manualOwnerMissionToken(request.accountId),
+        executionSequence,
+        actionType: "open",
+        market: request.market,
+        side: request.side,
+        size: sizing.size,
+        orderPreference,
+        limitPrice,
+        stop: {
+          stopPrice: request.stopPrice,
+          plannedLossAtStopUsd: sizing.plannedLossAtStopUsd,
+        },
+        reduceOnly: false,
+      };
+
+      // The manual checklist, against the same state the submit will read.
+      const nowMs = yield* Clock.currentTimeMillis;
+      const verdict = yield* previewManualOrder(intent, {
+        policy,
+        // Same interim-signer stand-in the mission preview uses at prepare
+        // time; the real armed-signer gate runs again inside the submit.
+        approvedExecutionWalletAddress: "prepare",
+        bbo,
+        accountObservedAt: snapshot.freshness.observedAt,
+        pendingExecution: yield* readPendingManualExecution(request.accountId),
+        existingNotionalUsd,
+        takerFeeRateBps: feeRate.takerFeeBps,
+        stopSlippageReserveBps: policy.riskPolicy.stopSlippageReserveBps,
+        nowMs,
+      }).pipe(
+        Effect.map(() => null),
+        Effect.catch((rejection) => Effect.succeed(rejection)),
+      );
+      if (verdict !== null) {
+        return refused(verdict.item, verdict.detail, sizing.size);
+      }
+
+      const costs = yield* estimator
+        .estimate({
+          market: request.market,
+          masterAddress,
+          sizeEth: sizing.size,
+          fallbackTakerFeeBpsPerSide: fallbackFeeBps,
+        })
+        .pipe(
+          Effect.provideService(HyperliquidGateway, gateway),
+          Effect.orElseSucceed(() => null),
+        );
+
+      const notes: Array<string> = [];
+      if (sizing.constrainedBy !== "requested") {
+        notes.push(sizing.detail);
+      }
+      if (costs === null) {
+        notes.push("the round-trip cost could not be read; estimatedRoundTripCostUsd is 0");
+      }
+
+      const reservedRiskUsd =
+        sizing.plannedLossAtStopUsd +
+        sizing.notionalUsd * ((feeRate.takerFeeBps / 10_000) * 2) +
+        sizing.notionalUsd * (policy.riskPolicy.stopSlippageReserveBps / 10_000);
+
+      return {
+        outcome: "prepared" as const,
+        accountId: request.accountId,
+        intent,
+        size: sizing.size,
+        constrainedBy: sizing.constrainedBy,
+        feasibleSize: sizing.ceilingSize,
+        notionalUsd: sizing.notionalUsd,
+        plannedLossAtStopUsd: sizing.plannedLossAtStopUsd,
+        reservedRiskUsd,
+        estimatedRoundTripCostUsd: costs?.roundTripUsd ?? 0,
+        notes,
+      } satisfies PreparedManualEntry;
+    }).pipe(
+      // A dropped read refuses with a retry hint rather than killing the RPC:
+      // same convention as the mission entry path.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("trading manual entry could not be prepared", {
+          cause: String(cause),
+        }).pipe(
+          Effect.as(
+            refused(
+              "market_data_unavailable",
+              "the account, book, or market state a manual entry is made of could not be read; retry once",
+            ),
+          ),
+        ),
+      ),
+    );
+
+  return TradingManualEntryService.of({ prepare });
+});
+
+export const TradingManualEntryServiceLive = Layer.effect(
+  TradingManualEntryService,
+  makeTradingManualEntryService,
+);

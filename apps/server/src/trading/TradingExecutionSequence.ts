@@ -45,3 +45,50 @@ export const allocateExecutionSequence = Effect.fn("trading.allocateExecutionSeq
   }
   return sequence;
 });
+
+/**
+ * The counter-table lane a manual owner's sequences live in.
+ *
+ * `trading_execution_sequences` is keyed by a single owner column named
+ * `mission_id`; a manual owner occupies a lane under a prefixed key that no
+ * mission id can collide with (mission ids are UUID-derived and carry no
+ * colon-prefixed namespace).
+ */
+export const manualSequenceLane = (accountId: string): string => `manual:${accountId}`;
+
+/**
+ * Atomically reserve the next MANUAL execution sequence for one account.
+ *
+ * Same upsert shape as the mission allocator, with the floor read over the
+ * account's manual execution records (`mission_id IS NULL`) so an imported
+ * database cannot hand out a sequence a manual cloid was already derived from.
+ */
+export const allocateManualExecutionSequence = Effect.fn("trading.allocateManualExecutionSequence")(
+  function* (sql: SqlClient.SqlClient, accountId: string) {
+    const lane = manualSequenceLane(accountId);
+    const rows = yield* sql<{ readonly execution_sequence: number }>`
+      INSERT INTO trading_execution_sequences (mission_id, next_sequence)
+      VALUES (
+        ${lane},
+        (
+          SELECT COALESCE(MAX(execution_sequence), -1) + 2
+          FROM trading_execution_records
+          WHERE mission_id IS NULL AND account_id = ${accountId}
+        )
+      )
+      ON CONFLICT(mission_id) DO UPDATE SET
+        next_sequence = MAX(
+          trading_execution_sequences.next_sequence + 1,
+          excluded.next_sequence
+        )
+      RETURNING next_sequence - 1 AS execution_sequence
+    `;
+    const sequence = rows[0]?.execution_sequence;
+    if (sequence === undefined) {
+      return yield* Effect.die(
+        new Error(`could not allocate a manual execution sequence for ${accountId}`),
+      );
+    }
+    return sequence;
+  },
+);
