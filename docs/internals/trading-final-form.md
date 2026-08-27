@@ -203,15 +203,19 @@ watchlist renders in persisted position order (no reorder RPC yet).
 After 1, 2.2, 3. **Accept:** a user with no mission arms an alert; it fires into
 the feed and as an OS notification; existing wake tests pass unchanged.
 
-### Phase 6 — A real chart
+### Phase 6 — A real chart _(landed)_
 
-- [ ] Draw `ChartBar` candles and `buildEmaLine` EMAs (line/candle toggle);
-      60–120 bar window; gap shading from archive coverage.
-- [ ] Restore `volume` to `TradingChartCandle`; bar-count parameter;
-      archive-backed depth; session levels (prior-day H/L/C, today O/H/L, VWAP);
-      timeframe selector.
-- [ ] `MarketChartPanel.tsx` for any watchlist asset — no mission required;
-      `chartReadEntitlement.ts` entitles followed assets. No repainting animation.
+- [x] Candles + EMA overlays with a persisted line/candle toggle; 60-bar floor
+      in the geometry; gap and pre-recording shading from archive coverage.
+- [x] `volume` restored to `TradingChartCandle` (drawn as a subtle in-chart
+      underlay, not a second pane); server-side `maxBars` (default 120, cap
+      360); session levels from the archive's 5m bars, live reads only;
+      seven-interval timeframe selector — `4h`/`1d` are archive-only so
+      `TradingTimeframe`/mandate parsing stay untouched.
+- [x] `MarketChartPanel.tsx` for any followed asset; `chartReadEntitlement.ts`
+      entitles the follow set; the chart-open ping fires for missionless reads.
+      Arm-at-price ships as a hover chip in the price gutter (drag
+      generalization would have restructured the mission drag path).
 
 After 1 (drawing) / 2.4 (depth). Upstream: contracts + `ws.ts` only.
 
