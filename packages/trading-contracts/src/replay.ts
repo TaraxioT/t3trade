@@ -106,6 +106,82 @@ export interface PolicyReplayReport {
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
+/**
+ * How a position settled against the bars that came after it.
+ *
+ * `open` means neither level was reached in the bars supplied — the caller
+ * decides what that means, which is "mark to the last close" for a fixture and
+ * "hand it to the bar-close exits" for a backtest.
+ */
+export type BarOutcome = "target" | "stop" | "open";
+
+export interface BarSettlement {
+  readonly outcome: BarOutcome;
+  readonly exitPrice: number;
+  /** Bars consumed, counting the one the level was reached in. */
+  readonly barsHeld: number;
+  /** Worst unrealised PnL reached before the outcome, in USD. Never positive. */
+  readonly adverseExcursionUsd: number;
+}
+
+/**
+ * Walk bars forward and settle one position against its levels.
+ *
+ * Extracted so the fixture replay and the thesis backtest resolve a trade the
+ * same way rather than growing two settlement rules that agree until the day
+ * they do not. The rule that matters is the tie: both levels inside one bar is
+ * unresolvable from OHLC, so it counts as the STOP. Resolving it the other way
+ * would flatter every policy and every thesis by exactly the trades whose
+ * outcome is unknown.
+ *
+ * Either level may be absent — a thesis whose only exit is a bar limit has no
+ * stop and no target, and comes back `open` with the last close.
+ */
+export function settleOnBars(input: {
+  readonly long: boolean;
+  readonly entryPrice: number;
+  readonly stopPrice?: number | undefined;
+  readonly targetPrice?: number | undefined;
+  /** Position size in base units, for the adverse-excursion figure. */
+  readonly size: number;
+  readonly bars: ReadonlyArray<MarketCandle>;
+}): BarSettlement {
+  const { long, entryPrice, stopPrice, targetPrice, size, bars } = input;
+  let adverse = 0;
+  let exitPrice = entryPrice;
+  let index = 0;
+
+  for (const bar of bars) {
+    index += 1;
+    const worst = long ? (bar.low - entryPrice) * size : (entryPrice - bar.high) * size;
+    adverse = Math.min(adverse, worst);
+
+    const hitStop =
+      stopPrice !== undefined && (long ? bar.low <= stopPrice : bar.high >= stopPrice);
+    const hitTarget =
+      targetPrice !== undefined && (long ? bar.high >= targetPrice : bar.low <= targetPrice);
+    if (hitStop) {
+      return {
+        outcome: "stop",
+        exitPrice: stopPrice as number,
+        barsHeld: index,
+        adverseExcursionUsd: adverse,
+      };
+    }
+    if (hitTarget) {
+      return {
+        outcome: "target",
+        exitPrice: targetPrice as number,
+        barsHeld: index,
+        adverseExcursionUsd: adverse,
+      };
+    }
+    exitPrice = bar.close;
+  }
+
+  return { outcome: "open", exitPrice, barsHeld: index, adverseExcursionUsd: adverse };
+}
+
 export interface SetupEvaluation {
   readonly eligible: boolean;
   readonly setup: CandidateSetup | null;
@@ -318,30 +394,18 @@ function replayFixture(fixture: ReplayFixture, policy: TradingPolicy): ReplayRes
     return { ...declined, setup, stopPrice };
   }
 
-  let adverse = 0;
-  let outcome: ReplayOutcome = "open";
-  let exitPrice = entryPrice;
-  for (const bar of fixture.forward) {
-    const worst = long ? (bar.low - entryPrice) * size : (entryPrice - bar.high) * size;
-    adverse = Math.min(adverse, worst);
-
-    const hitStop = long ? bar.low <= stopPrice : bar.high >= stopPrice;
-    const hitTarget = long ? bar.high >= targetPrice : bar.low <= targetPrice;
-    // Both inside one bar is unresolvable from OHLC, so it counts as the stop.
-    // Resolving it the other way would flatter every policy by exactly the
-    // trades whose outcome is unknown.
-    if (hitStop) {
-      outcome = "stop";
-      exitPrice = stopPrice;
-      break;
-    }
-    if (hitTarget) {
-      outcome = "target";
-      exitPrice = targetPrice;
-      break;
-    }
-    exitPrice = bar.close;
-  }
+  // The settlement rule itself lives in `settleOnBars`, shared with the thesis
+  // backtest so the two never drift apart on the stop-wins-the-tie question.
+  const settlement = settleOnBars({
+    long,
+    entryPrice,
+    stopPrice,
+    targetPrice,
+    size,
+    bars: fixture.forward,
+  });
+  const { outcome, exitPrice } = settlement;
+  const adverse = settlement.adverseExcursionUsd;
 
   const grossUsd = (long ? exitPrice - entryPrice : entryPrice - exitPrice) * size;
   return {

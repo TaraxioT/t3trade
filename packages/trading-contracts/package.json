@@ -143,6 +143,14 @@
     "./replay": {
       "types": "./src/replay.ts",
       "import": "./src/replay.ts"
+    },
+    "./thesis": {
+      "types": "./src/thesis.ts",
+      "import": "./src/thesis.ts"
+    },
+    "./backtest": {
+      "types": "./src/backtest.ts",
+      "import": "./src/backtest.ts"
     }
   },
   "scripts": {
