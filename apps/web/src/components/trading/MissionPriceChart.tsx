@@ -341,8 +341,23 @@ function tagCaption(tag: GutterTag): string {
 function fillMarkerStyle(kind: ChartFillKind): {
   readonly color: string;
   readonly filled: boolean;
+  /**
+   * Drawn as a dashed ring. Reserved for paper markers: a solid or hollow
+   * circle is a thing that happened to the account, and a paper trade is a
+   * thing that did not.
+   */
+  readonly dashed?: boolean;
 } {
   switch (kind) {
+    // Paper first, so the real cases below cannot accidentally catch one.
+    case "paper_open":
+      return { color: "var(--color-muted-foreground)", filled: false, dashed: true };
+    case "paper_profit":
+      return { color: "var(--color-profit)", filled: false, dashed: true };
+    case "paper_loss":
+      return { color: "var(--color-loss)", filled: false, dashed: true };
+    case "paper_flat":
+      return { color: "var(--color-muted-foreground)", filled: false, dashed: true };
     case "open":
       // An open is where the exposure came from — the same ink as the entry
       // rule it created, and solid, because it is a thing that has happened.
@@ -1479,6 +1494,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               className={cn(
                 "block size-[7px] rounded-full border-[1.5px] transition-transform duration-150 group-hover/fill:scale-[1.6] motion-reduce:transition-none motion-reduce:group-hover/fill:scale-100",
                 selected && "scale-[1.6] motion-reduce:scale-100",
+                // A dashed ring reads as provisional at a glance, which is
+                // exactly what a paper trade is.
+                style.dashed === true && "border-dashed",
               )}
               style={{
                 borderColor: style.color,

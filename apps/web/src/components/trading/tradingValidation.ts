@@ -1,0 +1,207 @@
+/**
+ * A forward validation's running verdict, as the card the reader asked for.
+ *
+ * Same posture as the backtest card next door, and for the same reason: the
+ * default tool row folds a `trading_validate` result into "Validate" and the
+ * answer to "how is my thesis doing" is inside it. Everything below is
+ * DERIVED, not received — the server sends the report as structured data and
+ * this composes the words, so mobile can render the same report natively off
+ * the same contract.
+ *
+ * The one thing this card must never do is read like a statement of account.
+ * Every figure on it is money that was not made or lost, and the card says so
+ * in a place the eye cannot skip rather than in a footnote.
+ *
+ * @module tradingValidation
+ */
+import {
+  describeExits,
+  describeThesis,
+  type TradingThesis,
+} from "@t3tools/trading-contracts/thesis";
+
+import { formatPrice, formatSignedUsd, formatUsd } from "./tradingFormat";
+
+export interface ValidationStatLine {
+  readonly label: string;
+  readonly value: string;
+  readonly tone: "positive" | "negative" | "neutral";
+}
+
+export interface ValidationCard {
+  /** The label the user gave it, or the thesis composed into a line. */
+  readonly headline: string;
+  /** The exit rules, in the order they are checked. */
+  readonly exits: ReadonlyArray<string>;
+  /** "Validating on paper · 4 days left" — state and clock in one line. */
+  readonly statusLine: string;
+  /** The headline number, with the sample-size caveat carried on it. */
+  readonly expectancy: ValidationStatLine;
+  readonly stats: ReadonlyArray<ValidationStatLine>;
+  /** How it compares to the backtest that armed it, in prose. */
+  readonly comparisonLabel: string;
+  readonly comparisonTone: "positive" | "negative" | "neutral";
+  /** The engine's own sentence. Never rewritten here. */
+  readonly verdictReason: string;
+  /** The open paper position, when there is one. */
+  readonly openLine: string | null;
+  readonly rawJson: string;
+}
+
+/**
+ * Prose for each comparison. The card never shows the literal:
+ * `too_few_trades` is a token for a switch statement, not something to put in
+ * front of a person who asked how their idea is doing.
+ */
+const COMPARISON_LABELS: Record<string, string> = {
+  tracking: "Tracking the backtest",
+  better_than_backtest: "Running better than the backtest",
+  worse_than_backtest: "Running worse than the backtest",
+  no_baseline: "No backtest to compare against",
+  too_few_trades: "Too few trades for a verdict",
+};
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const readNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+const signedTone = (value: number): "positive" | "negative" | "neutral" =>
+  value > 0 ? "positive" : value < 0 ? "negative" : "neutral";
+
+/** "4 days left", "6 hours left", or what ended it. */
+function statusLine(report: Record<string, unknown>): string {
+  const status = typeof report.status === "string" ? report.status : "";
+  if (status === "ended") {
+    const reason = report.endReason === "expired" ? "ran its course" : "ended";
+    return `Paper validation ${reason}`;
+  }
+  const expiresAt = readNumber(report.expiresAt);
+  const armedAt = readNumber(report.armedAt);
+  const base = status === "paused" ? "Paused — paper only" : "Validating on paper";
+  if (expiresAt === null) return base;
+  // Measured from the report's own clock rather than the browser's: the two
+  // can differ, and a card that says "2 hours left" about a validation the
+  // server already expired is worse than one that says nothing.
+  const from = armedAt === null ? Date.now() : Math.max(armedAt, Date.now());
+  const left = expiresAt - from;
+  if (left <= 0) return `${base} · finishing`;
+  const days = left / DAY_MS;
+  return days >= 1
+    ? `${base} · ${Math.round(days)} days left`
+    : `${base} · ${Math.max(1, Math.round(left / (60 * 60 * 1_000)))} hours left`;
+}
+
+/**
+ * Read a card out of a `trading_validate` tool call, or null when the payload
+ * carries no report — a `list`, a menu call, or a refusal, all of which fall
+ * back to the ordinary tool row rather than rendering an empty card.
+ *
+ * A hand-parse rather than a schema decode, the same posture the backtest card
+ * takes: a report that gained a field this build does not know about must
+ * still render.
+ */
+export function deriveValidationCard(toolData: unknown): ValidationCard | null {
+  const result = readValidateResult(toolData);
+  const report = asRecord(asRecord(result)?.report);
+  if (report === null) return null;
+
+  const stats = asRecord(report.stats);
+  const thesis = asRecord(report.thesis);
+  if (stats === null || thesis === null) return null;
+
+  const expectancy = readNumber(stats.expectancyUsd) ?? 0;
+  const trades = readNumber(stats.tradesTaken) ?? 0;
+  const winRate = readNumber(stats.winRatePercent) ?? 0;
+  const drawdown = readNumber(stats.maxDrawdownUsd) ?? 0;
+  const totalNet = readNumber(stats.totalNetUsd) ?? 0;
+  const fees = readNumber(stats.totalFeesUsd) ?? 0;
+  const bars = readNumber(report.barsWatched) ?? 0;
+  const baseline = readNumber(report.baselineExpectancyUsd);
+  const comparison = typeof report.comparison === "string" ? report.comparison : "";
+
+  const open = asRecord(report.openTrade);
+  const openEntry = open === null ? null : readNumber(open.entryPrice);
+
+  const label = typeof report.headline === "string" ? report.headline : null;
+
+  return {
+    headline: label ?? describeThesis(thesis as unknown as TradingThesis),
+    exits: describeExits((thesis.exits ?? {}) as TradingThesis["exits"]),
+    statusLine: statusLine(report),
+    expectancy: {
+      label: "Paper expectancy after fees",
+      value: `${formatSignedUsd(expectancy)} a trade`,
+      // Under the sample floor the number is printed but must not be coloured
+      // as a result — a green figure over eleven trades reads as a finding.
+      tone: comparison === "too_few_trades" ? "neutral" : signedTone(expectancy),
+    },
+    stats: [
+      { label: "Paper trades", value: `${trades}`, tone: "neutral" },
+      { label: "Hit rate", value: `${winRate.toFixed(1)}%`, tone: "neutral" },
+      { label: "Total after fees", value: formatSignedUsd(totalNet), tone: signedTone(totalNet) },
+      { label: "Fees paid", value: formatUsd(fees), tone: "neutral" },
+      { label: "Worst drawdown", value: formatUsd(drawdown), tone: "neutral" },
+      { label: "Bars watched", value: bars.toLocaleString("en-US"), tone: "neutral" },
+      ...(baseline === null
+        ? []
+        : [
+            {
+              label: "Backtest expected",
+              value: `${formatSignedUsd(baseline)} a trade`,
+              tone: "neutral" as const,
+            },
+          ]),
+    ],
+    comparisonLabel: COMPARISON_LABELS[comparison] ?? "No verdict",
+    comparisonTone:
+      comparison === "better_than_backtest" || comparison === "tracking"
+        ? "positive"
+        : comparison === "worse_than_backtest"
+          ? "negative"
+          : "neutral",
+    verdictReason: typeof report.verdictReason === "string" ? report.verdictReason : "",
+    openLine:
+      openEntry === null
+        ? null
+        : `One paper position is open, entered at ${formatPrice(openEntry)}`,
+    rawJson: JSON.stringify(result, null, 2),
+  };
+}
+
+/**
+ * The result out of the tool call, through whichever shape the transport used.
+ * Mirrors the backtest card's reader; see its notes on the three shapes.
+ */
+function readValidateResult(toolData: unknown): unknown {
+  const item = asRecord(toolData);
+  if (item === null) return null;
+  const name = typeof item.tool === "string" ? item.tool : item.toolName;
+  if (typeof name !== "string" || !name.endsWith("trading_validate")) return null;
+  const result = asRecord(item.result);
+  if (result === null) return null;
+
+  const content = result.content;
+  if (typeof content === "string") return parseJson(content);
+  if (!Array.isArray(content)) return result;
+  for (const entry of content) {
+    const text = asRecord(entry)?.text;
+    if (typeof text !== "string") continue;
+    return parseJson(text);
+  }
+  return null;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Truncated or a summary line. The ordinary tool row still renders it.
+    return null;
+  }
+}

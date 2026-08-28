@@ -98,6 +98,10 @@ export const TradingCoreLayerLive = Layer.mergeAll(
   TradingMarketChartLive.pipe(
     Layer.provide(gatewayWithRead),
     Layer.provide(TradingMarketArchiveLive),
+    // The chart draws an armed thesis's paper trades as markers. A read, and
+    // one that can never fail the chart: a price series must still render when
+    // the paper ledger does not answer.
+    Layer.provide(TradingThesisValidationServiceLive.pipe(Layer.provide(TradingMarketArchiveLive))),
   ),
   // What the venue lists, for the picker and the watchlist search. Same read
   // gateway again, so the universe and a resolve of one asset never disagree.

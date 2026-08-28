@@ -210,6 +210,51 @@ export const TradingChartInterval = Schema.Literals(["1m", "3m", "5m", "15m", "1
 export type TradingChartInterval = typeof TradingChartInterval.Type;
 
 /**
+ * One paper trade drawn on the market chart.
+ *
+ * Deliberately not the full paper-trade record: the chart needs a time, a
+ * price and whether the trade paid, and shipping the rest on a 15s poll would
+ * be bandwidth for numbers nothing renders. `exitTime` null means the paper
+ * position is still open, which the chart draws as an entry with no exit yet.
+ */
+export const TradingChartPaperTrade = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  entryTime: Schema.Number,
+  entryPrice: Schema.Number,
+  exitTime: Schema.NullOr(Schema.Number),
+  exitPrice: Schema.NullOr(Schema.Number),
+  /** Net after fees and funding. Null while the trade is open. */
+  netUsd: Schema.NullOr(Schema.Number),
+  exitReason: Schema.NullOr(Schema.String),
+});
+export type TradingChartPaperTrade = typeof TradingChartPaperTrade.Type;
+
+/**
+ * The thesis being validated on this market, for the chart's badge and
+ * markers.
+ *
+ * `intervalMatches` is the honest half. A thesis armed on 5m bars has paper
+ * trades whose entry times are 5m bar opens, and drawing those on a 1m chart
+ * would put markers at times the thesis never acted on. So the server compares
+ * the chart's interval against the thesis's own, and when they differ it sends
+ * the badge with no trades and the client says which interval to switch to
+ * rather than drawing markers in the wrong places.
+ */
+export const TradingChartThesis = Schema.Struct({
+  validationId: TrimmedNonEmptyString,
+  /** The thesis in one line, already composed: "Buy ETH 5m when …". */
+  headline: TrimmedNonEmptyString,
+  interval: TradingChartInterval,
+  status: Schema.Literals(["armed", "paused"]),
+  expiresAt: Schema.Number,
+  /** Whether the chart's interval is the thesis's own. */
+  intervalMatches: Schema.Boolean,
+  /** Empty when the intervals differ; the badge still says what is running. */
+  trades: Schema.Array(TradingChartPaperTrade),
+});
+export type TradingChartThesis = typeof TradingChartThesis.Type;
+
+/**
  * Candles plus the snapshot figures for one market. The chart needs both a
  * price series and the current mark/funding/OI/volume/change to render its
  * header and footer rows, so they travel together. `null` never appears in
@@ -252,6 +297,11 @@ export const TradingMarketChartView = Schema.Struct({
   recordingSince: Schema.optional(Schema.Number),
   /** Known missing stretches inside the served window, for honest shading. */
   gaps: Schema.optional(Schema.Array(TradingChartGap)),
+  /**
+   * The thesis being validated forward on this market, when there is one.
+   * Paper trades only — nothing here is a position, and the chart says so.
+   */
+  thesis: Schema.optional(TradingChartThesis),
 });
 export type TradingMarketChartView = typeof TradingMarketChartView.Type;
 

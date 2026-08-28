@@ -658,7 +658,23 @@ export function deriveTriggerExpiryMillis(mission: {
  * worth colouring by what it realised — the chart is then a record of every
  * position the session took, not only the one it is in.
  */
-export type ChartFillKind = "open" | "close_profit" | "close_loss" | "close_flat" | "unknown";
+export type ChartFillKind =
+  | "open"
+  | "close_profit"
+  | "close_loss"
+  | "close_flat"
+  | "unknown"
+  /**
+   * A forward validation's paper trades. Separate kinds rather than a flag on
+   * the existing ones because they must never read as fills: nothing was
+   * bought, nothing was sold, and a chart that draws them identically is
+   * telling the viewer their account did something it did not. The renderer
+   * draws them hollow and dashed for the same reason.
+   */
+  | "paper_open"
+  | "paper_profit"
+  | "paper_loss"
+  | "paper_flat";
 
 /** One fill, ready to be placed on the chart's time axis. */
 export interface ChartFillMarker {

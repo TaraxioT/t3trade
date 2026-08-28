@@ -34,10 +34,13 @@ import type {
   TradingChartCandle,
   TradingChartInterval,
   TradingChartSessionLevels,
+  TradingChartThesis,
   TradingMarketChartView,
 } from "@t3tools/contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
+import { describeThesis } from "@t3tools/trading-contracts/thesis";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
+import { TradingThesisValidationService } from "./TradingThesisValidationService.ts";
 
 export interface TradingMarketChartReadInput {
   readonly market: string;
@@ -151,7 +154,54 @@ export function toWireSessionLevels(
 export const makeTradingMarketChart = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const archive = yield* TradingMarketArchive;
+  const validations = yield* TradingThesisValidationService;
   const cache = yield* Ref.make(new Map<string, CachedChart>());
+
+  /**
+   * The armed or paused validation on this market, as the chart's badge and
+   * markers.
+   *
+   * Trades are served only when the chart is on the thesis's own interval. A
+   * 5m thesis has paper entries at 5m bar opens, and drawing those on a 1m
+   * chart would put markers at times the rule never fired — so the badge goes
+   * out alone and the client says which interval to switch to.
+   */
+  const readThesis = (
+    market: string,
+    interval: TradingChartInterval,
+  ): Effect.Effect<TradingChartThesis | null> =>
+    Effect.gen(function* () {
+      const found = yield* validations.forChart({ asset: market });
+      if (found === null) return null;
+      const { validation } = found;
+      if (validation.status === "ended") return null;
+      const intervalMatches = validation.interval === interval;
+      return {
+        validationId: validation.id,
+        headline: validation.label ?? describeThesis(validation.thesis),
+        interval: validation.interval as TradingChartInterval,
+        status: validation.status,
+        expiresAt: validation.expiresAt,
+        intervalMatches,
+        trades: intervalMatches
+          ? found.trades.map((trade) => ({
+              id: trade.id,
+              entryTime: trade.entryTime,
+              entryPrice: trade.entryPrice,
+              exitTime: trade.exitTime,
+              exitPrice: trade.exitPrice,
+              netUsd: trade.netUsd,
+              exitReason: trade.exitReason,
+            }))
+          : [],
+      };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logDebug("trading chart thesis read failed", { market, cause }).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
 
   const read = (input: TradingMarketChartReadInput): Effect.Effect<TradingMarketChartView | null> =>
     Effect.gen(function* () {
@@ -266,10 +316,20 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         ? null
         : toWireSessionLevels(yield* archive.sessionLevels({ coin: market, now }));
 
+      // The thesis being validated on this market, when there is one. Read
+      // last and never allowed to fail the chart: a validation is decoration
+      // on a price series, and a chart that would not draw because a paper
+      // ledger read failed is the wrong trade.
+      //
+      // Only on a live window. A post-mortem chart of last week is not where
+      // a running validation belongs, and its markers would be outside it.
+      const thesis = windowed ? null : yield* readThesis(market, interval);
+
       const view: TradingMarketChartView = {
         market,
         interval,
         candles: history.candles,
+        ...(thesis === null ? {} : { thesis }),
         ...(sessionLevels === null ? {} : { sessionLevels }),
         ...(coverage.recordingSince === null ? {} : { recordingSince: coverage.recordingSince }),
         ...(coverage.gaps.length === 0 ? {} : { gaps: coverage.gaps }),

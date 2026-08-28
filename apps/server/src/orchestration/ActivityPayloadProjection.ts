@@ -230,10 +230,18 @@ function summarizeMcpResult(result: unknown): Record<string, unknown> | undefine
  * its size does not grow with the window backtested. A run over a year of bars
  * and a run over a day produce the same payload.
  *
+ * `trading_validate` is the same shape of exception: a forward validation's
+ * report is the backtest's figures plus a handful of lifecycle fields, and its
+ * `openTrade` is one paper trade rather than an array of them, so it does not
+ * grow with the number of trades taken. Its `list` action is the one call here
+ * that can grow — one line per validation — and it degrades correctly: past
+ * the ceiling below it is summarized like any other result, which costs a card
+ * nobody needs on a list the model relays in prose anyway.
+ *
  * Matched on the name's suffix because providers qualify it differently
  * (`trading_backtest` bare, `mcp__t3-trade__trading_backtest` under Claude).
  */
-const MCP_RESULTS_KEPT_WHOLE = ["trading_backtest"] as const;
+const MCP_RESULTS_KEPT_WHOLE = ["trading_backtest", "trading_validate"] as const;
 
 /**
  * The ceiling that keeps the exception honest. Measured at roughly 1.6 KB for

@@ -126,8 +126,10 @@ import {
 import { SkillInlineText } from "./SkillInlineText";
 import {
   deriveBacktestCard,
+  deriveValidationCard,
   deriveWakeupCard,
   type BacktestCard,
+  type ValidationCard,
   type WakeupCard,
 } from "../trading/tradingPresentation";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
@@ -2909,6 +2911,102 @@ function TradingBacktestTimelineRow({ card }: { card: BacktestCard }) {
   );
 }
 
+/**
+ * A forward validation's running verdict, as a card.
+ *
+ * The same treatment the backtest gets, for the same reason — the answer to
+ * "how is my thesis doing" is the result, not a chevron — with one addition
+ * the backtest does not need. Every figure here is money that was neither made
+ * nor lost, so "paper" is on the status line at the top, in the reader's path
+ * rather than in a footnote. A card of green numbers that turns out to have
+ * been hypothetical is the one way this feature could mislead somebody.
+ */
+function TradingValidationTimelineRow({ card }: { card: ValidationCard }) {
+  const [expanded, setExpanded] = useState(false);
+  const toneClass = (tone: "positive" | "negative" | "neutral") =>
+    tone === "positive"
+      ? "text-success-foreground"
+      : tone === "negative"
+        ? "text-destructive"
+        : "text-foreground/85";
+
+  return (
+    <div
+      className="my-1 rounded-xl border border-border/60 border-dashed bg-muted/20"
+      data-testid="trading-validation-card"
+    >
+      <div className="flex flex-col gap-2 px-3 py-2.5">
+        <div className="flex items-start gap-2">
+          <span className="flex size-6 flex-none items-center justify-center rounded-md bg-foreground/[0.06] text-muted-foreground">
+            <FlaskConicalIcon className="size-3.5" strokeWidth={2} aria-hidden />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm leading-snug text-foreground/90">{card.headline}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {card.statusLine}
+              {card.exits.length > 0 ? ` · ${card.exits.join(", ")}` : ""}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-baseline gap-2 border-border/45 border-t pt-2">
+          <span className="text-[11px] text-muted-foreground">{card.expectancy.label}</span>
+          <span className={cn("font-mono font-medium text-base", toneClass(card.expectancy.tone))}>
+            {card.expectancy.value}
+          </span>
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
+          {card.stats.map((stat) => (
+            <div key={stat.label} className="min-w-0">
+              <dt className="truncate text-[10px] text-muted-foreground uppercase tracking-wide">
+                {stat.label}
+              </dt>
+              <dd className={cn("font-mono text-xs tabular-nums", toneClass(stat.tone))}>
+                {stat.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <p
+          className={cn(
+            "border-border/45 border-t pt-2 text-xs leading-relaxed",
+            toneClass(card.comparisonTone),
+          )}
+        >
+          <span className="font-medium">{card.comparisonLabel}.</span>{" "}
+          <span className="text-muted-foreground">{card.verdictReason}</span>
+        </p>
+
+        {card.openLine === null ? null : (
+          <p className="text-[11px] text-muted-foreground">{card.openLine}</p>
+        )}
+      </div>
+
+      <button
+        type="button"
+        aria-expanded={expanded}
+        data-scroll-anchor-ignore
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-1.5 px-3 pb-2 text-left text-[11px] text-muted-foreground hover:text-foreground/85"
+      >
+        {expanded ? (
+          <ChevronDownIcon className="size-3 flex-none" />
+        ) : (
+          <ChevronRightIcon className="size-3 flex-none" />
+        )}
+        Every number behind this
+      </button>
+      {expanded ? (
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all px-3 pb-2 text-[11px] text-muted-foreground">
+          {card.rawJson}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -2927,6 +3025,13 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     workEntry.itemType === "mcp_tool_call" ? deriveBacktestCard(workEntry.toolData) : null;
   if (backtestCard !== null) {
     return <TradingBacktestTimelineRow card={backtestCard} />;
+  }
+  // The same for a validation's report. A `list` or a menu call carries no
+  // report and falls through to the ordinary tool row.
+  const validationCard =
+    workEntry.itemType === "mcp_tool_call" ? deriveValidationCard(workEntry.toolData) : null;
+  if (validationCard !== null) {
+    return <TradingValidationTimelineRow card={validationCard} />;
   }
   return (
     <PlainWorkEntryRow

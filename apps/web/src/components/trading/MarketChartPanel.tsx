@@ -28,9 +28,10 @@
  * @module MarketChartPanel
  */
 import type { EnvironmentId, TradingArmWatchInput } from "@t3tools/contracts";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { refreshTradingWatches } from "../../lib/tradingAccountState";
+import { thesisChartBadge, thesisChartMarkers } from "./thesisChartMarkers";
 import { useTradingMarketChart, type ChartInterval } from "../../lib/tradingMarketChartState";
 import { cn } from "../../lib/utils";
 import { orchestrationEnvironment } from "../../state/orchestration";
@@ -72,6 +73,14 @@ export function MarketChartPanel({
   const analyst = useAskAnalyst(environmentId);
 
   const data = chart.data;
+
+  // A thesis being validated on this market. Both derivations are memoised on
+  // the served object, so a re-render that did not bring new chart data
+  // rebuilds no markers — the markers change when a bar closes and the poll
+  // brings a new trade, and at no other time.
+  const thesis = data?.thesis ?? null;
+  const paperMarkers = useMemo(() => (thesis === null ? [] : thesisChartMarkers(thesis)), [thesis]);
+  const badge = useMemo(() => (thesis === null ? null : thesisChartBadge(thesis)), [thesis]);
 
   const armAtPrice = (price: number) => {
     if (isArming || data === null) return;
@@ -118,6 +127,7 @@ export function MarketChartPanel({
           {...(data.sessionLevels === undefined ? {} : { sessionLevels: data.sessionLevels })}
           {...(data.recordingSince === undefined ? {} : { recordingSince: data.recordingSince })}
           {...(data.gaps === undefined ? {} : { gaps: data.gaps })}
+          {...(paperMarkers.length === 0 ? {} : { fills: paperMarkers })}
           {...(armable ? { onArmAtPrice: armAtPrice } : {})}
           {...(className === undefined ? {} : { className })}
         />
@@ -137,6 +147,22 @@ export function MarketChartPanel({
           {chart.error !== null
             ? "Chart unavailable"
             : `Not enough ${interval} bars recorded for ${asset} yet.`}
+        </div>
+      )}
+      {badge === null ? null : (
+        <div
+          className="flex items-baseline gap-1.5 px-1 text-[10.5px] leading-tight"
+          data-testid="market-chart-thesis-badge"
+        >
+          <span
+            aria-hidden
+            className={cn(
+              "size-1.5 shrink-0 translate-y-[-1px] rounded-full border border-dashed",
+              badge.paused ? "border-muted-foreground/60" : "border-foreground/70",
+            )}
+          />
+          <span className="truncate font-medium text-foreground/90">{badge.headline}</span>
+          <span className="shrink-0 text-muted-foreground">{badge.note}</span>
         </div>
       )}
       <div className="flex items-center gap-2 px-1">

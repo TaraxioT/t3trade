@@ -284,3 +284,56 @@ describe("projectActivityPayload — the backtest result survives whole", () => 
     expect((item.result as Record<string, unknown>).content).toBe(report);
   });
 });
+
+/**
+ * `trading_validate` joins the same exception, and for the same reasons: its
+ * report is the card the chat renders, and it is bounded — the backtest's
+ * figures plus a handful of lifecycle fields and at most one open paper trade.
+ */
+describe("projectActivityPayload — the validation report survives whole", () => {
+  const report = JSON.stringify({
+    report: {
+      validationId: "v1",
+      stats: { expectancyUsd: 1.2, tradesTaken: 30 },
+      comparison: "tracking",
+      verdictReason: "Forward is tracking the backtest within the noise of this sample.",
+    },
+  });
+
+  it("keeps the whole result under either provider's tool naming", () => {
+    for (const toolName of ["trading_validate", "mcp__t3-trade__trading_validate"]) {
+      const projected = projectActivityPayload(
+        activity({
+          itemType: "mcp_tool_call",
+          data: {
+            toolName,
+            input: { action: "report" },
+            result: { content: [{ type: "text", text: report }] },
+          },
+        }),
+      );
+      const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+      expect((data.result as Record<string, unknown>).content, toolName).toBe(report);
+    }
+  });
+
+  it("summarizes a result that outgrows the ceiling rather than shipping it", () => {
+    // The exception must not become the thing the projection exists to
+    // prevent. A `list` of many validations is the call that could get here.
+    const huge = JSON.stringify({ report: { verdictReason: "x".repeat(9_000) } });
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "mcp_tool_call",
+        data: {
+          toolName: "trading_validate",
+          input: { action: "list" },
+          result: { content: [{ type: "text", text: huge }] },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    const content = (data.result as Record<string, unknown>).content;
+    expect(typeof content).toBe("string");
+    expect((content as string).length).toBeLessThan(huge.length);
+  });
+});

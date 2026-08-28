@@ -25,6 +25,7 @@ import type {
 } from "@t3tools/trading-contracts/market";
 
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
+import { TradingThesisValidationService } from "./TradingThesisValidationService.ts";
 import { TradingMarketChart, TradingMarketChartLive } from "./TradingMarketChart.ts";
 
 const freshness = {
@@ -104,11 +105,21 @@ const emptyArchive = Layer.succeed(TradingMarketArchive, {
   sessionLevels: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
 } as unknown as (typeof TradingMarketArchive)["Service"]);
 
+/**
+ * Nothing being validated. These cases are about the gateway pair and the
+ * cache window; the thesis overlay has its own case below.
+ */
+const noValidations = Layer.succeed(TradingThesisValidationService, {
+  forChart: () => Effect.succeed(null),
+} as unknown as (typeof TradingThesisValidationService)["Service"]);
+
 /** The real chart layer on the stub gateway, plus the TestClock the TTL reads. */
 const testLayer = () =>
   Effect.provide(
     Layer.merge(
-      TradingMarketChartLive.pipe(Layer.provide(Layer.merge(stubGateway, emptyArchive))),
+      TradingMarketChartLive.pipe(
+        Layer.provide(Layer.mergeAll(stubGateway, emptyArchive, noValidations)),
+      ),
       TestClock.layer(),
     ),
   );
@@ -328,6 +339,7 @@ it.effect("draws a closed window from the archive instead of asking the exchange
     Effect.provide(
       Layer.merge(
         TradingMarketChartLive.pipe(
+          Layer.provide(noValidations),
           Layer.provide(
             Layer.merge(
               stubGateway,
@@ -399,6 +411,7 @@ it.effect("serves latest bars from the archive while its tail is fresh", () =>
     Effect.provide(
       Layer.merge(
         TradingMarketChartLive.pipe(
+          Layer.provide(noValidations),
           Layer.provide(
             Layer.merge(
               stubGateway,
@@ -468,4 +481,114 @@ it.effect("falls back to the exchange when the archive was not recording then", 
 
     assert.equal(historyCalls, 1);
   }).pipe(testLayer()),
+);
+
+/**
+ * The thesis overlay, and the one rule that keeps it honest.
+ *
+ * A 5m thesis has paper entries at 5m bar opens. Drawing those on a 1m chart
+ * would put markers at times the rule never fired — a picture of trades that
+ * did not happen where it says they did. So the trades are served only on the
+ * thesis's own interval, and the badge goes out either way.
+ */
+const validationOn = (interval: string) =>
+  Layer.succeed(TradingThesisValidationService, {
+    forChart: () =>
+      Effect.succeed({
+        validation: {
+          id: "validation-1",
+          interval,
+          status: "armed",
+          expiresAt: 9_000,
+          label: "The 5m fade",
+          thesis: { market: "ETH", interval, side: "long" },
+        },
+        trades: [
+          {
+            id: "paper-1",
+            entryTime: 1_000,
+            entryPrice: 3_000,
+            exitTime: 2_000,
+            exitPrice: 3_030,
+            netUsd: 9.4,
+            exitReason: "target",
+          },
+        ],
+      }),
+  } as unknown as (typeof TradingThesisValidationService)["Service"]);
+
+const withValidation = (interval: string) =>
+  Effect.provide(
+    Layer.merge(
+      TradingMarketChartLive.pipe(
+        Layer.provide(Layer.mergeAll(stubGateway, emptyArchive, validationOn(interval))),
+      ),
+      TestClock.layer(),
+    ),
+  );
+
+it.effect("draws the thesis's paper trades when the chart is on its own interval", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 60 });
+
+    assert.isNotNull(view);
+    assert.equal(view?.thesis?.validationId, "validation-1");
+    assert.equal(view?.thesis?.intervalMatches, true);
+    assert.equal(view?.thesis?.trades.length, 1);
+    assert.equal(view?.thesis?.trades[0]?.exitReason, "target");
+    // The label the user gave it, not a re-derived sentence.
+    assert.equal(view?.thesis?.headline, "The 5m fade");
+  }).pipe(withValidation("1m")),
+);
+
+it.effect("sends the badge without markers when the chart is on another interval", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 60 });
+
+    assert.equal(view?.thesis?.intervalMatches, false);
+    // The badge still says what is running; the markers do not lie about where.
+    assert.equal(view?.thesis?.interval, "5m");
+    assert.deepEqual(view?.thesis?.trades, []);
+  }).pipe(withValidation("5m")),
+);
+
+it.effect("still draws the chart when the paper ledger cannot be read", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 60 });
+
+    // A price series must render when a decoration fails. The alternative is a
+    // blank chart because a paper trade could not be counted.
+    assert.isNotNull(view);
+    assert.isAbove(view?.candles.length ?? 0, 0);
+    assert.isUndefined(view?.thesis);
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        TradingMarketChartLive.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              stubGateway,
+              emptyArchive,
+              Layer.succeed(TradingThesisValidationService, {
+                forChart: () => Effect.die("the paper ledger is unavailable"),
+              } as unknown as (typeof TradingThesisValidationService)["Service"]),
+            ),
+          ),
+        ),
+        TestClock.layer(),
+      ),
+    ),
+  ),
 );
