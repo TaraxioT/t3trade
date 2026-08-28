@@ -424,5 +424,7 @@ describe("checkBacktestBarBudget", () => {
     expect(refusal).toContain("15m");
     // The refusal has to be actionable, not just a wall.
     expect(refusal).toContain("shorten the window");
+    // No em dash reaches a person reading a refusal.
+    expect(refusal).not.toContain("—");
   });
 });

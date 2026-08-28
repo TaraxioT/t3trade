@@ -62,6 +62,8 @@ describe("validateThesis", () => {
     const refusal = validateThesis({ ...meanReversion, exits: {} });
     expect(refusal).toContain("at least one");
     expect(refusal).toContain("cannot be scored");
+    // Refusals are read by a person through the model. No em dashes.
+    expect(refusal).not.toContain("—");
   });
 
   it("refuses an R target with no stop to measure it against", () => {
@@ -147,7 +149,7 @@ describe("validateThesis", () => {
         ) as typeof meanReversion.entry.predicates,
       },
     });
-    expect(refusal).toContain("split the idea into two theses");
+    expect(refusal).toContain("Split the idea into two theses");
   });
 
   it("refuses a period no indicator could be computed over", () => {

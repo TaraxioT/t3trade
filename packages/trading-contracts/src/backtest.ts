@@ -682,7 +682,7 @@ export function checkBacktestBarBudget(input: {
       : `run it on ${input.coarser.join(" or ")} bars over the same window, or shorten the window`;
   return (
     `that window is ${input.bars.toLocaleString("en-US")} ${input.interval} bars and the cap is ` +
-    `${BACKTEST_MAX_BARS.toLocaleString("en-US")} — ${suggestion}`
+    `${BACKTEST_MAX_BARS.toLocaleString("en-US")}, so ${suggestion}`
   );
 }
 

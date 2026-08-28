@@ -237,7 +237,7 @@ const validateOperand = (operand: ThesisOperand, where: string): string | null =
 const validateCondition = (condition: ThesisCondition, where: string): string | null => {
   if (condition.predicates.length === 0) return `${where}: name at least one comparison`;
   if (condition.predicates.length > THESIS_MAX_PREDICATES) {
-    return `${where}: ${condition.predicates.length} comparisons, at most ${THESIS_MAX_PREDICATES} — split the idea into two theses instead of nesting it`;
+    return `${where}: ${condition.predicates.length} comparisons, at most ${THESIS_MAX_PREDICATES}. Split the idea into two theses instead of nesting it`;
   }
   for (const [index, predicate] of condition.predicates.entries()) {
     const at = `${where} comparison ${index + 1}`;
@@ -272,7 +272,7 @@ export function validateThesis(thesis: TradingThesis): string | null {
     exits.maxHoldBars !== undefined ||
     exits.opposite !== undefined;
   if (!hasExit) {
-    return "exits: name at least one of a stop, a target, a bar limit, or an exit condition — a thesis with no way out cannot be scored";
+    return "exits: name at least one of a stop, a target, a bar limit, or an exit condition. A thesis with no way out cannot be scored";
   }
 
   for (const [name, distance] of [
