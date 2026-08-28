@@ -73,13 +73,20 @@ export function selectThreadPanel(input: {
  * `position` and `strategy` come from the per-market arrays rather than from
  * the singular fields, which are the PRIMARY market's: reading them for a
  * second market is how a mission's ETH plan would be drawn over BTC candles.
+ *
+ * The primary market narrows like any other, deliberately. Handing it back
+ * whole would leave `orders` and `recentFills` carrying every market's rows,
+ * and the primary's ledger then listed the OTHER market's orders under its own
+ * name - which is exactly what it did the first time this ran against a live
+ * two-market mission.
  */
 export function missionOnMarket(
   mission: OrchestrationTradingMission,
   market: string,
 ): OrchestrationTradingMission {
-  if (market === mission.market) return mission;
-  const price = mission.marketPrices.find((entry) => entry.market === market)?.price;
+  const price =
+    mission.marketPrices.find((entry) => entry.market === market)?.price ??
+    (market === mission.market ? mission.marketPrice : undefined);
   return {
     ...mission,
     market,

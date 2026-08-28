@@ -159,8 +159,20 @@ describe("missionOnMarket", () => {
     inFlightExecution: { market: "BTC" },
   } as unknown as OrchestrationTradingMission;
 
-  it("hands back the mission itself for its primary market", () => {
-    expect(missionOnMarket(multi, "ETH")).toBe(multi);
+  // The primary narrows like any other market. Handing it back whole left its
+  // ledger listing the OTHER market's orders under its own name, which is what
+  // it did the first time this ran against a live two-market mission.
+  it("narrows the primary market too, orders and fills included", () => {
+    const eth = missionOnMarket(multi, "ETH");
+    expect(eth.market).toBe("ETH");
+    expect(eth.orders.map((order) => order.market)).toEqual(["ETH"]);
+    expect(eth.position?.market).toBe("ETH");
+    expect(eth.marketPrice).toBe(3_000);
+  });
+
+  it("keeps the primary's mark when only the singular price was read", () => {
+    const single = { ...multi, marketPrices: [] } as unknown as OrchestrationTradingMission;
+    expect(missionOnMarket(single, "ETH").marketPrice).toBe(3_000);
   });
 
   // The singular fields are the PRIMARY market's, so reading them for a second

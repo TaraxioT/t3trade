@@ -138,6 +138,14 @@ export function ThreadMarketPanel({
   // the label stays with the header, which is the panel's one line about the
   // market itself.
   const intervalLabel = mission === null ? null : runtimeTimeframe(mission.instruction);
+  // The mission's mark for the market the header is LABELLED with. A mission
+  // holding a set carries one mark per held market, and reading the singular
+  // one put the primary's price under the second market's name.
+  const headerMark =
+    mission === null
+      ? null
+      : (mission.marketPrices.find((entry) => entry.market === asset)?.price ??
+        (asset === mission.market ? (mission.marketPrice ?? null) : null));
 
   const header = (
     <div className="flex items-center gap-2 px-1">
@@ -155,20 +163,12 @@ export function ThreadMarketPanel({
             <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="text-sm font-semibold text-foreground">{asset}</span>
-          <MarketQuote
-            environmentId={environmentId}
-            asset={asset}
-            missionMark={mission?.marketPrice ?? null}
-          />
+          <MarketQuote environmentId={environmentId} asset={asset} missionMark={headerMark} />
         </button>
       ) : (
         <>
           <span className="text-sm font-semibold text-foreground">{asset}</span>
-          <MarketQuote
-            environmentId={environmentId}
-            asset={asset}
-            missionMark={mission?.marketPrice ?? null}
-          />
+          <MarketQuote environmentId={environmentId} asset={asset} missionMark={headerMark} />
           {intervalLabel === null ? null : (
             <span
               data-testid="thread-market-interval"

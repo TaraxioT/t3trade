@@ -195,6 +195,10 @@ export function ThreadMarketCard({
   // Every other held market that has something on it, so the card lists a
   // position card per held market while still drawing exactly one chart.
   const otherHeld = mission === null ? [] : mission.markets.filter((market) => market !== asset);
+  // The mission as it looks on the market being shown. The header's mark and
+  // the body's chart, ledger and levels all come off this one narrowing, so
+  // the label and the price under it can never be about different markets.
+  const shown = mission === null ? null : missionOnMarket(mission, asset);
 
   // A finished mission has no live market to card: its chart and its result are
   // the completion summary in the timeline, and the panel states the net in one
@@ -225,7 +229,7 @@ export function ThreadMarketCard({
         <MarketQuote
           environmentId={environmentId}
           asset={asset}
-          missionMark={mission?.marketPrice ?? null}
+          missionMark={shown?.marketPrice ?? null}
         />
         {mission === null ? null : (
           <div className="ml-auto">
@@ -244,7 +248,7 @@ export function ThreadMarketCard({
             <div className="flex flex-col gap-3">
               {/* One chart, of the market the switcher selected. */}
               <MissionLivePanel
-                mission={missionOnMarket(mission, asset)}
+                mission={shown ?? mission}
                 environmentId={environmentId}
                 parts="market"
               />
