@@ -1333,6 +1333,15 @@ const make = Effect.gen(function* () {
    * TP/SL children with it and would strip the filled slice of its only stop.
    * Anything else — a resting order with no recorded stop — is cancelled
    * plainly.
+   *
+   * Ownership is `trading_orders.mission_id`, and the execution record is
+   * joined for the parent test only, so it is an outer join: the protection
+   * orders this mission's own entries placed are reconciled into
+   * `trading_orders` without ever getting an execution record of their own, and
+   * an inner join dropped them — the mission could not cancel the very stops it
+   * had armed, and they were left resting on the exchange with no way to
+   * withdraw them. A row with no execution record has no recorded stop, so it
+   * takes the plain-cancel path, which is what a reduce-only stop wants.
    */
   const cancelRestingOrder = Effect.fn("TradingMissionReactor.cancelRestingOrder")(
     function* (input: {
@@ -1353,12 +1362,12 @@ const make = Effect.gen(function* () {
 
       const sql = yield* SqlClient.SqlClient;
       const rows = yield* sql<{
-        readonly action_type: string;
+        readonly action_type: string | null;
         readonly stop_price: number | null;
       }>`
       SELECT e.action_type, e.stop_price
       FROM trading_orders o
-      JOIN trading_execution_records e ON e.cloid = o.cloid
+      LEFT JOIN trading_execution_records e ON e.cloid = o.cloid
       WHERE o.mission_id = ${missionId} AND o.cloid = ${targetCloid}
     `;
       const order = rows[0];
@@ -1369,7 +1378,11 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (isPositionIncreasing(order.action_type) && order.stop_price !== null) {
+      if (
+        order.action_type !== null &&
+        isPositionIncreasing(order.action_type) &&
+        order.stop_price !== null
+      ) {
         const outcome = yield* protection.cancelEntriesWithProtection({
           missionId,
           executionSequence: intent.executionSequence,

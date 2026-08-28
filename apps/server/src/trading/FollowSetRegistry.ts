@@ -3,10 +3,11 @@
  *
  * Recording every asset a venue lists is not affordable and recording two
  * hardcoded ones is not useful. The set that matters is the one attention is
- * already on: what is held, what is armed, what is on the watchlist, what was
- * charted a moment ago. That is what gets deep recording — WS candles, book
- * samples, a first-follow backfill — and everything else gets the cheap
- * universe-wide sampling the archiver does in one call anyway.
+ * already on: what is held, what is armed, what is on the watchlist, what a
+ * chat is looking at, what was charted a moment ago. That is what gets deep
+ * recording — WS candles, book samples, a first-follow backfill — and
+ * everything else gets the cheap universe-wide sampling the archiver does in
+ * one call anyway.
  *
  * Derived on read, from tables that already exist, so there is no follow state
  * to keep in sync with the thing it follows. The one exception is chart opens:
@@ -99,7 +100,7 @@ const encodeControlFile = Schema.encodeSync(Schema.fromJsonString(FollowSetContr
 const REASON_ORDER: ReadonlyArray<FollowReason> = ["position", "watch", "watchlist", "chart"];
 
 /**
- * Fold the four sources into one capped, de-duplicated list.
+ * Fold the sources into one capped, de-duplicated list.
  *
  * Pure so the precedence and the cap can be tested without a database: an
  * asset held and charted is followed once, as a position, and the cap drops
@@ -187,6 +188,30 @@ const make = Effect.gen(function* () {
     );
   }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<FollowedMarket>));
 
+  /**
+   * The market each chat thread is looking at.
+   *
+   * The panel beside a conversation draws the thread's focused market, and a
+   * chart read is entitled by this set, so a focus that is not followed renders
+   * as an unavailable chart. `trading_thread_market_focus` is durable, unlike
+   * the in-memory chart opens, so this survives a restart the way the panel
+   * does. Followed for the same window and under the same reason as a chart
+   * open, because a panel on a market is a chart open on it.
+   */
+  const fromFocus = Effect.gen(function* () {
+    const since = (yield* Clock.currentTimeMillis) - CHART_DECAY_MS;
+    const rows = yield* sql<{ readonly venue: string; readonly asset: string }>`
+      SELECT DISTINCT venue, asset FROM trading_thread_market_focus WHERE updated_at >= ${since}
+    `;
+    return rows.map(
+      (row): FollowedMarket => ({
+        venue: row.venue as TradingVenue,
+        asset: row.asset,
+        reason: "chart",
+      }),
+    );
+  }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<FollowedMarket>));
+
   const fromCharts = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const opens = yield* Ref.get(charted);
@@ -204,11 +229,11 @@ const make = Effect.gen(function* () {
   });
 
   const list: FollowSetRegistryShape["list"] = Effect.gen(function* () {
-    const [positions, watches, watchlist, charts] = yield* Effect.all(
-      [fromPositions, fromWatches, fromWatchlist, fromCharts],
+    const [positions, watches, watchlist, charts, focused] = yield* Effect.all(
+      [fromPositions, fromWatches, fromWatchlist, fromCharts, fromFocus],
       { concurrency: "unbounded" },
     );
-    return foldFollowSet([...positions, ...watches, ...watchlist, ...charts]);
+    return foldFollowSet([...positions, ...watches, ...watchlist, ...charts, ...focused]);
   });
 
   const noteChartOpened: FollowSetRegistryShape["noteChartOpened"] = (ref) =>
