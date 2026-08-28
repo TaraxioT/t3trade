@@ -16,6 +16,12 @@
  * The chip goes through the same `armTradingWatch` RPC the alert panel's
  * form uses, so the armed watch shows up in that panel's list immediately.
  *
+ * That interaction is optional, because it only makes sense where the armed
+ * watch can then be seen. The trade home has the alert panel next to it and
+ * keeps the chip; the thread panel has no alert list, so arming there would
+ * put a watch somewhere the operator cannot read it back. `armable={false}`
+ * takes the chip and its hint off — one prop rather than a second chart.
+ *
  * No clock of its own: the chart poll lives in `useTradingMarketChart`, and
  * nothing here animates continuously.
  *
@@ -47,11 +53,14 @@ export function MarketChartPanel({
   environmentId,
   asset,
   className,
+  armable = true,
 }: {
   environmentId: EnvironmentId;
   asset: string;
   /** Sizing for the chart frame itself, e.g. the trade home's height class. */
   className?: string;
+  /** Whether hovering the plot offers the arm-at-price chip. */
+  armable?: boolean;
 }) {
   const [interval, setChartInterval] = useState<ChartInterval>("5m");
   const chart = useTradingMarketChart(environmentId, asset, interval, { enabled: true });
@@ -108,7 +117,7 @@ export function MarketChartPanel({
           {...(data.sessionLevels === undefined ? {} : { sessionLevels: data.sessionLevels })}
           {...(data.recordingSince === undefined ? {} : { recordingSince: data.recordingSince })}
           {...(data.gaps === undefined ? {} : { gaps: data.gaps })}
-          onArmAtPrice={armAtPrice}
+          {...(armable ? { onArmAtPrice: armAtPrice } : {})}
           {...(className === undefined ? {} : { className })}
         />
       ) : (
@@ -161,7 +170,7 @@ export function MarketChartPanel({
         {analyst.error === null ? null : (
           <span className="text-[10.5px] text-destructive">{analyst.error}</span>
         )}
-        {armStatus === null ? (
+        {!armable ? null : armStatus === null ? (
           <span className="text-[10.5px] text-muted-foreground/80">
             Hover the chart and click the chip to arm a price alert.
           </span>

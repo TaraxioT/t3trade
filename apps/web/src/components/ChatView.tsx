@@ -185,11 +185,10 @@ import {
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useTradingMissions } from "~/lib/tradingMissionsState";
-import { MissionLivePanel } from "./trading/MissionLivePanel";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
 import { ThreadMarketPanel } from "./trading/ThreadMarketPanel";
-import { selectThreadMarket } from "./trading/threadMarketPanelState";
+import { selectThreadPanel } from "./trading/threadMarketPanelState";
 import { useTradingThreadMarketFocus } from "~/lib/tradingThreadMarketState";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
@@ -1240,10 +1239,15 @@ function ChatViewContent(props: ChatViewProps) {
   // authority. It gates the companion panel beside the chat, and it is null for
   // every thread that has never named a market.
   const threadMarketFocus = useTradingThreadMarketFocus(environmentId, threadId);
-  const threadMarket = selectThreadMarket({
+  // One panel per thread, and the mission owns it when there is one: its chart
+  // is the only one carrying the plan's levels, so the panel's market has to be
+  // the mission's market or the levels would be drawn over another market's
+  // candles.
+  const threadPanel = selectThreadPanel({
     focus: threadMarketFocus.focus,
     mission: boundMission,
   });
+  const threadMarket = threadPanel.asset;
   // Below this the companion is a row above the timeline that expands from a
   // chip; above it, a column beside the chat. The breakpoint is the one the
   // right panel already switches its own layout at.
@@ -6331,6 +6335,7 @@ function ChatViewContent(props: ChatViewProps) {
         key={`${routeThreadKey}:${threadMarket}`}
         environmentId={environmentId}
         asset={threadMarket}
+        mission={threadPanel.chart === "mission" ? boundMission : null}
         missions={missions}
         threadKey={routeThreadKey}
         layout={useCompanionChipLayout ? "chip" : "column"}
@@ -6550,23 +6555,6 @@ function ChatViewContent(props: ChatViewProps) {
                   ) : (
                     <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
-                  {boundMission && !isDraftHeroState ? (
-                    // Wider than the composer it is docked above, deliberately.
-                    // The composer is a line of text and reads best at 3xl; the
-                    // panel is a chart beside an instrument, and at 3xl the two
-                    // shared 768px, which left a 380px chart next to a 384px
-                    // column of prices. It is centred, so the extra width opens
-                    // symmetrically on both sides and the composer stays the
-                    // narrower object underneath it.
-                    //
-                    // `mb-5` rather than a hairline gap: the panel is a set of
-                    // floating cards, and cards that nearly touch the composer
-                    // read as bolted to it. The air underneath is what makes
-                    // them read as lifted off the page.
-                    <div className="mx-auto mb-5 w-full max-w-6xl">
-                      <MissionLivePanel mission={boundMission} environmentId={environmentId} />
-                    </div>
-                  ) : null}
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}

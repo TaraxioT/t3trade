@@ -8,7 +8,7 @@ import type {
   TradingThreadMarketFocus,
 } from "@t3tools/contracts";
 
-import { filterAccountsToMarket, selectThreadMarket } from "./threadMarketPanelState";
+import { filterAccountsToMarket, selectThreadPanel } from "./threadMarketPanelState";
 
 const focusOn = (asset: string): TradingThreadMarketFocus =>
   ({
@@ -62,21 +62,49 @@ const account = (input: {
     openOrders: input.openOrders,
   }) as TradingAccountState;
 
-describe("selectThreadMarket", () => {
-  it("has no market for a thread that never named one", () => {
-    expect(selectThreadMarket({ focus: null, mission: null })).toBeNull();
+describe("selectThreadPanel", () => {
+  it("has no panel for a thread that never named a market", () => {
+    expect(selectThreadPanel({ focus: null, mission: null })).toEqual({
+      asset: null,
+      chart: null,
+    });
   });
 
-  it("takes the focus row, which is the most recent market by construction", () => {
-    expect(selectThreadMarket({ focus: focusOn("SOL"), mission: null })).toBe("SOL");
+  it("draws the market chart for a thread that has only looked at one", () => {
+    expect(selectThreadPanel({ focus: focusOn("SOL"), mission: null })).toEqual({
+      asset: "SOL",
+      chart: "market",
+    });
   });
 
-  it("prefers the focus row over the bound mission's market", () => {
-    expect(selectThreadMarket({ focus: focusOn("SOL"), mission: missionOn("ETH") })).toBe("SOL");
+  it("lets a bound mission win over the focus row, market and chart together", () => {
+    // The mission's chart is the only one carrying the plan's levels, so the
+    // panel has to be about the mission's market or the levels would be drawn
+    // across another market's candles.
+    expect(selectThreadPanel({ focus: focusOn("SOL"), mission: missionOn("ETH") })).toEqual({
+      asset: "ETH",
+      chart: "mission",
+    });
   });
 
-  it("falls back to the bound mission for threads that predate the row", () => {
-    expect(selectThreadMarket({ focus: null, mission: missionOn("ETH") })).toBe("ETH");
+  it("draws the mission chart for threads that predate the focus row", () => {
+    expect(selectThreadPanel({ focus: null, mission: missionOn("ETH") })).toEqual({
+      asset: "ETH",
+      chart: "mission",
+    });
+  });
+
+  it("never selects two charts", () => {
+    const cases = [
+      { focus: null, mission: null },
+      { focus: focusOn("SOL"), mission: null },
+      { focus: null, mission: missionOn("ETH") },
+      { focus: focusOn("SOL"), mission: missionOn("ETH") },
+    ];
+    for (const input of cases) {
+      const { chart } = selectThreadPanel(input);
+      expect(["mission", "market", null]).toContain(chart);
+    }
   });
 });
 

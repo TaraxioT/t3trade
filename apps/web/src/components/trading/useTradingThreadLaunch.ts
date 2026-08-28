@@ -13,9 +13,6 @@
  *   No mission is created: the thread takes authority on the market only when
  *   its first plan or entry does. This is how trading starts from the trade
  *   home now.
- * - `useMissionLauncher` creates the thread a new mission binds to and
- *   dispatches `trading.mission.create`. Nothing on the trade home mounts it
- *   any more; it is kept only because `MissionCreateForm` still imports it.
  *
  * @module useTradingThreadLaunch
  */
@@ -33,7 +30,6 @@ import { useCallback, useState } from "react";
 import { waitForServerThread, waitForStartedServerThread } from "../ChatView.logic";
 import { newMessageId, newThreadId } from "../../lib/utils";
 import { resolveDefaultProviderModelSelection } from "../../providerInstances";
-import { refreshTradingMissions } from "../../lib/tradingMissionsState";
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { threadEnvironment } from "../../state/threads";
@@ -246,100 +242,4 @@ export function useMarketThreadLauncher(environmentId: EnvironmentId): MarketThr
   );
 
   return { open, busy, error };
-}
-
-export interface MissionLaunchInput {
-  readonly asset: string;
-  readonly instruction: string;
-  readonly tradingAccountId: string;
-  readonly allocatedCapitalUsd?: number;
-  readonly maxWakes?: number;
-}
-
-export interface MissionLauncherHandle {
-  readonly launch: (input: MissionLaunchInput) => Promise<void>;
-  readonly busy: boolean;
-  readonly error: string | null;
-}
-
-/**
- * The explicit mission form's submit: create the thread the mission binds to,
- * dispatch `trading.mission.create`, and navigate to the thread. The server
- * refuses a market already owned (mission or manual exposure); dispatch is an
- * acknowledgement, so the refusal lands asynchronously in the alert feed with
- * its reason verbatim (the reactor appends it and rings the account doorbell)
- * rather than here.
- */
-export function useMissionLauncher(environmentId: EnvironmentId): MissionLauncherHandle {
-  const context = useLaunchContext(environmentId);
-  const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
-  const missionCreate = useAtomCommand(orchestrationEnvironment.missionCreate, {
-    reportFailure: false,
-  });
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const launch = useCallback(
-    async (input: MissionLaunchInput) => {
-      if (busy) return;
-      if (typeof context === "string") {
-        setError(context);
-        return;
-      }
-      setBusy(true);
-      setError(null);
-      try {
-        const threadId = newThreadId();
-        const created = await createThread({
-          environmentId,
-          input: {
-            threadId,
-            projectId: context.projectId,
-            title: `Mission — ${input.asset}`,
-            modelSelection: context.modelSelection,
-            runtimeMode: DEFAULT_RUNTIME_MODE,
-            interactionMode: "default",
-            branch: null,
-            worktreePath: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
-        if (created._tag === "Failure") {
-          setError("Could not create the mission's thread.");
-          return;
-        }
-
-        const dispatched = await missionCreate({
-          environmentId,
-          input: {
-            threadId,
-            tradingAccountId: input.tradingAccountId,
-            instruction: input.instruction,
-            market: input.asset,
-            ...(input.allocatedCapitalUsd === undefined
-              ? {}
-              : { allocatedCapitalUsd: input.allocatedCapitalUsd }),
-            ...(input.maxWakes === undefined ? {} : { maxWakes: input.maxWakes }),
-          },
-        });
-        if (dispatched._tag === "Failure") {
-          setError("The mission could not be created.");
-          return;
-        }
-
-        refreshTradingMissions(environmentId);
-        await waitForStartedServerThread(scopeThreadRef(environmentId, threadId));
-        await router.navigate({
-          to: "/$environmentId/$threadId",
-          params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
-        });
-      } finally {
-        setBusy(false);
-      }
-    },
-    [busy, context, createThread, environmentId, missionCreate, router],
-  );
-
-  return { launch, busy, error };
 }

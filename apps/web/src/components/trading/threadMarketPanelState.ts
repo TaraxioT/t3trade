@@ -14,20 +14,38 @@ import type {
   TradingThreadMarketFocus,
 } from "@t3tools/contracts";
 
+/** What the thread panel draws: one market, and exactly one chart of it. */
+export interface ThreadPanelComposition {
+  /** The market the whole panel is about, or null for no panel at all. */
+  readonly asset: string | null;
+  /**
+   * Which chart draws that market. `mission` is the mission chart with the
+   * plan's entry, stop, target and armed levels on it; `market` is the plain
+   * market chart. Never both, and null when there is no panel.
+   */
+  readonly chart: "mission" | "market" | null;
+}
+
 /**
- * Which market the companion panel should draw, or null for no panel.
+ * What the one panel beside the conversation is composed of.
  *
- * Most recent wins: the server writes the focus row on every look, every seed
- * and every bind, so it is by construction the last market the conversation
- * turned to. The bound mission's market is the fallback for threads that
- * predate the row, so a mission created before this existed still gets a panel.
+ * A bound mission wins. It is the thread's committed subject, it has money on
+ * it, and its chart is the only one carrying the plan's levels; a look is the
+ * agent glancing at something on the way. Deciding the market and the chart in
+ * one rule is the point: choosing them separately is how the panel ended up
+ * drawing a mission's levels over another market's candles.
+ *
+ * The focus row is the fallback, and it is the market chart's own case: a
+ * thread seeded from the trade home, or moved by the agent's own look, is
+ * about a market and not yet about a position.
  */
-export function selectThreadMarket(input: {
+export function selectThreadPanel(input: {
   readonly focus: TradingThreadMarketFocus | null;
   readonly mission: OrchestrationTradingMission | null;
-}): string | null {
-  if (input.focus !== null) return input.focus.market.asset;
-  return input.mission?.market ?? null;
+}): ThreadPanelComposition {
+  if (input.mission !== null) return { asset: input.mission.market, chart: "mission" };
+  if (input.focus !== null) return { asset: input.focus.market.asset, chart: "market" };
+  return { asset: null, chart: null };
 }
 
 /**

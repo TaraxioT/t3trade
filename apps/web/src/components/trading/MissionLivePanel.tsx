@@ -2,40 +2,33 @@
 // MissionLivePanel
 // ---------------------------------------------------------------------------
 //
-// The one pinned trading surface, docked directly above the composer. It
-// replaces four separate ones — the position-gated chart dock, the plan card,
-// the armed-conditions card, and the timeline's position card — which used to
-// stack as boxes saying overlapping things, each consuming timeline height
-// whether or not it was the thing the operator was looking at.
+// The mission half of the thread panel: everything the panel shows once the
+// thread has a mission bound to it. It is mounted by `ThreadMarketPanel`,
+// which owns the market header above it and the collapse control beside it,
+// and it is never mounted anywhere else — a thread has one panel, and this is
+// what that panel holds when there is a mission.
 //
 // Four explicit states, driven purely by the projection:
 //
-//   planning  no strategy yet          → chart + mark, "Analysing the market…"
+//   planning  no strategy yet          → chart + "Analysing the market…"
 //   armed     strategy, flat, watching → chart + condition levels + plan summary
 //   live      position open            → the same, plus P&L and the held figures
 //   complete  mission finished         → the net result, kept for good (plan 27 H1)
 //
-// It is THREE panes of glass, floating clear of each other and of the composer
-// below: the chart card on the left, closed by the risk/reward bar; the readout
-// card on the right — the side chip and the P&L, the progress rule, the thesis,
-// the grid of figures the exposure is made of, and the armed watches; and under
-// both of them, spanning the full width, the status bar that says in a sentence
-// what the mission is doing, with the ambient facts trailing right.
-// All three carry the composer's material, the same surface tint, blur,
-// saturation and hairline outline, plus a 1px inner highlight along the top
-// edge so each reads as a lit pane rather than a painted rectangle.
+// FOUR panes of glass in one column, floating clear of each other: the chart,
+// closed by the risk/reward bar; the status strip that says in a sentence what
+// the mission is doing, with the plan and the next wake on it; the positions
+// card, one row per order leg; and under them the agent log, which takes every
+// pixel the three fixed sections leave and scrolls inside it. All four carry
+// the composer's material — the same surface tint, blur, saturation and
+// hairline outline, plus a 1px inner highlight along the top edge — so each
+// reads as a lit pane rather than a painted rectangle.
 //
-// One box holding everything was the first attempt and it was wrong: a price
-// chart and a column of prices divided by a single hairline read as one flat
-// table, and the eye had nothing to tell it where the picture ended and the
-// instrument began. The gaps do that. Below `lg` the two cards stack, each
-// keeping its own edges, and the bar stays under them.
-//
-// Proportion is the point of the row. At the panel's own width (6xl, set at
-// its call site in ChatView) the readout takes a fixed 400px and the chart
-// takes everything else, which is about 64/35 — a picture with an instrument
-// beside it, not two columns splitting the difference. The chart is 440px tall
-// because the price line is the one thing here that is read as a shape.
+// A column rather than a row. The panel used to sit across the width above the
+// composer, where a chart and a readout could stand shoulder to shoulder; it
+// now sits beside the chat in a ~384px column, and two columns inside that is
+// two columns of nothing. Stacking also puts the sections in the order they
+// are read: the picture, what it means, what is on, then what the model said.
 //
 // ONE line in the picture. The chart draws closes at the runtime's own
 // interval, and nothing else: no candle bodies, no moving averages. Three
@@ -44,55 +37,53 @@
 // else on the chart is a level the plan drew across that line.
 //
 // Every figure on it is set in the mono face, at one of three sizes: the P&L
-// at 24px because it is the number being read, the exposure figures and the
+// at 15px because it is the number being read, the exposure figures and the
 // watch rows at 12px because they are read down a list, and the labels that
 // name them at 10.5px. Prose — the plan's thesis, the disclosure — stays in
 // the UI face. Mixing a proportional face into a column of prices is what made
 // four rows of numbers read as four unrelated facts.
 //
-// Density is held down by cutting whole objects, not by shrinking type. Three
-// things went in the pass that made this match its reference: the schedule
-// strip, whose every pill named a price the chart was already drawing a rule
-// at; the strip of recent wake pills, which was three amber capsules saying a
-// watch had fired, on a panel whose entire subject is watches; and the EMA
-// pair with its legend. What is left is a picture, a column of figures, a list
-// of conditions and a sentence.
+// Density is held down by cutting whole objects, not by shrinking type. The
+// schedule strip went, whose every pill named a price the chart was already
+// drawing a rule at; so did the strip of recent wake pills, which was three
+// amber capsules saying a watch had fired, on a panel whose entire subject is
+// watches; and the EMA pair with its legend. What is left is a picture, a
+// sentence, a column of figures and a log.
 //
 // A number still appears at most twice, and only when the two say different
 // things: P&L, ROI and progress are header figures and the grid never repeats
 // them, while entry and mark ARE in both places — as a tag on the shape and as
 // a cell in the column — because the gutter says where and the cell says what.
 // Hold time, funding and the day's change are true but not acted on, so they
-// sit in the ambient line at the foot; the exact threshold behind each watch is
-// a hover; everything the plan said is one disclosure away. Exceptions get
-// louder, not quieter: a stop covering only part of the position takes a cell
-// of its own, in the loss tone, because that is the difference between a
-// bounded loss and an open one.
+// sit in the status strip; the exact threshold behind each watch is a hover;
+// everything the plan said is one disclosure away. Exceptions get louder, not
+// quieter: a stop covering only part of the position takes a cell of its own,
+// in the loss tone, because that is the difference between a bounded loss and
+// an open one.
 //
 // `planning`, `armed` and `live` draw the same surface; what differs is how
 // much of it there is anything to say about. Planning has a market, a mark, a
 // candle series and a run history from its first turn, and none of that needs a
-// published strategy — but it has no thesis, no levels and no target, so its
-// grid holds a mark and a countdown, and the checklist, the risk/reward bar and
-// the plan disclosure are absent rather than empty. Nothing on the surface is
-// invented to fill the space a plan will later take.
+// published strategy — but it has no thesis, no levels and no target, so the
+// checklist, the risk/reward bar and the plan disclosure are absent rather than
+// empty. Nothing on the surface is invented to fill the space a plan will later
+// take.
 //
-// The chart's gate used to be "a
-// position exists", which meant a mission spent its whole waiting phase showing
-// nothing at all — and waiting is most of a mission's life. The plan's levels
-// used to be gated the other way, on `armed`, so they all vanished the instant
-// a fill landed. Both gates are gone: the levels change (armed draws what it is
-// waiting for, live draws what it is holding against, and a PnL watch resolves
-// to a price once there is an exposure to divide by), the surface does not.
+// The chart's gate used to be "a position exists", which meant a mission spent
+// its whole waiting phase showing nothing at all — and waiting is most of a
+// mission's life. The plan's levels used to be gated the other way, on `armed`,
+// so they all vanished the instant a fill landed. Both gates are gone: the
+// levels change (armed draws what it is waiting for, live draws what it is
+// holding against, and a PnL watch resolves to a price once there is an
+// exposure to divide by), the surface does not.
 //
 // Everything here is read from the projection. The chart feed
 // (`useTradingMarketChart`, 15s poll) supplies candles + funding/OI/volume; the
 // mission poll (3s) supplies the freshest mark via `mission.marketPrice`, so the
-// pill and the chart can never show two different marks. No figure is invented:
-// a missing denominator omits a figure rather than guessing.
+// panel's header and the chart can never show two different marks. No figure is
+// invented: a missing denominator omits a figure rather than guessing.
 
 import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
-import { ChevronUp } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
@@ -139,15 +130,11 @@ import {
 import { AgentLog } from "./MissionAgentLog";
 import {
   CARD_CLASS,
-  CARD_ROW_CLASS,
-  ChartPriceHeader,
   ChartSlot,
-  CollapsedRow,
   MissionStatusBar,
   PANEL_SHELL_CLASS,
   POSITIONS_HEIGHT_CLASS,
   ProgressToTargetRow,
-  READOUT_WIDTH_CLASS,
   RevisionNote,
   RiskRewardBar,
   TICK_INTERVAL_MILLIS,
@@ -155,39 +142,12 @@ import {
   BAND_LEGEND_CLASS,
   BAND_PAD_CLASS,
   deriveLastActivity,
-  describeArmedSummary,
   describeMissionStatus,
   flyChipToCard,
   formatReassessmentCountdown,
   useRecentlyFiredWatches,
 } from "./MissionLivePanelSections";
 import { PositionsCard } from "./MissionPositionsCard";
-
-/**
- * Module-level collapse state, keyed by mission id.
- *
- * Collapsing mission A must not collapse mission B, and the toggle must survive
- * a remount from the 3s poll. A map at module scope gives both without forcing
- * the call site to pass a `key`. The default is expanded — the panel is the
- * reason the thread is on screen.
- *
- * Bounded: only the most recently toggled missions are remembered, so a long
- * session cannot grow the map one entry per mission forever. Evicting the
- * oldest entry just means that mission renders expanded again — the default.
- */
-const COLLAPSED_MISSIONS_MAX = 50;
-const collapsedMissions = new Map<string, boolean>();
-
-/** Record a mission's collapse choice, evicting the oldest one past the cap. */
-function rememberCollapsed(missionId: string, collapsed: boolean): void {
-  // Re-insert so iteration order stays least-recently-toggled first.
-  collapsedMissions.delete(missionId);
-  collapsedMissions.set(missionId, collapsed);
-  if (collapsedMissions.size > COLLAPSED_MISSIONS_MAX) {
-    const oldest = collapsedMissions.keys().next().value;
-    if (oldest !== undefined) collapsedMissions.delete(oldest);
-  }
-}
 
 /** Which of the four surfaces the projection says to render. */
 export type PanelState = "planning" | "armed" | "live" | "complete";
@@ -219,16 +179,6 @@ export function MissionLivePanel({
   readonly environmentId: EnvironmentId;
 }): ReactNode {
   const state = readPanelState(mission);
-
-  // --- Collapse state, per mission id. --------------------------------------
-  const [collapsed, setCollapsed] = useState<boolean>(collapsedMissions.get(mission.id) ?? false);
-  const toggleCollapsed = (): void => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      rememberCollapsed(mission.id, next);
-      return next;
-    });
-  };
 
   // --- Ticker: the panel's clock. -------------------------------------------
   //
@@ -558,195 +508,48 @@ export function MissionLivePanel({
     );
   }
 
-  // --- collapsed: the 32px summary row. -------------------------------------
-  if (collapsed) {
-    return (
-      <div
-        data-testid="mission-live-panel"
-        data-panel-state={state}
-        className={cn("mission-panel", CARD_CLASS)}
-      >
-        <CollapsedRow
-          market={mission.market}
-          leverageLabel={leverage === null ? null : formatLeverage(leverage)}
-          summary={
-            state === "planning"
-              ? "Analysing"
-              : position === null
-                ? describeArmedSummary(watches)
-                : `${position.size > 0 ? "Long" : "Short"} · ${formatSignedUsd(position.unrealisedPnl)}`
-          }
-          summaryToneClass={position === null ? "text-muted-foreground" : pnlToneClass}
-          progressPercent={progressPercent}
-          onExpand={toggleCollapsed}
-        />
-      </div>
-    );
-  }
-
   return (
     <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_SHELL_CLASS}>
-      {/* Two cards with air between them, not two halves of one box. The chart
-          is the picture and the readout is the instrument beside it; welding
-          them into a single bordered surface made a candle chart and a column
-          of prices read as one flat table, which is how the first pass at this
-          went wrong.
+      {/* 1. The chart, with the plan drawn across it: entry, stop, target, the
+          armed levels, the fills already made and the reassessments still to
+          come. The panel's own header carries the market, the mark and the
+          day's move, so the card starts at the picture. */}
+      <section className={cn(CARD_CLASS, "flex flex-none flex-col pt-2")}>
+        <ChartSlot
+          data={chart.data}
+          isLoading={chart.isLoading}
+          error={chart.error}
+          entryPrice={entryPrice}
+          stopPrice={stopPrice}
+          targetPrice={targetPrice}
+          liquidationPrice={position?.liquidationPrice ?? null}
+          entryTime={entryMillis}
+          markPrice={markPrice}
+          pnlSign={pnlSign}
+          conditions={chartConditions}
+          fills={fillMarkers}
+          pendingOrder={pendingOrder}
+          nowMillis={nowMillis}
+          triggerExpiryAt={triggerExpiryAt}
+          projection={planProjection}
+          timeMarkers={timeMarkers}
+          pastMarkers={pastMarkers}
+          draggableKinds={draggableKinds}
+          onLevelDragEnd={onLevelDragEnd}
+          refusedStop={revision.refusedStop}
+          positionSize={position?.size ?? null}
+          overflowCount={droppedConditions}
+          firedWatchIds={[...recentlyFired]}
+        />
+        <RiskRewardBar
+          riskUsd={plan?.maxLossUsd ?? null}
+          rewardUsd={targetProfitUsd}
+          isStandAside={plan?.isStandAside === true}
+        />
+      </section>
 
-          Below `lg` they stack, chart first, each keeping its own edges. */}
-      <div className={CARD_ROW_CLASS}>
-        {/* Left column (plan 39 phase 1): the chart card and, under a glass
-            boundary of its own gap, the positions card. Every height here is
-            reserved — the chart flexes into whatever the fixed row leaves it,
-            and the positions card is always mounted at the same height. */}
-        <div
-          data-testid="mission-chart-column"
-          className="flex min-w-0 flex-1 flex-col gap-3 lg:h-full"
-        >
-          <section className={cn(CARD_CLASS, "flex min-h-0 flex-1 flex-col")}>
-            <ChartPriceHeader
-              market={mission.market}
-              intervalLabel={interval}
-              markPrice={markPrice}
-              changePercent={chart.data?.change24hPercent ?? null}
-            />
-            <ChartSlot
-              data={chart.data}
-              isLoading={chart.isLoading}
-              error={chart.error}
-              entryPrice={entryPrice}
-              stopPrice={stopPrice}
-              targetPrice={targetPrice}
-              liquidationPrice={position?.liquidationPrice ?? null}
-              entryTime={entryMillis}
-              markPrice={markPrice}
-              pnlSign={pnlSign}
-              conditions={chartConditions}
-              fills={fillMarkers}
-              pendingOrder={pendingOrder}
-              nowMillis={nowMillis}
-              triggerExpiryAt={triggerExpiryAt}
-              projection={planProjection}
-              timeMarkers={timeMarkers}
-              pastMarkers={pastMarkers}
-              draggableKinds={draggableKinds}
-              onLevelDragEnd={onLevelDragEnd}
-              refusedStop={revision.refusedStop}
-              positionSize={position?.size ?? null}
-              overflowCount={droppedConditions}
-              firedWatchIds={[...recentlyFired]}
-            />
-            <RiskRewardBar
-              riskUsd={plan?.maxLossUsd ?? null}
-              rewardUsd={targetProfitUsd}
-              isStandAside={plan?.isStandAside === true}
-            />
-          </section>
-
-          {/* The positions card (plan 39 phase 2): one glance answers everything
-            the mission has done or is trying to do — one list, one row per
-            order leg. Always mounted, always the same height; with nothing to
-            show it draws its empty state in the skeleton idiom. */}
-          <section
-            data-testid="mission-positions"
-            className={cn(CARD_CLASS, POSITIONS_HEIGHT_CLASS, "flex flex-none flex-col")}
-          >
-            <PositionsCard
-              rows={orderRows}
-              market={mission.market}
-              leverageLabel={leverage === null ? null : formatLeverage(leverage)}
-              position={position}
-              markPrice={markPrice}
-              stopPrice={stopPrice}
-              plan={plan}
-              roiPercent={roiPercent}
-              pnlToneClass={pnlToneClass}
-              nowMillis={nowMillis}
-              staleLabel={delayedRead ?? (chart.stale ? "delayed" : null)}
-            />
-          </section>
-        </div>
-
-        {/* The right column is purely the agent log (plan 39 phase 3): a
-            header, the armed alerts pinned at the top, and one chronological
-            scrollback merging the settled watches and the turn cards. */}
-        <section
-          data-testid="mission-agent-log"
-          className={cn(
-            CARD_CLASS,
-            READOUT_WIDTH_CLASS,
-            "flex min-h-0 w-full min-w-0 flex-col lg:h-full lg:flex-none",
-          )}
-        >
-          {/* The header: the log's name, the money being read, and the panel's
-              only chrome.
-
-              The P&L sits here as well as on the positions card, deliberately.
-              The heartbeat sentence that used to carry "up $1.37" above the
-              chart is gone, and this column is the one an operator watches
-              while the mission talks to itself — a log with no reading beside
-              it makes them look away to learn whether any of it is working. */}
-          <div className={cn(BAND_PAD_CLASS, "flex flex-none items-baseline gap-x-3 pt-3 pb-1.5")}>
-            <p className={cn(BAND_LEGEND_CLASS, "flex-none")}>agent log</p>
-            {position === null ? null : (
-              <span className="ml-auto flex flex-none items-baseline gap-2">
-                {roiPercent === null ? null : (
-                  <span className={cn("font-mono text-[11px] tabular-nums", pnlToneClass)}>
-                    {formatSignedPercent(roiPercent)}
-                  </span>
-                )}
-                <span
-                  className={cn(
-                    "font-mono text-[15px] leading-none tracking-[-0.02em] tabular-nums",
-                    pnlToneClass,
-                  )}
-                >
-                  <AnimatedUsd value={position.unrealisedPnl} />
-                </span>
-              </span>
-            )}
-            {/* The collapse control recedes to a hint until the pointer is on
-                the panel: a monitoring surface should read as figures, not as
-                a toolbar. */}
-            <button
-              type="button"
-              onClick={toggleCollapsed}
-              aria-label="Collapse chart"
-              className={cn(
-                "self-center text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground group-hover/panel:text-muted-foreground motion-reduce:transition-none",
-                position === null && "ml-auto",
-              )}
-            >
-              <ChevronUp className="size-4" aria-hidden />
-            </button>
-          </div>
-          {/* Progress to target, restored: the rule and the figure it stands
-              for, on the panel's left rule. Always mounted at one height — the
-              reserved-height rule applies to itself, and a strip that appeared
-              with the first fill would move the whole scrollback under it. */}
-          <ProgressToTargetRow percent={progressPercent} />
-          <AgentLog
-            stream={watchStream}
-            cards={turnTimeline.cards}
-            earlierTurns={turnTimeline.earlierCount}
-            nowMillis={nowMillis}
-            recentlyFired={recentlyFired}
-            droppedConditions={droppedConditions}
-            overflowRows={overflowConditionRows}
-            selection={selection}
-            onHoverEvent={hoverPanelEvent}
-          />
-          <RevisionNote revision={revision} />
-        </section>
-      </div>
-
-      {/* The third element, spanning both cards: what the mission is doing,
-          said in a sentence, with the facts that qualify it trailing on the
-          right. It is the line the landing page closes its readout with, and
-          the panel had nowhere to say the one thing a passing glance wants —
-          not a price, not a percentage, but a state. Everything on it is
-          ambient: a state, a duration, a carrying cost, the day's move. None
-          of it is decided on, which is why it is a bar under the instrument
-          rather than a cell inside it. */}
+      {/* 2. The status strip: what the mission is doing, said in a sentence,
+          with the plan one click away and the next wake beside it. */}
       <MissionStatusBar
         headline={describeMissionStatus(state, position, watches, plan)}
         because={plan?.because ?? null}
@@ -775,6 +578,80 @@ export function MissionLivePanel({
         exchangeUrl={exchangeUrl}
         lastActivity={deriveLastActivity(mission.missionTimeline, nowMillis)}
       />
+
+      {/* 3. What the mission has on this market, and what it is trying to put
+          on: one row per order leg. Always mounted, always the same height;
+          with nothing to show it draws its empty state in the skeleton idiom. */}
+      <section
+        data-testid="mission-positions"
+        className={cn(CARD_CLASS, POSITIONS_HEIGHT_CLASS, "flex flex-none flex-col")}
+      >
+        <PositionsCard
+          rows={orderRows}
+          market={mission.market}
+          leverageLabel={leverage === null ? null : formatLeverage(leverage)}
+          position={position}
+          markPrice={markPrice}
+          stopPrice={stopPrice}
+          plan={plan}
+          roiPercent={roiPercent}
+          pnlToneClass={pnlToneClass}
+          nowMillis={nowMillis}
+          staleLabel={delayedRead ?? (chart.stale ? "delayed" : null)}
+        />
+      </section>
+
+      {/* 4. The agent log, and the reason the panel is a column: it is the one
+          section with no natural end, so it takes every pixel the four fixed
+          ones above it leave and scrolls inside them. */}
+      <section
+        data-testid="mission-agent-log"
+        className={cn(CARD_CLASS, "flex min-h-0 w-full min-w-0 flex-1 flex-col")}
+      >
+        {/* The header: the log's name and the money being read.
+
+            The P&L sits here as well as on the positions card, deliberately.
+            This is the section an operator watches while the mission talks to
+            itself — a log with no reading beside it makes them look away to
+            learn whether any of it is working. */}
+        <div className={cn(BAND_PAD_CLASS, "flex flex-none items-baseline gap-x-3 pt-3 pb-1.5")}>
+          <p className={cn(BAND_LEGEND_CLASS, "flex-none")}>agent log</p>
+          {position === null ? null : (
+            <span className="ml-auto flex flex-none items-baseline gap-2">
+              {roiPercent === null ? null : (
+                <span className={cn("font-mono text-[11px] tabular-nums", pnlToneClass)}>
+                  {formatSignedPercent(roiPercent)}
+                </span>
+              )}
+              <span
+                className={cn(
+                  "font-mono text-[15px] leading-none tracking-[-0.02em] tabular-nums",
+                  pnlToneClass,
+                )}
+              >
+                <AnimatedUsd value={position.unrealisedPnl} />
+              </span>
+            </span>
+          )}
+        </div>
+        {/* Progress to target: the rule and the figure it stands for, on the
+            panel's left rule. Always mounted at one height — the reserved-height
+            rule applies to itself, and a strip that appeared with the first fill
+            would move the whole scrollback under it. */}
+        <ProgressToTargetRow percent={progressPercent} />
+        <AgentLog
+          stream={watchStream}
+          cards={turnTimeline.cards}
+          earlierTurns={turnTimeline.earlierCount}
+          nowMillis={nowMillis}
+          recentlyFired={recentlyFired}
+          droppedConditions={droppedConditions}
+          overflowRows={overflowConditionRows}
+          selection={selection}
+          onHoverEvent={hoverPanelEvent}
+        />
+        <RevisionNote revision={revision} />
+      </section>
     </div>
   );
 }

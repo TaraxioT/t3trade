@@ -459,14 +459,19 @@ export function AgentLog({
       data-testid="mission-watch-stream"
       className="flex min-h-0 flex-1 flex-col border-t border-border/40 pt-1"
     >
-      {/* `flex-1` bounds this only inside the shell's reserved height, which
-          exists at `lg` and above. Below `lg` the panel stacks and grows with
+      {/* `flex-1` bounds this only inside a parent with a height, which is the
+          panel's column layout. In the narrow chip layout the panel grows with
           its content, so the scrollback needs a bound of its own — without one
           a mission with fifty settled watches pushed the whole panel off the
-          top of a bottom-docked overlay that does not scroll. */}
+          top of a row that does not scroll.
+
+          981px, not `lg`: that is the width the thread panel switches from the
+          chip to the full-height column at (`RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY`).
+          At `lg` the bound outlived the chip by 43px of viewport, which showed
+          as a 260px log with dead space under it. */}
       <div
         ref={scrollRef}
-        className="max-h-[260px] min-h-0 flex-1 overflow-y-auto overscroll-contain lg:max-h-none"
+        className="max-h-[260px] min-h-0 flex-1 overflow-y-auto overscroll-contain min-[981px]:max-h-none"
       >
         {armed.length === 0 ? null : (
           // Pinned on an opaque strip, the same waterline the old stream kept:

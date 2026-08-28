@@ -40,7 +40,6 @@ import {
 import {
   formatDuration,
   formatPrice,
-  formatSignedPercent,
   formatSignedUsd,
   formatUsd,
   type ChartFillMarker,
@@ -53,36 +52,21 @@ import {
 } from "./tradingPresentation";
 import type { PanelState } from "./MissionLivePanel";
 
-/** Expanded chart area height.
+/** The chart's height inside the thread panel.
  *
- * Reserved, not reactive (plan 39 phase 1): inside the fixed-height card row
- * the chart card is `flex-1 min-h-0`, so at `sm` and above the chart takes
- * whatever height the fixed row leaves it and changes only when the window
- * resizes — never when state does. The mobile stack keeps the fixed 260px.
+ * Fixed, and deliberately modest. The panel is one narrow column and the agent
+ * log below is the section that has to be long — a chart that took the slack
+ * left the log four rows tall on a laptop. So the picture states a size and
+ * the log gets everything else.
  *
- * The 300px floor applies only where the panel stacks and grows with its
- * content. At `lg` the card row is inside the shell's reserved height, so a
- * floor there is a floor the parent cannot honour: the chart overflowed its own
- * card and the card clipped it. At `lg` the chart takes exactly what the fixed
- * column leaves, which is a function of the window and of nothing else. */
-export const CHART_HEIGHT_CLASS =
-  "h-[260px] min-h-0 w-full sm:h-auto sm:min-h-[300px] sm:flex-1 lg:min-h-0";
-
-/**
- * The readout card's width on a wide workspace.
+ * 200px, measured rather than guessed: at 260 the log came out 212px tall in
+ * an 848px column — the shortest section on a panel it is supposed to
+ * dominate. At 200 it is the tallest, and it is the only section that grows
+ * with the window, so it stays the tallest.
  *
- * Wide enough for a full watch sentence, a price and its verdict on one line
- * at 12px, which is the row this column exists to hold. At 336px the same row
- * truncated the sentence to make room for the word "waiting".
- *
- * 340px between `lg` and `xl` (plan 39 phase 5). The positions card now shares
- * the left column, and six columns of figures need ~435px to rule up; at
- * 1100px with the sidebar open the left column was 388px, so the money and
- * time columns sat outside the card and had to be scrolled to. The log gives
- * up 60px first — its rows already truncate their prose by design, while a
- * figure that has to be scrolled to is a figure the operator cannot read.
- */
-export const READOUT_WIDTH_CLASS = "lg:w-[340px] xl:w-[400px]";
+ * Reserved, not reactive: it changes on a window resize and on nothing a
+ * mission does, which is the rule every height in this panel keeps. */
+export const CHART_HEIGHT_CLASS = "h-[200px] min-h-0 w-full";
 
 /**
  * How often the panel's clock ticks.
@@ -96,9 +80,6 @@ export const READOUT_WIDTH_CLASS = "lg:w-[340px] xl:w-[400px]";
  * times out of four.
  */
 export const TICK_INTERVAL_MILLIS = 250;
-
-/** Collapsed summary row height, in pixels. */
-export const COLLAPSED_ROW_HEIGHT_PX = 38;
 
 /**
  * How many settled watches the stream renders before it says how many are left.
@@ -142,43 +123,28 @@ export const VISIBLE_BARS = MIN_VISIBLE_BARS;
 // the inner highlight from this side silently deleted the outer one.
 export const CARD_CLASS = "mission-panel-glass overflow-hidden rounded-xl border";
 
-/** The shell: the chart and the readout on one row, the status bar under both.
- *  It draws nothing itself — the gaps are the separation, and a third surface
- *  behind three glass ones would be a fourth object on a strip that should
- *  read as one instrument.
+/** The panel's own column: header, chart, status strip, positions, agent log.
  *
- *  The reserved height lives HERE rather than on the card row (plan 39 phase 1).
- *  The panel is bottom-docked above the composer and grows upward, so the box
- *  that must be bounded is the whole panel: with the height on the row instead,
- *  the heartbeat and the status bar added ~96px on top of it and the panel's own
- *  top edge went 41px off screen, taking the heartbeat and the chart's header
- *  with it. Fixing the outer box and letting the row take the slack keeps the
- *  chart's height reserved without hard-coding what the chrome costs. */
+ * One vertical stack, not two columns. The panel lives beside the chat now
+ * rather than across the width above the composer, and a 384px column has no
+ * room for a picture and an instrument shoulder to shoulder — the two-column
+ * row was sized for a 6xl surface that no longer exists.
+ *
+ * `min-h-0` on the shell and on the log's own section is what makes the log
+ * the section that scrolls: everything above it states a height, so the log
+ * takes the remainder and bounds its own scrollback inside it. */
 export const PANEL_SHELL_CLASS =
-  "mission-panel group/panel flex w-full flex-col gap-3 lg:h-[min(70vh,780px)] lg:min-h-[540px]";
+  "mission-panel group/panel flex min-h-0 w-full flex-1 flex-col gap-3";
 
-/** The two columns' own row. Wider gap than the shell's, because these two sit
- *  shoulder to shoulder and the eye needs the seam between a picture and an
- *  instrument to be unmistakable.
+/** The positions card's reserved height — always mounted, always the same
+ *  height, drawing its empty state when there is nothing to show.
  *
- *  Fixed height at `lg` (plan 39 phase 1): every height in the panel is
- *  reserved, not reactive. The row takes whatever the shell's reserved height
- *  leaves after the heartbeat and the status bar, and the pieces inside divide
- *  it — so the chart's height is fixed by CSS and changes only on a window
- *  resize. Below `lg` everything stacks intrinsically. */
-export const CARD_ROW_CLASS =
-  "flex flex-col gap-3 lg:min-h-0 lg:flex-1 lg:flex-row lg:items-stretch lg:gap-4";
-
-/** The positions card's reserved height at `lg` — always mounted, always the
- *  same height, drawing its empty state when there is nothing to show.
- *
- *  200px rather than the 268px the plan sketched. The two cards divide one
- *  fixed column, so every pixel here is a pixel off the chart: at 1440x900,
- *  70vh leaves the column 534px, and 268px of it left a 150px chart — smaller
- *  than the 340px this redesign set out to grow. 200px still rules up the
- *  header, the column headings and four rows before the scroller takes over,
- *  which is the live band plus its first settled legs. */
-export const POSITIONS_HEIGHT_CLASS = "lg:h-[200px]";
+ *  Unconditional now that the panel is one column: the old `lg:` qualifier was
+ *  there because the card shared a fixed-height column with the chart, and it
+ *  shares nothing now. 150px rules up the header, the column headings and
+ *  three rows before the scroller takes over, which is the live band plus its
+ *  first settled legs — and every pixel past that is a pixel off the log. */
+export const POSITIONS_HEIGHT_CLASS = "h-[150px]";
 
 /** How many settled order rows the positions card shows before counting. */
 export const MAX_ORDER_ROWS = 6;
@@ -229,71 +195,6 @@ export function describeMissionStatus(
   const pending = watches?.rows.filter((row) => !row.met).length ?? 0;
   if (pending === 0) return "Waiting for the entry";
   return `Waiting on ${pending} condition${pending === 1 ? "" : "s"}`;
-}
-
-/**
- * The price, above the picture of it.
- *
- * Borrowed wholesale from the Stocks app, which puts the number first and the
- * shape under it: the market, then the mark set large, then how far the day has
- * moved, then which bars are being drawn. It is the one figure that is true
- * whatever the mission is doing — planning, waiting, holding — so it belongs to
- * the chart card rather than to the readout, and it stays put while the panel's
- * state changes underneath it.
- *
- * The mark is `mission.marketPrice` (3s poll) rather than the candle feed's
- * (15s), so this figure and the dot at the end of the line are the same read.
- */
-export function ChartPriceHeader({
-  market,
-  intervalLabel,
-  markPrice,
-  changePercent,
-}: {
-  readonly market: string;
-  readonly intervalLabel: string;
-  readonly markPrice: number | null;
-  readonly changePercent: number | null;
-}): ReactNode {
-  // Not the money palette (plan 39 phase 5, check 10). The doctrine reserves
-  // profit/loss ink for THIS mission's money, and the day's move is neither:
-  // a green +19.68% sitting a few pixels from a red -$1.46 read as "we are up"
-  // about a mission that was down. It keeps its sign, which is what says which
-  // way the day went, in the foreground ink every other market fact wears.
-  const changeTone = changePercent === null ? "text-muted-foreground" : "text-foreground/70";
-  return (
-    <div className={cn(BAND_PAD_CLASS, "flex items-end justify-between gap-3 pb-2 pt-3")}>
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-muted-foreground">
-          {market} · USD
-        </span>
-        <span className="flex items-baseline gap-2">
-          <span
-            data-testid="mission-chart-mark"
-            className="font-mono text-[26px] leading-none tracking-[-0.02em] tabular-nums text-foreground"
-          >
-            {markPrice === null ? "-" : formatPrice(markPrice)}
-          </span>
-          {changePercent === null ? null : (
-            <span className={cn("font-mono text-[13px] tabular-nums", changeTone)}>
-              {formatSignedPercent(changePercent)}
-            </span>
-          )}
-        </span>
-      </div>
-      {/* Which bars the shape below is made of. The Stocks app puts a row of
-          ranges here; this chart draws one, so it states it rather than
-          offering it. */}
-      <span
-        data-testid="mission-chart-interval"
-        // Lower case, deliberately: "1M" is a month in every chart app the
-        // operator has ever used, and this is one minute.
-        className="flex-none rounded-full border border-border/60 px-2 py-0.5 font-mono text-[11px] lowercase tracking-[0.08em] text-muted-foreground"
-      >
-        {intervalLabel}
-      </span>
-    </div>
-  );
 }
 
 /**
@@ -410,14 +311,6 @@ export function RevisionNote({ revision }: { readonly revision: MissionPlanRevis
       {message}
     </button>
   );
-}
-
-/** What a collapsed armed mission says in one clause. */
-export function describeArmedSummary(
-  armed: { readonly rows: ReadonlyArray<unknown> } | null,
-): string {
-  if (armed === null || armed.rows.length === 0) return "Waiting";
-  return `Waiting on ${armed.rows.length} condition${armed.rows.length === 1 ? "" : "s"}`;
 }
 
 /**
@@ -973,47 +866,6 @@ export function SideChip({
       )}
       <span>{isLong ? "Long" : "Short"}</span>
     </span>
-  );
-}
-
-/** The collapsed summary row: one line at 32px, with a chevron to expand. */
-export function CollapsedRow({
-  market,
-  leverageLabel,
-  summary,
-  summaryToneClass,
-  progressPercent,
-  onExpand,
-}: {
-  readonly market: string;
-  readonly leverageLabel: string | null;
-  readonly summary: string;
-  readonly summaryToneClass: string;
-  readonly progressPercent: number | null;
-  readonly onExpand: () => void;
-}): ReactNode {
-  return (
-    <button
-      type="button"
-      onClick={onExpand}
-      aria-label="Expand chart"
-      data-testid="mission-live-panel-collapsed"
-      className={cn(
-        BAND_PAD_CLASS,
-        "flex w-full items-center gap-3 font-mono text-[12px] tabular-nums text-muted-foreground",
-      )}
-      style={{ height: COLLAPSED_ROW_HEIGHT_PX }}
-    >
-      <span className="text-foreground">
-        {market}
-        {leverageLabel === null ? "" : ` ${leverageLabel}`}
-      </span>
-      <span className={summaryToneClass}>{summary}</span>
-      {progressPercent === null ? null : <span>· {Math.round(progressPercent)}% to target</span>}
-      <span className="ml-auto">
-        <ChevronDown className="size-3.5" aria-hidden />
-      </span>
-    </button>
   );
 }
 
