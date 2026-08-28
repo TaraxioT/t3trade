@@ -9,6 +9,7 @@ import {
   deriveReviewMarkers,
   deriveMissionStrip,
   deriveRejectedOrder,
+  deriveBacktestCard,
   deriveWakeupCard,
   describeTradingAccount,
   describeWatch,
@@ -2351,5 +2352,120 @@ describe("deriveOrderLedger", () => {
       plannedEntry: planned,
     });
     expect(withWorking.some((row) => row.state === "planned")).toBe(false);
+  });
+});
+
+describe("deriveBacktestCard", () => {
+  const report = {
+    thesis: {
+      market: "ETH",
+      interval: "15m",
+      side: "long",
+      entry: {
+        match: "all",
+        predicates: [
+          {
+            left: { source: "indicator", indicator: "rsi", period: 14 },
+            comparator: "below",
+            right: { source: "constant", value: 30 },
+          },
+        ],
+      },
+      exits: { stop: { basis: "atr", multiple: 1.5 }, target: { basis: "r", multiple: 1.5 } },
+    },
+    notionalUsd: 1000,
+    costs: { takerFeeBpsPerSide: 5, slippageBpsPerSide: 1.2, slippageSource: "archived_book" },
+    coverage: {
+      requestedFromT: 0,
+      requestedToT: 9 * 24 * 60 * 60 * 1000,
+      servedFromT: 0,
+      servedToT: 9 * 24 * 60 * 60 * 1000,
+      barsServed: 864,
+      gaps: [],
+      recordingSince: 0,
+      fundingServed: true,
+    },
+    stats: {
+      setupsFound: 40,
+      tradesTaken: 31,
+      setupsUnpriced: 0,
+      wins: 18,
+      losses: 13,
+      breakEven: 0,
+      winRatePercent: 58.06,
+      averageWinUsd: 4.2,
+      averageLossUsd: -5.1,
+      expectancyUsd: -0.41,
+      totalGrossUsd: 24,
+      totalFeesUsd: 36.7,
+      totalFundingUsd: -0.02,
+      totalNetUsd: -12.72,
+      maxDrawdownUsd: 18.4,
+      timeInMarketPercent: 22.5,
+      buyAndHoldNetUsd: 31.6,
+      buyAndHoldReturnPercent: 3.16,
+    },
+    verdict: "negative_after_fees",
+    verdictReason: "-0.41 per trade after fees and funding across 31 trades.",
+  };
+  const toolData = { tool: "trading_backtest", result: { report, elapsedMillis: 12 } };
+
+  it("says the thesis and the verdict in prose, with no enum tokens anywhere", () => {
+    const card = deriveBacktestCard(toolData)!;
+    expect(card.headline).toBe("Buy ETH 15m when RSI(14) is below 30");
+    expect(card.exits).toEqual(["stop at 1.5x ATR", "target at 1.5R"]);
+    expect(card.verdictLabel).toBe("Negative after fees");
+    expect(card.verdictTone).toBe("negative");
+    // No raw literals and no em dashes reach the reader.
+    const rendered = [card.headline, ...card.exits, card.verdictLabel, card.coverageLine].join(" ");
+    expect(rendered).not.toContain("_");
+    expect(rendered).not.toContain("—");
+  });
+
+  it("leads with expectancy after fees, and keeps its sign", () => {
+    const card = deriveBacktestCard(toolData)!;
+    expect(card.expectancy.value).toBe("-$0.41 a trade");
+    expect(card.expectancy.tone).toBe("negative");
+    // The gap between setups and trades is information, not noise.
+    expect(card.stats.find((s) => s.label === "Trades")?.value).toBe("31 of 40 setups");
+    expect(card.stats.find((s) => s.label === "Buy and hold")?.value).toBe("+$31.60");
+  });
+
+  it("states the coverage the numbers were measured over", () => {
+    const card = deriveBacktestCard(toolData)!;
+    expect(card.coverageLine).toContain("864 bars over 9 days");
+    expect(card.coverageLine).toContain("no known gaps");
+    expect(card.coverageLine).toContain("funding charged");
+    // Whether the crossing cost was measured or assumed is part of the answer.
+    expect(card.coverageLine).toContain("(measured)");
+  });
+
+  it("says a sample was too small rather than grading it", () => {
+    const card = deriveBacktestCard({
+      ...toolData,
+      result: {
+        report: {
+          ...report,
+          verdict: "insufficient_sample",
+          stats: { ...report.stats, tradesTaken: 6 },
+        },
+      },
+    })!;
+    expect(card.verdictLabel).toBe("Not enough trades for a verdict");
+    expect(card.verdictTone).toBe("neutral");
+  });
+
+  it("unwraps the MCP text envelope the transport actually sends", () => {
+    const card = deriveBacktestCard({
+      tool: "trading_backtest",
+      result: { content: [{ type: "text", text: JSON.stringify({ report }) }] },
+    });
+    expect(card?.headline).toBe("Buy ETH 15m when RSI(14) is below 30");
+  });
+
+  it("leaves the menu call and other tools to the ordinary row", () => {
+    expect(deriveBacktestCard({ tool: "trading_backtest", result: { menu: "..." } })).toBeNull();
+    expect(deriveBacktestCard({ tool: "trading_look", result: { report } })).toBeNull();
+    expect(deriveBacktestCard(null)).toBeNull();
   });
 });

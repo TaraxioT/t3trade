@@ -55,6 +55,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
+  FlaskConicalIcon,
   PlayIcon,
   RadioTowerIcon,
   ReceiptIcon,
@@ -123,7 +124,12 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
-import { deriveWakeupCard, type WakeupCard } from "../trading/tradingPresentation";
+import {
+  deriveBacktestCard,
+  deriveWakeupCard,
+  type BacktestCard,
+  type WakeupCard,
+} from "../trading/tradingPresentation";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
   buildReviewCommentRenderablePatch,
@@ -2809,6 +2815,100 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   );
 });
 
+/**
+ * A backtest result, as the card the reader actually asked for.
+ *
+ * The default tool row collapses a `trading_backtest` result into "Backtest"
+ * with the answer folded away behind a chevron, and the answer is the whole
+ * point of the call: whether the idea makes money after costs. So the numbers
+ * come out onto the surface, the engine's own verdict sentence goes underneath
+ * them verbatim, and the coverage line sits at the bottom where it qualifies
+ * everything above it.
+ *
+ * The coverage line is not decoration. A verdict measured over four days of a
+ * market the archive only started recording last week is not a verdict, and
+ * this is the only place a reader would find that out.
+ */
+function TradingBacktestTimelineRow({ card }: { card: BacktestCard }) {
+  const [expanded, setExpanded] = useState(false);
+  const toneClass = (tone: "positive" | "negative" | "neutral") =>
+    tone === "positive"
+      ? "text-success-foreground"
+      : tone === "negative"
+        ? "text-destructive"
+        : "text-foreground/85";
+
+  return (
+    <div className="my-1 rounded-xl border border-border/60 bg-muted/20">
+      <div className="flex flex-col gap-2 px-3 py-2.5">
+        <div className="flex items-start gap-2">
+          <span className="flex size-6 flex-none items-center justify-center rounded-md bg-foreground/[0.06] text-muted-foreground">
+            <FlaskConicalIcon className="size-3.5" strokeWidth={2} aria-hidden />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm leading-snug text-foreground/90">{card.headline}</p>
+            {card.exits.length > 0 ? (
+              <p className="mt-0.5 text-[11px] text-muted-foreground">{card.exits.join(", ")}</p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="flex items-baseline gap-2 border-border/45 border-t pt-2">
+          <span className="text-[11px] text-muted-foreground">{card.expectancy.label}</span>
+          <span className={cn("font-mono font-medium text-base", toneClass(card.expectancy.tone))}>
+            {card.expectancy.value}
+          </span>
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
+          {card.stats.map((stat) => (
+            <div key={stat.label} className="min-w-0">
+              <dt className="truncate text-[10px] text-muted-foreground uppercase tracking-wide">
+                {stat.label}
+              </dt>
+              <dd className={cn("font-mono text-xs tabular-nums", toneClass(stat.tone))}>
+                {stat.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <p
+          className={cn(
+            "border-border/45 border-t pt-2 text-xs leading-relaxed",
+            toneClass(card.verdictTone),
+          )}
+        >
+          <span className="font-medium">{card.verdictLabel}.</span>{" "}
+          <span className="text-muted-foreground">{card.verdictReason}</span>
+        </p>
+
+        <p className="text-[11px] text-muted-foreground">{card.coverageLine}</p>
+      </div>
+
+      <button
+        type="button"
+        aria-expanded={expanded}
+        data-scroll-anchor-ignore
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-1.5 px-3 pb-2 text-left text-[11px] text-muted-foreground hover:text-foreground/85"
+      >
+        {expanded ? (
+          <ChevronDownIcon className="size-3 flex-none" />
+        ) : (
+          <ChevronRightIcon className="size-3 flex-none" />
+        )}
+        Every number behind this
+      </button>
+      {expanded ? (
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all px-3 pb-2 text-[11px] text-muted-foreground">
+          {card.rawJson}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -2818,6 +2918,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   // Before any hooks: spawn CTA rows render their own component.
   if (workEntry.agentSpawn) {
     return <AgentSpawnCtaRow workEntry={workEntry} />;
+  }
+  // A backtest report is the answer to the question the user asked, so it is
+  // rendered rather than folded away. A `trading_backtest` call that carries
+  // no report — the menu call, or a refusal — falls through to the ordinary
+  // tool row, which already renders both correctly.
+  const backtestCard =
+    workEntry.itemType === "mcp_tool_call" ? deriveBacktestCard(workEntry.toolData) : null;
+  if (backtestCard !== null) {
+    return <TradingBacktestTimelineRow card={backtestCard} />;
   }
   return (
     <PlainWorkEntryRow

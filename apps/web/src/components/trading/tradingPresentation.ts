@@ -12,6 +12,7 @@ import {
 
 export * from "./tradingFormat";
 export * from "./tradingWakeup";
+export * from "./tradingBacktest";
 export * from "./tradingMissionStrip";
 export * from "./tradingPositionLifecycle";
 export * from "./tradingWatchStream";
