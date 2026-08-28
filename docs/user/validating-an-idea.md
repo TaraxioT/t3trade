@@ -1,0 +1,81 @@
+# Validating a trading idea
+
+A backtest tells you what an idea would have done on bars that already exist. It
+is the cheap question, and almost every idea that was tuned until it looked good
+passes it. The expensive question is whether the same rule still works on bars
+nobody has seen yet.
+
+Forward validation asks that question. You describe an idea in one sentence, T3
+Trade watches it on live bars for as long as you asked, and records every trade
+the rule would have taken — at the fees and funding a real trade would have
+paid. Nothing is ever sent to the exchange.
+
+## Starting one
+
+Say what the idea is and how long to watch it:
+
+> On ETH one-minute bars, buy whenever price crosses above the 20-period EMA,
+> stop 0.2% below entry, target 0.3% above, and give up after 30 bars if neither
+> hits. Watch this for two weeks and tell me if it works.
+
+The agent writes the idea back to you as a rule before it starts, so you can see
+exactly what it is about to test. It usually runs a backtest at the same time —
+that becomes the number the live run is later compared against.
+
+Ideas can be validated on 1m, 3m, 5m, 15m and 1h bars. Longer timeframes are not
+offered: a fortnight of daily bars is fourteen observations, which is not enough
+to conclude anything from.
+
+One idea at a time per market and timeframe. To test a variation, end the
+running one first or test it on another timeframe.
+
+## Watching it
+
+On the chart above the composer, a validated idea shows a badge naming it, and
+its paper trades appear as markers as bars close — a dashed ring where the rule
+would have bought, and another where it would have closed, coloured by what the
+trade made or lost after fees.
+
+The markers are drawn as dashed rings, never as solid ones, because nothing
+happened to your account. If the chart is on a different timeframe than the
+idea, the badge tells you which one to switch to and draws no markers, rather
+than putting marks at times the rule never fired.
+
+## Asking how it is doing
+
+Ask at any time:
+
+> How is my thesis doing?
+
+You get the paper trades taken so far, the hit rate, what each trade made or
+lost on average after fees, the worst drawdown, and how all of that compares to
+the backtest from when it started.
+
+Under twenty paper trades there is no verdict. The numbers are still shown —
+withholding them would be its own kind of dishonesty — but nothing calls them
+evidence, because a handful of trades cannot tell a real edge from a lucky
+week.
+
+## Pausing, resuming and stopping
+
+- **Pause** stops evaluation and keeps everything: the idea, its trades so far,
+  and the backtest it is being compared against. Bars that pass while it is
+  paused are simply bars it did not watch, which the report says.
+- **Resume** carries on the same record.
+- **End** stops it and gives you the final report.
+- Otherwise it ends itself when the time you asked for runs out, and the final
+  report arrives as an alert.
+
+Ask for any of these in plain words, or ask "what am I validating?" to see
+everything currently running.
+
+## Trading a validated idea
+
+Nothing is automatic. If an idea holds up and you want to trade it, say so:
+
+> This one is working. Trade it.
+
+That is an ordinary trade from there — the same plan, the same stop, the same
+confirmation as any other — with the validation record as the evidence behind
+the decision. There is no switch that turns a validation into a live position,
+by design.

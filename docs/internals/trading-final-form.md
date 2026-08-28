@@ -365,3 +365,75 @@ widened to both kinds.
 - No mobile in this plan.
 - No reactor decomposition.
 - No retention machinery yet.
+
+## Forward validation
+
+A thesis (`packages/trading-contracts/src/thesis.ts`) can be backtested over the
+archive or validated forward on live bars. The two share their arithmetic
+deliberately: `makeThesisSignals` decides what a signal is and `summarizeTrades`
+produces the figures, and both `runBacktest` and the forward walk call them. A
+forward run is scored against the backtest that armed it, and that comparison is
+meaningless if the two engines disagree about which bars fired.
+
+`stepForward` (`packages/trading-contracts/src/forward.ts`) is the batch walk
+turned inside out. The backtest's rule — a signal on closed bar `t` fills at bar
+`t+1`'s open — cannot be evaluated in one pass when only one bar is visible at a
+time, so the delay becomes explicit state carried on the validation row:
+`pending_entry_signal_time` and `pending_exit_reason`. Durable, because a fill
+owed across a restart is a fill that would otherwise be silently dropped.
+
+The two engines agree exactly on which trades are taken, and to within 0.1% on
+the price of an ATR-derived level. That residue is inherent: ATR is a Wilder
+average seeded by an SMA, so a trailing window and a full history converge on
+slightly different readings. `forward.test.ts` drives 600 bars through both
+walks across five theses and asserts the sequence exactly and the price to that
+bound.
+
+### Where it runs
+
+`TradingThesisValidationService` owns the lifecycle and the paper ledger. Its
+dependency set is the market archive, the SQL client and a UUID source —
+`TradingEntryService`, `TradingExitService`, `HyperliquidExecutionService` and
+the gateway are deliberately absent, so there is no expression in it that
+reaches an order. That absence is the safety claim, and it is asserted from both
+sides in `TradingThesisValidationService.test.ts`: a firing thesis leaves every
+execution table empty, and settled paper money reaches no real PnL surface.
+
+Evaluation rides `WatchEvaluator.evaluateDelivery`. The candle delivery is the
+clock and the archive is the data — the rule the derived watches already follow,
+because the archiver trails the websocket by up to a minute. Each pass walks
+every archived bar newer than `last_bar_time`, so a lagging archiver is one
+delivery late rather than never, and a restart catches up instead of leaving a
+hole. It costs no venue read, so the sweep's batched exchange reads are
+untouched.
+
+Expiry rides the sweep instead, because a quiet market delivers no candle and a
+validation whose window has closed must end anyway. The final report is
+delivered as an alert.
+
+An armed or paused validation joins the follow set (`FollowSetRegistry`). This
+is load-bearing: an unfollowed market gets no deep recording and no candle
+subscription, so without it a validation would look armed and be deaf.
+
+### Tables
+
+Migration 083 adds `trading_thesis_validations` and
+`trading_thesis_paper_fills`. Their separation from `trading_fills`,
+`trading_closed_trades`, `trading_orders` and `trading_position_snapshots` is
+the design rather than a filing decision — a paper fill that reached those would
+surface as realised PnL on an account that never traded. A paper fill row with a
+null `exit_time` is the open position; there is at most one per validation, and
+it is the same row from entry to settlement.
+
+Costs are frozen at arm time. The comparison is against a backtest priced once,
+and a fee assumption drifting underneath the run would report a change in the
+thesis that was really a change in the spread.
+
+### Promotion
+
+There is no promotion code path, and that is the point. A validated thesis
+becomes a position the way any idea does: the user says so and the agent
+publishes a plan and enters, with the validation record as context. The tool
+description and the menu are tested for this — both must say no order is ever
+placed, both must point at the ordinary flow, and neither may contain "auto",
+"promote", "automatically" or "go live".
