@@ -33,6 +33,7 @@ import type { CandleFeed } from "./ws.ts";
 import {
   readArchiveCoinsFromDisk,
   ARCHIVE_INTERVALS,
+  ARCHIVE_VENUE,
   CANDLE_WINDOW_BARS,
   FUNDING_INTERVAL_MS,
   FUNDING_ORIGIN_MS,
@@ -95,6 +96,7 @@ export async function backfillCandles(
   now: number,
   shouldContinue: () => boolean,
   coins: ReadonlyArray<string>,
+  venue: string = ARCHIVE_VENUE,
 ): Promise<void> {
   for (const coin of coins) {
     for (const interval of ARCHIVE_INTERVALS) {
@@ -103,20 +105,24 @@ export async function backfillCandles(
       }
       const intervalMs = INTERVAL_MS[interval];
       const plan = planCandleRepair({
-        latestStoredOpen: latestStoredOpen(db, coin, interval),
+        latestStoredOpen: latestStoredOpen(db, coin, interval, venue),
         now,
         intervalMs,
         windowBars: CANDLE_WINDOW_BARS,
       });
 
       if (plan.unrecoverable !== null) {
-        recordKnownGap(db, {
-          coin,
-          interval,
-          fromT: plan.unrecoverable.fromT,
-          toT: plan.unrecoverable.toT,
-          recordedAt: now,
-        });
+        recordKnownGap(
+          db,
+          {
+            coin,
+            interval,
+            fromT: plan.unrecoverable.fromT,
+            toT: plan.unrecoverable.toT,
+            recordedAt: now,
+          },
+          venue,
+        );
         counters.gaps += 1;
         logWarn(
           `gap: ${coin} ${interval} ${new Date(plan.unrecoverable.fromT).toISOString()} — ` +
@@ -129,7 +135,7 @@ export async function backfillCandles(
         candleSnapshotBody(coin, interval, plan.fetchFrom, plan.fetchTo),
       );
       const rows = parseCandles(raw, coin, interval);
-      counters.candles += upsertCandles(db, rows);
+      counters.candles += upsertCandles(db, rows, venue);
       logInfo(`backfill: ${coin} ${interval} ${rows.length} bars`);
     }
   }
@@ -147,6 +153,7 @@ export async function pollCandles(
   now: number,
   coins: ReadonlyArray<string>,
   feed: CandleFeed | null = null,
+  venue: string = ARCHIVE_VENUE,
 ): Promise<void> {
   for (const coin of coins) {
     for (const interval of ARCHIVE_INTERVALS) {
@@ -157,7 +164,7 @@ export async function pollCandles(
       const currentOpen = Math.floor(now / intervalMs) * intervalMs;
       const startTime = currentOpen - (POLL_TAIL_BARS[interval] - 1) * intervalMs;
       const raw = await info.post("candleSnapshot", candleSnapshotBody(coin, interval, startTime));
-      counters.candles += upsertCandles(db, parseCandles(raw, coin, interval));
+      counters.candles += upsertCandles(db, parseCandles(raw, coin, interval), venue);
       feed?.markPolled(coin, interval);
     }
   }
@@ -170,9 +177,10 @@ export async function pullFunding(
   counters: ArchiveCounters,
   shouldContinue: () => boolean,
   coins: ReadonlyArray<string>,
+  venue: string = ARCHIVE_VENUE,
 ): Promise<void> {
   for (const coin of coins) {
-    const stored = latestFundingTime(db, coin);
+    const stored = latestFundingTime(db, coin, venue);
     let cursor = stored === null ? FUNDING_ORIGIN_MS : stored + 1;
     let pages = 0;
 
@@ -187,7 +195,7 @@ export async function pullFunding(
       if (rows.length === 0) {
         break;
       }
-      counters.funding += upsertFunding(db, rows);
+      counters.funding += upsertFunding(db, rows, venue);
 
       const newest = rows.reduce((max, row) => Math.max(max, row.time), cursor);
       if (newest < cursor || rows.length < FUNDING_PAGE_ROWS) {
@@ -208,12 +216,13 @@ export async function pollAssetContexts(
   info: InfoClient,
   counters: ArchiveCounters,
   ts: number,
+  venue: string = ARCHIVE_VENUE,
 ): Promise<void> {
   const raw = await info.post("metaAndAssetCtxs", { type: "metaAndAssetCtxs" });
   // The whole universe, not just the followed coins: the call already carries
   // every listed asset, so an asset nobody follows still accumulates the OI and
   // funding history that makes it worth looking at later.
-  counters.assetCtx += upsertAssetContexts(db, parseAssetContexts(raw, null, ts));
+  counters.assetCtx += upsertAssetContexts(db, parseAssetContexts(raw, null, ts), venue);
 }
 
 /** Sample the top of book and the depth behind it, one call per coin. */
@@ -223,12 +232,13 @@ export async function pollBookSummaries(
   counters: ArchiveCounters,
   ts: number,
   coins: ReadonlyArray<string>,
+  venue: string = ARCHIVE_VENUE,
 ): Promise<void> {
   for (const coin of coins) {
     const raw = await info.post("l2Book", { type: "l2Book", coin });
     const row = summariseBook(raw, coin, ts);
     if (row !== null) {
-      counters.bookSummary += upsertBookSummaries(db, [row]);
+      counters.bookSummary += upsertBookSummaries(db, [row], venue);
     }
   }
 }
@@ -242,9 +252,10 @@ export async function pollBookSummaries(
  * reads in the thousands. The marker is what makes the line glanceable: any
  * `!` means that interval actually missed a bar.
  */
-function candleLag(db: ArchiveDatabase, now: number): ReadonlyArray<string> {
+function candleLag(db: ArchiveDatabase, now: number, venue: string): ReadonlyArray<string> {
   const rows = db.all<{ interval: string; latest: number }>(
-    "SELECT interval, MAX(t) AS latest FROM candles GROUP BY interval",
+    "SELECT interval, MAX(t) AS latest FROM candles WHERE venue = ? GROUP BY interval",
+    venue,
   );
   const latestByInterval = new Map(rows.map((row) => [row.interval, row.latest]));
   return ARCHIVE_INTERVALS.map((interval: ArchiveInterval) => {
@@ -271,13 +282,14 @@ export function formatHeartbeat(
   info: InfoClient,
   now: number,
   startedAt: number,
+  venue: string = ARCHIVE_VENUE,
 ): string {
   const uptimeMinutes = Math.round((now - startedAt) / 60_000);
   return (
     `heartbeat: up ${uptimeMinutes}m | ` +
     `candles=${counters.candles} funding=${counters.funding} ` +
     `asset_ctx=${counters.assetCtx} book=${counters.bookSummary} gaps=${counters.gaps} | ` +
-    `lag ${candleLag(db, now).join(" ")} | ` +
+    `lag ${candleLag(db, now, venue).join(" ")} | ` +
     `req=${info.stats.requests} retry=${info.stats.retries} fail=${info.stats.failures} ` +
     `pace=${Math.round(info.stats.paceMs)}ms`
   );
@@ -304,14 +316,17 @@ export async function runArchiver(input: {
    * with no feed, every series is polled every tick as before.
    */
   readonly makeFeed?: (onCandle: (row: CandleRow) => void) => CandleFeed;
+  /** The venue stamped on every row this run writes. Defaults to mainnet. */
+  readonly venue?: string;
 }): Promise<void> {
   const { db, info, shouldContinue, sleep } = input;
   const readCoins = input.readCoins ?? readArchiveCoinsFromDisk;
+  const venue = input.venue ?? ARCHIVE_VENUE;
   const counters = emptyCounters();
   const startedAt = Date.now();
   const feed =
     input.makeFeed?.((row) => {
-      counters.candles += upsertCandles(db, [row]);
+      counters.candles += upsertCandles(db, [row], venue);
     }) ?? null;
 
   try {
@@ -321,8 +336,8 @@ export async function runArchiver(input: {
     let coins = readCoins();
     feed?.setCoins(coins);
     logInfo(`archiver: starting backfill for ${coins.join(" ")}`);
-    await backfillCandles(db, info, counters, Date.now(), shouldContinue, coins);
-    await pullFunding(db, info, counters, shouldContinue, coins);
+    await backfillCandles(db, info, counters, Date.now(), shouldContinue, coins, venue);
+    await pullFunding(db, info, counters, shouldContinue, coins, venue);
     logInfo("archiver: backfill complete");
 
     let lastFundingAt = Date.now();
@@ -340,15 +355,15 @@ export async function runArchiver(input: {
         const fresh = coins.filter((coin) => !hydrated.has(coin));
         if (fresh.length > 0) {
           logInfo(`archiver: hydrating ${fresh.join(" ")}`);
-          await backfillCandles(db, info, counters, tickStartedAt, shouldContinue, fresh);
-          await pullFunding(db, info, counters, shouldContinue, fresh);
+          await backfillCandles(db, info, counters, tickStartedAt, shouldContinue, fresh, venue);
+          await pullFunding(db, info, counters, shouldContinue, fresh, venue);
           for (const coin of fresh) hydrated.add(coin);
         }
-        await pollCandles(db, info, counters, tickStartedAt, coins, feed);
-        await pollAssetContexts(db, info, counters, ts);
-        await pollBookSummaries(db, info, counters, ts, coins);
+        await pollCandles(db, info, counters, tickStartedAt, coins, feed, venue);
+        await pollAssetContexts(db, info, counters, ts, venue);
+        await pollBookSummaries(db, info, counters, ts, coins, venue);
         if (tickStartedAt - lastFundingAt >= FUNDING_INTERVAL_MS) {
-          await pullFunding(db, info, counters, shouldContinue, coins);
+          await pullFunding(db, info, counters, shouldContinue, coins, venue);
           lastFundingAt = tickStartedAt;
         }
       } catch (error) {
@@ -358,7 +373,7 @@ export async function runArchiver(input: {
         logWarn(`tick failed: ${describeError(error)}`);
       }
 
-      logInfo(formatHeartbeat(db, counters, info, Date.now(), startedAt));
+      logInfo(formatHeartbeat(db, counters, info, Date.now(), startedAt, venue));
 
       const elapsed = Date.now() - tickStartedAt;
       await sleep(Math.max(0, POLL_INTERVAL_MS - elapsed));

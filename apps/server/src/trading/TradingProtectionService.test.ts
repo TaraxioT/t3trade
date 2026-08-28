@@ -22,7 +22,9 @@ import type { TradingOrderResult } from "@t3tools/trading-contracts/execution";
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import {
   makeTradingProtectionService,
+  MANUAL_PROTECTION_GRACE_MILLIS,
   TradingProtectionService,
+  withinManualEntryGrace,
   type ProtectionInput,
   type TakeProfitInput,
 } from "./TradingProtectionService.ts";
@@ -541,5 +543,24 @@ it.effect("never touches a resting stop while reconciling the take-profit", () =
     const stop = fake.orders.find((o) => o.cloid === "0xstop");
     assert.ok(stop !== undefined);
     assert.equal(stop.isTrigger, true);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// R6-3: the manual watchdog's post-entry grace window. Pure predicate — the
+// reactor's guard skips a manual position whose first observation is younger
+// than the grace, so it never races the entry's own stop placement.
+// ---------------------------------------------------------------------------
+
+it.effect("withinManualEntryGrace covers a just-filled entry and expires after it", () =>
+  Effect.sync(() => {
+    const nowMs = 1_000_000;
+    // Five seconds old — the exact race R6-3 observed — is inside the grace.
+    assert.equal(withinManualEntryGrace(nowMs - 5_000, nowMs), true);
+    // At and past the boundary the guard treats the position as uncovered.
+    assert.equal(withinManualEntryGrace(nowMs - MANUAL_PROTECTION_GRACE_MILLIS, nowMs), false);
+    assert.equal(withinManualEntryGrace(nowMs - 60_000, nowMs), false);
+    // A legacy row with no opened_at gets no grace: fail toward protecting.
+    assert.equal(withinManualEntryGrace(null, nowMs), false);
   }),
 );

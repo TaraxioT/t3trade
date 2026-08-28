@@ -555,6 +555,53 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
     }),
   );
 
+  // R6-1: a refused create used to be a server WARN and nothing else — the
+  // form's dispatch is an acknowledgement, so the user saw no mission and no
+  // reason. The refusal now lands in the alert feed with its text verbatim,
+  // the same channel manual-order refusals use.
+  it.effect("appends a D4 manual-exposure refusal to the alert feed", () =>
+    Effect.gen(function* () {
+      yield* started;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_alert_events`;
+      yield* sql`DELETE FROM trading_position_snapshots`;
+
+      // The user is in ETH by hand: an open manual position (mission_id NULL).
+      yield* sql`
+        INSERT INTO trading_position_snapshots
+          (mission_id, market, size, entry_price, unrealised_pnl, margin_used,
+           protected_size, observed_at, account_id)
+        VALUES (NULL, 'ETH', 0.5, 3_000, 0, 100, 0, 1_000, 'acct-trading-reactor')
+      `;
+
+      yield* createMission;
+
+      // The domain refused: no mission row exists.
+      assert.equal(yield* missionRowCount, 0);
+      // The refusal reached the one surface the user watches, text verbatim.
+      const alerts = yield* sql<{
+        readonly asset: string;
+        readonly account_id: string | null;
+        readonly watch_id: string;
+        readonly summary: string;
+      }>`
+        SELECT asset, account_id, watch_id, summary FROM trading_alert_events
+      `;
+      assert.equal(alerts.length, 1);
+      assert.equal(alerts[0]?.asset, "ETH");
+      assert.equal(alerts[0]?.account_id, "acct-trading-reactor");
+      assert.equal(alerts[0]?.watch_id, "mission_create");
+      assert.equal(
+        alerts[0]?.summary,
+        "Mission on ETH refused: ETH has manual exposure (open position); " +
+          "close it or cancel it before a mission can take this market",
+      );
+
+      yield* sql`DELETE FROM trading_position_snapshots`;
+      yield* sql`DELETE FROM trading_alert_events`;
+    }),
+  );
+
   it.effect("applies a legal control and reflects it in the projection", () =>
     Effect.gen(function* () {
       yield* started;

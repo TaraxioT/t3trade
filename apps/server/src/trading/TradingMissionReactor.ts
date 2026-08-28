@@ -74,7 +74,7 @@ import { TradingAlertService } from "./TradingAlertService.ts";
 import { manualOwnerMissionToken, TradingManualEntryService } from "./TradingManualEntryService.ts";
 import { LOCAL_TRADING_ACCOUNT_ID } from "./TradingAccountBootstrap.ts";
 import { recordTakeProfitOutcome } from "./TradingProtectionLedger.ts";
-import { TradingProtectionService } from "./TradingProtectionService.ts";
+import { TradingProtectionService, withinManualEntryGrace } from "./TradingProtectionService.ts";
 import { TradingWorkingOrderService } from "./TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
 import { TradingControlService } from "./TradingControlService.ts";
@@ -441,6 +441,32 @@ const make = Effect.gen(function* () {
     };
   });
 
+  /**
+   * A refused mission-create lands in the alert feed (R6-1). The create
+   * command's dispatch is an acknowledgement, not an answer — the decider
+   * cannot see D4's live state — so by the time the domain refuses, the form
+   * has already moved on. The feed is the one push channel the user already
+   * watches for asynchronous outcomes (the Phase 7 manual-order model), and
+   * the doorbell it rings is what makes the refusal visible at all.
+   */
+  const appendMissionRefusedAlert = (input: {
+    readonly accountId: string;
+    readonly market: string;
+    readonly reason: string;
+  }) =>
+    Effect.gen(function* () {
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* alerts.append({
+        venue: "hyperliquid",
+        asset: input.market,
+        accountId: input.accountId,
+        watchId: "mission_create",
+        firedAt: occurredAt,
+        summary: `Mission on ${input.market} refused: ${input.reason}`,
+        payload: { reason: input.reason },
+      });
+    }).pipe(Effect.ignore);
+
   const processCreateRequested = Effect.fn("TradingMissionReactor.create")(function* (
     event: Extract<TradingRequestEvent, { type: "trading.mission-create-requested" }>,
   ) {
@@ -464,6 +490,11 @@ const make = Effect.gen(function* () {
           threadId,
           market,
         });
+        yield* appendMissionRefusedAlert({
+          accountId: tradingAccountId,
+          market,
+          reason: `${market} is not a market the venue lists`,
+        });
         return;
       }
     }
@@ -481,16 +512,55 @@ const make = Effect.gen(function* () {
       ),
     });
 
-    yield* missions.createMission({
-      missionId,
-      userId: LOCAL_TRADING_USER_ID,
-      tradingAccountId,
-      instruction,
-      allocatedCapitalUsd: capital.allocatedCapitalUsd,
-      ...(market === undefined ? {} : { market }),
-      ...(maxWakes === undefined ? {} : { maxWakes }),
-      harness,
-    });
+    // D4's two refusals — the market is owned by another mission, or the user
+    // is in it by hand — are normal outcomes, not crashes. Answer each with
+    // the refusal text verbatim in the alert feed and stop; anything else
+    // still bubbles to the queue's catch-and-warn.
+    const created = yield* missions
+      .createMission({
+        missionId,
+        userId: LOCAL_TRADING_USER_ID,
+        tradingAccountId,
+        instruction,
+        allocatedCapitalUsd: capital.allocatedCapitalUsd,
+        ...(market === undefined ? {} : { market }),
+        ...(maxWakes === undefined ? {} : { maxWakes }),
+        harness,
+      })
+      .pipe(
+        Effect.map(() => "created" as const),
+        Effect.catchTags({
+          TradingMissionAlreadyActiveError: (refusal) =>
+            Effect.gen(function* () {
+              yield* Effect.logWarning("trading mission creation refused", {
+                missionId,
+                threadId,
+                reason: refusal.message,
+              });
+              yield* appendMissionRefusedAlert({
+                accountId: tradingAccountId,
+                market: refusal.market ?? market ?? "unknown",
+                reason: refusal.message,
+              });
+              return "refused" as const;
+            }),
+          TradingMarketManualExposureError: (refusal) =>
+            Effect.gen(function* () {
+              yield* Effect.logWarning("trading mission creation refused", {
+                missionId,
+                threadId,
+                reason: refusal.message,
+              });
+              yield* appendMissionRefusedAlert({
+                accountId: tradingAccountId,
+                market: refusal.market,
+                reason: refusal.message,
+              });
+              return "refused" as const;
+            }),
+        }),
+      );
+    if (created === "refused") return;
     // Bind the trading profile to the thread so the provider adapter (the
     // Claude path) locks subsequent sessions to the `mcp__t3-trade__*` tools
     // only. Set here, at mission creation, is what marks this thread as a
@@ -2158,19 +2228,25 @@ const make = Effect.gen(function* () {
   const guardManualProtection = Effect.fn("TradingMissionReactor.guardManualProtection")(
     function* () {
       const sql = yield* SqlClient.SqlClient;
+      const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       const rows = yield* sql<{
         readonly account_id: string;
         readonly market: string;
         readonly size: number;
         readonly protected_size: number;
+        readonly opened_at: number | null;
       }>`
-        SELECT account_id, market, size, protected_size
+        SELECT account_id, market, size, protected_size, opened_at
         FROM trading_position_snapshots
         WHERE mission_id IS NULL AND size != 0
       `;
       for (const row of rows) {
         const exposed = Math.abs(row.size);
         if (row.protected_size >= exposed - PROTECTION_SIZE_EPSILON) continue;
+        // R6-3: a just-filled entry is placing its own stop right now; give it
+        // a grace window before calling the position uncovered, or the guard
+        // re-places the same stop and double-alerts a second after the entry.
+        if (withinManualEntryGrace(row.opened_at, nowMs)) continue;
 
         const stops = yield* sql<{ readonly stop_price: number }>`
           SELECT stop_price FROM trading_execution_records

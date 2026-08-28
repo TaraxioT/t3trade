@@ -25,7 +25,8 @@
 import { Context, Effect } from "effect";
 import * as Layer from "effect/Layer";
 
-import { archiveDatabasePath } from "./archive/config.ts";
+import { HyperliquidEndpoints, isTestnetEndpoints } from "@t3tools/hyperliquid/config";
+import { ARCHIVE_VENUE, archiveDatabasePath, archiveVenue } from "./archive/config.ts";
 import type { AssetCtxRow } from "./archive/assetCtx.ts";
 import type { BookSummaryRow } from "./archive/bookSummary.ts";
 import { openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./archive/db.ts";
@@ -244,8 +245,11 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 const SCAN_MARK_STALE_MS = 2 * 5 * 60_000;
 
 /**
- * Build the service against an explicit archive path. Tests pass a temp
- * fixture; the live layer passes `archiveDatabasePath()`.
+ * Build the service against an explicit archive path and venue. Tests pass a
+ * temp fixture; the live layer passes `archiveDatabasePath()` and the venue of
+ * the network the trading gateway is on, so every read filters to the
+ * exchange actually being traded — a testnet session must never be served
+ * mainnet rows as its own history.
  *
  * The handle is opened lazily and never cached as "missing": every call
  * re-checks the file, so an archive created after boot — the archiver being
@@ -254,7 +258,10 @@ const SCAN_MARK_STALE_MS = 2 * 5 * 60_000;
  * on it. A `n` of less than 1 is a caller bug, refused as `unavailable`
  * rather than silently returning everything (`LIMIT -1` in SQLite).
  */
-export const makeTradingMarketArchive = (filePath: string): TradingMarketArchiveShape => {
+export const makeTradingMarketArchive = (
+  filePath: string,
+  venue: string = ARCHIVE_VENUE,
+): TradingMarketArchiveShape => {
   let handle: ArchiveDatabase | null = null;
 
   // Opens the handle when possible and runs `read` against it. A missing or
@@ -287,7 +294,7 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
     fundingStats: ({ coin, windowDays, now }) =>
       withHandle((db) => {
         const since = now - windowDays * DAY_MS;
-        const rows = fundingInRange(db, coin, since, now);
+        const rows = fundingInRange(db, coin, since, now, venue);
         if (rows.length === 0) {
           return {
             status: "unavailable",
@@ -325,7 +332,7 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
         return Effect.succeed({ status: "unavailable", reason: invalid });
       }
       return withHandle((db) => {
-        const rows = recentFunding(db, coin, n);
+        const rows = recentFunding(db, coin, n, venue);
         if (rows.length === 0) {
           return {
             status: "unavailable",
@@ -342,7 +349,7 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
         return Effect.succeed({ status: "unavailable", reason: invalid });
       }
       return withHandle((db) => {
-        const rows = recentAssetContext(db, coin, n);
+        const rows = recentAssetContext(db, coin, n, venue);
         if (rows.length === 0) {
           return {
             status: "unavailable",
@@ -359,7 +366,7 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
         return Effect.succeed({ status: "unavailable", reason: invalid });
       }
       return withHandle((db) => {
-        const rows = recentBookSummary(db, coin, n);
+        const rows = recentBookSummary(db, coin, n, venue);
         if (rows.length === 0) {
           return {
             status: "unavailable",
@@ -373,11 +380,17 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
     derivedMetric: ({ market, params, now, positionEntryAt, sinceMs }) =>
       Effect.map(
         withHandle((db): DerivedMetricResult => {
-          const outcome = derivedMetricValue(db, market, params, {
-            now,
-            ...(positionEntryAt === undefined ? {} : { positionEntryAt }),
-            ...(sinceMs === undefined ? {} : { sinceMs }),
-          });
+          const outcome = derivedMetricValue(
+            db,
+            market,
+            params,
+            {
+              now,
+              ...(positionEntryAt === undefined ? {} : { positionEntryAt }),
+              ...(sinceMs === undefined ? {} : { sinceMs }),
+            },
+            venue,
+          );
           return outcome.status === "ok"
             ? {
                 status: "ok",
@@ -396,7 +409,7 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
 
     candlesInWindow: ({ coin, interval, fromT, toT, maxBars }) =>
       withHandle((db) => {
-        const bars = candlesInRange(db, coin, interval, fromT, toT);
+        const bars = candlesInRange(db, coin, interval, fromT, toT, venue);
         // Newest bars win when the window holds more than the caller asked
         // for: a chart is read right-to-left.
         return bars.length <= maxBars ? bars : bars.slice(bars.length - maxBars);
@@ -412,11 +425,11 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
         // whole key. There is deliberately no regime field: it is not
         // derivable from the existing structure code at acceptable cost, and
         // the plan says omit rather than invent.
-        const coins = archivedCoins(db).map((coin): ScanCoinDigest => {
+        const coins = archivedCoins(db, venue).map((coin): ScanCoinDigest => {
           const entry: { coin: string } & Record<string, number | string> = { coin };
           const missing: Array<string> = [];
 
-          const bars = candlesInRange(db, coin, "5m", now - DAY_MS, now);
+          const bars = candlesInRange(db, coin, "5m", now - DAY_MS, now, venue);
           if (bars.length === 0) {
             missing.push("no 5m candles in the trailing 24h");
           } else {
@@ -466,13 +479,13 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             }
           }
 
-          const week = fundingInRange(db, coin, now - 7 * DAY_MS, now);
+          const week = fundingInRange(db, coin, now - 7 * DAY_MS, now, venue);
           if (week.length === 0) {
             missing.push("no funding rows in the trailing 7d");
           } else {
             const latest = week[week.length - 1] as FundingRow;
             entry["fundingNowPer8h"] = latest.fundingRate * 8;
-            const earliest = minFundingTime(db, coin);
+            const earliest = minFundingTime(db, coin, venue);
             if (earliest !== null && earliest <= now - 7 * DAY_MS) {
               const total = week.reduce((sum, row) => sum + row.fundingRate, 0);
               entry["funding7dMeanPer8h"] = (total / week.length) * 8;
@@ -481,8 +494,8 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
             }
           }
 
-          const latestCtx = latestAssetContext(db, coin);
-          const dayAgoCtx = assetCtxAtOrBefore(db, coin, now - DAY_MS);
+          const latestCtx = latestAssetContext(db, coin, venue);
+          const dayAgoCtx = assetCtxAtOrBefore(db, coin, now - DAY_MS, venue);
           if (latestCtx === null || dayAgoCtx === null || dayAgoCtx.ts < now - 2 * DAY_MS) {
             missing.push("no asset_ctx coverage across the trailing 24h");
           } else if (dayAgoCtx.openInterest > 0) {
@@ -505,8 +518,8 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
     sessionLevels: ({ coin, now }) =>
       withHandle((db) => {
         const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
-        const prior = candlesInRange(db, coin, "5m", dayStart - DAY_MS, dayStart - 1);
-        const current = candlesInRange(db, coin, "5m", dayStart, now);
+        const prior = candlesInRange(db, coin, "5m", dayStart - DAY_MS, dayStart - 1, venue);
+        const current = candlesInRange(db, coin, "5m", dayStart, now, venue);
         const missing: Array<string> = [];
         if (prior.length === 0) {
           missing.push("no 5m candles in the prior UTC day");
@@ -561,8 +574,8 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
     coverage: ({ coin, interval, fromT, toT }) =>
       Effect.map(
         withHandle((db): ArchiveCoverage => {
-          const recordingSince = earliestCandleTime(db, coin, interval);
-          const gaps = knownGaps(db, coin, interval)
+          const recordingSince = earliestCandleTime(db, coin, interval, venue);
+          const gaps = knownGaps(db, coin, interval, venue)
             .filter((gap) => gap.toT >= fromT && gap.fromT <= toT)
             .map((gap) => ({
               fromT: Math.max(gap.fromT, fromT),
@@ -578,7 +591,18 @@ export const makeTradingMarketArchive = (filePath: string): TradingMarketArchive
   });
 };
 
-export const TradingMarketArchiveLive = Layer.succeed(
+/**
+ * The live layer reads with the venue of the network the trading gateway is
+ * configured for — derived from `HyperliquidEndpoints` exactly the way the
+ * execution service derives `isTestnet`, so there is a single decision point.
+ * The supervised archiver writes with the same venue (the supervisor passes
+ * the same decision down to the child), so reads and recording always agree.
+ */
+export const TradingMarketArchiveLive: Layer.Layer<TradingMarketArchive> = Layer.effect(
   TradingMarketArchive,
-  makeTradingMarketArchive(archiveDatabasePath()),
+  Effect.gen(function* () {
+    const endpoints = yield* HyperliquidEndpoints;
+    const venue = archiveVenue(isTestnetEndpoints(endpoints) ? "testnet" : "mainnet");
+    return makeTradingMarketArchive(archiveDatabasePath(), venue);
+  }),
 );

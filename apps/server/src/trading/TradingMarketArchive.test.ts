@@ -21,6 +21,7 @@ import * as NodePath from "node:path";
 import { upsertAssetContexts } from "./archive/assetCtx.ts";
 import { upsertBookSummaries } from "./archive/bookSummary.ts";
 import { recordKnownGap, upsertCandles, type CandleRow } from "./archive/candles.ts";
+import { TESTNET_ARCHIVE_VENUE } from "./archive/config.ts";
 import { openArchiveDatabase } from "./archive/db.ts";
 import { upsertFunding } from "./archive/funding.ts";
 import {
@@ -395,5 +396,91 @@ it.effect("coverage over a missing archive is empty, never a failure", () =>
       toT: NOW,
     });
     assert.deepStrictEqual(coverage, { recordingSince: null, gaps: [] });
+  }),
+);
+
+it.effect("a testnet reader never serves mainnet rows as its own history", () =>
+  Effect.gen(function* () {
+    // R5-1: the live layer reads with the venue of the network being traded.
+    // Mainnet rows recorded before the switch simply stop matching — a
+    // testnet session sees "recording since now", never the other exchange's
+    // prices.
+    const dir = tempDir("market-archive-venue-");
+    const path = NodePath.join(dir, "archive.sqlite");
+    const writer = openArchiveDatabase(path);
+    const bar = (t: number, close: number): CandleRow => ({
+      coin: "HYPE",
+      interval: "5m",
+      t,
+      tClose: t + 5 * MINUTE - 1,
+      o: close,
+      h: close + 1,
+      l: close - 1,
+      c: close,
+      v: 3,
+      n: 2,
+    });
+    // Mainnet history at ~82, testnet at ~41 — the R5-1 live divergence.
+    upsertCandles(writer, [bar(NOW - 10 * MINUTE, 82), bar(NOW - 5 * MINUTE, 82.5)]);
+    upsertFunding(writer, [{ coin: "HYPE", time: NOW - MINUTE, fundingRate: 0.01, premium: 0 }]);
+    upsertCandles(writer, [bar(NOW - 5 * MINUTE, 41)], TESTNET_ARCHIVE_VENUE);
+    recordKnownGap(writer, {
+      coin: "HYPE",
+      interval: "5m",
+      fromT: NOW - DAY,
+      toT: NOW - DAY + MINUTE,
+      recordedAt: NOW,
+    });
+    writer.close();
+
+    const testnet = makeTradingMarketArchive(path, TESTNET_ARCHIVE_VENUE);
+
+    // Candles: only the testnet bar, never the mainnet 82s.
+    const bars = yield* testnet.candlesInWindow({
+      coin: "HYPE",
+      interval: "5m",
+      fromT: NOW - DAY,
+      toT: NOW,
+      maxBars: 100,
+    });
+    assert.deepStrictEqual(
+      bars.map((row) => row.c),
+      [41],
+    );
+
+    // Funding recorded only on mainnet is unavailable, not served.
+    const stats = yield* testnet.fundingStats({ coin: "HYPE", windowDays: 7, now: NOW });
+    assert.strictEqual(stats.status, "unavailable");
+
+    // Session levels come from the testnet bar alone.
+    const levels = yield* testnet.sessionLevels({ coin: "HYPE", now: NOW });
+    assert.strictEqual(levels.status, "ok");
+    if (levels.status !== "ok") return;
+    assert.strictEqual(levels.currentUtcDay?.high, 42);
+
+    // Coverage: recording started at the testnet bar, and the mainnet-only
+    // gap record does not bleed across.
+    const coverage = yield* testnet.coverage({
+      coin: "HYPE",
+      interval: "5m",
+      fromT: NOW - DAY,
+      toT: NOW,
+    });
+    assert.strictEqual(coverage.recordingSince, NOW - 5 * MINUTE);
+    assert.deepStrictEqual(coverage.gaps, []);
+
+    // The mainnet reader still sees its own history untouched.
+    const mainnet = makeTradingMarketArchive(path);
+    const mainnetBars = yield* mainnet.candlesInWindow({
+      coin: "HYPE",
+      interval: "5m",
+      fromT: NOW - DAY,
+      toT: NOW,
+      maxBars: 100,
+    });
+    assert.deepStrictEqual(
+      mainnetBars.map((row) => row.c),
+      [82, 82.5],
+    );
   }),
 );

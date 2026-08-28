@@ -37,6 +37,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { estimateIsolatedLiquidationPrice } from "./AccountMarginCapacity.ts";
 import { retryTransientRead } from "./RetryTransient.ts";
 import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
@@ -137,6 +138,26 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
       Effect.orElseSucceed(() => null),
     );
 
+  /**
+   * The leverage the exchange has this market configured at for this account,
+   * when nothing is currently open in it. The reconciler persists `leverage`
+   * on every position snapshot and deliberately leaves it standing after the
+   * position closes, so the last row is the account's per-asset setting as
+   * last observed — the isolated 10x a mission era left behind is exactly
+   * what a fresh manual entry inherits (R6-2).
+   */
+  const readLastKnownMarketLeverage = (accountId: string, market: string) =>
+    sql<{ readonly leverage: number | null }>`
+      SELECT leverage FROM trading_position_snapshots
+      WHERE venue = 'hyperliquid' AND account_id = ${accountId}
+        AND market = ${market} AND leverage IS NOT NULL
+      ORDER BY observed_at DESC
+      LIMIT 1
+    `.pipe(
+      Effect.map((rows) => rows[0]?.leverage ?? null),
+      Effect.orElseSucceed(() => null),
+    );
+
   /** The oldest mid-submission manual record for this account, if any. */
   const readPendingManualExecution = (accountId: string) =>
     Effect.gen(function* () {
@@ -200,8 +221,9 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
       // What the exchange account can fund: account value at the leverage this
       // market is configured at (1x when it has never held the market — the
       // floor no account is below, same reasoning as `AccountMarginCapacity`).
-      const marketLeverage =
-        snapshot.positions.find((position) => position.market === request.market)?.leverage ?? 1;
+      const openPositionLeverage =
+        snapshot.positions.find((position) => position.market === request.market)?.leverage ?? null;
+      const marketLeverage = openPositionLeverage ?? 1;
       const accountMarginCapacityUsd =
         snapshot.accountValue > 0 ? snapshot.accountValue * marketLeverage : null;
 
@@ -241,6 +263,41 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
         slippageBps: (yield* iocSlippage.resolve).entryBps,
       });
       const entryPrice = request.side === "buy" ? bestAsk : bestBid;
+
+      // R6-2/R2-5: the entry inherits the account's per-asset margin mode and
+      // leverage — this service never sets either on the exchange — so the
+      // mandatory stop must sit on the survivable side of the liquidation
+      // that inheritance implies. A stop at or beyond the estimate protects
+      // nothing: the exchange liquidates before the stop can fire. The
+      // estimate is deliberately conservative (isolated at full utilisation),
+      // so the ambiguous band refuses.
+      const configuredLeverage =
+        openPositionLeverage ??
+        (yield* readLastKnownMarketLeverage(request.accountId, request.market)) ??
+        1;
+      const estimatedLiquidationPrice = estimateIsolatedLiquidationPrice({
+        side: request.side,
+        entryPrice,
+        leverage: configuredLeverage,
+        maxLeverage: resolved.maxLeverage,
+      });
+      const stopBeyondLiquidation =
+        estimatedLiquidationPrice !== null &&
+        (request.side === "buy"
+          ? request.stopPrice <= estimatedLiquidationPrice
+          : request.stopPrice >= estimatedLiquidationPrice);
+      if (stopBeyondLiquidation) {
+        const liquidationText = Number(estimatedLiquidationPrice.toPrecision(6));
+        return refused(
+          "stop_beyond_liquidation",
+          `the stop at ${request.stopPrice} cannot protect this entry: at the account's ` +
+            `inherited ${configuredLeverage}x ${request.market} leverage the liquidation is ` +
+            `estimated near ${liquidationText}, ${request.side === "buy" ? "above" : "below"} the stop — ` +
+            `the exchange would liquidate before the stop fires. Reduce this market's leverage ` +
+            `on the exchange or move the stop ${request.side === "buy" ? "above" : "below"} ${liquidationText}`,
+        );
+      }
+
       const requestedSize =
         request.sizeEth ??
         (request.notionalUsd === undefined ? undefined : request.notionalUsd / entryPrice);

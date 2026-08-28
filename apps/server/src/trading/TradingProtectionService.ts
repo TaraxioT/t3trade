@@ -56,6 +56,27 @@ import {
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 
+/**
+ * How long after a manual position first appears the watchdog leaves it alone
+ * (R6-3). A manual entry places its own linked stop in the same submission,
+ * but the stop reaches `frontendOpenOrders` — and therefore the snapshot's
+ * `protected_size` — a beat after the fill does, so the 5s guard pass saw a
+ * seconds-old position as "uncovered" and re-placed a stop the entry flow was
+ * itself placing, double-alerting one second after the entry alert. Ten
+ * seconds is two guard passes: long enough for the entry's own stop to be
+ * observed, short enough that a genuinely naked position is still caught
+ * within the §17 reconciliation spirit.
+ */
+export const MANUAL_PROTECTION_GRACE_MILLIS = 10_000;
+
+/**
+ * Whether a manual position is still inside the post-entry grace window.
+ * `openedAt` is the snapshot's `opened_at` (first observation of the
+ * position); null — a row from before the column was stamped — gets no grace.
+ */
+export const withinManualEntryGrace = (openedAt: number | null, nowMs: number): boolean =>
+  openedAt !== null && nowMs - openedAt < MANUAL_PROTECTION_GRACE_MILLIS;
+
 /** Protection could not be established. */
 export class TradingProtectionError extends Schema.TaggedErrorClass<TradingProtectionError>()(
   "TradingProtectionError",

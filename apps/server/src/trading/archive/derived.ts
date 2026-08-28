@@ -86,6 +86,7 @@ function lastCandles(
   coin: string,
   interval: string,
   limit: number,
+  venue: string,
 ): ReadonlyArray<CandleRow> {
   return db
     .all<{
@@ -102,7 +103,7 @@ function lastCandles(
     }>(
       `SELECT ${CANDLE_COLUMNS} FROM candles ` +
         "WHERE venue = ? AND coin = ? AND interval = ? ORDER BY t DESC LIMIT ?",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       interval,
       limit,
@@ -123,10 +124,10 @@ function lastCandles(
 }
 
 /** Total bars stored for a series — the "does the archive hold it at all" check. */
-function candleCount(db: ArchiveDatabase, coin: string, interval: string): number {
+function candleCount(db: ArchiveDatabase, coin: string, interval: string, venue: string): number {
   const rows = db.all<{ total: number }>(
     "SELECT COUNT(*) AS total FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
     interval,
   );
@@ -139,17 +140,18 @@ function candlesClosedAfter(
   coin: string,
   interval: string,
   afterT: number,
+  venue: string,
 ): ReadonlyArray<CandleRow> {
-  return candlesInRange(db, coin, interval, afterT + 1, Number.MAX_SAFE_INTEGER).filter(
+  return candlesInRange(db, coin, interval, afterT + 1, Number.MAX_SAFE_INTEGER, venue).filter(
     (row) => row.tClose > afterT,
   );
 }
 
 /** The earliest funding timestamp recorded for a coin, or `null` when none. */
-function earliestFundingTime(db: ArchiveDatabase, coin: string): number | null {
+function earliestFundingTime(db: ArchiveDatabase, coin: string, venue: string): number | null {
   const rows = db.all<{ earliest: number | null }>(
     "SELECT MIN(time) AS earliest FROM funding WHERE venue = ? AND coin = ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
   );
   return rows[0]?.earliest ?? null;
@@ -167,12 +169,13 @@ function assetCtxInRange(
   coin: string,
   fromT: number,
   toT: number,
+  venue: string,
 ): ReadonlyArray<{ readonly ts: number; readonly openInterest: number; readonly premium: number }> {
   return db
     .all<CtxSampleColumns>(
       "SELECT ts, open_interest, premium FROM asset_ctx " +
         "WHERE venue = ? AND coin = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       fromT,
       toT,
@@ -192,12 +195,13 @@ function bookSamplesInRange(
   coin: string,
   fromT: number,
   toT: number,
+  venue: string,
 ): ReadonlyArray<{ readonly ts: number; readonly bidDepth5: number; readonly askDepth5: number }> {
   return db
     .all<BookSampleColumns>(
       "SELECT ts, bid_depth5, ask_depth5 FROM book_summary " +
         "WHERE venue = ? AND coin = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       fromT,
       toT,
@@ -241,10 +245,15 @@ function returnsOf(closes: ReadonlyArray<number>): ReadonlyArray<number> {
 }
 
 /** The close time of the newest stored bar for a series, or `null` when none. */
-function lastCandleClose(db: ArchiveDatabase, coin: string, interval: string): number | null {
+function lastCandleClose(
+  db: ArchiveDatabase,
+  coin: string,
+  interval: string,
+  venue: string,
+): number | null {
   const rows = db.all<{ latest: number | null }>(
     "SELECT MAX(t_close) AS latest FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
     interval,
   );
@@ -263,8 +272,9 @@ function refuseOnStale(
   coin: string,
   interval: BarInterval,
   now: number,
+  venue: string,
 ): DerivedMetricOutcome | null {
-  const latest = lastCandleClose(db, coin, interval);
+  const latest = lastCandleClose(db, coin, interval, venue);
   if (latest === null) {
     return null; // "no bars at all" is a window/archive answer the callers give.
   }
@@ -291,8 +301,9 @@ function refuseOnGap(
   interval: string,
   fromT: number,
   toT: number,
+  venue: string,
 ): DerivedMetricOutcome | null {
-  for (const gap of knownGaps(db, coin, interval)) {
+  for (const gap of knownGaps(db, coin, interval, venue)) {
     if (gap.fromT <= toT && gap.toT >= fromT) {
       return {
         status: "unavailable",
@@ -318,18 +329,19 @@ function requireBars(
   barsNeeded: number,
   gapFromT: number | null,
   now: number,
+  venue: string,
 ): { readonly bars: ReadonlyArray<CandleRow> } | DerivedMetricOutcome {
   const intervalMs = INTERVAL_MS[interval];
   const fromT = gapFromT ?? now - barsNeeded * intervalMs;
-  const staleRefusal = refuseOnStale(db, coin, interval, now);
+  const staleRefusal = refuseOnStale(db, coin, interval, now, venue);
   if (staleRefusal !== null) {
     return staleRefusal;
   }
-  const gapRefusal = refuseOnGap(db, coin, interval, fromT, now);
+  const gapRefusal = refuseOnGap(db, coin, interval, fromT, now, venue);
   if (gapRefusal !== null) {
     return gapRefusal;
   }
-  const bars = lastCandles(db, coin, interval, barsNeeded);
+  const bars = lastCandles(db, coin, interval, barsNeeded, venue);
   if (bars.length < barsNeeded) {
     return {
       status: "unavailable",
@@ -372,13 +384,16 @@ function coveredMinuteSamples<T extends { readonly ts: number }>(
 
 /**
  * Compute one derived metric for `coin` from the archive. Pure: the same
- * handle, params, and context always produce the same outcome.
+ * handle, params, context, and venue always produce the same outcome. `venue`
+ * is the archive venue of the network being traded — a testnet evaluation
+ * must never read mainnet rows.
  */
 export function derivedMetricValue(
   db: ArchiveDatabase,
   coin: string,
   params: DerivedMetricParams,
   ctx: DerivedMetricContext,
+  venue: string = ARCHIVE_VENUE,
 ): DerivedMetricOutcome {
   switch (params.metric) {
     case "funding_mean":
@@ -390,8 +405,8 @@ export function derivedMetricValue(
       // NOT scale it to an 8h equivalent here. Agents that need the 8h unit
       // read `funding_stats` (meanPer8h) or the snapshot's `fundingRate8h`.
       const from = ctx.now - params.windowDays * DAY_MS;
-      const rows = fundingInRange(db, coin, from, ctx.now);
-      const earliest = earliestFundingTime(db, coin);
+      const rows = fundingInRange(db, coin, from, ctx.now, venue);
+      const earliest = earliestFundingTime(db, coin, venue);
       if (rows.length === 0 || earliest === null) {
         return {
           status: "unavailable",
@@ -423,8 +438,8 @@ export function derivedMetricValue(
           detail: "no open position to accumulate since",
         };
       }
-      const rows = fundingInRange(db, coin, entryAt, ctx.now);
-      const earliest = earliestFundingTime(db, coin);
+      const rows = fundingInRange(db, coin, entryAt, ctx.now, venue);
+      const earliest = earliestFundingTime(db, coin, venue);
       if (rows.length === 0 || earliest === null || earliest > entryAt) {
         return {
           status: "unavailable",
@@ -439,7 +454,15 @@ export function derivedMetricValue(
 
     case "sigma_return": {
       // The last bar's return in population-σ units of the trailing period returns.
-      const needed = requireBars(db, coin, params.interval, params.period + 1, null, ctx.now);
+      const needed = requireBars(
+        db,
+        coin,
+        params.interval,
+        params.period + 1,
+        null,
+        ctx.now,
+        venue,
+      );
       if (!("bars" in needed)) return needed;
       const returns = returnsOf(needed.bars.map((bar) => bar.c));
       const sigma = populationStdev(returns);
@@ -452,7 +475,7 @@ export function derivedMetricValue(
     case "sigma_distance": {
       // The last close's distance from the window mean (or seeded EMA) in
       // population-σ units of the closes.
-      const needed = requireBars(db, coin, params.interval, params.period, null, ctx.now);
+      const needed = requireBars(db, coin, params.interval, params.period, null, ctx.now, venue);
       if (!("bars" in needed)) return needed;
       const closes = needed.bars.map((bar) => bar.c);
       const mu =
@@ -468,7 +491,7 @@ export function derivedMetricValue(
 
     case "sigma_ratio": {
       // Fast-window return σ over slow-window return σ — vol regime shift.
-      const needed = requireBars(db, coin, params.interval, params.slow + 1, null, ctx.now);
+      const needed = requireBars(db, coin, params.interval, params.slow + 1, null, ctx.now, venue);
       if (!("bars" in needed)) return needed;
       const returns = returnsOf(needed.bars.map((bar) => bar.c));
       const sigmaFast = populationStdev(returns.slice(returns.length - params.fast));
@@ -481,7 +504,7 @@ export function derivedMetricValue(
 
     case "ema_distance": {
       // The last close's relative distance from the seeded EMA of its window.
-      const needed = requireBars(db, coin, params.interval, params.period, null, ctx.now);
+      const needed = requireBars(db, coin, params.interval, params.period, null, ctx.now, venue);
       if (!("bars" in needed)) return needed;
       const closes = needed.bars.map((bar) => bar.c);
       const ema = seededEma(closes, params.period);
@@ -495,7 +518,7 @@ export function derivedMetricValue(
       // Open-interest change across the covered window: (last − first)/first.
       const from = ctx.now - params.windowMinutes * MINUTE_MS;
       const covered = coveredMinuteSamples(
-        assetCtxInRange(db, coin, from, ctx.now),
+        assetCtxInRange(db, coin, from, ctx.now, venue),
         from,
         params.windowMinutes,
         coin,
@@ -520,7 +543,7 @@ export function derivedMetricValue(
       // Mean of the premium samples inside the covered window.
       const from = ctx.now - params.windowMinutes * MINUTE_MS;
       const covered = coveredMinuteSamples(
-        assetCtxInRange(db, coin, from, ctx.now),
+        assetCtxInRange(db, coin, from, ctx.now, venue),
         from,
         params.windowMinutes,
         coin,
@@ -535,7 +558,7 @@ export function derivedMetricValue(
       // samples with no ask-side depth (a one-sided book is not a ratio).
       const from = ctx.now - params.windowMinutes * MINUTE_MS;
       const covered = coveredMinuteSamples(
-        bookSamplesInRange(db, coin, from, ctx.now),
+        bookSamplesInRange(db, coin, from, ctx.now, venue),
         from,
         params.windowMinutes,
         coin,
@@ -570,18 +593,21 @@ export function derivedMetricValue(
           detail: "reference watch has not fired",
         };
       }
-      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now);
+      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now, venue);
       if (staleRefusal !== null) return staleRefusal;
-      const gapRefusal = refuseOnGap(db, coin, params.interval, sinceMs, ctx.now);
+      const gapRefusal = refuseOnGap(db, coin, params.interval, sinceMs, ctx.now, venue);
       if (gapRefusal !== null) return gapRefusal;
-      if (candleCount(db, coin, params.interval) === 0) {
+      if (candleCount(db, coin, params.interval, venue) === 0) {
         return {
           status: "unavailable",
           kind: "window",
           detail: `no ${params.interval} bars recorded for ${coin}`,
         };
       }
-      return { status: "ok", value: candlesClosedAfter(db, coin, params.interval, sinceMs).length };
+      return {
+        status: "ok",
+        value: candlesClosedAfter(db, coin, params.interval, sinceMs, venue).length,
+      };
     }
 
     case "hold_bars": {
@@ -594,18 +620,21 @@ export function derivedMetricValue(
           detail: "no open position to count bars since",
         };
       }
-      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now);
+      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now, venue);
       if (staleRefusal !== null) return staleRefusal;
-      const gapRefusal = refuseOnGap(db, coin, params.interval, entryAt, ctx.now);
+      const gapRefusal = refuseOnGap(db, coin, params.interval, entryAt, ctx.now, venue);
       if (gapRefusal !== null) return gapRefusal;
-      if (candleCount(db, coin, params.interval) === 0) {
+      if (candleCount(db, coin, params.interval, venue) === 0) {
         return {
           status: "unavailable",
           kind: "window",
           detail: `no ${params.interval} bars recorded for ${coin}`,
         };
       }
-      return { status: "ok", value: candlesClosedAfter(db, coin, params.interval, entryAt).length };
+      return {
+        status: "ok",
+        value: candlesClosedAfter(db, coin, params.interval, entryAt, venue).length,
+      };
     }
 
     case "vwap_distance": {
@@ -613,11 +642,11 @@ export function derivedMetricValue(
       // (Σ typical·v / Σ v over the bars that opened inside the current UTC
       // day), in population-σ units of the session's closes.
       const dayStart = Math.floor(ctx.now / DAY_MS) * DAY_MS;
-      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now);
+      const staleRefusal = refuseOnStale(db, coin, params.interval, ctx.now, venue);
       if (staleRefusal !== null) return staleRefusal;
-      const gapRefusal = refuseOnGap(db, coin, params.interval, dayStart, ctx.now);
+      const gapRefusal = refuseOnGap(db, coin, params.interval, dayStart, ctx.now, venue);
       if (gapRefusal !== null) return gapRefusal;
-      const bars = candlesInRange(db, coin, params.interval, dayStart, ctx.now);
+      const bars = candlesInRange(db, coin, params.interval, dayStart, ctx.now, venue);
       if (bars.length === 0) {
         return {
           status: "unavailable",

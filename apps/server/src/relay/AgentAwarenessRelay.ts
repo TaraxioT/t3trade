@@ -66,6 +66,56 @@ export function eventThreadId(event: OrchestrationEvent): ThreadId | null {
   return null;
 }
 
+/**
+ * The relay's reason for refusing a publish on authentication grounds, or null
+ * when the failure was anything else.
+ *
+ * Only an auth refusal is a verdict on the link itself. A transport failure is
+ * a blip on one publish and must leave the next thread free to try, or a single
+ * flaky request would silence awareness until the next restart.
+ */
+export function relayAuthRejectionReason(cause: Cause.Cause<unknown>): string | null {
+  const error = Cause.findErrorOption(cause);
+  if (Option.isNone(error)) {
+    return null;
+  }
+  const failure = error.value as { readonly _tag?: unknown; readonly reason?: unknown } | null;
+  return failure?._tag === "RelayAuthInvalidError" && typeof failure.reason === "string"
+    ? failure.reason
+    : null;
+}
+
+/**
+ * Whether publishing is parked: the relay has refused the very credential this
+ * publish would present.
+ *
+ * A different credential means the environment was re-linked since the refusal,
+ * so the latch lifts on its own and publishing resumes without a restart.
+ */
+export function isRelayLinkRejected(input: {
+  readonly rejectedCredential: string | null;
+  readonly credential: string;
+}): boolean {
+  return input.rejectedCredential === input.credential;
+}
+
+/**
+ * Whether a fresh auth refusal is worth a warning, or whether the standing one
+ * already said it.
+ *
+ * The boot snapshot publishes every active thread in turn, so an unlinked
+ * environment produces one refusal per thread — dozens on a busy install. Only
+ * the first refusal on a given credential is reported. A refusal that arrives
+ * with no credential to latch (the link was removed mid-publish) is always
+ * reported, because nothing can record it.
+ */
+export function shouldReportRelayAuthRejection(input: {
+  readonly rejectedCredential: string | null;
+  readonly credential: string | null;
+}): boolean {
+  return input.credential === null || input.credential !== input.rejectedCredential;
+}
+
 export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boolean {
   switch (event.type) {
     case "thread.message-sent":
@@ -300,6 +350,21 @@ export const make = Effect.gen(function* () {
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const activeSnapshotPublishedRef = yield* Ref.make(false);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  /**
+   * The environment credential the relay refused, or null while the link is
+   * believed good.
+   *
+   * An auth refusal is a standing answer about the link, not a blip on one
+   * thread: the environment is unlinked or unknown to the relay, and every
+   * other thread is about to hear the same thing. Without this latch the boot
+   * snapshot publishes each active thread in turn — one request and one
+   * identical warning apiece, dozens of them — and every later domain event
+   * adds another. The first refusal parks publishing and says so once.
+   *
+   * Re-linking writes a new credential, which no longer matches the latch, so
+   * publishing resumes on its own without a restart.
+   */
+  const relayAuthRejectedCredentialRef = yield* Ref.make<string | null>(null);
 
   const readSecretString = (name: string) =>
     secrets
@@ -355,6 +420,15 @@ export const make = Effect.gen(function* () {
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
     if (!relayConfig) {
       yield* Effect.logDebug("agent activity publish skipped; relay link credentials unavailable", {
+        threadId,
+      });
+      return;
+    }
+    const rejectedCredential = yield* Ref.get(relayAuthRejectedCredentialRef);
+    if (
+      isRelayLinkRejected({ rejectedCredential, credential: relayConfig.environmentCredential })
+    ) {
+      yield* Effect.logDebug("agent activity publish skipped; relay rejected this link", {
         threadId,
       });
       return;
@@ -500,13 +574,36 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Park publishing on the credential the relay just refused and report it
+   * once. A second refusal on the same credential is silent — the first one
+   * already said everything a later one would.
+   */
+  const noteRelayAuthRejection = (threadId: ThreadId, reason: string) =>
+    Effect.gen(function* () {
+      const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
+      const credential = relayConfig?.environmentCredential ?? null;
+      const rejectedCredential = yield* Ref.get(relayAuthRejectedCredentialRef);
+      if (!shouldReportRelayAuthRejection({ rejectedCredential, credential })) {
+        return;
+      }
+      yield* Ref.set(relayAuthRejectedCredentialRef, credential);
+      yield* Effect.logWarning(
+        "agent activity publishing paused; the relay rejected this environment's link. Re-link the environment in Settings → Connections to resume it.",
+        { threadId, reason, relayUrl: relayConfig?.url ?? null },
+      );
+    });
+
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
     publishThreadUnsafe(threadId).pipe(
       Effect.catchCause((cause) => {
-        return Effect.logWarning("agent activity publish failed", {
-          threadId,
-          cause: Cause.pretty(cause),
-        });
+        const reason = relayAuthRejectionReason(cause);
+        return reason === null
+          ? Effect.logWarning("agent activity publish failed", {
+              threadId,
+              cause: Cause.pretty(cause),
+            })
+          : noteRelayAuthRejection(threadId, reason);
       }),
       Effect.withSpan("AgentAwarenessRelay.publishThread"),
       withRelayClientTracing,

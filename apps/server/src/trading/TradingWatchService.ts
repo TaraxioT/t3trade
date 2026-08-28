@@ -253,8 +253,13 @@ const makeTradingWatchService = Effect.gen(function* () {
   const requireActiveMission = Effect.fn("TradingWatchService.requireActiveMission")(function* (
     missionId: string,
   ) {
-    const rows = yield* sql<{ readonly status: string }>`
-      SELECT status FROM trading_missions WHERE mission_id = ${missionId}
+    const rows = yield* sql<{
+      readonly status: string;
+      readonly venue: string;
+      readonly trading_account_id: string;
+    }>`
+      SELECT status, venue, trading_account_id
+      FROM trading_missions WHERE mission_id = ${missionId}
     `.pipe(Effect.mapError(sqlFail("requireActiveMission")));
 
     const row = rows[0];
@@ -282,11 +287,17 @@ const makeTradingWatchService = Effect.gen(function* () {
 
   const registerWatch: TradingWatchServiceShape["registerWatch"] = (input) =>
     Effect.gen(function* () {
-      yield* requireActiveMission(input.missionId);
+      const mission = yield* requireActiveMission(input.missionId);
 
       const now = yield* Clock.currentTimeMillis;
       const watchId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const watchJson = encodeWatch(input.watch);
+      // Migration 074's market-identity columns, filled the same way the
+      // account-watch insert fills them, so a query never has to parse
+      // `watch_json` to learn what a mission watch is about. `asset` is null
+      // for the two marketless watch types (order_update,
+      // scheduled_reassessment), exactly as 074's backfill left them.
+      const asset = "market" in input.watch ? input.watch.market : null;
 
       // One transaction, so a re-level never leaves the side it is re-levelling
       // momentarily unwatched — and a failure half-way leaves the OLD watch
@@ -318,11 +329,13 @@ const makeTradingWatchService = Effect.gen(function* () {
             yield* sql`
               INSERT INTO trading_watches
                 (watch_id, mission_id, watch_json, status, armed_reason, version,
-                 created_at, updated_at, prediction_version, armed_with_position)
+                 created_at, updated_at, prediction_version, armed_with_position,
+                 venue, asset, deliver, account_id)
               VALUES
                 (${watchId}, ${input.missionId}, ${watchJson}, 'active',
                  ${input.armedReason ?? null}, 1, ${now}, ${now},
-                 ${input.predictionVersion ?? null}, ${armedWithPosition})
+                 ${input.predictionVersion ?? null}, ${armedWithPosition},
+                 ${mission.venue}, ${asset}, 'wake', ${mission.trading_account_id})
             `;
 
             // §11.1 `analysing → waiting`, second actor (plan 29 step 4.4):

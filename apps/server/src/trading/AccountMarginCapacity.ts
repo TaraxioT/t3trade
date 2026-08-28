@@ -20,6 +20,41 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 /**
+ * A conservative isolated-margin liquidation estimate for a NEW entry.
+ *
+ * Hyperliquid's real liquidation price depends on margin mode, transferred
+ * margin, and the maintenance-margin tier; none of that is knowable at ticket
+ * time without another exchange call. This is the standard isolated
+ * approximation at full margin utilisation —
+ * long: `entry * (1 - 1/L + mmf)`, short mirrored — where the maintenance
+ * margin fraction is half the initial margin at the market's max leverage
+ * (`1 / (2 * maxLeverage)`, the venue's published rule). Extra isolated
+ * margin only pushes the true liquidation FURTHER from entry, so this
+ * estimate errs toward refusing: a stop the estimate calls unprotective is
+ * refused even when the exchange might have honoured it.
+ *
+ * Returns null when there is nothing to estimate from (no positive entry or
+ * leverage) — null is "unknown", never "safe".
+ */
+export const estimateIsolatedLiquidationPrice = (input: {
+  readonly side: "buy" | "sell";
+  readonly entryPrice: number;
+  /** The leverage the exchange has this market configured at for the account. */
+  readonly leverage: number;
+  /** The market's max leverage, for the maintenance fraction; falls back to `leverage`. */
+  readonly maxLeverage?: number | undefined;
+}): number | null => {
+  const { entryPrice, leverage } = input;
+  if (!(entryPrice > 0) || !(leverage > 0)) return null;
+  const tierLeverage =
+    input.maxLeverage !== undefined && input.maxLeverage > 0 ? input.maxLeverage : leverage;
+  const maintenanceMarginFraction = 1 / (2 * tierLeverage);
+  return input.side === "buy"
+    ? Math.max(0, entryPrice * (1 - 1 / leverage + maintenanceMarginFraction))
+    : entryPrice * (1 + 1 / leverage - maintenanceMarginFraction);
+};
+
+/**
  * The account's fundable notional, or null when there is no account value to
  * read. Null is "unknown", never "zero": an unreadable row must not bound an
  * entry, and must not price a cost line either.

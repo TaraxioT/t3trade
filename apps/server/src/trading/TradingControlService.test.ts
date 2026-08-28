@@ -48,6 +48,10 @@ interface Fake {
   transitions: string[];
   protectedCancels: Array<ReadonlyArray<string>>;
   protectionEscalates: boolean;
+  /** When set, every manual reduce-only IOC is rejected with this reason. */
+  manualExitRejection: string | null;
+  /** Fraction of each manual reduce-only IOC that fills (1 = fully). */
+  manualExitFillFraction: number;
 }
 
 const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
@@ -57,6 +61,8 @@ const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
   transitions: [],
   protectedCancels: [],
   protectionEscalates: false,
+  manualExitRejection: null,
+  manualExitFillFraction: 1,
   ...overrides,
 });
 
@@ -97,6 +103,21 @@ const executionLayer = (fake: Fake) =>
         );
         return [
           { cloid: "0xexit", status: "filled", role: "entry" },
+        ] as ReadonlyArray<TradingOrderResult>;
+      }),
+    submitManualReduceOnlyIoc: (input: { positionSize: number }) =>
+      Effect.sync(() => {
+        fake.exits.push(input.positionSize);
+        if (fake.manualExitRejection !== null) {
+          return [
+            { cloid: "0xmanual", status: "error", reason: fake.manualExitRejection, role: "entry" },
+          ] as ReadonlyArray<TradingOrderResult>;
+        }
+        const closable = Math.abs(input.positionSize) * fake.manualExitFillFraction;
+        const sign = fake.positionSize > 0 ? 1 : -1;
+        fake.positionSize = Number((fake.positionSize - sign * closable).toFixed(10));
+        return [
+          { cloid: "0xmanual", status: "filled", filledSize: closable, role: "entry" },
         ] as ReadonlyArray<TradingOrderResult>;
       }),
     submitCancel: (input: { cloid: string }) =>
@@ -418,5 +439,63 @@ it.effect("every control runs with no harness service in context", () =>
       summaries.every((s) => s.length > 0),
       true,
     );
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Manual close truthfulness (R2-2/R2-3): the summary reports what actually
+// happened on the exchange — closed, partly closed, or failed with the
+// exchange's verbatim rejection — never "partly closed" for an untouched
+// position.
+// ---------------------------------------------------------------------------
+
+const MANUAL = {
+  accountId: "acct_manual",
+  masterAddress: "0xmaster",
+  market: "ETH",
+};
+
+it.effect("manual close that fills nothing reports failure with the exchange's reason", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 0.2,
+      manualExitRejection: "Order could not immediately match against any resting orders.",
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeManualPosition(MANUAL));
+
+    assert.equal(outcome.outcome, "done");
+    if (outcome.outcome !== "done") return;
+    assert.equal(outcome.positionSize, 0.2);
+    assert.ok(outcome.summary.startsWith("Close failed"), outcome.summary);
+    assert.ok(
+      outcome.summary.includes("Order could not immediately match against any resting orders."),
+      outcome.summary,
+    );
+    assert.ok(!outcome.summary.includes("partly closed"), outcome.summary);
+  }),
+);
+
+it.effect("manual close that half fills reports partly closed", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0.5, manualExitFillFraction: 0.5 });
+    const outcome = yield* runControl(fake, (s) => s.closeManualPosition(MANUAL));
+
+    assert.equal(outcome.outcome, "done");
+    if (outcome.outcome !== "done") return;
+    assert.ok(Math.abs(outcome.positionSize) > 0);
+    assert.ok(outcome.summary.includes("partly closed"), outcome.summary);
+    assert.ok(!outcome.summary.startsWith("Close failed"), outcome.summary);
+  }),
+);
+
+it.effect("manual close that fully fills reports closed", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0.3 });
+    const outcome = yield* runControl(fake, (s) => s.closeManualPosition(MANUAL));
+
+    assert.equal(outcome.outcome, "done");
+    if (outcome.outcome !== "done") return;
+    assert.equal(outcome.positionSize, 0);
+    assert.equal(outcome.summary, "Position closed.");
   }),
 );

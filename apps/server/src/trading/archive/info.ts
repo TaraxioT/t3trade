@@ -1,8 +1,9 @@
 /**
- * The public Info client the archiver reads mainnet through.
+ * The public Info client the archiver reads its network through — mainnet by
+ * default, testnet when `main.ts` passes the testnet URL.
  *
- * Not the repo's `HyperliquidInfoClient`: that one is Effect-shaped, points at
- * testnet, and carries the account-scoped reads this process must never make.
+ * Not the repo's `HyperliquidInfoClient`: that one is Effect-shaped and
+ * carries the account-scoped reads this process must never make.
  * This client posts four public bodies at one endpoint and returns `null`
  * instead of failing, because the archiver's contract with itself is that no
  * single bad response ends the recording.

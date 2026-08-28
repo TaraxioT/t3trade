@@ -134,7 +134,11 @@ const UPSERT_CANDLE_SQL =
   "c = excluded.c, v = excluded.v, n = excluded.n";
 
 /** Upsert a batch in one transaction. Returns how many rows were written. */
-export function upsertCandles(db: ArchiveDatabase, rows: ReadonlyArray<CandleRow>): number {
+export function upsertCandles(
+  db: ArchiveDatabase,
+  rows: ReadonlyArray<CandleRow>,
+  venue: string = ARCHIVE_VENUE,
+): number {
   if (rows.length === 0) {
     return 0;
   }
@@ -142,7 +146,7 @@ export function upsertCandles(db: ArchiveDatabase, rows: ReadonlyArray<CandleRow
     for (const row of rows) {
       db.run(
         UPSERT_CANDLE_SQL,
-        ARCHIVE_VENUE,
+        venue,
         row.coin,
         row.interval,
         row.t,
@@ -164,10 +168,11 @@ export function latestStoredOpen(
   db: ArchiveDatabase,
   coin: string,
   interval: string,
+  venue: string = ARCHIVE_VENUE,
 ): number | null {
   const rows = db.all<{ latest: number | null }>(
     "SELECT MAX(t) AS latest FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
     interval,
   );
@@ -188,12 +193,13 @@ export function recordKnownGap(
     readonly toT: number;
     readonly recordedAt: number;
   },
+  venue: string = ARCHIVE_VENUE,
 ): void {
   db.run(
     "INSERT INTO known_gaps (venue, coin, interval, from_t, to_t, recorded_at) " +
       "VALUES (?, ?, ?, ?, ?, ?) " +
       "ON CONFLICT(venue, coin, interval, from_t, to_t) DO NOTHING",
-    ARCHIVE_VENUE,
+    venue,
     gap.coin,
     gap.interval,
     gap.fromT,

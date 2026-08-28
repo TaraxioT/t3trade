@@ -17,9 +17,11 @@ import type {
   RelayAgentActivityState,
 } from "@t3tools/contracts/relay";
 import { CommandId, ProviderInstanceId } from "@t3tools/contracts";
+import { RelayAuthInvalidError } from "@t3tools/contracts/relay";
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import { RELAY_ACTIVITY_PUBLISH_TYP, verifyRelayJwt } from "@t3tools/shared/relayJwt";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -726,4 +728,89 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       }),
     ),
   );
+});
+
+describe("relayAuthRejectionReason", () => {
+  // Only an auth refusal is a verdict on the link. A transport blip is one bad
+  // publish, and treating it as a dead link would silence awareness for every
+  // other thread until the next restart.
+  it("names the reason for an auth refusal and nothing else", () => {
+    expect(
+      AgentAwarenessRelay.relayAuthRejectionReason(
+        Cause.fail(
+          new RelayAuthInvalidError({
+            code: "auth_invalid",
+            reason: "not_authorized",
+            traceId: "trace-1",
+          }),
+        ),
+      ),
+    ).toBe("not_authorized");
+    expect(
+      AgentAwarenessRelay.relayAuthRejectionReason(Cause.fail(new Error("socket hang up"))),
+    ).toBeNull();
+    expect(AgentAwarenessRelay.relayAuthRejectionReason(Cause.die("boom"))).toBeNull();
+  });
+});
+
+describe("the relay auth latch", () => {
+  // The boot snapshot publishes every active thread in turn. Once the relay has
+  // refused the link, publishing the rest is a retry storm and a wall of
+  // identical warnings — dozens of both on an unlinked install.
+  it("parks publishing on the credential the relay refused", () => {
+    expect(
+      AgentAwarenessRelay.isRelayLinkRejected({
+        rejectedCredential: "stale-credential",
+        credential: "stale-credential",
+      }),
+    ).toBe(true);
+    expect(
+      AgentAwarenessRelay.isRelayLinkRejected({
+        rejectedCredential: null,
+        credential: "stale-credential",
+      }),
+    ).toBe(false);
+  });
+
+  // Re-linking writes a new credential, so publishing resumes on its own.
+  it("lifts the latch once the environment is re-linked", () => {
+    expect(
+      AgentAwarenessRelay.isRelayLinkRejected({
+        rejectedCredential: "stale-credential",
+        credential: "fresh-credential",
+      }),
+    ).toBe(false);
+  });
+
+  it("reports the first refusal on a credential and stays quiet after it", () => {
+    expect(
+      AgentAwarenessRelay.shouldReportRelayAuthRejection({
+        rejectedCredential: null,
+        credential: "stale-credential",
+      }),
+    ).toBe(true);
+    expect(
+      AgentAwarenessRelay.shouldReportRelayAuthRejection({
+        rejectedCredential: "stale-credential",
+        credential: "stale-credential",
+      }),
+    ).toBe(false);
+    expect(
+      AgentAwarenessRelay.shouldReportRelayAuthRejection({
+        rejectedCredential: "stale-credential",
+        credential: "fresh-credential",
+      }),
+    ).toBe(true);
+  });
+
+  // Nothing can be latched against a link that is already gone, so the refusal
+  // is reported rather than swallowed.
+  it("reports a refusal that arrives with no credential to latch", () => {
+    expect(
+      AgentAwarenessRelay.shouldReportRelayAuthRejection({
+        rejectedCredential: null,
+        credential: null,
+      }),
+    ).toBe(true);
+  });
 });

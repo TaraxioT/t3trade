@@ -8,8 +8,12 @@
  * write it down as it goes by. Everything here is a value, not an operator
  * knob — the coins recorded come from the server's follow set.
  *
- * Mainnet only, public reads only. The archiver never authenticates, never
- * sees a key, and never touches an order endpoint.
+ * Public reads only. The archiver never authenticates, never sees a key, and
+ * never touches an order endpoint. Which Hyperliquid network it reads —
+ * mainnet or testnet — is decided by whoever starts the process: the
+ * supervised in-app archiver records the venue the app actually trades
+ * (passed down via `ARCHIVE_NETWORK_ENV`), while a hand-run archiver with no
+ * environment set keeps its historical default of mainnet.
  *
  * @module trading/archive/config
  */
@@ -31,11 +35,43 @@ import * as NodePath from "node:path";
 export const DEFAULT_SEED_COINS = ["BTC", "ETH"] as const;
 
 /**
- * The venue every row in the archive is recorded from today. The schema is
- * (venue, coin)-keyed since v2 so a second venue is a new writer, not a new
- * schema; until one exists, every read and write pins this value.
+ * The Hyperliquid network a run of the archiver records from. The schema is
+ * (venue, coin)-keyed since v2, so the two networks coexist in one file as
+ * two venues; every read and write pins the venue of the network it is for.
  */
-export const ARCHIVE_VENUE = "hyperliquid";
+export type ArchiveNetwork = "mainnet" | "testnet";
+
+/**
+ * The env var the ArchiveSupervisor sets on the spawned archiver child so the
+ * recorder reads the same network the app trades. The value is an
+ * `ArchiveNetwork`; anything else (including absence) means mainnet, which
+ * keeps a hand-run `node archive/main.ts` recording what it always has.
+ */
+export const ARCHIVE_NETWORK_ENV = "T3TRADE_ARCHIVE_NETWORK";
+
+/** Decode the env var (or any string) into a network. Unrecognized → mainnet. */
+export function archiveNetworkFromEnv(value: string | undefined): ArchiveNetwork {
+  return value === "testnet" ? "testnet" : "mainnet";
+}
+
+/**
+ * The venue string stamped on every row recorded from a network. `hyperliquid`
+ * is the only venue v1 ever recorded (mainnet); testnet rows carry their own
+ * venue so a chart of the traded market never silently mixes the two
+ * exchanges' prices.
+ */
+export const MAINNET_ARCHIVE_VENUE = "hyperliquid";
+export const TESTNET_ARCHIVE_VENUE = "hyperliquid-testnet";
+
+export function archiveVenue(network: ArchiveNetwork): string {
+  return network === "testnet" ? TESTNET_ARCHIVE_VENUE : MAINNET_ARCHIVE_VENUE;
+}
+
+/**
+ * The default venue for writes and reads that do not name one — the mainnet
+ * venue, matching every row recorded before the network became a choice.
+ */
+export const ARCHIVE_VENUE = MAINNET_ARCHIVE_VENUE;
 
 /**
  * How many coins are deeply recorded at once.
@@ -127,6 +163,22 @@ export const MAINNET_INFO_URL = "https://api.hyperliquid.xyz/info";
 
 /** Public mainnet WebSocket endpoint — the candle feed's counterpart to the Info URL. */
 export const MAINNET_WS_URL = "wss://api.hyperliquid.xyz/ws";
+
+/** Public testnet Info endpoint — the same pair the trading gateway uses. */
+export const TESTNET_INFO_URL = "https://api.hyperliquid-testnet.xyz/info";
+
+/** Public testnet WebSocket endpoint. */
+export const TESTNET_WS_URL = "wss://api.hyperliquid-testnet.xyz/ws";
+
+/** The Info endpoint for a network — a matched pair with `archiveWsUrl`. */
+export function archiveInfoUrl(network: ArchiveNetwork): string {
+  return network === "testnet" ? TESTNET_INFO_URL : MAINNET_INFO_URL;
+}
+
+/** The WebSocket endpoint for a network — a matched pair with `archiveInfoUrl`. */
+export function archiveWsUrl(network: ArchiveNetwork): string {
+  return network === "testnet" ? TESTNET_WS_URL : MAINNET_WS_URL;
+}
 
 /**
  * How often the candle feed pings the socket. Hyperliquid closes a connection

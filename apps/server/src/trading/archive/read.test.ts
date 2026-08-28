@@ -16,6 +16,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { parseAssetContexts, upsertAssetContexts } from "./assetCtx.ts";
+import { TESTNET_ARCHIVE_VENUE } from "./config.ts";
 import { summariseBook, upsertBookSummaries } from "./bookSummary.ts";
 import { recordKnownGap, upsertCandles, type CandleRow } from "./candles.ts";
 import { openArchiveDatabase, openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./db.ts";
@@ -422,6 +423,79 @@ describe("recentBookSummary", () => {
   it("returns nothing for a coin with no rows", () => {
     withArchive((db) => {
       assert.deepStrictEqual(recentBookSummary(db, "SOL", 10), []);
+    });
+  });
+});
+
+describe("venue filtering", () => {
+  // R5-1: the archive can hold both networks' recordings in one file, and a
+  // read for the traded venue must never return the other exchange's prices.
+  it("a testnet read never returns mainnet rows, and vice versa", () => {
+    withArchive((db) => {
+      upsertCandles(db, [candle(MINUTE, 101)]); // mainnet, the default venue
+      upsertCandles(db, [{ ...candle(MINUTE, 555), h: 556 }], TESTNET_ARCHIVE_VENUE);
+
+      assert.strictEqual(latestCandle(db, "BTC", "1m")?.c, 101);
+      assert.strictEqual(latestCandle(db, "BTC", "1m", TESTNET_ARCHIVE_VENUE)?.c, 555);
+      assert.deepStrictEqual(
+        candlesInRange(db, "BTC", "1m", 0, NOW, TESTNET_ARCHIVE_VENUE).map((row) => row.c),
+        [555],
+      );
+
+      // A coin recorded only on mainnet is absent from a testnet read.
+      upsertCandles(db, [{ ...candle(MINUTE, 42), coin: "ETH" }]);
+      assert.strictEqual(latestCandle(db, "ETH", "1m", TESTNET_ARCHIVE_VENUE), null);
+    });
+  });
+
+  it("funding, contexts, books and gaps filter the same way", () => {
+    withArchive((db) => {
+      upsertFunding(db, [{ coin: "BTC", time: NOW, fundingRate: 0.01, premium: 0 }]);
+      upsertFunding(
+        db,
+        [{ coin: "BTC", time: NOW, fundingRate: 0.99, premium: 0 }],
+        TESTNET_ARCHIVE_VENUE,
+      );
+      assert.strictEqual(recentFunding(db, "BTC", 10)[0]?.fundingRate, 0.01);
+      assert.strictEqual(recentFunding(db, "BTC", 10, TESTNET_ARCHIVE_VENUE)[0]?.fundingRate, 0.99);
+      assert.strictEqual(trailingMeanFunding(db, "BTC", 1, NOW, TESTNET_ARCHIVE_VENUE), 0.99);
+
+      const ctx = {
+        coin: "BTC",
+        ts: NOW,
+        openInterest: 1,
+        premium: 0,
+        oraclePx: 1,
+        markPx: 1,
+        dayNtlVolume: 1,
+        funding: 0,
+      };
+      upsertAssetContexts(db, [ctx], TESTNET_ARCHIVE_VENUE);
+      assert.strictEqual(latestAssetContext(db, "BTC"), null);
+      assert.strictEqual(latestAssetContext(db, "BTC", TESTNET_ARCHIVE_VENUE)?.ts, NOW);
+
+      const book = {
+        coin: "BTC",
+        ts: NOW,
+        bidPx: 99,
+        bidSz: 1,
+        askPx: 101,
+        askSz: 1,
+        bidDepth5: 5,
+        askDepth5: 5,
+      };
+      upsertBookSummaries(db, [book], TESTNET_ARCHIVE_VENUE);
+      assert.strictEqual(latestBookSummary(db, "BTC"), null);
+      assert.strictEqual(latestBookSummary(db, "BTC", TESTNET_ARCHIVE_VENUE)?.ts, NOW);
+
+      const at = { recordedAt: NOW };
+      recordKnownGap(
+        db,
+        { coin: "BTC", interval: "1m", fromT: 1_000, toT: 2_000, ...at },
+        TESTNET_ARCHIVE_VENUE,
+      );
+      assert.deepStrictEqual(knownGaps(db, "BTC", "1m"), []);
+      assert.strictEqual(knownGaps(db, "BTC", "1m", TESTNET_ARCHIVE_VENUE).length, 1);
     });
   });
 });

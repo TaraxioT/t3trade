@@ -49,23 +49,31 @@ const UPSERT_FUNDING_SQL =
   "ON CONFLICT(venue, coin, time) DO UPDATE SET " +
   "funding_rate = excluded.funding_rate, premium = excluded.premium";
 
-export function upsertFunding(db: ArchiveDatabase, rows: ReadonlyArray<FundingRow>): number {
+export function upsertFunding(
+  db: ArchiveDatabase,
+  rows: ReadonlyArray<FundingRow>,
+  venue: string = ARCHIVE_VENUE,
+): number {
   if (rows.length === 0) {
     return 0;
   }
   return db.transaction(() => {
     for (const row of rows) {
-      db.run(UPSERT_FUNDING_SQL, ARCHIVE_VENUE, row.coin, row.time, row.fundingRate, row.premium);
+      db.run(UPSERT_FUNDING_SQL, venue, row.coin, row.time, row.fundingRate, row.premium);
     }
     return rows.length;
   });
 }
 
 /** Newest stored funding timestamp for a coin, or `null` on a cold start. */
-export function latestFundingTime(db: ArchiveDatabase, coin: string): number | null {
+export function latestFundingTime(
+  db: ArchiveDatabase,
+  coin: string,
+  venue: string = ARCHIVE_VENUE,
+): number | null {
   const rows = db.all<{ latest: number | null }>(
     "SELECT MAX(time) AS latest FROM funding WHERE venue = ? AND coin = ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
   );
   return rows[0]?.latest ?? null;

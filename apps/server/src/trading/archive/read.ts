@@ -7,6 +7,11 @@
  * function here is a query and a shape: no caching, no clock of its own, no
  * side effects, so a caller can test against a temp file with synthetic rows.
  *
+ * Every query filters on `venue` — the archive can hold both networks'
+ * recordings in one file, and a read for the traded venue must never return
+ * the other exchange's prices. The parameter defaults to the mainnet venue so
+ * a caller that predates the choice keeps reading what it always has.
+ *
  * Open the handle with `openArchiveDatabase(archiveDatabasePath())`. Reads are
  * safe while the archiver is writing — the file is in WAL mode.
  *
@@ -52,11 +57,12 @@ export function latestCandle(
   db: ArchiveDatabase,
   coin: string,
   interval: string,
+  venue: string = ARCHIVE_VENUE,
 ): CandleRow | null {
   const rows = db.all<CandleColumns>(
     `SELECT ${CANDLE_COLUMNS} FROM candles ` +
       "WHERE venue = ? AND coin = ? AND interval = ? ORDER BY t DESC LIMIT 1",
-    ARCHIVE_VENUE,
+    venue,
     coin,
     interval,
   );
@@ -71,12 +77,13 @@ export function candlesInRange(
   interval: string,
   fromT: number,
   toT: number,
+  venue: string = ARCHIVE_VENUE,
 ): ReadonlyArray<CandleRow> {
   return db
     .all<CandleColumns>(
       `SELECT ${CANDLE_COLUMNS} FROM candles ` +
         "WHERE venue = ? AND coin = ? AND interval = ? AND t >= ? AND t <= ? ORDER BY t ASC",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       interval,
       fromT,
@@ -96,12 +103,13 @@ export function trailingMeanFunding(
   coin: string,
   days: number,
   now: number,
+  venue: string = ARCHIVE_VENUE,
 ): number | null {
   const since = now - days * 24 * 60 * 60 * 1_000;
   const rows = db.all<{ mean: number | null }>(
     "SELECT AVG(funding_rate) AS mean FROM funding " +
       "WHERE venue = ? AND coin = ? AND time >= ? AND time <= ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
     since,
     now,
@@ -135,11 +143,15 @@ const ASSET_CTX_COLUMNS =
   "coin, ts, open_interest, premium, oracle_px, mark_px, day_ntl_volume, funding";
 
 /** The most recent open-interest/premium sample for a coin. */
-export function latestAssetContext(db: ArchiveDatabase, coin: string): AssetCtxRow | null {
+export function latestAssetContext(
+  db: ArchiveDatabase,
+  coin: string,
+  venue: string = ARCHIVE_VENUE,
+): AssetCtxRow | null {
   const rows = db.all<AssetCtxColumns>(
     `SELECT ${ASSET_CTX_COLUMNS} FROM asset_ctx ` +
       "WHERE venue = ? AND coin = ? ORDER BY ts DESC LIMIT 1",
-    ARCHIVE_VENUE,
+    venue,
     coin,
   );
   const row = rows[0];
@@ -171,11 +183,15 @@ const toBookSummary = (row: BookSummaryColumns): BookSummaryRow => ({
 const BOOK_SUMMARY_COLUMNS = "coin, ts, bid_px, bid_sz, ask_px, ask_sz, bid_depth5, ask_depth5";
 
 /** The most recent book summary for a coin. */
-export function latestBookSummary(db: ArchiveDatabase, coin: string): BookSummaryRow | null {
+export function latestBookSummary(
+  db: ArchiveDatabase,
+  coin: string,
+  venue: string = ARCHIVE_VENUE,
+): BookSummaryRow | null {
   const rows = db.all<BookSummaryColumns>(
     `SELECT ${BOOK_SUMMARY_COLUMNS} FROM book_summary ` +
       "WHERE venue = ? AND coin = ? ORDER BY ts DESC LIMIT 1",
-    ARCHIVE_VENUE,
+    venue,
     coin,
   );
   const row = rows[0];
@@ -192,12 +208,13 @@ export function fundingInRange(
   coin: string,
   fromT: number,
   toT: number,
+  venue: string = ARCHIVE_VENUE,
 ): ReadonlyArray<FundingRow> {
   return db
     .all<{ coin: string; time: number; funding_rate: number; premium: number }>(
       "SELECT coin, time, funding_rate, premium FROM funding " +
         "WHERE venue = ? AND coin = ? AND time >= ? AND time <= ? ORDER BY time ASC",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       fromT,
       toT,
@@ -220,12 +237,13 @@ export function recentFunding(
   db: ArchiveDatabase,
   coin: string,
   limit: number,
+  venue: string = ARCHIVE_VENUE,
 ): ReadonlyArray<FundingRow> {
   return db
     .all<{ coin: string; time: number; funding_rate: number; premium: number }>(
       "SELECT coin, time, funding_rate, premium FROM funding " +
         "WHERE venue = ? AND coin = ? ORDER BY time DESC LIMIT ?",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       limit,
     )
@@ -243,12 +261,13 @@ export function recentAssetContext(
   db: ArchiveDatabase,
   coin: string,
   limit: number,
+  venue: string = ARCHIVE_VENUE,
 ): ReadonlyArray<AssetCtxRow> {
   return db
     .all<AssetCtxColumns>(
       `SELECT ${ASSET_CTX_COLUMNS} FROM asset_ctx ` +
         "WHERE venue = ? AND coin = ? ORDER BY ts DESC LIMIT ?",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       limit,
     )
@@ -263,12 +282,13 @@ export function recentBookSummary(
   db: ArchiveDatabase,
   coin: string,
   limit: number,
+  venue: string = ARCHIVE_VENUE,
 ): ReadonlyArray<BookSummaryRow> {
   return db
     .all<BookSummaryColumns>(
       `SELECT ${BOOK_SUMMARY_COLUMNS} FROM book_summary ` +
         "WHERE venue = ? AND coin = ? ORDER BY ts DESC LIMIT ?",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       limit,
     )
@@ -282,11 +302,14 @@ export function recentBookSummary(
  * collected, but a coin once followed keeps its history after being dropped,
  * and a digest over the archive should cover what the file actually holds.
  */
-export function archivedCoins(db: ArchiveDatabase): ReadonlyArray<string> {
+export function archivedCoins(
+  db: ArchiveDatabase,
+  venue: string = ARCHIVE_VENUE,
+): ReadonlyArray<string> {
   return db
     .all<{ coin: string }>(
       "SELECT DISTINCT coin FROM candles WHERE venue = ? ORDER BY coin ASC",
-      ARCHIVE_VENUE,
+      venue,
     )
     .map((row) => row.coin);
 }
@@ -300,10 +323,11 @@ export function earliestCandleTime(
   db: ArchiveDatabase,
   coin: string,
   interval: string,
+  venue: string = ARCHIVE_VENUE,
 ): number | null {
   const rows = db.all<{ earliest: number | null }>(
     "SELECT MIN(t) AS earliest FROM candles WHERE venue = ? AND coin = ? AND interval = ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
     interval,
   );
@@ -311,10 +335,14 @@ export function earliestCandleTime(
 }
 
 /** The earliest funding timestamp recorded for a coin, or `null` when none. */
-export function minFundingTime(db: ArchiveDatabase, coin: string): number | null {
+export function minFundingTime(
+  db: ArchiveDatabase,
+  coin: string,
+  venue: string = ARCHIVE_VENUE,
+): number | null {
   const rows = db.all<{ earliest: number | null }>(
     "SELECT MIN(time) AS earliest FROM funding WHERE venue = ? AND coin = ?",
-    ARCHIVE_VENUE,
+    venue,
     coin,
   );
   return rows[0]?.earliest ?? null;
@@ -325,11 +353,12 @@ export function assetCtxAtOrBefore(
   db: ArchiveDatabase,
   coin: string,
   ts: number,
+  venue: string = ARCHIVE_VENUE,
 ): AssetCtxRow | null {
   const rows = db.all<AssetCtxColumns>(
     `SELECT ${ASSET_CTX_COLUMNS} FROM asset_ctx ` +
       "WHERE venue = ? AND coin = ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
-    ARCHIVE_VENUE,
+    venue,
     coin,
     ts,
   );
@@ -354,6 +383,7 @@ export function knownGaps(
   db: ArchiveDatabase,
   coin: string,
   interval: string,
+  venue: string = ARCHIVE_VENUE,
 ): ReadonlyArray<KnownGap> {
   return db
     .all<{
@@ -365,7 +395,7 @@ export function knownGaps(
     }>(
       "SELECT coin, interval, from_t, to_t, recorded_at FROM known_gaps " +
         "WHERE venue = ? AND coin = ? AND interval = ? ORDER BY from_t ASC",
-      ARCHIVE_VENUE,
+      venue,
       coin,
       interval,
     )

@@ -150,6 +150,75 @@ layer("TradingManualEntryService", (it) => {
     }),
   );
 
+  // R6-2: the account's per-asset leverage (isolated 10x here, left behind by
+  // a mission era) is read from the last persisted snapshot; the mandatory
+  // stop must clear the conservative liquidation estimate that implies.
+  // At entry ~3001, 10x, maxLeverage 20 (mmf = 1/40): long liq ≈ 2775.9,
+  // short liq ≈ 3225 off the 3000 bid.
+  const seedInheritedLeverage = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_position_snapshots (
+        mission_id, market, size, entry_price, unrealised_pnl, margin_used,
+        protected_size, observed_at, leverage, account_id, venue, asset
+      ) VALUES (NULL, 'ETH', 0, NULL, 0, 0, 0, 5, 10, 'acct_1', 'hyperliquid', 'ETH')
+    `;
+  });
+
+  it.effect("refuses a long whose stop sits at or below the estimated liquidation", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedInheritedLeverage;
+      const service = yield* TradingManualEntryService;
+      const refused = yield* service.prepare({ ...request, stopPrice: 2_700 });
+      assert.equal(refused.outcome, "refused");
+      if (refused.outcome !== "refused") return;
+      assert.equal(refused.reason, "stop_beyond_liquidation");
+      assert.ok(refused.detail.includes("10x"), refused.detail);
+      assert.ok(refused.detail.includes("2775"), refused.detail);
+    }),
+  );
+
+  it.effect("refuses a short whose stop sits at or above the estimated liquidation", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedInheritedLeverage;
+      const service = yield* TradingManualEntryService;
+      const refused = yield* service.prepare({
+        ...request,
+        side: "sell",
+        stopPrice: 3_300,
+      });
+      assert.equal(refused.outcome, "refused");
+      if (refused.outcome !== "refused") return;
+      assert.equal(refused.reason, "stop_beyond_liquidation");
+      assert.ok(refused.detail.includes("3225"), refused.detail);
+    }),
+  );
+
+  it.effect("passes a protective stop through even at inherited leverage", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedInheritedLeverage;
+      const service = yield* TradingManualEntryService;
+      // 2950 is above the ~2775.9 long estimate: the stop fires before the
+      // exchange takes the position, so the ticket prices normally.
+      const prepared = yield* service.prepare({ ...request, stopPrice: 2_950 });
+      assert.equal(
+        prepared.outcome,
+        "prepared",
+        prepared.outcome === "refused" ? `${prepared.reason}: ${prepared.detail}` : "",
+      );
+      // And the short mirror: 3100 is below the ~3225 short estimate.
+      const short = yield* service.prepare({ ...request, side: "sell", stopPrice: 3_100 });
+      assert.equal(
+        short.outcome,
+        "prepared",
+        short.outcome === "refused" ? `${short.reason}: ${short.detail}` : "",
+      );
+    }),
+  );
+
   it.effect("prepares a sized ticket under the manual owner token, stop attached", () =>
     Effect.gen(function* () {
       yield* migrated;

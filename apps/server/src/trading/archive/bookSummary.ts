@@ -90,6 +90,7 @@ const UPSERT_BOOK_SQL =
 export function upsertBookSummaries(
   db: ArchiveDatabase,
   rows: ReadonlyArray<BookSummaryRow>,
+  venue: string = ARCHIVE_VENUE,
 ): number {
   if (rows.length === 0) {
     return 0;
@@ -98,7 +99,7 @@ export function upsertBookSummaries(
     for (const row of rows) {
       db.run(
         UPSERT_BOOK_SQL,
-        ARCHIVE_VENUE,
+        venue,
         row.coin,
         row.ts,
         row.bidPx,

@@ -9,7 +9,12 @@
  */
 import { describe, expect, it } from "vite-plus/test";
 
-import { coverageBands, sessionLevelLines } from "./marketChartOverlays";
+import {
+  coverageBands,
+  layoutSessionLabelYs,
+  SESSION_LABEL_MIN_SEPARATION,
+  sessionLevelLines,
+} from "./marketChartOverlays";
 
 describe("sessionLevelLines", () => {
   const levels = {
@@ -38,6 +43,58 @@ describe("sessionLevelLines", () => {
   it("is empty with no levels at all", () => {
     expect(sessionLevelLines(undefined, 0, 1_000)).toEqual([]);
     expect(sessionLevelLines({}, 0, 1_000)).toEqual([]);
+  });
+});
+
+describe("layoutSessionLabelYs", () => {
+  const frameHeight = 160;
+
+  it("leaves labels already far enough apart where they are", () => {
+    const ys = layoutSessionLabelYs(
+      [
+        { key: "do", y: 20 },
+        { key: "vwap", y: 80 },
+      ],
+      frameHeight,
+    );
+    expect(ys.get("do")).toBe(20);
+    expect(ys.get("vwap")).toBe(80);
+  });
+
+  it("folds colliding labels apart by at least the minimum separation", () => {
+    // "open 81.18" printed on "vwap 81.14" was the observed collision: two
+    // levels a few cents apart land within a line of each other.
+    const ys = layoutSessionLabelYs(
+      [
+        { key: "do", y: 70 },
+        { key: "vwap", y: 72 },
+        { key: "dh", y: 73 },
+      ],
+      frameHeight,
+    );
+    const placed = [ys.get("do")!, ys.get("vwap")!, ys.get("dh")!];
+    expect(placed[1]! - placed[0]!).toBeGreaterThanOrEqual(SESSION_LABEL_MIN_SEPARATION);
+    expect(placed[2]! - placed[1]!).toBeGreaterThanOrEqual(SESSION_LABEL_MIN_SEPARATION);
+    // The cluster stays anchored at its own level, not pushed off elsewhere.
+    expect(placed[0]).toBe(70);
+  });
+
+  it("keeps a cluster at the bottom edge inside the frame", () => {
+    const ys = layoutSessionLabelYs(
+      [
+        { key: "dl", y: 158 },
+        { key: "pdl", y: 159 },
+      ],
+      frameHeight,
+    );
+    const bottom = frameHeight - SESSION_LABEL_MIN_SEPARATION;
+    expect(ys.get("pdl")).toBeLessThanOrEqual(bottom);
+    expect(ys.get("pdl")! - ys.get("dl")!).toBeGreaterThanOrEqual(SESSION_LABEL_MIN_SEPARATION);
+    expect(ys.get("dl")).toBeGreaterThanOrEqual(0);
+  });
+
+  it("is empty for no labels", () => {
+    expect(layoutSessionLabelYs([], frameHeight).size).toBe(0);
   });
 });
 

@@ -14,7 +14,14 @@
 
 // @effect-diagnostics globalTimers:off - a standalone always-on process.
 import { runArchiver } from "./archiver.ts";
-import { archiveDatabasePath } from "./config.ts";
+import {
+  ARCHIVE_NETWORK_ENV,
+  archiveDatabasePath,
+  archiveInfoUrl,
+  archiveNetworkFromEnv,
+  archiveVenue,
+  archiveWsUrl,
+} from "./config.ts";
 import { openArchiveDatabase } from "./db.ts";
 import { makeInfoClient } from "./info.ts";
 import { describeError, logInfo, logWarn } from "./log.ts";
@@ -23,9 +30,14 @@ import { startCandleFeed } from "./ws.ts";
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 async function main(): Promise<void> {
+  // The supervised child records the network the app trades — the supervisor
+  // passes it down from the trading gateway's own endpoint decision. A
+  // hand-run archiver with nothing set keeps recording mainnet.
+  const network = archiveNetworkFromEnv(process.env[ARCHIVE_NETWORK_ENV]);
+  const venue = archiveVenue(network);
   const path = archiveDatabasePath();
   const db = openArchiveDatabase(path);
-  logInfo(`archiver: mainnet public data -> ${path}`);
+  logInfo(`archiver: ${network} public data (venue ${venue}) -> ${path}`);
 
   // The first signal asks the loop to stop at its next checkpoint; a second
   // one leaves immediately. Leaving immediately is safe — every write is an
@@ -46,10 +58,11 @@ async function main(): Promise<void> {
   try {
     await runArchiver({
       db,
-      info: makeInfoClient(),
+      info: makeInfoClient(archiveInfoUrl(network)),
       shouldContinue: () => running,
       sleep,
-      makeFeed: (onCandle) => startCandleFeed({ onCandle }),
+      makeFeed: (onCandle) => startCandleFeed({ onCandle, url: archiveWsUrl(network) }),
+      venue,
     });
   } finally {
     db.close();

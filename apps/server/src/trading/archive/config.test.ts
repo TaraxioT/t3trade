@@ -6,7 +6,47 @@
  */
 import { assert, describe, it } from "@effect/vitest";
 
-import { DEFAULT_SEED_COINS, MAX_ARCHIVE_COINS, readArchiveCoins } from "./config.ts";
+import {
+  DEFAULT_SEED_COINS,
+  MAINNET_ARCHIVE_VENUE,
+  MAINNET_INFO_URL,
+  MAINNET_WS_URL,
+  MAX_ARCHIVE_COINS,
+  TESTNET_ARCHIVE_VENUE,
+  TESTNET_INFO_URL,
+  TESTNET_WS_URL,
+  archiveInfoUrl,
+  archiveNetworkFromEnv,
+  archiveVenue,
+  archiveWsUrl,
+  readArchiveCoins,
+} from "./config.ts";
+
+describe("archive network selection", () => {
+  // The supervised child records the network the app trades; a hand-run
+  // archiver with nothing set must keep recording mainnet, so only the exact
+  // value "testnet" flips the switch.
+  it("reads testnet from the env var and mainnet from everything else", () => {
+    assert.strictEqual(archiveNetworkFromEnv("testnet"), "testnet");
+    assert.strictEqual(archiveNetworkFromEnv("mainnet"), "mainnet");
+    assert.strictEqual(archiveNetworkFromEnv(undefined), "mainnet");
+    assert.strictEqual(archiveNetworkFromEnv(""), "mainnet");
+    assert.strictEqual(archiveNetworkFromEnv("TESTNET"), "mainnet");
+  });
+
+  // Venue and endpoints are a matched triple per network: rows recorded from
+  // the testnet feed must never carry the mainnet venue, and vice versa.
+  it("maps each network onto its matched venue and endpoint pair", () => {
+    assert.strictEqual(archiveVenue("mainnet"), MAINNET_ARCHIVE_VENUE);
+    assert.strictEqual(archiveInfoUrl("mainnet"), MAINNET_INFO_URL);
+    assert.strictEqual(archiveWsUrl("mainnet"), MAINNET_WS_URL);
+    assert.strictEqual(archiveVenue("testnet"), TESTNET_ARCHIVE_VENUE);
+    assert.strictEqual(archiveInfoUrl("testnet"), TESTNET_INFO_URL);
+    assert.strictEqual(archiveWsUrl("testnet"), TESTNET_WS_URL);
+    assert.ok(TESTNET_INFO_URL.includes("hyperliquid-testnet"));
+    assert.ok(TESTNET_WS_URL.includes("hyperliquid-testnet"));
+  });
+});
 
 describe("readArchiveCoins", () => {
   const read = (contents: string) => () => contents;

@@ -36,6 +36,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
+import type { TradingOrderResult } from "@t3tools/trading-contracts/execution";
 import { PROTECTION_SIZE_EPSILON } from "@t3tools/trading-contracts/protection";
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
@@ -160,6 +161,29 @@ export type ManualCloseOutcome =
 /** How many reduce-only attempts one button press makes before reporting back. */
 const REDUCTION_ATTEMPTS = 2;
 
+/**
+ * The truthful three-way close report (R2-2): what actually happened on the
+ * exchange, not what was attempted. A close that filled nothing is a FAILURE
+ * and says so, carrying the exchange's own rejection verbatim — the old
+ * "Position partly closed" for an untouched position sent Round 2's operator
+ * away believing the exit had half worked while the exchange had refused it
+ * outright.
+ */
+export const describeCloseOutcome = (input: {
+  readonly market: string;
+  readonly positionSize: number;
+  readonly closedSize: number;
+  readonly failureReason: string | null;
+}): string => {
+  const remains = `${Math.abs(input.positionSize)} ${input.market} remains.`;
+  const exchangeSaid = input.failureReason === null ? "" : ` Exchange said: ${input.failureReason}`;
+  if (Math.abs(input.positionSize) <= PROTECTION_SIZE_EPSILON) return "Position closed.";
+  if (input.closedSize <= PROTECTION_SIZE_EPSILON) {
+    return `Close failed; nothing filled and ${remains}${exchangeSaid}`;
+  }
+  return `Position partly closed; ${remains}${exchangeSaid}`;
+};
+
 export const makeTradingControlService = Effect.gen(function* () {
   // SQL and the gateway are captured at layer build, not demanded per call.
   // §14.7's controls are invoked straight from a workspace button; making the
@@ -251,29 +275,41 @@ export const makeTradingControlService = Effect.gen(function* () {
       attempt: number,
       signedSize: number,
       referencePrice: number,
-    ) => Effect.Effect<unknown, TradingControlError>;
+    ) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingControlError>;
     /** Runs after each submit; the mission lane reconciles, the manual one waits on the reconciler's own cadence. */
     readonly betweenAttempts: Effect.Effect<void>;
     readonly logContext: string;
   }) =>
     Effect.gen(function* () {
       let position = yield* readPosition(input.exchangeInput);
-      let remainingToClose = Math.min(input.targetSize, Math.abs(position.size));
+      const startingSize = Math.abs(position.size);
+      let remainingToClose = Math.min(input.targetSize, startingSize);
+      // The exchange's own words for the attempts that did not fill, so the
+      // caller can report a close that closed nothing as the failure it is
+      // (R2-2) instead of narrating success.
+      const failureReasons: Array<string> = [];
 
       for (let attempt = 0; attempt < REDUCTION_ATTEMPTS; attempt++) {
         if (remainingToClose <= PROTECTION_SIZE_EPSILON) break;
         if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) break;
 
         const signed = position.size > 0 ? remainingToClose : -remainingToClose;
-        yield* input
-          .submit(attempt, signed, position.crossingPrice)
-          .pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning(
-                `${input.logContext}: reduce attempt ${attempt} did not submit: ${cause.message}`,
-              ),
+        const results = yield* input.submit(attempt, signed, position.crossingPrice).pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning(
+              `${input.logContext}: reduce attempt ${attempt} did not submit: ${cause.message}`,
             ),
-          );
+          ),
+          Effect.catch((cause) => {
+            failureReasons.push(cause.detail ?? cause.message);
+            return Effect.succeed([] as ReadonlyArray<TradingOrderResult>);
+          }),
+        );
+        for (const row of results) {
+          if (row.status === "error") {
+            failureReasons.push(row.reason ?? "rejected without a reason");
+          }
+        }
 
         yield* input.betweenAttempts;
 
@@ -283,7 +319,12 @@ export const makeTradingControlService = Effect.gen(function* () {
         remainingToClose = Math.max(0, remainingToClose - closed);
       }
 
-      return position.size;
+      return {
+        positionSize: position.size,
+        closedSize: Math.max(0, startingSize - Math.abs(position.size)),
+        /** The most recent rejection, verbatim; null when nothing was refused. */
+        failureReason: failureReasons.at(-1) ?? null,
+      };
     });
 
   /** The mission lane of {@link reduceLoop}. */
@@ -431,16 +472,20 @@ export const makeTradingControlService = Effect.gen(function* () {
       }
 
       const targetSize = Math.abs(position.size) * (input.percent / 100);
-      const remaining = yield* reduceBy({ ...input, targetSize });
+      const reduced = yield* reduceBy({ ...input, targetSize });
 
       // Protection is sized to the position, so a smaller position needs a
       // smaller stop — and the old one is oversized until it is replaced.
       // Reduce-only protection cannot over-close, so this is a tidy-up rather
       // than a safety fix, but leaving it stale would misreport coverage.
       return {
-        positionSize: remaining,
+        positionSize: reduced.positionSize,
         cancelledCloids: [],
-        summary: `Reduced by ${input.percent}%. ${Math.abs(remaining)} ${input.market} remains.`,
+        summary:
+          reduced.closedSize <= PROTECTION_SIZE_EPSILON
+            ? `Reduce failed; nothing filled and ${Math.abs(reduced.positionSize)} ${input.market} remains.` +
+              (reduced.failureReason === null ? "" : ` Exchange said: ${reduced.failureReason}`)
+            : `Reduced by ${input.percent}%. ${Math.abs(reduced.positionSize)} ${input.market} remains.`,
       } satisfies ControlOutcome;
     });
 
@@ -455,14 +500,19 @@ export const makeTradingControlService = Effect.gen(function* () {
         } satisfies ControlOutcome;
       }
 
-      const remaining = yield* reduceBy({ ...input, targetSize: Math.abs(position.size) });
+      const closed = yield* reduceBy({ ...input, targetSize: Math.abs(position.size) });
       return {
-        positionSize: remaining,
+        positionSize: closed.positionSize,
         cancelledCloids: [],
-        summary:
-          Math.abs(remaining) <= PROTECTION_SIZE_EPSILON
-            ? "Position closed."
-            : `Position partly closed; ${Math.abs(remaining)} ${input.market} remains.`,
+        // Truthful three-way report (R2-2): closed, partly closed, or — when
+        // nothing filled — a failure carrying the exchange's verbatim reason,
+        // never "partly closed" for a position that did not move.
+        summary: describeCloseOutcome({
+          market: input.market,
+          positionSize: closed.positionSize,
+          closedSize: closed.closedSize,
+          failureReason: closed.failureReason,
+        }),
       } satisfies ControlOutcome;
     });
 
@@ -513,7 +563,7 @@ export const makeTradingControlService = Effect.gen(function* () {
       }
 
       const percent = input.percent ?? 100;
-      const remaining = yield* reduceLoop({
+      const reduced = yield* reduceLoop({
         exchangeInput,
         targetSize: Math.abs(position.size) * (percent / 100),
         submit: (attempt, signedSize, referencePrice) =>
@@ -541,13 +591,20 @@ export const makeTradingControlService = Effect.gen(function* () {
       });
       return {
         outcome: "done",
-        positionSize: remaining,
+        positionSize: reduced.positionSize,
+        // Truthful report (R2-2): a partial reduce that filled reports the
+        // percent; anything else — including a close that filled NOTHING —
+        // goes through the shared three-way close description, exchange
+        // reason attached verbatim.
         summary:
-          Math.abs(remaining) <= PROTECTION_SIZE_EPSILON
-            ? "Position closed."
-            : percent === 100
-              ? `Position partly closed; ${Math.abs(remaining)} ${input.market} remains.`
-              : `Reduced by ${percent}%. ${Math.abs(remaining)} ${input.market} remains.`,
+          percent !== 100 && reduced.closedSize > PROTECTION_SIZE_EPSILON
+            ? `Reduced by ${percent}%. ${Math.abs(reduced.positionSize)} ${input.market} remains.`
+            : describeCloseOutcome({
+                market: input.market,
+                positionSize: reduced.positionSize,
+                closedSize: reduced.closedSize,
+                failureReason: reduced.failureReason,
+              }),
       } satisfies ManualCloseOutcome;
     });
 

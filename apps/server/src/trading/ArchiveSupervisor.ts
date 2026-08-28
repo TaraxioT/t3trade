@@ -29,12 +29,18 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
 
-import { archiveDatabasePath } from "./archive/config.ts";
+import { HyperliquidEndpoints, isTestnetEndpoints } from "@t3tools/hyperliquid/config";
+import { ARCHIVE_NETWORK_ENV, archiveDatabasePath, type ArchiveNetwork } from "./archive/config.ts";
+import {
+  TradingAccountProjection,
+  TradingAccountProjectionLive,
+} from "./TradingAccountProjection.ts";
 import { acquire, heartbeatLoop } from "./TradingRuntimeLease.ts";
 
 /** What the supervisor knows about the archiver right now. */
@@ -77,19 +83,57 @@ const HEALTHY_AFTER = Duration.minutes(2);
 /**
  * Where the archiver's entry file is, from wherever this module ended up.
  *
- * Two shapes: the source tree, where this file sits beside `archive/main.ts`,
- * and the packed CLI, where both were bundled into the same output directory.
+ * Two shapes. In the source tree this file sits beside `archive/main.ts`. In
+ * the packed CLI this module is inlined into `bin.mjs`, so `here` is the
+ * bundle root, and the archiver — packed as its own entry — keeps its path
+ * below it as `trading/archive/main.mjs`. Both entries land in one `vp pack`
+ * run; see `pack.entry` in `apps/server/vite.config.ts`.
+ *
  * Returns null when neither is found, which leaves the archiver off with a
  * reason rather than spawning something that does not exist.
  */
 export const resolveArchiverEntry = (moduleUrl: string): string | null => {
   const here = NodePath.dirname(NodeURL.fileURLToPath(moduleUrl));
-  const candidates = [NodePath.join(here, "archive", "main.ts"), NodePath.join(here, "main.js")];
+  const candidates = [
+    NodePath.join(here, "archive", "main.ts"),
+    NodePath.join(here, "trading", "archive", "main.mjs"),
+  ];
   return candidates.find((candidate) => NodeFS.existsSync(candidate)) ?? null;
 };
 
-const make = Effect.gen(function* () {
+/**
+ * The signal a child died from, pulled out of the failed `exitCode` read, or
+ * `null` when the failure is not a signal death. The Node spawner reports a
+ * signal-terminated child as a failure whose message names the signal
+ * ("Process interrupted due to receipt of signal: 'SIGKILL'"); the message may
+ * sit on the error itself or on a nested cause, so both are walked.
+ */
+export const exitSignal = (error: unknown): string | null => {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== null && current !== undefined; depth += 1) {
+    const record = current as { readonly message?: unknown; readonly cause?: unknown };
+    const message = typeof current === "string" ? current : record.message;
+    if (typeof message === "string") {
+      const match = /signal:\s*'?(SIG[A-Z0-9]+)'?/.exec(message);
+      if (match?.[1] !== undefined) return match[1];
+    }
+    current = typeof current === "string" ? undefined : record.cause;
+  }
+  return null;
+};
+
+/** Exported for tests: the supervisor's construction with its dependencies visible. */
+export const makeArchiveSupervisor = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  // The account view carries the archiver-health rider, and the account view
+  // refreshes only when this doorbell rings — so every supervisor transition
+  // rings it, exactly as the reconciler does after a pass (R1-1).
+  const projection = yield* TradingAccountProjection;
+  // The archiver records the venue the app trades. The network is derived
+  // from the trading gateway's own endpoint configuration — the same single
+  // decision the execution service makes — and passed to the child by env.
+  const endpoints = yield* HyperliquidEndpoints;
+  const network: ArchiveNetwork = isTestnetEndpoints(endpoints) ? "testnet" : "mainnet";
   /** Flipped by the heartbeat if another process takes the archive lock. */
   let ownsArchive = false;
 
@@ -108,7 +152,7 @@ const make = Effect.gen(function* () {
       running: false,
       pid: null,
       stoppedReason: reason,
-    }));
+    })).pipe(Effect.andThen(projection.invalidate({ reason: "archiver_stopped" })));
 
   /**
    * Run one child to completion, folding its stdout into the health state.
@@ -123,7 +167,10 @@ const make = Effect.gen(function* () {
   const runOnce = (entry: string) =>
     Effect.gen(function* () {
       const child = yield* spawner.spawn(
-        ChildProcess.make(NodeProcess.execPath, [entry], { extendEnv: true }),
+        ChildProcess.make(NodeProcess.execPath, [entry], {
+          extendEnv: true,
+          env: { [ARCHIVE_NETWORK_ENV]: network },
+        }),
       );
       yield* Ref.update(state, (current) => ({
         ...current,
@@ -131,7 +178,12 @@ const make = Effect.gen(function* () {
         pid: child.pid ?? null,
         stoppedReason: null,
       }));
-      yield* Effect.logInfo("ArchiveSupervisor: archiver started", { pid: child.pid, entry });
+      yield* projection.invalidate({ reason: "archiver_started" });
+      yield* Effect.logInfo("ArchiveSupervisor: archiver started", {
+        pid: child.pid,
+        entry,
+        network,
+      });
 
       yield* Stream.runForEach(
         Stream.splitLines(Stream.decodeText(child.stdout)),
@@ -149,8 +201,18 @@ const make = Effect.gen(function* () {
             : Effect.logDebug("archiver", { line: line.trim() }),
       );
 
-      const code = yield* child.exitCode;
-      yield* Effect.logWarning("ArchiveSupervisor: archiver exited", { code });
+      // A signal death (SIGKILL, a kill during shutdown) surfaces as a failed
+      // exit-code read; it is an ordinary way to operate the process, logged
+      // as information. Everything else stays a warning (R1-2).
+      yield* child.exitCode.pipe(
+        Effect.flatMap((code) => Effect.logWarning("ArchiveSupervisor: archiver exited", { code })),
+        Effect.catch((error) => {
+          const signal = exitSignal(error);
+          return signal === null
+            ? Effect.fail(error)
+            : Effect.logInfo(`ArchiveSupervisor: archiver exited (signal ${signal})`);
+        }),
+      );
     }).pipe(Effect.scoped);
 
   /**
@@ -184,6 +246,7 @@ const make = Effect.gen(function* () {
           restarts: current.restarts + 1,
           stoppedReason: "restarting",
         }));
+        yield* projection.invalidate({ reason: "archiver_restarting" });
 
         backoff =
           ranFor >= Duration.toMillis(HEALTHY_AFTER)
@@ -234,8 +297,16 @@ const make = Effect.gen(function* () {
   return { health: Ref.get(state), start } satisfies ArchiveSupervisorShape;
 });
 
+/**
+ * The projection is provided here (not by the runtime layer) so the
+ * supervisor's dependency stays local; Effect memoizes the layer by
+ * reference, so this is the same doorbell instance the reconciler, the alert
+ * services and the WS read path share.
+ */
 export const ArchiveSupervisorLive: Layer.Layer<
   ArchiveSupervisor,
   never,
-  ChildProcessSpawner.ChildProcessSpawner
-> = Layer.effect(ArchiveSupervisor, make);
+  ChildProcessSpawner.ChildProcessSpawner | SqlClient.SqlClient
+> = Layer.effect(ArchiveSupervisor, makeArchiveSupervisor).pipe(
+  Layer.provide(TradingAccountProjectionLive),
+);

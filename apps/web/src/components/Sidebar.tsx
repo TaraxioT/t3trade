@@ -1845,8 +1845,10 @@ export default function Sidebar() {
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   // Trading missions live on the primary (local) environment. Joined here by
-  // threadId so every row can carry its mission's state and P&L; polled on the
-  // same cadence the mission surfaces use, because the projection is pull-only.
+  // threadId so every row can carry its mission's state and P&L. Freshness
+  // rides the account doorbell like every other mission surface (see
+  // `tradingMissionsState`): the server publishes an invalidation on each
+  // trading event and each reconcile pass, and one refetch answers each ring.
   const missionSnapshot = useEnvironmentQuery(
     primaryEnvironmentId
       ? orchestrationEnvironment.tradingMissionSnapshot({
@@ -1856,9 +1858,25 @@ export default function Sidebar() {
       : null,
   );
   const refreshMissionSnapshot = missionSnapshot.refresh;
+  const missionInvalidation = useEnvironmentQuery(
+    primaryEnvironmentId
+      ? orchestrationEnvironment.tradingAccountInvalidations({
+          environmentId: primaryEnvironmentId,
+          input: {},
+        })
+      : null,
+  );
+  const missionInvalidationRevision = missionInvalidation.data?.revision ?? null;
+  useEffect(() => {
+    if (missionInvalidationRevision === null) return;
+    refreshMissionSnapshot();
+  }, [missionInvalidationRevision, refreshMissionSnapshot]);
+  // Slow backstop for what push cannot cover: an older server without the
+  // subscription RPC, or a subscription that failed without a session change
+  // to restart it. Same interval as `tradingMissionsState`.
   useEffect(() => {
     if (primaryEnvironmentId === null) return;
-    const id = window.setInterval(refreshMissionSnapshot, 3_000);
+    const id = window.setInterval(refreshMissionSnapshot, 30_000);
     return () => window.clearInterval(id);
   }, [primaryEnvironmentId, refreshMissionSnapshot]);
   const missionByThreadKey = useMemo(() => {

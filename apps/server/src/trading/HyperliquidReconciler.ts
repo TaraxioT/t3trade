@@ -1497,6 +1497,46 @@ function settleManualExecutions(
   }).pipe(Effect.mapError(manualPersistFail));
 }
 
+/**
+ * The `mission_id` a MANUAL account observation is stored under.
+ *
+ * `trading_account_observations` is keyed by `mission_id` alone (044), and a
+ * NULL there neither deduplicates nor attributes: SQLite's PK admits any
+ * number of NULL rows, and a NULL row names no account. So the manual pass
+ * stores its one row per account under this token instead. Joins to
+ * `trading_missions` never match it — which is the point: it is the
+ * account's row, not any mission's — and `TradingAccountProjection` parses
+ * the account id back out with {@link manualObservationAccountId}.
+ */
+export const manualObservationMissionId = (accountId: string): string => `manual:${accountId}`;
+
+/** The account id inside a manual observation's mission_id token, or null. */
+export const manualObservationAccountId = (missionId: string): string | null =>
+  missionId.startsWith("manual:") ? missionId.slice("manual:".length) : null;
+
+/**
+ * The manual pass's balance observation — the mirror of the mission pass's
+ * `persistAccountValue` (R2-4: with no active mission nothing wrote one, and
+ * the account view's balance froze at the last mission era's row). One row
+ * per account, overwritten every pass, exactly like the mission row's cadence.
+ */
+function persistManualAccountValue(
+  input: ManualReconcileInput,
+  accountValue: number,
+  observedAt: number,
+): Effect.Effect<void, never, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const missionId = manualObservationMissionId(input.accountId);
+    yield* sql`
+      INSERT INTO trading_account_observations (mission_id, account_value, observed_at)
+      VALUES (${missionId}, ${accountValue}, ${observedAt})
+      ON CONFLICT(mission_id) DO UPDATE SET
+        account_value = ${accountValue}, observed_at = ${observedAt}
+    `;
+  }).pipe(Effect.ignore);
+}
+
 const manualPersistFail = (cause: unknown): TradingReconciliationError =>
   new TradingReconciliationError({
     reason: "persist_failed",
@@ -1549,6 +1589,7 @@ export const reconcileManualExposure = (
           } satisfies TradingPositionSnapshot);
 
     yield* persistManualPosition(input, position, observedAt);
+    yield* persistManualAccountValue(input, account.accountValue, observedAt);
     yield* persistManualFills(input, fills);
     yield* persistManualOpenOrders(input, canonicalOrders, observedAt);
     yield* settleManualExecutions(input, canonicalOrders, observedAt);

@@ -96,7 +96,11 @@ const UPSERT_ASSET_CTX_SQL =
   "oracle_px = excluded.oracle_px, mark_px = excluded.mark_px, " +
   "day_ntl_volume = excluded.day_ntl_volume, funding = excluded.funding";
 
-export function upsertAssetContexts(db: ArchiveDatabase, rows: ReadonlyArray<AssetCtxRow>): number {
+export function upsertAssetContexts(
+  db: ArchiveDatabase,
+  rows: ReadonlyArray<AssetCtxRow>,
+  venue: string = ARCHIVE_VENUE,
+): number {
   if (rows.length === 0) {
     return 0;
   }
@@ -104,7 +108,7 @@ export function upsertAssetContexts(db: ArchiveDatabase, rows: ReadonlyArray<Ass
     for (const row of rows) {
       db.run(
         UPSERT_ASSET_CTX_SQL,
-        ARCHIVE_VENUE,
+        venue,
         row.coin,
         row.ts,
         row.openInterest,

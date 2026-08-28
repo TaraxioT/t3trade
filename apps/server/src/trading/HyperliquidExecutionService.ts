@@ -1049,7 +1049,11 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         cloid: input.cloid,
         stopPrice: input.stopPrice,
         positionSize: input.positionSize,
-        outcomes: outcome.statuses.map((row) => row.outcome),
+        // The exchange's own words ride along with the status: a bare
+        // `['error']` was un-root-causable from the server's logs (R2-3).
+        outcomes: outcome.statuses.map((row) =>
+          row.reason === undefined ? row.outcome : `${row.outcome}: ${row.reason}`,
+        ),
       });
       return outcome.statuses.map(
         (row) =>
@@ -1137,7 +1141,11 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       side,
       size,
       attempt: input.attempt,
-      outcomes: outcome.statuses.map((row) => row.outcome),
+      // The exchange's own words ride along with the status: a bare
+      // `['error']` was un-root-causable from the server's logs (R2-3).
+      outcomes: outcome.statuses.map((row) =>
+        row.reason === undefined ? row.outcome : `${row.outcome}: ${row.reason}`,
+      ),
     });
     return outcome.statuses.map(
       (row) =>

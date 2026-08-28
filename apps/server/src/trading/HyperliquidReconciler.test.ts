@@ -49,6 +49,8 @@ import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import {
   HyperliquidReconciler,
   HyperliquidReconcilerLive,
+  manualObservationMissionId,
+  reconcileManualExposure,
   type ReconcileInput,
 } from "./HyperliquidReconciler.ts";
 
@@ -1596,6 +1598,48 @@ layer("HyperliquidReconciler", (it) => {
         rows.map((r) => r.fill_id),
         ["0xnew-101-11000-3000-1-0"],
       );
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // R2-4: the 5s manual pass writes a balance observation of its own, so a
+  // missionless account's balance moves. One row per account under the
+  // `manual:<accountId>` token, overwritten each pass — never appended.
+  // -------------------------------------------------------------------------
+  it.effect("the manual pass writes one balance observation per account, overwritten", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        orders: [],
+        fills: [],
+      });
+      const manualInput = {
+        accountId: "acct_manual",
+        masterAddress: MASTER,
+        market: "ETH",
+      };
+
+      yield* reconcileManualExposure(manualInput);
+      const first = yield* sql<{
+        readonly mission_id: string;
+        readonly account_value: number;
+      }>`SELECT mission_id, account_value FROM trading_account_observations`;
+      assert.strictEqual(first.length, 1);
+      assert.strictEqual(first[0]?.mission_id, manualObservationMissionId("acct_manual"));
+      assert.strictEqual(first[0]?.account_value, 1000);
+
+      // The balance moved on the exchange; the next pass overwrites the same
+      // row rather than growing the table.
+      yield* setState({ account: snapshotFromClearinghouse(longClearinghouse) });
+      yield* reconcileManualExposure(manualInput);
+      const second = yield* sql<{
+        readonly mission_id: string;
+        readonly account_value: number;
+      }>`SELECT mission_id, account_value FROM trading_account_observations`;
+      assert.strictEqual(second.length, 1);
+      assert.strictEqual(second[0]?.account_value, 1020);
     }),
   );
 });

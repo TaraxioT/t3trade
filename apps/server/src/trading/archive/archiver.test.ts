@@ -20,6 +20,7 @@ import {
   ARCHIVE_INTERVALS,
   CANDLE_WINDOW_BARS,
   INTERVAL_MS,
+  TESTNET_ARCHIVE_VENUE,
   type ArchiveInterval,
 } from "./config.ts";
 import { openArchiveDatabase, type ArchiveDatabase } from "./db.ts";
@@ -132,6 +133,7 @@ async function runTicks(
   info: InfoClient,
   ticks: number,
   makeFeed?: (onCandle: (row: CandleRow) => void) => CandleFeed,
+  venue?: string,
 ): Promise<void> {
   let remaining = ticks;
   await runArchiver({
@@ -144,6 +146,7 @@ async function runTicks(
     },
     readCoins: () => COINS,
     ...(makeFeed === undefined ? {} : { makeFeed }),
+    ...(venue === undefined ? {} : { venue }),
   });
 }
 
@@ -204,6 +207,21 @@ describe("runArchiver", () => {
 
       const sampled = db.all<{ ts: number }>("SELECT DISTINCT ts FROM asset_ctx");
       assert.strictEqual(sampled[0]?.ts, alignToMinute(sampled[0]?.ts ?? 0));
+      db.close();
+    });
+  });
+
+  it("stamps every table with the venue the run was given", async () => {
+    // R5-1: the supervised archiver records the venue actually traded. A run
+    // handed the testnet venue must write it on every row, everywhere.
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      await runTicks(db, fakeInfo(), 1, undefined, TESTNET_ARCHIVE_VENUE);
+
+      for (const table of ["candles", "funding", "asset_ctx", "book_summary"]) {
+        const venues = db.all<{ venue: string }>(`SELECT DISTINCT venue FROM ${table}`);
+        assert.deepStrictEqual(venues, [{ venue: TESTNET_ARCHIVE_VENUE }], table);
+      }
       db.close();
     });
   });

@@ -68,6 +68,15 @@ export class TradingAccountProjection extends Context.Service<
 
 const toIso = (epochMillis: number): string => DateTime.formatIso(DateTime.makeUnsafe(epochMillis));
 
+/**
+ * The account id inside a manual observation's `manual:<accountId>` token —
+ * the row `HyperliquidReconciler.persistManualAccountValue` writes. Declared
+ * here rather than imported: the reconciler already imports this module, and
+ * a two-line parser is not worth a module cycle.
+ */
+const manualObservationAccountId = (missionId: string): string | null =>
+  missionId.startsWith("manual:") ? missionId.slice("manual:".length) : null;
+
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
 
 interface PositionRow {
@@ -98,7 +107,9 @@ interface OpenOrderRow {
 }
 
 interface BalanceRow {
-  readonly trading_account_id: string;
+  /** Null for a manual observation row whose token names no real mission. */
+  readonly trading_account_id: string | null;
+  readonly mission_id: string;
   readonly account_value: number;
   readonly observed_at: number;
 }
@@ -183,20 +194,23 @@ const makeTradingAccountProjection = Effect.gen(function* () {
         ORDER BY o.observed_at DESC
       `.pipe(Effect.mapError(sqlFail("orders")));
 
-      // Latest reconciled account value per account. The observations table is
-      // mission-keyed (one row per mission, overwritten per pass), so the
-      // account's balance is its most recently observed mission's row.
+      // Latest reconciled account value per account. The observations table
+      // is mission-keyed (one row per mission, overwritten per pass), plus
+      // one MANUAL row per account under the `manual:` token (R2-4: the 5s
+      // manual pass writes it, so a missionless account's balance still
+      // moves). Newest row wins regardless of which pass wrote it.
       const balances = yield* sql<BalanceRow>`
-        SELECT m.trading_account_id, a.account_value, a.observed_at
+        SELECT m.trading_account_id, a.mission_id, a.account_value, a.observed_at
         FROM trading_account_observations a
-        JOIN trading_missions m ON m.mission_id = a.mission_id
+        LEFT JOIN trading_missions m ON m.mission_id = a.mission_id
         ORDER BY a.observed_at DESC
       `.pipe(Effect.mapError(sqlFail("balances")));
 
       const latestBalance = new Map<string, BalanceRow>();
       for (const row of balances) {
-        if (!latestBalance.has(row.trading_account_id)) {
-          latestBalance.set(row.trading_account_id, row);
+        const accountId = row.trading_account_id ?? manualObservationAccountId(row.mission_id);
+        if (accountId !== null && !latestBalance.has(accountId)) {
+          latestBalance.set(accountId, row);
         }
       }
 

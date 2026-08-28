@@ -521,4 +521,45 @@ layer("TradingWatchService", (it) => {
       assert.equal(result._tag, "Failure");
     }),
   );
+
+  // R4-1: mission-armed watches carry migration 074's market-identity columns,
+  // the same way the account-watch insert fills them, so queries never have to
+  // parse `watch_json` to learn what a mission watch is about.
+  it.effect("fills 074's venue/asset/deliver/account_id columns on a mission watch", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      const watches = yield* TradingWatchService;
+
+      const { watch } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+      const rows = yield* sql<{
+        readonly venue: string;
+        readonly asset: string | null;
+        readonly deliver: string;
+        readonly account_id: string | null;
+      }>`
+        SELECT venue, asset, deliver, account_id FROM trading_watches
+        WHERE watch_id = ${watch.id}
+      `;
+      assert.deepStrictEqual(
+        { ...rows[0] },
+        { venue: "hyperliquid", asset: "ETH", deliver: "wake", account_id: "acct_1" },
+      );
+
+      // The marketless watch types keep a null asset, as 074's backfill did.
+      const { watch: reassess } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: { type: "scheduled_reassessment", runAt: 2_000 },
+      });
+      const marketless = yield* sql<{ readonly asset: string | null; readonly deliver: string }>`
+        SELECT asset, deliver FROM trading_watches WHERE watch_id = ${reassess.id}
+      `;
+      assert.equal(marketless[0]?.asset, null);
+      assert.equal(marketless[0]?.deliver, "wake");
+    }),
+  );
 });

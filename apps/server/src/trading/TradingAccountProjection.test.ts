@@ -196,6 +196,38 @@ layer("TradingAccountProjection", (it) => {
     }),
   );
 
+  it.effect("serves the manual balance observation when it is the newest (R2-4)", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedMission("mission_1", "account_a");
+      // The mission era's last observation, then a fresher one from the 5s
+      // manual pass — stored under the `manual:<accountId>` token because the
+      // observations table keys on mission_id alone. The frozen-balance bug
+      // was exactly this row not existing: nothing wrote for a missionless
+      // account, and the view served the mission era's stale number forever.
+      yield* sql`
+        INSERT INTO trading_account_observations (mission_id, account_value, observed_at)
+        VALUES ('mission_1', 891.70, 4000), ('manual:account_a', 868.71, 9000)
+      `;
+
+      const projection = yield* TradingAccountProjection;
+      const view = yield* projection.view();
+      const account = view.accounts.find((a) => a.accountId === "account_a")!;
+      assert.strictEqual(account.balanceUsd, 868.71);
+      assert.strictEqual(account.balanceObservedAt, "1970-01-01T00:00:09.000Z");
+
+      // And the reverse ordering: a newer mission row beats an older manual one.
+      yield* sql`
+        UPDATE trading_account_observations SET account_value = 900, observed_at = 12000
+        WHERE mission_id = 'mission_1'
+      `;
+      const after = yield* projection.view();
+      const accountAfter = after.accounts.find((a) => a.accountId === "account_a")!;
+      assert.strictEqual(accountAfter.balanceUsd, 900);
+    }),
+  );
+
   it.effect("invalidate publishes one doorbell event to a live subscriber", () =>
     Effect.gen(function* () {
       yield* migrated;

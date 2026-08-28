@@ -37,7 +37,7 @@ import type {
   TradingChartSessionLevels,
 } from "@t3tools/contracts";
 
-import { coverageBands, sessionLevelLines } from "./marketChartOverlays";
+import { coverageBands, layoutSessionLabelYs, sessionLevelLines } from "./marketChartOverlays";
 import { useMissionChartMode } from "./missionChartModeStore";
 import { isMomentSelected, useMissionSelection } from "./missionSelectionStore";
 import { cn } from "~/lib/utils";
@@ -712,6 +712,13 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     timeEnd: geometry.timeEnd,
   });
   const sessionLines = sessionLevelLines(sessionLevels, geometry.domainMin, geometry.domainMax);
+  // The labels folded apart: two session levels a few cents apart keep their
+  // rules at the true prices, but their one-line labels must not print on top
+  // of each other.
+  const sessionLabelYs = layoutSessionLabelYs(
+    sessionLines.map((line) => ({ key: line.key, y: geometry.yForPrice(line.price) })),
+    CHART_VIEWBOX_HEIGHT,
+  );
   const maxVolume =
     showVolume === true ? candles.reduce((max, candle) => Math.max(max, candle.volume), 0) : 0;
   const volumeByOpenTime =
@@ -1642,12 +1649,16 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       ))}
 
       {/* The session rules' labels (phase 6): tiny, muted, at the left end of
-          their rule, under it so they never sit on the grid labels above. */}
+          their rule, under it so they never sit on the grid labels above.
+          Docked at the folded y, so two levels a few cents apart still print
+          as two readable lines; the rules stay at their true prices. */}
       {sessionLines.map((line) => (
         <span
           key={`session-label-${line.key}`}
           className="pointer-events-none absolute left-1.5 pt-0.5 font-mono text-[9px] leading-none tabular-nums text-muted-foreground/80"
-          style={{ top: `${(geometry.yForPrice(line.price) / CHART_VIEWBOX_HEIGHT) * 100}%` }}
+          style={{
+            top: `${((sessionLabelYs.get(line.key) ?? geometry.yForPrice(line.price)) / CHART_VIEWBOX_HEIGHT) * 100}%`,
+          }}
           aria-hidden="true"
         >
           {line.label} {formatPrice(line.price)}
@@ -1656,12 +1667,15 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
 
       {/* The arm-at-price chip (phase 6): docked in the gutter at the pointer's
           own price while the affordance is on. Clicking it arms a notify watch
-          at that price — the chip is the statement, the click sends it. */}
+          at that price — the chip is the statement, the click sends it.
+          `z-10`, because the level gutter below is a later sibling that spans
+          the same strip: without an explicit layer the gutter wins hit-testing
+          and no mouse click ever reaches the chip. */}
       {onArmAtPrice !== undefined && armHover !== null && drag === null ? (
         <button
           type="button"
           data-testid="market-chart-arm-chip"
-          className="absolute right-1 flex -translate-y-1/2 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border border-armed/50 bg-background/85 px-1.5 py-[1.5px] font-mono text-[10px] leading-none text-armed outline-none backdrop-blur-sm hover:border-armed focus-visible:border-armed"
+          className="absolute right-1 z-10 flex -translate-y-1/2 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border border-armed/50 bg-background/85 px-1.5 py-[1.5px] font-mono text-[10px] leading-none text-armed outline-none backdrop-blur-sm hover:border-armed focus-visible:border-armed"
           style={{ top: `${(armHover.y / CHART_VIEWBOX_HEIGHT) * 100}%` }}
           aria-label={`Arm an alert at ${formatPrice(armHover.price)}`}
           onClick={() => onArmAtPrice(armHover.price)}

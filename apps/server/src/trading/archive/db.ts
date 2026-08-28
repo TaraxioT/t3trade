@@ -29,7 +29,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
-import { ARCHIVE_VENUE } from "./config.ts";
+import { MAINNET_ARCHIVE_VENUE } from "./config.ts";
 
 /** Values SQLite accepts as a bound parameter. */
 export type SqlValue = string | number | null;
@@ -181,7 +181,8 @@ function migrateV1ToV2(db: ArchiveDatabase): void {
       db.run(
         `INSERT INTO ${shadow} (venue, ${table.v1Columns}) ` +
           `SELECT ?, ${table.v1Columns} FROM ${table.name}`,
-        ARCHIVE_VENUE,
+        // v1 only ever recorded mainnet, whatever network this run is on.
+        MAINNET_ARCHIVE_VENUE,
       );
       db.run(`DROP TABLE ${table.name}`);
       db.run(`ALTER TABLE ${shadow} RENAME TO ${table.name}`);
