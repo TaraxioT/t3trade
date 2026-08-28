@@ -39,6 +39,7 @@ import { MissionLivePanel } from "./MissionLivePanel";
 import { MarketQuote } from "./ThreadMarketPanel";
 import { filterAccountsToMarket } from "./threadMarketPanelState";
 import { useThreadMarketCardCollapsed, useThreadMarketPanelStore } from "./threadMarketPanelStore";
+import { isMissionComplete } from "./tradingPresentation";
 
 /** The card's chart, at the panel's own height so both surfaces read alike. */
 const CHART_HEIGHT_CLASS = "h-[200px] min-h-0 w-full";
@@ -112,6 +113,12 @@ export function ThreadMarketCard({
   const collapsed = useThreadMarketCardCollapsed(threadKey);
   const setCollapsed = useThreadMarketPanelStore((state) => state.setCardCollapsed);
   const isOpen = !collapsed;
+
+  // A finished mission has no live market to card: its chart and its result are
+  // the completion summary in the timeline, and the panel states the net in one
+  // line. Rendering the header alone would leave a bar of chrome over an empty
+  // body, which is what a card with nothing in it is.
+  if (mission !== null && isMissionComplete(mission.status)) return null;
 
   return (
     <section
