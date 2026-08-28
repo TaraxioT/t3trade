@@ -71,6 +71,7 @@ import {
 } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler, reconcileManualExposure } from "./HyperliquidReconciler.ts";
 import { TradingAlertService } from "./TradingAlertService.ts";
+import { manualOrderAlertSummary } from "./alertProse.ts";
 import { manualOwnerMissionToken, TradingManualEntryService } from "./TradingManualEntryService.ts";
 import { LOCAL_TRADING_ACCOUNT_ID } from "./TradingAccountBootstrap.ts";
 import { recordTakeProfitOutcome } from "./TradingProtectionLedger.ts";
@@ -673,7 +674,12 @@ const make = Effect.gen(function* () {
       yield* appendManualOrderAlert({
         accountId,
         market: payload.market,
-        summary: `Manual ${payload.side} ${payload.market} refused: ${preparation.reason} — ${preparation.detail}`,
+        summary: manualOrderAlertSummary({
+          side: payload.side,
+          market: payload.market,
+          outcome: "refused",
+          detail: preparation.detail,
+        }),
         payload: { reason: preparation.reason, detail: preparation.detail },
       });
       return;
@@ -700,7 +706,13 @@ const make = Effect.gen(function* () {
                 appendManualOrderAlert({
                   accountId,
                   market: payload.market,
-                  summary: `Manual ${payload.side} ${payload.market} failed: ${cause.stage}${cause.detail === undefined ? "" : ` — ${cause.detail}`}`,
+                  summary: manualOrderAlertSummary({
+                    side: payload.side,
+                    market: payload.market,
+                    outcome: "failed",
+                    detail: cause.detail,
+                    stage: cause.stage,
+                  }),
                   payload: { stage: cause.stage, detail: cause.detail },
                 }),
               ),

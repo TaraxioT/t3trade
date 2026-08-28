@@ -96,7 +96,10 @@ const missionConflict = (input: {
   readonly threadTitle: string | null;
 }): AuthorityConflict => {
   const named = input.threadTitle !== null;
-  const holder = named ? `the chat "${input.threadTitle}"` : "another chat";
+  // Capitalized: `detail` is read as its own sentences wherever it lands — the
+  // model relays it into the chat, and a refusal that opens in lower case
+  // reads as the tail of a sentence the reader never saw.
+  const holder = named ? `The chat "${input.threadTitle}"` : "Another chat";
   // Where to go to end it. A titled chat is findable by that title; an
   // untitled one is only reachable the old way, and only while it holds a
   // position to be listed by.
@@ -146,7 +149,7 @@ const manualConflict = (input: {
 }): AuthorityConflict => ({
   market: input.market,
   heldBy: "your_own_hand",
-  detail: `you are in ${input.market} by hand, with a ${input.exposure.replace("_", " ")} on ${BOUND_VENUE}. An agent may not take a market its owner is already trading, so nothing was placed here.`,
+  detail: `You are in ${input.market} by hand, with a ${input.exposure.replace("_", " ")} on ${BOUND_VENUE}. An agent may not take a market its owner is already trading, so nothing was placed here.`,
   options: [
     `close or cancel that ${input.exposure.replace("_", " ")} on ${input.market}, then ask again`,
     "trade a different market from this chat instead",

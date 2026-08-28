@@ -1743,7 +1743,7 @@ it.effect("refuses a market another authority holds, and places nothing", () =>
         // "another mission" was all it used to say, which told the user a
         // market was taken and gave them nowhere to look: the chat's own title
         // is what they can find in the thread list.
-        assert.include(text, 'the chat "SOL momentum watch" already holds SOL');
+        assert.include(text, 'The chat "SOL momentum watch" already holds SOL');
         // What that mission is doing, since a waiting one is not on the trade
         // home and a position-holding one is.
         assert.include(text, "starting up");
