@@ -36,6 +36,7 @@ import { cn } from "../../lib/utils";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
+import { Skeleton } from "../ui/skeleton";
 import { formatPrice } from "./tradingPresentation";
 import { MissionPriceChart } from "./MissionPriceChart";
 import { describeControlFailure } from "./useMissionControls";
@@ -120,6 +121,12 @@ export function MarketChartPanel({
           {...(armable ? { onArmAtPrice: armAtPrice } : {})}
           {...(className === undefined ? {} : { className })}
         />
+      ) : chart.error === null && data === null ? (
+        // Switching timeframe re-reads the series under a new key, so `data`
+        // is null again for that beat. A skeleton at the chart's own height is
+        // what says so: the previous interval's candles left up would be a
+        // picture of bars the selector no longer names.
+        <Skeleton className={cn("w-full", className)} data-testid="market-chart-skeleton" />
       ) : (
         <div
           className={cn(
@@ -129,9 +136,7 @@ export function MarketChartPanel({
         >
           {chart.error !== null
             ? "Chart unavailable"
-            : data !== null
-              ? `Not enough ${interval} bars recorded for ${asset} yet.`
-              : "Loading chart…"}
+            : `Not enough ${interval} bars recorded for ${asset} yet.`}
         </div>
       )}
       <div className="flex items-center gap-2 px-1">

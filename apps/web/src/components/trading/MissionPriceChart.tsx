@@ -575,6 +575,8 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // same way. Candle is the default; the store owns that decision.
   const chartMode = useMissionChartMode((state) => state.mode);
   const toggleChartMode = useMissionChartMode((state) => state.toggle);
+  const showEma = useMissionChartMode((state) => state.showEma);
+  const toggleEma = useMissionChartMode((state) => state.toggleEma);
 
   // --- The chip lifecycle (phase 4): arm pulses once, retire fades once. ---
   //
@@ -676,6 +678,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // rather than to an empty plot. The toggle still shows the preference; the
   // data is what is missing.
   const drawCandles = chartMode === "candle" && geometry.bars.length > 0;
+  // Off is off: the polylines and the legend are both gated on this, so an
+  // EMA the trader turned off leaves no ghost of itself on the plot.
+  const drawEma = drawCandles && showEma;
 
   // While flat there is no P&L to tint by, so the line takes the window's own
   // direction — up over the hour is green, down is red — which is the rule the
@@ -1143,7 +1148,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             read as the overlay they are — and the cross of fast through slow is
             the strategy's own entry read, drawn from the same arithmetic the
             gate runs. Slow first (geometry orders them), so fast sits on top. */}
-          {drawCandles
+          {drawEma
             ? geometry.emaLines.map((line) => (
                 <polyline
                   key={`ema-${line.speed}`}
@@ -1601,7 +1606,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         className="absolute top-1 flex items-center gap-2 font-mono text-[9.5px] leading-none tabular-nums"
         style={{ right: `calc(${gutterPercent}% + 6px)` }}
       >
-        {drawCandles
+        {drawEma
           ? geometry.emaLines.map((line) => (
               <span
                 key={`ema-legend-${line.speed}`}
@@ -1630,6 +1635,26 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           </span>
           <span className={chartMode === "line" ? "text-foreground" : undefined}>line</span>
         </button>
+        {/* The EMA switch, in the mode control's own language: a segmented
+            pair, the active reading lit. Only offered where the overlay can be
+            drawn at all — over a close line there are no EMAs to turn off. */}
+        {chartMode === "candle" ? (
+          <button
+            type="button"
+            data-testid="mission-chart-ema-toggle"
+            aria-pressed={showEma}
+            className="flex cursor-pointer items-center gap-1 rounded-full border border-border/50 bg-background/70 px-1.5 py-[1.5px] font-mono text-[9.5px] leading-none text-muted-foreground outline-none backdrop-blur-sm transition-colors hover:border-border focus-visible:border-border"
+            aria-label={showEma ? "Hide the EMA overlay" : "Show the EMA overlay"}
+            onClick={toggleEma}
+          >
+            <span className="opacity-70">ema</span>
+            <span className={showEma ? "text-foreground" : undefined}>on</span>
+            <span className="opacity-40" aria-hidden>
+              ·
+            </span>
+            <span className={showEma ? undefined : "text-foreground"}>off</span>
+          </button>
+        ) : null}
       </div>
 
       {/* The grid's own prices, sitting just above their rules at the left of
