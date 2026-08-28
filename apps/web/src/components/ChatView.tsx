@@ -187,6 +187,7 @@ import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useTradingMissions } from "~/lib/tradingMissionsState";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
+import { ThreadMarketCard } from "./trading/ThreadMarketCard";
 import { ThreadMarketPanel } from "./trading/ThreadMarketPanel";
 import { selectThreadPanel } from "./trading/threadMarketPanelState";
 import { useTradingThreadMarketFocus } from "~/lib/tradingThreadMarketState";
@@ -6336,9 +6337,25 @@ function ChatViewContent(props: ChatViewProps) {
         environmentId={environmentId}
         asset={threadMarket}
         mission={threadPanel.chart === "mission" ? boundMission : null}
-        missions={missions}
         threadKey={routeThreadKey}
         layout={useCompanionChipLayout ? "chip" : "column"}
+      />
+    );
+
+  // The market itself: the chart and what is on it, docked above the composer
+  // inside the composer's own overlay, so the timeline's end inset already
+  // accounts for it and the card can never cover the conversation. Absent in
+  // the draft hero state, where the composer is centred and there is no thread
+  // for a market to belong to yet.
+  const threadMarketCard =
+    threadMarket === null || isDraftHeroState ? null : (
+      <ThreadMarketCard
+        key={`${routeThreadKey}:${threadMarket}:card`}
+        environmentId={environmentId}
+        asset={threadMarket}
+        mission={threadPanel.chart === "mission" ? boundMission : null}
+        missions={missions}
+        threadKey={routeThreadKey}
       />
     );
 
@@ -6553,7 +6570,10 @@ function ChatViewContent(props: ChatViewProps) {
                       <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                     </div>
                   ) : (
-                    <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
+                    <>
+                      {threadMarketCard}
+                      <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
+                    </>
                   )}
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />

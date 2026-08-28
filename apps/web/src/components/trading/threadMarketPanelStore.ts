@@ -20,6 +20,17 @@ import { persist } from "zustand/middleware";
 interface ThreadMarketPanelState {
   readonly collapsedByThreadKey: Readonly<Record<string, boolean>>;
   readonly setCollapsed: (threadKey: string, collapsed: boolean) => void;
+  /**
+   * The market card above the composer, which collapses on its own.
+   *
+   * A separate map, because the two surfaces answer different questions: the
+   * panel is "do I want the mission's log beside this conversation", the card
+   * is "do I want the chart and my positions under it". A trader reading the
+   * log while the chart is folded away is a real thing to want, and one flag
+   * for both would make it impossible.
+   */
+  readonly cardCollapsedByThreadKey: Readonly<Record<string, boolean>>;
+  readonly setCardCollapsed: (threadKey: string, collapsed: boolean) => void;
 }
 
 export const useThreadMarketPanelStore = create<ThreadMarketPanelState>()(
@@ -30,6 +41,11 @@ export const useThreadMarketPanelStore = create<ThreadMarketPanelState>()(
         set((state) => ({
           collapsedByThreadKey: { ...state.collapsedByThreadKey, [threadKey]: collapsed },
         })),
+      cardCollapsedByThreadKey: {},
+      setCardCollapsed: (threadKey, collapsed) =>
+        set((state) => ({
+          cardCollapsedByThreadKey: { ...state.cardCollapsedByThreadKey, [threadKey]: collapsed },
+        })),
     }),
     { name: "t3-thread-market-panel" },
   ),
@@ -38,4 +54,15 @@ export const useThreadMarketPanelStore = create<ThreadMarketPanelState>()(
 /** The thread's collapsed choice, or `fallback` where it has never made one. */
 export function useThreadMarketPanelCollapsed(threadKey: string, fallback: boolean): boolean {
   return useThreadMarketPanelStore((state) => state.collapsedByThreadKey[threadKey] ?? fallback);
+}
+
+/**
+ * Whether the market card above the composer is folded away.
+ *
+ * Expanded until the thread says otherwise: the card is the chart and the
+ * position the conversation is about, and hiding that by default would make
+ * the chat about a market with the market missing.
+ */
+export function useThreadMarketCardCollapsed(threadKey: string): boolean {
+  return useThreadMarketPanelStore((state) => state.cardCollapsedByThreadKey[threadKey] ?? false);
 }

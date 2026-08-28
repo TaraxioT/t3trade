@@ -1,34 +1,32 @@
 /**
  * The one panel beside the conversation.
  *
- * When a chat thread is about a market — seeded from the trade home, looked at
- * by the agent, or taken as trading authority — that market sits next to the
- * chat instead of a page away. One panel, one market, one chart, composed top
- * to bottom:
+ * When a chat thread is about a market, that market sits next to the chat
+ * instead of a page away. The panel is what the trader reads *about* the
+ * market rather than the market itself, composed top to bottom:
  *
  *   1. the market header: the asset, its mark and the day's move
- *   2. one chart: the mission chart with the plan's levels on it when a
- *      mission is bound, the plain market chart otherwise, never both
- *   3. the mission status strip, only when a mission is bound
- *   4. the positions on this market
- *   5. the agent log, which takes the rest and scrolls
+ *   2. the mission status strip, only when a mission is bound
+ *   3. the agent log, which takes the rest and scrolls
  *
- * A bound mission owns 2 to 5: `MissionLivePanel` draws all four from the
- * projection, and this file draws the header above it. Without a mission the
- * panel is the trade home's own components, composed — the phase-6
- * {@link MarketChartPanel} and {@link AccountPositionsPanel} filtered to the
- * one market. Nothing is forked, so a fix to either lands on both surfaces.
+ * The chart and the positions are not here. They live in {@link
+ * ThreadMarketCard}, docked above the composer in the chat column, because
+ * that is where the trader is already looking and because a chart beside a
+ * scrolling log is a chart nobody watches. One chart in the thread view, one
+ * place per card: the panel draws the mission's `status` half and the card
+ * draws its `market` half, off the same projection.
  *
- * No alerts here, in either case. The alert feed and its arm form live on the
- * trade home, next to each other, where an armed watch can be read back;
- * arming one from a thread put it somewhere the operator could not see it. The
- * chart's own hover-to-arm chip goes with them, gated off by `armable={false}`
- * rather than by a second chart component.
+ * Without a mission there is no strip and no log to draw, so the panel says
+ * so in one line rather than standing empty; the market itself is in the card.
  *
- * Two layouts, one component. `column` is the wide one: a fixed-width column to
- * the right of the chat, scrolling on its own. `chip` is the narrow one: a
+ * No alerts here either. The alert feed and its arm form live on the trade
+ * home, next to each other, where an armed watch can be read back.
+ *
+ * Two layouts, one component. `column` is the wide one: a fixed-width column
+ * to the right of the chat, scrolling on its own. `chip` is the narrow one: a
  * single row above the timeline that expands in place. Both live inside the
- * chat's own layout rather than over it, so neither can ever cover the composer.
+ * chat's own layout rather than over it, so neither can ever cover the
+ * composer.
  *
  * Collapse is persisted per thread (see `threadMarketPanelStore`) and is the
  * way out: the panel arrives on its own, so it must be dismissible without
@@ -41,18 +39,11 @@ import { ChevronDownIcon, ChevronRightIcon, PanelRightCloseIcon } from "lucide-r
 
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 
-import { useTradingAccountView } from "../../lib/tradingAccountState";
 import { cn } from "../../lib/utils";
-import { Skeleton } from "../ui/skeleton";
-import { AccountPositionsPanel } from "./AccountPositionsPanel";
-import { MarketChartPanel } from "./MarketChartPanel";
 import { MissionLivePanel } from "./MissionLivePanel";
-import { filterAccountsToMarket } from "./threadMarketPanelState";
 import { useThreadMarketPanelCollapsed, useThreadMarketPanelStore } from "./threadMarketPanelStore";
 import { formatPrice } from "./tradingPresentation";
 import { useTradingUniverseAssets } from "./UniverseAssetSearch";
-
-const CHART_HEIGHT_CLASS = "h-[220px] min-h-0 w-full";
 
 /**
  * The market's mark and day change.
@@ -63,7 +54,7 @@ const CHART_HEIGHT_CLASS = "h-[220px] min-h-0 w-full";
  * thread has) supplies the day's move, and the mark for threads with no
  * mission to ask.
  */
-function MarketQuote({
+export function MarketQuote({
   environmentId,
   asset,
   missionMark,
@@ -90,65 +81,22 @@ function MarketQuote({
 }
 
 /**
- * The panel's shape while the account read is in flight.
+ * What the panel says on a thread that is only looking at a market.
  *
- * Blocks at the heights their content will take, in the order it will take
- * them, so nothing jumps when the read lands. No spinner: a spinner says "wait"
- * without saying what for, and the layout it replaces already says it.
+ * There is no mission, so there is no status to strip and no agent log to
+ * draw. Saying that is better than an empty column: the market is in the card
+ * above the composer, and this says where to look and what would fill this
+ * space.
  */
-function ThreadMarketSkeleton() {
+function NoMissionBody({ asset }: { asset: string }) {
   return (
-    <div className="flex flex-col gap-3" data-testid="thread-market-skeleton">
-      <Skeleton className={CHART_HEIGHT_CLASS} />
-      <div className="flex flex-col gap-1.5">
-        <Skeleton className="h-4 w-20" />
-        <Skeleton className="h-8 w-full" />
-      </div>
-    </div>
-  );
-}
-
-/** The panel without a mission: the market's own chart and what is on it. */
-function ThreadMarketBody({
-  environmentId,
-  asset,
-  missions,
-}: {
-  environmentId: EnvironmentId;
-  asset: string;
-  missions: ReadonlyArray<OrchestrationTradingMission>;
-}) {
-  const account = useTradingAccountView(environmentId);
-  const accounts = account.data?.accounts ?? [];
-  const scoped = filterAccountsToMarket(accounts, asset);
-
-  if (account.data === null && account.isLoading) return <ThreadMarketSkeleton />;
-
-  return (
-    // Scrolls itself in the column layout, where the aside is bounded and does
-    // not. In the chip layout nothing bounds it, so nothing overflows.
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-      <MarketChartPanel
-        environmentId={environmentId}
-        asset={asset}
-        className={CHART_HEIGHT_CLASS}
-        // The armed watch would land in the alert list on the trade home, one
-        // surface away from the chart that armed it.
-        armable={false}
-      />
-      {account.error === null ? null : (
-        <p className="px-1 text-xs text-destructive">{account.error}</p>
-      )}
-      <AccountPositionsPanel
-        accounts={scoped}
-        missions={missions}
-        environmentId={environmentId}
-        selectedAsset={asset}
-        // The panel is already about one market, so selecting a row would be
-        // selecting what is already selected.
-        onSelect={() => {}}
-      />
-    </div>
+    <p
+      data-testid="thread-market-no-mission"
+      className="px-1 py-2 text-xs leading-relaxed text-muted-foreground"
+    >
+      No mission on {asset} from this chat yet. The chart and your positions are above the composer;
+      ask for a trade here and this is where the agent&apos;s log will run.
+    </p>
   );
 }
 
@@ -156,12 +104,11 @@ export interface ThreadMarketPanelProps {
   readonly environmentId: EnvironmentId;
   readonly asset: string;
   /**
-   * The mission bound to this thread, or null. It decides the whole body: with
-   * one, the panel is the mission's chart, strip, positions and log; without,
-   * it is the market's chart and the positions on it.
+   * The mission bound to this thread, or null. It decides the body: with one,
+   * the panel is the mission's status strip and agent log; without, it is one
+   * line saying so.
    */
   readonly mission: OrchestrationTradingMission | null;
-  readonly missions: ReadonlyArray<OrchestrationTradingMission>;
   /** The scoped thread key the collapsed flag is stored under. */
   readonly threadKey: string;
   readonly layout: "column" | "chip";
@@ -171,7 +118,6 @@ export function ThreadMarketPanel({
   environmentId,
   asset,
   mission,
-  missions,
   threadKey,
   layout,
 }: ThreadMarketPanelProps) {
@@ -183,15 +129,14 @@ export function ThreadMarketPanel({
 
   const body =
     mission === null ? (
-      <ThreadMarketBody environmentId={environmentId} asset={asset} missions={missions} />
+      <NoMissionBody asset={asset} />
     ) : (
-      <MissionLivePanel mission={mission} environmentId={environmentId} />
+      <MissionLivePanel mission={mission} environmentId={environmentId} parts="status" />
     );
 
-  // Which bars the mission's chart is made of. Derived from the mandate with
-  // the same function the panel resolves its own candles with, so the label
-  // and the picture cannot disagree. The market chart offers its own timeframe
-  // selector, so it states nothing here.
+  // Which bars the mission wakes on. The card draws that interval's candles;
+  // the label stays with the header, which is the panel's one line about the
+  // market itself.
   const intervalLabel = mission === null ? null : runtimeTimeframe(mission.instruction);
 
   const header = (

@@ -2,11 +2,20 @@
 // MissionLivePanel
 // ---------------------------------------------------------------------------
 //
-// The mission half of the thread panel: everything the panel shows once the
-// thread has a mission bound to it. It is mounted by `ThreadMarketPanel`,
-// which owns the market header above it and the collapse control beside it,
-// and it is never mounted anywhere else — a thread has one panel, and this is
-// what that panel holds when there is a mission.
+// Everything a thread shows once it has a mission bound to it, in two halves
+// that sit in two columns:
+//
+//   parts="market"  the chart with the plan drawn across it, and the order
+//                   ledger under it. Mounted by `ThreadMarketCard`, docked
+//                   above the composer, where the trader is already looking.
+//   parts="status"  the status strip and the agent log. Mounted by
+//                   `ThreadMarketPanel`, beside the chat, where the log can
+//                   take every pixel the strip leaves and scroll inside it.
+//
+// One component for both because they are one derivation: the same projection,
+// the same chart atom (only the market half polls it), the same selection
+// store, so the picture and the words about it cannot disagree. Each mount
+// derives only what it draws.
 //
 // Four explicit states, driven purely by the projection:
 //
@@ -15,20 +24,19 @@
 //   live      position open            → the same, plus P&L and the held figures
 //   complete  mission finished         → the net result, kept for good (plan 27 H1)
 //
-// FOUR panes of glass in one column, floating clear of each other: the chart,
-// closed by the risk/reward bar; the status strip that says in a sentence what
-// the mission is doing, with the plan and the next wake on it; the positions
-// card, one row per order leg; and under them the agent log, which takes every
-// pixel the three fixed sections leave and scrolls inside it. All four carry
-// the composer's material — the same surface tint, blur, saturation and
-// hairline outline, plus a 1px inner highlight along the top edge — so each
-// reads as a lit pane rather than a painted rectangle.
+// FOUR panes of glass, floating clear of each other: the chart, closed by the
+// risk/reward bar; the positions card, one row per order leg; the status strip
+// that says in a sentence what the mission is doing, with the plan and the
+// next wake on it; and the agent log, which takes every pixel the strip leaves
+// and scrolls inside it. All four carry the composer's material — the same
+// surface tint, blur, saturation and hairline outline, plus a 1px inner
+// highlight along the top edge — so each reads as a lit pane rather than a
+// painted rectangle.
 //
-// A column rather than a row. The panel used to sit across the width above the
-// composer, where a chart and a readout could stand shoulder to shoulder; it
-// now sits beside the chat in a ~384px column, and two columns inside that is
+// Each half is a column, never a row. The market card is the width of the
+// composer and the panel is a ~384px aside, and two columns inside either is
 // two columns of nothing. Stacking also puts the sections in the order they
-// are read: the picture, what it means, what is on, then what the model said.
+// are read: the picture, then what is on it; the sentence, then the log.
 //
 // ONE line in the picture. The chart draws closes at the runtime's own
 // interval, and nothing else: no candle bodies, no moving averages. Three
@@ -149,6 +157,23 @@ import {
 } from "./MissionLivePanelSections";
 import { PositionsCard } from "./MissionPositionsCard";
 
+/**
+ * What the half that is not drawn reads instead.
+ *
+ * Each mount derives only what it renders: the market half never walks the
+ * timeline into cards, and the status half never builds the order ledger or
+ * the chart's markers. Typed off the derivations themselves so the two
+ * branches of each ternary stay one type.
+ */
+const EMPTY_FILL_MARKERS: ReturnType<typeof deriveChartFillMarkers> = [];
+const EMPTY_TIME_MARKERS: ReturnType<typeof deriveChartTimeMarkers> = [];
+const EMPTY_PAST_MARKERS: ReturnType<typeof deriveChartPastMarkers> = [];
+const EMPTY_ORDER_ROWS: ReturnType<typeof deriveOrderLedger> = [];
+const EMPTY_TURN_TIMELINE: ReturnType<typeof deriveTurnTimeline> = {
+  cards: [],
+  earlierCount: 0,
+};
+
 /** Which of the four surfaces the projection says to render. */
 export type PanelState = "planning" | "armed" | "live" | "complete";
 
@@ -174,11 +199,30 @@ export function panelWantsChart(state: PanelState): boolean {
 export function MissionLivePanel({
   mission,
   environmentId,
+  parts,
 }: {
   readonly mission: OrchestrationTradingMission;
   readonly environmentId: EnvironmentId;
+  /**
+   * Which half of the mission this mount draws.
+   *
+   * `market` is the picture and the money: the chart with the plan across it
+   * and the order ledger under it. It lives in the market card above the
+   * composer, where the trader's eye already is.
+   *
+   * `status` is what the mission is doing and what it has said: the status
+   * strip and the agent log. It lives in the panel beside the chat, where the
+   * log can take every pixel the strip leaves.
+   *
+   * Two mounts rather than one component drawing both, because they sit in two
+   * columns. They share the projection, the chart atom and the selection
+   * store, so neither can disagree with the other.
+   */
+  readonly parts: "market" | "status";
 }): ReactNode {
   const state = readPanelState(mission);
+  const wantsMarket = parts === "market";
+  const wantsStatus = parts === "status";
 
   // --- Ticker: the panel's clock. -------------------------------------------
   //
@@ -295,6 +339,9 @@ export function MissionLivePanel({
   const mode = readMissionMode(mission.instruction);
   const chart = useTradingMarketChart(environmentId, mission.market, interval, {
     enabled: wantsChart,
+    // The status half borrows one figure (funding) off the same atom the
+    // market half polls. One poll, two readers.
+    poll: wantsMarket,
   });
 
   // --- What the plan is watching, in either state. --------------------------
@@ -322,7 +369,7 @@ export function MissionLivePanel({
   // opened and closed an hour ago has no row on the projection any more, but its
   // two fills are still here — so the chart, not the scrollback, is where the
   // session's whole activity is read.
-  const fillMarkers = deriveChartFillMarkers(mission);
+  const fillMarkers = wantsMarket ? deriveChartFillMarkers(mission) : EMPTY_FILL_MARKERS;
 
   // One row per order leg (plan 39 phase 2): queued, working, partial, the
   // open leg with live figures, and every settled leg — the whole record of
@@ -336,12 +383,14 @@ export function MissionLivePanel({
           direction: (strategy?.intent === "short" ? "short" : "long") as "long" | "short",
         }
       : null;
-  const orderRows = deriveOrderLedger({
-    orders: mission.orders,
-    position,
-    markPrice,
-    plannedEntry,
-  });
+  const orderRows = wantsMarket
+    ? deriveOrderLedger({
+        orders: mission.orders,
+        position,
+        markPrice,
+        plannedEntry,
+      })
+    : EMPTY_ORDER_ROWS;
 
   // The order the agent has committed to but the book has not filled. This is
   // the "I will enter long at X" the plan announces, drawn where it will happen
@@ -379,12 +428,14 @@ export function MissionLivePanel({
 
   // Every armed reassessment, not only the nearest: the header's countdown is
   // one appointment, the axis is the whole queue.
-  const timeMarkers = deriveChartTimeMarkers(mission, plannedReassessment);
+  const timeMarkers = wantsMarket
+    ? deriveChartTimeMarkers(mission, plannedReassessment)
+    : EMPTY_TIME_MARKERS;
 
   // What has already happened, as a rug of ticks along the axis: the mission's
   // own wakes, publishes and stop moves, which no amount of current state can
   // show. Bounded server-side, and again by the geometry's own cap.
-  const pastMarkers = deriveChartPastMarkers(mission);
+  const pastMarkers = wantsMarket ? deriveChartPastMarkers(mission) : EMPTY_PAST_MARKERS;
 
   // One stream: what is armed, then everything that has settled, newest first.
   //
@@ -397,11 +448,13 @@ export function MissionLivePanel({
   // trade cards, newest first. Everything it states is already pushed — the
   // timeline's composed prose and the fill receipts — so this is a reformat,
   // not a new projection.
-  const turnTimeline = deriveTurnTimeline({
-    market: mission.market,
-    missionTimeline: mission.missionTimeline,
-    recentFills: mission.recentFills,
-  });
+  const turnTimeline = wantsStatus
+    ? deriveTurnTimeline({
+        market: mission.market,
+        missionTimeline: mission.missionTimeline,
+        recentFills: mission.recentFills,
+      })
+    : EMPTY_TURN_TIMELINE;
   // A row that just fired holds its place at the top for a beat while the live
   // dot becomes a tick, so the operator sees the moment happen instead of a row
   // sliding down between polls.
@@ -454,6 +507,7 @@ export function MissionLivePanel({
     }
   }, [recentlyFired, watchStream]);
   useEffect(() => {
+    if (!wantsStatus) return;
     if (pendingFlightsRef.current.size === 0) return;
     for (const [id, watchAt] of [...pendingFlightsRef.current]) {
       const card = turnTimeline.cards.find(
@@ -473,7 +527,7 @@ export function MissionLivePanel({
         pendingFlightsRef.current.delete(id);
       }
     }
-  }, [turnTimeline.cards, nowMillis]);
+  }, [wantsStatus, turnTimeline.cards, nowMillis]);
 
   // --- complete: the result, one line. --------------------------------------
   // The full review — the post-mortem chart and the fee/PnL breakdown — is the
@@ -482,6 +536,10 @@ export function MissionLivePanel({
   // now (plan 27 H1), so this one-liner is the settled thread's permanent
   // trading surface above the composer.
   if (state === "complete") {
+    // Nothing for the market card: a finished mission's chart and result are
+    // the completion summary in the timeline, and a second picture of the same
+    // closed trade is the duplicate this layout exists to remove.
+    if (wantsMarket) return null;
     const net = mission.result.realizedPnlUsd - mission.result.feesPaidUsd;
     return (
       <div
@@ -508,46 +566,82 @@ export function MissionLivePanel({
     );
   }
 
+  if (wantsMarket) {
+    return (
+      <div
+        data-testid="mission-market-parts"
+        data-panel-state={state}
+        className="mission-panel group/panel flex w-full flex-col gap-3"
+      >
+        {/* 1. The chart, with the plan drawn across it: entry, stop, target, the
+            armed levels, the fills already made and the reassessments still to
+            come. The panel's own header carries the market, the mark and the
+            day's move, so the card starts at the picture. */}
+        <section className={cn(CARD_CLASS, "flex flex-none flex-col pt-2")}>
+          <ChartSlot
+            data={chart.data}
+            isLoading={chart.isLoading}
+            error={chart.error}
+            entryPrice={entryPrice}
+            stopPrice={stopPrice}
+            targetPrice={targetPrice}
+            liquidationPrice={position?.liquidationPrice ?? null}
+            entryTime={entryMillis}
+            markPrice={markPrice}
+            pnlSign={pnlSign}
+            conditions={chartConditions}
+            fills={fillMarkers}
+            pendingOrder={pendingOrder}
+            nowMillis={nowMillis}
+            triggerExpiryAt={triggerExpiryAt}
+            projection={planProjection}
+            timeMarkers={timeMarkers}
+            pastMarkers={pastMarkers}
+            draggableKinds={draggableKinds}
+            onLevelDragEnd={onLevelDragEnd}
+            refusedStop={revision.refusedStop}
+            positionSize={position?.size ?? null}
+            overflowCount={droppedConditions}
+            firedWatchIds={[...recentlyFired]}
+          />
+          <RiskRewardBar
+            riskUsd={plan?.maxLossUsd ?? null}
+            rewardUsd={targetProfitUsd}
+            isStandAside={plan?.isStandAside === true}
+          />
+          {/* What came of dragging a level, said where the level was dragged.
+              It used to sit under the agent log, a column away from the rule
+              the operator had just moved. */}
+          <RevisionNote revision={revision} />
+        </section>
+
+        {/* 3. What the mission has on this market, and what it is trying to put
+            on: one row per order leg. Always mounted, always the same height;
+            with nothing to show it draws its empty state in the skeleton idiom. */}
+        <section
+          data-testid="mission-positions"
+          className={cn(CARD_CLASS, POSITIONS_HEIGHT_CLASS, "flex flex-none flex-col")}
+        >
+          <PositionsCard
+            rows={orderRows}
+            market={mission.market}
+            leverageLabel={leverage === null ? null : formatLeverage(leverage)}
+            position={position}
+            markPrice={markPrice}
+            stopPrice={stopPrice}
+            plan={plan}
+            roiPercent={roiPercent}
+            pnlToneClass={pnlToneClass}
+            nowMillis={nowMillis}
+            staleLabel={delayedRead ?? (chart.stale ? "delayed" : null)}
+          />
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_SHELL_CLASS}>
-      {/* 1. The chart, with the plan drawn across it: entry, stop, target, the
-          armed levels, the fills already made and the reassessments still to
-          come. The panel's own header carries the market, the mark and the
-          day's move, so the card starts at the picture. */}
-      <section className={cn(CARD_CLASS, "flex flex-none flex-col pt-2")}>
-        <ChartSlot
-          data={chart.data}
-          isLoading={chart.isLoading}
-          error={chart.error}
-          entryPrice={entryPrice}
-          stopPrice={stopPrice}
-          targetPrice={targetPrice}
-          liquidationPrice={position?.liquidationPrice ?? null}
-          entryTime={entryMillis}
-          markPrice={markPrice}
-          pnlSign={pnlSign}
-          conditions={chartConditions}
-          fills={fillMarkers}
-          pendingOrder={pendingOrder}
-          nowMillis={nowMillis}
-          triggerExpiryAt={triggerExpiryAt}
-          projection={planProjection}
-          timeMarkers={timeMarkers}
-          pastMarkers={pastMarkers}
-          draggableKinds={draggableKinds}
-          onLevelDragEnd={onLevelDragEnd}
-          refusedStop={revision.refusedStop}
-          positionSize={position?.size ?? null}
-          overflowCount={droppedConditions}
-          firedWatchIds={[...recentlyFired]}
-        />
-        <RiskRewardBar
-          riskUsd={plan?.maxLossUsd ?? null}
-          rewardUsd={targetProfitUsd}
-          isStandAside={plan?.isStandAside === true}
-        />
-      </section>
-
       {/* 2. The status strip: what the mission is doing, said in a sentence,
           with the plan one click away and the next wake beside it. */}
       <MissionStatusBar
@@ -578,28 +672,6 @@ export function MissionLivePanel({
         exchangeUrl={exchangeUrl}
         lastActivity={deriveLastActivity(mission.missionTimeline, nowMillis)}
       />
-
-      {/* 3. What the mission has on this market, and what it is trying to put
-          on: one row per order leg. Always mounted, always the same height;
-          with nothing to show it draws its empty state in the skeleton idiom. */}
-      <section
-        data-testid="mission-positions"
-        className={cn(CARD_CLASS, POSITIONS_HEIGHT_CLASS, "flex flex-none flex-col")}
-      >
-        <PositionsCard
-          rows={orderRows}
-          market={mission.market}
-          leverageLabel={leverage === null ? null : formatLeverage(leverage)}
-          position={position}
-          markPrice={markPrice}
-          stopPrice={stopPrice}
-          plan={plan}
-          roiPercent={roiPercent}
-          pnlToneClass={pnlToneClass}
-          nowMillis={nowMillis}
-          staleLabel={delayedRead ?? (chart.stale ? "delayed" : null)}
-        />
-      </section>
 
       {/* 4. The agent log, and the reason the panel is a column: it is the one
           section with no natural end, so it takes every pixel the four fixed
@@ -650,7 +722,6 @@ export function MissionLivePanel({
           selection={selection}
           onHoverEvent={hoverPanelEvent}
         />
-        <RevisionNote revision={revision} />
       </section>
     </div>
   );

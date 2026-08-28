@@ -125,9 +125,24 @@ export function useTradingMarketChart(
   environmentId: EnvironmentId,
   market: string | null,
   interval: ChartInterval,
-  options: { readonly enabled: boolean; readonly window?: ChartWindow },
+  options: {
+    readonly enabled: boolean;
+    readonly window?: ChartWindow;
+    /**
+     * Whether this caller drives the 15s poll. Default true.
+     *
+     * Two views of one mission read the same series — the chart in the market
+     * card and the funding figure in the status bar — and the atom is keyed by
+     * environment, market and interval, so both already share one value. What
+     * they must not share is two intervals refreshing it: that is the same
+     * chart read twice as often for one extra figure. The reader that draws
+     * the series polls; the reader that borrows a number from it does not.
+     */
+    readonly poll?: boolean;
+  },
 ): TradingMarketChartState {
   const enabled = options.enabled && market !== null;
+  const polls = options.poll ?? true;
   const chartWindow = options.window ?? null;
   const windowStart = chartWindow?.startTime ?? null;
   const windowEnd = chartWindow?.endTime ?? null;
@@ -181,12 +196,12 @@ export function useTradingMarketChart(
   const isWindowed = windowStart !== null && windowEnd !== null;
 
   useEffect(() => {
-    if (!enabled || isWindowed) {
+    if (!enabled || isWindowed || !polls) {
       return;
     }
     const id = window.setInterval(refresh, CHART_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [enabled, isWindowed, refresh]);
+  }, [enabled, isWindowed, polls, refresh]);
 
   return {
     data,

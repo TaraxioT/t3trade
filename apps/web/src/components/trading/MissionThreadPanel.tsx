@@ -1,25 +1,22 @@
 /**
  * The trading surfaces a mission-bound thread carries.
  *
- * Two mounts, deliberately separate (§14.2 / §13 / §10):
+ * Two mounts, deliberately separate:
  *
  * - {@link MissionThreadBanners} is chrome. The exception banners that sit with
  *   the strip above the thread, for as long as the mission is armed or exposed,
  *   so a feed or staleness warning stays on screen without hunting.
- * - {@link MissionThreadCards} is content. The execution *events* — an order
- *   intent while one is in flight, the fill receipts, the completion summary —
- *   render at the end of the message timeline and scroll with it.
+ * - {@link MissionThreadCards} is content. The mission's *events* — the result
+ *   of a finished mission, an order the venue refused — render at the end of
+ *   the message timeline and scroll with it.
  *
- * The live position is deliberately not here. It is state, not an event: it
- * changes every reconcile, and a changing number parked in a scrolling log
- * reads as a fact recorded at the point you scrolled past. It lives in the
- * pinned `MissionLivePanel` instead, which is also where its entry price and
- * size stopped being said twice — once by the position card, once by the fill
- * receipt directly beneath it.
- *
- * The split is the point. A pinned band that grows with every fill covers the
- * conversation it is supposed to annotate; the prototype puts the cards inline
- * in the thread and keeps only the strip fixed, and so does this.
+ * Nothing live is here. The position, the order about to go on and the fills
+ * that made it are state, not events: they change every reconcile, and a
+ * changing number parked in a scrolling log reads as a fact recorded at the
+ * point you scrolled past. They are the order ledger in `ThreadMarketCard`,
+ * directly below this stack and above the composer, where they update in
+ * place. Saying them in both places was the same numbers twice, six inches
+ * apart, with only one of them current.
  *
  * Everything here is read from the projection. These components hold no state
  * of their own and show nothing the projection does not say — there is no
@@ -28,12 +25,7 @@
  *
  * @module MissionThreadPanel
  */
-import type {
-  EnvironmentId,
-  OrchestrationTradingMission,
-  TradingFillView,
-  TradingExecutionView,
-} from "@t3tools/contracts";
+import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 
 import { useActiveEnvironmentId } from "../../state/entities";
@@ -43,20 +35,14 @@ import { MissionReviewChart } from "./MissionReviewChart";
 import { useMissionControls } from "./useMissionControls";
 import {
   deriveCompletionSummary,
-  deriveEffectiveLeverage,
-  deriveFillSlippagePercent,
   deriveRejectedOrder,
   formatDuration,
   formatLeverage,
-  formatPrice,
   formatSize,
-  formatSignedPercent,
   formatSignedUsd,
   formatUsd,
   humanizeLiteral,
   isMissionComplete,
-  readFillLifecycle,
-  readIntentLifecycle,
   shouldShowMissionStrip,
   type CompletionSummary,
   type PositionLifecycle,
@@ -100,22 +86,6 @@ function Card({
   );
 }
 
-/**
- * One `label value` pair on a receipt's line.
- *
- * The receipt shape from the prototype: a settled fact is a short list of
- * numbers, and a grid of labelled boxes gives it more room than it earns. The
- * wrapping row that holds these is the receipt itself now, rather than a
- * `StatLine` inside a card.
- */
-function Stat({ label, value, tone }: { label: string; value: string; tone?: Tone }) {
-  return (
-    <span className="text-muted-foreground">
-      {label} <span className={`tabular-nums ${toneClass(tone)}`}>{value}</span>
-    </span>
-  );
-}
-
 /** A two-column list of key/value rows: the intent shape from the prototype. */
 function FieldRows({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-x-8 px-3 py-1.5 sm:grid-cols-2">{children}</div>;
@@ -129,8 +99,6 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: To
     </div>
   );
 }
-
-const sideLabel = (side: "buy" | "sell"): string => (side === "buy" ? "Buy" : "Sell");
 
 /** The neutral chip: a card header's plain, untinted label. */
 function Chip({ children }: { children: ReactNode }) {
@@ -199,105 +167,6 @@ function LifecycleChips({
       </span>
       <Chip>{lifecycle.actionLabel}</Chip>
     </>
-  );
-}
-
-/** The order-intent card while an execution record is in flight (§10). */
-function OrderIntentCard({
-  exec,
-  leverage,
-}: {
-  exec: TradingExecutionView;
-  leverage: number | null;
-}) {
-  return (
-    <Card
-      title="Order intent"
-      badge={
-        <LifecycleChips
-          market={exec.market}
-          leverage={leverage}
-          lifecycle={readIntentLifecycle(exec)}
-          fallbackDetail={`${sideLabel(exec.side)} ${formatSize(exec.size)}`}
-        />
-      }
-      meta={humanizeLiteral(exec.status)}
-      accentClassName="border-armed/40 bg-armed/5"
-    >
-      <FieldRows>
-        <Field label="Order" value={`${sideLabel(exec.side)} ${formatSize(exec.size)}`} />
-        <Field label="Limit" value={formatPrice(exec.limitPrice)} />
-        <Field label="Time in force" value={exec.timeInForce.toUpperCase()} />
-        <Field label="Action" value={humanizeLiteral(exec.actionType)} />
-      </FieldRows>
-    </Card>
-  );
-}
-
-/**
- * A fill receipt: what filled, at what price, and what it cost (§10).
- *
- * One line, not a card. A session can fill a dozen times, and every one of them
- * is shown — a receipt that took a title bar, a chip row and a stat row each
- * meant the thread could only afford to keep the last three. Stripped to a
- * single row, the same fill costs about a fifth of the height, so the whole
- * history fits and nothing has to be truncated away.
- *
- * The price is labelled `Entry` or `Exit` rather than "Average fill". Which end
- * of the position a fill was is the thing being read; that the price is a
- * size-weighted average of the lots that filled it is implementation detail.
- */
-function FillReceipt({
-  fill,
-  intent,
-  leverage,
-}: {
-  fill: TradingFillView;
-  /** The execution this fill can be attributed to, for the slippage figure. */
-  intent: TradingExecutionView | null;
-  /** The market's configured leverage, for the chip. */
-  leverage: number | null;
-}) {
-  const slippagePercent = deriveFillSlippagePercent(fill, intent);
-  const lifecycle = readFillLifecycle(fill.direction);
-  // An entry has no result yet, and "Realized $0.00" on one reads as a trade
-  // that made nothing rather than a trade that has not finished.
-  const showRealized = lifecycle === null || lifecycle.action !== "open" || fill.closedPnl !== 0;
-  // Without a lifecycle label the fill's end of the position is unknown, and
-  // "Entry" would be a guess — `Fill` says exactly what is known.
-  const priceLabel = lifecycle === null ? "Fill" : lifecycle.action === "close" ? "Exit" : "Entry";
-
-  return (
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-border bg-card/40 px-3 py-1.5 text-xs">
-      <LifecycleChips
-        market={fill.market}
-        leverage={leverage}
-        lifecycle={lifecycle}
-        fallbackDetail={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)}`}
-      />
-      <Stat label="Size" value={formatSize(fill.filledSize)} />
-      <Stat label={priceLabel} value={formatPrice(fill.avgFillPrice)} />
-      {slippagePercent === null ? null : (
-        // Positive means the fill spent some of the slippage bound the server
-        // priced the limit at; negative means it did better than the bound.
-        <Stat
-          label="Slippage"
-          value={formatSignedPercent(slippagePercent)}
-          tone={slippagePercent > 0 ? "loss" : slippagePercent < 0 ? "profit" : undefined}
-        />
-      )}
-      <Stat label="Fee" value={formatSignedUsd(-fill.feeUsd)} />
-      {showRealized && (
-        <Stat
-          label="Realized"
-          value={formatSignedUsd(fill.closedPnl)}
-          tone={pnlTone(fill.closedPnl)}
-        />
-      )}
-      <span className="ml-auto tabular-nums text-muted-foreground">
-        {new Date(fill.tradedAt).toLocaleTimeString()} · #{fill.orderId}
-      </span>
-    </div>
   );
 }
 
@@ -515,92 +384,35 @@ export function MissionThreadBanners({
 }
 
 /**
- * The execution cards, as the tail of the message timeline.
+ * The mission's own events, as the tail of the message timeline.
  *
- * They live inside the scroll, so a mission with an intent, a position and
- * three receipts costs the conversation nothing once the user scrolls past it.
+ * What is here is what the market card above the composer cannot say: the
+ * result of a finished mission, and an order the venue refused along with the
+ * buttons that answer it. Both are events — they happened once and stay true —
+ * and both scroll away with the conversation they belong to.
+ *
+ * What is deliberately NOT here is every live thing: the position, the order
+ * about to go on, and the fills that made it. Those are state, one row per
+ * order leg, and they are drawn in the market card directly below this stack,
+ * where they update in place. Saying them in both places was the same numbers
+ * twice, six inches apart, with only one of them current.
  */
 export function MissionThreadCards({ mission }: { readonly mission: OrchestrationTradingMission }) {
-  // A closed position leaves its snapshot row behind with size zeroed, so the
-  // card is gated on exposure rather than on the row existing.
-  const openPosition =
-    mission.position !== null && mission.position.size !== 0 ? mission.position : null;
-  // A rejected order has no position and no fills, so it must hold the wrapper
-  // up on its own — otherwise a flat mission whose only event is a refusal
-  // would render nothing at all.
+  // A rejected order has to hold the stack up on its own: a flat mission whose
+  // only event is a refusal would otherwise render nothing at all.
   const rejected = deriveRejectedOrder(mission);
-  const hasCards =
-    mission.inFlightExecution !== null ||
-    openPosition !== null ||
-    mission.recentFills.length > 0 ||
-    isMissionComplete(mission.status) ||
-    rejected !== null;
+  const hasCards = isMissionComplete(mission.status) || rejected !== null;
 
   if (!hasCards) return null;
-
-  // One leverage for the whole thread: it is the market's setting, so it is the
-  // same for the order about to go on and the receipt from an hour ago. The
-  // exchange's own figure when the reconciler has read one, and notional over
-  // margin when it has not.
-  const leverage =
-    mission.leverage ??
-    (openPosition === null ? null : deriveEffectiveLeverage(openPosition)) ??
-    null;
 
   return (
     <div className="flex flex-col gap-2 pt-2">
       {/*
         A finished mission's result is the headline — it leads the stack so the
-        thing the thread existed to report is the first thing read. The
-        execution cards (intent/position/fills) follow, reporting the trade as
-        it happened. The plan and the armed conditions are not here: they live
-        in the pinned `MissionLivePanel` above the timeline, where one surface
-        carries the whole live picture.
+        thing the thread existed to report is the first thing read.
       */}
       {isMissionComplete(mission.status) && <CompletionSummaryCard mission={mission} />}
-      {/*
-        A rejected execution never renders as a live intent: branch on it before
-        the intent card so a refusal shows as a refusal, not as an order about
-        to go on.
-      */}
-      {rejected !== null ? (
-        <OrderRejectedCard notice={rejected} mission={mission} />
-      ) : mission.inFlightExecution !== null ? (
-        <OrderIntentCard exec={mission.inFlightExecution} leverage={leverage} />
-      ) : null}
-      {/*
-        Every fill the mission has made, not the last three. The cap was there
-        because each receipt was a card; as a single row a fill costs about a
-        fifth of the height, and a session that scaled in twice and out three
-        times is unreadable if two of those five are missing.
-
-        Reversed: the projection serves newest-first (its LIMIT has to), but
-        these rows sit at the end of a message timeline that reads downward, so
-        the oldest fill belongs at the top and the newest nearest the composer.
-      */}
-      {/*
-        The fills that opened the position the operator is currently holding do
-        not print here. That receipt was the only place the live position
-        appeared as a pill in the middle of the conversation, saying the same
-        market, side, leverage, size and entry the pinned panel says one screen
-        up — and unlike the panel it scrolled, so the position was in two places
-        and neither was where the eye went. The panel owns the open position now;
-        the thread keeps the history the panel does not carry, which is every
-        exit and every fill of a position that is already closed.
-      */}
-      {mission.recentFills
-        .toReversed()
-        .filter(
-          (fill) => openPosition === null || readFillLifecycle(fill.direction)?.action !== "open",
-        )
-        .map((fill) => (
-          <FillReceipt
-            key={`${fill.orderId}-${fill.tradedAt}`}
-            fill={fill}
-            intent={mission.inFlightExecution}
-            leverage={leverage}
-          />
-        ))}
+      {rejected === null ? null : <OrderRejectedCard notice={rejected} mission={mission} />}
     </div>
   );
 }
