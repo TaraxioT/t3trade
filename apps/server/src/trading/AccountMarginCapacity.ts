@@ -20,6 +20,31 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 /**
+ * The slice of the account's margin the sizer refuses to spend, in bps.
+ *
+ * `account_value * leverage` is the venue's REJECTION line, not a safe target,
+ * and sizing to it made whether a first order landed a matter of tick timing: a
+ * live entry sized to $857.2460 against an account value of $857.2857 was
+ * rejected for insufficient margin, and the retry at $857.2301 — four cents
+ * lower — went through. Four cents is not a decision, it is a coin flip.
+ *
+ * 100 bps, because three things sit between the number sized against and the
+ * number the exchange checks, and the reserve has to cover all of them:
+ *
+ *   - the entry IOC crosses with a 50 bps allowance
+ *     (`DEFAULT_IOC_SLIPPAGE_BPS`), so a fill that sweeps the book costs up to
+ *     50 bps more notional than the far-side quote it was sized from;
+ *   - one taker fee, about 4.5 bps of notional, leaves the account on the fill;
+ *   - the mark moves between the book read and the exchange's own check — 0.5
+ *     bps decided the rejection above.
+ *
+ * That is ~55 bps of known drift; 100 bps is the round number above it with
+ * room to spare. It costs about $8.57 of usable notional on an $857 account,
+ * which is the price of an entry that lands the first time.
+ */
+export const ACCOUNT_MARGIN_HEADROOM_BPS = 100;
+
+/**
  * A conservative isolated-margin liquidation estimate for a NEW entry.
  *
  * Hyperliquid's real liquidation price depends on margin mode, transferred
@@ -55,9 +80,15 @@ export const estimateIsolatedLiquidationPrice = (input: {
 };
 
 /**
- * The account's fundable notional, or null when there is no account value to
- * read. Null is "unknown", never "zero": an unreadable row must not bound an
+ * The account's fundable notional, net of
+ * {@link ACCOUNT_MARGIN_HEADROOM_BPS}, or null when there is no account value
+ * to read. Null is "unknown", never "zero": an unreadable row must not bound an
  * entry, and must not price a cost line either.
+ *
+ * The headroom is applied here rather than at the one caller that sizes,
+ * because the callers that PRICE must quote the notional an entry will really
+ * be allowed to take. A cost line drawn against a notional the sizer will
+ * refuse is the same lie this module was written to end.
  */
 export const readAccountMarginCapacityUsd = (
   sql: SqlClient.SqlClient,
@@ -87,7 +118,7 @@ export const readAccountMarginCapacityUsd = (
     // below, so it is the honest stand-in for a leverage nobody has reported.
     const leverage = positions[0]?.leverage ?? 1;
     if (!(leverage > 0)) return null;
-    return accountValue * leverage;
+    return accountValue * leverage * (1 - ACCOUNT_MARGIN_HEADROOM_BPS / 10_000);
   }).pipe(
     // A sizing bound and a cost reference are both enrichments. An unreadable
     // row leaves each exactly as it was before this existed.

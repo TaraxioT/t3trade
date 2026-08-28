@@ -52,20 +52,13 @@ export type EntryActionType = typeof EntryActionType.Type;
  * Which ceiling decided the size, when the size is not the one that was asked
  * for.
  *
- * `requested` means nothing bound — the harness got the size it named. The
- * others are the four authority/budget limits and the two hard failures, and
- * naming which one bound is the difference between "ask for less" and "this
- * mission cannot trade right now".
+ * `requested` means nothing bound — the harness got the size it named, and a
+ * size it named is never exceeded. The others are the five ceilings and the two
+ * hard failures, and naming which one bound is the difference between "ask for
+ * less" and "this mission cannot trade right now".
  */
 export const EntrySizeConstraint = Schema.Literals([
   "requested",
-  /**
-   * The size was raised above the one asked for so the position can pay the
-   * plan's own profit target after its round-trip costs — see
-   * `notionalForProfitTarget`. Every ceiling below still bound it; this only
-   * ever names a size that cleared them all.
-   */
-  "target_notional",
   "gross_notional",
   "leverage",
   /**
@@ -157,12 +150,14 @@ export interface EntrySizingInput {
    * from `notionalForProfitTarget`. Omitted when no target or no expected move
    * was readable.
    *
-   * A FLOOR the sizing lifts toward, never a ceiling and never a veto: a
-   * smaller size does not make a target cheaper to reach, it makes it
-   * unreachable, because the round trip shrinks with the notional and the
-   * target does not. Every risk ceiling still binds above it — a target that
-   * needs more notional than the mission is allowed to hold is reported, not
-   * funded.
+   * Read only to answer {@link EntrySizing.fundsTarget}; it never moves the
+   * size. It used to be a floor the sizing lifted a too-small request up to,
+   * and that made an explicit request unable to reduce anything: a harness
+   * asking for 500 USD of notional against a plan whose target needed more got
+   * the account's whole margin capacity — 857 USD — and had no way left to
+   * de-risk except to publish a different plan. A target the size cannot pay is
+   * reported through `fundsTarget` and re-cut at the next publish; it is not a
+   * mandate to hold more than was asked for.
    */
   readonly targetNotionalUsd?: number | undefined;
 }
@@ -265,16 +260,11 @@ export function deriveFeasibleSize(input: EntrySizingInput): EntrySizing {
   const binding = caps.reduce((tightest, cap) => (cap.size < tightest.size ? cap : tightest));
   const requestedSize = input.requestedSize ?? binding.size;
 
-  // The size the plan's own target needs, as a floor under the requested one.
-  // Sizing below it does not make the target safer to pursue; it makes it
-  // arithmetically unreachable.
-  const targetSize =
-    input.targetNotionalUsd === undefined || input.targetNotionalUsd <= 0
-      ? 0
-      : input.targetNotionalUsd / input.entryPrice;
-  const desiredSize = Math.max(requestedSize, targetSize);
-
-  const allowed = Math.min(desiredSize, binding.size);
+  // A size that was asked for is a CEILING, not a suggestion. Nothing below
+  // raises it — not the plan's target, not the account's spare margin. The
+  // harness's only lever for taking less risk than the mandate allows is the
+  // number it puts in this field, and for a while that lever did nothing.
+  const allowed = Math.min(requestedSize, binding.size);
   const size = truncateSize(allowed, input.szDecimals);
   const ceilingSize = truncateSize(binding.size, input.szDecimals);
 
@@ -284,17 +274,12 @@ export function deriveFeasibleSize(input: EntrySizingInput): EntrySizing {
   const fundsTarget =
     input.targetNotionalUsd === undefined || notionalUsd >= input.targetNotionalUsd;
 
-  // `requested` only when the harness's own number survived untouched;
-  // `target_notional` when the target lifted it; otherwise the rule that cut
-  // it, so "ask for less", "this is what the target needs" and "this mission
-  // cannot trade" all read differently.
-  const raisedForTarget = input.requestedSize !== undefined && targetSize > input.requestedSize;
+  // `requested` only when the harness's own number survived untouched,
+  // otherwise the rule that cut it, so "ask for less" and "this mission cannot
+  // trade" read differently. An omitted size is always ceiling-bound: there is
+  // no request for it to have survived.
   const constrainedBy: EntrySizeConstraint =
-    allowed < desiredSize || input.requestedSize === undefined
-      ? binding.by
-      : raisedForTarget
-        ? "target_notional"
-        : "requested";
+    allowed < requestedSize || input.requestedSize === undefined ? binding.by : "requested";
 
   if (notionalUsd < input.minimumNotionalUsd) {
     return {
@@ -326,11 +311,8 @@ export function deriveFeasibleSize(input: EntrySizingInput): EntrySizing {
     detail:
       constrainedBy === "requested"
         ? `size ${size} clears every ceiling`
-        : constrainedBy === "target_notional"
-          ? `size ${size} ($${notionalUsd.toFixed(2)} notional) is what the plan's profit target needs ` +
-            `after costs, up from the ${input.requestedSize} requested`
-          : `size ${size} is what ${constrainedBy} allows` +
-            (input.requestedSize === undefined ? "" : ` of the ${input.requestedSize} requested`),
+        : `size ${size} is what ${constrainedBy} allows` +
+          (input.requestedSize === undefined ? "" : ` of the ${input.requestedSize} requested`),
   };
 }
 

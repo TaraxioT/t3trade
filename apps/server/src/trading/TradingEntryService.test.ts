@@ -354,17 +354,17 @@ layer("TradingEntryService", (it) => {
   );
 
   // Plan 29 step 4.1: the stand-down of the old schema is `intent:
-  // "stand_aside"`, and it must skip the entry-sizing lift exactly as the
-  // stand-down did — a plan that declined to trade does not size an entry
-  // toward a target it is not aiming at.
-  it.effect("skips the target-sizing lift on a stand-aside plan, applies it on a long", () =>
+  // "stand_aside"`, and it must skip the plan's target read exactly as the
+  // stand-down did — a plan that declined to trade is not measured against a
+  // target it is not aiming at. The target no longer moves the size either
+  // way; what it moves is what the harness is told about the size.
+  it.effect("reports the target shortfall on a long, and says nothing on a stand-aside", () =>
     Effect.gen(function* () {
       yield* seed();
       const sql = yield* SqlClient.SqlClient;
 
       // The plan's target, as the reshaped document stores it: a $50 rung at a
-      // level $100 above the entry. Sizing toward it lifts the 0.05 ETH
-      // request to whatever the ceilings allow.
+      // level $100 above the entry — far more than 0.05 ETH can pay.
       const planJson = (intent: "long" | "stand_aside") =>
         `{"market":"ETH","intent":"${intent}","entry":{"triggers":[],"urgency":"now"},` +
         `"stop":{"method":"swing low"},"target":{"profitUsd":50,"price":2100.5},` +
@@ -374,8 +374,8 @@ layer("TradingEntryService", (it) => {
         VALUES ('mission_1', 1, ${planJson("long")}, 1000)
       `;
 
-      const lifted = yield* enterALong;
-      assert.strictEqual(lifted.outcome, "prepared");
+      const measured = yield* enterALong;
+      assert.strictEqual(measured.outcome, "prepared");
 
       yield* sql`
         UPDATE trading_plan_history
@@ -385,13 +385,16 @@ layer("TradingEntryService", (it) => {
       const skipped = yield* enterALong;
       assert.strictEqual(skipped.outcome, "prepared");
 
-      if (lifted.outcome !== "prepared" || skipped.outcome !== "prepared") return;
-      // The lift is real (the long plan's target raised the size above the
-      // bare request), and the stand-aside skips it: same target fields, no
-      // lift — the request is sized exactly as a plan with no target is.
-      assert.isAbove(lifted.size, 0.05);
+      if (measured.outcome !== "prepared" || skipped.outcome !== "prepared") return;
+      // Both take exactly the size that was asked for — a target the size
+      // cannot pay is not a licence to hold more than the harness requested.
+      assert.strictEqual(measured.size, 0.05);
+      assert.strictEqual(measured.constrainedBy, "requested");
       assert.strictEqual(skipped.size, 0.05);
       assert.strictEqual(skipped.constrainedBy, "requested");
+      // Same target fields, and only the long plan is measured against them.
+      assert.isTrue(measured.notes.some((note) => note.includes("short of the target")));
+      assert.isFalse(skipped.notes.some((note) => note.includes("short of the target")));
     }),
   );
 });

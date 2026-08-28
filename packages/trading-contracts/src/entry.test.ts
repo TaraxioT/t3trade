@@ -221,16 +221,48 @@ describe("deriveEntryLimitPrice", () => {
   });
 });
 
-describe("sizing to the plan's own profit target", () => {
-  it("raises a too-small request to the notional the target needs", () => {
+describe("a requested size is a ceiling", () => {
+  // The live failure: the harness asked trading_enter for $500 of notional and
+  // got $857 of ETH, because the plan's target notional was a floor the sizer
+  // lifted the request up to. Asking for less was the one lever the harness had
+  // for taking less risk than the mandate allowed, and it did nothing.
+  it("does not raise a request to the notional the plan's target needs", () => {
     // $6,000 of notional is 3 ETH at 2,000 — twice the 1.5 asked for.
     const sizing = deriveFeasibleSize({ ...base, requestedSize: 1.5, targetNotionalUsd: 6_000 });
 
     assert.strictEqual(sizing.feasible, true);
-    assert.strictEqual(sizing.size, 3);
-    assert.strictEqual(sizing.constrainedBy, "target_notional");
-    assert.strictEqual(sizing.fundsTarget, true);
-    assert.include(sizing.detail, "profit target");
+    assert.strictEqual(sizing.size, 1.5);
+    assert.strictEqual(sizing.constrainedBy, "requested");
+    // Short of the target, and said so rather than funded.
+    assert.strictEqual(sizing.fundsTarget, false);
+  });
+
+  it("honours a request below every cap, including the account's margin", () => {
+    // $500 of notional at 2,000 is 0.25 ETH; the account could fund 0.4285.
+    const sizing = deriveFeasibleSize({
+      ...base,
+      requestedSize: 0.25,
+      accountMarginCapacityUsd: 857,
+      targetNotionalUsd: 6_000,
+    });
+
+    assert.strictEqual(sizing.size, 0.25);
+    assert.strictEqual(sizing.notionalUsd, 500);
+    assert.strictEqual(sizing.constrainedBy, "requested");
+  });
+
+  it("still caps a request above the account's margin", () => {
+    const sizing = deriveFeasibleSize({
+      ...base,
+      requestedSize: 1,
+      accountMarginCapacityUsd: 857,
+    });
+
+    // The capacity is spent to the last cent here on purpose: the venue's
+    // headroom is reserved by the caller that reads the capacity, so the
+    // sizer's job is only to not exceed the number it was handed.
+    assert.strictEqual(sizing.constrainedBy, "account_margin");
+    assert.isAtMost(sizing.notionalUsd, 857);
   });
 
   it("never lowers a request that already funds the target", () => {
@@ -241,11 +273,11 @@ describe("sizing to the plan's own profit target", () => {
     assert.strictEqual(sizing.fundsTarget, true);
   });
 
-  it("keeps every risk ceiling above the target, and reports the shortfall", () => {
+  it("keeps every risk ceiling above the request, and reports the shortfall", () => {
     // The target wants $6,000 of notional; the gross ceiling allows $4,000.
     const sizing = deriveFeasibleSize({
       ...base,
-      requestedSize: 1.5,
+      requestedSize: 3,
       targetNotionalUsd: 6_000,
       maximumGrossNotionalUsd: 4_000,
     });

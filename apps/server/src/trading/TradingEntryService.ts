@@ -298,10 +298,11 @@ export const makeTradingEntryService = Effect.gen(function* () {
         (request.notionalUsd === undefined ? undefined : request.notionalUsd / entryPrice);
 
       // The notional the plan's own target needs, given what the round trip
-      // costs at this book. A floor the sizing lifts toward, never a ceiling:
-      // sizing down does not make a target cheaper to reach, it makes it
-      // unreachable, because the costs shrink with the notional and the target
-      // does not. Every risk ceiling still binds above it.
+      // costs at this book. Reported, never enforced: it answers whether the
+      // size about to go on can pay the target, and a `no` is a target to
+      // re-cut at the next publish. It used to be a floor the sizing lifted a
+      // too-small request up to, which left an explicit `notionalUsd` unable to
+      // reduce anything.
       const plan = yield* readPlanTarget(request.missionId);
       // Sized through the same composition the structure read's cost estimate
       // prices from (`targetNotionalForPlan`), so the two cannot drift apart on
@@ -328,14 +329,11 @@ export const makeTradingEntryService = Effect.gen(function* () {
               makerFeeBpsPerSide: feeRate.makerFeeBps,
             });
 
-      // The lift is a floor under the size, so an unreachable target used to
-      // raise the order until the arithmetic worked: a $1.86 target over a
-      // 2.7 bps net move demanded $6,809 of notional from a plan that had
-      // declared $500, and the sizer funded it. A plan that cannot reach its
-      // target at the size it declared has published a bad target; it has not
-      // authorised a bigger position. Clamp the lift to what the plan itself
-      // said it intended, and let `fundsTarget: false` carry the disagreement
-      // back to the model, which is what that flag is for.
+      // The plan's own declared intent still bounds the target the size is
+      // measured against, so `fundsTarget` asks whether the notional pays the
+      // target the plan said it was sizing for — not the $6,809 a $1.86 target
+      // over a 2.7 bps net move arithmetically demands from a plan that
+      // declared $500.
       const declaredNotionalCapUsd =
         plan?.maximum_intended_notional_usd ?? plan?.initial_notional_usd ?? null;
       const targetNotional = capTargetNotional(targetNotionalUncapped, declaredNotionalCapUsd);
@@ -572,8 +570,6 @@ export const makeTradingEntryService = Effect.gen(function* () {
               `and ${sizing.constrainedBy} capped the notional at ${sizing.notionalUsd.toFixed(2)} USD`,
           );
         }
-        // A size RAISED to fund the target is already reported: `constrainedBy`
-        // is `target_notional` and the block above pushed its detail.
       }
       if (costs === null) {
         warnings.push(
