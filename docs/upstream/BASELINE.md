@@ -7,6 +7,31 @@ acceptance criteria were checked against.
 
 ## Current baseline
 
+| Field                       | Value                                                    |
+| --------------------------- | -------------------------------------------------------- |
+| Upstream repository         | `https://github.com/pingdotgg/t3code.git`                |
+| Upstream branch             | `main`                                                   |
+| Pinned commit (full SHA)    | `f925d639421844f02b3166d29281905dbba6d529`               |
+| Pinned commit (short SHA)   | `f925d6394`                                              |
+| Upstream commit date        | 2026-08-26                                               |
+| Upstream release tag at pin | `v0.0.35`                                                |
+| Accepted-baseline tag       | `upstream-base/2026-08-26-f925d6394`                     |
+| Fork repository             | `https://github.com/TaraxioT/t3trade.git`                |
+| Fork product line           | `origin/main`                                            |
+| Pinned by                   | Upstream sync to v0.0.35                                 |
+| Pinned on                   | 2026-08-28                                               |
+| Sync PR                     | none — merged locally on `sync/v0.0.35`, not pushed      |
+| Accepted range              | `beab6886f..f925d6394` (133 upstream commits, one batch) |
+
+The previous baseline was the `v0.0.34-nightly.20260820.1142` nightly, which
+sits **127 commits before** upstream's stable `v0.0.34` (`badae6a5c`,
+2026-08-26). This batch therefore carries the whole v0.0.34 release as well as
+v0.0.35's own six commits — measuring `v0.0.34..v0.0.35` (6 commits) badly
+understates a sync taken from a nightly pin. Prefer stable tags as baselines
+for exactly this reason.
+
+## Superseded baseline (Plan 40 · v0.0.34-nightly)
+
 | Field                       | Value                                                          |
 | --------------------------- | -------------------------------------------------------------- |
 | Upstream repository         | `https://github.com/pingdotgg/t3code.git`                      |
