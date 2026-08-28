@@ -551,9 +551,9 @@ describe("string budgets", () => {
       verdictReason: verdict.verdictReason,
     } as never);
 
-    process.stdout.write(`MEASURED verdict_with_sample ${verdict.verdictReason.length}\n`);
-    process.stdout.write(`MEASURED verdict_below_floor ${belowFloor.verdictReason.length}\n`);
-    process.stdout.write(`MEASURED alert_summary ${summary.length}\n`);
+    console.log(`MEASURED verdict_with_sample ${verdict.verdictReason.length}`);
+    console.log(`MEASURED verdict_below_floor ${belowFloor.verdictReason.length}`);
+    console.log(`MEASURED alert_summary ${summary.length}`);
 
     // The alert lands in a feed beside one-line price alerts, so it is the
     // tightest of these; the report card carries everything else.
@@ -569,7 +569,7 @@ describe("renderForwardMenu", () => {
   // than eyeballed, and printed so the number is watched instead of drifting.
   it("stays lean and names every action and bound", () => {
     const menu = renderForwardMenu();
-    process.stdout.write(`FORWARD_MENU_CHARS ${menu.length}\n`);
+    console.log(`FORWARD_MENU_CHARS ${menu.length}`);
     expect(menu.length, "the forward menu must stay under 600 chars").toBeLessThan(600);
 
     for (const action of ["arm", "list", "pause", "resume", "end", "report"]) {
