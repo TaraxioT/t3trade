@@ -419,7 +419,7 @@ const renderTriggeredLine = (wakeup: TradingHarnessWakeup): string | undefined =
  * what keeps a single-market wake byte-for-byte what it was.
  */
 const renderOtherMarkets = (
-  otherMarkets: TradingHarnessWakeup["otherMarkets"],
+  otherMarkets: NonNullable<TradingHarnessWakeup["otherMarkets"]>,
 ): ReadonlyArray<string> =>
   otherMarkets.map((entry) =>
     entry.size === 0
@@ -444,7 +444,7 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string => {
     position: wakeup.position,
     // Kept even at the floor: a held market nobody mentioned is a position
     // this turn does not know it owns.
-    ...(wakeup.otherMarkets.length === 0
+    ...(wakeup.otherMarkets === undefined || wakeup.otherMarkets.length === 0
       ? {}
       : { alsoHeld: renderOtherMarkets(wakeup.otherMarkets) }),
     ...(triggered === undefined ? {} : { triggered }),
@@ -489,7 +489,7 @@ const renderLeanWakeup = (
     position: wakeup.position,
     // The other markets this mission holds, one line each. The wake's OWN
     // market carries the detail; these say only whether anything is on them.
-    ...(wakeup.otherMarkets.length === 0
+    ...(wakeup.otherMarkets === undefined || wakeup.otherMarkets.length === 0
       ? {}
       : { alsoHeld: renderOtherMarkets(wakeup.otherMarkets) }),
     // `position.size` is what is held; this is what was asked for and what is
@@ -1252,7 +1252,7 @@ const make = Effect.gen(function* () {
         userMessage: input.userMessage,
         marketSnapshot: toObservedMarketSnapshot(marketSnapshot),
         position,
-        otherMarkets,
+        ...(otherMarkets.length === 0 ? {} : { otherMarkets }),
         ...(workingEntry === null ? {} : { workingEntry }),
         ...(positionCosts === null ? {} : { positionCosts }),
         ...(costContext === null ? {} : { costContext }),

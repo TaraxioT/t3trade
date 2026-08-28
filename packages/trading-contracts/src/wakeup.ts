@@ -374,16 +374,19 @@ export const TradingHarnessWakeup = Schema.Struct({
    * A line is enough to answer the only question the other markets pose on
    * someone else's wake: is anything over there that needs this turn?
    *
-   * Empty for the mission that holds one market, which is most of them, so a
-   * single-market wake is byte-for-byte what it was.
+   * ABSENT for the mission that holds one market, which is most of them, so a
+   * single-market wake is byte-for-byte what it was and every wake persisted
+   * before the held set existed still decodes.
    */
-  otherMarkets: Schema.Array(
-    Schema.Struct({
-      market: TradingMarket,
-      /** Signed net size; 0 is flat and still worth saying. */
-      size: Schema.Number,
-      unrealisedPnl: Schema.Number,
-    }),
+  otherMarkets: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        market: TradingMarket,
+        /** Signed net size; 0 is flat and still worth saying. */
+        size: Schema.Number,
+        unrealisedPnl: Schema.Number,
+      }),
+    ),
   ),
   /**
    * The last few bars of the runtime timeframe (the interval the mandate

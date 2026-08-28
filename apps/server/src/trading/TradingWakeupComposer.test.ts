@@ -629,7 +629,7 @@ layer("TradingWakeupComposer", (it) => {
       const both = yield* composeFull({ markets: ["ETH", "BTC"] });
 
       assert.deepEqual(
-        both.wakeup.otherMarkets.map((entry) => entry.market),
+        (both.wakeup.otherMarkets ?? []).map((entry) => entry.market),
         ["BTC"],
       );
       // Flat over there, said in three words rather than a payload.
@@ -645,7 +645,8 @@ layer("TradingWakeupComposer", (it) => {
   it.effect("a one-market mission's wake is exactly what it was", () =>
     Effect.gen(function* () {
       const composed = yield* composeFull({});
-      assert.deepEqual([...composed.wakeup.otherMarkets], []);
+      // Absent, not empty: a one-market wake is byte-for-byte what it was.
+      assert.equal(composed.wakeup.otherMarkets, undefined);
       assert.notInclude(composed.text, "alsoHeld");
     }),
   );
@@ -675,7 +676,7 @@ layer("TradingWakeupComposer", (it) => {
       assert.equal(composed.wakeup.position.market, "BTC");
       // And ETH, which did not cause this wake, is the one reduced to a line.
       assert.deepEqual(
-        composed.wakeup.otherMarkets.map((entry) => entry.market),
+        (composed.wakeup.otherMarkets ?? []).map((entry) => entry.market),
         ["ETH"],
       );
     }),
