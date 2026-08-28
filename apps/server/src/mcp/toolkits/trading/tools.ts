@@ -146,7 +146,7 @@ export const TradingPlanTool = Tool.make("trading_plan", {
 
 export const TradingWatchTool = Tool.make("trading_watch", {
   description:
-    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, else touch), `metric` (funding_rate_8h, open_interest, spread_bps, volume_ratio vs a value), `derived` (archive-computed metrics; menu: trading_look({})), `pnl`, `giveback`, `fill`, `time` (clock fallback) — or retire with `cancel`. Fires once, terminal — re-arm to keep it. `replacesWatchId` swaps in one transaction; if it already fired, the arm is an ADDITION. A refusal changes nothing; `recovery` says what to do.',
+    'Arm one `condition` — `price` (`confirm: "close"` needs an `interval`, else touch), `metric` (funding_rate_8h (rate not %), open_interest, spread_bps, volume_ratio vs a value), `derived` (archive metrics; menu: trading_look({})), `pnl`, `giveback`, `fill`, `time` (clock fallback) — or retire with `cancel`. Fires once, terminal — re-arm to keep it. `replacesWatchId` swaps in one transaction; if it already fired, the arm is an ADDITION. A refusal changes nothing; `recovery` says what to do.',
   parameters: TradingWatchInput,
   success: TradingWatchResult,
   failure: TradingToolRejectedError,

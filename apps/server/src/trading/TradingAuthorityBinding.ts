@@ -25,6 +25,7 @@ import type { TradingProvider } from "@t3tools/trading-contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
@@ -58,19 +59,86 @@ export type AuthorityBinding =
   | { readonly outcome: "bound"; readonly mission: TradingMission }
   | { readonly outcome: "conflict"; readonly conflict: AuthorityConflict };
 
-/** The refusal text a held market answers with, holder named. */
+/**
+ * What the holding mission is doing, in words a user reads rather than the
+ * §11.1 token.
+ *
+ * The two that matter to someone hunting for the holder are the two that look
+ * different on the trade home: a mission holding a position is listed there,
+ * and a waiting one is not.
+ */
+const statusInWords = (status: string): string =>
+  status === "position_open"
+    ? "holding a position"
+    : status === "waiting"
+      ? "waiting on its plan"
+      : status === "executing"
+        ? "placing an order"
+        : status === "analysing"
+          ? "reading the market"
+          : status === "initializing"
+            ? "starting up"
+            : status.replace(/_/g, " ");
+
+/**
+ * The refusal text a held market answers with, holder named.
+ *
+ * `threadTitle` is what makes the refusal actionable: "another mission" told
+ * the user a market was taken and gave them nowhere to look. Naming the chat
+ * lets them find it in the thread list, which is the only route to a mission
+ * that holds no position — the trade home lists positions, so a waiting
+ * mission is invisible there. That gap is said out loud rather than papered
+ * over, and no new navigation is built to close it.
+ */
 const missionConflict = (input: {
   readonly market: string;
   readonly status: string;
-}): AuthorityConflict => ({
-  market: input.market,
-  heldBy: "another_mission",
-  detail: `another mission already holds ${input.market} on ${BOUND_VENUE} and is ${input.status.replace("_", " ")}. One authority holds one market at a time, so nothing was placed here.`,
-  options: [
-    `take ${input.market} over in this chat by ending that mission first, from the trade home`,
-    "trade a different market from this chat instead",
-  ],
-});
+  readonly threadTitle: string | null;
+}): AuthorityConflict => {
+  const named = input.threadTitle !== null;
+  const holder = named ? `the chat "${input.threadTitle}"` : "another chat";
+  // Where to go to end it. A titled chat is findable by that title; an
+  // untitled one is only reachable the old way, and only while it holds a
+  // position to be listed by.
+  const goTo = named ? "that chat" : "the trade home";
+  const invisible = named
+    ? input.status === "position_open"
+      ? ""
+      : " It holds no position, so the trade home does not list it; find it by that name in your thread list."
+    : " It has no title to find it by, and the trade home lists it only while it holds a position.";
+  return {
+    market: input.market,
+    heldBy: "another_mission",
+    detail:
+      `${holder} already holds ${input.market} on ${BOUND_VENUE} and is ` +
+      `${statusInWords(input.status)}. One authority holds one market at a time, so nothing ` +
+      `was placed here.${invisible}`,
+    options: [
+      `take ${input.market} over in this chat by ending that mission first, from ${goTo}`,
+      "trade a different market from this chat instead",
+    ],
+  };
+};
+
+/**
+ * The holding chat's title, for the refusal above.
+ *
+ * Advisory: a title that cannot be read costs the refusal a name, never the
+ * refusal itself, so every failure answers `null`.
+ */
+const readThreadTitle = (
+  threadId: string | undefined,
+): Effect.Effect<string | null, never, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    if (threadId === undefined) return null;
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly title: string }>`
+      SELECT title FROM projection_threads
+      WHERE thread_id = ${threadId} AND deleted_at IS NULL
+    `;
+    const title = rows[0]?.title.trim();
+    return title === undefined || title === "" ? null : title;
+  }).pipe(Effect.catchCause(() => Effect.succeed(null)));
 
 const manualConflict = (input: {
   readonly market: string;
@@ -117,6 +185,7 @@ export const bindThreadToMarket = Effect.fn("TradingAuthorityBinding.bindThreadT
     | HyperliquidGateway
     | ProviderRegistry
     | OrchestrationEngineService
+    | SqlClient.SqlClient
     | Crypto.Crypto
   > {
     const missions = yield* TradingMissionService;
@@ -177,13 +246,16 @@ export const bindThreadToMarket = Effect.fn("TradingAuthorityBinding.bindThreadT
         Effect.map((mission) => ({ outcome: "bound" as const, mission })),
         Effect.catchTags({
           TradingMissionAlreadyActiveError: (refusal) =>
-            Effect.succeed({
-              outcome: "conflict" as const,
-              conflict: missionConflict({
-                market: refusal.market ?? input.market,
-                status: refusal.activeStatus,
-              }),
-            }),
+            readThreadTitle(refusal.activeThreadId).pipe(
+              Effect.map((threadTitle) => ({
+                outcome: "conflict" as const,
+                conflict: missionConflict({
+                  market: refusal.market ?? input.market,
+                  status: refusal.activeStatus,
+                  threadTitle,
+                }),
+              })),
+            ),
           TradingMarketManualExposureError: (refusal) =>
             Effect.succeed({
               outcome: "conflict" as const,

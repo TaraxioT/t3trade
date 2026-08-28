@@ -99,7 +99,7 @@ import {
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/market-structure";
-import { toCandleSeries } from "@t3tools/trading-contracts/market";
+import { toCandleSeries, toObservedMarketSnapshot } from "@t3tools/trading-contracts/market";
 import type {
   AgentMarketSnapshot,
   MarketCandle,
@@ -132,6 +132,13 @@ import { TradingToolkit } from "./tools.ts";
 interface BoundCall {
   readonly threadId: string;
   readonly mission: TradingMission;
+  /**
+   * True when THIS call took the market: the mission did not exist when the
+   * call started. Its only reader is the plan path, which cannot hold the
+   * harness to an optimistic-lock version of a row that was created after the
+   * arguments were written.
+   */
+  readonly boundNow: boolean;
 }
 
 /**
@@ -242,7 +249,7 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
     });
   }
 
-  return { threadId: scope.threadId, mission: bound.value };
+  return { threadId: scope.threadId, mission: bound.value, boundNow: false };
 });
 
 /**
@@ -273,6 +280,7 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
   | ProviderRegistry
   | OrchestrationEngineService
   | TradingThreadMarketService
+  | SqlClient.SqlClient
   | Crypto.Crypto
 > {
   const scope = yield* McpInvocationContext.requireCapability("trading", (denial) => denial).pipe(
@@ -317,7 +325,7 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
     });
   }
   yield* noteThreadMarket({ threadId: scope.threadId, market, source: "bound" });
-  return { threadId: scope.threadId, mission: binding.mission };
+  return { threadId: scope.threadId, mission: binding.mission, boundNow: true };
 });
 
 /**
@@ -1312,7 +1320,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
           const resolvedMarket = yield* gateway
             .resolveMarket(market)
             .pipe(Effect.catchCause(() => Effect.succeed(null)));
-          sections.snapshot = snapshot;
+          sections.snapshot = toObservedMarketSnapshot(snapshot);
           if (resolvedMarket !== null) sections.resolvedMarket = resolvedMarket;
         }
         const orderBook =
@@ -2075,13 +2083,27 @@ const handlers = {
 
   trading_plan: (input) =>
     Effect.gen(function* () {
-      const { threadId, mission } = yield* resolveBindableCall({
+      const { threadId, mission, boundNow } = yield* resolveBindableCall({
         missionId: input.missionId,
         market: input.strategy.market,
       });
+
+      // The optimistic lock, when the mission is older than the call. A bind
+      // that happened INSIDE this call created the mission moments ago and
+      // walked it through §11.1 to `waiting`, so it is already at version 3
+      // while the harness wrote `expectedMissionVersion: 0` — there was no
+      // mission for it to have read a version from. The lock exists to catch a
+      // concurrent writer, and a row that did not exist when the call started
+      // has none, so the version the bind produced is the one the publish is
+      // checked against. Without this the first plan on every chat-started
+      // thread was spent on a `stale_mission_state` refusal and a retry.
+      const expectedMissionVersion = boundNow
+        ? yield* readMissionVersion(mission.id, input.expectedMissionVersion)
+        : input.expectedMissionVersion;
+
       // The strategy service keys off `input.missionId`; resolve it to the bound
       // mission so an omitted `missionId` reaches the publish path.
-      const resolvedInput = { ...input, missionId: mission.id };
+      const resolvedInput = { ...input, missionId: mission.id, expectedMissionVersion };
 
       // Before the publish, so a refusal means nothing was written.
       const verdict = yield* judgeTargetCost({ mission, strategy: input.strategy });
@@ -2089,7 +2111,7 @@ const handlers = {
         return {
           outcome: "rejected" as const,
           reason: "target_below_cost_floor" as const,
-          currentVersion: yield* readMissionVersion(mission.id, input.expectedMissionVersion),
+          currentVersion: yield* readMissionVersion(mission.id, expectedMissionVersion),
           detail: targetFloorRefusal({
             targetUsd: input.strategy.target.profitUsd ?? 0,
             urgency: input.strategy.entry.urgency,

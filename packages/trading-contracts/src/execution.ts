@@ -414,6 +414,15 @@ export const TradingOpenOrderRecord = Schema.Struct({
   /** Remaining size after partial fills. */
   remainingSize: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   reduceOnly: Schema.Boolean,
+  /**
+   * Where a trigger order fires, when this is one.
+   *
+   * A stop's `limitPrice` is its slippage cap, not its stop: the two are
+   * deliberately apart, and reading the cap as the stop understates the risk
+   * the trader is carrying. Absent on an ordinary limit order, which has no
+   * trigger to report.
+   */
+  triggerPrice: Schema.optional(Price),
   observedAt: UnixMillis,
 });
 export type TradingOpenOrderRecord = typeof TradingOpenOrderRecord.Type;

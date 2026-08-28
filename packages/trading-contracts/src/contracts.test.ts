@@ -18,6 +18,7 @@ import {
   MarketHistoryRequest,
   OrderBook,
   ResolvedMarket,
+  toObservedMarketSnapshot,
 } from "./market.ts";
 import { TradingHarnessRun, TradingMission } from "./mission.ts";
 import {
@@ -494,6 +495,67 @@ describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
     expect(decoded.bestBidOffer.freshness.staleAfterMillis).toBe(
       MARKET_FRESHNESS.bboStaleAfterMillis,
     );
+  });
+
+  // Finding 5 of the live pass: the look served `fundingRate8h` as a raw rate
+  // and the turn read -0.0007467 back to the user as "-0.00075%", a
+  // hundredfold understatement. The agent-facing snapshot carries the unit in
+  // the field name now, and the value matches it.
+  it("serves the harness a funding PERCENT, not a raw rate", () => {
+    const observed = toObservedMarketSnapshot({
+      market: "ETH",
+      markPrice: 3_750,
+      midPrice: 3_750.5,
+      oraclePrice: 3_749,
+      fundingRate8h: -0.0007467,
+      openInterest: 12_500,
+      dayVolumeUsd: 1_200_000,
+      bestBidOffer: {
+        bidPrice: 3_750.1,
+        bidSize: 2.4,
+        askPrice: 3_750.9,
+        askSize: 1.8,
+        freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 2_000 },
+      },
+      freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 5_000 },
+      change24hPercent: 1.4,
+    });
+
+    expect(observed.fundingRatePct8h).toBe(-0.07467);
+    // The raw rate does not ride along under its old name: one field in, one
+    // field out, and nothing left for a reader to pick the wrong one of.
+    expect("fundingRate8h" in observed).toBe(false);
+    // Everything else is the snapshot untouched.
+    expect(observed.markPrice).toBe(3_750);
+    expect(observed.change24hPercent).toBe(1.4);
+  });
+
+  it("keeps the smallest funding this venue quotes, and cuts the float tail", () => {
+    const at = (fundingRate8h: number) =>
+      toObservedMarketSnapshot({
+        market: "ETH",
+        markPrice: 3_750,
+        midPrice: 3_750,
+        oraclePrice: 3_750,
+        fundingRate8h,
+        openInterest: 1,
+        dayVolumeUsd: 1,
+        bestBidOffer: {
+          freshness: {
+            observedAt: 1_753_000_000_000,
+            source: "websocket",
+            staleAfterMillis: 2_000,
+          },
+        },
+        freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 5_000 },
+        change24hPercent: 0,
+      }).fundingRatePct8h;
+
+    expect(at(0.0000125)).toBe(0.00125);
+    expect(at(0)).toBe(0);
+    // 0.0007467 * 100 is 0.07467000000000001 in binary floating point; the
+    // payload carries the number, not the artifact.
+    expect(String(at(0.0007467))).toBe("0.07467");
   });
 
   it("clamps the candle history request to the §13 500-bar cap at the gateway, not the contract", () => {

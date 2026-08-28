@@ -27,6 +27,14 @@ export class TradingMissionAlreadyActiveError extends Schema.TaggedErrorClass<Tr
     activeStatus: TradingMissionStatus,
     /** The market the existing mission holds. */
     market: Schema.optional(Schema.String),
+    /**
+     * The chat the holding mission is bound to, so a refusal can name it.
+     *
+     * Optional because a mission row written before this field existed has no
+     * thread to point at, and a refusal that cannot name the holder is still a
+     * refusal.
+     */
+    activeThreadId: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {

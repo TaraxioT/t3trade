@@ -90,6 +90,7 @@ import Migration0074 from "./Migrations/074_TradingWatchlistAlerts.ts";
 import Migration0075 from "./Migrations/075_TradingManualExecution.ts";
 import Migration0076 from "./Migrations/076_TradingAnalystThreads.ts";
 import Migration0077 from "./Migrations/077_TradingThreadMarketFocus.ts";
+import Migration0078 from "./Migrations/078_TradingOrderTriggerPrice.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -182,6 +183,7 @@ export const migrationEntries = [
   [75, "TradingManualExecution", Migration0075],
   [76, "TradingAnalystThreads", Migration0076],
   [77, "TradingThreadMarketFocus", Migration0077],
+  [78, "TradingOrderTriggerPrice", Migration0078],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

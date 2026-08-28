@@ -13,7 +13,7 @@ import { Schema } from "effect";
 import { AgentAccountSnapshot, AgentNetPosition } from "./account-snapshot.ts";
 import { TradingAuthority } from "./authority.ts";
 import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
-import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
+import { MarketHistory, ObservedMarketSnapshot } from "./market.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { Price, TradingId, TradingText, UnixMillis } from "./primitives.ts";
@@ -329,7 +329,7 @@ export const TradingHarnessWakeup = Schema.Struct({
   wakeReason: Schema.optional(WatchArmedReason),
   /** The user message that woke the run, when the cause is `user_message`. */
   userMessage: Schema.optional(TradingText),
-  marketSnapshot: AgentMarketSnapshot,
+  marketSnapshot: ObservedMarketSnapshot,
   /**
    * The live balance: what the account holds right now. This is information
    * for sizing, never a limit — the limits are in `authority`.

@@ -35,6 +35,7 @@ import type {
   MarketHistory,
   OrderBook,
 } from "@t3tools/trading-contracts/market";
+import { toObservedMarketSnapshot } from "@t3tools/trading-contracts/market";
 import {
   MARKET_SAMPLE_MIN_SPAN_MILLIS,
   readMicrostructure,
@@ -1173,7 +1174,7 @@ const make = Effect.gen(function* () {
         // harness registered woke it for the reason the harness already knows.
         wakeReason: Option.isSome(triggeringWatch) ? triggeringWatch.value.armedReason : undefined,
         userMessage: input.userMessage,
-        marketSnapshot,
+        marketSnapshot: toObservedMarketSnapshot(marketSnapshot),
         position,
         ...(workingEntry === null ? {} : { workingEntry }),
         ...(positionCosts === null ? {} : { positionCosts }),

@@ -148,6 +148,9 @@ layer("TradingAccountProjection", (it) => {
         kind: "mission",
         missionId: TradingMissionId.make("mission_1"),
       });
+      // An ordinary limit order has no trigger, and says so rather than
+      // reporting its limit twice.
+      assert.strictEqual(order.triggerPrice, null);
 
       // A flat account with no orders still exists in the view, so its balance
       // card does not vanish between trades.
@@ -155,6 +158,37 @@ layer("TradingAccountProjection", (it) => {
       assert.strictEqual(accountB.positions.length, 0);
       assert.strictEqual(accountB.openOrders.length, 0);
       assert.strictEqual(accountB.balanceUsd, 800);
+    }),
+  );
+
+  // Finding 3 of the live pass: a protection stop's trigger sat at 2,472 and
+  // the panel showed 2,447.3, its slippage cap, so the trader read their risk
+  // twenty-five dollars looser than it was. The trigger is persisted (078) and
+  // projected now, alongside the cap rather than instead of it.
+  it.effect("serves a trigger order's trigger price, not just its slippage cap", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedMission("mission_stop", "account_s");
+      yield* sql`
+        INSERT INTO trading_orders
+          (mission_id, cloid, order_id, market, side, limit_price, remaining_size,
+           reduce_only, trigger_price, observed_at, account_id)
+        VALUES (
+          'mission_stop', ${"b".repeat(32)}, 77, 'ETH', 'sell', 2447.3, 0.35,
+          1, 2472, 2000, 'account_s'
+        )
+      `;
+
+      const projection = yield* TradingAccountProjection;
+      const view = yield* projection.view();
+
+      const order = view.accounts.find((a) => a.accountId === "account_s")!.openOrders[0]!;
+      assert.strictEqual(order.triggerPrice, 2472);
+      // The cap is still carried, because it is still true and the panel
+      // labels both.
+      assert.strictEqual(order.limitPrice, 2447.3);
+      assert.strictEqual(order.reduceOnly, true);
     }),
   );
 

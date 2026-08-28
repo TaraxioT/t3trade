@@ -4,9 +4,11 @@
  * Everything on it is a server truth relayed verbatim: as the trader types,
  * the ticket asks `previewTradingOrder` to price and pre-check the entry —
  * the live `deriveFeasibleSize` readout, the planned loss at the stop, the
- * round-trip cost — and shows a refusal exactly as the server worded it,
- * including D4's `market_owned_by_mission`. The stop field is mandatory: the
- * ticket will not preview, let alone place, without one.
+ * round-trip cost — and shows a refusal in the server's own sentence,
+ * including D4's market-owned-by-mission one. The rule name and the feasible
+ * size stay in the log and the tool payload rather than on the ticket; see
+ * {@link refusalSentence}. The stop field is mandatory: the ticket will not
+ * preview, let alone place, without one.
  *
  * Placing dispatches `trading.order.place`; the dispatch is only the
  * acknowledgement, and the outcome — filled, resting, or refused — lands in
@@ -54,15 +56,28 @@ function parseTicket(
   return { market: asset, side, stopPrice, sizeEth, urgency };
 }
 
+/**
+ * The refusal as a sentence, not a record.
+ *
+ * The server's `reason` is a rule name (`stop_on_wrong_side`) and
+ * `feasibleSize` is the sizer's own readout; both belong in the log line and
+ * the tool payload, and both still travel there. On the ticket they turned one
+ * readable sentence into "stop_on_wrong_side — a buy entry at 81093 needs its
+ * stop below that price; got 82500 (feasible: 0)". The detail already says the
+ * whole thing, so the ticket shows the detail and nothing else; the size the
+ * account can actually fund is already on the prepared readout as "max
+ * feasible", where it is a number the trader can use rather than a suffix.
+ */
+const refusalSentence = (detail: string): string => {
+  const trimmed = detail.trim();
+  return trimmed === "" ? "This order was refused." : trimmed[0]!.toUpperCase() + trimmed.slice(1);
+};
+
 function PreviewReadout({ preview }: { preview: TradingOrderPreviewResult }) {
   if (preview.outcome === "refused") {
     return (
       <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs">
-        <span className="font-medium text-destructive">{preview.reason}</span>
-        <span className="text-foreground"> — {preview.detail}</span>
-        {preview.feasibleSize === undefined ? null : (
-          <span className="text-muted-foreground"> (feasible: {preview.feasibleSize})</span>
-        )}
+        <span className="text-foreground">{refusalSentence(preview.detail)}</span>
       </div>
     );
   }

@@ -1,8 +1,8 @@
 /**
  * Launching trading threads from the trade home (final-form Phase 8).
  *
- * Two launchers share one shape — resolve the environment's first project and
- * its default model, create a real server thread, then navigate to it:
+ * Two launchers share one shape — resolve where the thread belongs and which
+ * model runs it, create a real server thread, then navigate to it:
  *
  * - `useAskAnalyst` rides the analyst-thread registry: one analyst thread per
  *   market, reused, with the question sent as an ordinary turn. The server
@@ -28,9 +28,11 @@ import { useRouter } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
 import { waitForServerThread, waitForStartedServerThread } from "../ChatView.logic";
+import { useHandleNewThread } from "../../hooks/useHandleNewThread";
+import { resolveThreadActionProjectRef } from "../../lib/chatThreadActions";
 import { newMessageId, newThreadId } from "../../lib/utils";
 import { resolveDefaultProviderModelSelection } from "../../providerInstances";
-import { useProjects, useServerConfigs } from "../../state/entities";
+import { readThreadShell, useProjects, useServerConfigs } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -41,17 +43,57 @@ interface LaunchContext {
   readonly modelSelection: ModelSelection;
 }
 
-/** The environment's first project and its resolved default model, or the
- * one-line reason a thread cannot be launched. */
+/**
+ * Where a launched thread lands and what runs it, or the one-line reason it
+ * cannot be launched.
+ *
+ * Both answers are the ones a thread the user made by hand would get, and they
+ * used to be neither: the project was whichever came first in the environment's
+ * list, and the model was that project's default. A user who lives in one
+ * project and launches from the trade home got a thread in some other project,
+ * running some other project's model, with no way to tell from the screen.
+ *
+ * So the project comes from {@link resolveThreadActionProjectRef} — the same
+ * precedence the command palette and the sidebar use for "new thread": the
+ * thread being viewed, then the draft being viewed, then the user's own
+ * first-ordered project. The model follows the same carry rule: the viewed
+ * thread's, since that is the working mode the user is in, and the target
+ * project's default when there is no thread to carry from. No trading-specific
+ * model is imposed at any point.
+ *
+ * The one thing that does not carry is a project on another environment. A
+ * project id is only meaningful to the server that owns it, and this launch
+ * creates its thread on `environmentId`; a ref from elsewhere names nothing
+ * here, so it falls back to this environment's own first project.
+ */
 function useLaunchContext(environmentId: EnvironmentId): LaunchContext | string {
   const projects = useProjects();
   const serverConfigs = useServerConfigs();
-  const project = projects.find((entry) => entry.environmentId === environmentId) ?? null;
+  const newThreadContext = useHandleNewThread();
+
+  const contextRef = resolveThreadActionProjectRef({
+    activeThread: newThreadContext.activeThread ?? undefined,
+    activeDraftThread: newThreadContext.activeDraftThread,
+    defaultProjectRef: newThreadContext.defaultProjectRef,
+    handleNewThread: newThreadContext.handleNewThread,
+  });
+  const contextProjectId =
+    contextRef !== null && contextRef.environmentId === environmentId ? contextRef.projectId : null;
+  const here = projects.filter((entry) => entry.environmentId === environmentId);
+  const project = here.find((entry) => entry.id === contextProjectId) ?? here[0] ?? null;
   if (project === null) return "No project in this environment to home the thread in.";
+
   const providers = serverConfigs.get(environmentId)?.providers ?? [];
+  const viewedThreadRef =
+    newThreadContext.routeThreadRef !== null &&
+    newThreadContext.routeThreadRef.environmentId === environmentId
+      ? newThreadContext.routeThreadRef
+      : null;
+  const carriedModelSelection =
+    viewedThreadRef === null ? null : (readThreadShell(viewedThreadRef)?.modelSelection ?? null);
   const modelSelection = resolveDefaultProviderModelSelection(
     providers,
-    project.defaultModelSelection,
+    carriedModelSelection ?? project.defaultModelSelection,
   );
   if (modelSelection === null) return "No provider is available to run the thread.";
   return { projectId: project.id, modelSelection };

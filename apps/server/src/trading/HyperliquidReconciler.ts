@@ -267,6 +267,7 @@ function toOpenOrderRecords(
           limitPrice: o.limitPrice,
           remainingSize: o.remainingSize,
           reduceOnly: o.reduceOnly,
+          ...(o.triggerPrice === undefined ? {} : { triggerPrice: o.triggerPrice }),
           observedAt,
         }) as TradingOpenOrderRecord,
     );
@@ -601,15 +602,18 @@ function persistOpenOrders(
       yield* sql`
         INSERT INTO trading_orders (
           mission_id, cloid, order_id, market, side, limit_price,
-          remaining_size, reduce_only, observed_at, account_id, venue, asset
+          remaining_size, reduce_only, trigger_price, observed_at,
+          account_id, venue, asset
         ) VALUES (
           ${o.missionId}, ${o.cloid}, ${o.orderId}, ${o.market}, ${o.side},
-          ${o.limitPrice}, ${o.remainingSize}, ${o.reduceOnly ? 1 : 0}, ${o.observedAt},
+          ${o.limitPrice}, ${o.remainingSize}, ${o.reduceOnly ? 1 : 0},
+          ${o.triggerPrice ?? null}, ${o.observedAt},
           ${accountId}, 'hyperliquid', ${o.market}
         )
         ON CONFLICT(account_id, cloid) DO UPDATE SET
           order_id = ${o.orderId}, limit_price = ${o.limitPrice},
           remaining_size = ${o.remainingSize}, reduce_only = ${o.reduceOnly ? 1 : 0},
+          trigger_price = ${o.triggerPrice ?? null},
           observed_at = ${o.observedAt}
       `;
     }
@@ -1407,17 +1411,19 @@ function persistManualOpenOrders(
       yield* sql`
         INSERT INTO trading_orders (
           mission_id, cloid, order_id, market, side, limit_price,
-          remaining_size, reduce_only, observed_at, account_id, venue, asset
+          remaining_size, reduce_only, trigger_price, observed_at,
+          account_id, venue, asset
         ) VALUES (
           NULL, ${order.cloid ?? ""}, ${order.orderId}, ${order.market},
           ${order.side}, ${order.limitPrice}, ${order.remainingSize},
-          ${order.reduceOnly ? 1 : 0}, ${observedAt},
+          ${order.reduceOnly ? 1 : 0}, ${order.triggerPrice ?? null}, ${observedAt},
           ${input.accountId}, 'hyperliquid', ${order.market}
         )
         ON CONFLICT(account_id, cloid) DO UPDATE SET
           order_id = ${order.orderId}, limit_price = ${order.limitPrice},
           remaining_size = ${order.remainingSize},
           reduce_only = ${order.reduceOnly ? 1 : 0},
+          trigger_price = ${order.triggerPrice ?? null},
           observed_at = ${observedAt}
       `;
     }

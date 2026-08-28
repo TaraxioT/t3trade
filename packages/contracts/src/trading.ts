@@ -520,7 +520,14 @@ export const TradingAccountOpenOrder = Schema.Struct({
   cloid: TrimmedNonEmptyString,
   orderId: Schema.Number,
   side: Schema.Literals(["buy", "sell"]),
+  /**
+   * The price the order rests at. On a trigger order this is the slippage cap
+   * the exchange fills within once `triggerPrice` is touched, NOT the stop —
+   * anything showing a stop to a user must show the trigger.
+   */
   limitPrice: Schema.Number,
+  /** Where a trigger order fires. Null on an ordinary limit order. */
+  triggerPrice: Schema.NullOr(Schema.Number),
   remainingSize: Schema.Number,
   reduceOnly: Schema.Boolean,
   authority: TradingOwningAuthority,

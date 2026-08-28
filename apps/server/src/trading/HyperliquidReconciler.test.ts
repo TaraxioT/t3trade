@@ -1443,6 +1443,45 @@ layer("HyperliquidReconciler", (it) => {
     }),
   );
 
+  // Finding 3 of the live pass: the reconciler read a stop's trigger off the
+  // exchange and dropped it, so the panel showed the slippage cap and a user
+  // read their stop $25 below where it actually sat.
+  it.effect("persists a trigger order's trigger price alongside its slippage cap", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* setState({
+        orders: [
+          {
+            ...order("d", 4, "sell", 2447.3, 0.35),
+            reduceOnly: true,
+            isTrigger: true,
+            triggerPrice: 2472,
+          },
+          // An ordinary limit order alongside it, to prove the column is not
+          // filled in for orders that have no trigger.
+          order("e", 5, "buy", 2900, 1),
+        ],
+      });
+      yield* reconciler.reconcile(input, "after_submission");
+
+      const rows = yield* sql<{
+        readonly cloid: string;
+        readonly limit_price: number;
+        readonly trigger_price: number | null;
+      }>`
+        SELECT cloid, limit_price, trigger_price FROM trading_orders
+        WHERE mission_id = ${MISSION} ORDER BY cloid
+      `;
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0]?.trigger_price, 2472);
+      assert.equal(rows[0]?.limit_price, 2447.3);
+      assert.equal(rows[1]?.trigger_price, null);
+    }),
+  );
+
   // -------------------------------------------------------------------------
   // §18.2 external actions: a position that moved with no order of T3's behind
   // it is somebody acting on the exchange directly, and the harness has to be

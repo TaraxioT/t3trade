@@ -101,6 +101,8 @@ interface OpenOrderRow {
   readonly market: string;
   readonly side: string;
   readonly limit_price: number;
+  /** Null on an ordinary limit order, and on rows written before 078. */
+  readonly trigger_price: number | null;
   readonly remaining_size: number;
   readonly reduce_only: number;
   readonly observed_at: number;
@@ -145,6 +147,7 @@ const toOpenOrder = (row: OpenOrderRow): TradingAccountOpenOrder => ({
   orderId: row.order_id,
   side: row.side === "buy" ? "buy" : "sell",
   limitPrice: row.limit_price,
+  triggerPrice: row.trigger_price,
   remainingSize: row.remaining_size,
   reduceOnly: row.reduce_only !== 0,
   authority:
@@ -188,8 +191,8 @@ const makeTradingAccountProjection = Effect.gen(function* () {
 
       const openOrders = yield* sql<OpenOrderRow>`
         SELECT o.mission_id, o.account_id AS trading_account_id, o.cloid, o.order_id,
-               o.market, o.side, o.limit_price, o.remaining_size, o.reduce_only,
-               o.observed_at
+               o.market, o.side, o.limit_price, o.trigger_price, o.remaining_size,
+               o.reduce_only, o.observed_at
         FROM trading_orders o
         ORDER BY o.observed_at DESC
       `.pipe(Effect.mapError(sqlFail("orders")));

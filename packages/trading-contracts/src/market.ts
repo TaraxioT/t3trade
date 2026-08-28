@@ -182,6 +182,48 @@ export const AgentMarketSnapshot = Schema.Struct({
 });
 export type AgentMarketSnapshot = typeof AgentMarketSnapshot.Type;
 
+// The snapshot as a MODEL reads it, which is a different problem from the
+// snapshot as code reads it. Everything above keeps `fundingRate8h`, a raw
+// rate, because every internal consumer multiplies it into something else.
+// Nothing below does: it is read once and written into a sentence.
+const { fundingRate8h: _rawFundingRate, ...agentSnapshotFieldsWithoutFunding } =
+  marketSnapshotFields;
+
+/**
+ * The snapshot served to the harness in a look or a wake.
+ *
+ * Identical to {@link AgentMarketSnapshot} except for funding, and funding is
+ * the one field on it whose unit cannot be inferred from the value. Served as
+ * the raw rate under the name `fundingRate8h`, -0.0007467 was read back to the
+ * user as "-0.00075%" — a hundredfold understatement, and an easy one, because
+ * every other number on the snapshot is already in the unit its name implies.
+ * The name now carries the unit and the value matches it, so there is nothing
+ * left to convert and nothing left to get wrong. One field in, one field out:
+ * the payload is the same size.
+ */
+export const ObservedMarketSnapshot = Schema.Struct({
+  ...agentSnapshotFieldsWithoutFunding,
+  /** 24h percentage change, derived from prior-day open to current mark. */
+  change24hPercent: Schema.Number,
+  /** The 8-hour funding rate as a PERCENT (-0.0747 is -0.0747%/8h). */
+  fundingRatePct8h: Schema.Number,
+});
+export type ObservedMarketSnapshot = typeof ObservedMarketSnapshot.Type;
+
+/**
+ * Rate to percent, with the float tail cut.
+ *
+ * Six places holds the smallest funding this venue quotes (0.00125%) without
+ * riding an eleven-digit artifact of the multiply into every payload.
+ */
+const toPercent = (rate: number): number => Math.round(rate * 1e8) / 1e6;
+
+/** The snapshot, re-expressed for the harness. */
+export const toObservedMarketSnapshot = (snapshot: AgentMarketSnapshot): ObservedMarketSnapshot => {
+  const { fundingRate8h, ...rest } = snapshot;
+  return { ...rest, fundingRatePct8h: toPercent(fundingRate8h) };
+};
+
 // -- candle history ----------------------------------------------------------
 
 /** A single OHLCV candle - domain shape, not the exchange wire array. */

@@ -18,7 +18,7 @@ import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./accoun
 import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { TradingTradeHistory } from "./history.ts";
 import { IndicatorReading } from "./indicators.ts";
-import { AgentMarketSnapshot, MarketCandleSeries, OrderBook, ResolvedMarket } from "./market.ts";
+import { MarketCandleSeries, ObservedMarketSnapshot, OrderBook, ResolvedMarket } from "./market.ts";
 import {
   ObservedMarketStructure,
   StrategyCandidate,
@@ -387,7 +387,7 @@ export const TradingObservation = Schema.Struct({
   // the model most needs to be able to read its own position and mandate. A
   // failed market read costs these fields and nothing else.
   resolvedMarket: Schema.optional(ResolvedMarket),
-  snapshot: Schema.optional(AgentMarketSnapshot),
+  snapshot: Schema.optional(ObservedMarketSnapshot),
   /**
    * The book, bounded to {@link TRADING_LOOK_BOOK_LEVELS} a side — the depth
    * `microstructure` measures its readings over. Twenty levels rode every
@@ -530,8 +530,9 @@ export const TradingObservation = Schema.Struct({
   ),
   /**
    * `funding_stats:<W>`: the trailing window's verdict, from the archive.
-   * `meanPer8h` and `latestRatePer8h` are 8h-equivalent rates (hourly archive
-   * rate x 8) — the same unit as the snapshot's `fundingRate8h`.
+   * `meanPer8h` and `latestRatePer8h` are 8h-equivalent RATES (hourly archive
+   * rate x 8), not percentages — unlike the snapshot's `fundingRatePct8h`,
+   * which carries its unit in its name because it is the one a turn quotes.
    */
   fundingStats: Schema.optional(
     Schema.Struct({

@@ -103,7 +103,7 @@ describe("TradingHarnessWakeup", () => {
       markPrice: 4_000,
       midPrice: 4_000,
       oraclePrice: 4_000,
-      fundingRate8h: 0.0001,
+      fundingRatePct8h: 0.01,
       openInterest: 10,
       dayVolumeUsd: 1_000,
       bestBidOffer: {

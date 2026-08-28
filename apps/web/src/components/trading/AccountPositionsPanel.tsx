@@ -250,6 +250,20 @@ function PositionRow({
   );
 }
 
+/**
+ * One resting order, priced at the number that actually decides it.
+ *
+ * A trigger order has two prices and they are far apart on purpose: the
+ * trigger is where it fires, the limit is the slippage cap it fills within
+ * once it has. This row showed the cap, so a stop set at 2,472 read as 2,447.3
+ * and the trader saw their risk twenty-five dollars looser than it was. The
+ * trigger takes the price slot now, named, with the cap beside it also named —
+ * neither number is left to be guessed at from position.
+ *
+ * "Trigger" rather than "stop" because a reduce-only trigger is a stop or a
+ * take-profit depending on which side of the mark it rests, and the row cannot
+ * tell without the mark.
+ */
 function OpenOrderRow({ order }: { order: TradingAccountOpenOrder }) {
   return (
     <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-2 py-1 text-xs">
@@ -257,7 +271,20 @@ function OpenOrderRow({ order }: { order: TradingAccountOpenOrder }) {
       <span className={order.side === "buy" ? "text-long" : "text-short"}>
         {order.side} {order.remainingSize}
       </span>
-      <span className="tabular-nums text-muted-foreground">@ {formatPrice(order.limitPrice)}</span>
+      {order.triggerPrice === null ? (
+        <span className="tabular-nums text-muted-foreground">
+          @ {formatPrice(order.limitPrice)}
+        </span>
+      ) : (
+        <>
+          <span className="tabular-nums text-foreground">
+            trigger {formatPrice(order.triggerPrice)}
+          </span>
+          <span className="tabular-nums text-muted-foreground">
+            limit {formatPrice(order.limitPrice)}
+          </span>
+        </>
+      )}
       {order.reduceOnly ? <span className="text-muted-foreground">reduce-only</span> : null}
       <span className="ml-auto text-muted-foreground">
         {order.authority.kind === "mission" ? "mission" : "manual"}

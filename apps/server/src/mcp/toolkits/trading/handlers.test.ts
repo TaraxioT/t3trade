@@ -713,6 +713,12 @@ const withMcpServer = <A, E>(
       readonly missionId: string;
       readonly market: string;
       readonly threadId: string;
+      /**
+       * The holding chat's title, when the test wants the refusal to name it.
+       * Omitted seeds no `projection_threads` row, which is the deleted-thread
+       * case the refusal has to survive.
+       */
+      readonly threadTitle?: string;
     }) => Effect.Effect<void, never, never>;
     /** What the open run recorded as its first execution refusal, if anything. */
     readonly readFirstRefusal: () => Effect.Effect<string | null, never, never>;
@@ -921,9 +927,20 @@ const withMcpServer = <A, E>(
         readonly missionId: string;
         readonly market: string;
         readonly threadId: string;
+        readonly threadTitle?: string;
       }) =>
-        missions
-          .createMission({
+        Effect.gen(function* () {
+          if (input.threadTitle !== undefined) {
+            yield* sql`
+              INSERT INTO projection_threads (
+                thread_id, project_id, title, created_at, updated_at
+              ) VALUES (
+                ${input.threadId}, 'project_local', ${input.threadTitle},
+                '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+              )
+            `;
+          }
+          yield* missions.createMission({
             missionId: input.missionId,
             userId: LOCAL_TRADING_USER_ID,
             tradingAccountId: LOCAL_TRADING_ACCOUNT_ID,
@@ -936,8 +953,8 @@ const withMcpServer = <A, E>(
               threadId: ThreadId.make(input.threadId),
               status: "available",
             },
-          })
-          .pipe(Effect.asVoid, Effect.orDie);
+          });
+        }).pipe(Effect.asVoid, Effect.orDie);
       const readFirstRefusal = () =>
         sql<{ readonly first_preview_refusal: string | null }>`
           SELECT first_preview_refusal FROM trading_harness_runs WHERE run_id = 'run_funnel'
@@ -1709,6 +1726,7 @@ it.effect("refuses a market another authority holds, and places nothing", () =>
           missionId: "mission_holding_sol",
           market: "SOL",
           threadId: "thread-holding-sol",
+          threadTitle: "SOL momentum watch",
         });
 
         const refused = yield* callTool(FRESH_CHAT_THREAD, "trading_enter", {
@@ -1722,7 +1740,15 @@ it.effect("refuses a market another authority holds, and places nothing", () =>
         const text = refused.result.content[0].text as string;
         // The holder is named in words the model relays, and the ways out come
         // with it — a refusal the user cannot act on costs the turn twice.
-        assert.include(text, "another mission already holds SOL");
+        // "another mission" was all it used to say, which told the user a
+        // market was taken and gave them nowhere to look: the chat's own title
+        // is what they can find in the thread list.
+        assert.include(text, 'the chat "SOL momentum watch" already holds SOL');
+        // What that mission is doing, since a waiting one is not on the trade
+        // home and a position-holding one is.
+        assert.include(text, "starting up");
+        assert.include(text, "the trade home does not list it");
+        assert.include(text, "from that chat");
         assert.include(text, "What you can do:");
         assert.include(text, "[reason=market_held_by_other_authority");
         assert.notInclude(text, "—");
@@ -1744,14 +1770,20 @@ it.effect("refuses a market another authority holds, and places nothing", () =>
   ),
 );
 
-it.effect("publishing a plan on a fresh chat takes the market it names", () =>
+it.effect("publishing a plan on a fresh chat takes the market it names, in one call", () =>
   withMcpServer(
     ({ callTool, missions, seedLocalTradingAccount }) =>
       Effect.gen(function* () {
         yield* seedLocalTradingAccount();
 
+        // Zero is what a harness with no mission actually sends: it has never
+        // seen a version because there was nothing to read one from. The bind
+        // this same call performs creates the mission and walks it through
+        // §11.1 to `waiting`, so by the time the publish runs the row is at 3
+        // — and the optimistic lock used to refuse it as `stale_mission_state`,
+        // spending the first plan of every chat-started thread on a retry.
         const published = yield* callTool(FRESH_CHAT_THREAD, "trading_plan", {
-          expectedMissionVersion: 3,
+          expectedMissionVersion: 0,
           strategy: strategyBody("first plan from chat"),
         });
 
@@ -1760,6 +1792,34 @@ it.effect("publishing a plan on a fresh chat takes the market it names", () =>
 
         const bound = yield* missions.findMissionByThreadId(FRESH_CHAT_THREAD).pipe(Effect.orDie);
         assert.equal(bound._tag, "Some");
+
+        clearAllSessionProfiles();
+      }),
+    bindLayer(),
+  ),
+);
+
+// The other half of the same rule: once a thread HOLDS its mission, the lock
+// is real again. A second plan quoting the version the first one superseded is
+// the concurrent-writer case the lock exists for, and it is still refused.
+it.effect("keeps the version lock on a chat that already holds its mission", () =>
+  withMcpServer(
+    ({ callTool, seedLocalTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedLocalTradingAccount();
+
+        const first = yield* callTool(FRESH_CHAT_THREAD, "trading_plan", {
+          expectedMissionVersion: 0,
+          strategy: strategyBody("first plan from chat"),
+        });
+        assert.equal(first.result.body.outcome, "accepted");
+
+        const stale = yield* callTool(FRESH_CHAT_THREAD, "trading_plan", {
+          expectedMissionVersion: 0,
+          strategy: strategyBody("second plan on a stale version"),
+        });
+        assert.equal(stale.result.body.outcome, "rejected");
+        assert.equal(stale.result.body.reason, "stale_mission_state");
 
         clearAllSessionProfiles();
       }),

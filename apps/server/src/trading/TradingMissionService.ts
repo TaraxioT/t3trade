@@ -618,6 +618,7 @@ const makeTradingMissionService = Effect.gen(function* () {
           activeMissionId: existing.value.id,
           activeStatus: existing.value.status,
           market,
+          activeThreadId: existing.value.harness.threadId,
         });
       }
       const manualExposure = yield* readManualExposure(market);

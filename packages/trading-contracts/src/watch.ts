@@ -26,6 +26,10 @@ export type WatchCrossDirection = typeof WatchCrossDirection.Type;
  * deliveries the evaluator already subscribes to.
  *
  * - `funding_rate_8h`: the raw 8h funding rate (0.0001 = 1bp/8h). Signed.
+ *   Deliberately the RATE, while the look's snapshot serves the same number
+ *   as `fundingRatePct8h`. The two are a hundred apart, so a threshold copied
+ *   straight off a look would arm a hundred times too wide; the names say so
+ *   and the tool description repeats it.
  * - `open_interest`: open interest in base units, as the exchange reports it.
  * - `day_volume_usd`: 24h notional volume in USD.
  * - `spread_bps`: (ask − bid) / mid × 10 000, from the live BBO.
