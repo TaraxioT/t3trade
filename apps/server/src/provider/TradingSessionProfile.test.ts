@@ -35,7 +35,9 @@ it("gives the analyst the reads and alert watches, and none of the acting tools"
     expect(registeredToolNames).toContain(name);
   }
   expect([...TRADING_ANALYST_TOOL_NAMES].sort()).toEqual(
-    ["trading_look", "trading_strategy", "trading_watch"].sort(),
+    // `trading_backtest` is a read over the archive with no path to an order,
+    // so it is research an analyst may run.
+    ["trading_look", "trading_strategy", "trading_watch", "trading_backtest"].sort(),
   );
   // …and the acting tools are exactly what it lacks.
   for (const excluded of ["trading_enter", "trading_exit", "trading_plan", "trading_journal"]) {

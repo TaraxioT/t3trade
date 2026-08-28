@@ -212,6 +212,19 @@ export interface TradingMarketArchiveShape {
     readonly toT: number;
     readonly maxBars: number;
   }) => Effect.Effect<ReadonlyArray<CandleRow>>;
+  /**
+   * Funding rows inside a closed window, oldest first — the funding
+   * counterpart of `candlesInWindow`, for a backtest that has to charge a
+   * held position what it actually paid rather than a modelled rate.
+   *
+   * An empty array is honest emptiness: the archive holds no funding for that
+   * stretch, and the caller reports it as unaccounted rather than as zero.
+   */
+  readonly fundingInWindow: (input: {
+    readonly coin: string;
+    readonly fromT: number;
+    readonly toT: number;
+  }) => Effect.Effect<ReadonlyArray<FundingRow>>;
   readonly scan: (input: { readonly now: number }) => Effect.Effect<ScanResult>;
   readonly sessionLevels: (input: {
     readonly coin: string;
@@ -416,6 +429,12 @@ export const makeTradingMarketArchive = (
       }, "archive file not found").pipe(
         Effect.map((result) => (Array.isArray(result) ? result : [])),
       ),
+    fundingInWindow: ({ coin, fromT, toT }) =>
+      withHandle(
+        (db) => fundingInRange(db, coin, fromT, toT, venue),
+        "archive file not found",
+      ).pipe(Effect.map((result) => (Array.isArray(result) ? result : []))),
+
     scan: ({ now }) =>
       withHandle((db) => {
         // One compact digest per archived coin — the coins the archive's

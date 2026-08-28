@@ -43,10 +43,14 @@
  *
  * @module TradingBacktest
  */
+import * as Schema from "effect/Schema";
+
 import { pocRiskPolicyDefaults } from "./authority.ts";
 import {
   computeIndicatorSeries,
   DEFAULT_INDICATOR_PERIODS,
+  INDICATOR_COMPONENTS,
+  INDICATOR_KINDS,
   type IndicatorComponent,
   type IndicatorPoint,
   type IndicatorRequest,
@@ -54,12 +58,15 @@ import {
 import type { MarketCandle } from "./market.ts";
 import { MIN_REPLAY_SETUPS, settleOnBars } from "./replay.ts";
 import {
+  BacktestInterval,
+  THESIS_MAX_HOLD_BARS,
+  THESIS_MAX_PREDICATES,
   thesisIndicators,
+  TradingThesis,
   type ThesisCondition,
   type ThesisDistance,
   type ThesisOperand,
   type ThesisPredicate,
-  type TradingThesis,
 } from "./thesis.ts";
 
 /**
@@ -105,30 +112,33 @@ export const BACKTEST_TAKER_FEE_BPS_PER_SIDE = pocRiskPolicyDefaults.fallbackTak
 export const BACKTEST_FALLBACK_SLIPPAGE_BPS_PER_SIDE = 1;
 
 /** Where the crossing cost in a run came from. */
-export type BacktestSlippageSource = "archived_book" | "assumed";
+export const BacktestSlippageSource = Schema.Literals(["archived_book", "assumed"]);
+export type BacktestSlippageSource = typeof BacktestSlippageSource.Type;
 
-export interface BacktestCosts {
-  readonly takerFeeBpsPerSide: number;
-  readonly slippageBpsPerSide: number;
-  readonly slippageSource: BacktestSlippageSource;
-}
+export const BacktestCosts = Schema.Struct({
+  takerFeeBpsPerSide: Schema.Number,
+  slippageBpsPerSide: Schema.Number,
+  slippageSource: BacktestSlippageSource,
+});
+export type BacktestCosts = typeof BacktestCosts.Type;
 
 /** What the archive could and could not serve for the window asked about. */
-export interface BacktestCoverage {
-  readonly requestedFromT: number;
-  readonly requestedToT: number;
+export const BacktestCoverage = Schema.Struct({
+  requestedFromT: Schema.Number,
+  requestedToT: Schema.Number,
   /** Open time of the first bar actually served, null when none were. */
-  readonly servedFromT: number | null;
+  servedFromT: Schema.NullOr(Schema.Number),
   /** Open time of the last bar actually served. */
-  readonly servedToT: number | null;
-  readonly barsServed: number;
+  servedToT: Schema.NullOr(Schema.Number),
+  barsServed: Schema.Number,
   /** Stretches `known_gaps` says the archive is missing, clipped to the window. */
-  readonly gaps: ReadonlyArray<{ readonly fromT: number; readonly toT: number }>;
+  gaps: Schema.Array(Schema.Struct({ fromT: Schema.Number, toT: Schema.Number })),
   /** When the archive started recording this series at all. */
-  readonly recordingSince: number | null;
+  recordingSince: Schema.NullOr(Schema.Number),
   /** True when the archive holds funding rows covering the window. */
-  readonly fundingServed: boolean;
-}
+  fundingServed: Schema.Boolean,
+});
+export type BacktestCoverage = typeof BacktestCoverage.Type;
 
 export type BacktestExitReason = "stop" | "target" | "exit_condition" | "max_hold" | "window_end";
 
@@ -147,55 +157,62 @@ export interface BacktestTrade {
   readonly adverseExcursionUsd: number;
 }
 
-export interface BacktestStats {
+export const BacktestStats = Schema.Struct({
   /** Bars where the entry rule held and a next-bar fill existed. */
-  readonly setupsFound: number;
+  setupsFound: Schema.Number,
   /** Setups actually entered — the rest overlapped an open position. */
-  readonly tradesTaken: number;
+  tradesTaken: Schema.Number,
   /**
    * Setups skipped because a reading the exits needed was not defined yet —
    * an ATR stop inside the indicator's own warm-up, usually.
    */
-  readonly setupsUnpriced: number;
-  readonly wins: number;
-  readonly losses: number;
-  readonly breakEven: number;
-  readonly winRatePercent: number;
-  readonly averageWinUsd: number;
+  setupsUnpriced: Schema.Number,
+  wins: Schema.Number,
+  losses: Schema.Number,
+  breakEven: Schema.Number,
+  winRatePercent: Schema.Number,
+  averageWinUsd: Schema.Number,
   /** Reported negative, the way the loss reads on a statement. */
-  readonly averageLossUsd: number;
+  averageLossUsd: Schema.Number,
   /** Net per trade after every fee and funding payment. The headline. */
-  readonly expectancyUsd: number;
-  readonly totalGrossUsd: number;
-  readonly totalFeesUsd: number;
-  readonly totalFundingUsd: number;
-  readonly totalNetUsd: number;
+  expectancyUsd: Schema.Number,
+  totalGrossUsd: Schema.Number,
+  totalFeesUsd: Schema.Number,
+  totalFundingUsd: Schema.Number,
+  totalNetUsd: Schema.Number,
   /** Deepest peak-to-trough fall of the cumulative net curve, in USD. */
-  readonly maxDrawdownUsd: number;
+  maxDrawdownUsd: Schema.Number,
   /** Share of the served bars spent holding a position. */
-  readonly timeInMarketPercent: number;
+  timeInMarketPercent: Schema.Number,
   /** Holding the asset from the first open to the last close, same notional. */
-  readonly buyAndHoldNetUsd: number;
-  readonly buyAndHoldReturnPercent: number;
-}
+  buyAndHoldNetUsd: Schema.Number,
+  buyAndHoldReturnPercent: Schema.Number,
+});
+export type BacktestStats = typeof BacktestStats.Type;
 
 /**
  * `insufficient_sample` is not a hedge. It is the engine declining to grade a
  * thesis on a sample too small to grade one on, while still printing what it
  * measured.
  */
-export type BacktestVerdict = "positive_after_fees" | "negative_after_fees" | "insufficient_sample";
+export const BacktestVerdict = Schema.Literals([
+  "positive_after_fees",
+  "negative_after_fees",
+  "insufficient_sample",
+]);
+export type BacktestVerdict = typeof BacktestVerdict.Type;
 
-export interface BacktestReport {
-  readonly thesis: TradingThesis;
-  readonly notionalUsd: number;
-  readonly costs: BacktestCosts;
-  readonly coverage: BacktestCoverage;
-  readonly stats: BacktestStats;
-  readonly verdict: BacktestVerdict;
+export const BacktestReport = Schema.Struct({
+  thesis: TradingThesis,
+  notionalUsd: Schema.Number,
+  costs: BacktestCosts,
+  coverage: BacktestCoverage,
+  stats: BacktestStats,
+  verdict: BacktestVerdict,
   /** Why the verdict is what it is, in one line of prose. */
-  readonly verdictReason: string;
-}
+  verdictReason: Schema.String,
+});
+export type BacktestReport = typeof BacktestReport.Type;
 
 /** The report plus the trades behind it. Tests read the trades; the wire does not. */
 export interface BacktestRun {
@@ -667,4 +684,68 @@ export function checkBacktestBarBudget(input: {
     `that window is ${input.bars.toLocaleString("en-US")} ${input.interval} bars and the cap is ` +
     `${BACKTEST_MAX_BARS.toLocaleString("en-US")} — ${suggestion}`
   );
+}
+
+// ---------------------------------------------------------------------------
+// the tool surface
+// ---------------------------------------------------------------------------
+
+export const TRADING_BACKTEST_TOOL = "trading_backtest";
+
+/**
+ * The window a run covers, and the notional it prices at.
+ *
+ * `thesis` is optional for one reason: a call without it returns the menu.
+ * That is the plan 38 disclosure pattern `trading_look({})` already
+ * establishes — the tool description stays a few hundred characters and the
+ * vocabulary is served on demand, to the one call that asked for it, instead
+ * of riding in every turn's system prompt.
+ */
+export const TradingBacktestInput = Schema.Struct({
+  /**
+   * The mission this research is for, when there is one. A backtest reads the
+   * archive and touches no mission state, so it is optional — but a call made
+   * inside a mission names it, so the run is attributable.
+   */
+  missionId: Schema.optional(Schema.String),
+  thesis: Schema.optional(TradingThesis),
+  /** How far back to test. Defaults to everything the archive holds. */
+  lookbackDays: Schema.optional(Schema.Number),
+  /** The notional each trade is priced at. Fixed, never compounded. */
+  notionalUsd: Schema.optional(Schema.Number),
+});
+export type TradingBacktestInput = typeof TradingBacktestInput.Type;
+
+export const TradingBacktestResult = Schema.Struct({
+  report: Schema.optional(BacktestReport),
+  /** How long the archive read and the walk took together. */
+  elapsedMillis: Schema.optional(Schema.Number),
+  /** The vocabulary, when this call was the menu call. */
+  menu: Schema.optional(Schema.String),
+});
+export type TradingBacktestResult = typeof TradingBacktestResult.Type;
+
+/**
+ * Everything a thesis can say, rendered from the constants that enforce it.
+ *
+ * Rendered rather than written out so the menu cannot drift from the schema:
+ * an indicator kind added to the library, or a cap moved, changes this line
+ * without anybody remembering to.
+ */
+export function renderTradingBacktestMenu(): string {
+  const components = (["macd", "bollinger"] as const)
+    .map((kind) => `${kind}=${INDICATOR_COMPONENTS[kind].join("|")}`)
+    .join(" ");
+  return [
+    `thesis={market, interval, side, entry, exits}; interval=${BacktestInterval.literals.join("|")}; side=long|short`,
+    `entry and exits.opposite = {match: all|any, predicates: [{left, comparator, right}]}, at most ${THESIS_MAX_PREDICATES}, one level deep, no nesting`,
+    "operand = {source:price, field:open|high|low|close} | {source:indicator, indicator, period?, component?} | {source:constant, value}",
+    `indicator = ${INDICATOR_KINDS.join(" ")}; component ${components}, every other kind reports value only`,
+    "comparator = crosses_above crosses_below above below; a cross means the relation holds on this closed bar and did not on the one before",
+    "exits, at least one = stop/target {basis:percent, value} | {basis:atr, multiple, period?}; target also {basis:r, multiple}, which needs a stop; " +
+      `maxHoldBars up to ${THESIS_MAX_HOLD_BARS}; opposite = a condition`,
+    `lookbackDays defaults to everything archived; ${BACKTEST_MAX_BARS.toLocaleString("en-US")} bars a run, so ask a long 1m window on a coarser interval`,
+    `signals read closed bars and fill at the next bar open; every trade pays ${BACKTEST_TAKER_FEE_BPS_PER_SIDE} bps taker a side plus crossing plus archived funding`,
+    `under ${MIN_REPLAY_SETUPS} trades there is no verdict, only the numbers; this is research and never places an order`,
+  ].join(" · ");
 }

@@ -28,6 +28,7 @@ import {
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
+import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
@@ -67,6 +68,7 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_JOURNAL_TOOL,
   TRADING_ENTER_TOOL,
   TRADING_EXIT_TOOL,
+  TRADING_BACKTEST_TOOL,
 ];
 
 /**
@@ -91,6 +93,9 @@ export const TRADING_ANALYST_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_LOOK_TOOL,
   TRADING_STRATEGY_TOOL,
   TRADING_WATCH_TOOL,
+  // Research, and only research: a backtest reads the archive read-only and
+  // has no path to an order, so an analyst session may run one.
+  TRADING_BACKTEST_TOOL,
 ];
 
 export const TRADING_ANALYST_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =

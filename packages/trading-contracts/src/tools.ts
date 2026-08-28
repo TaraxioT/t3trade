@@ -103,6 +103,15 @@ export const TradingToolRejectionReason = Schema.Literals([
   /** A `fetch` key whose parameters are out of range — the detail names the
       bound, so the caller can re-ask inside it (plan 38 §2.3 rule 5). */
   "fetch_key_params_invalid",
+  /** A `trading_backtest` thesis the engine cannot run as written. The detail
+      is `validateThesis`'s own sentence, which names the field and the fix. */
+  "thesis_invalid",
+  /** A thesis interval the market archive does not record. */
+  "interval_not_archived",
+  /** More bars than one run walks. The detail names a coarser interval. */
+  "window_too_large",
+  /** The archive holds nothing for that market, interval and window. */
+  "no_archived_bars",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
 
@@ -133,6 +142,14 @@ const REJECTION_PROSE: Record<TradingToolRejectionReason, string> = {
     "Refused: that fetch key is not in the catalog, so nothing was read. Ask again with a key the catalog lists.",
   fetch_key_params_invalid:
     "Refused: that fetch key's parameters are out of range, so nothing was read. Ask again inside the bound named below.",
+  thesis_invalid:
+    "Refused: that thesis cannot be run as written, so nothing was tested. The line below names the field and what it needs; fix that one thing and ask again.",
+  interval_not_archived:
+    "Refused: that bar interval is not recorded, so there is nothing to test on. Ask again on one of the intervals named below.",
+  window_too_large:
+    "Refused: that window is more bars than one run walks, so nothing was tested. Ask again on the coarser interval named below, or over a shorter window.",
+  no_archived_bars:
+    "Refused: the archive holds no bars for that market and window, so there is nothing to test. Tell the user how far back recording actually reaches.",
 };
 
 export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToolRejectedError>()(

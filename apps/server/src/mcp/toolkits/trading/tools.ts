@@ -22,6 +22,7 @@ import {
   TradingToolRejectedError,
 } from "@t3tools/trading-contracts/tools";
 import { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
+import { TradingBacktestInput, TradingBacktestResult } from "@t3tools/trading-contracts/backtest";
 import { TradingEnterInput } from "@t3tools/trading-contracts/entry";
 import { TradingExitInput } from "@t3tools/trading-contracts/exit";
 import { Playbook } from "@t3tools/trading-contracts/playbook";
@@ -53,6 +54,7 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
 import { TradingThreadMarketService } from "../../../trading/TradingThreadMarketService.ts";
+import { TradingBacktestService } from "../../../trading/TradingBacktestService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -109,6 +111,9 @@ const dependencies = [
   // Which market this thread is about, so the panel beside the chat follows
   // the conversation. Written by `trading_look` and by taking authority.
   TradingThreadMarketService,
+  // `trading_backtest` walks the market archive and nothing else. It is the
+  // only tool here with no path to an order.
+  TradingBacktestService,
   SqlClient.SqlClient,
 ];
 
@@ -222,6 +227,22 @@ export const TradingExitTool = Tool.make("trading_exit", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
+export const TradingBacktestTool = Tool.make("trading_backtest", {
+  description:
+    "Research one `thesis` over archived bars. Never places an order. `thesis` = market, interval, side, an `entry` condition (comparisons plus match all/any), and `exits` (stop, target, maxHoldBars, opposite) — at least one. Signals read closed bars and fill at the NEXT bar open; every trade pays taker fees both sides, crossing, and archived funding. Returns expectancy after fees, win rate, drawdown, buy-and-hold, and coverage. Under 20 trades there is no verdict. Vocabulary: trading_backtest({})",
+  parameters: TradingBacktestInput,
+  success: TradingBacktestResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Backtest")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  // The archive grows, so the same thesis run tomorrow reads more bars. That
+  // is an open world even though nothing here leaves the machine.
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
@@ -230,4 +251,5 @@ export const TradingToolkit = Toolkit.make(
   TradingJournalTool,
   TradingEnterTool,
   TradingExitTool,
+  TradingBacktestTool,
 );

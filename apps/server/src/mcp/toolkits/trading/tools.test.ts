@@ -4,6 +4,7 @@ import {
   TRADING_PLAN_TOOL,
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
+import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
@@ -17,7 +18,7 @@ import {
 } from "../../../provider/TradingSessionProfile.ts";
 import { TradingToolkit } from "./tools.ts";
 
-it("exposes the read, the plan, the watch, the journal, and the two writes", () => {
+it("exposes the read, the plan, the watch, the journal, the research, and the two writes", () => {
   expect(
     Object.values(TradingToolkit.tools)
       .map((tool) => tool.name)
@@ -31,6 +32,7 @@ it("exposes the read, the plan, the watch, the journal, and the two writes", () 
       TRADING_JOURNAL_TOOL,
       TRADING_ENTER_TOOL,
       TRADING_EXIT_TOOL,
+      TRADING_BACKTEST_TOOL,
     ].sort(),
   );
 });
@@ -214,7 +216,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 7 trading tools").toBe(7);
+  expect(tools.length, "expected exactly 8 trading tools").toBe(8);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   expect(total, "total description chars must stay under 4,000").toBeLessThan(4_000);

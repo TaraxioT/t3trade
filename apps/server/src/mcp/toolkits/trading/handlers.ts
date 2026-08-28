@@ -47,6 +47,7 @@ import {
 import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -133,6 +134,8 @@ import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistory
 import { TradingEventInbox } from "../../../trading/TradingEventInbox.ts";
 import { TradingMarketArchive } from "../../../trading/TradingMarketArchive.ts";
 import { TradingToolkit } from "./tools.ts";
+import { TradingBacktestService } from "../../../trading/TradingBacktestService.ts";
+import { renderTradingBacktestMenu } from "@t3tools/trading-contracts/backtest";
 
 interface BoundCall {
   readonly threadId: string;
@@ -161,7 +164,11 @@ const rejectCall = (input: {
     | "mission_not_bound_to_thread"
     | "market_held_by_other_authority"
     | "unknown_fetch_key"
-    | "fetch_key_params_invalid";
+    | "fetch_key_params_invalid"
+    | "thesis_invalid"
+    | "interval_not_archived"
+    | "window_too_large"
+    | "no_archived_bars";
   readonly threadId: string;
   readonly missionId: string | undefined;
   /** What to do about it, when the reason alone does not say (fetch keys). */
@@ -2845,6 +2852,40 @@ const handlers = {
         entry: appended,
         entries: [appended, ...entries].slice(0, TRADING_JOURNAL_READ_LIMIT),
       };
+    }),
+  /**
+   * Run one thesis over the archive, or hand back the vocabulary.
+   *
+   * A call with no `thesis` returns the menu — the same disclosure the fetch
+   * catalog uses, so the tool's description stays short and the operand and
+   * comparator vocabulary is served to the one call that asked for it rather
+   * than riding in every turn.
+   *
+   * A backtest is research, so this is a read call: it needs no mission, no
+   * binding and no lease, and there is no branch below that reaches an
+   * execution path. The `missionId` in the input is attribution, not authority.
+   */
+  trading_backtest: (input) =>
+    Effect.gen(function* () {
+      if (input.thesis === undefined) {
+        return { menu: renderTradingBacktestMenu() };
+      }
+      const backtest = yield* TradingBacktestService;
+      const outcome = yield* backtest.run({
+        thesis: input.thesis,
+        ...(input.lookbackDays === undefined ? {} : { lookbackDays: input.lookbackDays }),
+        ...(input.notionalUsd === undefined ? {} : { notionalUsd: input.notionalUsd }),
+        now: yield* Clock.currentTimeMillis,
+      });
+      if (outcome.status === "refused") {
+        return yield* rejectCall({
+          reason: outcome.reason,
+          threadId: (yield* McpInvocationContext.McpInvocationContext).threadId,
+          missionId: input.missionId,
+          detail: outcome.detail,
+        });
+      }
+      return { report: outcome.report, elapsedMillis: outcome.elapsedMillis };
     }),
 } satisfies Parameters<typeof TradingToolkit.toLayer>[0];
 

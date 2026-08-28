@@ -63,6 +63,7 @@ import { TradingExitServiceLive } from "./TradingExitService.ts";
 import { TradingEntryServiceLive } from "./TradingEntryService.ts";
 import { TradingManualEntryServiceLive } from "./TradingManualEntryService.ts";
 import { TradingMarketArchiveLive } from "./TradingMarketArchive.ts";
+import { TradingBacktestServiceLive } from "./TradingBacktestService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -200,6 +201,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // `trading_look`'s archive-backed fetch keys (plan 38 §2.4). Read-only over
   // the archiver's own file; a missing archive answers unavailable, not zero.
   TradingMarketArchiveLive,
+  // `trading_backtest` reads the same archive and nothing else. Provided the
+  // archive layer explicitly rather than relying on merge order, so the one
+  // dependency it has is visible at the wiring.
+  TradingBacktestServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
   TradingMissionServiceLive,
   // The single-writer lease for this database. Merged here so every consumer
   // of the trading layer — the sweep below, the reactors above — sees the
