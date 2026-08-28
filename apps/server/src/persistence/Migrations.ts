@@ -92,6 +92,9 @@ import Migration0076 from "./Migrations/076_TradingAnalystThreads.ts";
 import Migration0077 from "./Migrations/077_TradingThreadMarketFocus.ts";
 import Migration0078 from "./Migrations/078_TradingOrderTriggerPrice.ts";
 import Migration0079 from "./Migrations/079_TradingMissionMarkets.ts";
+import Migration0080 from "./Migrations/080_AuthSessionClientConnection.ts";
+import Migration0081 from "./Migrations/081_ProjectionThreadLinkedPullRequest.ts";
+import Migration0082 from "./Migrations/082_ProjectionThreadsUnsettledAt.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -186,6 +189,11 @@ export const migrationEntries = [
   [77, "TradingThreadMarketFocus", Migration0077],
   [78, "TradingOrderTriggerPrice", Migration0078],
   [79, "TradingMissionMarkets", Migration0079],
+  // Upstream's own 041-043; renumbered to the fork's next free ids for the
+  // same reason as 054-059 above.
+  [80, "AuthSessionClientConnection", Migration0080],
+  [81, "ProjectionThreadLinkedPullRequest", Migration0081],
+  [82, "ProjectionThreadsUnsettledAt", Migration0082],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

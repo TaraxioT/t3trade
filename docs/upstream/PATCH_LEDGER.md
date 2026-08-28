@@ -437,6 +437,49 @@ Upstream rewrites the surrounding text often; the delta is mechanical.
 | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | Lockfile | `pnpm-lock.yaml` | Take either side during the merge, then run `pnpm install` once every `package.json` conflict is settled, and commit the regenerated file. |
 
+## SYNC · v0.0.35 (beab6886f..f925d6394, 2026-08-28)
+
+133 upstream commits in one merge on `sync/v0.0.35`. The previous baseline was
+a v0.0.34 _nightly_, so this batch carried stable v0.0.34 as well as v0.0.35 —
+see `BASELINE.md`. Twelve files conflicted, exactly the set `merge-tree`
+forecast.
+
+### Migration renumber policy (exercised again)
+
+| Upstream id / name                      | Fork id |
+| --------------------------------------- | ------- |
+| `041_AuthSessionClientConnection`       | 080     |
+| `042_ProjectionThreadLinkedPullRequest` | 081     |
+| `043_ProjectionThreadsUnsettledAt`      | 082     |
+
+The fork owns 035–079, so upstream's 041–043 could not keep their own ids.
+Each move renames the file, its registry row, its `layer(...)` name **and** the
+`runMigrations({ toMigrationInclusive: N })` bounds inside its own test — the
+bounds are ids, not offsets. Verified by running the whole chain against a
+`VACUUM INTO` snapshot of the real `~/.t3trade/dev` database: 82 rows, no gaps,
+no duplicates, and the 27 existing trading missions survived the boot.
+
+### Applied
+
+| Seam                       | File(s)                                     | Change                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client-attributed dispatch | `apps/server/src/ws.ts`                     | Upstream `11f051373` routes every client command through `dispatchFromClient` so threads and turns record which client started them. The fork's `dispatchTradingAwareTurnStart` and its bootstrap already-exists guard both called `orchestrationEngine.dispatch` directly; both now call `dispatchFromClient`. **Any future fork dispatch site must do the same or it silently drops client attribution.** |
+| Editor-discovery rename    | `apps/server/src/ws.ts`                     | Upstream renamed `EDITOR_DISCOVERY_TIMEOUT` to `CONFIG_DISCOVERY_TIMEOUT` and wrapped it in `resolveDiscoveryForConfig`. The fork's trading wire helpers (`toWireThreadMarketFocus`, `toWireAccountWatch`, `toWireWatchlist*`) sit immediately above and conflict with every edit to that block.                                                                                                            |
+| Composer send notice       | `apps/web/src/components/ChatView.tsx`      | The fork's `startResult.value.notice` handling and upstream's `releaseAttachmentUploads` are independent statements in the same success branch — take both.                                                                                                                                                                                                                                                 |
+| Labelled settle buttons    | `apps/web/src/components/Sidebar.tsx`       | The fork gives the Settle / Un-settle row buttons **visible text labels**. Upstream `9b5d41687` instead wrapped the icon-only Un-settle button in a `Tooltip`. Keep the fork's labels; a tooltip on a labelled button is redundant. Upstream will keep editing that button — re-take ours.                                                                                                                  |
+| Version-skew hint constant | `apps/web/src/versionSkew.test.ts`          | Upstream hoisted the mismatch hint into a local `MISMATCH_HINT` const that reads "T3 Code". The fork's `versionSkew.ts` says "T3 Trade", so the constant is a **new instance of the bucket-B rebrand seam** and has to be re-pointed on every sync.                                                                                                                                                         |
+| macOS signing hook         | `scripts/build-desktop-artifact.ts`         | Upstream `63eb0429f` added a batched `sign` hook (`scripts/sign-macos.ts`) on the signed path. The fork does not sign; its `afterPack` ad-hoc hook and `identity: null` stay, and upstream's `sign` is kept on the `signed` branch so the seam stays a one-line ternary.                                                                                                                                    |
+| Model manifest URL         | `apps/server/src/provider/ModelManifest.ts` | Upstream `badae6a5c` fetches legacy-model classification from `raw.githubusercontent.com/pingdotgg/t3code`, with a bundled copy as fallback. Added to `ALLOWED_FILES` in `scripts/check-fork-independence.ts`. **Deferred**: repointing needs the fork to host a manifest of its own.                                                                                                                       |
+| `.plans/` now gitignored   | `.gitignore`                                | Upstream `9167622a4` moved its implementation plans out of the repo and added `.plans/` to `.gitignore`. The fork's already-tracked plans (21–26) stay tracked, but **a new plan file will not be picked up by `git add` without `-f`.** Decide deliberately rather than by accident.                                                                                                                       |
+| CI and Macroscope, again   | `.github/workflows/**`, `.macroscope/**`    | The modify/delete conflicts were resolved by keeping the deletions, and upstream's two **newly added** files (`.github/workflows/desktop-macos-preview.yml`, `.macroscope/approvability.md`) were deleted too. The fork has zero workflow files, so the CI perf commits (`a3a8cbd60`, `25dcee00a`) had nothing to be ported into.                                                                           |
+| Lockfile                   | `pnpm-lock.yaml`                            | No `package.json` conflicted; the lock was regenerated with `vp i`.                                                                                                                                                                                                                                                                                                                                         |
+
+### Stale doc note
+
+`SYNC_RUNBOOK.md` still points at `.github/workflows/upstream-drift.yml` as a
+weekly job. That workflow was deleted with the rest of `.github/workflows/**`;
+only `scripts/upstream-drift.sh` remains, and it has to be run by hand.
+
 ## Standing seam policy (2026-08-20)
 
 `apps/web/src/trading.css` is fork-owned and upstream has no file by that name,

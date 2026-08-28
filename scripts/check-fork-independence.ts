@@ -24,6 +24,11 @@ const ALLOWED_FILES = new Set([
   // npm `repository` metadata inherited from upstream; informational only,
   // not consulted by any update/release code path (see PATCH_LEDGER.md).
   "apps/server/package.json",
+  // Legacy-model classification manifest, fetched read-only from upstream's
+  // raw GitHub with a bundled copy as the fallback (arrived with the v0.0.35
+  // sync, upstream `badae6a5c`). The fork publishes no manifest of its own, so
+  // repointing it would mean hosting one; deferred in PATCH_LEDGER.md.
+  "apps/server/src/provider/ModelManifest.ts",
   // Doc comment linking to an upstream GitHub issue for context.
   "apps/server/src/provider/Layers/ClaudeAdapter.ts",
   // Doc comment recording where a `gh pr list --json` cost was measured.
