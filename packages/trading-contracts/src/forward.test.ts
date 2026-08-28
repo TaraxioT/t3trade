@@ -16,6 +16,7 @@ import {
   FORWARD_TRACKING_BAND,
   forwardWarmupBars,
   isForwardInterval,
+  forwardEndSummary,
   judgeForward,
   renderForwardMenu,
   stepForward,
@@ -497,6 +498,68 @@ describe("judgeForward", () => {
     });
     expect(judged.verdictReason).toContain("paused");
     expect(judged.verdictReason).toContain("still open");
+  });
+});
+
+describe("string budgets", () => {
+  const measured = (over: Record<string, number> = {}) =>
+    ({
+      setupsFound: 90,
+      tradesTaken: 34,
+      setupsUnpriced: 0,
+      wins: 19,
+      losses: 15,
+      breakEven: 0,
+      winRatePercent: 55.88,
+      averageWinUsd: 4.1,
+      averageLossUsd: -3.4,
+      expectancyUsd: 0.79,
+      totalGrossUsd: 61,
+      totalFeesUsd: 34.1,
+      totalFundingUsd: 0,
+      totalNetUsd: 26.9,
+      maxDrawdownUsd: 12.4,
+      timeInMarketPercent: 31,
+      buyAndHoldNetUsd: 0,
+      buyAndHoldReturnPercent: 0,
+      ...over,
+    }) as never;
+
+  // Everything this feature puts in front of a model or into a feed, measured
+  // rather than eyeballed, and printed so the numbers are watched instead of
+  // rediscovered the next time one of them grows a clause.
+  it("keeps every served sentence inside its budget", () => {
+    const verdict = judgeForward({
+      stats: measured(),
+      baselineExpectancyUsd: 1.1,
+      baselineTradesTaken: 197,
+      barsWatched: 20_160,
+      hasOpenTrade: true,
+      status: "armed",
+    });
+    const belowFloor = judgeForward({
+      stats: measured({ tradesTaken: 4 }),
+      baselineExpectancyUsd: -1.17,
+      baselineTradesTaken: 197,
+      barsWatched: 300,
+      hasOpenTrade: false,
+      status: "armed",
+    });
+    const summary = forwardEndSummary({
+      headline: "ETH 1m EMA20 cross-above, 0.2%/0.3%/30bar",
+      endReason: "expired",
+      verdictReason: verdict.verdictReason,
+    } as never);
+
+    process.stdout.write(`MEASURED verdict_with_sample ${verdict.verdictReason.length}\n`);
+    process.stdout.write(`MEASURED verdict_below_floor ${belowFloor.verdictReason.length}\n`);
+    process.stdout.write(`MEASURED alert_summary ${summary.length}\n`);
+
+    // The alert lands in a feed beside one-line price alerts, so it is the
+    // tightest of these; the report card carries everything else.
+    expect(summary.length, "the expiry alert must stay under 400 chars").toBeLessThan(400);
+    expect(verdict.verdictReason.length, "a verdict sentence stays under 400").toBeLessThan(400);
+    expect(belowFloor.verdictReason.length, "so does the below-floor one").toBeLessThan(400);
   });
 });
 
