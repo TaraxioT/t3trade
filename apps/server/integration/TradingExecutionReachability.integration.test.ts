@@ -90,6 +90,7 @@ import {
   TradingMissionReactorLive,
 } from "../src/trading/TradingMissionReactor.ts";
 import { TradingMarketArchiveLive } from "../src/trading/TradingMarketArchive.ts";
+import { TradingThesisValidationServiceLive } from "../src/trading/TradingThesisValidationService.ts";
 import { TradingRuntimeLease } from "../src/trading/TradingRuntimeLease.ts";
 import { FollowSetRegistry } from "../src/trading/FollowSetRegistry.ts";
 import { TradingAlertService } from "../src/trading/TradingAlertService.ts";
@@ -532,6 +533,12 @@ function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
         // The evaluator computes `metric_derived` watches through the archive
         // seam; a missing archive file answers unavailable, never zero.
         Layer.provide(TradingMarketArchiveLive),
+        // Forward validation rides the same delivery path. Inert in this
+        // proof — it takes paper trades and this test drives no thesis — but
+        // present, because the evaluator now depends on it.
+        Layer.provide(
+          TradingThesisValidationServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
+        ),
         // The notify delivery route and the follow-set-driven subscriptions
         // (final-form Phase 5). This proof only drives wake watches, so both
         // are inert stand-ins.

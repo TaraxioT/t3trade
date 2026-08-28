@@ -33,6 +33,10 @@ import {
 import { FollowSetRegistryLive } from "./FollowSetRegistry.ts";
 import { TradingAccountProjectionLive } from "./TradingAccountProjection.ts";
 import { TradingAlertServiceLive } from "./TradingAlertService.ts";
+import {
+  TradingThesisValidationService,
+  TradingThesisValidationServiceLive,
+} from "./TradingThesisValidationService.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
@@ -111,13 +115,39 @@ const resetDerivedFake = (script?: (index: number) => DerivedMetricResult): void
   derivedServe = script ? () => Effect.succeed(script(calls++)) : () => Effect.succeed(okMetric(1));
 };
 
+/**
+ * The archived 5m series the thesis-validation cases walk: a four-bar cycle
+ * that crosses 3,100 from below every fourth bar, so an armed thesis has
+ * something to fire on.
+ */
+const VALIDATION_BARS = Array.from({ length: 40 }, (_, i) => {
+  const t = PAST_CLOSE - (40 - i) * 300_000;
+  const base = { coin: "ETH", interval: "5m", t, tClose: t + 300_000 - 1, v: 10, n: 5 };
+  switch (i % 4) {
+    case 0:
+      return { ...base, o: 3_050, h: 3_060, l: 3_040, c: 3_050 };
+    case 1:
+      return { ...base, o: 3_050, h: 3_160, l: 3_050, c: 3_150 };
+    case 2:
+      return { ...base, o: 3_150, h: 3_200, l: 3_140, c: 3_180 };
+    default:
+      return { ...base, o: 3_180, h: 3_180, l: 3_000, c: 3_020 };
+  }
+});
+
 const fakeArchive = Layer.succeed(
   TradingMarketArchive,
   TradingMarketArchive.of({
     fundingStats: unusedRead,
     fundingSeries: unusedRead,
     oiPremium: unusedRead,
-    bookHistory: unusedRead,
+    // Forward validation prices its crossing cost off recorded books at arm
+    // time and reads bars on every pass. Both are served here; no other test
+    // in this file touches them.
+    bookHistory: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
+    candlesInWindow: (input: { readonly fromT: number; readonly toT: number }) =>
+      Effect.succeed(VALIDATION_BARS.filter((row) => row.t >= input.fromT && row.t <= input.toT)),
+    fundingInWindow: () => Effect.succeed([]),
     derivedMetric: (input: {
       readonly market: string;
       readonly params: { readonly metric: string };
@@ -216,6 +246,8 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_mission_markets`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
+  yield* sql`DELETE FROM trading_thesis_validations`;
+  yield* sql`DELETE FROM trading_thesis_paper_fills`;
   yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_position_snapshots`;
@@ -369,6 +401,10 @@ const layer = it.layer(
     // read the subscription sync uses. Same fakes underneath as everything
     // else: the stub gateway and the in-memory database.
     Layer.provideMerge(TradingAlertServiceLive),
+    // An armed thesis evaluates on the same closed bars these watches do. The
+    // real service over the fake archive, so a delivery that reaches it here
+    // is the delivery that reaches it in production.
+    Layer.provideMerge(TradingThesisValidationServiceLive),
     Layer.provideMerge(FollowSetRegistryLive),
     Layer.provideMerge(TradingAccountProjectionLive),
     Layer.provideMerge(TradingEventInboxLive),
@@ -1652,6 +1688,111 @@ layer("WatchEvaluator", (it) => {
       const alerts = yield* readAlerts;
       assert.equal(alerts.length, 1);
       assert.equal(alerts[0]?.watch_id, watch.id);
+    }),
+  );
+});
+
+/**
+ * Forward validation on the evaluator's own paths.
+ *
+ * The service's own behaviour is pinned in `TradingThesisValidationService.test.ts`.
+ * What is pinned here is the wiring: that a candle delivery drives an armed
+ * thesis, and that an expired one ends on the sweep and is delivered as an
+ * alert. Both are the seams a service test cannot see.
+ */
+layer("WatchEvaluator and forward validation", (it) => {
+  const thesis = {
+    market: "ETH",
+    interval: "5m",
+    side: "long",
+    entry: {
+      predicates: [
+        {
+          left: { source: "price" },
+          comparator: "crosses_above",
+          right: { source: "constant", value: 3_100 },
+        },
+      ],
+    },
+    exits: { stop: { basis: "percent", value: 2 }, target: { basis: "percent", value: 1 } },
+  } as const;
+
+  const readAlertRows = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{
+      readonly watch_id: string;
+      readonly asset: string;
+      readonly summary: string;
+    }>`SELECT watch_id, asset, summary FROM trading_alert_events ORDER BY fired_at ASC`;
+  });
+
+  it.effect("a candle delivery evaluates an armed thesis against the archive", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // The evaluator reads `now` off the clock, and `it.effect` starts it at
+      // zero — where the archive window ends before the fixture begins. Stand
+      // the clock just after the last bar, which is where a real delivery for
+      // that bar would arrive.
+      yield* TestClock.setTime(PAST_CLOSE + 600_000);
+      const validations = yield* TradingThesisValidationService;
+      const evaluator = yield* WatchEvaluator;
+
+      // Armed far enough back that the fixture's bars are inside its window.
+      const armedAt = VALIDATION_BARS[0]?.t ?? PAST_CLOSE;
+      const armed = yield* validations.arm({ thesis, durationMs: 14 * 86_400_000, now: armedAt });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      // Nothing has been evaluated until a bar is delivered.
+      assert.equal((yield* validations.get(armed.validation.id))?.barsWatched, 0);
+
+      // Two deliveries: the first only establishes the previous bar, the
+      // second finalizes one, which is how this evaluator decides a bar closed.
+      yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE, 3_150));
+      yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE + 300_000, 3_150));
+
+      const after = yield* validations.get(armed.validation.id);
+      assert.isAbove(after?.barsWatched ?? 0, 0, "the delivery must drive evaluation");
+      const trades = yield* validations.trades(armed.validation.id);
+      assert.isAbove(trades.length, 0, "the fixture crosses the level, so it must trade");
+
+      // Paper, and only paper.
+      const sql = yield* SqlClient.SqlClient;
+      const orders = yield* sql<{ readonly n: number }>`SELECT COUNT(*) AS n FROM trading_orders`;
+      assert.equal(orders[0]?.n ?? 0, 0);
+    }),
+  );
+
+  it.effect("the sweep ends an expired validation and delivers its final report", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* TestClock.setTime(PAST_CLOSE + 600_000);
+      const validations = yield* TradingThesisValidationService;
+      const evaluator = yield* WatchEvaluator;
+
+      const armedAt = VALIDATION_BARS[0]?.t ?? PAST_CLOSE;
+      const armed = yield* validations.arm({
+        thesis,
+        // An hour: the fixture spans far longer, so it is expired by `now`.
+        durationMs: 60 * 60_000,
+        now: armedAt,
+      });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const ended = yield* validations.get(armed.validation.id);
+      assert.equal(ended?.status, "ended");
+      assert.equal(ended?.endReason, "expired");
+
+      // The delivery the user actually gets: nobody is watching the chat when
+      // a two-week validation finishes.
+      const alerts = yield* readAlertRows;
+      assert.equal(alerts.length, 1);
+      assert.equal(alerts[0]?.watch_id, armed.validation.id);
+      assert.equal(alerts[0]?.asset, "ETH");
+      assert.include(alerts[0]?.summary ?? "", "ran its course");
     }),
   );
 });

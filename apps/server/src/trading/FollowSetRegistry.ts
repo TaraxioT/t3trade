@@ -189,6 +189,32 @@ const make = Effect.gen(function* () {
   }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<FollowedMarket>));
 
   /**
+   * Markets with a thesis being validated forward on them.
+   *
+   * Load-bearing rather than tidy: forward validation reads archived bars, and
+   * a market that is not followed gets no deep recording and no candle
+   * subscription. Without this an armed thesis would sit there looking armed
+   * with no bars ever arriving for it. Followed under `watch`, which is what an
+   * armed thesis is — a standing question about this market.
+   *
+   * Paused validations count too. A pause is a gap in evaluation, not a reason
+   * to stop recording the bars the user is about to resume over.
+   */
+  const fromValidations = Effect.gen(function* () {
+    const rows = yield* sql<{ readonly venue: string; readonly asset: string }>`
+      SELECT DISTINCT venue, asset FROM trading_thesis_validations
+      WHERE status IN ('armed', 'paused')
+    `;
+    return rows.map(
+      (row): FollowedMarket => ({
+        venue: row.venue as TradingVenue,
+        asset: row.asset,
+        reason: "watch",
+      }),
+    );
+  }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<FollowedMarket>));
+
+  /**
    * The market each chat thread is looking at.
    *
    * The panel beside a conversation draws the thread's focused market, and a
@@ -229,11 +255,18 @@ const make = Effect.gen(function* () {
   });
 
   const list: FollowSetRegistryShape["list"] = Effect.gen(function* () {
-    const [positions, watches, watchlist, charts, focused] = yield* Effect.all(
-      [fromPositions, fromWatches, fromWatchlist, fromCharts, fromFocus],
+    const [positions, watches, validated, watchlist, charts, focused] = yield* Effect.all(
+      [fromPositions, fromWatches, fromValidations, fromWatchlist, fromCharts, fromFocus],
       { concurrency: "unbounded" },
     );
-    return foldFollowSet([...positions, ...watches, ...watchlist, ...charts, ...focused]);
+    return foldFollowSet([
+      ...positions,
+      ...watches,
+      ...validated,
+      ...watchlist,
+      ...charts,
+      ...focused,
+    ]);
   });
 
   const noteChartOpened: FollowSetRegistryShape["noteChartOpened"] = (ref) =>

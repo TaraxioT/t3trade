@@ -64,6 +64,7 @@ import { TradingEntryServiceLive } from "./TradingEntryService.ts";
 import { TradingManualEntryServiceLive } from "./TradingManualEntryService.ts";
 import { TradingMarketArchiveLive } from "./TradingMarketArchive.ts";
 import { TradingBacktestServiceLive } from "./TradingBacktestService.ts";
+import { TradingThesisValidationServiceLive } from "./TradingThesisValidationService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -205,6 +206,11 @@ export const TradingLayerLive = Layer.mergeAll(
   // archive layer explicitly rather than relying on merge order, so the one
   // dependency it has is visible at the wiring.
   TradingBacktestServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
+  // Forward validation reads the same archive and writes only its own paper
+  // tables. Provided the archive explicitly for the same reason the backtest
+  // is: the whole dependency set is meant to be readable at the wiring, and
+  // this one is the claim that it cannot place an order.
+  TradingThesisValidationServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
   TradingMissionServiceLive,
   // The single-writer lease for this database. Merged here so every consumer
   // of the trading layer — the sweep below, the reactors above — sees the

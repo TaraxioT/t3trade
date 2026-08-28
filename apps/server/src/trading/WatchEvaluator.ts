@@ -34,6 +34,7 @@ import type {
 } from "@t3tools/trading-contracts/account-snapshot";
 import type { AgentMarketSnapshot } from "@t3tools/trading-contracts/market";
 import { unpaidExitFeeUsd } from "@t3tools/trading-contracts/costs";
+import { forwardEndSummary } from "@t3tools/trading-contracts/forward";
 import type { BarInterval, DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import { HyperliquidWebSocketClient, type WsDelivery } from "@t3tools/hyperliquid/WebSocketClient";
 import * as Cause from "effect/Cause";
@@ -53,6 +54,7 @@ import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/
 import { INTERVAL_MS } from "./archive/config.ts";
 import { FollowSetRegistry } from "./FollowSetRegistry.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
+import { DEFAULT_TRADING_VENUE } from "./Schemas.ts";
 import type {
   MarketWatch,
   PersistedWatch,
@@ -64,6 +66,7 @@ import type {
 import { TradingTimeframe } from "./Schemas.ts";
 import { TradingAlertService } from "./TradingAlertService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
+import { TradingThesisValidationService } from "./TradingThesisValidationService.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
@@ -244,6 +247,7 @@ const make = Effect.gen(function* () {
   const alerts = yield* TradingAlertService;
   const followSet = yield* FollowSetRegistry;
   const archive = yield* TradingMarketArchive;
+  const validations = yield* TradingThesisValidationService;
   const inbox = yield* TradingEventInbox;
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
@@ -1416,6 +1420,20 @@ const make = Effect.gen(function* () {
         const due = t.watch.nextEvaluateAt;
         return due === undefined || due <= now;
       });
+      // An armed thesis evaluates on the same closed bar the watches do, and
+      // costs no venue read: the delivery is only the clock, and the bars come
+      // from the archive. Contained, because a validation is research and must
+      // never be able to starve the watches that guard a real position.
+      yield* validations.onClosedBar({ asset: market, interval, now }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("WatchEvaluator: a thesis validation pass failed; watches continue", {
+            market,
+            interval,
+            cause: String(cause),
+          }),
+        ),
+      );
+
       yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, market, interval, finalized));
       yield* Effect.forEach(tracked, (t) => evaluateDerivedDelivery(t, market, interval));
       if (finalVolume !== undefined) {
@@ -1508,9 +1526,49 @@ const make = Effect.gen(function* () {
       );
     }
 
+    // A validation whose clock has run out ends here rather than on a candle,
+    // because a quiet market delivers no candle and an expiry that waits for
+    // one would never arrive. Pure database and clock: it adds nothing to the
+    // batch of exchange reads collected above.
+    yield* expireValidations(observedAt).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("WatchEvaluator: the thesis expiry pass failed; the sweep continues", {
+          cause: String(cause),
+        }),
+      ),
+    );
+
     // The batch is only good for the pass it was read in.
     sweepReads = null;
   });
+
+  /**
+   * End every validation whose window has closed, and deliver its final report
+   * as an alert.
+   *
+   * The alert is the delivery the user actually gets: a validation runs for
+   * weeks, and nobody is watching the chat when it finishes. The summary is one
+   * line because it lands in a feed beside price alerts; the report card
+   * carries the rest, and the payload carries the report itself so a client can
+   * render it without asking again.
+   */
+  const expireValidations = (observedAt: number) =>
+    Effect.gen(function* () {
+      const finished = yield* validations.expireDue({ now: observedAt });
+      for (const report of finished) {
+        yield* alerts.append({
+          venue: DEFAULT_TRADING_VENUE,
+          asset: report.thesis.market,
+          accountId: null,
+          // The validation is the thing that fired. Alerts are keyed by what
+          // armed them, and a validation is not a watch row.
+          watchId: report.validationId,
+          firedAt: observedAt,
+          summary: forwardEndSummary(report),
+          payload: report,
+        });
+      }
+    });
 
   /**
    * The markets and wallets one sweep needs, read once each.
