@@ -135,18 +135,54 @@ const fakeArchive = Layer.succeed(
 );
 
 /**
- * The position the stub gateway serves to `getPosition`. Mutable so a `pnl_above`
- * case can set the unrealised PnL it wants the evaluator to see. `null` keeps
- * the legacy "not used" behaviour so the other cases are unaffected.
+ * The position the stub gateway serves. Mutable so a `pnl_above` case can set
+ * the unrealised PnL it wants the evaluator to see. `null` keeps the legacy
+ * "not used" behaviour so the other cases are unaffected.
+ *
+ * Reached through the account snapshot now, because the sweep reads the whole
+ * account once and picks each watch's market out of it rather than reading the
+ * account once per watch.
  */
 let stubPosition: AgentNetPosition | null = null;
+
+/** Every venue read the sweep made, so the batching can be counted. */
+const venueReads = { metaAndAssetCtxs: 0, clearinghouseState: 0 };
 
 const stubGateway = Layer.succeed(HyperliquidGateway, {
   resolveMarket: unusedRead,
   getMarketSnapshot: () => Effect.succeed(stubSnapshot),
+  // One `metaAndAssetCtxs` for the whole list, which is what the batch buys.
+  getMarketSnapshots: (symbols: ReadonlyArray<string>) =>
+    Effect.sync(() => {
+      venueReads.metaAndAssetCtxs += 1;
+      return symbols.map((market) => ({ ...stubSnapshot, market }));
+    }),
   getMarketHistory: unusedRead,
   getOrderBook: unusedRead,
-  getAccountSnapshot: unusedRead,
+  getAccountSnapshot: () =>
+    Effect.sync(() => {
+      venueReads.clearinghouseState += 1;
+      return {
+        address: "0x00000000000000000000000000000000000000ff",
+        accountValue: 1_000,
+        marginUsed: 0,
+        withdrawable: 1_000,
+        positions:
+          stubPosition === null || stubPosition.size === 0
+            ? []
+            : [
+                {
+                  market: stubPosition.market,
+                  size: stubPosition.size,
+                  entryPrice: stubPosition.entryPrice ?? 1,
+                  unrealisedPnl: stubPosition.unrealisedPnl,
+                  cumulativeFunding: stubPosition.cumulativeFunding,
+                  marginUsed: stubPosition.marginUsed,
+                },
+              ],
+        freshness: stubPosition?.freshness ?? { observedAt: 0, source: "info_api" },
+      };
+    }) as never,
   getPosition: () =>
     stubPosition === null ? (unusedRead() as never) : Effect.succeed(stubPosition),
   getOpenOrders: unusedRead,
@@ -470,6 +506,88 @@ layer("WatchEvaluator", (it) => {
       const strategies = yield* TradingStrategyService;
       const [persisted] = yield* strategies.listWatches("mission_1");
       assert.equal(persisted?.status, "triggered");
+    }),
+  );
+
+  // The sweep runs every two seconds over every armed watch. Each watch used to
+  // do its own venue reads — a `metaAndAssetCtxs` plus a book per price or
+  // metric watch, a `clearinghouseState` per PnL watch — and twenty armed
+  // watches was sixty info calls every two seconds, which is what put this
+  // server into the venue's rate limiter. A 429 on the exit path is what
+  // aborted a live close.
+  it.effect("one universe read and one account read serve the whole sweep", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        unrealisedPnl: 1,
+        cumulativeFunding: 0,
+        marginUsed: 10,
+        freshness: { observedAt: 0, source: "info_api", staleAfterMillis: 5_000 },
+      };
+      // Six watches over two markets: four that need the universe, two that
+      // need the account. None of their levels are reached, so nothing fires
+      // and every one of them is evaluated.
+      yield* seed({
+        type: "price_cross",
+        market: "ETH",
+        priceSource: "mark",
+        direction: "above",
+        price: 99_000,
+      });
+      yield* seedMore({
+        type: "price_cross",
+        market: "ETH",
+        priceSource: "mid",
+        direction: "above",
+        price: 98_000,
+      });
+      yield* seedMore({
+        type: "price_cross",
+        market: "BTC",
+        priceSource: "mark",
+        direction: "above",
+        price: 99_000,
+      });
+      yield* seedMore({
+        type: "metric_threshold",
+        market: "BTC",
+        metric: "open_interest",
+        direction: "above",
+        value: 9_000_000_000,
+      });
+      yield* seedMore({ type: "pnl_above", market: "ETH", valueUsd: 9_000 });
+      yield* seedMore({ type: "pnl_below", market: "ETH", valueUsd: -9_000 });
+
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+      venueReads.metaAndAssetCtxs = 0;
+      venueReads.clearinghouseState = 0;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      assert.equal(
+        venueReads.metaAndAssetCtxs,
+        1,
+        "one universe read per sweep, however many watches it evaluates",
+      );
+      assert.equal(
+        venueReads.clearinghouseState,
+        1,
+        "one account read per sweep, however many PnL watches it evaluates",
+      );
+
+      // And a second pass reads again: the batch is good for one sweep, not
+      // for a cache that would serve a stale mark to a level watch.
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      assert.equal(venueReads.metaAndAssetCtxs, 2);
+      assert.equal(venueReads.clearinghouseState, 2);
+
+      stubPosition = null;
     }),
   );
 

@@ -28,7 +28,11 @@ import type { ThreadId, TradingMissionId } from "@t3tools/contracts";
 import { CommandId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
-import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
+import type {
+  AgentAccountSnapshot,
+  AgentNetPosition,
+} from "@t3tools/trading-contracts/account-snapshot";
+import type { AgentMarketSnapshot } from "@t3tools/trading-contracts/market";
 import { unpaidExitFeeUsd } from "@t3tools/trading-contracts/costs";
 import type { BarInterval, DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import { HyperliquidWebSocketClient, type WsDelivery } from "@t3tools/hyperliquid/WebSocketClient";
@@ -542,6 +546,43 @@ const make = Effect.gen(function* () {
     });
 
   /**
+   * The venue reads one sweep pass is allowed to make, shared by every watch
+   * in it.
+   *
+   * The sweep runs every two seconds over every armed watch, and each watch
+   * used to do its own reads: a `metaAndAssetCtxs` plus an `l2Book` per
+   * price-cross or metric watch, a `clearinghouseState` per PnL watch. Twenty
+   * armed watches was sixty info calls every two seconds, which is what put
+   * this server into the venue's rate limiter — and a 429 on the exit path is
+   * what aborted a live close.
+   *
+   * One `metaAndAssetCtxs` and one `clearinghouseState` per sweep now serve
+   * all of them, plus one book per distinct market. Null between sweeps, and
+   * the delivery-driven path never has one: a WS delivery is not a sweep and
+   * still reads live.
+   */
+  let sweepReads: {
+    readonly snapshots: ReadonlyMap<string, AgentMarketSnapshot>;
+    readonly accounts: ReadonlyMap<string, AgentAccountSnapshot>;
+  } | null = null;
+
+  /** The sweep's snapshot for `market`, or a live read outside a sweep. */
+  const readMarketSnapshot = (market: string) => {
+    const cached = sweepReads?.snapshots.get(market);
+    return cached === undefined
+      ? gateway.getMarketSnapshot(market).pipe(Effect.orDie)
+      : Effect.succeed(cached);
+  };
+
+  /** The sweep's account read for `address`, or a live read outside a sweep. */
+  const readAccountSnapshot = (address: `0x${string}`) => {
+    const cached = sweepReads?.accounts.get(address);
+    return cached === undefined
+      ? gateway.getAccountSnapshot(address).pipe(Effect.orDie)
+      : Effect.succeed(cached);
+  };
+
+  /**
    * Evaluate a `price_cross` watch against a fresh BBO/mark snapshot.
    *
    * Freshness is enforced by reading through the gateway (§13: BBO stale after
@@ -553,7 +594,7 @@ const make = Effect.gen(function* () {
     const watch = tracked.watch.watch;
     if (watch.type !== "price_cross") return;
 
-    const snapshot = yield* gateway.getMarketSnapshot(watch.market).pipe(Effect.orDie);
+    const snapshot = yield* readMarketSnapshot(watch.market);
     const reference = watch.priceSource === "mark" ? snapshot.markPrice : snapshot.midPrice;
 
     const observedAt = yield* nowMs;
@@ -730,8 +771,21 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const mission = yield* missions.getMission(missionId);
       const address = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      const position = yield* gateway.getPosition(address, market);
-      return position.size === 0 ? null : position;
+      // One account read serves every PnL watch in the sweep; `getPosition`
+      // would have made one per watch, because it reads the whole account and
+      // then picks a market out of it.
+      const snapshot = yield* readAccountSnapshot(address);
+      const held = snapshot.positions.find((entry) => entry.market === market);
+      if (held === undefined || held.size === 0) return null;
+      return {
+        market: held.market,
+        size: held.size,
+        entryPrice: held.entryPrice,
+        unrealisedPnl: held.unrealisedPnl,
+        cumulativeFunding: held.cumulativeFunding,
+        marginUsed: held.marginUsed,
+        freshness: snapshot.freshness,
+      } satisfies AgentNetPosition;
     }).pipe(Effect.orDie);
 
   /**
@@ -940,7 +994,7 @@ const make = Effect.gen(function* () {
     if (watch.type !== "metric_threshold") return;
     if (watch.metric === "volume_ratio") return;
 
-    const snapshot = yield* gateway.getMarketSnapshot(watch.market).pipe(Effect.orDie);
+    const snapshot = yield* readMarketSnapshot(watch.market);
     const bbo = snapshot.bestBidOffer;
     const reading =
       watch.metric === "funding_rate_8h"
@@ -1430,8 +1484,15 @@ const make = Effect.gen(function* () {
     if (!lease.held) return;
     const tracked = yield* activeTrackedWatches();
     const observedAt = yield* nowMs;
-    for (const t of tracked) {
-      if (sweepSkips(t, observedAt)) continue;
+
+    // Everything the pass will read, read once. Anything that fails is simply
+    // absent from the maps, and the watch that wanted it falls through to a
+    // live read of its own — the sweep degrades to what it did before rather
+    // than going deaf.
+    const due = tracked.filter((t) => !sweepSkips(t, observedAt));
+    sweepReads = yield* collectSweepReads(due);
+
+    for (const t of due) {
       // Contained per watch: the evaluators read the exchange and the DB
       // through `orDie`, and one watch's transient failure must not starve the
       // rest of this sweep — a silent evaluator is a deaf mission wearing a
@@ -1446,6 +1507,66 @@ const make = Effect.gen(function* () {
         ),
       );
     }
+
+    // The batch is only good for the pass it was read in.
+    sweepReads = null;
+  });
+
+  /**
+   * The markets and wallets one sweep needs, read once each.
+   *
+   * `getMarketSnapshots` pays one `metaAndAssetCtxs` for the whole list, and
+   * the account read is one `clearinghouseState` per distinct master wallet —
+   * which in this fork is one. A failed read leaves its entry out, and the
+   * watch that wanted it reads live: this is a rate-limit optimisation, never
+   * a correctness gate.
+   */
+  const collectSweepReads = Effect.fn("WatchEvaluator.collectSweepReads")(function* (
+    due: ReadonlyArray<TrackedWatch>,
+  ) {
+    const markets = new Set<string>();
+    const missionIds = new Set<TradingMissionId>();
+    for (const t of due) {
+      const watch = t.watch.watch;
+      if (watch.type === "price_cross" || watch.type === "metric_threshold") {
+        markets.add(watch.market);
+      }
+      if (
+        t.missionId !== null &&
+        (watch.type === "pnl_above" || watch.type === "pnl_below" || watch.type === "pnl_giveback")
+      ) {
+        missionIds.add(t.missionId);
+      }
+    }
+
+    const snapshots = new Map<string, AgentMarketSnapshot>();
+    if (markets.size > 0) {
+      const read = yield* gateway
+        .getMarketSnapshots([...markets])
+        .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<AgentMarketSnapshot>));
+      for (const snapshot of read) snapshots.set(snapshot.market, snapshot);
+    }
+
+    const addresses = new Set<`0x${string}`>();
+    for (const missionId of missionIds) {
+      const address = yield* missions.getMission(missionId).pipe(
+        Effect.flatMap((mission) => missions.getMasterWalletAddress(mission.tradingAccountId)),
+        Effect.map((address) => address as `0x${string}` | null),
+        Effect.orElseSucceed(() => null),
+      );
+      if (address !== null) addresses.add(address);
+    }
+
+    const accounts = new Map<string, AgentAccountSnapshot>();
+    for (const address of addresses) {
+      const snapshot = yield* gateway.getAccountSnapshot(address).pipe(
+        Effect.map((value) => value as AgentAccountSnapshot | null),
+        Effect.orElseSucceed(() => null),
+      );
+      if (snapshot !== null) accounts.set(address, snapshot);
+    }
+
+    return { snapshots, accounts };
   });
 
   /**

@@ -916,6 +916,8 @@ it.live("sizes a mission with no stated capital from the live account value", ()
     const stubGateway = Layer.succeed(HyperliquidGateway, {
       resolveMarket: () => Effect.die("not used"),
       listUniverse: Effect.die("not used"),
+      getMarketSnapshots: () =>
+        Effect.die("HyperliquidGateway.getMarketSnapshots is not used by these tests"),
       getMarketSnapshot: () => Effect.die("not used"),
       getMarketHistory: () => Effect.die("not used"),
       getOrderBook: () => Effect.die("not used"),

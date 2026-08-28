@@ -83,6 +83,22 @@ export class HyperliquidGateway extends Context.Service<
     readonly getMarketSnapshot: (
       symbol: string,
     ) => Effect.Effect<AgentMarketSnapshot, GatewayError>;
+    /**
+     * The same snapshot for several markets, on ONE `metaAndAssetCtxs` read.
+     *
+     * `getMarketSnapshot` pays a universe read per call, which is the right
+     * trade for a single ad-hoc read and the wrong one for a caller holding a
+     * list. The watch evaluator sweeps every armed watch every two seconds and
+     * was paying one universe read per WATCH; under load that is what put the
+     * server into the venue's rate limiter.
+     *
+     * A symbol the venue does not list, or has no context for, is simply
+     * absent from the result rather than failing the batch: one unknown market
+     * must not cost the caller every other one.
+     */
+    readonly getMarketSnapshots: (
+      symbols: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlyArray<AgentMarketSnapshot>, GatewayError>;
     /** Bounded candle history (≤500 bars, §13). */
     readonly getMarketHistory: (
       request: MarketHistoryRequest,
@@ -438,6 +454,39 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     return history;
   });
 
+  const getMarketSnapshots = Effect.fn("HyperliquidGateway.getMarketSnapshots")(function* (
+    symbols: ReadonlyArray<string>,
+  ) {
+    const wanted = [...new Set(symbols)];
+    if (wanted.length === 0) return [] as ReadonlyArray<AgentMarketSnapshot>;
+
+    // The one universe read the whole batch pairs against, exactly as
+    // `getMarketSnapshot` does for one symbol: index and context must come
+    // from the same payload (§10.6).
+    const [meta, assetCtxs] = yield* info.metaAndAssetCtxs;
+    const observedAt = yield* nowMillis;
+
+    const snapshots: Array<AgentMarketSnapshot> = [];
+    for (const symbol of wanted) {
+      const assetIndex = meta.universe.findIndex((entry) => entry.name === symbol);
+      if (assetIndex === -1) continue;
+      const ctx = assetCtxs[assetIndex];
+      if (!ctx) continue;
+      const wireBook = yield* info.l2Book(symbol);
+      const orderBook = toOrderBook(wireBook, observedAt);
+      snapshots.push(
+        toMarketSnapshotFields(
+          symbol,
+          ctx,
+          orderBook.bestBidOffer,
+          observedAt,
+          "info_api",
+        ) as AgentMarketSnapshot,
+      );
+    }
+    return snapshots as ReadonlyArray<AgentMarketSnapshot>;
+  });
+
   const getOrderBook = Effect.fn("HyperliquidGateway.getOrderBook")(function* (symbol: string) {
     const observedAt = yield* nowMillis;
 
@@ -551,6 +600,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     resolveMarket,
     listUniverse,
     getMarketSnapshot,
+    getMarketSnapshots,
     getMarketHistory,
     getOrderBook,
     getAccountSnapshot,
