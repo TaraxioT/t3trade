@@ -8,7 +8,11 @@ import type {
   TradingThreadMarketFocus,
 } from "@t3tools/contracts";
 
-import { filterAccountsToMarket, selectThreadPanel } from "./threadMarketPanelState";
+import {
+  filterAccountsToMarket,
+  missionOnMarket,
+  selectThreadPanel,
+} from "./threadMarketPanelState";
 
 const focusOn = (asset: string): TradingThreadMarketFocus =>
   ({
@@ -18,8 +22,13 @@ const focusOn = (asset: string): TradingThreadMarketFocus =>
     updatedAt: "2026-08-28T12:00:00.000Z",
   }) as TradingThreadMarketFocus;
 
-const missionOn = (market: string): OrchestrationTradingMission =>
-  ({ id: "mission_1", threadId: "thread_1", market }) as unknown as OrchestrationTradingMission;
+const missionOn = (market: string, markets?: ReadonlyArray<string>): OrchestrationTradingMission =>
+  ({
+    id: "mission_1",
+    threadId: "thread_1",
+    market,
+    markets: markets ?? [market],
+  }) as unknown as OrchestrationTradingMission;
 
 const position = (asset: string): TradingAccountPosition =>
   ({
@@ -87,6 +96,21 @@ describe("selectThreadPanel", () => {
     });
   });
 
+  // A mission holds a set, and focus within it is the thread saying which of
+  // its own markets it is talking about — the agent's look and the card's
+  // switcher write the same row.
+  it("follows focus onto another market the mission holds", () => {
+    expect(
+      selectThreadPanel({ focus: focusOn("BTC"), mission: missionOn("ETH", ["ETH", "BTC"]) }),
+    ).toEqual({ asset: "BTC", chart: "mission" });
+  });
+
+  it("stays on a held market when focus lands outside the held set", () => {
+    expect(
+      selectThreadPanel({ focus: focusOn("SOL"), mission: missionOn("ETH", ["ETH", "BTC"]) }),
+    ).toEqual({ asset: "ETH", chart: "mission" });
+  });
+
   it("draws the mission chart for threads that predate the focus row", () => {
     expect(selectThreadPanel({ focus: null, mission: missionOn("ETH") })).toEqual({
       asset: "ETH",
@@ -100,11 +124,67 @@ describe("selectThreadPanel", () => {
       { focus: focusOn("SOL"), mission: null },
       { focus: null, mission: missionOn("ETH") },
       { focus: focusOn("SOL"), mission: missionOn("ETH") },
+      { focus: focusOn("BTC"), mission: missionOn("ETH", ["ETH", "BTC"]) },
     ];
     for (const input of cases) {
       const { chart } = selectThreadPanel(input);
       expect(["mission", "market", null]).toContain(chart);
     }
+  });
+});
+
+describe("missionOnMarket", () => {
+  const multi = {
+    id: "mission_1",
+    threadId: "thread_1",
+    market: "ETH",
+    markets: ["ETH", "BTC"],
+    marketPrice: 3_000,
+    marketPrices: [
+      { market: "ETH", price: 3_000 },
+      { market: "BTC", price: 90_000 },
+    ],
+    position: { market: "ETH", size: 0.5 },
+    positions: [
+      { market: "ETH", size: 0.5 },
+      { market: "BTC", size: -0.01 },
+    ],
+    strategy: { market: "ETH", intent: "long" },
+    strategies: [
+      { market: "ETH", intent: "long" },
+      { market: "BTC", intent: "short" },
+    ],
+    orders: [{ market: "ETH" }, { market: "BTC" }],
+    recentFills: [{ market: "BTC" }],
+    inFlightExecution: { market: "BTC" },
+  } as unknown as OrchestrationTradingMission;
+
+  it("hands back the mission itself for its primary market", () => {
+    expect(missionOnMarket(multi, "ETH")).toBe(multi);
+  });
+
+  // The singular fields are the PRIMARY market's, so reading them for a second
+  // market is how an ETH plan would end up drawn over BTC candles.
+  it("swaps every singular field for the named market's own", () => {
+    const btc = missionOnMarket(multi, "BTC");
+    expect(btc.market).toBe("BTC");
+    expect(btc.position?.market).toBe("BTC");
+    expect(btc.strategy?.market).toBe("BTC");
+    expect(btc.marketPrice).toBe(90_000);
+    expect(btc.orders.map((order) => order.market)).toEqual(["BTC"]);
+    expect(btc.recentFills.map((fill) => fill.market)).toEqual(["BTC"]);
+    expect(btc.inFlightExecution?.market).toBe("BTC");
+    // The held set itself is a property of the mission, not of one market.
+    expect([...btc.markets]).toEqual(["ETH", "BTC"]);
+  });
+
+  it("draws nothing rather than the wrong thing on a market with no position", () => {
+    const sol = missionOnMarket(multi, "SOL");
+    expect(sol.position).toBe(null);
+    expect(sol.strategy).toBe(null);
+    expect(sol.marketPrice).toBe(undefined);
+    expect(sol.orders).toEqual([]);
+    expect(sol.inFlightExecution).toBe(null);
   });
 });
 

@@ -218,10 +218,11 @@ export function MissionLivePanel({
    * columns. They share the projection, the chart atom and the selection
    * store, so neither can disagree with the other.
    */
-  readonly parts: "market" | "status";
+  readonly parts: "market" | "status" | "positions";
 }): ReactNode {
   const state = readPanelState(mission);
-  const wantsMarket = parts === "market";
+  const wantsMarket = parts === "market" || parts === "positions";
+  const wantsChartFeed = parts === "market";
   const wantsStatus = parts === "status";
 
   // --- Ticker: the panel's clock. -------------------------------------------
@@ -341,7 +342,7 @@ export function MissionLivePanel({
     enabled: wantsChart,
     // The status half borrows one figure (funding) off the same atom the
     // market half polls. One poll, two readers.
-    poll: wantsMarket,
+    poll: wantsChartFeed,
   });
 
   // --- What the plan is watching, in either state. --------------------------
@@ -566,6 +567,33 @@ export function MissionLivePanel({
     );
   }
 
+  // One held market's ledger and nothing else: the card lists a position card
+  // per held market, and only ONE of them is the market the chart is drawing.
+  if (parts === "positions") {
+    if (orderRows.length === 0 && position === null) return null;
+    return (
+      <section
+        data-testid="mission-positions"
+        data-market={mission.market}
+        className={cn(CARD_CLASS, POSITIONS_HEIGHT_CLASS, "flex flex-none flex-col")}
+      >
+        <PositionsCard
+          rows={orderRows}
+          market={mission.market}
+          leverageLabel={leverage === null ? null : formatLeverage(leverage)}
+          position={position}
+          markPrice={markPrice}
+          stopPrice={stopPrice}
+          plan={plan}
+          roiPercent={roiPercent}
+          pnlToneClass={pnlToneClass}
+          nowMillis={nowMillis}
+          staleLabel={null}
+        />
+      </section>
+    );
+  }
+
   if (wantsMarket) {
     return (
       <div
@@ -620,6 +648,7 @@ export function MissionLivePanel({
             with nothing to show it draws its empty state in the skeleton idiom. */}
         <section
           data-testid="mission-positions"
+          data-market={mission.market}
           className={cn(CARD_CLASS, POSITIONS_HEIGHT_CLASS, "flex flex-none flex-col")}
         >
           <PositionsCard

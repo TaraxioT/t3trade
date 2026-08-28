@@ -35,17 +35,62 @@ export interface ThreadPanelComposition {
  * one rule is the point: choosing them separately is how the panel ended up
  * drawing a mission's levels over another market's candles.
  *
- * The focus row is the fallback, and it is the market chart's own case: a
- * thread seeded from the trade home, or moved by the agent's own look, is
- * about a market and not yet about a position.
+ * A mission holds a SET of markets, so "the mission wins" generalizes rather
+ * than hardening: focus WITHIN the held set moves the card, because both the
+ * agent's look and the card's own switcher write that row, and either is the
+ * thread saying which of its markets it is talking about. Focus on a market
+ * the mission does not hold does not move it - the agent glancing at SOL while
+ * holding ETH and BTC must not draw ETH's plan over SOL's candles, and must not
+ * take the trader's chart away from what their money is on.
+ *
+ * The focus row is the whole rule for an unbound thread, and it is the market
+ * chart's own case: a thread seeded from the trade home, or moved by the
+ * agent's own look, is about a market and not yet about a position.
  */
 export function selectThreadPanel(input: {
   readonly focus: TradingThreadMarketFocus | null;
   readonly mission: OrchestrationTradingMission | null;
 }): ThreadPanelComposition {
-  if (input.mission !== null) return { asset: input.mission.market, chart: "mission" };
+  if (input.mission !== null) {
+    const focused = input.focus?.market.asset ?? null;
+    const asset =
+      focused !== null && input.mission.markets.includes(focused) ? focused : input.mission.market;
+    return { asset, chart: "mission" };
+  }
   if (input.focus !== null) return { asset: input.focus.market.asset, chart: "market" };
   return { asset: null, chart: null };
+}
+
+/**
+ * The mission as it looks on ONE of the markets it holds.
+ *
+ * A mission holds a set, and every mission surface — the chart, the plan
+ * levels, the order ledger, the mark — is about one market at a time. Rather
+ * than teaching each of them which market it is drawing, the card narrows the
+ * projection once and hands the same components the same shape they have
+ * always read. A one-market mission narrows to itself, unchanged.
+ *
+ * `position` and `strategy` come from the per-market arrays rather than from
+ * the singular fields, which are the PRIMARY market's: reading them for a
+ * second market is how a mission's ETH plan would be drawn over BTC candles.
+ */
+export function missionOnMarket(
+  mission: OrchestrationTradingMission,
+  market: string,
+): OrchestrationTradingMission {
+  if (market === mission.market) return mission;
+  const price = mission.marketPrices.find((entry) => entry.market === market)?.price;
+  return {
+    ...mission,
+    market,
+    position: mission.positions.find((entry) => entry.market === market) ?? null,
+    strategy: mission.strategies.find((entry) => entry.market === market) ?? null,
+    orders: mission.orders.filter((entry) => entry.market === market),
+    recentFills: mission.recentFills.filter((entry) => entry.market === market),
+    inFlightExecution:
+      mission.inFlightExecution?.market === market ? mission.inFlightExecution : null,
+    ...(price === undefined ? { marketPrice: undefined } : { marketPrice: price }),
+  };
 }
 
 /**

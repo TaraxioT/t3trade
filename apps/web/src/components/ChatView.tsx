@@ -6356,6 +6356,7 @@ function ChatViewContent(props: ChatViewProps) {
         mission={threadPanel.chart === "mission" ? boundMission : null}
         missions={missions}
         threadKey={routeThreadKey}
+        threadId={threadId}
       />
     );
 

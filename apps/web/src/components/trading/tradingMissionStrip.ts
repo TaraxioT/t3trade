@@ -35,7 +35,13 @@ export type MissionStripTone = "exposed" | "armed" | "paused" | "blocked";
 export interface MissionStrip {
   readonly tone: MissionStripTone;
   readonly stateLabel: string;
-  /** The market the mission trades, as the exchange names it. */
+  /**
+   * The market the mission trades, as the exchange names it, or every market it
+   * holds when it holds more than one.
+   *
+   * A mission holding ETH and BTC that labelled itself "ETH" would be telling
+   * the trader the BTC position beside it belongs to something else.
+   */
   readonly marketLabel: string;
   /**
    * What the market is doing right now, whether or not anything is held.
@@ -129,6 +135,11 @@ function describeProtection(position: {
 export function deriveMissionStrip(mission: {
   readonly status: TradingMissionStatus;
   readonly market: string;
+  /**
+   * Every market the mission holds, primary first. Absent for the callers that
+   * still hand one market, which then behaves exactly as it did.
+   */
+  readonly markets?: ReadonlyArray<string> | undefined;
   readonly marketPrice?: number | undefined;
   readonly blockedReason: string | null;
   readonly harness: { readonly provider: string; readonly status: string };
@@ -140,11 +151,28 @@ export function deriveMissionStrip(mission: {
     readonly unrealisedPnl: number;
     readonly protectedSize: number;
   } | null;
+  /**
+   * One position per held market that has one. Absent, the singular `position`
+   * is the whole story, which it is for a one-market mission.
+   */
+  readonly positions?:
+    | ReadonlyArray<{
+        readonly market: string;
+        readonly size: number;
+        readonly unrealisedPnl: number;
+        readonly protectedSize: number;
+      }>
+    | undefined;
   readonly authority: { readonly maximumCumulativeLossUsd: number };
 }): MissionStrip {
   const position = mission.position;
+  const held = (mission.positions ?? []).filter((entry) => entry.size !== 0);
+  // `exposure` is one signed number and cannot describe two assets, so it stays
+  // the primary market's — it drives the up/down arrow, which is honest for the
+  // market the strip is labelled by. `exposureLabel` is the one that says what
+  // is really on, across every held market.
   const exposure = position?.size ?? 0;
-  const exposed = exposure !== 0;
+  const exposed = held.length > 0 || exposure !== 0;
   const markPrice = mission.marketPrice ?? position?.markPrice ?? null;
 
   const tone: MissionStripTone =
@@ -178,15 +206,26 @@ export function deriveMissionStrip(mission: {
         ? describeExposure(position)
         : describeArmedWatch(mission.watches);
 
-  const detailSecondary =
-    exposed && position !== null
-      ? `Unrealised ${formatSignedUsd(position.unrealisedPnl)} · ${describeProtection(position)}`
-      : null;
+  // Unrealised PnL is dollars, so it adds across markets even where sizes do
+  // not. Protection is reported for the primary's position, which is the one
+  // the rest of the strip is about.
+  const unrealised =
+    held.length > 0
+      ? held.reduce((sum, entry) => sum + entry.unrealisedPnl, 0)
+      : (position?.unrealisedPnl ?? 0);
+  const detailSecondary = exposed
+    ? position !== null
+      ? `Unrealised ${formatSignedUsd(unrealised)} · ${describeProtection(position)}`
+      : `Unrealised ${formatSignedUsd(unrealised)}`
+    : null;
 
   return {
     tone,
     stateLabel: MISSION_STATUS_LABELS[mission.status],
-    marketLabel: mission.market,
+    marketLabel:
+      mission.markets !== undefined && mission.markets.length > 1
+        ? mission.markets.join(" · ")
+        : mission.market,
     // The live read is preferred over the position's mark: a flat mission has
     // no position mark at all, and an exposed one's is as old as its last
     // reconcile.
@@ -195,9 +234,17 @@ export function deriveMissionStrip(mission: {
     detailSecondary,
     harnessLabel: `${mission.harness.provider} · ${humanizeLiteral(mission.harness.status)}`,
     exposure,
-    exposureLabel: exposed
-      ? `${exposure > 0 ? "Long" : "Short"} ${formatSize(Math.abs(exposure))}`
-      : "Flat",
+    exposureLabel:
+      held.length > 0
+        ? held
+            .map(
+              (entry) =>
+                `${entry.size > 0 ? "Long" : "Short"} ${formatSize(Math.abs(entry.size))} ${entry.market}`,
+            )
+            .join(" · ")
+        : exposed
+          ? `${exposure > 0 ? "Long" : "Short"} ${formatSize(Math.abs(exposure))}`
+          : "Flat",
     maximumLossLabel: formatUsd(mission.authority.maximumCumulativeLossUsd),
     primaryAction,
     primaryActionLabel:

@@ -195,6 +195,32 @@ describe("mission strip", () => {
     expect(deriveMissionStrip({ ...armed, status: "paused" }).primaryAction).toBe("resume");
   });
 
+  // A mission holds a set of markets. The strip is market-agnostic chrome and
+  // needed no new structure, but its TEXT was primary-only: a mission holding
+  // ETH and BTC labelled itself "ETH" and read "Flat" while BTC was short,
+  // telling the trader the BTC position beside it belonged to something else.
+  it("names every held market and everything on them", () => {
+    const strip = deriveMissionStrip({
+      ...exposed,
+      market: "ETH",
+      markets: ["ETH", "BTC"],
+      positions: [
+        { market: "ETH", size: 0.5, unrealisedPnl: 12.8, protectedSize: 0.5 },
+        { market: "BTC", size: -0.01, unrealisedPnl: -3.2, protectedSize: 0.01 },
+      ],
+    });
+    expect(strip.marketLabel).toBe("ETH · BTC");
+    expect(strip.exposureLabel).toBe("Long 0.5 ETH · Short 0.01 BTC");
+    // Dollars add across markets even where sizes do not.
+    expect(strip.detailSecondary).toContain("+$9.60");
+  });
+
+  it("reads a mission holding one market exactly as it did", () => {
+    const strip = deriveMissionStrip({ ...exposed, markets: ["ETH-PERP"] });
+    expect(strip.marketLabel).toBe("ETH-PERP");
+    expect(strip.exposureLabel).toBe("Long 0.5");
+  });
+
   it("labels exposure by direction and size", () => {
     expect(deriveMissionStrip(exposed).exposureLabel).toBe("Long 0.5");
     expect(
