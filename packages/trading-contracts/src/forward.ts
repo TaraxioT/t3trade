@@ -608,12 +608,89 @@ export function forwardEndSummary(report: ForwardReport): string {
 /** The intervals and durations the tool will accept, as one line for the menu. */
 export function renderForwardMenu(): string {
   return [
-    `arm a thesis (same shape as trading_backtest) for a duration; interval=${FORWARD_INTERVALS.join("|")}`,
-    "actions: arm list pause resume end report",
-    `duration from 1 hour to 90 days; under ${MIN_REPLAY_SETUPS} paper trades there is no verdict, only the numbers`,
+    `arm {thesis, durationHours, label?}; thesis is trading_backtest's shape; interval=${FORWARD_INTERVALS.join("|")}`,
+    "actions: arm list pause resume end report; the last four take validationId",
+    `durationHours 1 to ${MAX_VALIDATION_HOURS}; under ${MIN_REPLAY_SETUPS} paper trades there is no verdict, only the numbers`,
     "paper only: signals read closed bars and fill at the next bar open, costed like a backtest, and no order is ever placed",
     "to trade a validated idea, publish a plan and enter as normal with this record as context",
   ].join(" · ");
 }
 
 export type { BacktestCosts, BacktestInterval };
+
+// ---------------------------------------------------------------------------
+// the tool surface
+// ---------------------------------------------------------------------------
+
+export const TRADING_VALIDATE_TOOL = "trading_validate";
+
+/**
+ * One tool for the whole lifecycle, because every way in needs a way out and
+ * a way to see the current state, and six verbs spread over six tools would
+ * cost six descriptions in every turn's system prompt.
+ *
+ * A call with no action returns the menu — the plan 38 disclosure pattern
+ * `trading_look({})` and `trading_backtest({})` already establish.
+ */
+export const TradingValidateAction = Schema.Literals([
+  "arm",
+  "list",
+  "pause",
+  "resume",
+  "end",
+  "report",
+]);
+export type TradingValidateAction = typeof TradingValidateAction.Type;
+
+/** The longest a validation may be asked for, in hours. Ninety days. */
+export const MAX_VALIDATION_HOURS = MAX_VALIDATION_MS / (60 * 60 * 1_000);
+
+export const TradingValidateInput = Schema.Struct({
+  /**
+   * The mission this research is for, when there is one. A validation touches
+   * no mission state and takes no authority from one, so it is optional and it
+   * is attribution rather than permission — the same role it plays on
+   * `trading_backtest`.
+   */
+  missionId: Schema.optional(Schema.String),
+  action: Schema.optional(TradingValidateAction),
+  /** Required by `arm`, ignored elsewhere. */
+  thesis: Schema.optional(TradingThesis),
+  /** How long to watch for. Required by `arm`. */
+  durationHours: Schema.optional(Schema.Number),
+  /** A name for the idea, so the chart badge and the report read as English. */
+  label: Schema.optional(Schema.String),
+  /** Required by `pause`, `resume`, `end` and `report`. */
+  validationId: Schema.optional(Schema.String),
+  /** Ended validations are off the list unless asked for. */
+  includeEnded: Schema.optional(Schema.Boolean),
+});
+export type TradingValidateInput = typeof TradingValidateInput.Type;
+
+/** One line per validation, for the list. */
+export const ForwardListEntry = Schema.Struct({
+  validationId: Schema.String,
+  headline: Schema.String,
+  market: Schema.String,
+  interval: Schema.String,
+  status: ThesisValidationStatus,
+  armedAt: Schema.Number,
+  expiresAt: Schema.Number,
+  tradesTaken: Schema.Number,
+  expectancyUsd: Schema.Number,
+});
+export type ForwardListEntry = typeof ForwardListEntry.Type;
+
+export const TradingValidateResult = Schema.Struct({
+  /** Set by `arm`, `report`, `end` and by an expiry the caller asked about. */
+  report: Schema.optional(ForwardReport),
+  /** Set by `list`. */
+  validations: Schema.optional(Schema.Array(ForwardListEntry)),
+  /** What the call did, in one sentence the model can relay. */
+  outcome: Schema.optional(Schema.String),
+  /** Why a call changed nothing. Present only on a refusal. */
+  refused: Schema.optional(Schema.String),
+  /** The vocabulary, when this call was the menu call. */
+  menu: Schema.optional(Schema.String),
+});
+export type TradingValidateResult = typeof TradingValidateResult.Type;

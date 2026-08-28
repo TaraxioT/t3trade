@@ -186,6 +186,19 @@ export interface TradingThesisValidationServiceShape {
     readonly now: number;
   }) => Effect.Effect<ReadonlyArray<ForwardReport>, PersistenceSqlError>;
 
+  /**
+   * Record the backtest figures the forward run will be scored against.
+   *
+   * Separate from `arm` because the backtest lives in another service, and
+   * pulling it in here would put a second dependency on a service whose short
+   * dependency list is the claim that it cannot trade. The caller runs the
+   * backtest and hands the figures over.
+   */
+  readonly setBaseline: (input: {
+    readonly id: string;
+    readonly baseline: BacktestStats;
+  }) => Effect.Effect<void, PersistenceSqlError>;
+
   /** The armed validation on a market, with its paper trades, for the chart. */
   readonly forChart: (input: {
     readonly asset: string;
@@ -731,9 +744,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
     expireDue,
     forChart,
     setBaseline,
-  } satisfies TradingThesisValidationServiceShape & {
-    readonly setBaseline: typeof setBaseline;
-  };
+  } satisfies TradingThesisValidationServiceShape;
 });
 
 /**

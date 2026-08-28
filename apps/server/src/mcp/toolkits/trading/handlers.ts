@@ -135,7 +135,10 @@ import { TradingEventInbox } from "../../../trading/TradingEventInbox.ts";
 import { TradingMarketArchive } from "../../../trading/TradingMarketArchive.ts";
 import { TradingToolkit } from "./tools.ts";
 import { TradingBacktestService } from "../../../trading/TradingBacktestService.ts";
+import { TradingThesisValidationService } from "../../../trading/TradingThesisValidationService.ts";
 import { renderTradingBacktestMenu } from "@t3tools/trading-contracts/backtest";
+import { renderForwardMenu, type TradingValidateResult } from "@t3tools/trading-contracts/forward";
+import { describeThesis } from "@t3tools/trading-contracts/thesis";
 
 interface BoundCall {
   readonly threadId: string;
@@ -157,6 +160,17 @@ interface BoundCall {
  * operator had no way to tell "the agent stopped calling tools" from "every
  * call it made was refused". One line per refusal closes that gap.
  */
+/**
+ * A `trading_validate` result, at its declared type.
+ *
+ * Each branch of the handler returns a different subset of the result's
+ * optional keys, and a bare union of those object literals fills the keys each
+ * branch omits with `never` — which `exactOptionalPropertyTypes` then refuses
+ * against the schema's `?: string | undefined`. Naming the type once here
+ * collapses the union at each return instead.
+ */
+const validateResult = (value: TradingValidateResult): TradingValidateResult => value;
+
 const rejectCall = (input: {
   readonly reason:
     | "capability_not_granted"
@@ -168,7 +182,8 @@ const rejectCall = (input: {
     | "thesis_invalid"
     | "interval_not_archived"
     | "window_too_large"
-    | "no_archived_bars";
+    | "no_archived_bars"
+    | "validation_refused";
   readonly threadId: string;
   readonly missionId: string | undefined;
   /** What to do about it, when the reason alone does not say (fetch keys). */
@@ -2886,6 +2901,152 @@ const handlers = {
         });
       }
       return { report: outcome.report, elapsedMillis: outcome.elapsedMillis };
+    }),
+
+  /**
+   * Arm, inspect and retire a forward validation.
+   *
+   * One tool for the whole lifecycle because every way in needs a way out and
+   * a way to see the current state, and six verbs as six tools would cost six
+   * descriptions in every turn's system prompt. A call with no `action`
+   * returns the menu, the same disclosure `trading_backtest({})` uses.
+   *
+   * Nothing here places an order, and nothing here can. The validation service
+   * has no execution dependency, and promotion is not a branch below: a user
+   * who says "trade this" is answered by `trading_plan` and `trading_enter`
+   * with the validation record as the context for the decision.
+   */
+  trading_validate: (input) =>
+    Effect.gen(function* () {
+      if (input.action === undefined) {
+        return validateResult({ menu: renderForwardMenu() });
+      }
+
+      const validations = yield* TradingThesisValidationService;
+      const now = yield* Clock.currentTimeMillis;
+      const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
+
+      // `missionId` is attribution, never authority: a validation takes no
+      // mission state and can reach no order, whether or not one is named.
+      const refuse = (detail: string) =>
+        rejectCall({ reason: "validation_refused", threadId, missionId: input.missionId, detail });
+
+      switch (input.action) {
+        case "arm": {
+          if (input.thesis === undefined) {
+            return yield* refuse("arm needs a thesis; the shape is trading_validate({})");
+          }
+          if (input.durationHours === undefined) {
+            return yield* refuse("arm needs durationHours; two weeks is 336");
+          }
+          const armed = yield* validations
+            .arm({
+              thesis: input.thesis,
+              durationMs: input.durationHours * 60 * 60 * 1_000,
+              ...(input.label === undefined ? {} : { label: input.label }),
+              ...(threadId === undefined ? {} : { threadId }),
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (armed.outcome === "refused") return yield* refuse(armed.reason);
+
+          // The baseline: what the backtest said about this idea at the moment
+          // it was armed. Recorded now rather than computed later, because the
+          // archive keeps growing and a comparison against a number that moved
+          // underneath the validation is not a comparison. A backtest that
+          // cannot run leaves the baseline null, which the report states
+          // rather than papering over with a zero.
+          const backtest = yield* TradingBacktestService;
+          const priced = yield* backtest.run({ thesis: input.thesis, now });
+          if (priced.status === "ok") {
+            yield* validations
+              .setBaseline({ id: armed.validation.id, baseline: priced.report.stats })
+              .pipe(Effect.orDie);
+          }
+
+          const report = yield* validations
+            .report({ id: armed.validation.id, now })
+            .pipe(Effect.orDie);
+          return validateResult({
+            ...(report === null ? {} : { report }),
+            outcome:
+              `Validating ${describeThesis(input.thesis)} on paper until ` +
+              `${new Date(armed.validation.expiresAt).toISOString()}. No order will be placed.`,
+          });
+        }
+
+        case "list": {
+          const all = yield* validations
+            .list({
+              ...(input.includeEnded === undefined ? {} : { includeEnded: input.includeEnded }),
+            })
+            .pipe(Effect.orDie);
+          const entries = yield* Effect.forEach(all, (validation) =>
+            Effect.gen(function* () {
+              const report = yield* validations
+                .report({ id: validation.id, now })
+                .pipe(Effect.orDie);
+              return {
+                validationId: validation.id,
+                headline: report?.headline ?? describeThesis(validation.thesis),
+                market: validation.asset,
+                interval: validation.interval,
+                status: validation.status,
+                armedAt: validation.armedAt,
+                expiresAt: validation.expiresAt,
+                tradesTaken: report?.stats.tradesTaken ?? 0,
+                expectancyUsd: report?.stats.expectancyUsd ?? 0,
+              };
+            }),
+          );
+          return validateResult({
+            validations: entries,
+            outcome: `${entries.length} validation(s)`,
+          });
+        }
+
+        case "report": {
+          if (input.validationId === undefined) {
+            return yield* refuse("report needs a validationId; trading_validate({action:'list'})");
+          }
+          const report = yield* validations
+            .report({ id: input.validationId, now })
+            .pipe(Effect.orDie);
+          if (report === null) return yield* refuse("no validation with that id");
+          return validateResult({ report, outcome: report.verdictReason });
+        }
+
+        case "pause":
+        case "resume":
+        case "end": {
+          if (input.validationId === undefined) {
+            return yield* refuse(`${input.action} needs a validationId`);
+          }
+          const to =
+            input.action === "pause" ? "paused" : input.action === "resume" ? "armed" : "ended";
+          const moved = yield* validations
+            .setStatus({
+              id: input.validationId,
+              to,
+              ...(input.action === "end" ? { endReason: "ended_by_user" as const } : {}),
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (moved.outcome === "refused") return yield* refuse(moved.reason);
+          // Ending hands back the final report, so the last thing a user sees
+          // is what the idea actually did rather than a bare acknowledgement.
+          const report = yield* validations
+            .report({ id: input.validationId, now })
+            .pipe(Effect.orDie);
+          return validateResult({
+            ...(report === null ? {} : { report }),
+            outcome:
+              input.action === "end"
+                ? "Validation ended."
+                : `Validation ${input.action}d. It can be ${input.action === "pause" ? "resumed" : "paused"} again at any time.`,
+          });
+        }
+      }
     }),
 } satisfies Parameters<typeof TradingToolkit.toLayer>[0];
 

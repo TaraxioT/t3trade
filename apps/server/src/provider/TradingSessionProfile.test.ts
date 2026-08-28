@@ -36,8 +36,16 @@ it("gives the analyst the reads and alert watches, and none of the acting tools"
   }
   expect([...TRADING_ANALYST_TOOL_NAMES].sort()).toEqual(
     // `trading_backtest` is a read over the archive with no path to an order,
-    // so it is research an analyst may run.
-    ["trading_look", "trading_strategy", "trading_watch", "trading_backtest"].sort(),
+    // so it is research an analyst may run. `trading_validate` writes, but only
+    // to the paper ledger, and no surface reporting real money reads it — so it
+    // is research too, and an analyst may arm one and read its verdict.
+    [
+      "trading_look",
+      "trading_strategy",
+      "trading_watch",
+      "trading_backtest",
+      "trading_validate",
+    ].sort(),
   );
   // …and the acting tools are exactly what it lacks.
   for (const excluded of ["trading_enter", "trading_exit", "trading_plan", "trading_journal"]) {

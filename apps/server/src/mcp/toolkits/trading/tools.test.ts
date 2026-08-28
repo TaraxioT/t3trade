@@ -5,6 +5,7 @@ import {
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
+import { renderForwardMenu, TRADING_VALIDATE_TOOL } from "@t3tools/trading-contracts/forward";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
@@ -33,6 +34,7 @@ it("exposes the read, the plan, the watch, the journal, the research, and the tw
       TRADING_ENTER_TOOL,
       TRADING_EXIT_TOOL,
       TRADING_BACKTEST_TOOL,
+      TRADING_VALIDATE_TOOL,
     ].sort(),
   );
 });
@@ -216,10 +218,19 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 8 trading tools").toBe(8);
+  expect(tools.length, "expected exactly 9 trading tools").toBe(9);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
-  expect(total, "total description chars must stay under 4,000").toBeLessThan(4_000);
+  // Printed rather than only asserted: the budget is meant to be watched, and
+  // a number nobody can see is a number that drifts to the cap.
+  process.stdout.write(`TOOLKIT_DESCRIPTION_CHARS ${total}\n`);
+  for (const tool of tools) {
+    process.stdout.write(`  ${tool.name} ${(tool.description ?? "").length}\n`);
+  }
+  // Raised from 4,000 when `trading_validate` became the ninth tool. The cap
+  // is a budget, not a discovered constant: it moved by one tool's worth,
+  // deliberately, rather than being widened until the measurement fitted.
+  expect(total, "total description chars must stay under 4,250").toBeLessThan(4_250);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;
@@ -247,4 +258,29 @@ it("teaches urgency and keeps time-in-force vocabulary out of the descriptions",
   const exit = TradingToolkit.tools[TRADING_EXIT_TOOL].description ?? "";
   expect(exit).toContain("urgency");
   expect(exit).toContain("patient");
+});
+
+// Task 5's doctrine, as an assertion rather than a note in a commit message.
+// Promotion is a sentence the user types, answered by the ordinary trading
+// flow. Nothing in the validation surface may imply the tool itself can cross
+// from paper to a real order, and nothing may offer to do it automatically.
+it("says paper only, and points promotion at the ordinary trading flow", () => {
+  const validate = TradingToolkit.tools[TRADING_VALIDATE_TOOL].description ?? "";
+  const menu = renderForwardMenu();
+
+  expect(validate, "the description must say it never places an order").toContain(
+    "Never places an order",
+  );
+  expect(menu, "the menu must say the same").toContain("no order is ever placed");
+
+  // The promotion sentence names the normal path rather than a verb of its own.
+  expect(validate).toContain("plan and enter as normal");
+  expect(menu).toContain("publish a plan and enter as normal");
+
+  // No automatic crossing, in either surface.
+  for (const text of [validate, menu]) {
+    for (const forbidden of ["auto", "promote", "automatically", "go live"]) {
+      expect(text.toLowerCase(), `must not offer to ${forbidden}`).not.toContain(forbidden);
+    }
+  }
 });

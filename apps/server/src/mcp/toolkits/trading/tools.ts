@@ -23,6 +23,7 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
 import { TradingBacktestInput, TradingBacktestResult } from "@t3tools/trading-contracts/backtest";
+import { TradingValidateInput, TradingValidateResult } from "@t3tools/trading-contracts/forward";
 import { TradingEnterInput } from "@t3tools/trading-contracts/entry";
 import { TradingExitInput } from "@t3tools/trading-contracts/exit";
 import { Playbook } from "@t3tools/trading-contracts/playbook";
@@ -55,6 +56,7 @@ import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts
 import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
 import { TradingThreadMarketService } from "../../../trading/TradingThreadMarketService.ts";
 import { TradingBacktestService } from "../../../trading/TradingBacktestService.ts";
+import { TradingThesisValidationService } from "../../../trading/TradingThesisValidationService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -114,6 +116,9 @@ const dependencies = [
   // `trading_backtest` walks the market archive and nothing else. It is the
   // only tool here with no path to an order.
   TradingBacktestService,
+  // `trading_validate` writes the paper ledger and nothing else. Same claim,
+  // and the same absence of a dependency behind it.
+  TradingThesisValidationService,
   SqlClient.SqlClient,
 ];
 
@@ -243,6 +248,25 @@ export const TradingBacktestTool = Tool.make("trading_backtest", {
   // is an open world even though nothing here leaves the machine.
   .annotate(Tool.OpenWorld, true);
 
+export const TradingValidateTool = Tool.make("trading_validate", {
+  description:
+    "Validate a thesis forward on live bars, on paper. Never places an order. `arm` a `thesis` (trading_backtest's shape) with `durationHours`; every closed bar is evaluated and the trades it would have taken are recorded at real fees. Also `list` `pause` `resume` `end` `report`. `report` gives trades, hit rate, after-fee expectancy, drawdown and how it compares to the backtest that armed it; expiry reports itself. To trade a validated idea, plan and enter as normal. Menu: trading_validate({})",
+  parameters: TradingValidateInput,
+  success: TradingValidateResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Validate")
+  // Arming, pausing and ending write. The annotation describes the tool, so it
+  // takes the writing half even though `list` and `report` are pure reads.
+  .annotate(Tool.Readonly, false)
+  // Nothing here can lose money. The paper ledger is the only thing it writes,
+  // and no surface that reports real money reads it.
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  // Live bars keep arriving, so the same report read twice differs.
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
@@ -252,4 +276,5 @@ export const TradingToolkit = Toolkit.make(
   TradingEnterTool,
   TradingExitTool,
   TradingBacktestTool,
+  TradingValidateTool,
 );

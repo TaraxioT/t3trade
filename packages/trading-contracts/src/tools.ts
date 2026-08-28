@@ -112,6 +112,11 @@ export const TradingToolRejectionReason = Schema.Literals([
   "window_too_large",
   /** The archive holds nothing for that market, interval and window. */
   "no_archived_bars",
+  /** A forward validation call that changed nothing. The detail is the
+      service's own sentence: the interval that gets no bars, the duration
+      that is out of range, the market already being validated, or the
+      lifecycle move that does not apply from where the validation is. */
+  "validation_refused",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
 
@@ -150,6 +155,8 @@ const REJECTION_PROSE: Record<TradingToolRejectionReason, string> = {
     "Refused: that window is more bars than one run walks, so nothing was tested. Ask again on the coarser interval named below, or over a shorter window.",
   no_archived_bars:
     "Refused: the archive holds no bars for that market and window, so there is nothing to test. Tell the user how far back recording actually reaches.",
+  validation_refused:
+    "Refused: that forward validation was not changed, and nothing is running that was not already. The line below says what stopped it; no paper trade was taken and no order was ever in question.",
 };
 
 export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToolRejectedError>()(

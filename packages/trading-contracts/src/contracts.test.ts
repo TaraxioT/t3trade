@@ -887,6 +887,11 @@ describe("subpath exports", () => {
         "./recovery",
         "./policy",
         "./replay",
+        // Prompt K's thesis schema and backtest engine, and the forward
+        // validation that runs one on live bars.
+        "./thesis",
+        "./backtest",
+        "./forward",
       ].sort(),
     );
 

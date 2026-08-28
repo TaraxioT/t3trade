@@ -17,6 +17,7 @@ import {
   forwardWarmupBars,
   isForwardInterval,
   judgeForward,
+  renderForwardMenu,
   stepForward,
   type ForwardState,
 } from "./forward.ts";
@@ -496,5 +497,23 @@ describe("judgeForward", () => {
     });
     expect(judged.verdictReason).toContain("paused");
     expect(judged.verdictReason).toContain("still open");
+  });
+});
+
+describe("renderForwardMenu", () => {
+  // The menu is served on demand rather than riding in every turn's system
+  // prompt, which is only worth doing while it stays small. Measured rather
+  // than eyeballed, and printed so the number is watched instead of drifting.
+  it("stays lean and names every action and bound", () => {
+    const menu = renderForwardMenu();
+    process.stdout.write(`FORWARD_MENU_CHARS ${menu.length}\n`);
+    expect(menu.length, "the forward menu must stay under 600 chars").toBeLessThan(600);
+
+    for (const action of ["arm", "list", "pause", "resume", "end", "report"]) {
+      expect(menu, `the menu must name the ${action} action`).toContain(action);
+    }
+    // The two facts a caller cannot infer and must not get wrong.
+    expect(menu).toContain("durationHours");
+    expect(menu, "the menu must say no order is ever placed").toContain("no order is ever placed");
   });
 });

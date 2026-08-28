@@ -29,6 +29,7 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
+import { TRADING_VALIDATE_TOOL } from "@t3tools/trading-contracts/forward";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
@@ -69,6 +70,7 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_ENTER_TOOL,
   TRADING_EXIT_TOOL,
   TRADING_BACKTEST_TOOL,
+  TRADING_VALIDATE_TOOL,
 ];
 
 /**
@@ -96,6 +98,11 @@ export const TRADING_ANALYST_TOOL_NAMES: ReadonlyArray<string> = [
   // Research, and only research: a backtest reads the archive read-only and
   // has no path to an order, so an analyst session may run one.
   TRADING_BACKTEST_TOOL,
+  // Forward validation is the same claim one step further: it writes, but only
+  // to the paper ledger, and no surface that reports real money reads it. An
+  // analyst may arm one and read its verdict; trading the idea still needs a
+  // session that holds authority.
+  TRADING_VALIDATE_TOOL,
 ];
 
 export const TRADING_ANALYST_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
