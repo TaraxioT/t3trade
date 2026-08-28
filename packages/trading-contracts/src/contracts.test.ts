@@ -121,6 +121,7 @@ const mission: TradingMission = {
   tradingAccountId: "acct_1",
   instruction: "Trade ETH momentum",
   market: "ETH",
+  markets: ["ETH"],
   harness: {
     provider: "claude",
     providerInstanceId: "instance_1",

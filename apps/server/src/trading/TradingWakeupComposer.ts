@@ -59,6 +59,7 @@ import {
   runtimeTimeframe,
   type TradingTimeframe,
 } from "@t3tools/trading-contracts/strategy";
+import { marketOfWatch } from "@t3tools/trading-contracts/watch";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
@@ -409,6 +410,24 @@ const renderTriggeredLine = (wakeup: TradingHarnessWakeup): string | undefined =
 };
 
 /**
+ * The other held markets, one line each: `BTC -0.01 @ -3.25`, flat as `flat`.
+ *
+ * Deliberately a string list rather than a structure. A wake caused by ETH
+ * carries ETH's detail; the other markets are there so the turn knows whether
+ * anything over there needs it, and the whole answer fits in a handful of
+ * characters per market. Absent entirely for a one-market mission, which is
+ * what keeps a single-market wake byte-for-byte what it was.
+ */
+const renderOtherMarkets = (
+  otherMarkets: TradingHarnessWakeup["otherMarkets"],
+): ReadonlyArray<string> =>
+  otherMarkets.map((entry) =>
+    entry.size === 0
+      ? `${entry.market} flat`
+      : `${entry.market} ${entry.size} pnl ${entry.unrealisedPnl.toFixed(2)}`,
+  );
+
+/**
  * The floor under every render path: identity, the mark, the position, the
  * fold, the pointer, and the note that says the budget was exceeded.
  */
@@ -423,6 +442,11 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string => {
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
+    // Kept even at the floor: a held market nobody mentioned is a position
+    // this turn does not know it owns.
+    ...(wakeup.otherMarkets.length === 0
+      ? {}
+      : { alsoHeld: renderOtherMarkets(wakeup.otherMarkets) }),
     ...(triggered === undefined ? {} : { triggered }),
     fetch: FETCH_POINTER,
     note: "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
@@ -463,6 +487,11 @@ const renderLeanWakeup = (
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
+    // The other markets this mission holds, one line each. The wake's OWN
+    // market carries the detail; these say only whether anything is on them.
+    ...(wakeup.otherMarkets.length === 0
+      ? {}
+      : { alsoHeld: renderOtherMarkets(wakeup.otherMarkets) }),
     // `position.size` is what is held; this is what was asked for and what is
     // still working for the rest. A plan sized to the request and a position
     // that is 4% of it is the case this exists for.
@@ -1077,15 +1106,64 @@ const make = Effect.gen(function* () {
       // to `trading_look`; running it here paid five exchange reads per wake
       // for measurements the render then dropped, and the model re-read them
       // with a look anyway.
-      const market = mission.market;
+      // A wake is caused by one market, and it is that market's detail the
+      // wake carries. Read off the watch that fired rather than off the
+      // mission, which since the held set only names the market it STARTED on:
+      // a BTC level firing on an ETH-and-BTC mission woke the run with ETH's
+      // mark, ETH's position and ETH's plan, and nothing in it said BTC.
+      const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
+      const causedBy = Option.isSome(triggeringWatch)
+        ? marketOfWatch(triggeringWatch.value.watch)
+        : undefined;
+      const market =
+        causedBy !== undefined && mission.markets.includes(causedBy) ? causedBy : mission.market;
       const address = yield* missions
         .getMasterWalletAddress(mission.tradingAccountId)
         .pipe(Effect.mapError((error) => fail("address_resolution_failed", error)));
 
-      const [marketSnapshot, exchangePosition] = yield* Effect.all(
-        [gateway.getMarketSnapshot(market), gateway.getPosition(address, market)],
+      // One account read serves the wake's own position AND every other held
+      // market's line: `getPosition` calls `getAccountSnapshot` underneath, so
+      // this is the same number of exchange reads a single-market wake made.
+      const [marketSnapshot, accountSnapshot] = yield* Effect.all(
+        [gateway.getMarketSnapshot(market), gateway.getAccountSnapshot(address)],
         { concurrency: "unbounded" },
       ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
+
+      const held = accountSnapshot.positions.find((entry) => entry.market === market);
+      const exchangePosition: AgentNetPosition =
+        held === undefined
+          ? {
+              market,
+              size: 0,
+              unrealisedPnl: 0,
+              cumulativeFunding: 0,
+              marginUsed: 0,
+              freshness: accountSnapshot.freshness,
+            }
+          : {
+              market: held.market,
+              size: held.size,
+              ...(held.entryPrice === undefined ? {} : { entryPrice: held.entryPrice }),
+              unrealisedPnl: held.unrealisedPnl,
+              cumulativeFunding: held.cumulativeFunding,
+              marginUsed: held.marginUsed,
+              freshness: accountSnapshot.freshness,
+            };
+
+      // The other held markets, a line each. Deliberately size and PnL and
+      // nothing else: the full look payload for every held market on every
+      // wake is exactly the context cost this codebase spent plan 35 and plan
+      // 38 removing.
+      const otherMarkets = mission.markets
+        .filter((other) => other !== market)
+        .map((other) => {
+          const position = accountSnapshot.positions.find((entry) => entry.market === other);
+          return {
+            market: other,
+            size: position?.size ?? 0,
+            unrealisedPnl: position?.unrealisedPnl ?? 0,
+          };
+        });
 
       // What the position was worth at its best, and how far it has come off
       // that — T3's own bookkeeping, which the exchange does not report.
@@ -1140,8 +1218,6 @@ const make = Effect.gen(function* () {
         .listWatches(mission.id)
         .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
 
-      const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
-
       // What is still armed, and how far the market has to travel to fire each
       // one. Without this a woken run has to read the watch list and do the
       // arithmetic itself before it can tell a near miss from a level it armed
@@ -1176,6 +1252,7 @@ const make = Effect.gen(function* () {
         userMessage: input.userMessage,
         marketSnapshot: toObservedMarketSnapshot(marketSnapshot),
         position,
+        otherMarkets,
         ...(workingEntry === null ? {} : { workingEntry }),
         ...(positionCosts === null ? {} : { positionCosts }),
         ...(costContext === null ? {} : { costContext }),

@@ -63,6 +63,7 @@ const mission = {
   tradingAccountId: "acct_1",
   instruction: "trade the 1m",
   market: "ETH",
+  markets: ["ETH"],
   status: "position_open",
   authorityVersion: 1,
   authority: pocAuthorityDefaults(1_000),
@@ -151,9 +152,11 @@ const stubGateway = Layer.succeed(HyperliquidGateway)({
       freshness,
     } as never);
   },
-  getMarketSnapshot: () =>
+  // Echoes the symbol it was asked for, so a wake caused by a market the
+  // mission did not start on is visible rather than silently renamed.
+  getMarketSnapshot: (symbol: string) =>
     Effect.succeed({
-      market: "ETH",
+      market: symbol,
       markPrice: MARK,
       midPrice: MARK,
       oraclePrice: MARK,
@@ -164,13 +167,26 @@ const stubGateway = Layer.succeed(HyperliquidGateway)({
       freshness,
       change24hPercent: 1.2,
     } as never),
+  // The wake path reads the account once and derives every held market's line
+  // from it, so the position the test is driving lives here.
   getAccountSnapshot: () =>
     Effect.succeed({
       address: "0x00000000000000000000000000000000000000ff",
       accountValue: 1_000,
       marginUsed: 0,
       withdrawable: 1_000,
-      positions: [],
+      positions:
+        positionSize === 0
+          ? []
+          : [
+              {
+                market: "ETH",
+                size: positionSize,
+                unrealisedPnl: 0,
+                cumulativeFunding: 0,
+                marginUsed: 0,
+              },
+            ],
       freshness,
     } as never),
   getPosition: () =>
@@ -270,12 +286,18 @@ const composeFull = (input?: {
   /** Pass `true` to compose the wakeup of a mission with no plan at all. */
   readonly planless?: boolean;
   readonly instruction?: string;
+  /** The held set, for the multi-market cases. Defaults to the fixture's own. */
+  readonly markets?: ReadonlyArray<string>;
 }) =>
   Effect.gen(function* () {
     const composer = yield* TradingWakeupComposer;
     return yield* composer.compose({
-      mission:
-        input?.instruction === undefined ? mission : { ...mission, instruction: input.instruction },
+      mission: {
+        ...(input?.instruction === undefined
+          ? mission
+          : { ...mission, instruction: input.instruction }),
+        ...(input?.markets === undefined ? {} : { markets: input.markets }),
+      },
       harnessRunId: "run_1",
       cause: "scheduled_reassessment",
       occurredAt: NOW,
@@ -592,6 +614,70 @@ layer("TradingWakeupComposer", (it) => {
       // And what the run cannot re-derive still rides.
       assert.include(composed.text, "markPrice");
       assert.include(composed.text, "position:");
+    }),
+  );
+
+  // -- the held set on a wake ------------------------------------------------
+  //
+  // A wake is caused by one market and carries that market's detail. The other
+  // held markets get a line each: enough to answer "is anything over there
+  // that needs this turn", and nothing like the full look payload, which is
+  // the cost this repo spent two plans removing.
+  it.effect("carries one line per other held market, and no more", () =>
+    Effect.gen(function* () {
+      const single = yield* composeFull({});
+      const both = yield* composeFull({ markets: ["ETH", "BTC"] });
+
+      assert.deepEqual(
+        both.wakeup.otherMarkets.map((entry) => entry.market),
+        ["BTC"],
+      );
+      // Flat over there, said in three words rather than a payload.
+      assert.include(both.text, "BTC flat");
+      // The wake's own market is untouched: same mark, same position, same plan.
+      assert.equal(both.wakeup.marketSnapshot.market, "ETH");
+      assert.equal(both.wakeup.position.market, "ETH");
+      // And the line costs a line. Not a look.
+      assert.isBelow(both.text.length - single.text.length, 40);
+    }),
+  );
+
+  it.effect("a one-market mission's wake is exactly what it was", () =>
+    Effect.gen(function* () {
+      const composed = yield* composeFull({});
+      assert.deepEqual([...composed.wakeup.otherMarkets], []);
+      assert.notInclude(composed.text, "alsoHeld");
+    }),
+  );
+
+  // The wake's market is the market that CAUSED it. Before the held set it was
+  // always the mission's own, which for a mission holding a set is only the
+  // market it started on: a BTC level firing woke the run with ETH's mark,
+  // ETH's position, and nothing in it saying BTC.
+  it.effect("wakes on the market whose watch fired, not the mission's first", () =>
+    Effect.gen(function* () {
+      armedOverride = [
+        watch("00000009-4c1e-4d0f-9a3b-1f2e3d4c5b6a", {
+          type: "price_cross",
+          market: "BTC",
+          priceSource: "mark",
+          direction: "above",
+          price: 90_000,
+        }),
+      ];
+      const composed = yield* composeFull({
+        markets: ["ETH", "BTC"],
+        triggeringWatchId: "00000009-4c1e-4d0f-9a3b-1f2e3d4c5b6a",
+      });
+      armedOverride = null;
+
+      assert.equal(composed.wakeup.marketSnapshot.market, "BTC");
+      assert.equal(composed.wakeup.position.market, "BTC");
+      // And ETH, which did not cause this wake, is the one reduced to a line.
+      assert.deepEqual(
+        composed.wakeup.otherMarkets.map((entry) => entry.market),
+        ["ETH"],
+      );
     }),
   );
 

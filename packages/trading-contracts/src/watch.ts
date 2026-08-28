@@ -1171,6 +1171,17 @@ export type TradingWatchRow = typeof TradingWatchRow.Type;
 export const WATCH_HANDLE_CHARS = 8;
 
 /** The short form of a watch id, as every model-facing surface renders it. */
+/**
+ * The market a watch is about, or undefined when it names none.
+ *
+ * A clock tick and an account-wide level belong to no market; everything else
+ * carries one. The wake path reads it to answer "which market caused this",
+ * which stopped being the mission's own the moment a mission could hold a set.
+ */
+export function marketOfWatch(watch: MarketWatch): string | undefined {
+  return "market" in watch ? watch.market : undefined;
+}
+
 export function watchHandle(id: string): string {
   return id.slice(0, WATCH_HANDLE_CHARS);
 }

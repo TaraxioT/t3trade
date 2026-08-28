@@ -16,7 +16,7 @@ import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { MarketHistory, ObservedMarketSnapshot } from "./market.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
-import { Price, TradingId, TradingText, UnixMillis } from "./primitives.ts";
+import { Price, TradingId, TradingMarket, TradingText, UnixMillis } from "./primitives.ts";
 import { TradingPlanState, TradingTimeframe } from "./strategy.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import {
@@ -364,6 +364,27 @@ export const TradingHarnessWakeup = Schema.Struct({
    * call to learn whether it holds anything before it can think.
    */
   position: AgentNetPosition,
+  /**
+   * One line per OTHER market the mission holds: what is on it, and what it is
+   * worth right now.
+   *
+   * A wake is caused by one market, and it carries that market's detail. The
+   * other held markets get a line each and nothing more - never the full look
+   * payload, which is what the context findings in this repo are strict about.
+   * A line is enough to answer the only question the other markets pose on
+   * someone else's wake: is anything over there that needs this turn?
+   *
+   * Empty for the mission that holds one market, which is most of them, so a
+   * single-market wake is byte-for-byte what it was.
+   */
+  otherMarkets: Schema.Array(
+    Schema.Struct({
+      market: TradingMarket,
+      /** Signed net size; 0 is flat and still worth saying. */
+      size: Schema.Number,
+      unrealisedPnl: Schema.Number,
+    }),
+  ),
   /**
    * The last few bars of the runtime timeframe (the interval the mandate
    * names, else `5m` — see `runtimeTimeframe` in `./strategy.ts`).
