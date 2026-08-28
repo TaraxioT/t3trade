@@ -274,6 +274,50 @@ layer("TradingThesisValidationService", (it) => {
     }),
   );
 
+  // The defect a live pass found: resuming used to replay every bar the pause
+  // was supposed to skip, because the catch-up walk starts from `lastBarTime`
+  // and pausing left it behind. That made pause a way to DELAY evaluation
+  // rather than to exclude it, and made a liar of the report's own "bars are
+  // passing unwatched" and of the documentation promising the same.
+  it.effect("a resumed validation does not replay the bars it sat out", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+      const id = armed.validation.id;
+
+      // Watch a short opening stretch, then pause part-way through the fixture.
+      const pausedAt = (ALL_BARS[19]?.tClose ?? START) + 1;
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: pausedAt });
+      const beforePause = yield* service.get(id);
+      const watchedBeforePause = beforePause?.barsWatched ?? 0;
+      const tradesBeforePause = (yield* service.trades(id)).length;
+      assert.isAbove(watchedBeforePause, 0);
+
+      yield* service.setStatus({ id, to: "paused", now: pausedAt });
+      // Bars keep closing in the market while it is paused; none are evaluated.
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+      assert.equal((yield* service.get(id))?.barsWatched, watchedBeforePause);
+
+      // Resuming picks up from the live edge, not from where the pause began.
+      yield* service.setStatus({ id, to: "armed", now: AFTER_ALL });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const afterResume = yield* service.get(id);
+      assert.equal(
+        afterResume?.barsWatched,
+        watchedBeforePause,
+        "the paused stretch must not be counted as watched",
+      );
+      assert.equal(
+        (yield* service.trades(id)).length,
+        tradesBeforePause,
+        "the paused stretch must not have taken trades",
+      );
+    }),
+  );
+
   it.effect("ends on demand, and an ended validation cannot be moved again", () =>
     Effect.gen(function* () {
       yield* migrated;

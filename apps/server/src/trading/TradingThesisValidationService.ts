@@ -499,11 +499,34 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       // Resuming clears the pending fill. A rule that fired before a pause
       // would otherwise fill at whatever bar happens to open after the resume,
       // at a price the signal never saw — a trade the thesis did not take.
+      //
+      // Resuming also moves `last_bar_time` up to now, which is what makes a
+      // pause mean anything. The catch-up walk starts from that mark, so
+      // without this a resume would replay every bar the pause was supposed to
+      // skip and the paused stretch would be counted after all — leaving pause
+      // as a way to delay evaluation rather than to exclude it, and making
+      // liars of the report's own "bars are passing unwatched" and of the
+      // documentation that promises it. Found in a live pass, where a paused
+      // validation resumed and immediately took the trades it had sat out.
+      if (input.to === "armed") {
+        yield* sql`
+          UPDATE trading_thesis_validations
+          SET status = 'armed',
+              pending_entry_signal_time = NULL,
+              last_bar_time = ${input.now},
+              updated_at = ${input.now}
+          WHERE validation_id = ${input.id}
+        `.pipe(Effect.mapError(sqlFail("setStatus.resume")));
+        return { outcome: "ok" } as const;
+      }
+
+      // Pausing leaves `last_bar_time` where it is. It is only a marker of what
+      // has been evaluated; the resume above is what moves it forward.
       yield* sql`
         UPDATE trading_thesis_validations
         SET status = ${input.to}, pending_entry_signal_time = NULL, updated_at = ${input.now}
         WHERE validation_id = ${input.id}
-      `.pipe(Effect.mapError(sqlFail("setStatus.move")));
+      `.pipe(Effect.mapError(sqlFail("setStatus.pause")));
       return { outcome: "ok" } as const;
     });
 
