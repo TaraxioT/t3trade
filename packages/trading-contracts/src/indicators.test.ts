@@ -10,7 +10,9 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   computeIndicator,
+  computeIndicatorSeries,
   DEFAULT_INDICATOR_PERIODS,
+  effectiveIndicatorPeriod,
   indicatorLookbackBars,
   INDICATOR_MAX_REQUESTS,
 } from "./indicators.ts";
@@ -137,5 +139,165 @@ describe("indicatorLookbackBars", () => {
     // The one `indicatorLookbackBars` asks for: two orders of magnitude closer.
     expect(Math.abs(at(250) - converged)).toBeLessThan(0.005);
     expect(indicatorLookbackBars([{ kind: "ema", period: 50 }])).toBe(250);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// atr, macd, bollinger — the three the backtest engine added
+// ---------------------------------------------------------------------------
+//
+// Every expectation below is hand-computed from the definition, not captured
+// from a run. Where a closed form exists it is used: on a linear ramp the
+// SMA-seeded EMA sits exactly `(period - 1) / 2` behind price for every bar it
+// is defined on (the seed lands on the recursion's own fixed point), which
+// makes MACD's 12/26/9 triple exactly computable without a spreadsheet.
+
+/** A bar with an explicit range, for the true-range arithmetic ATR needs. */
+const ohlc = (open: number, high: number, low: number, close: number): MarketCandle =>
+  ({ openTime: 0, closeTime: 0, open, high, low, close, volume: 1, trades: 1 }) as MarketCandle;
+
+describe("atr", () => {
+  it("seeds on the mean of the first `period` true ranges, then smooths (Wilder)", () => {
+    // Bar 0 has no previous close, so its range is unusable. Ranges 1..3 are
+    // each exactly 10 (high - low = 10, and every gap is inside that), so the
+    // seed is 10.
+    const candles = [
+      ohlc(100, 105, 95, 100),
+      ohlc(100, 105, 95, 100),
+      ohlc(100, 105, 95, 100),
+      ohlc(100, 105, 95, 100),
+    ];
+    expect(computeIndicator({ kind: "atr", period: 3 }, candles).value).toBe(10);
+  });
+
+  it("counts the gap from the previous close, not just the bar's own range", () => {
+    // Bars 1..3 each have a 2-wide body but open 8 above the previous close,
+    // so the true range is |high - previousClose| = 10, not 2.
+    const candles = [
+      ohlc(100, 100, 100, 100),
+      ohlc(108, 110, 108, 110),
+      ohlc(118, 120, 118, 120),
+      ohlc(128, 130, 128, 130),
+    ];
+    expect(computeIndicator({ kind: "atr", period: 3 }, candles).value).toBe(10);
+  });
+
+  it("smooths the seed toward a new range at 1/period", () => {
+    // Seed over ranges 1..2 is 10. Bar 3's range is 20, so Wilder gives
+    // (10 * 1 + 20) / 2 = 15.
+    const candles = [
+      ohlc(100, 105, 95, 100),
+      ohlc(100, 105, 95, 100),
+      ohlc(100, 105, 95, 100),
+      ohlc(100, 110, 90, 100),
+    ];
+    expect(computeIndicator({ kind: "atr", period: 2 }, candles).value).toBe(15);
+  });
+
+  it("needs period + 1 bars, and says so with an absent value", () => {
+    const candles = [ohlc(100, 105, 95, 100), ohlc(100, 105, 95, 100)];
+    expect(computeIndicator({ kind: "atr", period: 3 }, candles).value).toBeUndefined();
+    expect(computeIndicator({ kind: "atr" }, candles).period).toBe(14);
+  });
+});
+
+describe("macd", () => {
+  it("is fast minus slow on a ramp: exactly (26-1)/2 - (12-1)/2 = 7", () => {
+    // On closes[i] = i the SMA-seeded EMA(p) equals i - (p - 1) / 2 exactly,
+    // so the line is a constant 7, the EMA(9) of a constant is that constant,
+    // and the histogram is exactly zero.
+    const candles = Array.from({ length: 60 }, (_, i) => bar(i));
+    const reading = computeIndicator({ kind: "macd" }, candles);
+    expect(reading.period).toBe(12);
+    expect(reading.value).toBe(7);
+    expect(reading.signal).toBe(7);
+    // Exactly zero by construction; the residue is float noise, not a drift.
+    expect(reading.histogram).toBeCloseTo(0, 12);
+    expect(reading.previous).toBe(7);
+  });
+
+  it("is flat at zero on a flat series", () => {
+    const candles = Array.from({ length: 60 }, () => bar(100));
+    const reading = computeIndicator({ kind: "macd" }, candles);
+    expect(reading.value).toBe(0);
+    expect(reading.signal).toBe(0);
+    expect(reading.histogram).toBe(0);
+  });
+
+  it("defines the line nine bars before it can define the signal", () => {
+    // The line needs the slow leg (26 bars); the signal needs nine line
+    // values on top of it, so at 30 bars there is a line and no signal.
+    const candles = Array.from({ length: 30 }, (_, i) => bar(i));
+    const reading = computeIndicator({ kind: "macd" }, candles);
+    expect(reading.value).toBe(7);
+    expect(reading.signal).toBeUndefined();
+    expect(reading.histogram).toBeUndefined();
+  });
+
+  it("has no reading at all below the slow leg", () => {
+    const candles = Array.from({ length: 20 }, (_, i) => bar(i));
+    expect(computeIndicator({ kind: "macd" }, candles).value).toBeUndefined();
+  });
+});
+
+describe("bollinger", () => {
+  it("puts the bands two population deviations either side of the SMA basis", () => {
+    // Last three closes 2, 4, 6: mean 4, population variance
+    // ((-2)^2 + 0 + 2^2) / 3 = 8/3, deviation sqrt(8/3) = 1.632993...
+    const candles = [10, 2, 4, 6].map((close) => bar(close));
+    const reading = computeIndicator({ kind: "bollinger", period: 3 }, candles);
+    const deviation = Math.sqrt(8 / 3) * 2;
+    expect(reading.value).toBe(4);
+    expect(reading.upper).toBeCloseTo(4 + deviation, 4);
+    expect(reading.lower).toBeCloseTo(4 - deviation, 4);
+  });
+
+  it("collapses both bands onto the basis when the window does not move", () => {
+    const candles = Array.from({ length: 25 }, () => bar(100));
+    const reading = computeIndicator({ kind: "bollinger" }, candles);
+    expect(reading.period).toBe(20);
+    expect(reading.value).toBe(100);
+    expect(reading.upper).toBe(100);
+    expect(reading.lower).toBe(100);
+  });
+
+  it("needs a full basis window before it reports anything", () => {
+    const candles = [1, 2].map((close) => bar(close));
+    expect(computeIndicator({ kind: "bollinger", period: 5 }, candles).value).toBeUndefined();
+  });
+});
+
+describe("computeIndicatorSeries", () => {
+  it("is the same arithmetic the two-value reading reports, at every bar", () => {
+    const candles = Array.from({ length: 40 }, (_, i) => bar(100 + (i % 7)));
+    for (const kind of ["ema", "sma", "rsi", "vwap", "atr", "macd", "bollinger"] as const) {
+      const series = computeIndicatorSeries({ kind }, candles);
+      const reading = computeIndicator({ kind }, candles);
+      const latest = series[series.length - 1];
+      // The reading rounds to six significant digits; the series does not.
+      expect(latest === undefined ? undefined : Number(latest.value.toPrecision(6))).toBe(
+        reading.value,
+      );
+    }
+  });
+
+  it("runs the same length as the bars, undefined where it is not yet defined", () => {
+    const candles = Array.from({ length: 10 }, (_, i) => bar(i + 1));
+    const series = computeIndicatorSeries({ kind: "sma", period: 3 }, candles);
+    expect(series.length).toBe(10);
+    expect(series[0]).toBeUndefined();
+    expect(series[1]).toBeUndefined();
+    expect(series[2]?.value).toBe(2);
+    expect(series[9]?.value).toBe(9);
+  });
+});
+
+describe("effectiveIndicatorPeriod", () => {
+  it("sizes macd's history off its slow leg plus its signal, not its fast leg", () => {
+    expect(effectiveIndicatorPeriod("macd", 12)).toBe(35);
+    expect(effectiveIndicatorPeriod("ema", 12)).toBe(12);
+    // Five of 35 is the history a macd request actually asks for.
+    expect(indicatorLookbackBars([{ kind: "macd" }])).toBe(175);
+    expect(indicatorLookbackBars([{ kind: "atr", period: 14 }])).toBe(70);
   });
 });

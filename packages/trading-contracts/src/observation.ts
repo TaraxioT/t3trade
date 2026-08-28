@@ -120,7 +120,12 @@ export const TRADING_LOOK_CATALOG: ReadonlyArray<TradingLookCatalogEntry> = [
     parameterized: "<interval>:<n>",
     note: "indicators:<spec> is the cheaper derived alternative (~40 a reading)",
   },
-  { key: "indicators", chars: 63, parameterized: "<spec>", note: "~125 for a pair" },
+  {
+    key: "indicators",
+    chars: 63,
+    parameterized: "<spec>",
+    note: "~125 for a pair; macd and bollinger carry three numbers, so nearer 110 each",
+  },
   { key: "volatility", chars: 677 },
   { key: "volatility_htf", chars: 680 },
   { key: "structure", chars: 4375 },

@@ -115,6 +115,7 @@ import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
 import {
   computeIndicator,
   indicatorLookbackBars,
+  INDICATOR_KINDS,
   type IndicatorRequest,
 } from "@t3tools/trading-contracts/indicators";
 import {
@@ -1157,8 +1158,15 @@ const FETCH_HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe
   "1h": null,
 };
 
-/** `indicators:<spec>` — `ema20`, `sma9`, `rsi14`, `vwap` (defaults apply). */
-const INDICATOR_SPEC_PATTERN = /^(ema|sma|rsi|vwap)([0-9]{1,3})?$/;
+/**
+ * `indicators:<spec>` — `ema20`, `sma9`, `rsi14`, `vwap`, `atr14`, `macd`,
+ * `bollinger20` (defaults apply). Built from `INDICATOR_KINDS` so a kind added
+ * to the library is servable here without a second edit; longest name first so
+ * the alternation cannot match a prefix of a longer kind.
+ */
+const INDICATOR_SPEC_PATTERN = new RegExp(
+  `^(${[...INDICATOR_KINDS].sort((a, b) => b.length - a.length).join("|")})([0-9]{1,3})?$`,
+);
 
 const parseIndicatorSpec = (spec: string): IndicatorRequest | null => {
   const match = spec.match(INDICATOR_SPEC_PATTERN);
@@ -1241,7 +1249,9 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
           reason: "fetch_key_params_invalid",
           threadId: input.threadId,
           missionId: mission?.id,
-          detail: `fetch key "${key}" refused: spec must look like ema20, sma9, rsi14 or vwap`,
+          detail:
+            `fetch key "${key}" refused: spec is a kind and an optional period — ` +
+            `${INDICATOR_KINDS.join(", ")}, as in ema20, rsi14, macd, bollinger20`,
         });
       }
       indicatorRequests.push(request);
