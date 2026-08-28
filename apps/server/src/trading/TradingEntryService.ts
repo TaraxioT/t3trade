@@ -350,16 +350,31 @@ export const makeTradingEntryService = Effect.gen(function* () {
       const sizing = deriveFeasibleSize({
         side: request.side,
         entryPrice,
+        // The ceilings are checked at the price that goes out, not the price
+        // that comes back.
+        ceilingPriceUsd: limitPrice,
         stopPrice: request.stopPrice,
         requestedSize,
         ...(targetNotional?.notionalUsd == null
           ? {}
           : { targetNotionalUsd: targetNotional.notionalUsd }),
         szDecimals: resolved.szDecimals,
-        existingNotionalUsd: budgetInput.openPositions.reduce(
-          (sum, position) => sum + position.size * (position.weightedEntryPrice ?? entryPrice),
-          0,
-        ),
+        // Everything the mission has ALREADY claimed of the account, across
+        // every market it holds: open positions plus entries that are accepted
+        // or in flight and not yet a position.
+        //
+        // The pending half is what item 5 turns on. Preview has counted it
+        // since patient entries landed (`existingNotional`), and the sizer did
+        // not — so two entries in one turn each sized themselves against the
+        // whole ceiling, and the second one's own preview then refused the
+        // trade the server had just proposed to the model. With the set, that
+        // is not an edge case: "buy ETH and BTC" is two entries in one turn by
+        // construction, and the second must see what the first took.
+        existingNotionalUsd:
+          budgetInput.openPositions.reduce(
+            (sum, position) => sum + position.size * (position.weightedEntryPrice ?? entryPrice),
+            0,
+          ) + budgetInput.pendingEntryNotionalUsd,
         allocatedCapitalUsd: mission.authority.allocatedCapitalUsd,
         maximumLeverage: mission.authority.maximumLeverage,
         maximumGrossNotionalUsd: mission.authority.maximumGrossNotionalUsd,

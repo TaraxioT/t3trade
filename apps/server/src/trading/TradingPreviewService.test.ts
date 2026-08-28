@@ -29,6 +29,7 @@ const goodMission = (overrides: Partial<TradingMission> = {}): TradingMission =>
     tradingAccountId: "acct_1",
     instruction: "trade eth",
     market: "ETH",
+    markets: ["ETH"],
     harness: {
       provider: "claude",
       providerInstanceId: "claude",

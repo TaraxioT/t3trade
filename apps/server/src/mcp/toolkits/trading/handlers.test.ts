@@ -2474,9 +2474,12 @@ it.effect("tells the run's funnel that an entry was attempted and refused", () =
     Effect.gen(function* () {
       yield* seedHarnessRun();
 
-      // The mandate guard refuses before any exchange read, which is the point:
-      // an entry is priced and pre-checked before anything is dispatched, so
+      // An entry is priced and pre-checked before anything is dispatched, so
       // the reactor — which records its own refusals — never sees this one.
+      // BTC is free here, so the mission EXTENDS onto it and the refusal comes
+      // from the market read the fixture cannot serve; before the held set it
+      // came from the mandate guard, which now only fires on a market some
+      // other authority holds.
       const entered = yield* callTool(BOUND_THREAD, "trading_enter", {
         market: "BTC",
         side: "buy",
@@ -2487,7 +2490,7 @@ it.effect("tells the run's funnel that an entry was attempted and refused", () =
 
       // Without this the turn records as `no_setup` — the same shape as a turn
       // that never wanted to trade at all.
-      assert.include(yield* readFirstRefusal(), "market_is_eth");
+      assert.include(yield* readFirstRefusal(), "market_data_unavailable");
     }),
   ),
 );

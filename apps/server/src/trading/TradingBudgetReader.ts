@@ -59,10 +59,16 @@ interface ReservationBudgetRow {
  */
 export interface TradingBudgetSnapshot extends LossBudgetInput {
   /**
-   * Sum of `size * limit_price` over the resting patient entries the
-   * working-order loop owns: `status='accepted' AND time_in_force='alo' AND
-   * reduce_only=0` with a stop and a position-increasing action type. A
-   * filled, cancelled, or expired record rests nothing and counts nothing.
+   * Sum of `size * limit_price` over every entry the mission has claimed the
+   * account for but that is not a position yet: a resting patient entry the
+   * working-order loop owns (`accepted` + `alo`), and an entry still in flight
+   * (`reserved` or `submitted`). Reduce-only, take-profit and
+   * exposure-reducing records are excluded, and a filled, cancelled or expired
+   * record claims nothing.
+   *
+   * The in-flight half matters most inside one turn: an IOC entry is claimed
+   * before the reconcile writes its position snapshot, and a second entry
+   * sized in that window would otherwise see an empty account.
    */
   readonly pendingEntryNotionalUsd: number;
 }
@@ -204,8 +210,10 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
         SELECT COALESCE(SUM(size * limit_price), 0) AS pending_entry_notional_usd
         FROM trading_execution_records
         WHERE mission_id = ${input.missionId}
-          AND status = 'accepted'
-          AND time_in_force = 'alo'
+          AND (
+            (status = 'accepted' AND time_in_force = 'alo')
+            OR status IN ('reserved', 'submitted')
+          )
           AND reduce_only = 0
           AND stop_price IS NOT NULL
           AND NOT ${sql.in("action_type", EXPOSURE_REDUCING_ACTION_TYPES)}

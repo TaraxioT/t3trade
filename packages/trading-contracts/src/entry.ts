@@ -128,6 +128,22 @@ export interface EntrySizingInput {
   readonly szDecimals: number;
   /** Gross notional already open on this mission. */
   readonly existingNotionalUsd: number;
+  /**
+   * The price the aggregate ceilings will be measured at, when it is not
+   * `entryPrice`.
+   *
+   * A crossing entry is FILLED at `entryPrice` (the far side) but goes out at a
+   * padded limit, and preview checks `size * limitPrice` against the ceilings.
+   * Sizing at the fill price therefore proposes a size whose own preview
+   * refuses it by the width of the pad — invisible while the mission is flat,
+   * because the ceiling is nowhere near, and immediate the moment something
+   * else already claims part of it. Which is every second entry in a turn.
+   *
+   * Defaults to `entryPrice`, so a caller that does not pad is unaffected.
+   * Never used for the risk arithmetic: planned loss is measured against the
+   * price the order actually fills at.
+   */
+  readonly ceilingPriceUsd?: number | undefined;
   readonly allocatedCapitalUsd: number;
   readonly maximumLeverage: number;
   readonly maximumGrossNotionalUsd: number;
@@ -225,8 +241,12 @@ export function deriveFeasibleSize(input: EntrySizingInput): EntrySizing {
   }
 
   // Every ceiling as a size in base units. The smallest one wins.
+  const ceilingPrice =
+    input.ceilingPriceUsd !== undefined && input.ceilingPriceUsd > 0
+      ? input.ceilingPriceUsd
+      : input.entryPrice;
   const notionalHeadroom = (ceiling: number): number =>
-    Math.max(0, ceiling - input.existingNotionalUsd) / input.entryPrice;
+    Math.max(0, ceiling - input.existingNotionalUsd) / ceilingPrice;
   const feeAndSlip = (2 * input.takerFeeBpsPerSide + input.stopSlippageReserveBps) / 10_000;
   const reservedRiskPerUnit = stopDistance + input.entryPrice * feeAndSlip;
 

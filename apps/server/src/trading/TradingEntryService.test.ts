@@ -189,6 +189,74 @@ layer("TradingEntryService", (it) => {
     }),
   );
 
+  // Item 5: margin capacity is account-level and shared. "Buy ETH and BTC" is
+  // two entries in one turn by construction, and the second one must see what
+  // the first took — otherwise both size themselves against the whole ceiling
+  // and the second's own preview refuses the trade the server just proposed.
+  it.effect("the second entry in a turn is sized against what the first claimed", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const entries = yield* TradingEntryService;
+      const sql = yield* SqlClient.SqlClient;
+
+      // Unbounded ask, so the ceiling is what binds and the number is readable.
+      const first = yield* entries.prepare({
+        missionId: "mission_1",
+        market: "ETH",
+        side: "buy",
+        stopPrice: 1_980,
+      });
+      assert.strictEqual(first.outcome, "prepared");
+      if (first.outcome !== "prepared") return;
+
+      // The claim the first entry made, as the execution path writes it: an
+      // order out on the wire, no position snapshot yet, which is exactly the
+      // window a second entry in the same turn lands in.
+      yield* sql`
+        INSERT INTO trading_execution_records (
+          execution_id, mission_id, account_id, cloid, idempotency_key, execution_sequence,
+          action_type, side, market, size, limit_price, time_in_force, reduce_only,
+          stop_price, signer_address, status, order_results_json, created_at, updated_at
+        ) VALUES (
+          'exec_first', 'mission_1', 'acct_1', '0xfirst', 'idem_first',
+          ${first.intent.executionSequence},
+          'open', 'buy', 'ETH', ${first.size}, ${first.intent.limitPrice}, 'ioc', 0, 1980,
+          '0xsigner', 'submitted', '[]', 1000, 1000
+        )
+      `;
+
+      // The extend the toolkit performs in the same call: the turn named a
+      // second market, and the mission took it.
+      const missions = yield* TradingMissionService;
+      yield* missions.bindMarket({ missionId: "mission_1", market: "BTC" });
+
+      const second = yield* entries.prepare({
+        missionId: "mission_1",
+        market: "BTC",
+        side: "buy",
+        stopPrice: 1_980,
+      });
+      assert.strictEqual(
+        second.outcome,
+        "prepared",
+        second.outcome === "refused" ? `${second.reason}: ${second.detail}` : "",
+      );
+      if (second.outcome !== "prepared") return;
+
+      // Not the same ceiling twice: what is left after the first entry's claim.
+      const firstNotional = first.size * first.intent.limitPrice;
+      const secondNotional = second.size * second.intent.limitPrice;
+      assert.isBelow(secondNotional, firstNotional);
+      // And together they clear the mandate rather than doubling it. The
+      // testnet envelope is 8x the $1,000 allocation.
+      assert.isAtMost(
+        firstNotional + secondNotional,
+        1_000 * 8,
+        "two entries in one turn must not each claim the whole gross-notional ceiling",
+      );
+    }),
+  );
+
   it.effect("records the entry's evidence before the order goes out", () =>
     Effect.gen(function* () {
       yield* seed();
@@ -328,7 +396,11 @@ layer("TradingEntryService", (it) => {
       const second = yield* enterALong;
 
       assert.strictEqual(first.outcome, "prepared");
-      assert.strictEqual(second.outcome, "prepared");
+      assert.strictEqual(
+        second.outcome,
+        "prepared",
+        second.outcome === "refused" ? `${second.reason}: ${second.detail}` : "",
+      );
       if (first.outcome !== "prepared" || second.outcome !== "prepared") return;
       assert.strictEqual(first.intent.executionSequence, 0);
       assert.strictEqual(second.intent.executionSequence, 1);

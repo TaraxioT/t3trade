@@ -252,7 +252,7 @@ const recordingMissionsLayer = Layer.succeed(TradingMissionService, {
       return {} as never;
     })) as never,
   getMissionVersion: (() => Effect.succeed(1)) as never,
-  getMission: (() => Effect.succeed({ market: "ETH" })) as never,
+  getMission: (() => Effect.succeed({ market: "ETH", markets: ["ETH"] })) as never,
 } as unknown as TradingMissionService["Service"]);
 
 // Shared suite layer: real execution service + real reconciler over the fakes,
