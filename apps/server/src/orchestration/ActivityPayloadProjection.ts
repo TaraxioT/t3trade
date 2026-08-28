@@ -218,6 +218,53 @@ function summarizeMcpResult(result: unknown): Record<string, unknown> | undefine
 }
 
 /**
+ * Tools whose result IS the thing a client renders, and whose result is small
+ * enough by construction to be worth the bytes.
+ *
+ * The summarizing above exists because an MCP result is usually unbounded tool
+ * output that no client renders in full, and shipping it dominates wire size
+ * on MCP-heavy threads. `trading_backtest` is the exception in both halves of
+ * that sentence: its result is a fixed-shape report of about twenty numbers
+ * that the chat renders as a card, and there is nothing variable-length in it
+ * — no per-trade array, no series, no prose beyond one verdict sentence — so
+ * its size does not grow with the window backtested. A run over a year of bars
+ * and a run over a day produce the same payload.
+ *
+ * Matched on the name's suffix because providers qualify it differently
+ * (`trading_backtest` bare, `mcp__t3-trade__trading_backtest` under Claude).
+ */
+const MCP_RESULTS_KEPT_WHOLE = ["trading_backtest"] as const;
+
+/**
+ * The ceiling that keeps the exception honest. Measured at roughly 1.6 KB for
+ * a real report; 8 KB is generous headroom for fields yet to be added, and a
+ * result that somehow exceeds it is summarized like any other rather than
+ * quietly becoming the thing this projection exists to prevent.
+ */
+const MCP_KEPT_RESULT_MAX_CHARS = 8_000;
+
+function keepsWholeResult(toolName: unknown): boolean {
+  return (
+    typeof toolName === "string" &&
+    MCP_RESULTS_KEPT_WHOLE.some((suffix) => toolName.endsWith(suffix))
+  );
+}
+
+/**
+ * The whole result when the tool is one of the few whose result is the
+ * rendered content and is small, the ordinary one-line summary otherwise.
+ */
+function projectMcpResult(result: unknown, toolName: unknown): Record<string, unknown> | undefined {
+  if (keepsWholeResult(toolName)) {
+    const text = extractMcpResultText(result);
+    if (text !== null && text.length <= MCP_KEPT_RESULT_MAX_CHARS) {
+      return { content: text };
+    }
+  }
+  return summarizeMcpResult(result);
+}
+
+/**
  * MCP tool calls carry full tool results (`data.item.result` on Codex,
  * `data.result` on Claude/OpenCode) that used to bypass slimming entirely to
  * keep the expanded-row UI working. Keep the fields the UI actually renders
@@ -234,7 +281,7 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
         projectedItem[key] = item[key];
       }
     }
-    const result = summarizeMcpResult(item.result);
+    const result = projectMcpResult(item.result, item.tool ?? data.toolName);
     if (result) {
       projectedItem.result = result;
     }
@@ -248,7 +295,7 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
     projectedData.input = data.input;
   }
   if (!item) {
-    const result = summarizeMcpResult(data.result);
+    const result = projectMcpResult(data.result, data.toolName);
     if (result) {
       projectedData.result = result;
     }

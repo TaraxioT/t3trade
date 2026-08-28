@@ -2463,6 +2463,41 @@ describe("deriveBacktestCard", () => {
     expect(card?.headline).toBe("Buy ETH 15m when RSI(14) is below 30");
   });
 
+  it("reads the projected string form, which is what actually crosses the wire", () => {
+    // The server keeps this result whole but still collapses it to
+    // `{content: "<json>"}`. That is the shape a real client receives.
+    const card = deriveBacktestCard({
+      toolName: "mcp__t3-trade__trading_backtest",
+      result: { content: JSON.stringify({ report, elapsedMillis: 12 }) },
+    });
+    expect(card?.headline).toBe("Buy ETH 15m when RSI(14) is below 30");
+    expect(card?.expectancy.value).toBe("-$0.41 a trade");
+  });
+
+  it("falls back to the ordinary row when the result was summarized away", () => {
+    expect(
+      deriveBacktestCard({
+        toolName: "mcp__t3-trade__trading_backtest",
+        result: { content: '{"report":{"thesis":{"market":"ETH","interval":"15m","side":"long…' },
+      }),
+    ).toBeNull();
+  });
+
+  it("reads the Claude adapter's shape, which names the tool MCP-qualified", () => {
+    // Measured off a real turn: the Claude adapter emits {toolName, input,
+    // result} with the name qualified by the server that mounted the tool.
+    const card = deriveBacktestCard({
+      toolName: "mcp__t3-trade__trading_backtest",
+      input: { thesis: report.thesis },
+      result: {
+        type: "tool_result",
+        content: [{ type: "text", text: JSON.stringify({ report, elapsedMillis: 9 }) }],
+      },
+    });
+    expect(card?.headline).toBe("Buy ETH 15m when RSI(14) is below 30");
+    expect(card?.verdictLabel).toBe("Negative after fees");
+  });
+
   it("leaves the menu call and other tools to the ordinary row", () => {
     expect(deriveBacktestCard({ tool: "trading_backtest", result: { menu: "..." } })).toBeNull();
     expect(deriveBacktestCard({ tool: "trading_look", result: { report } })).toBeNull();

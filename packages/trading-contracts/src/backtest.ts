@@ -638,6 +638,9 @@ export function judgeBacktest(stats: BacktestStats): {
   readonly verdict: BacktestVerdict;
   readonly verdictReason: string;
 } {
+  // The sentence is read by a person. A bare `-1.51` next to the word "trade"
+  // reads as a count of something; the sign belongs outside the currency.
+  const usd = (value: number): string => `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
   if (stats.tradesTaken < MIN_REPLAY_SETUPS) {
     return {
       verdict: "insufficient_sample",
@@ -651,15 +654,15 @@ export function judgeBacktest(stats: BacktestStats): {
     return {
       verdict: "positive_after_fees",
       verdictReason:
-        `${stats.expectancyUsd} per trade after fees and funding across ${stats.tradesTaken} trades. ` +
+        `${usd(stats.expectancyUsd)} per trade after fees and funding across ${stats.tradesTaken} trades. ` +
         "A backtest is not a soak: confirm on testnet before this trades live.",
     };
   }
   return {
     verdict: "negative_after_fees",
     verdictReason:
-      `${stats.expectancyUsd} per trade after fees and funding across ${stats.tradesTaken} trades. ` +
-      `Gross was ${stats.totalGrossUsd} and costs took ${stats.totalFeesUsd}, so this idea does not pay as written.`,
+      `${usd(stats.expectancyUsd)} per trade after fees and funding across ${stats.tradesTaken} trades. ` +
+      `Gross was ${usd(stats.totalGrossUsd)} and costs took ${usd(stats.totalFeesUsd)}, so this idea does not pay as written.`,
   };
 }
 

@@ -207,3 +207,80 @@ describe("projectActivityPayload", () => {
     expect(projected.payload).toEqual(source.payload);
   });
 });
+
+/**
+ * The narrow exception to the summarizing rule. A `trading_backtest` result is
+ * the card the chat renders, and it is fixed-shape and small, so it survives
+ * the wire whole. Everything about that exception is bounded, and these pin
+ * each bound.
+ */
+describe("projectActivityPayload — the backtest result survives whole", () => {
+  const report = JSON.stringify({
+    report: {
+      stats: { expectancyUsd: -0.41, tradesTaken: 31 },
+      verdict: "negative_after_fees",
+      verdictReason: "-0.41 per trade after fees and funding across 31 trades.",
+    },
+  });
+
+  it("keeps the whole result for the tool whose result is the rendered card", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "mcp_tool_call",
+        data: {
+          toolName: "mcp__t3-trade__trading_backtest",
+          input: { thesis: {} },
+          result: { content: [{ type: "text", text: report }] },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect((data.result as Record<string, unknown>).content).toBe(report);
+  });
+
+  it("still summarizes every other MCP result to one line", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "mcp_tool_call",
+        data: {
+          toolName: "mcp__t3-trade__trading_look",
+          result: { content: [{ type: "text", text: "x".repeat(5_000) }] },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    const content = (data.result as Record<string, unknown>).content as string;
+    expect(content.length).toBeLessThanOrEqual(84);
+  });
+
+  it("falls back to the summary when even the exception grows too large", () => {
+    // The bound is what keeps the carve-out from becoming the thing the
+    // projection exists to prevent.
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "mcp_tool_call",
+        data: {
+          toolName: "trading_backtest",
+          result: { content: [{ type: "text", text: "y".repeat(9_000) }] },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    const content = (data.result as Record<string, unknown>).content as string;
+    expect(content.length).toBeLessThanOrEqual(84);
+  });
+
+  it("keeps it whole through the nested item shape the ACP adapters use", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "mcp_tool_call",
+        data: {
+          item: { server: "t3-trade", tool: "trading_backtest", result: { content: report } },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    const item = data.item as Record<string, unknown>;
+    expect((item.result as Record<string, unknown>).content).toBe(report);
+  });
+});

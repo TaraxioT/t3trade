@@ -295,6 +295,10 @@ describe("runBacktest — the costs are the whole story on a zero-edge series", 
     expect(report.stats.totalNetUsd).toBe(-36);
     expect(report.stats.expectancyUsd).toBe(-1.2);
     expect(report.verdict).toBe("negative_after_fees");
+    // The verdict sentence is read by a person, so the numbers in it carry
+    // their currency and their sign the way a statement would.
+    expect(report.verdictReason).toContain("-$1.20 per trade");
+    expect(report.verdictReason).toContain("costs took $36.00");
   });
 
   it("charges the live taker rate when the caller does not override it", () => {

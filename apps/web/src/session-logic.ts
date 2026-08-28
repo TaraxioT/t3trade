@@ -976,9 +976,16 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     entry.toolTitle = title;
   }
   if (itemType === "mcp_tool_call") {
+    // Two provider shapes reach here. The ACP adapters nest the call under
+    // `data.item` ({server, tool, arguments, result}); the Claude adapter puts
+    // it straight on `data` ({toolName, input, result}). Reading only the
+    // first left every Claude MCP call with no tool data at all, so its
+    // expanded body was the truncated one-line detail and its result was
+    // unreachable. `formatMcpToolCallDetail` reads both shapes.
     const data = asRecord(payload?.data);
-    if (data?.item !== undefined) {
-      entry.toolData = data.item;
+    const item = data?.item ?? (data?.toolName !== undefined ? data : undefined);
+    if (item !== undefined) {
+      entry.toolData = item;
     }
   }
   if (itemType) {
@@ -1292,14 +1299,18 @@ export function formatMcpToolCallDetail(toolData: unknown): string | null {
 
   const blocks: string[] = [];
   const server = asTrimmedString(item.server);
-  const tool = asTrimmedString(item.tool);
+  // `tool` is the ACP shape's name; `toolName` is the Claude adapter's, and it
+  // arrives MCP-qualified (`mcp__t3-trade__trading_look`), which reads as
+  // noise beside a server column that says the same thing.
+  const tool = asTrimmedString(item.tool) ?? asTrimmedString(item.toolName);
   if (server !== null || tool !== null) {
     blocks.push([server, tool].filter((part) => part !== null).join(" · "));
   }
 
-  if (item.arguments !== undefined) {
+  const args = item.arguments ?? item.input;
+  if (args !== undefined) {
     blocks.push(`Arguments
-${stringifyPretty(item.arguments)}`);
+${stringifyPretty(args)}`);
   }
 
   const resultText = readMcpResultText(item.result);

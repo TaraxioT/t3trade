@@ -127,23 +127,40 @@ function coverageLine(coverage: Record<string, unknown>, costs: Record<string, u
  */
 function readBacktestResult(toolData: unknown): unknown {
   const item = asRecord(toolData);
-  if (item === null || item.tool !== "trading_backtest") return null;
+  if (item === null) return null;
+  // The ACP adapters name the tool bare in `tool`; the Claude adapter names it
+  // MCP-qualified in `toolName` (`mcp__t3-trade__trading_backtest`). Matching
+  // the suffix covers both without caring which server mounted it.
+  const name = typeof item.tool === "string" ? item.tool : item.toolName;
+  if (typeof name !== "string" || !name.endsWith("trading_backtest")) return null;
   const result = asRecord(item.result);
   if (result === null) return null;
 
   const content = result.content;
+  // The server's activity projection collapses an MCP result to `{content:
+  // "<text>"}` on the way to a client. For this tool it keeps the whole text
+  // rather than a one-line summary (see `MCP_RESULTS_KEPT_WHOLE`), so the
+  // string case is the one that actually arrives over the wire; the array case
+  // is the raw transport shape, and the bare object is what the handler
+  // returns before either touches it.
+  if (typeof content === "string") return parseReport(content);
   if (!Array.isArray(content)) return result;
   for (const entry of content) {
     const text = asRecord(entry)?.text;
     if (typeof text !== "string") continue;
-    try {
-      return JSON.parse(text);
-    } catch {
-      // Not JSON, so not a report. The ordinary tool row still renders it.
-      return null;
-    }
+    return parseReport(text);
   }
   return null;
+}
+
+/** JSON, or null when it is a summary line rather than a report. */
+function parseReport(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Truncated or not JSON at all. The ordinary tool row still renders it.
+    return null;
+  }
 }
 
 /**
