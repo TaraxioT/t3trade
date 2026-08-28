@@ -151,6 +151,10 @@
     "./backtest": {
       "types": "./src/backtest.ts",
       "import": "./src/backtest.ts"
+    },
+    "./forward": {
+      "types": "./src/forward.ts",
+      "import": "./src/forward.ts"
     }
   },
   "scripts": {

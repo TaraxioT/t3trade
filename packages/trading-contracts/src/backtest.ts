@@ -246,28 +246,101 @@ const componentOf = (
 };
 
 /**
- * Evaluate a thesis over one contiguous run of bars.
+ * Every figure a run reports, from the trades it took.
  *
- * `candles` is oldest first and is whatever the archive served — the caller
- * has already clipped it to the window and to {@link BACKTEST_MAX_BARS}, and
- * reports in `coverage` what it could not serve. `funding` is the archive's
- * hourly rows, oldest first; an empty series means funding is not accounted
- * for, which `coverage.fundingServed` states rather than hiding behind a zero.
+ * Split out of {@link runBacktest} for the same reason the signals were: a
+ * forward validation is scored against the backtest that armed it, and two
+ * expectancies computed by two pieces of arithmetic are not a comparison. Both
+ * paths reduce their trades here.
+ *
+ * `bars` is the run's own bar count, which `timeInMarketPercent` is a share
+ * of. Buy-and-hold is passed in rather than computed: it needs the price
+ * series, and a forward run's series is read separately from its trades.
  */
-export function runBacktest(input: {
+export function summarizeTrades(input: {
+  readonly trades: ReadonlyArray<BacktestTrade>;
+  readonly setupsFound: number;
+  readonly setupsUnpriced: number;
+  readonly bars: number;
+  readonly buyAndHoldNetUsd: number;
+  readonly buyAndHoldReturnPercent: number;
+}): BacktestStats {
+  const { trades, bars } = input;
+  const wins = trades.filter((trade) => trade.netUsd > 0);
+  const losses = trades.filter((trade) => trade.netUsd < 0);
+  const totalGrossUsd = trades.reduce((sum, trade) => sum + trade.grossUsd, 0);
+  const totalFeesUsd = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
+  const totalFundingUsd = trades.reduce((sum, trade) => sum + trade.fundingUsd, 0);
+  const totalNetUsd = trades.reduce((sum, trade) => sum + trade.netUsd, 0);
+
+  let peak = 0;
+  let cumulative = 0;
+  let maxDrawdownUsd = 0;
+  for (const trade of trades) {
+    cumulative += trade.netUsd;
+    peak = Math.max(peak, cumulative);
+    maxDrawdownUsd = Math.max(maxDrawdownUsd, peak - cumulative);
+  }
+
+  const barsHeldTotal = trades.reduce((sum, trade) => sum + trade.barsHeld, 0);
+  const expectancyUsd = trades.length === 0 ? 0 : totalNetUsd / trades.length;
+
+  return {
+    setupsFound: input.setupsFound,
+    tradesTaken: trades.length,
+    setupsUnpriced: input.setupsUnpriced,
+    wins: wins.length,
+    losses: losses.length,
+    breakEven: trades.length - wins.length - losses.length,
+    winRatePercent: trades.length === 0 ? 0 : round2((wins.length / trades.length) * 100),
+    averageWinUsd:
+      wins.length === 0 ? 0 : round2(wins.reduce((sum, t) => sum + t.netUsd, 0) / wins.length),
+    averageLossUsd:
+      losses.length === 0
+        ? 0
+        : round2(losses.reduce((sum, t) => sum + t.netUsd, 0) / losses.length),
+    expectancyUsd: round2(expectancyUsd),
+    totalGrossUsd: round2(totalGrossUsd),
+    totalFeesUsd: round2(totalFeesUsd),
+    totalFundingUsd: round2(totalFundingUsd),
+    totalNetUsd: round2(totalNetUsd),
+    maxDrawdownUsd: round2(maxDrawdownUsd),
+    timeInMarketPercent: bars === 0 ? 0 : round2((barsHeldTotal / bars) * 100),
+    buyAndHoldNetUsd: round2(input.buyAndHoldNetUsd),
+    buyAndHoldReturnPercent: round2(input.buyAndHoldReturnPercent),
+  };
+}
+
+/**
+ * The rule half of the engine: what a thesis says about one run of bars.
+ *
+ * Split out of {@link runBacktest} so forward validation cannot drift from it.
+ * A forward run evaluates the same thesis on a trailing window of the same
+ * archive, one closed bar at a time, and the whole comparison it is for — did
+ * the idea keep working — is worthless if "the entry fired" means something
+ * different on the two paths. There is one definition, and both call it.
+ *
+ * `candles` is oldest first. Every returned function indexes into it.
+ */
+export function makeThesisSignals(input: {
   readonly thesis: TradingThesis;
   readonly candles: ReadonlyArray<MarketCandle>;
-  readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
-  readonly costs: BacktestCosts;
-  readonly coverage: BacktestCoverage;
-  readonly notionalUsd?: number;
-}): BacktestRun {
-  const { thesis, candles, coverage, costs } = input;
-  const notionalUsd = input.notionalUsd ?? DEFAULT_BACKTEST_NOTIONAL_USD;
-  const funding = input.funding ?? [];
-  const long = thesis.side === "long";
-  const bars = candles.length;
-
+}): {
+  /** Whether a condition holds on the closed bar at `index`. */
+  readonly conditionHolds: (condition: ThesisCondition, index: number) => boolean;
+  /**
+   * A stop or target distance in price, measured from readings at the SIGNAL
+   * bar. `undefined` means a reading the distance needs is not defined there
+   * yet, which is a setup that cannot be priced rather than one that lost.
+   */
+  readonly distanceInPrice: (
+    distance: ThesisDistance | undefined,
+    signalIndex: number,
+    entryPrice: number,
+    stopDistance: number | undefined,
+  ) => number | undefined;
+} {
+  const { thesis, candles } = input;
   // -- indicator series, computed once over the whole run ---------------------
   const series = new Map<string, ReadonlyArray<IndicatorPoint | undefined>>();
   for (const request of thesisIndicators(thesis)) {
@@ -368,6 +441,34 @@ export function runBacktest(input: {
         return stopDistance === undefined ? undefined : stopDistance * distance.multiple;
     }
   };
+
+  return { conditionHolds, distanceInPrice };
+}
+
+/**
+ * Evaluate a thesis over one contiguous run of bars.
+ *
+ * `candles` is oldest first and is whatever the archive served — the caller
+ * has already clipped it to the window and to {@link BACKTEST_MAX_BARS}, and
+ * reports in `coverage` what it could not serve. `funding` is the archive's
+ * hourly rows, oldest first; an empty series means funding is not accounted
+ * for, which `coverage.fundingServed` states rather than hiding behind a zero.
+ */
+export function runBacktest(input: {
+  readonly thesis: TradingThesis;
+  readonly candles: ReadonlyArray<MarketCandle>;
+  readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
+  readonly costs: BacktestCosts;
+  readonly coverage: BacktestCoverage;
+  readonly notionalUsd?: number;
+}): BacktestRun {
+  const { thesis, candles, coverage, costs } = input;
+  const notionalUsd = input.notionalUsd ?? DEFAULT_BACKTEST_NOTIONAL_USD;
+  const funding = input.funding ?? [];
+  const long = thesis.side === "long";
+  const bars = candles.length;
+
+  const { conditionHolds, distanceInPrice } = makeThesisSignals({ thesis, candles });
 
   // -- funding, as a prefix sum so a hold costs one subtraction ---------------
   const fundingTimes = funding.map((row) => row.time);
@@ -557,24 +658,7 @@ export function runBacktest(input: {
   }
 
   // -- totals ----------------------------------------------------------------
-  const wins = trades.filter((trade) => trade.netUsd > 0);
-  const losses = trades.filter((trade) => trade.netUsd < 0);
-  const totalGrossUsd = trades.reduce((sum, trade) => sum + trade.grossUsd, 0);
-  const totalFeesUsd = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
-  const totalFundingUsd = trades.reduce((sum, trade) => sum + trade.fundingUsd, 0);
-  const totalNetUsd = trades.reduce((sum, trade) => sum + trade.netUsd, 0);
-
-  let peak = 0;
-  let cumulative = 0;
-  let maxDrawdownUsd = 0;
-  for (const trade of trades) {
-    cumulative += trade.netUsd;
-    peak = Math.max(peak, cumulative);
-    maxDrawdownUsd = Math.max(maxDrawdownUsd, peak - cumulative);
-  }
-
-  const barsHeldTotal = trades.reduce((sum, trade) => sum + trade.barsHeld, 0);
-
+  //
   // Buy and hold: the asset, from the first open to the last close, at the same
   // notional and one round trip of the same costs. No funding — the comparison
   // is the unlevered hold, which pays none.
@@ -592,31 +676,14 @@ export function runBacktest(input: {
     buyAndHoldReturnPercent = (buyAndHoldNetUsd / notionalUsd) * 100;
   }
 
-  const expectancyUsd = trades.length === 0 ? 0 : totalNetUsd / trades.length;
-  const stats: BacktestStats = {
+  const stats = summarizeTrades({
+    trades,
     setupsFound,
-    tradesTaken: trades.length,
     setupsUnpriced,
-    wins: wins.length,
-    losses: losses.length,
-    breakEven: trades.length - wins.length - losses.length,
-    winRatePercent: trades.length === 0 ? 0 : round2((wins.length / trades.length) * 100),
-    averageWinUsd:
-      wins.length === 0 ? 0 : round2(wins.reduce((sum, t) => sum + t.netUsd, 0) / wins.length),
-    averageLossUsd:
-      losses.length === 0
-        ? 0
-        : round2(losses.reduce((sum, t) => sum + t.netUsd, 0) / losses.length),
-    expectancyUsd: round2(expectancyUsd),
-    totalGrossUsd: round2(totalGrossUsd),
-    totalFeesUsd: round2(totalFeesUsd),
-    totalFundingUsd: round2(totalFundingUsd),
-    totalNetUsd: round2(totalNetUsd),
-    maxDrawdownUsd: round2(maxDrawdownUsd),
-    timeInMarketPercent: bars === 0 ? 0 : round2((barsHeldTotal / bars) * 100),
-    buyAndHoldNetUsd: round2(buyAndHoldNetUsd),
-    buyAndHoldReturnPercent: round2(buyAndHoldReturnPercent),
-  };
+    bars,
+    buyAndHoldNetUsd,
+    buyAndHoldReturnPercent,
+  });
 
   const { verdict, verdictReason } = judgeBacktest(stats);
 
