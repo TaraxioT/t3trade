@@ -226,6 +226,7 @@ const PROJECT_ID = ProjectId.make("project-trading-reactor");
 const started = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM projection_trading_missions`;
   yield* sql`DELETE FROM trading_fills`;

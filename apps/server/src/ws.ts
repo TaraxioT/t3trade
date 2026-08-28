@@ -129,8 +129,27 @@ const withMarketPrices = (
       if (mission.status === "revoked" || mission.status === "completed") {
         return Effect.succeed(mission);
       }
-      return Effect.map(marketPrice.markPrice(mission.market), (price) =>
-        price === null ? mission : { ...mission, marketPrice: price },
+      // One read per held market, so a switcher can label every tab. The
+      // primary's is lifted into `marketPrice` as well, which is what every
+      // surface that draws one market still reads.
+      return Effect.map(
+        Effect.forEach(
+          mission.markets,
+          (market) =>
+            Effect.map(marketPrice.markPrice(market), (price) =>
+              price === null ? null : { market, price },
+            ),
+          { concurrency: "unbounded" },
+        ),
+        (reads) => {
+          const marketPrices = reads.filter((read) => read !== null);
+          const primary = marketPrices.find((read) => read.market === mission.market);
+          return {
+            ...mission,
+            marketPrices,
+            ...(primary === undefined ? {} : { marketPrice: primary.price }),
+          };
+        },
       );
     },
     { concurrency: "unbounded" },

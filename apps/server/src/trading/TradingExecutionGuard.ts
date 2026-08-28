@@ -224,19 +224,21 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
         );
 
       // Reconcile so local order rows reflect the cancels before the reactor
-      // announces the blocked status. The mission names the market it is
-      // mandated to; an unreadable mission falls back to the default rather
-      // than skipping the reconcile.
-      const market = yield* missions.getMission(missionId).pipe(
-        Effect.map((mission) => mission.market),
-        Effect.orElseSucceed(() => DEFAULT_TRADING_MARKET),
+      // announces the blocked status. Every market the mission holds, because
+      // the exhaustion cancelled orders on all of them; an unreadable mission
+      // falls back to the default rather than skipping the reconcile.
+      const markets = yield* missions.getMission(missionId).pipe(
+        Effect.map((mission) => mission.markets),
+        Effect.orElseSucceed(() => [DEFAULT_TRADING_MARKET] as ReadonlyArray<string>),
       );
-      yield* reconciler
-        .reconcile(
-          { missionId, masterAddress: masterAddress as `0x${string}`, market },
-          "after_position_update",
-        )
-        .pipe(Effect.catch(() => Effect.void));
+      yield* Effect.forEach(markets, (market) =>
+        reconciler
+          .reconcile(
+            { missionId, masterAddress: masterAddress as `0x${string}`, market },
+            "after_position_update",
+          )
+          .pipe(Effect.catch(() => Effect.void)),
+      );
     });
 
   const guardResume = (

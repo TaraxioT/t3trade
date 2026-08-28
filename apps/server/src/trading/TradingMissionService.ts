@@ -88,6 +88,14 @@ const changedIdentityFields = (
 ): ReadonlyArray<string> =>
   HARNESS_BINDING_IDENTITY_FIELDS.filter((field) => current[field] !== next[field]);
 
+/**
+ * What a release did, in the three words the caller has to relay.
+ *
+ * `last_market` is a refusal that changed nothing: it is the one case where the
+ * honest answer is "end the mission instead".
+ */
+export type MarketReleaseOutcome = "released" | "not_held" | "last_market";
+
 export type TradingMissionServiceError =
   | PersistenceSqlError
   | TradingMissionAlreadyActiveError
@@ -177,6 +185,57 @@ export interface TradingMissionServiceShape {
     readonly venue: string;
     readonly market: string;
   }) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
+
+  /**
+   * Extend an active mission onto one more market, or say who holds it.
+   *
+   * The bind-on-first-use path for a thread that already holds a mission. Every
+   * gate `createMission` applies to the market half applies here unchanged —
+   * the D4 mission-vs-mission check, the manual-exposure check — because taking
+   * a second market is the same act as taking the first, and the only thing
+   * that differs is whether a mission has to be created to hold it.
+   *
+   * A market the mission already holds is a no-op, not a refusal: a turn that
+   * enters twice on one market must not be told the market is taken by itself.
+   */
+  readonly bindMarket: (input: {
+    readonly missionId: string;
+    readonly market: string;
+  }) => Effect.Effect<
+    TradingMission,
+    | PersistenceSqlError
+    | TradingMissionAlreadyActiveError
+    | TradingMarketManualExposureError
+    | TradingMissionNotFoundError
+  >;
+
+  /**
+   * Which of the mission's markets still carry exposure: an open position, a
+   * resting order, or an execution the exchange has not settled.
+   *
+   * Read before a release, because giving up authority over a market something
+   * is still open on would leave that exposure with nobody managing it.
+   */
+  readonly listOpenMarkets: (
+    missionId: string,
+  ) => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
+
+  /**
+   * Let one market go without ending the mission - the reverse of the bind.
+   *
+   * The market becomes free for another chat immediately. Releasing a market
+   * the mission does not hold is a no-op. Releasing the LAST one is refused
+   * here: a mission holding nothing is a mission that should have ended, and
+   * ending it is the caller's decision to make out loud rather than a side
+   * effect of a release.
+   */
+  readonly releaseMarket: (input: {
+    readonly missionId: string;
+    readonly market: string;
+  }) => Effect.Effect<
+    { readonly mission: TradingMission; readonly outcome: MarketReleaseOutcome },
+    PersistenceSqlError | TradingMissionNotFoundError
+  >;
 
   /**
    * The mission row's optimistic-locking version.
@@ -345,7 +404,11 @@ const decodeBlockedReason = Schema.decodeUnknownSync(TradingMissionBlockedReason
  * The mission row plus its current authority version. Strategy is intentionally
  * left off: it is published separately and joined by the read tools.
  */
-const toMission = (row: MissionRow, authorityJson: string): TradingMission => ({
+const toMission = (
+  row: MissionRow,
+  authorityJson: string,
+  heldMarkets: ReadonlyArray<string>,
+): TradingMission => ({
   id: row.mission_id,
   userId: row.user_id,
   tradingAccountId: row.trading_account_id,
@@ -354,6 +417,10 @@ const toMission = (row: MissionRow, authorityJson: string): TradingMission => ({
   // opaque. The old two-literal clamp here would have made the D4 per-market
   // machinery guard the wrong market for anything that was not BTC or ETH.
   market: row.market,
+  // Primary first, then the rest in the order they were taken. A mission whose
+  // set has not been written yet (only possible between migration 079 and the
+  // next bind) still holds its primary, which is what it held before.
+  markets: heldMarkets.length === 0 ? [row.market] : heldMarkets,
   harness: decodeHarnessJson(row.harness_json),
   authority: decodeAuthorityJson(authorityJson),
   status: decodeStatus(row.status),
@@ -385,6 +452,26 @@ const makeTradingMissionService = Effect.gen(function* () {
     `.pipe(Effect.mapError(sqlFail("readAuthorityJson")));
 
   /** Hydrate a mission row together with the authority version it points at. */
+  /**
+   * The markets a mission still holds, primary first.
+   *
+   * Ordered by `bound_at` with the primary lifted to the front, so the panel's
+   * first tab and the mandate's own market are the same thing.
+   */
+  const readHeldMarkets = (missionId: string, primary: string) =>
+    sql<{ readonly market: string }>`
+      SELECT market FROM trading_mission_markets
+      WHERE mission_id = ${missionId} AND released_at IS NULL
+      ORDER BY bound_at ASC, market ASC
+    `.pipe(
+      Effect.map((rows) => {
+        const markets = rows.map((row) => row.market);
+        if (!markets.includes(primary)) return markets;
+        return [primary, ...markets.filter((market) => market !== primary)];
+      }),
+      Effect.mapError(sqlFail("readHeldMarkets")),
+    );
+
   const hydrate = (row: MissionRow) =>
     Effect.gen(function* () {
       const authority = yield* readAuthorityJson(row.mission_id, row.authority_version);
@@ -392,7 +479,8 @@ const makeTradingMissionService = Effect.gen(function* () {
       if (authorityJson === undefined) {
         return yield* new TradingMissionNotFoundError({ missionId: row.mission_id });
       }
-      return toMission(row, authorityJson);
+      const heldMarkets = yield* readHeldMarkets(row.mission_id, row.market);
+      return toMission(row, authorityJson, heldMarkets);
     });
 
   const getMission: TradingMissionServiceShape["getMission"] = (missionId) =>
@@ -436,12 +524,16 @@ const makeTradingMissionService = Effect.gen(function* () {
     input,
   ) =>
     Effect.gen(function* () {
-      // The 075 exclusivity index guarantees at most one row matches.
+      // The held-set table is the authority record since migration 079: a
+      // mission holds a SET, so the mission row's own `market` column only ever
+      // knew about the first one. Its `released_at IS NULL` index guarantees at
+      // most one row matches.
       const rows = yield* sql<MissionRow>`
-        SELECT * FROM trading_missions
-        WHERE user_id = ${input.userId} AND venue = ${input.venue}
-          AND market = ${input.market}
-          AND status NOT IN ('revoked', 'completed')
+        SELECT m.* FROM trading_missions m
+        JOIN trading_mission_markets h ON h.mission_id = m.mission_id
+        WHERE h.user_id = ${input.userId} AND h.venue = ${input.venue}
+          AND h.market = ${input.market} AND h.released_at IS NULL
+          AND m.status NOT IN ('revoked', 'completed')
         LIMIT 1
       `.pipe(Effect.mapError(sqlFail("findActiveMissionOnMarket")));
       const row = rows[0];
@@ -663,7 +755,105 @@ const makeTradingMissionService = Effect.gen(function* () {
         )
       `.pipe(Effect.mapError(sqlFail("createMission:mission")));
 
+      // The first element of the held set. The unique index on this table is
+      // the D4 invariant now, so this insert is what actually reserves the
+      // market against a concurrent creator.
+      yield* sql`
+        INSERT INTO trading_mission_markets
+          (mission_id, user_id, venue, market, bound_at, released_at)
+        VALUES (${input.missionId}, ${input.userId}, 'hyperliquid', ${market}, ${now}, NULL)
+      `.pipe(Effect.mapError(sqlFail("createMission:market")));
+
       return yield* getMission(input.missionId);
+    });
+
+  const bindMarket: TradingMissionServiceShape["bindMarket"] = (input) =>
+    Effect.gen(function* () {
+      const mission = yield* getMission(input.missionId);
+      if (mission.markets.includes(input.market)) return mission;
+
+      // The same two D4 gates `createMission` runs, in the same order, so a
+      // market taken by extension is taken under exactly the rules a market
+      // taken by creation is.
+      const existing = yield* findActiveMissionOnMarket({
+        userId: mission.userId,
+        venue: "hyperliquid",
+        market: input.market,
+      });
+      if (Option.isSome(existing)) {
+        return yield* new TradingMissionAlreadyActiveError({
+          userId: mission.userId,
+          activeMissionId: existing.value.id,
+          activeStatus: existing.value.status,
+          market: input.market,
+          activeThreadId: existing.value.harness.threadId,
+        });
+      }
+      const manualExposure = yield* readManualExposure(input.market);
+      if (manualExposure !== null) {
+        return yield* new TradingMarketManualExposureError({
+          market: input.market,
+          exposure: manualExposure,
+        });
+      }
+
+      const now = yield* Clock.currentTimeMillis;
+      // A market this mission held before and released comes back through the
+      // same row: the primary key is (mission, venue, market), so re-taking it
+      // clears the release rather than colliding with its own history.
+      yield* sql`
+        INSERT INTO trading_mission_markets
+          (mission_id, user_id, venue, market, bound_at, released_at)
+        VALUES (${input.missionId}, ${mission.userId}, 'hyperliquid', ${input.market}, ${now}, NULL)
+        ON CONFLICT (mission_id, venue, market)
+        DO UPDATE SET released_at = NULL, bound_at = ${now}
+      `.pipe(Effect.mapError(sqlFail("bindMarket")));
+      // The mission row moves so every optimistic-lock holder learns the set
+      // changed underneath it.
+      yield* sql`
+        UPDATE trading_missions SET version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${input.missionId}
+      `.pipe(Effect.mapError(sqlFail("bindMarket:version")));
+
+      return yield* getMission(input.missionId);
+    });
+
+  const listOpenMarkets: TradingMissionServiceShape["listOpenMarkets"] = (missionId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{ readonly market: string }>`
+        SELECT market FROM trading_position_snapshots
+        WHERE mission_id = ${missionId} AND size != 0
+        UNION
+        SELECT market FROM trading_orders WHERE mission_id = ${missionId}
+        UNION
+        SELECT market FROM trading_execution_records
+        WHERE mission_id = ${missionId} AND ${sql.in("status", PENDING_EXECUTION_STATUSES)}
+      `.pipe(Effect.mapError(sqlFail("listOpenMarkets")));
+      return rows.map((row) => row.market);
+    });
+
+  const releaseMarket: TradingMissionServiceShape["releaseMarket"] = (input) =>
+    Effect.gen(function* () {
+      const mission = yield* getMission(input.missionId);
+      if (!mission.markets.includes(input.market)) {
+        return { mission, outcome: "not_held" as const };
+      }
+      if (mission.markets.length === 1) {
+        return { mission, outcome: "last_market" as const };
+      }
+
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`
+        UPDATE trading_mission_markets SET released_at = ${now}
+        WHERE mission_id = ${input.missionId} AND market = ${input.market}
+          AND released_at IS NULL
+      `.pipe(Effect.mapError(sqlFail("releaseMarket")));
+      yield* sql`
+        UPDATE trading_missions SET version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${input.missionId}
+      `.pipe(Effect.mapError(sqlFail("releaseMarket:version")));
+
+      return { mission: yield* getMission(input.missionId), outcome: "released" as const };
     });
 
   const transition: TradingMissionServiceShape["transition"] = (input) =>
@@ -707,6 +897,17 @@ const makeTradingMissionService = Effect.gen(function* () {
             updated_at = ${now}
         WHERE mission_id = ${input.missionId} AND version = ${input.expectedVersion}
       `.pipe(Effect.mapError(sqlFail("transition")));
+
+      // Ending the mission releases every market it held. Exclusivity lives in
+      // the held-set table now, so a terminal status that left rows behind
+      // would hold markets hostage to a mission nobody can reach.
+      if (input.to === "revoked" || input.to === "completed") {
+        yield* sql`
+          UPDATE trading_mission_markets
+          SET released_at = ${now}
+          WHERE mission_id = ${input.missionId} AND released_at IS NULL
+        `.pipe(Effect.mapError(sqlFail("transition:release")));
+      }
 
       return yield* getMission(input.missionId);
     });
@@ -810,6 +1011,7 @@ const makeTradingMissionService = Effect.gen(function* () {
           yield* sql`DELETE FROM trading_protection_orders WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_stop_adjustments WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_structure_reads WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_mission_markets WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM projection_trading_missions WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_missions WHERE mission_id = ${missionId}`;
         }),
@@ -839,6 +1041,9 @@ const makeTradingMissionService = Effect.gen(function* () {
 
   return {
     createMission,
+    bindMarket,
+    releaseMarket,
+    listOpenMarkets,
     transition,
     refreshAuthorityVersion,
     updateHarnessBinding,

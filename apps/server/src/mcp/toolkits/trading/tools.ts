@@ -208,7 +208,7 @@ export const TradingStrategyTool = Tool.make("trading_strategy", {
 
 export const TradingExitTool = Tool.make("trading_exit", {
   description:
-    'One `action` on exposure you hold. `close` flattens it, no size or side. `reduce` takes part off by `sizeEth` or `fraction`, closing if the rest is dust. `cancel_order` cancels a resting order by `cloid`. `move_stop` trails the stop in policy — never past the approved stop, bounded steps, outside the noise floor, never back below entry, rate-limited — and needs `expectedPlanUpdatedAt` (from trading_look), as a publish moves the stop too. `urgency: "patient"` rests. A refusal sends nothing.',
+    'One `action`. `close` flattens the position, no size or side. `reduce` takes part off by `sizeEth` or `fraction`, closing if the rest is dust. `cancel_order` cancels a resting order by `cloid`. `move_stop` trails the stop in policy (never past the approved stop, bounded steps, outside the noise floor, never below entry, rate-limited) and needs `expectedPlanUpdatedAt` from trading_look. `release_market` hands one held market back once flat. `urgency: "patient"` rests. A refusal sends nothing.',
   parameters: TradingExitInput,
   success: TradingExitResult,
   failure: TradingToolRejectedError,

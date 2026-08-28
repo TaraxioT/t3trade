@@ -82,7 +82,11 @@ import { recordExecutionRefusal } from "../../../trading/TradingRunTelemetry.ts"
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { isTradingAnalystThread } from "../../../provider/SessionProfile.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
-import { bindThreadToMarket } from "../../../trading/TradingAuthorityBinding.ts";
+import {
+  bindThreadToMarket,
+  extendMissionToMarket,
+  releaseMissionMarket,
+} from "../../../trading/TradingAuthorityBinding.ts";
 import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
 import { TradingAlertService } from "../../../trading/TradingAlertService.ts";
 import {
@@ -260,12 +264,18 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
  * is already making. The agent never has to ask for a mission, and never has to
  * make a second attempt — a bind and the original call are one invocation.
  *
+ * A thread that ALREADY holds a mission and names a market that mission does
+ * not hold extends onto it, in the same call, under the same rules. That is the
+ * whole of what makes "buy ETH and BTC" one chat: authority stays per market,
+ * exclusivity stays per market, and the mission holds a set.
+ *
  * Three things are deliberately not done here. An analyst session never binds:
  * it holds no mission by design, and the handlers are its fence. A call that
  * names no market cannot bind, because there is nothing to take authority on.
- * And a market another authority holds is never taken: the existing per-market
- * exclusivity check refuses it, and the refusal names the holder in words the
- * model relays to the user.
+ * And a market another authority holds is never taken, whether the thread is
+ * binding its first market or its second: the existing per-market exclusivity
+ * check refuses it, and the refusal names the holder in words the model relays
+ * to the user.
  */
 const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(function* (input: {
   readonly missionId: string | undefined;
@@ -295,14 +305,36 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
 
   const missions = yield* TradingMissionService;
   const bound = yield* missions.findMissionByThreadId(scope.threadId).pipe(Effect.orDie);
-  if (Option.isSome(bound)) return yield* resolveBoundCall(input.missionId);
+  const named = input.market?.trim();
+
+  if (Option.isSome(bound)) {
+    const mission = bound.value;
+    // Already held, or nothing named: the call is about a market this mission
+    // is already the authority on, and there is nothing to take.
+    if (named === undefined || named === "" || mission.markets.includes(named)) {
+      return yield* resolveBoundCall(input.missionId);
+    }
+    // A second market. Same act, same rules; only the holder of the new market
+    // already exists.
+    const extended = yield* extendMissionToMarket({ missionId: mission.id, market: named });
+    if (extended.outcome === "conflict") {
+      return yield* rejectCall({
+        reason: "market_held_by_other_authority",
+        threadId: scope.threadId,
+        missionId: input.missionId,
+        detail: `${extended.conflict.detail} What you can do: ${extended.conflict.options.join("; or ")}.`,
+      });
+    }
+    yield* noteThreadMarket({ threadId: scope.threadId, market: named, source: "bound" });
+    return { threadId: scope.threadId, mission: extended.mission, boundNow: true };
+  }
 
   // Naming someone else's mission is a mismatch whether or not this thread
   // could have taken a market; answering it with a fresh mission would be
   // answering a different question.
   if (input.missionId !== undefined) return yield* resolveBoundCall(input.missionId);
 
-  const market = input.market?.trim();
+  const market = named;
   if (
     isTradingAnalystThread(ThreadId.make(scope.threadId)) ||
     market === undefined ||
@@ -614,7 +646,10 @@ const executeExit = (request: {
 
     // A close leaves nothing behind — including the entry that was still
     // working when the model decided to leave.
-    const withdrawn = request.kind === "close" ? yield* withdrawWorkingEntry(mission) : null;
+    const withdrawn =
+      request.kind === "close"
+        ? yield* withdrawWorkingEntry(mission, prepared.intent.market)
+        : null;
 
     // A size the server changed — clamped, or promoted past the dust threshold
     // — has to travel with the outcome, or the harness sizes its next decision
@@ -647,14 +682,14 @@ const executeExit = (request: {
  * never fails the close — the working loop's own backstop retries it.
  */
 const withdrawWorkingEntry = Effect.fn("TradingToolkit.withdrawWorkingEntry")(
-  function* (mission: TradingMission) {
+  function* (mission: TradingMission, closingMarket: string) {
     const missions = yield* TradingMissionService;
     const workingOrders = yield* TradingWorkingOrderService;
     const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
     const outcome = yield* workingOrders.abandon({
       missionId: mission.id,
       masterAddress,
-      market: mission.market,
+      market: closingMarket,
       nowMs: yield* Effect.clockWith((clock) => clock.currentTimeMillis),
       scope: "entries",
     });
@@ -666,6 +701,72 @@ const withdrawWorkingEntry = Effect.fn("TradingToolkit.withdrawWorkingEntry")(
   },
   Effect.catchCause(() => Effect.succeed(null)),
 );
+
+/**
+ * Hand one held market back, leaving the mission running on the rest.
+ *
+ * The reverse of the bind, and the only way "stop trading BTC in this chat"
+ * can be answered without ending the mission. Refused while anything is open on
+ * the market: a release gives up AUTHORITY, and an unmanaged position is worse
+ * than a managed one. Nothing is ever closed here — that is the user's call,
+ * and `close` is the tool for it.
+ */
+const releaseMarket = Effect.fn("TradingToolkit.releaseMarket")(function* (request: {
+  readonly missionId: string | undefined;
+  readonly market: string;
+}) {
+  const { mission } = yield* resolveBoundCall(request.missionId);
+  const missions = yield* TradingMissionService;
+
+  const exposure = yield* missions
+    .listOpenMarkets(mission.id)
+    .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
+  if (exposure.includes(request.market)) {
+    return {
+      status: "refused_request" as const,
+      reason: "release_needs_market" as const,
+      detail:
+        `Nothing changed: ${request.market} still has exposure on it. Close the position and ` +
+        "cancel what is resting first, then release the market.",
+      recovery: classifyFailure({ tag: "TradingExitRefusal", reason: "release_needs_market" }),
+    };
+  }
+
+  const released = yield* releaseMissionMarket({
+    missionId: mission.id,
+    market: request.market,
+  });
+  if (released.outcome === "refused") {
+    return {
+      status: "refused_request" as const,
+      reason: "release_needs_market" as const,
+      detail: released.detail,
+      recovery: classifyFailure({ tag: "TradingExitRefusal", reason: "release_needs_market" }),
+    };
+  }
+
+  // Watches on a market this chat no longer answers for would spend wakes the
+  // turn could only refuse.
+  const watches = yield* TradingWatchService;
+  const retired = yield* watches
+    .supersedeMarketWatches({ missionId: mission.id, market: request.market })
+    .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
+  if (retired.length > 0) {
+    yield* Effect.logInfo("trading retired a released market's watches", {
+      missionId: mission.id,
+      market: request.market,
+      watchIds: retired,
+    });
+  }
+
+  return {
+    status: "filled" as const,
+    cloid: "",
+    orderResults: [],
+    budget: { remainingCumulativeLossUsd: 0, exhausted: false },
+    detail: released.detail,
+  };
+});
 
 /**
  * Read the multi-timeframe structure, priced at the size the mission would
@@ -739,7 +840,7 @@ const readMarketStructure = Effect.fn("TradingToolkit.readMarketStructure")(func
 
           const strategies = yield* TradingStrategyService;
           const plan = yield* strategies
-            .getCurrentStrategy(mission.id)
+            .getCurrentStrategy(mission.id, input.market)
             .pipe(Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())));
           const currentPlan = Option.isSome(plan) ? plan.value : null;
           const intended = currentPlan?.entry.initialNotionalUsd;
@@ -1199,7 +1300,9 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
         };
 
         if (wants("plan")) {
-          const strategy = yield* strategies.getCurrentStrategy(mission.id).pipe(Effect.orDie);
+          const strategy = yield* strategies
+            .getCurrentStrategy(mission.id, market)
+            .pipe(Effect.orDie);
           if (Option.isNone(strategy)) {
             refuseKeys(keysFor("plan"), "no plan published yet");
           } else {
@@ -1302,7 +1405,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
                 const composer = yield* TradingWakeupComposer;
                 const strategies = yield* TradingStrategyService;
                 const plan = yield* strategies
-                  .getCurrentStrategy(mission.id)
+                  .getCurrentStrategy(mission.id, market)
                   .pipe(Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())));
                 return yield* composer.observe({
                   mission,
@@ -2261,6 +2364,14 @@ const handlers = {
           detail: refusal.detail,
           recovery: classifyFailure({ tag: "TradingExitRefusal", reason: refusal.code }),
         };
+      }
+
+      if (input.action === "release_market") {
+        return yield* releaseMarket({
+          missionId: input.missionId,
+          // `readExitRequest` refused a release with no market a moment ago.
+          market: input.market ?? "",
+        });
       }
 
       if (input.action === "move_stop") {

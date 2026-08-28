@@ -21,31 +21,31 @@ describe("isChartReadEntitled", () => {
   });
 
   it("refuses a market some OTHER mission is running", () => {
-    const missions = [{ market: "BTC", status: "position_open" }];
+    const missions = [{ markets: ["BTC"], status: "position_open" }];
     expect(isChartReadEntitled(LIVE, missions)).toBe(false);
     expect(isChartReadEntitled(REVIEW, missions)).toBe(false);
   });
 
   it("serves a live read on a running mission", () => {
-    expect(isChartReadEntitled(LIVE, [{ market: "ETH", status: "position_open" }])).toBe(true);
+    expect(isChartReadEntitled(LIVE, [{ markets: ["ETH"], status: "position_open" }])).toBe(true);
   });
 
   it("refuses a live read once the mission is terminal", () => {
-    expect(isChartReadEntitled(LIVE, [{ market: "ETH", status: "completed" }])).toBe(false);
-    expect(isChartReadEntitled(LIVE, [{ market: "ETH", status: "revoked" }])).toBe(false);
+    expect(isChartReadEntitled(LIVE, [{ markets: ["ETH"], status: "completed" }])).toBe(false);
+    expect(isChartReadEntitled(LIVE, [{ markets: ["ETH"], status: "revoked" }])).toBe(false);
   });
 
   // The whole point of the review shape: the mission whose chart is being
   // reviewed has finished, so a terminal status must not refuse the read.
   it("serves a windowed read on a terminal mission", () => {
-    expect(isChartReadEntitled(REVIEW, [{ market: "ETH", status: "completed" }])).toBe(true);
-    expect(isChartReadEntitled(REVIEW, [{ market: "ETH", status: "revoked" }])).toBe(true);
+    expect(isChartReadEntitled(REVIEW, [{ markets: ["ETH"], status: "completed" }])).toBe(true);
+    expect(isChartReadEntitled(REVIEW, [{ markets: ["ETH"], status: "revoked" }])).toBe(true);
   });
 
   // Half a window is not a window: a caller that sends only one bound gets the
   // live rule, so the review relaxation cannot be reached by accident.
   it("treats a half-specified window as a live read", () => {
-    const missions = [{ market: "ETH", status: "completed" }];
+    const missions = [{ markets: ["ETH"], status: "completed" }];
     expect(isChartReadEntitled({ market: "ETH", startTime: 1_000 }, missions)).toBe(false);
     expect(isChartReadEntitled({ market: "ETH", endTime: 2_000 }, missions)).toBe(false);
   });
@@ -58,6 +58,14 @@ describe("isChartReadEntitled", () => {
     expect(isChartReadEntitled(REVIEW, [], ["ETH"])).toBe(true);
   });
 
+  // A mission holding a SET entitles every market in it, not just the first.
+  it("serves a live read on any market a multi-market mission holds", () => {
+    const missions = [{ markets: ["ETH", "BTC"], status: "position_open" }];
+    expect(isChartReadEntitled(LIVE, missions)).toBe(true);
+    expect(isChartReadEntitled({ market: "BTC" }, missions)).toBe(true);
+    expect(isChartReadEntitled({ market: "SOL" }, missions)).toBe(false);
+  });
+
   it("does not let one followed market entitle another", () => {
     expect(isChartReadEntitled(LIVE, [], ["BTC"])).toBe(false);
     expect(isChartReadEntitled(REVIEW, [], ["BTC"])).toBe(false);
@@ -66,7 +74,7 @@ describe("isChartReadEntitled", () => {
   // A terminal mission refuses the live shape, but the market being followed
   // still serves it: the two entitlements are independent.
   it("follow set entitles a live read even where the mission rule refuses", () => {
-    const missions = [{ market: "ETH", status: "completed" }];
+    const missions = [{ markets: ["ETH"], status: "completed" }];
     expect(isChartReadEntitled(LIVE, missions, ["ETH"])).toBe(true);
   });
 });

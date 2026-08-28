@@ -93,10 +93,10 @@ export const makeTradingExitService = Effect.gen(function* () {
     Effect.gen(function* () {
       const mission = yield* missions.getMission(request.missionId);
       const market = request.market ?? mission.market;
-      if (market !== mission.market) {
+      if (!mission.markets.includes(market)) {
         return refused(
           "market_is_eth",
-          `nothing was sent: this chat holds authority on ${mission.market}, not ${market}. Exit ${mission.market} here, or move to the chat that holds ${market}.`,
+          `nothing was sent: this chat holds authority on ${mission.markets.join(", ")}, not ${market}. Exit one of those here, or move to the chat that holds ${market}.`,
         );
       }
 

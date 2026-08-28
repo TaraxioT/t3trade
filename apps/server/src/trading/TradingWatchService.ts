@@ -189,6 +189,22 @@ export interface TradingWatchServiceShape {
   readonly supersedePositionWatches: (input: {
     readonly missionId: string;
   }) => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
+
+  /**
+   * Retire every active watch on one market, because the mission no longer
+   * holds it.
+   *
+   * Releasing a market gives up the authority to act on what a watch would
+   * wake the mission to do, so a watch that outlived the release would spend
+   * wakes on a market the turn can only refuse. Watches that name no market —
+   * a clock tick, an account-wide PnL level — are untouched.
+   *
+   * Returns the ids it superseded, for the log line.
+   */
+  readonly supersedeMarketWatches: (input: {
+    readonly missionId: string;
+    readonly market: string;
+  }) => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
 }
 
 export class TradingWatchService extends Context.Service<
@@ -463,6 +479,20 @@ const makeTradingWatchService = Effect.gen(function* () {
       return rows.map((row) => row.watch_id);
     });
 
+  const supersedeMarketWatches: TradingWatchServiceShape["supersedeMarketWatches"] = (input) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{ readonly watch_id: string }>`
+        UPDATE trading_watches
+        SET status = 'superseded', version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${input.missionId}
+          AND status = 'active'
+          AND json_extract(watch_json, '$.market') = ${input.market}
+        RETURNING watch_id
+      `.pipe(Effect.mapError(sqlFail("supersedeMarketWatches")));
+      return rows.map((row) => row.watch_id);
+    });
+
   const supersedePositionWatches: TradingWatchServiceShape["supersedePositionWatches"] = (input) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
@@ -496,6 +526,7 @@ const makeTradingWatchService = Effect.gen(function* () {
   return {
     registerWatch,
     cancelWatch,
+    supersedeMarketWatches,
     markTriggered,
     getWatch,
     supersedePredictionWatches,

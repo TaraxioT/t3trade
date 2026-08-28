@@ -1570,6 +1570,46 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // The held set moved. `TradingMissionService` already wrote it — this is the
+    // record, exactly like `status-set` is the record of a transition.
+    case "trading.mission.market-bound": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-market-bound",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          market: command.market,
+          markets: command.markets,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.mission.market-released": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-market-released",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          market: command.market,
+          markets: command.markets,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "trading.mission.watch-cancelled": {
       return {
         ...(yield* withEventBase({

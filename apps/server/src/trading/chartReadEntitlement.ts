@@ -31,7 +31,8 @@ export interface ChartReadRequest {
 }
 
 export interface ChartReadMission {
-  readonly market: string;
+  /** Every market the mission holds. A mission entitles reads on all of them. */
+  readonly markets: ReadonlyArray<string>;
   readonly status: string;
 }
 
@@ -56,7 +57,7 @@ export function isChartReadEntitled(
   if (followedAssets.includes(request.market)) return true;
   const review = isReviewRead(request);
   return missions.some((mission) => {
-    if (mission.market !== request.market) return false;
+    if (!mission.markets.includes(request.market)) return false;
     return review || !TERMINAL_STATUSES.has(mission.status);
   });
 }

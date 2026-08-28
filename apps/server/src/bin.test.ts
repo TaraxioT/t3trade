@@ -183,6 +183,7 @@ const seedSessionReportDatabase = (databasePath: string) =>
     yield* sql`DELETE FROM trading_harness_runs`;
     yield* sql`DELETE FROM trading_plan_history`;
     yield* sql`DELETE FROM trading_missions`;
+    yield* sql`DELETE FROM trading_mission_markets`;
     yield* sql`
       INSERT INTO trading_missions (
         mission_id, user_id, trading_account_id, instruction, market,

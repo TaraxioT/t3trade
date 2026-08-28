@@ -61,6 +61,7 @@ const seedMission = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_stop_adjustments`;
   yield* sql`DELETE FROM trading_plan_history`;
+  yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`
     INSERT INTO projection_trading_missions (
       mission_id, thread_id, user_id, trading_account_id, instruction, market,
@@ -144,6 +145,87 @@ const rangeReversionStrategy: TradingPlanState = {
     "bouncing inside a band, so buy near the bottom and sell near the top.",
   updatedAt: 1_754_356_376_000,
 };
+
+layer("TradingMissionProjection held markets", (it) => {
+  // The read model a multi-market mission hands the client: the set the
+  // switcher draws tabs from, one position card per market that has one, and
+  // one plan per market rather than whichever market was published to last.
+  it.effect("serves the held set, a position per market, and a plan per market", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_position_snapshots`;
+      yield* sql`
+        UPDATE projection_trading_missions
+        SET markets_json = '["ETH","BTC"]'
+        WHERE mission_id = ${MISSION_ID}
+      `;
+      for (const [market, size, pnl, at] of [
+        ["ETH", 0.5, 12.5, 1_754_356_000_000],
+        ["BTC", -0.01, -3.25, 1_754_356_100_000],
+      ] as const) {
+        yield* sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, account_id, venue, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at
+          ) VALUES (
+            ${MISSION_ID}, 'hyperliquid-testnet', 'hyperliquid', ${market}, ${size},
+            100, ${pnl}, 10, 0, ${at}
+          )
+        `;
+      }
+      for (const [version, market] of [
+        [1, "ETH"],
+        [2, "BTC"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO trading_plan_history (mission_id, version, market, strategy_json, created_at)
+          VALUES (${MISSION_ID}, ${version}, ${market},
+                  ${encodeStrategy({ ...rangeReversionStrategy, market })}, ${version})
+        `;
+      }
+
+      const found = yield* (yield* TradingMissionProjection).getByThreadId(THREAD_ID);
+      assert.isTrue(Option.isSome(found));
+      const mission = Option.getOrThrow(found);
+
+      assert.deepEqual([...mission.markets], ["ETH", "BTC"]);
+      // Held order, not snapshot order: the cards sit under the tabs.
+      assert.deepEqual(
+        mission.positions.map((position) => position.market),
+        ["ETH", "BTC"],
+      );
+      assert.deepEqual(
+        mission.positions.map((position) => position.unrealisedPnl),
+        [12.5, -3.25],
+      );
+      // One plan per market, in held order. Reading the newest plan alone would
+      // have answered BTC's for both, which is the whole reason plans are keyed
+      // by market. (The singular `strategy` is the primary's, and comes from
+      // the projection row `refresh` writes rather than from this seed.)
+      assert.deepEqual(
+        mission.strategies.map((plan) => plan.market),
+        ["ETH", "BTC"],
+      );
+    }),
+  );
+
+  // A row written before migration 079 backfilled the column still holds
+  // exactly what it always held.
+  it.effect("falls back to the primary market when the set was never written", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        UPDATE projection_trading_missions SET markets_json = NULL
+        WHERE mission_id = ${MISSION_ID}
+      `;
+
+      const found = yield* (yield* TradingMissionProjection).getByThreadId(THREAD_ID);
+      assert.deepEqual([...Option.getOrThrow(found).markets], ["ETH"]);
+    }),
+  );
+});
 
 layer("TradingMissionProjection strategy card", (it) => {
   // The projection degrades a strategy it cannot decode to "no strategy", which

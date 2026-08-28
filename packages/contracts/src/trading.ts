@@ -342,7 +342,16 @@ export const OrchestrationTradingMission = Schema.Struct({
   userId: TrimmedNonEmptyString,
   tradingAccountId: TrimmedNonEmptyString,
   instruction: TrimmedNonEmptyString,
+  /** The mission's primary market: the one it was created on, and the tab the panel opens to. */
   market: TrimmedNonEmptyString,
+  /**
+   * Every market the mission currently holds, primary first.
+   *
+   * One element for a mission that holds one, which is most of them. The chat's
+   * market card draws a switcher when there is more than one, and still draws
+   * exactly one chart.
+   */
+  markets: Schema.Array(TrimmedNonEmptyString),
 
   status: TradingMissionStatus,
   blockedReason: Schema.NullOr(TradingMissionBlockedReason),
@@ -356,7 +365,16 @@ export const OrchestrationTradingMission = Schema.Struct({
    */
   missionVersion: NonNegativeInt,
 
+  /** The published plan for the primary market, or null. */
   strategy: Schema.NullOr(TradingPlanState),
+  /**
+   * One published plan per held market that has one.
+   *
+   * Plans are keyed by market: a mission holding ETH and BTC publishes a plan
+   * for each, and revising one leaves the other exactly where it was. Each
+   * document names its own `market`.
+   */
+  strategies: Schema.Array(TradingPlanState),
 
   watches: Schema.Array(PersistedWatch),
 
@@ -376,8 +394,20 @@ export const OrchestrationTradingMission = Schema.Struct({
    * surfaces still read.
    */
   orders: Schema.Array(TradingOrderView),
-  /** The live position card from reconciled projections (§10). Null when flat. */
+  /**
+   * The live position card for the PRIMARY market (§10). Null when flat.
+   *
+   * Kept beside `positions` because every surface that predates multi-market
+   * missions reads it, and for a one-market mission the two say the same thing.
+   */
   position: Schema.NullOr(TradingPositionView),
+  /**
+   * One position card per held market that has one, in `markets` order.
+   *
+   * A flat market contributes nothing, so this is empty for a mission that has
+   * never held anything and shorter than `markets` for one that is partly flat.
+   */
+  positions: Schema.Array(TradingPositionView),
   /**
    * The market's live mark price.
    *
@@ -387,6 +417,14 @@ export const OrchestrationTradingMission = Schema.Struct({
    * Absent when the exchange read failed; never a stale carry-forward.
    */
   marketPrice: Schema.optional(Schema.Number),
+  /**
+   * The live mark for every held market, so a switcher can label its tabs
+   * without one read per tab. Same read as `marketPrice`, which stays as the
+   * primary market's for the surfaces that only ever draw one.
+   */
+  marketPrices: Schema.Array(
+    Schema.Struct({ market: TrimmedNonEmptyString, price: Schema.Number }),
+  ),
   /**
    * The leverage the exchange has this mission's market configured at, e.g. 20.
    *
@@ -1074,6 +1112,39 @@ export const TradingMissionStopAdjustedCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * A mission took one more market, or let one go - migration 079.
+ *
+ * The write has already happened when this is raised: `TradingMissionService`
+ * owns the held set and its exclusivity index, exactly as it owns status. This
+ * records what it did, so the workspace learns about a second market on the
+ * ordered push path rather than by polling.
+ *
+ * Two commands rather than one with a direction, because a bind and a release
+ * are read by different parts of the UI and mean opposite things to a user.
+ */
+export const TradingMissionMarketBoundCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.market-bound"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  market: TradingMarket,
+  /** The whole held set after the bind, primary first. */
+  markets: Schema.Array(TradingMarket),
+  createdAt: IsoDateTime,
+});
+
+export const TradingMissionMarketReleasedCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.market-released"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  market: TradingMarket,
+  /** The whole held set after the release, primary first. Never empty. */
+  markets: Schema.Array(TradingMarket),
+  createdAt: IsoDateTime,
+});
+
 export const InternalTradingCommand = Schema.Union([
   TradingMissionStatusSetCommand,
   TradingMissionStrategyPublishedCommand,
@@ -1082,6 +1153,8 @@ export const InternalTradingCommand = Schema.Union([
   TradingMissionWatchFiredCommand,
   TradingMissionRunStartedCommand,
   TradingMissionStopAdjustedCommand,
+  TradingMissionMarketBoundCommand,
+  TradingMissionMarketReleasedCommand,
   TradingExecutionRequestedCommand,
 ]);
 export type InternalTradingCommand = typeof InternalTradingCommand.Type;
@@ -1186,6 +1259,22 @@ export const TradingMissionRunStartedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const TradingMissionMarketBoundPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  market: TradingMarket,
+  markets: Schema.Array(TradingMarket),
+  updatedAt: IsoDateTime,
+});
+
+export const TradingMissionMarketReleasedPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  market: TradingMarket,
+  markets: Schema.Array(TradingMarket),
+  updatedAt: IsoDateTime,
+});
+
 export const TradingMissionStopAdjustedPayload = Schema.Struct({
   missionId: TradingMissionId,
   threadId: ThreadId,
@@ -1237,6 +1326,8 @@ export const TRADING_EVENT_TYPES = [
   "trading.mission-watch-fired",
   "trading.mission-run-started",
   "trading.mission-stop-adjusted",
+  "trading.mission-market-bound",
+  "trading.mission-market-released",
   "trading.execution-requested",
   "trading.order-place-requested",
 ] as const;

@@ -76,6 +76,7 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_protection_orders`;
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
 });
 
 // ---------------------------------------------------------------------------

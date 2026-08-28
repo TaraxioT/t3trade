@@ -114,7 +114,7 @@ const missionConflict = (input: {
     heldBy: "another_mission",
     detail:
       `${holder} already holds ${input.market} on ${BOUND_VENUE} and is ` +
-      `${statusInWords(input.status)}. One authority holds one market at a time, so nothing ` +
+      `${statusInWords(input.status)}. One market answers to one chat at a time, so nothing ` +
       `was placed here.${invisible}`,
     options: [
       `take ${input.market} over in this chat by ending that mission first, from ${goTo}`,
@@ -167,6 +167,82 @@ const autoMandate = (market: string): string =>
   `Trade ${market} on ${BOUND_VENUE} testnet for the user, from this chat. ` +
   `Authority was taken automatically when the chat first acted on ${market}. ` +
   "Follow what the user asks in the chat; where they have not said, work your own read of the market and publish a plan for it.";
+
+/**
+ * Take one more market for a thread that already holds a mission.
+ *
+ * The same act as taking the first, and deliberately the same shape: the D4
+ * per-market exclusivity check and the manual-exposure check are the ones
+ * `createMission` runs, so a market taken by extension is taken under exactly
+ * the rules a market taken by creation is. Nothing else moves — no new mission,
+ * no new harness binding, no status walk, no second lease. The turn that is
+ * asking is already running under this mission's authority; all it needed was
+ * for the mission to hold the market it just named.
+ *
+ * A market the mission already holds answers `bound` without writing anything,
+ * so a turn that enters twice on one market is never told the market is taken
+ * by itself.
+ */
+export const extendMissionToMarket = Effect.fn("TradingAuthorityBinding.extendMissionToMarket")(
+  function* (input: {
+    readonly missionId: string;
+    readonly market: TradingMarket;
+  }): Effect.fn.Return<
+    AuthorityBinding,
+    never,
+    TradingMissionService | OrchestrationEngineService | SqlClient.SqlClient | Crypto.Crypto
+  > {
+    const missions = yield* TradingMissionService;
+    const extended = yield* missions.bindMarket(input).pipe(
+      Effect.map((mission) => ({ outcome: "bound" as const, mission })),
+      Effect.catchTags({
+        TradingMissionAlreadyActiveError: (refusal) =>
+          readThreadTitle(refusal.activeThreadId).pipe(
+            Effect.map((threadTitle) => ({
+              outcome: "conflict" as const,
+              conflict: missionConflict({
+                market: refusal.market ?? input.market,
+                status: refusal.activeStatus,
+                threadTitle,
+              }),
+            })),
+          ),
+        TradingMarketManualExposureError: (refusal) =>
+          Effect.succeed({
+            outcome: "conflict" as const,
+            conflict: manualConflict({ market: refusal.market, exposure: refusal.exposure }),
+          }),
+      }),
+      // Anything else is a defect: the caller is mid-order and has no honest
+      // answer to give. Same rule as the create path.
+      Effect.orDie,
+    );
+
+    if (extended.outcome === "conflict") {
+      yield* Effect.logInfo("trading authority not extended: the market is held", {
+        missionId: input.missionId,
+        market: input.market,
+        heldBy: extended.conflict.heldBy,
+      });
+      return extended;
+    }
+
+    yield* announceMarkets({
+      type: "trading.mission.market-bound",
+      threadId: ThreadId.make(extended.mission.harness.threadId),
+      missionId: TradingMissionId.make(extended.mission.id),
+      market: input.market,
+      markets: extended.mission.markets,
+    });
+
+    yield* Effect.logInfo("trading authority extended to a second market", {
+      missionId: input.missionId,
+      market: input.market,
+      markets: extended.mission.markets.join(","),
+    });
+    return extended;
+  },
+);
 
 /**
  * Take authority on `{venue, market}` for this thread, or say who holds it.
@@ -311,6 +387,115 @@ export const bindThreadToMarket = Effect.fn("TradingAuthorityBinding.bindThreadT
     return { outcome: "bound", mission: created.mission };
   },
 );
+
+/**
+ * What a release did, in the words the model relays to the user.
+ *
+ * `refused` is the only one that changed nothing, and it says why in a sentence
+ * rather than a code: the caller is a tool handler, and its answer goes
+ * straight into the chat.
+ */
+export type MarketRelease =
+  | { readonly outcome: "released"; readonly mission: TradingMission; readonly detail: string }
+  | { readonly outcome: "refused"; readonly detail: string };
+
+/**
+ * Let one market go without ending the mission - the reverse of the bind.
+ *
+ * The market is free for another chat the moment this returns. Releasing the
+ * last one is refused: a mission holding nothing is a mission that should have
+ * ended, and ending it is a decision the user makes out loud rather than a side
+ * effect of "stop trading BTC here".
+ *
+ * Deliberately does NOT close a position or cancel an order. Releasing is about
+ * authority, not exposure, and a release that silently flattened a position
+ * would be the most expensive surprise in the product. The caller checks for
+ * exposure first and says so.
+ */
+export const releaseMissionMarket = Effect.fn("TradingAuthorityBinding.releaseMissionMarket")(
+  function* (input: {
+    readonly missionId: string;
+    readonly market: TradingMarket;
+  }): Effect.fn.Return<
+    MarketRelease,
+    never,
+    TradingMissionService | OrchestrationEngineService | SqlClient.SqlClient | Crypto.Crypto
+  > {
+    const missions = yield* TradingMissionService;
+    const released = yield* missions.releaseMarket(input).pipe(Effect.orDie);
+
+    if (released.outcome === "not_held") {
+      return {
+        outcome: "refused",
+        detail: `Nothing changed: this chat does not hold ${input.market}. It holds ${released.mission.markets.join(", ")}.`,
+      };
+    }
+    if (released.outcome === "last_market") {
+      return {
+        outcome: "refused",
+        detail:
+          `Nothing changed: ${input.market} is the only market this chat holds, and a mission ` +
+          "cannot hold none. Ask the user to end the mission if they want this chat to stop trading entirely.",
+      };
+    }
+
+    yield* announceMarkets({
+      type: "trading.mission.market-released",
+      threadId: ThreadId.make(released.mission.harness.threadId),
+      missionId: TradingMissionId.make(released.mission.id),
+      market: input.market,
+      markets: released.mission.markets,
+    });
+
+    yield* Effect.logInfo("trading authority released one market", {
+      missionId: input.missionId,
+      market: input.market,
+      markets: released.mission.markets.join(","),
+    });
+
+    return {
+      outcome: "released",
+      mission: released.mission,
+      detail:
+        `${input.market} was released and is free for another chat. This chat still holds ` +
+        `${released.mission.markets.join(", ")}.`,
+    };
+  },
+);
+
+/**
+ * One held-set command, so the workspace sees the change on the ordered push
+ * path. A failed announcement is a stale panel, never a lost release.
+ */
+const announceMarkets = (input: {
+  readonly type: "trading.mission.market-bound" | "trading.mission.market-released";
+  readonly threadId: ThreadId;
+  readonly missionId: TradingMissionId;
+  readonly market: string;
+  readonly markets: ReadonlyArray<string>;
+}) =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    const crypto = yield* Crypto.Crypto;
+    const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+    yield* engine.dispatch({
+      type: input.type,
+      commandId: CommandId.make(commandId),
+      threadId: input.threadId,
+      missionId: input.missionId,
+      market: input.market,
+      markets: input.markets,
+      createdAt: yield* DateTime.now.pipe(Effect.map(DateTime.formatIso)),
+    });
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("could not announce a mission's held-market change", {
+        missionId: input.missionId,
+        market: input.market,
+        cause: String(cause),
+      }),
+    ),
+  );
 
 /** One `trading.mission.status-set`, so the workspace sees the new mission. */
 const announce = (input: {

@@ -76,7 +76,25 @@ export const TradingMission = Schema.Struct({
   tradingAccountId: TradingId,
 
   instruction: TradingText,
+  /**
+   * The mission's PRIMARY market: the one it was created on.
+   *
+   * It is always a member of {@link TradingMission.markets}, and it is what
+   * defaults answer with — the chat panel's opening chart, the mandate's own
+   * words, a telemetry row's one market column. It is no longer the whole of
+   * the mission's authority; `markets` is.
+   */
   market: TradingMarket,
+  /**
+   * Every market this mission currently holds authority on, primary first.
+   *
+   * Authority and exclusivity stay per market: the venue nets positions per
+   * asset, so two authorities on one asset would be two agents on one position.
+   * Nothing about that required a mission to hold only one, and holding a set
+   * is what lets "buy ETH and BTC" be one chat. Never empty while the mission
+   * is active - releasing the last market ends the mission.
+   */
+  markets: Schema.Array(TradingMarket),
   harness: TradingHarnessBinding,
 
   authority: TradingAuthority,

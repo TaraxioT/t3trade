@@ -42,6 +42,7 @@ const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations({});
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM trading_plan_history`;

@@ -117,6 +117,7 @@ const seed = (options?: { readonly withOpenRun?: boolean }) =>
     servedBook = book;
     yield* runMigrations({});
     yield* sql`DELETE FROM trading_missions`;
+    yield* sql`DELETE FROM trading_mission_markets`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;
     yield* sql`DELETE FROM trading_entry_context`;

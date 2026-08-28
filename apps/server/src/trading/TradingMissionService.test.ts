@@ -37,6 +37,7 @@ const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations();
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
   yield* sql`DELETE FROM trading_authority_versions`;
 });
 
@@ -150,12 +151,13 @@ layer("TradingMissionService", (it) => {
   );
 
   // The service's pre-insert check is a race away from being wrong: two
-  // concurrent creates both read "no active mission" and both insert. The
-  // partial unique index from migration 035 is what actually makes the
-  // invariant true, so it is asserted against a raw insert that skips the
-  // service entirely — the only way to prove the database, not the read, is
-  // holding the line.
-  it.effect("refuses a second active mission row at the database", () =>
+  // concurrent creates both read "no market held" and both insert. A partial
+  // unique index is what actually makes the invariant true, and since migration
+  // 079 it lives on the held-set table — a mission holds a SET, so the mission
+  // row's own `market` column could only ever guard the first one. Asserted
+  // against a raw insert that skips the service entirely, which is the only way
+  // to prove the database rather than the read is holding the line.
+  it.effect("refuses a second live claim on one market at the database", () =>
     Effect.gen(function* () {
       yield* migrated;
       const service = yield* TradingMissionService;
@@ -164,14 +166,9 @@ layer("TradingMissionService", (it) => {
       yield* service.createMission(createInput());
 
       const smuggled = yield* Effect.result(sql`
-        INSERT INTO trading_missions (
-          mission_id, user_id, trading_account_id, instruction, market,
-          harness_json, status, control_json,
-          authority_version, version, created_at, updated_at
-        ) VALUES (
-          'mission_smuggled', 'user_1', 'acct_1', 'Trade ETH momentum', 'ETH',
-          '{}', 'waiting', '{}', 1, 1, 0, 0
-        )
+        INSERT INTO trading_mission_markets
+          (mission_id, user_id, venue, market, bound_at, released_at)
+        VALUES ('mission_smuggled', 'user_1', 'hyperliquid', 'ETH', 0, NULL)
       `);
 
       assert.equal(smuggled._tag, "Failure");
@@ -181,6 +178,158 @@ layer("TradingMissionService", (it) => {
       const active = yield* service.findActiveMission("user_1");
       assert.ok(Option.isSome(active));
       assert.equal(Option.getOrThrow(active).id, "mission_1");
+    }),
+  );
+
+  // -- the held set (migration 079) -----------------------------------------
+
+  it.effect("a new mission holds exactly the market it was created on", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      const mission = yield* service.createMission({ ...createInput(), market: "ETH" });
+
+      assert.deepEqual([...mission.markets], ["ETH"]);
+      assert.equal(mission.market, "ETH");
+    }),
+  );
+
+  it.effect("bindMarket extends the mission onto a free market, primary first", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      yield* service.createMission({ ...createInput(), market: "ETH" });
+      const extended = yield* service.bindMarket({ missionId: "mission_1", market: "BTC" });
+
+      assert.deepEqual([...extended.markets], ["ETH", "BTC"]);
+      // The primary is unmoved: it is what the mandate names and what the
+      // panel opens to.
+      assert.equal(extended.market, "ETH");
+    }),
+  );
+
+  it.effect("binding a market the mission already holds changes nothing", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      yield* service.createMission({ ...createInput(), market: "ETH" });
+      const before = yield* service.getMissionVersion("mission_1");
+      const again = yield* service.bindMarket({ missionId: "mission_1", market: "ETH" });
+
+      assert.deepEqual([...again.markets], ["ETH"]);
+      assert.equal(yield* service.getMissionVersion("mission_1"), before);
+    }),
+  );
+
+  // Mediation is unchanged by the set: a market another mission holds is
+  // refused with the holder named, whether the caller is taking its first
+  // market or its second.
+  it.effect("bindMarket refuses a market another mission holds, naming it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      yield* service.createMission({ ...createInput(), market: "ETH" });
+      yield* service.createMission({
+        ...createInput({ missionId: "mission_2" }),
+        market: "BTC",
+        harness: { ...harness, threadId: "thread_2" },
+      });
+
+      const refused = yield* Effect.result(
+        service.bindMarket({ missionId: "mission_1", market: "BTC" }),
+      );
+
+      assert.equal(refused._tag, "Failure");
+      if (refused._tag === "Failure") {
+        const error = refused.failure;
+        assert.equal(error._tag, "TradingMissionAlreadyActiveError");
+        if (error._tag === "TradingMissionAlreadyActiveError") {
+          assert.equal(error.activeMissionId, "mission_2");
+          assert.equal(error.market, "BTC");
+          assert.equal(error.activeThreadId, "thread_2");
+        }
+      }
+      // And the mission that asked is exactly where it was.
+      const unchanged = yield* service.getMission("mission_1");
+      assert.deepEqual([...unchanged.markets], ["ETH"]);
+    }),
+  );
+
+  it.effect("releaseMarket frees one market and leaves the mission running", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      yield* service.createMission({ ...createInput(), market: "ETH" });
+      yield* service.bindMarket({ missionId: "mission_1", market: "BTC" });
+      const released = yield* service.releaseMarket({ missionId: "mission_1", market: "BTC" });
+
+      assert.equal(released.outcome, "released");
+      assert.deepEqual([...released.mission.markets], ["ETH"]);
+      assert.equal(released.mission.status, "initializing");
+
+      // Free means free: another mission can take it now.
+      const taker = yield* service.createMission({
+        ...createInput({ missionId: "mission_2" }),
+        market: "BTC",
+        harness: { ...harness, threadId: "thread_2" },
+      });
+      assert.deepEqual([...taker.markets], ["BTC"]);
+    }),
+  );
+
+  it.effect("releasing the last market is refused rather than emptying the mission", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      yield* service.createMission({ ...createInput(), market: "ETH" });
+      const refused = yield* service.releaseMarket({ missionId: "mission_1", market: "ETH" });
+
+      assert.equal(refused.outcome, "last_market");
+      assert.deepEqual([...refused.mission.markets], ["ETH"]);
+    }),
+  );
+
+  it.effect("releasing a market the mission never held is a no-op", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      yield* service.createMission({ ...createInput(), market: "ETH" });
+      const outcome = yield* service.releaseMarket({ missionId: "mission_1", market: "SOL" });
+
+      assert.equal(outcome.outcome, "not_held");
+      assert.deepEqual([...outcome.mission.markets], ["ETH"]);
+    }),
+  );
+
+  it.effect("ending the mission releases every market it held", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      yield* service.createMission({ ...createInput(), market: "ETH" });
+      yield* service.bindMarket({ missionId: "mission_1", market: "BTC" });
+      yield* service.transition({
+        missionId: "mission_1",
+        to: "revoked",
+        expectedVersion: yield* service.getMissionVersion("mission_1"),
+      });
+
+      // Both markets are free: a fresh mission takes either.
+      const eth = yield* service.createMission({
+        ...createInput({ missionId: "mission_2" }),
+        market: "ETH",
+        harness: { ...harness, threadId: "thread_2" },
+      });
+      const btc = yield* service.bindMarket({ missionId: "mission_2", market: "BTC" });
+      assert.deepEqual([...btc.markets], ["ETH", "BTC"]);
+      assert.equal(eth.id, "mission_2");
     }),
   );
 

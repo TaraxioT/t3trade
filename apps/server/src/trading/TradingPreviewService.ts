@@ -276,11 +276,11 @@ const directionPermitted: Check = (intent, ctx) => {
 // Exit-only since plan-29 §3.3 — the entry list stopped policing the market,
 // but an exit still has to land in the mandated one.
 const marketIsEth: Check = (intent, ctx) =>
-  intent.market === ctx.mission.market
+  ctx.mission.markets.includes(intent.market)
     ? Effect.void
     : reject(
         "market_is_eth",
-        `mission is mandated to ${ctx.mission.market} only; got ${intent.market}`,
+        `mission holds ${ctx.mission.markets.join(", ")}; got ${intent.market}`,
       );
 
 const executionWalletApproved: Check = (_intent, ctx) =>

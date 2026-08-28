@@ -125,6 +125,7 @@ const seed = (options?: { readonly withOpenRun?: boolean; readonly position?: nu
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({});
     yield* sql`DELETE FROM trading_missions`;
+    yield* sql`DELETE FROM trading_mission_markets`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;
     yield* sql`DELETE FROM trading_execution_records`;

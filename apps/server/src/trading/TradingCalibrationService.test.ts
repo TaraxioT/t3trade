@@ -38,6 +38,7 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
 });
 
 /** A mission row, for the account-wide read (plan 27 H4) to join through. */

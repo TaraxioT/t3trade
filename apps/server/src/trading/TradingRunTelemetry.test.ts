@@ -39,6 +39,7 @@ const seed = (input?: { readonly plan?: Record<string, unknown> }) =>
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({});
     yield* sql`DELETE FROM trading_missions`;
+    yield* sql`DELETE FROM trading_mission_markets`;
     yield* sql`DELETE FROM trading_harness_runs`;
     yield* sql`DELETE FROM trading_plan_history`;
 

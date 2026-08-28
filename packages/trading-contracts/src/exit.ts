@@ -41,7 +41,21 @@ export const TRADING_EXIT_TOOL = "trading_exit";
  * still runs in `TradingStopAdjustmentService` before anything reaches the
  * exchange.
  */
-export const TradingExitAction = Schema.Literals(["close", "reduce", "cancel_order", "move_stop"]);
+/**
+ * `release_market` is the odd one out and belongs here anyway: it is the only
+ * other way a chat stops being responsible for exposure. A mission holds a set
+ * of markets, and the reverse of taking one has to be reachable without ending
+ * the whole mission. It releases AUTHORITY, never a position: a market with
+ * anything open on it is refused, so "stop trading BTC here" can never quietly
+ * become "flatten BTC".
+ */
+export const TradingExitAction = Schema.Literals([
+  "close",
+  "reduce",
+  "cancel_order",
+  "move_stop",
+  "release_market",
+]);
 export type TradingExitAction = typeof TradingExitAction.Type;
 
 /**
@@ -72,7 +86,11 @@ const UrgencyWithDefault = TradingUrgency.pipe(Schema.withDecodingDefault(Effect
 export const TradingExitInput = Schema.Struct({
   ...missionBound,
   action: TradingExitAction,
-  /** Defaults to the market the mission is mandated to. Ignored by `cancel_order`. */
+  /**
+   * Defaults to the mission's primary market. Ignored by `cancel_order`, and
+   * REQUIRED by `release_market` — giving up authority by default is not a
+   * default anyone wants.
+   */
   market: Schema.optional(TradingMarket),
   /** `reduce` only: base units to remove, clamped to what is actually held. */
   sizeEth: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
@@ -109,6 +127,8 @@ export const TradingExitRefusalCode = Schema.Literals([
   "cancel_needs_cloid",
   /** `move_stop` missing `newStopPrice`, `justification` or `expectedPlanUpdatedAt`. */
   "move_stop_needs_stop_and_plan",
+  /** `release_market` naming no market to release. */
+  "release_needs_market",
 ]);
 export type TradingExitRefusalCode = typeof TradingExitRefusalCode.Type;
 
@@ -126,6 +146,7 @@ export interface TradingExitRefusal {
  */
 export function readExitRequest(input: {
   readonly action: TradingExitAction;
+  readonly market?: string | undefined;
   readonly sizeEth?: number | undefined;
   readonly fraction?: number | undefined;
   readonly cloid?: string | undefined;
@@ -161,6 +182,13 @@ export function readExitRequest(input: {
             detail:
               "a stop move names newStopPrice, justification, and the expectedPlanUpdatedAt " +
               "of the plan you read it against",
+          };
+    case "release_market":
+      return input.market !== undefined && input.market.length > 0
+        ? null
+        : {
+            code: "release_needs_market",
+            detail: "name the market to hand back; a release never defaults to one",
           };
   }
 }

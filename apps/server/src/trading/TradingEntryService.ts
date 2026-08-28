@@ -223,10 +223,14 @@ export const makeTradingEntryService = Effect.gen(function* () {
   const prepare: TradingEntryService["Service"]["prepare"] = (request) =>
     Effect.gen(function* () {
       const mission = yield* missions.getMission(request.missionId);
-      if (mission.market !== request.market) {
+      // A market the mission does not hold reaches here only when the bind
+      // could not extend onto it — the toolkit takes an unheld free market in
+      // the same call. So the refusal is about a market someone ELSE holds, and
+      // the held set is what it names.
+      if (!mission.markets.includes(request.market)) {
         return refused(
           "market_is_eth",
-          `nothing was placed: this chat holds authority on ${mission.market}, not ${request.market}. Trade ${mission.market} here, or ask the user to open ${request.market} in its own chat.`,
+          `nothing was placed: this chat holds authority on ${mission.markets.join(", ")}, not ${request.market}. Trade one of those here, or ask the user to open ${request.market} in its own chat.`,
         );
       }
 

@@ -46,8 +46,17 @@ export interface TradingStrategyServiceShape {
     input: TradingPublishPlanInput,
   ) => Effect.Effect<TradingPublishPlanResult, PersistenceSqlError | TradingMissionNotFoundError>;
 
+  /**
+   * The mission's current plan for one market.
+   *
+   * Plans are keyed by market, one per held market: a mission holding ETH and
+   * BTC publishes a plan for each, and revising one leaves the other exactly
+   * where it was. `market` omitted answers with the newest plan on any market,
+   * which is what a caller that has no market in hand actually means.
+   */
   readonly getCurrentStrategy: (
     missionId: string,
+    market?: string | undefined,
   ) => Effect.Effect<Option.Option<TradingPlanState>, PersistenceSqlError>;
 
   /**
@@ -199,15 +208,28 @@ const makeTradingStrategyService = Effect.gen(function* () {
   const sqlFail = (operation: string) =>
     toPersistenceSqlError(`TradingStrategyService.${operation}`);
 
-  const getCurrentStrategy: TradingStrategyServiceShape["getCurrentStrategy"] = (missionId) =>
+  const getCurrentStrategy: TradingStrategyServiceShape["getCurrentStrategy"] = (
+    missionId,
+    market,
+  ) =>
     Effect.gen(function* () {
-      const rows = yield* sql<{ readonly strategy_json: string }>`
-        SELECT strategy_json
-        FROM trading_plan_history
-        WHERE mission_id = ${missionId}
-        ORDER BY version DESC
-        LIMIT 1
-      `.pipe(Effect.mapError(sqlFail("getCurrentStrategy")));
+      const rows = yield* (
+        market === undefined
+          ? sql<{ readonly strategy_json: string }>`
+            SELECT strategy_json
+            FROM trading_plan_history
+            WHERE mission_id = ${missionId}
+            ORDER BY version DESC
+            LIMIT 1
+          `
+          : sql<{ readonly strategy_json: string }>`
+            SELECT strategy_json
+            FROM trading_plan_history
+            WHERE mission_id = ${missionId} AND market = ${market}
+            ORDER BY version DESC
+            LIMIT 1
+          `
+      ).pipe(Effect.mapError(sqlFail("getCurrentStrategy")));
 
       const row = rows[0];
       if (row === undefined) return Option.none();
@@ -399,9 +421,15 @@ const makeTradingStrategyService = Effect.gen(function* () {
             `;
             const version = (latest[0]?.version ?? 0) + 1;
 
+            // `market` is lifted out of the document into its own column: it
+            // is what "the current plan for BTC" reads, and a mission holding
+            // a set publishes one plan per market rather than one plan that
+            // keeps changing which market it is about.
             yield* sql`
-              INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
-              VALUES (${missionId}, ${version}, ${encodeStrategyJson(strategy)}, ${now})
+              INSERT INTO trading_plan_history
+                (mission_id, version, market, strategy_json, created_at)
+              VALUES (${missionId}, ${version}, ${strategy.market},
+                      ${encodeStrategyJson(strategy)}, ${now})
             `;
             return { version };
           }),

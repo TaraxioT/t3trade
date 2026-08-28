@@ -822,28 +822,36 @@ const make = Effect.gen(function* () {
 
     if (yield* holdsPosition(missionId)) {
       const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      const outcome = yield* controls.closeAndRevoke({
-        missionId,
-        masterAddress,
-        market: mission.market,
-      });
+      // Every market the mission holds: the thread is going, so nothing it was
+      // carrying on any of them may outlive it.
+      const outcomes = yield* Effect.forEach(mission.markets, (market) =>
+        controls.closeAndRevoke({ missionId, masterAddress, market }),
+      );
       yield* Effect.logInfo("thread ending closed and revoked a mission holding a position", {
         missionId,
         threadId,
         ending,
-        summary: outcome.summary,
+        summary: outcomes.map((entry) => entry.summary).join("; "),
       });
-      if (outcome.status !== undefined) {
-        const status = outcome.status as TradingMissionStatus;
+      // The status the closes left the mission in. Every market's close walks
+      // the same mission, so the last one to answer is the one that stands.
+      const reached = outcomes
+        .map((entry) => entry.status)
+        .filter((status): status is string => status !== undefined);
+      const last = reached[reached.length - 1];
+      if (last !== undefined) {
+        const status = last as TradingMissionStatus;
         yield* announceStatus({ missionId, threadId, status });
         if (status === "revoked" || status === "completed") {
           yield* Effect.sync(() => clearSessionProfile(threadId));
-          yield* retireWorkingOrdersQuietly({
-            missionId,
-            tradingAccountId: mission.tradingAccountId,
-            market: mission.market,
-            reason: `the thread was ${ending}`,
-          });
+          yield* Effect.forEach(mission.markets, (market) =>
+            retireWorkingOrdersQuietly({
+              missionId,
+              tradingAccountId: mission.tradingAccountId,
+              market,
+              reason: `the thread was ${ending}`,
+            }),
+          );
         }
       }
       return;
@@ -876,12 +884,14 @@ const make = Effect.gen(function* () {
     // Whatever resting entry the mission left behind goes with it — a flat
     // ending skips the close-and-revoke path that cancels entries for a
     // position, and a patient entry must not outlive its mission.
-    yield* retireWorkingOrdersQuietly({
-      missionId,
-      tradingAccountId: mission.tradingAccountId,
-      market: mission.market,
-      reason: `the thread was ${ending}`,
-    });
+    yield* Effect.forEach(mission.markets, (market) =>
+      retireWorkingOrdersQuietly({
+        missionId,
+        tradingAccountId: mission.tradingAccountId,
+        market,
+        reason: `the thread was ${ending}`,
+      }),
+    );
   });
 
   /** Map the fired watch's type to the §11.2 run cause it wakes the harness with. */
@@ -979,9 +989,11 @@ const make = Effect.gen(function* () {
       yield* guard.guardResume(missionId, isBlocked);
       yield* Effect.gen(function* () {
         const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-        yield* reconciler.reconcile(
-          { missionId, masterAddress, market: mission.market },
-          "before_resuming_paused_mission",
+        yield* Effect.forEach(mission.markets, (market) =>
+          reconciler.reconcile(
+            { missionId, masterAddress, market },
+            "before_resuming_paused_mission",
+          ),
         );
       }).pipe(Effect.catch(() => Effect.void));
 
@@ -1012,12 +1024,14 @@ const make = Effect.gen(function* () {
     // is released, and the row stays as the mission's permanent record.
     if (updated.status === "revoked" || updated.status === "completed") {
       yield* Effect.sync(() => clearSessionProfile(threadId));
-      yield* retireWorkingOrdersQuietly({
-        missionId,
-        tradingAccountId: mission.tradingAccountId,
-        market: mission.market,
-        reason: `the mission was ${updated.status}`,
-      });
+      yield* Effect.forEach(mission.markets, (market) =>
+        retireWorkingOrdersQuietly({
+          missionId,
+          tradingAccountId: mission.tradingAccountId,
+          market,
+          reason: `the mission was ${updated.status}`,
+        }),
+      );
     }
   });
 
@@ -1553,32 +1567,42 @@ const make = Effect.gen(function* () {
 
     const mission = yield* missions.getMission(missionId);
     const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    const target = { missionId, masterAddress, market: mission.market };
-
-    const outcome = yield* control === "cancel_entries"
-      ? controls.cancelEntries(target)
-      : control === "reduce_position"
-        ? controls.reducePosition({ ...target, percent: reductionPercent ?? 100 })
-        : control === "close_position"
-          ? controls.closePosition(target)
-          : controls.closeAndRevoke(target);
+    // A §14.7 button is about the mission, and the mission is every market it
+    // holds. Cancelling entries or flattening on one of two would leave the
+    // other running under a control the user believes they pressed.
+    const outcomes = yield* Effect.forEach(mission.markets, (market) => {
+      const target = { missionId, masterAddress, market };
+      return control === "cancel_entries"
+        ? controls.cancelEntries(target)
+        : control === "reduce_position"
+          ? controls.reducePosition({ ...target, percent: reductionPercent ?? 100 })
+          : control === "close_position"
+            ? controls.closePosition(target)
+            : controls.closeAndRevoke(target);
+    });
 
     yield* Effect.logInfo("trading deterministic control applied", {
       missionId,
       control,
-      summary: outcome.summary,
+      summary: outcomes.map((outcome) => outcome.summary).join("; "),
     });
 
-    if (outcome.status !== undefined) {
-      const status = outcome.status as TradingMissionStatus;
+    const reached = outcomes
+      .map((outcome) => outcome.status)
+      .filter((status): status is string => status !== undefined);
+    const last = reached[reached.length - 1];
+    if (last !== undefined) {
+      const status = last as TradingMissionStatus;
       yield* announceStatus({ missionId, threadId, status });
       if (status === "revoked" || status === "completed") {
-        yield* retireWorkingOrdersQuietly({
-          missionId,
-          tradingAccountId: mission.tradingAccountId,
-          market: mission.market,
-          reason: `the ${control} control ended the mission`,
-        });
+        yield* Effect.forEach(mission.markets, (market) =>
+          retireWorkingOrdersQuietly({
+            missionId,
+            tradingAccountId: mission.tradingAccountId,
+            market,
+            reason: `the ${control} control ended the mission`,
+          }),
+        );
       }
     }
   });
@@ -2052,10 +2076,18 @@ const make = Effect.gen(function* () {
       for (const mission of active) {
         if (followedMissions.has(mission.id)) continue;
         const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-        const input = { missionId: mission.id, masterAddress, market: mission.market };
-        yield* reconciler.reconcile(input, "server_startup").pipe(Effect.catch(() => Effect.void));
         const scope = yield* Scope.make("sequential");
-        yield* fillReconciler.follow(input).pipe(Scope.provide(scope), Effect.forkScoped);
+        // One reconcile and one fill follower per held market. They share the
+        // mission's scope, so the whole set stops together when it does.
+        yield* Effect.forEach(mission.markets, (market) =>
+          Effect.gen(function* () {
+            const input = { missionId: mission.id, masterAddress, market };
+            yield* reconciler
+              .reconcile(input, "server_startup")
+              .pipe(Effect.catch(() => Effect.void));
+            yield* fillReconciler.follow(input).pipe(Scope.provide(scope), Effect.forkScoped);
+          }),
+        );
         followedMissions.set(mission.id, scope);
         yield* Effect.logInfo("trading following mission", { missionId: mission.id });
       }
@@ -2126,11 +2158,9 @@ const make = Effect.gen(function* () {
     // the belt. The stop path is deliberately not touched here — withdrawing
     // stops is not this loop's invariant to own.
     const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    yield* reconcileTakeProtectionQuietly({
-      missionId,
-      market: mission.market,
-      masterAddress,
-    });
+    yield* Effect.forEach(mission.markets, (market) =>
+      reconcileTakeProtectionQuietly({ missionId, market, masterAddress }),
+    );
   });
 
   /**
@@ -2160,87 +2190,104 @@ const make = Effect.gen(function* () {
     yield* guardManualProtection().pipe(Effect.catchCause(() => Effect.void));
   });
 
+  /**
+   * The watchdog, per held market.
+   *
+   * Protection is a property of a position, and a position is per market: a
+   * mission holding ETH and BTC can lose the stop on either one, and the
+   * uncovered one is not necessarily the one it was created on.
+   */
   const guardMissionProtection = Effect.fn("TradingMissionReactor.guardMissionProtection")(
     function* (mission: TradingMission) {
-      // Only while the mission is simply holding a position. An execution in
-      // progress owns protection for the duration and reconciles it itself.
       if (mission.status !== "position_open") return;
+      yield* Effect.forEach(mission.markets, (market) =>
+        guardMarketProtection(mission, market).pipe(Effect.catchCause(() => Effect.void)),
+      );
+    },
+  );
 
-      const missionId = TradingMissionId.make(mission.id);
-      const threadId = mission.harness.threadId as ThreadId;
-      const sql = yield* SqlClient.SqlClient;
-      const rows = yield* sql<{ readonly size: number; readonly protected_size: number }>`
+  const guardMarketProtection = Effect.fn("TradingMissionReactor.guardMarketProtection")(function* (
+    mission: TradingMission,
+    market: string,
+  ) {
+    // Only while the mission is simply holding a position. An execution in
+    // progress owns protection for the duration and reconciles it itself.
+    if (mission.status !== "position_open") return;
+
+    const missionId = TradingMissionId.make(mission.id);
+    const threadId = mission.harness.threadId as ThreadId;
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly size: number; readonly protected_size: number }>`
       SELECT size, protected_size FROM trading_position_snapshots
-      WHERE mission_id = ${missionId} AND market = ${mission.market}
+      WHERE mission_id = ${missionId} AND market = ${market}
     `;
-      const snapshot = rows[0];
-      if (snapshot === undefined) return;
+    const snapshot = rows[0];
+    if (snapshot === undefined) return;
 
-      const exposed = Math.abs(snapshot.size);
-      if (exposed === 0) return;
-      if (snapshot.protected_size >= exposed - PROTECTION_SIZE_EPSILON) return;
+    const exposed = Math.abs(snapshot.size);
+    if (exposed === 0) return;
+    if (snapshot.protected_size >= exposed - PROTECTION_SIZE_EPSILON) return;
 
-      // The price the last approved stop was set at. Without one there is nothing
-      // to re-place — a position that never had a stop is not this loop's problem.
-      const stops = yield* sql<{ readonly stop_price: number }>`
+    // The price the last approved stop was set at. Without one there is nothing
+    // to re-place — a position that never had a stop is not this loop's problem.
+    const stops = yield* sql<{ readonly stop_price: number }>`
       SELECT stop_price FROM trading_execution_records
-      WHERE mission_id = ${missionId} AND stop_price IS NOT NULL
+      WHERE mission_id = ${missionId} AND market = ${market} AND stop_price IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 1
     `;
-      const stopPrice = stops[0]?.stop_price;
-      if (stopPrice === undefined) return;
+    const stopPrice = stops[0]?.stop_price;
+    if (stopPrice === undefined) return;
 
-      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      const summary =
-        `protection_lost: ${exposed} of ${mission.market} is open with only ` +
-        `${snapshot.protected_size} confirmed protected; re-placing the stop at ${stopPrice}`;
-      yield* inbox
-        .persist({
-          missionId,
-          category: "exchange",
-          deduplicationKey: `protection_lost:${occurredAt}`,
-          payload: { size: snapshot.size, protectedSize: snapshot.protected_size, stopPrice },
-          occurredAt,
-          summary,
-        })
-        .pipe(Effect.ignore);
-      yield* Effect.logWarning("trading protection watchdog found an uncovered position", {
+    const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+    const summary =
+      `protection_lost: ${exposed} of ${market} is open with only ` +
+      `${snapshot.protected_size} confirmed protected; re-placing the stop at ${stopPrice}`;
+    yield* inbox
+      .persist({
         missionId,
-        size: snapshot.size,
-        protectedSize: snapshot.protected_size,
+        category: "exchange",
+        deduplicationKey: `protection_lost:${market}:${occurredAt}`,
+        payload: { size: snapshot.size, protectedSize: snapshot.protected_size, stopPrice },
+        occurredAt,
+        summary,
+      })
+      .pipe(Effect.ignore);
+    yield* Effect.logWarning("trading protection watchdog found an uncovered position", {
+      missionId,
+      size: snapshot.size,
+      protectedSize: snapshot.protected_size,
+    });
+
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    const outcome = yield* protection.reconcileProtection({
+      missionId,
+      // Not a harness execution, so there is no sequence to borrow. Epoch
+      // seconds keeps each watchdog placement's cloid distinct from the last
+      // one's and from every harness sequence, which are small counters.
+      executionSequence: Math.floor(occurredAt / 1000),
+      masterAddress,
+      market,
+      stopPrice,
+    });
+
+    if (outcome.status === "escalate") {
+      yield* Effect.logError("trading protection watchdog could not re-place the stop; §17.5", {
+        missionId,
+        reason: outcome.escalationReason,
       });
-
-      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      const outcome = yield* protection.reconcileProtection({
+      yield* emergency.emergencyClose({
         missionId,
-        // Not a harness execution, so there is no sequence to borrow. Epoch
-        // seconds keeps each watchdog placement's cloid distinct from the last
-        // one's and from every harness sequence, which are small counters.
-        executionSequence: Math.floor(occurredAt / 1000),
         masterAddress,
-        market: mission.market,
-        stopPrice,
+        market,
+        reason: outcome.escalationReason ?? "protection was removed and could not be re-placed",
       });
+      yield* announceStatus({ missionId, threadId, status: "blocked" });
+    }
 
-      if (outcome.status === "escalate") {
-        yield* Effect.logError("trading protection watchdog could not re-place the stop; §17.5", {
-          missionId,
-          reason: outcome.escalationReason,
-        });
-        yield* emergency.emergencyClose({
-          missionId,
-          masterAddress,
-          market: mission.market,
-          reason: outcome.escalationReason ?? "protection was removed and could not be re-placed",
-        });
-        yield* announceStatus({ missionId, threadId, status: "blocked" });
-      }
-
-      // Either way the harness is told: its stop was pulled out from under it.
-      yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
-    },
-  );
+    // Either way the harness is told: its stop was pulled out from under it.
+    yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
+  });
 
   /**
    * The manual half of the protection watchdog. A manual entry always went out
@@ -2398,11 +2445,9 @@ const make = Effect.gen(function* () {
 
       const missionId = TradingMissionId.make(mission.id);
       const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      yield* reconcileTakeProtectionFor({
-        missionId,
-        market: mission.market,
-        masterAddress,
-      });
+      yield* Effect.forEach(mission.markets, (market) =>
+        reconcileTakeProtectionFor({ missionId, market, masterAddress }),
+      );
     },
   );
 
@@ -2423,8 +2468,17 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /** The working-order pass, per held market: a resting entry belongs to one. */
   const guardMissionWorkingOrder = Effect.fn("TradingMissionReactor.guardMissionWorkingOrder")(
     function* (mission: TradingMission) {
+      yield* Effect.forEach(mission.markets, (market) =>
+        guardMarketWorkingOrder(mission, market).pipe(Effect.catchCause(() => Effect.void)),
+      );
+    },
+  );
+
+  const guardMarketWorkingOrder = Effect.fn("TradingMissionReactor.guardMarketWorkingOrder")(
+    function* (mission: TradingMission, market: string) {
       const missionId = TradingMissionId.make(mission.id);
       const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
       const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
@@ -2432,7 +2486,7 @@ const make = Effect.gen(function* () {
       const outcome = yield* workingOrders.reconcile({
         missionId,
         masterAddress,
-        market: mission.market,
+        market,
         missionStatus: mission.status,
         plan: yield* moduleReadPlanPublication(missionId),
         nowMs,

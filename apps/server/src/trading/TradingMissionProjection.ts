@@ -66,6 +66,9 @@ export class TradingMissionProjection extends Context.Service<
 /** The one place migration 035's epoch millis become read-model ISO strings. */
 const toIso = (epochMillis: number): string => DateTime.formatIso(DateTime.makeUnsafe(epochMillis));
 
+const MarketsJson = Schema.fromJsonString(Schema.Array(Schema.String));
+const encodeMarketsJson = Schema.encodeUnknownSync(MarketsJson);
+const decodeMarketsJson = Schema.decodeUnknownSync(MarketsJson);
 const WatchesJson = Schema.fromJsonString(Schema.Array(PersistedWatch));
 const encodeWatchesJson = Schema.encodeUnknownSync(WatchesJson);
 const decodeWatchesJson = Schema.decodeUnknownSync(WatchesJson);
@@ -139,6 +142,8 @@ interface ProjectionRow {
   readonly authority_json: string;
   readonly authority_version: number;
   readonly strategy_json: string | null;
+  /** JSON array of the held markets, primary first. Null only until the next refresh. */
+  readonly markets_json: string | null;
   readonly watches_json: string;
   readonly control_json: string;
   readonly harness_json: string;
@@ -256,6 +261,8 @@ interface ExecutionSurfaces {
   readonly orders: ReadonlyArray<OrderRow>;
   /** The latest position snapshot, or null when flat/absent. */
   readonly position: PositionSnapshotRow | null;
+  /** One snapshot per market the mission has a live position on, newest first. */
+  readonly positions: ReadonlyArray<PositionSnapshotRow>;
   /** Realised result across every fill. */
   readonly result: MissionResultRow;
 }
@@ -415,14 +422,44 @@ const EMPTY_SURFACES: ExecutionSurfaces = {
   recentFills: [],
   orders: [],
   position: null,
+  positions: [],
   result: EMPTY_RESULT,
 };
+
+/**
+ * The held set as the row records it, primary first.
+ *
+ * Falls back to `[market]` for a row written before migration 079 backfilled
+ * the column, which is exactly what such a mission held.
+ */
+const readHeldMarkets = (row: ProjectionRow): ReadonlyArray<string> => {
+  if (row.markets_json === null) return [row.market];
+  try {
+    const markets = decodeMarketsJson(row.markets_json);
+    return markets.length === 0 ? [row.market] : markets;
+  } catch {
+    return [row.market];
+  }
+};
+
+const toPositionView = (position: PositionSnapshotRow) => ({
+  market: position.market,
+  size: position.size,
+  entryPrice: position.entry_price ?? undefined,
+  unrealisedPnl: position.unrealised_pnl,
+  marginUsed: position.margin_used,
+  protectedSize: position.protected_size,
+  liquidationPrice: position.liquidation_price ?? undefined,
+  markPrice: position.mark_px ?? undefined,
+  observedAt: toIso(position.observed_at),
+});
 
 const toMission = (
   row: ProjectionRow,
   missionVersion: number,
   exec: ExecutionSurfaces,
   strategy: TradingPlanState | null,
+  strategies: ReadonlyArray<TradingPlanState>,
   missionTimeline: ReadonlyArray<TradingMissionTimelineEntry>,
 ): OrchestrationTradingMission =>
   ({
@@ -432,6 +469,7 @@ const toMission = (
     tradingAccountId: row.trading_account_id,
     instruction: row.instruction,
     market: row.market,
+    markets: readHeldMarkets(row),
     status: decodeStatus(row.status),
     blockedReason: row.blocked_reason === null ? null : decodeBlockedReason(row.blocked_reason),
     authority: decodeAuthorityJson(row.authority_json),
@@ -443,6 +481,7 @@ const toMission = (
     // nothing had.
     missionVersion,
     strategy,
+    strategies,
     watches: decodeWatchesJson(row.watches_json),
     control: decodeControlJson(row.control_json),
     harness: decodeHarnessJson(row.harness_json),
@@ -511,25 +550,20 @@ const toMission = (
       lastFillAt: exec.result.last_fill_at === null ? null : toIso(exec.result.last_fill_at),
       plannedLossAtStopUsd: exec.result.planned_loss_at_stop,
     },
-    position:
-      exec.position === null
-        ? null
-        : {
-            market: exec.position.market,
-            size: exec.position.size,
-            entryPrice: exec.position.entry_price ?? undefined,
-            unrealisedPnl: exec.position.unrealised_pnl,
-            marginUsed: exec.position.margin_used,
-            protectedSize: exec.position.protected_size,
-            liquidationPrice: exec.position.liquidation_price ?? undefined,
-            markPrice: exec.position.mark_px ?? undefined,
-            observedAt: toIso(exec.position.observed_at),
-          },
+    position: exec.position === null ? null : toPositionView(exec.position),
+    // Drawn in held order rather than snapshot order, so the switcher's tabs
+    // and the cards under them agree.
+    positions: readHeldMarkets(row).flatMap((market) => {
+      const snapshot = exec.positions.find((position) => position.market === market);
+      return snapshot === undefined ? [] : [toPositionView(snapshot)];
+    }),
     // The market's configured leverage, read off the position snapshot because
     // that is where the exchange reports it. Mission-level rather than
     // position-level: it outlives the position, and the mission's receipts are
     // read after it has closed.
     leverage: exec.position?.leverage ?? undefined,
+    // Filled by the ws layer, which owns the live mark read.
+    marketPrices: [],
     missionTimeline,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -573,9 +607,25 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         WHERE mission_id = ${input.missionId} AND version = ${mission.authority_version}
       `.pipe(Effect.mapError(sqlFail("refresh:authority")));
 
+      const heldRows = yield* sql<{ readonly market: string }>`
+        SELECT market FROM trading_mission_markets
+        WHERE mission_id = ${input.missionId} AND released_at IS NULL
+        ORDER BY bound_at ASC, market ASC
+      `.pipe(Effect.mapError(sqlFail("refresh:markets")));
+      const held = heldRows.map((row) => row.market);
+      const heldMarkets =
+        held.length === 0
+          ? [mission.market]
+          : held.includes(mission.market)
+            ? [mission.market, ...held.filter((market) => market !== mission.market)]
+            : held;
+
+      // The primary market's current plan. Plans are keyed by market since
+      // migration 079, so "the mission's latest plan" would otherwise be
+      // whichever market was published to last.
       const strategies = yield* sql<{ readonly strategy_json: string }>`
         SELECT strategy_json FROM trading_plan_history
-        WHERE mission_id = ${input.missionId}
+        WHERE mission_id = ${input.missionId} AND market = ${mission.market}
         ORDER BY version DESC
         LIMIT 1
       `.pipe(Effect.mapError(sqlFail("refresh:strategy")));
@@ -638,7 +688,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       yield* sql`
         INSERT INTO projection_trading_missions (
           mission_id, thread_id, user_id, trading_account_id, instruction, market,
-          status, blocked_reason, authority_json, authority_version,
+          markets_json, status, blocked_reason, authority_json, authority_version,
           strategy_json, watches_json, control_json, harness_json,
           created_at, updated_at
         ) VALUES (
@@ -648,6 +698,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           ${mission.trading_account_id},
           ${mission.instruction},
           ${mission.market},
+          ${encodeMarketsJson(heldMarkets)},
           ${mission.status},
           ${mission.blocked_reason},
           ${authorityJson},
@@ -661,6 +712,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         )
         ON CONFLICT (mission_id) DO UPDATE SET
           thread_id = excluded.thread_id,
+          markets_json = excluded.markets_json,
           status = excluded.status,
           blocked_reason = excluded.blocked_reason,
           authority_json = excluded.authority_json,
@@ -795,12 +847,14 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         planned_loss_at_stop: plannedRiskRows[0]?.planned_loss_at_stop ?? null,
       };
 
-      // The latest position snapshot. Null when the mission has never had one.
+      // One snapshot per market the mission holds a position on — the table is
+      // unique on (mission, market), so this is the whole set and no longer
+      // whichever one was reconciled last.
       const positionRows = yield* sql<PositionSnapshotRow>`
         SELECT market, size, entry_price, unrealised_pnl, margin_used, protected_size,
                liquidation_price, mark_px, leverage, observed_at
         FROM trading_position_snapshots WHERE mission_id = ${missionId}
-        ORDER BY observed_at DESC LIMIT 1
+        ORDER BY observed_at DESC
       `.pipe(Effect.mapError(sqlFail("position")));
       const position = positionRows[0] ?? null;
 
@@ -809,6 +863,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         recentFills,
         orders,
         position,
+        positions: positionRows,
         result,
       } satisfies ExecutionSurfaces;
     });
@@ -861,6 +916,35 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       Effect.mapError(sqlFail("readMissionVersion")),
     );
 
+  /**
+   * The current plan for every held market, in held order.
+   *
+   * The projection row carries only the primary market's plan; the rest come
+   * from the history table, which has been keyed by market since migration 079.
+   * A row that no longer decodes is skipped, same as the primary's.
+   */
+  const readStrategies = (row: ProjectionRow) =>
+    Effect.gen(function* () {
+      const markets = readHeldMarkets(row);
+      const rows = yield* sql<{ readonly market: string; readonly strategy_json: string }>`
+        SELECT market, strategy_json FROM trading_plan_history p
+        WHERE p.mission_id = ${row.mission_id} AND p.market IS NOT NULL
+          AND p.version = (
+            SELECT MAX(version) FROM trading_plan_history q
+            WHERE q.mission_id = p.mission_id AND q.market = p.market
+          )
+      `.pipe(Effect.mapError(sqlFail("readStrategies")));
+      const byMarket = new Map(rows.map((entry) => [entry.market, entry.strategy_json]));
+      const plans: Array<TradingPlanState> = [];
+      for (const market of markets) {
+        const json = byMarket.get(market);
+        if (json === undefined) continue;
+        const plan = yield* readStrategy({ mission_id: row.mission_id, strategy_json: json });
+        if (plan !== null) plans.push(plan);
+      }
+      return plans as ReadonlyArray<TradingPlanState>;
+    });
+
   const getByThreadId: TradingMissionProjectionShape["getByThreadId"] = (threadId) =>
     Effect.gen(function* () {
       const rows = yield* sql<ProjectionRow>`
@@ -870,9 +954,10 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       if (row === undefined) return Option.none();
       const exec = yield* readExecutionSurfaces(row.mission_id);
       const strategy = yield* readStrategy(row);
+      const strategies = yield* readStrategies(row);
       const timeline = yield* readMissionTimeline(row.mission_id);
       const missionVersion = yield* readMissionVersion(row.mission_id);
-      return Option.some(toMission(row, missionVersion, exec, strategy, timeline));
+      return Option.some(toMission(row, missionVersion, exec, strategy, strategies, timeline));
     });
 
   const list: TradingMissionProjectionShape["list"] = () =>
@@ -886,11 +971,12 @@ const makeTradingMissionProjection = Effect.gen(function* () {
             Effect.all([
               readExecutionSurfaces(row.mission_id),
               readStrategy(row),
+              readStrategies(row),
               readMissionTimeline(row.mission_id),
               readMissionVersion(row.mission_id),
             ]),
-            ([exec, strategy, timeline, missionVersion]) =>
-              toMission(row, missionVersion, exec, strategy, timeline),
+            ([exec, strategy, strategies, timeline, missionVersion]) =>
+              toMission(row, missionVersion, exec, strategy, strategies, timeline),
           ),
         ),
         { concurrency: "unbounded" },

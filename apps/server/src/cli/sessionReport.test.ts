@@ -46,6 +46,7 @@ const seedSession = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
 
   // The mission lived 100 minutes and held positions for 50 of them.
   yield* insertMission(MISSION, 100 * 60_000);
@@ -119,6 +120,7 @@ const seedEmptySession = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
 
   yield* insertMission(EMPTY_MISSION, 1000);
 });
@@ -133,6 +135,7 @@ const seedOldFillSession = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
+  yield* sql`DELETE FROM trading_mission_markets`;
 
   yield* insertMission(OLD_FILLS_MISSION, 1000);
   // 1.00 of fees on 6010 gross notional is a 0.02% fee share — the fee line

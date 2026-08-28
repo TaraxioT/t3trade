@@ -173,7 +173,7 @@ it("names the bounds trading_exit's move_stop actually enforces", () => {
   expect(exit).toContain("approved stop");
   // And the other named bounds.
   expect(exit).toContain("noise floor");
-  expect(exit).toContain("never back below entry");
+  expect(exit).toContain("never below entry");
   expect(exit).toContain("rate-limited");
   // A refusal costs nothing, which is what makes trying one safe.
   expect(exit).toContain("A refusal sends nothing");

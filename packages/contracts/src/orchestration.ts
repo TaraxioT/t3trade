@@ -39,6 +39,8 @@ import {
   TradingMissionWatchCancelledPayload,
   TradingMissionWatchFiredPayload,
   TradingMissionWatchRegisteredPayload,
+  TradingMissionMarketBoundPayload,
+  TradingMissionMarketReleasedPayload,
   TradingMissionStopAdjustedPayload,
   TradingExecutionRequestedPayload,
   TradingOrderPlaceRequestedPayload,
@@ -1186,6 +1188,8 @@ export const OrchestrationEventType = Schema.Literals([
   "trading.mission-watch-fired",
   "trading.mission-run-started",
   "trading.mission-stop-adjusted",
+  "trading.mission-market-bound",
+  "trading.mission-market-released",
   "trading.execution-requested",
   "trading.order-place-requested",
 ]);
@@ -1638,6 +1642,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("trading.mission-stop-adjusted"),
     payload: TradingMissionStopAdjustedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-market-bound"),
+    payload: TradingMissionMarketBoundPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-market-released"),
+    payload: TradingMissionMarketReleasedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
