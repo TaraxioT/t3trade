@@ -2,6 +2,7 @@ import {
   connectLoopbackRedirectUri,
   CONNECT_OAUTH_SCOPES,
   DEFAULT_HOSTED_APP_URL,
+  DEFAULT_RELAY_URL,
 } from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
@@ -97,7 +98,11 @@ export function resolveRelayClientTracingConfig(
 
 export function makeRelayUrlConfig(fallback = buildTimeRelayUrl) {
   const runtimeConfig = Config.nonEmptyString("T3CODE_RELAY_URL");
-  return (fallback ? runtimeConfig.pipe(Config.withDefault(fallback)) : runtimeConfig).pipe(
+  // Precedence: environment variable, then the build-time value, then the
+  // fork's own relay. Only the case that used to fail closed gains a default;
+  // anything that resolved a URL before resolves the same one now.
+  return runtimeConfig.pipe(
+    Config.withDefault(fallback || DEFAULT_RELAY_URL),
     Config.mapOrFail(validateRelayUrl),
   );
 }

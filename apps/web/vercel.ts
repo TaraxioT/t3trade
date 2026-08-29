@@ -1,9 +1,16 @@
 import { matchers, routes, type Transform, type VercelConfig } from "@vercel/config/v1";
 
-const ROUTER_HOST = "app.t3.codes";
+// The channel router serves this fork's hosted app. The host follows the
+// hosted-app origin the deployment configures (VITE_HOSTED_APP_URL is visible
+// to the config file at deploy time), so a staging project cannot accidentally
+// route the production host, and the latest/nightly channel origins derive
+// from it. The literal fallback is this fork's own; an upstream sync will try
+// to revert it, keep it.
+const HOSTED_APP_ORIGIN = process.env.VITE_HOSTED_APP_URL ?? "https://app.athelstan.xyz";
+const ROUTER_HOST = new URL(HOSTED_APP_ORIGIN).host;
 const HOSTED_WEB_CHANNEL_COOKIE = "t3code_web_channel";
-const LATEST_ORIGIN = "https://latest.app.t3.codes";
-const NIGHTLY_ORIGIN = "https://nightly.app.t3.codes";
+const LATEST_ORIGIN = `https://latest.${ROUTER_HOST}`;
+const NIGHTLY_ORIGIN = `https://nightly.${ROUTER_HOST}`;
 const CLEAN_CHANNEL_QUERY_TRANSFORMS = [
   {
     type: "request.query",

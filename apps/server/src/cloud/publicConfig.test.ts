@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { DEFAULT_RELAY_URL } from "@t3tools/shared/connectAuth";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -33,8 +34,14 @@ it.effect("prefers a runtime relay URL override over the statically injected val
   }),
 );
 
-it.effect("requires a relay URL when the server bundle has no injected value", () =>
-  makeRelayUrlConfig("").pipe(provideEnv({}), Effect.flip),
+it.effect("falls back to the fork default relay URL when nothing is configured", () =>
+  Effect.gen(function* () {
+    // The case that used to fail closed. Precedence stays env var, then
+    // build-time value, then the fork's own relay.
+    const relayUrl = yield* makeRelayUrlConfig("").pipe(provideEnv({}));
+    assert.equal(relayUrl, DEFAULT_RELAY_URL);
+    assert.equal(relayUrl, "https://relay.athelstan.xyz");
+  }),
 );
 
 it.effect("rejects an insecure runtime relay URL override", () =>

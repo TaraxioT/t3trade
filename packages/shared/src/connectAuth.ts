@@ -13,8 +13,23 @@ const CONNECT_CALLBACK_PATH = "/connect/callback";
  * The CLI prints URLs against this origin and the web bundle uses it to
  * decide whether it is the hosted deployment — the two must agree, so the
  * default lives here.
+ *
+ * Fork patch: both defaults below point at this fork's own deployment, not
+ * upstream's. An upstream sync will try to revert them; keep the fork's
+ * values, the same rule `forkPaths.ts` documents for forked names.
  */
-export const DEFAULT_HOSTED_APP_URL = "https://app.t3.codes";
+export const DEFAULT_HOSTED_APP_URL = "https://app.athelstan.xyz";
+
+/**
+ * The relay a build talks to when no environment variable and no build-time
+ * value says otherwise. The server's `makeRelayUrlConfig` and the web's
+ * `resolveCloudPublicConfig` both use this as their final fallback, so a
+ * fork build without configuration reaches the fork's own relay rather than
+ * failing closed into silence, and never upstream's.
+ *
+ * Fork patch: keep pointing at this fork's relay across syncs.
+ */
+export const DEFAULT_RELAY_URL = "https://relay.athelstan.xyz";
 
 /**
  * Requested at authorize time by the hosted page and honored by the CLI's

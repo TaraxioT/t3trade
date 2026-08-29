@@ -1,3 +1,4 @@
+import { DEFAULT_RELAY_URL } from "@t3tools/shared/connectAuth";
 import { relayClerkTokenOptions } from "@t3tools/shared/relayAuth";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Schema from "effect/Schema";
@@ -43,8 +44,10 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
       import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined,
     ),
     clerkJwtTemplate: trimNonEmpty(import.meta.env.VITE_CLERK_JWT_TEMPLATE as string | undefined),
+    // Precedence: the build-time value, then the fork's own relay. Only the
+    // case that used to yield null gains a default.
     relayUrl: normalizeSecureRelayUrl(
-      (import.meta.env.VITE_T3CODE_RELAY_URL as string | undefined) ?? "",
+      (import.meta.env.VITE_T3CODE_RELAY_URL as string | undefined) ?? DEFAULT_RELAY_URL,
     ),
     relayTracing: {
       tracesUrl: normalizeSecureUrl(

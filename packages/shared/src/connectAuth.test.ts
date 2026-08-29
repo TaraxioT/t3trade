@@ -1,14 +1,32 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { normalizeSecureRelayUrl } from "./relayUrl.ts";
 import {
   buildConnectAuthorizeRequestUrl,
   buildConnectClerkAuthorizeUrl,
   connectCallbackUrl,
   connectLoopbackRedirectUri,
+  DEFAULT_HOSTED_APP_URL,
+  DEFAULT_RELAY_URL,
   encodeConnectAuthCode,
   parseConnectAuthCode,
   readConnectAuthorizeRequest,
 } from "./connectAuth.ts";
+
+describe("fork deployment defaults", () => {
+  it("points the hosted app and relay defaults at this fork's own deployment", () => {
+    // Byte-pinned on purpose: an upstream sync that reverts the fork patch
+    // should fail here rather than silently send fresh builds upstream.
+    expect(DEFAULT_HOSTED_APP_URL).toBe("https://app.athelstan.xyz");
+    expect(DEFAULT_RELAY_URL).toBe("https://relay.athelstan.xyz");
+  });
+
+  it("ships a relay default that survives the secure-origin normalization", () => {
+    // Both public configs run the default through normalizeSecureRelayUrl;
+    // if that ever rejects it, every fallback silently yields null.
+    expect(normalizeSecureRelayUrl(DEFAULT_RELAY_URL)).toBe(DEFAULT_RELAY_URL);
+  });
+});
 
 describe("connectAuth", () => {
   it("round-trips state and challenge through the authorize URL fragment", () => {
