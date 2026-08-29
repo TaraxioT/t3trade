@@ -781,7 +781,12 @@ export type TradingArmWatchInput = typeof TradingArmWatchInput.Type;
 /** One account-scoped watch as the RPCs serve it. */
 export const TradingAccountWatch = Schema.Struct({
   id: TrimmedNonEmptyString,
-  market: MarketRef,
+  /**
+   * Null for the one watch kind that names no market: a `time` watch is a
+   * clock, and inventing an asset for it would put a coin the user never
+   * named into every surface that lists the armed set.
+   */
+  market: Schema.NullOr(MarketRef),
   condition: WatchCondition,
   deliver: TradingWatchDeliver,
   rearm: Schema.optional(TradingWatchRearm),

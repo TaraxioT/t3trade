@@ -49,8 +49,9 @@ function describeAccountWatch(watch: TradingAccountWatch): string {
     return `${condition.market} crosses ${condition.direction} ${condition.price}`;
   }
   // The form only arms price watches today, but the list serves whatever the
-  // server holds; fall back to the shared vocabulary for the rest.
-  return `${watch.market.asset}: ${condition.kind}`;
+  // server holds; fall back to the shared vocabulary for the rest. A time
+  // watch names no market, so the clock is the only name it gets.
+  return `${watch.market === null ? "clock" : watch.market.asset}: ${condition.kind}`;
 }
 
 function ArmWatchForm({
@@ -197,7 +198,8 @@ function ArmedWatches({
   const cancel = useAtomCommand(orchestrationEnvironment.cancelTradingWatch);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const active = (data?.watches ?? []).filter(
-    (watch) => watch.status === "active" && (market === undefined || watch.market.asset === market),
+    (watch) =>
+      watch.status === "active" && (market === undefined || watch.market?.asset === market),
   );
 
   if (error !== null) return <p className="px-1 text-xs text-destructive">{error}</p>;

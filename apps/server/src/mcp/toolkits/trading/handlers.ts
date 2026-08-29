@@ -2146,7 +2146,8 @@ const analystWatch = Effect.fn("TradingToolkit.analystWatch")(function* (input: 
   return {
     outcome: "armed_alert" as const,
     watchId: armed.watch.id,
-    market: armed.watch.market.asset,
+    // The documented "" convention for a time alert, which names no market.
+    market: armed.watch.market === null ? "" : armed.watch.market.asset,
     deliver: "notify" as const,
   };
 });

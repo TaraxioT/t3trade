@@ -65,7 +65,8 @@ export interface ArmAccountWatchInput {
 /** One account-scoped watch as the RPCs serve it. */
 export interface AccountWatch {
   readonly id: string;
-  readonly market: MarketRef;
+  /** Null for the clock watch, which names no market. */
+  readonly market: MarketRef | null;
   readonly condition: WatchCondition;
   readonly deliver: TradingWatchDeliver;
   readonly rearm?: TradingWatchRearm;
@@ -156,12 +157,18 @@ const toAccountWatch = (row: AccountWatchRow): AccountWatch => {
   const watch = decodeWatchJson(row.watch_json);
   const condition = toWatchCondition(watch);
   const rearm = row.rearm_json === null ? undefined : decodeRearmJson(row.rearm_json);
+  // A time watch names no market, and the empty string that used to stand
+  // in for that fact failed the wire's own non-empty asset check, taking the
+  // whole armed list down with it. Null is the honest shape.
+  const marketless = row.asset === null && !("market" in watch);
   return {
     id: row.watch_id,
-    market: {
-      venue: row.venue as TradingVenue,
-      asset: row.asset ?? ("market" in watch ? watch.market : ""),
-    },
+    market: marketless
+      ? null
+      : {
+          venue: row.venue as TradingVenue,
+          asset: row.asset ?? ("market" in watch ? watch.market : ""),
+        },
     condition,
     deliver: row.deliver as TradingWatchDeliver,
     ...(rearm === undefined ? {} : { rearm }),
