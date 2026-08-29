@@ -182,6 +182,7 @@ layer("session-report", (it) => {
         "wakes taken: 4",
         "wakes that changed nothing: 1",
         "wakes with no decision: 1",
+        "wakes that researched an idea: 0",
         "time in market: 50%",
         "stand-down codes:",
         "  insufficient_volatility 1",
@@ -217,6 +218,7 @@ layer("session-report", (it) => {
         "wakes taken: 0",
         "wakes that changed nothing: 0",
         "wakes with no decision: 0",
+        "wakes that researched an idea: 0",
         "time in market: 0%",
         "stand-down codes: none",
       ]);
@@ -252,6 +254,7 @@ layer("session-report", (it) => {
           "wakes taken: 0",
           "wakes that changed nothing: 0",
           "wakes with no decision: 0",
+          "wakes that researched an idea: 0",
           "time in market: 0%",
           "stand-down codes: none",
         ]);

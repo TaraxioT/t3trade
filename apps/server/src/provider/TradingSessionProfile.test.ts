@@ -3,6 +3,10 @@ import { expect, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as NodeFSP from "node:fs/promises";
 
+import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
+import { TRADING_VALIDATE_TOOL } from "@t3tools/trading-contracts/forward";
+import { TRADING_HYPOTHESIS_TOOL } from "@t3tools/trading-contracts/hypothesis";
+
 import { TradingToolkit } from "../mcp/toolkits/trading/tools.ts";
 import { clearAllSessionProfiles, setSessionProfile } from "./SessionProfile.ts";
 import {
@@ -12,8 +16,12 @@ import {
   TRADING_ANALYST_ALLOWED_TOOL_NAMES,
   TRADING_ANALYST_SYSTEM_PROMPT,
   TRADING_ANALYST_TOOL_NAMES,
+  TRADING_OBSERVE_ALLOWED_TOOL_NAMES,
+  TRADING_OBSERVE_SYSTEM_PROMPT,
+  TRADING_OBSERVE_TOOL_NAMES,
   TRADING_SYSTEM_PROMPT,
   TRADING_TOOL_NAMES,
+  WORKSPACE_CHAT_PREFIX,
   WORKSPACE_TRADING_PREAMBLE,
 } from "./TradingSessionProfile.ts";
 
@@ -90,14 +98,98 @@ it("prefixes the analyst contract onto an analyst thread's turn", () => {
   clearAllSessionProfiles();
 });
 
-it("grounds every thread in the workspace, in under 800 characters", () => {
+it("gives an observe mission every research tool and no way to act", () => {
+  for (const name of TRADING_OBSERVE_TOOL_NAMES) {
+    expect(registeredToolNames).toContain(name);
+  }
+  // The analyst's set plus the journal. The journal is the difference: an
+  // observe mission is woken and needs somewhere durable to put what it
+  // concluded, where an analyst's transcript is its whole memory.
+  expect([...TRADING_OBSERVE_TOOL_NAMES].sort()).toEqual(
+    [
+      "trading_look",
+      "trading_strategy",
+      "trading_watch",
+      "trading_journal",
+      "trading_backtest",
+      "trading_validate",
+      "trading_hypothesis",
+    ].sort(),
+  );
+  // The three execution tools are exactly what it lacks, and this is the
+  // assertion the whole "structurally unable to trade" claim rests on.
+  for (const excluded of ["trading_plan", "trading_enter", "trading_exit"]) {
+    expect(TRADING_OBSERVE_TOOL_NAMES).not.toContain(excluded);
+    expect(TRADING_OBSERVE_ALLOWED_TOOL_NAMES).not.toContain(`mcp__t3-trade__${excluded}`);
+  }
+  expect(TRADING_OBSERVE_ALLOWED_TOOL_NAMES.every((n) => n.startsWith("mcp__t3-trade__"))).toBe(
+    true,
+  );
+  expect(TRADING_OBSERVE_ALLOWED_TOOL_NAMES).not.toContain("mcp__t3-trade__*");
+
+  // The prompt names only tools it has, in both directions: it may not promise
+  // one it lacks, and the three it names as absent are named as absent.
+  const mentioned = new Set(TRADING_OBSERVE_SYSTEM_PROMPT.match(/trading_[a-z_]+/g) ?? []);
+  for (const name of mentioned) {
+    if (["trading_plan", "trading_enter", "trading_exit"].includes(name)) continue;
+    expect(TRADING_OBSERVE_TOOL_NAMES).toContain(name);
+  }
+  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain("are not in this session");
+  // The reverse state, named where the observer will look for it. Found live:
+  // an observer asked to stand down reached for `shelve` — a verdict on the
+  // idea — because nothing had told it that `observe` is also the way out.
+  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain("WHEN THE USER ASKS YOU TO STOP WATCHING");
+  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain("ends this watch");
+  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain(WORKSPACE_TRADING_PREAMBLE);
+});
+
+it("tells every woken agent what to do with a validation event", () => {
+  // The doctrine reaches BOTH contracts: a trade mission with a validation on
+  // its market gets these wakes too, and the rule there is the same one.
+  for (const prompt of [TRADING_SYSTEM_PROMPT, TRADING_OBSERVE_SYSTEM_PROMPT]) {
+    expect(prompt).toContain("WHEN A VALIDATION WAKES YOU, NARRATE IT AND DO NOTHING ELSE");
+    expect(prompt).toContain("validationEvents");
+    expect(prompt).toContain("Do not publish a plan");
+  }
+  // …and not the analyst's, which holds no mission and is never woken.
+  expect(TRADING_ANALYST_SYSTEM_PROMPT).not.toContain("WHEN A VALIDATION WAKES YOU");
+});
+
+it("prefixes the observe contract onto an observe thread's turn", () => {
+  clearAllSessionProfiles();
+  const observeThread = ThreadId.make("thread-observe");
+  setSessionProfile({ threadId: observeThread, kind: "trading_observe" });
+  resetTradingContractDelivery(observeThread);
+
+  const wake = "paper long opened on ETH at 2451";
+  const first = applyTradingTurnContract(observeThread, wake);
+  expect(first.text.endsWith(wake)).toBe(true);
+  expect(first.text).toContain("t3-trade observe session");
+  expect(first.text).toContain("are not in this session");
+  first.markDelivered();
+
+  const second = applyTradingTurnContract(observeThread, wake);
+  expect(second.text).toContain("t3-trade observe session");
+  expect(second.text).not.toContain("are not in this session");
+  expect(second.text.length).toBeLessThan(first.text.length / 4);
+
+  clearAllSessionProfiles();
+});
+
+it("grounds every thread in the workspace, in under 900 characters", () => {
   // It rides every turn in the workspace, trading thread or not, so its size is
-  // paid on every call here. The four things it says are the four a thread
-  // cannot work them out from the tools alone.
-  expect(WORKSPACE_TRADING_PREAMBLE.length).toBeLessThan(800);
+  // paid on every call here. The five things it says are the five a thread
+  // cannot work out from the tools alone. The budget moved from 800 to 900 for
+  // exactly one of them: without the line saying an idea can be tested without
+  // being traded, the only thing this block described was execution, and every
+  // thread opened on the assumption that a trade was coming.
+  expect(WORKSPACE_TRADING_PREAMBLE.length).toBeLessThan(900);
   expect(WORKSPACE_TRADING_PREAMBLE).toContain("Hyperliquid testnet");
+  expect(WORKSPACE_TRADING_PREAMBLE).toContain("An idea does not have to become a trade");
   expect(WORKSPACE_TRADING_PREAMBLE).toContain("Every entry needs a stop");
   expect(WORKSPACE_TRADING_PREAMBLE).toContain("binds automatically");
+  // And the presumption that an order is coming is gone from it.
+  expect(WORKSPACE_TRADING_PREAMBLE).not.toContain("when you place the order");
   // Plain sentences, no em-dashes, in anything a user or a model reads.
   expect(WORKSPACE_TRADING_PREAMBLE).not.toContain("\u2014");
 
@@ -128,8 +220,71 @@ it("enumerates the playbook call order and the terminal decision outcomes", () =
     "no_setup",
     "blocked_by_data",
     "execution_refused",
+    "researched",
   ]) {
     expect(TRADING_SYSTEM_PROMPT).toContain(outcome);
+  }
+});
+
+it("gives an ordinary chat thread the research loop, not only the grounding", () => {
+  // The gap this closes: a thread takes a trading profile, and with it the full
+  // decision contract, only when it publishes a plan or executes. A thread that
+  // is exploring an idea does neither, so the exploratory doctrine used to ride
+  // every mission wake and no chat turn — the exact inverse of where it is
+  // needed. It rides the first turn of a chat session and nothing after it.
+  expect(WORKSPACE_CHAT_PREFIX).toContain(WORKSPACE_TRADING_PREAMBLE);
+  expect(WORKSPACE_CHAT_PREFIX).toContain("WHEN THE USER BRINGS AN IDEA AND NOT AN ORDER");
+  expect(WORKSPACE_CHAT_PREFIX).toContain(
+    "DO NOT PUBLISH A PLAN OR ARM AN EXECUTION WAKE FOR AN IDEA THE USER HAS NOT ASKED TO TRADE",
+  );
+  // Standing alone, it may not point at a loop that is not there.
+  expect(WORKSPACE_CHAT_PREFIX).not.toContain("the loop above");
+
+  const chatThread = ThreadId.make("thread_chat_research");
+  resetTradingContractDelivery(chatThread);
+  const first = applyTradingTurnContract(chatThread, "is this idea any good?");
+  expect(first.text).toContain(WORKSPACE_CHAT_PREFIX);
+  first.markDelivered();
+  // And once only: the transcript keeps what it was already told.
+  expect(applyTradingTurnContract(chatThread, "and now?").text).toBe("and now?");
+  clearAllSessionProfiles();
+});
+
+it("makes the research loop a peer of the execution loop, not a footnote", () => {
+  // The contract used to describe one thing to do with a market: predict, arm,
+  // wait, react. A user who brought an IDEA got that loop pointed at them, and
+  // the three research tools were never named in it at all.
+  expect(TRADING_SYSTEM_PROMPT).toContain("WHEN THE USER BRINGS AN IDEA AND NOT AN ORDER");
+  for (const tool of [TRADING_HYPOTHESIS_TOOL, TRADING_BACKTEST_TOOL, TRADING_VALIDATE_TOOL]) {
+    expect(TRADING_SYSTEM_PROMPT).toContain(tool);
+  }
+  // The four moves the research path is made of.
+  expect(TRADING_SYSTEM_PROMPT).toContain("IN THE USER'S OWN WORDS");
+  expect(TRADING_SYSTEM_PROMPT).toContain("NEAREST TESTABLE FORM");
+  expect(TRADING_SYSTEM_PROMPT).toContain("OFFER FORWARD VALIDATION");
+  expect(TRADING_SYSTEM_PROMPT).toContain("REVISE, DO NOT REFILE");
+  // And the one thing it forbids.
+  expect(TRADING_SYSTEM_PROMPT).toContain(
+    "DO NOT PUBLISH A PLAN OR ARM AN EXECUTION WAKE FOR AN IDEA THE USER HAS NOT ASKED TO TRADE",
+  );
+  // The direct-order rule survives it untouched: research is the path for an
+  // idea, never a reason to talk somebody out of a trade they asked for.
+  expect(TRADING_SYSTEM_PROMPT).toContain("WHEN THE USER TELLS YOU TO MAKE A TRADE, MAKE IT");
+  expect(TRADING_SYSTEM_PROMPT).toContain("say so in ONE line and then execute");
+});
+
+it("names every tool the analyst allowlist actually grants", () => {
+  // The contract said "your three tools" while the allowlist granted six, so
+  // the prompt was telling the model it could not do things it could.
+  expect(TRADING_ANALYST_SYSTEM_PROMPT).not.toContain("Your three tools");
+  for (const tool of TRADING_ANALYST_TOOL_NAMES) {
+    expect(TRADING_ANALYST_SYSTEM_PROMPT).toContain(tool);
+  }
+  // Every trading tool the analyst prompt names is one the analyst can call:
+  // naming an execution tool would be worse than naming too few.
+  const mentioned = new Set(TRADING_ANALYST_SYSTEM_PROMPT.match(/trading_[a-z_]+/g) ?? []);
+  for (const name of mentioned) {
+    expect(TRADING_ANALYST_TOOL_NAMES).toContain(name);
   }
 });
 

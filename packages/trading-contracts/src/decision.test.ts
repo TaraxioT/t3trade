@@ -50,6 +50,48 @@ describe("deriveDecisionOutcome", () => {
     expect(deriveDecisionOutcome(facts())).toBe("no_decision");
   });
 
+  it("calls a turn that measured an idea researched, not silent", () => {
+    // The exploratory loop's whole product: an idea filed, measured, or put on
+    // paper, with no plan and no position behind it. Recorded as `no_decision`
+    // it read as the failure the funnel drives to zero.
+    for (const tool of ["trading_backtest", "trading_validate", "trading_hypothesis"]) {
+      const researched = facts({ toolsCalled: ["trading_look", tool] });
+      expect(deriveDecisionOutcome(researched)).toBe("researched");
+      expect(deriveStandDownCode(researched, "researched")).toBeUndefined();
+    }
+  });
+
+  it("keeps the plan-side outcome when a research turn also published", () => {
+    // Researching and then planning is a turn that decided; the plan is the
+    // decision and the research is how it got there.
+    const armed = facts({
+      toolsCalled: ["trading_backtest", "trading_plan"],
+      publishedPlan: true,
+      hasArmedEntry: true,
+    });
+    expect(deriveDecisionOutcome(armed)).toBe("waiting_with_setup");
+
+    const stoodAside = facts({
+      toolsCalled: ["trading_hypothesis", "trading_plan"],
+      publishedPlan: true,
+      publishedStandDown: true,
+    });
+    expect(deriveDecisionOutcome(stoodAside)).toBe("no_setup");
+  });
+
+  it("still calls a turn that called nothing at all no_decision", () => {
+    expect(deriveDecisionOutcome(facts({ toolsCalled: ["trading_look"] }))).toBe("no_decision");
+    expect(deriveDecisionOutcome(facts())).toBe("no_decision");
+  });
+
+  it("does not dress a failed research turn up as research", () => {
+    // The numbers it would report cannot be trusted, so the read failure is
+    // still what the turn is about.
+    expect(
+      deriveDecisionOutcome(facts({ toolsCalled: ["trading_backtest"], toolErrorCount: 1 })),
+    ).toBe("blocked_by_data");
+  });
+
   it("counts a reasoned stand-down as a decision even when a read failed", () => {
     // The turn published: it concluded something. The failed read is recorded
     // on the run, but it is not what the outcome is about.

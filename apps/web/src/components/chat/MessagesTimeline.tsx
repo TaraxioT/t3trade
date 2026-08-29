@@ -126,6 +126,15 @@ import {
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
 import { ValidationReportCard } from "../trading/ValidationReportCard";
+import { CardPrefillActions } from "../trading/CardPrefillActions";
+import {
+  armValidationSentence,
+  backtestLatestVersionSentence,
+  rerunBacktestSentence,
+  validateThisThesisSentence,
+} from "../trading/cardPrefillSentences";
+import { useComposerPrefill } from "../trading/composerPrefill";
+import type { ValidationCard } from "../trading/tradingValidation";
 import {
   deriveBacktestCard,
   deriveHypothesisCard,
@@ -2836,6 +2845,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
  */
 function TradingBacktestTimelineRow({ card }: { card: BacktestCard }) {
   const [expanded, setExpanded] = useState(false);
+  const prefill = useComposerPrefill(use(TimelineRowCtx).threadRef);
   const toneClass = (tone: "positive" | "negative" | "neutral") =>
     tone === "positive"
       ? "text-success-foreground"
@@ -2891,6 +2901,14 @@ function TradingBacktestTimelineRow({ card }: { card: BacktestCard }) {
         <p className="text-[11px] text-muted-foreground">{card.coverageLine}</p>
       </div>
 
+      <CardPrefillActions
+        prefill={prefill}
+        actions={[
+          { label: "Validate forward on paper", sentence: validateThisThesisSentence() },
+          { label: "Rerun with a change", sentence: rerunBacktestSentence() },
+        ]}
+      />
+
       <button
         type="button"
         aria-expanded={expanded}
@@ -2924,9 +2942,13 @@ function TradingBacktestTimelineRow({ card }: { card: BacktestCard }) {
  * rather than in a footnote. A card of green numbers that turns out to have
  * been hypothetical is the one way this feature could mislead somebody.
  */
-// One card, two callers: this row and the alert feed's expiry expansion.
-// See `ValidationReportCard`.
-const TradingValidationTimelineRow = ValidationReportCard;
+// One card, two callers: this row and the alert feed's expiry expansion. Only
+// this one is inside a thread, so only this one hands the card a composer to
+// write into. See `ValidationReportCard`.
+function TradingValidationTimelineRow({ card }: { card: ValidationCard }) {
+  const prefill = useComposerPrefill(use(TimelineRowCtx).threadRef);
+  return <ValidationReportCard card={card} prefill={prefill} />;
+}
 
 /**
  * The idea, its runs, and whatever is still running against it.
@@ -2938,6 +2960,7 @@ const TradingValidationTimelineRow = ValidationReportCard;
  */
 function TradingHypothesisTimelineRow({ card }: { card: HypothesisCard }) {
   const [expanded, setExpanded] = useState(false);
+  const prefill = useComposerPrefill(use(TimelineRowCtx).threadRef);
   const toneClass = (tone: "positive" | "negative" | "neutral") =>
     tone === "positive"
       ? "text-success-foreground"
@@ -3026,6 +3049,17 @@ function TradingHypothesisTimelineRow({ card }: { card: HypothesisCard }) {
           <p className="text-[11px] text-muted-foreground">{card.windowNote}</p>
         )}
       </div>
+
+      <CardPrefillActions
+        prefill={prefill}
+        actions={[
+          {
+            label: "Backtest the latest version",
+            sentence: backtestLatestVersionSentence(card),
+          },
+          { label: "Validate it forward on paper", sentence: armValidationSentence(card) },
+        ]}
+      />
 
       <button
         type="button"

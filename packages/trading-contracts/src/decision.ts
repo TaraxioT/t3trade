@@ -13,6 +13,24 @@
  */
 import { Schema } from "effect";
 
+import { TRADING_BACKTEST_TOOL } from "./backtest.ts";
+import { TRADING_VALIDATE_TOOL } from "./forward.ts";
+import { TRADING_HYPOTHESIS_TOOL } from "./hypothesis.ts";
+
+/**
+ * The three tools whose product is knowledge rather than a position.
+ *
+ * A turn that called one of these and published no plan did not fail to decide;
+ * it decided to measure. Before `researched` existed that turn was recorded as
+ * `no_decision`, which is the bucket the funnel exists to drive to zero, so the
+ * loop's own health metric counted honest research as a defect.
+ */
+const RESEARCH_TOOLS: ReadonlySet<string> = new Set([
+  TRADING_BACKTEST_TOOL,
+  TRADING_VALIDATE_TOOL,
+  TRADING_HYPOTHESIS_TOOL,
+]);
+
 /**
  * How a harness run ended.
  *
@@ -25,6 +43,9 @@ import { Schema } from "effect";
  * - `blocked_by_data` — the turn could not get the evidence it needed (a tool
  *   failed, data was stale or unavailable).
  * - `execution_refused` — the turn tried to execute and a server gate refused.
+ * - `researched` — the run's product is a tested or updated hypothesis rather
+ *   than a position: it called a research tool and published no plan, because
+ *   the user asked whether an idea holds up, not for a trade.
  * - `no_decision` — the run ended without any of the above. This is the outcome
  *   the funnel exists to drive to zero.
  */
@@ -35,6 +56,7 @@ export const TradingDecisionOutcome = Schema.Literals([
   "no_setup",
   "blocked_by_data",
   "execution_refused",
+  "researched",
   "no_decision",
 ]);
 export type TradingDecisionOutcome = typeof TradingDecisionOutcome.Type;
@@ -108,6 +130,8 @@ export interface TradingRunFacts {
  * refusal beats a publish (the turn wanted to trade and was stopped), and a
  * data failure beats a stand-down only when nothing was published — a turn that
  * hit a failed read and still published a reasoned stand-down made a decision.
+ * Research sits under the unpublished branch: a turn with a completed research
+ * call and no plan is `researched`, not the silence `no_decision` names.
  */
 export function deriveDecisionOutcome(facts: TradingRunFacts): TradingDecisionOutcome {
   if (facts.exchangeStatus === "rejected" || facts.exchangeStatus === "failed") {
@@ -117,7 +141,15 @@ export function deriveDecisionOutcome(facts: TradingRunFacts): TradingDecisionOu
   if (facts.exchangeAction !== undefined) return "managed_position";
   if (facts.firstPreviewRefusal !== undefined) return "execution_refused";
   if (!facts.publishedPlan) {
-    return facts.toolErrorCount > 0 ? "blocked_by_data" : "no_decision";
+    if (facts.toolErrorCount > 0) return "blocked_by_data";
+    // A turn that filed, measured, or validated an idea produced something,
+    // even though nothing was planned and nothing was traded. Only a turn that
+    // did none of that is `no_decision`. Note the ordering: a research turn
+    // whose reads actually failed is still `blocked_by_data`, because the
+    // numbers it would report cannot be trusted.
+    return facts.toolsCalled.some((tool) => RESEARCH_TOOLS.has(tool))
+      ? "researched"
+      : "no_decision";
   }
   if (facts.publishedStandDown) return "no_setup";
   return facts.hasArmedEntry ? "waiting_with_setup" : "no_setup";
@@ -133,6 +165,10 @@ export function deriveStandDownCode(
   switch (outcome) {
     case "entered":
     case "managed_position":
+    // Research is not a stand-down: nothing was declined, because nothing was
+    // proposed. A code here would be counted as market evidence for a
+    // stand-down that never happened.
+    case "researched":
       return undefined;
     case "execution_refused":
       return facts.exchangeStatus === "rejected" || facts.exchangeStatus === "failed"

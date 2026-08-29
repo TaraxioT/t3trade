@@ -36,7 +36,11 @@ import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
 import type { ThreadId } from "@t3tools/contracts";
 
-import { hasTradingProfile, isTradingAnalystThread } from "./SessionProfile.ts";
+import {
+  hasTradingProfile,
+  isTradingAnalystThread,
+  isTradingObserveThread,
+} from "./SessionProfile.ts";
 
 /** The MCP server name every adapter mounts the trading toolkit under. */
 export const TRADING_MCP_SERVER_NAME = "t3-trade";
@@ -45,17 +49,19 @@ export const TRADING_MCP_SERVER_NAME = "t3-trade";
  * The workspace grounding block, carried by EVERY thread here.
  *
  * Chat is the front door for trading now, so a thread that has never held a
- * mission can still reach the trading tools and still has to know four things
+ * mission can still reach the trading tools and still has to know five things
  * before it says anything: which venue exists, that market facts are fetched
- * rather than recalled, that an entry without a stop is not an entry, and that
- * authority binds itself on first use rather than being applied for. It is
- * deliberately short — it rides every turn's system context, trading thread or
- * not, and anything longer is paid for on every call in the workspace.
+ * rather than recalled, that an idea can be tested without ever being traded,
+ * that an entry without a stop is not an entry, and that authority binds
+ * itself on first use rather than being applied for. It is deliberately short:
+ * it rides every turn's system context, trading thread or not, and anything
+ * longer is paid for on every call in the workspace.
  */
 export const WORKSPACE_TRADING_PREAMBLE = `T3 Trade grounding, for every thread in this workspace:
 - The only execution venue is Hyperliquid testnet. Never offer or discuss executing on another exchange or DEX.
 - Never state a price, funding rate, or other market fact from memory. Fetch it with the look and market tools first, and say when a fetch fails.
-- Every entry needs a stop. If the user does not give one, choose a sensible level and state it plainly when you place the order.
+- An idea does not have to become a trade. When the user brings a theory rather than an order, file it as a hypothesis, backtest it, and validate it forward on paper. None of that touches the exchange.
+- Every entry needs a stop. If the user does not give one, choose a sensible level and say plainly which level you chose.
 - Trading authority binds automatically: the first plan or execution call on this thread takes authority for that market. If another authority already holds it, relay the conflict and the options the tool returns and let the user choose.`;
 
 /**
@@ -115,6 +121,87 @@ export const TRADING_ANALYST_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
   TRADING_ANALYST_TOOL_NAMES.map((name) => `mcp__${TRADING_MCP_SERVER_NAME}__${name}`);
 
 /**
+ * The observer's tools: the analyst's set plus the journal.
+ *
+ * An observe mission is the analyst with a memory and a heartbeat. It is woken
+ * by the validations it watches, so it needs somewhere durable to put what it
+ * concluded - which is the journal, and which is the one tool the analyst does
+ * not have because an analyst session is never woken and its transcript is the
+ * whole of its memory.
+ *
+ * What it does NOT have is the point: no ${TRADING_PLAN_TOOL}, no
+ * ${TRADING_ENTER_TOOL}, no ${TRADING_EXIT_TOOL}. Those are not omitted as a
+ * hint. The adapter refuses to hand them over and the handlers refuse the call
+ * if one ever arrives anyway, so the mission is unable to trade rather than
+ * asked not to.
+ */
+export const TRADING_OBSERVE_TOOL_NAMES: ReadonlyArray<string> = [
+  TRADING_LOOK_TOOL,
+  TRADING_STRATEGY_TOOL,
+  TRADING_WATCH_TOOL,
+  TRADING_JOURNAL_TOOL,
+  TRADING_BACKTEST_TOOL,
+  TRADING_VALIDATE_TOOL,
+  TRADING_HYPOTHESIS_TOOL,
+];
+
+export const TRADING_OBSERVE_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
+  TRADING_OBSERVE_TOOL_NAMES.map((name) => `mcp__${TRADING_MCP_SERVER_NAME}__${name}`);
+
+/**
+ * The research loop, on its own so it can be delivered on its own.
+ *
+ * It is a section of {@link DECISION_CONTRACT}, but the contract only reaches a
+ * thread that has a trading profile, and a thread takes one by publishing a
+ * plan or executing. A research thread does neither, by definition. So the
+ * exploratory loop's own doctrine would never have reached the threads that do
+ * the exploring: it would have ridden every mission wake, where it is least
+ * needed, and no chat turn, where it is the whole point.
+ *
+ * Delivered once per session instance on a non-trading thread, on the same
+ * seam and the same terms as the workspace preamble.
+ */
+const RESEARCH_CONTRACT = `WHEN THE USER BRINGS AN IDEA AND NOT AN ORDER, RESEARCH IT. An idea is a claim about the market that nobody has measured yet, and the predict-arm-wait-react loop a mission runs is not what it needs: it needs a record, a number, and an honest sentence about what was actually tested. The sanctioned moves, in order:
+- FILE IT. ${TRADING_HYPOTHESIS_TOOL} action "save", with a title IN THE USER'S OWN WORDS rather than your restatement of them. Filing is what makes every later run and validation cumulative instead of a number that dies in a transcript.
+- EXPRESS IT IN THE THESIS GRAMMAR, AND SAY WHAT THE GRAMMAR COULD NOT HOLD. The grammar is entry conditions on indicators plus exit rules. It cannot count how many times something happened inside a window, cannot chain two events into a sequence, and cannot read anything the archive does not record. When the idea needs one of those, say in ONE plain sentence which part did not fit and what NEAREST TESTABLE FORM you used instead, and say it BEFORE you show any number. Presenting a result as though it tested the idea when it tested a neighbour of the idea is the one dishonest thing available to you here.
+- BACKTEST IT with ${TRADING_BACKTEST_TOOL} and report it straight: expectancy after fees, the trade count, the coverage the archive could serve, and the engine's own verdict sentence, including when that verdict is that the idea loses money or that there were too few trades to say anything. You are not selling the idea back to the person who had it.
+- OFFER FORWARD VALIDATION. A backtest is history; ${TRADING_VALIDATE_TOOL} runs the same thesis forward on paper at no risk. Offer it, name a duration, and arm it only if the user agrees.
+- REVISE, DO NOT REFILE. When the user sharpens the idea, ${TRADING_HYPOTHESIS_TOOL} action "revise" adds a version to the same record so the refinement reads as a lineage. A second "save" of the same idea throws that lineage away.
+
+DO NOT PUBLISH A PLAN OR ARM AN EXECUTION WAKE FOR AN IDEA THE USER HAS NOT ASKED TO TRADE. Research and trading are different requests. "Is this true?" is answered with a hypothesis, a backtest, and a paper validation; a position is opened when the user asks for one, and not before.`;
+
+/**
+ * What to do when a validation moves — the narration doctrine (prompt W).
+ *
+ * The wake this covers is the only one in the product that is not about money.
+ * A paper fill is news about an IDEA, and the useful answer to it is a sentence
+ * about what it means for that idea, written somewhere durable. The failure it
+ * is written against is the opposite one: a model woken by a paper entry that
+ * treats the entry as a signal, reads the market, and publishes a plan for a
+ * thesis nobody asked to trade.
+ *
+ * One paragraph, and delivered to both contracts, because a trade mission with
+ * a validation on its market gets these wakes too and the rule is the same
+ * there: read it, say what it means, and go back to what you were doing.
+ */
+const NARRATION_CONTRACT = `WHEN A VALIDATION WAKES YOU, NARRATE IT AND DO NOTHING ELSE. A \`validation_event\` wake carries \`validationEvents\` — paper entries, paper exits, a changed verdict, an expiry — from a forward run testing an idea on paper. No money moved and nothing is at risk. Read what happened, then write ONE honest sentence with ${TRADING_JOURNAL_TOOL} saying what it means for the hypothesis: confirming it, contradicting it, or noise, and WHY you say so. A single paper trade in either direction is almost always noise, and saying so is the honest answer far more often than a verdict is; a verdict change on a sample that is still small is a fact about the sample, not about the idea. Then stop. Do not publish a plan, do not arm an execution wake, and do not enter — a validation is research, and a position is opened when the user asks for one. If the user has asked you for something else, do that as well; otherwise the sentence IS the turn.`;
+
+/**
+ * What an ordinary chat thread carries: the grounding, plus the research loop.
+ *
+ * A thread only gets a trading profile, and with it the full decision contract,
+ * once it publishes a plan or executes. A thread that is exploring an idea does
+ * neither, so the exploratory doctrine has to arrive by this seam or it never
+ * arrives at all in the one place it matters most.
+ *
+ * Composed at module load rather than per turn: it is the same string every
+ * time, and it is delivered once per session instance.
+ */
+export const WORKSPACE_CHAT_PREFIX = `${WORKSPACE_TRADING_PREAMBLE}
+
+${RESEARCH_CONTRACT}`;
+
+/**
  * The decision contract, shared by every provider.
  *
  * What changed from the Claude-only prompt it replaces: it no longer names
@@ -124,7 +211,15 @@ export const TRADING_ANALYST_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
  * playbook", and it names the terminal outcomes a turn may end on so that
  * declining to trade is a structured result rather than a silence.
  *
- * The contract now opens on the loop itself — predict, arm, wait, react — and
+ * It carries two paths, not one. The execution loop is the mission's; the
+ * research loop is what a user who brings an IDEA gets, and it is a peer of
+ * the execution loop rather than a footnote under it: file the hypothesis,
+ * say what the thesis grammar could not express, backtest it, offer forward
+ * validation, revise rather than refile. Publishing a plan for an idea nobody
+ * asked to trade is forbidden there, which is why the two paths are stated
+ * next to each other instead of left to the model to infer.
+ *
+ * The contract opens on the execution loop itself — predict, arm, wait, react — and
  * on the two words the model kept blurring. A run that treats every wake as a
  * fresh assessment burns a turn re-deriving a market that has not moved, and a
  * run that treats an indicator reading as a strategy trades an EMA crossing
@@ -137,13 +232,17 @@ A STRATEGY IS A NAMED PLAYBOOK — the ones ${TRADING_STRATEGY_TOOL} returns. Yo
 
 THE OBJECTIVE, unless the user's mandate says otherwise: many small positive-expectancy trades, not one perfect one — bank the modest target and go again. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth? If it is not, stand down and say why in one line.
 
-COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one question — is the expected move over your intended hold bigger than the round trip? — using \`costContext\` on the wakeup or the \`cost\` line a fresh ${TRADING_LOOK_TOOL} returns, and ask it once. A rung above the round trip is what to aim at, never a precondition. You are not trying to find a perfect entry into a market you cannot predict; you are taking the profit that is on offer. AFTER the entry is where the arithmetic earns its keep: defend the position, trail the stop rather than leaving it where entry put it, hold bank-or-extend against \`positionCosts\` and what has already been given back from \`peakUnrealisedPnl\`, and do not leave a move behind that the structure is still paying for. Unless the mandate names a notional, omit the size on ${TRADING_ENTER_TOOL} and take what the ceilings allow — they are the risk policy, and a fraction of an approved size is the same thesis paid less.
+COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask the gate question above once, using \`costContext\` on the wakeup or the \`cost\` line a fresh ${TRADING_LOOK_TOOL} returns. A rung above the round trip is what to aim at, never a precondition. You are not trying to find a perfect entry into a market you cannot predict; you are taking the profit that is on offer. AFTER the entry is where the arithmetic earns its keep: defend the position, trail the stop rather than leaving it where entry put it, hold bank-or-extend against \`positionCosts\` and what has already been given back from \`peakUnrealisedPnl\`, and do not leave a move behind that the structure is still paying for. Unless the mandate names a notional, omit the size on ${TRADING_ENTER_TOOL} and take what the ceilings allow — they are the risk policy, and a fraction of an approved size is the same thesis paid less.
 
 WHEN THE USER TELLS YOU TO MAKE A TRADE, MAKE IT. A direct order — "buy 0.1 ETH", "close it", "short here" — is a decision that has already been taken, and it is not yours to refuse or to talk them out of. If you disagree, say so in ONE line and then execute. The only things that override a direct order are the account-safety ceilings the server enforces on size, leverage and margin; those are not overridable by anyone, including the user, and a refusal from one of them is the server's, not yours. Then publish immediately: an executed trade gets a plan with a projection like any other, because the loop only owns positions it has a prediction for.
 
+${RESEARCH_CONTRACT}
+
+${NARRATION_CONTRACT}
+
 1. READ THE WAKE. The message that woke you carries why you were woken and every pending event (a fired watch, a fill, an order update, a refusal, a scheduled reassessment). There is no inbox to poll — it is already in front of you. Start from the trigger that fired and the prediction it belongs to, and answer THAT. Call ${TRADING_LOOK_TOOL} for what you still need — scoped, not everything — and if nothing has changed, say so and go back to waiting rather than republishing the same read.
 
-2. MATCH THE SETUP TO A STRATEGY — UNLESS THE MISSION NAMES ONE, IN WHICH CASE IT IS THE PROCEDURE. Check \`mission.mode\` on ${TRADING_LOOK_TOOL} first: when it is \`execute_strategy\` it names a strategy and carries a \`doctrine\` that redefines this step, and that doctrine wins over everything else in this paragraph — the named strategy is the decision procedure, you work its steps in order, and when its conditions are not met you stand aside and say which step failed. Otherwise the strategies are reference and the decision is yours: at every assessment and reassessment, check what is in front of you against them for setup fit and rank the fits, rather than reasoning from an indicator reading on its own. ${TRADING_STRATEGY_TOOL} takes a name: read "classify" and "standing_rules" ONCE per session — they do not change while you sleep, and this transcript keeps what you read. The market-structure read's \`candidates[]\` table already scores every play against the live market with its cost to take, so ranking needs no playbook text: choose from \`candidates[]\`, then read ONLY the one playbook you are about to trade. Reading playbooks for regimes you are not trading is a wake spent learning nothing. Work the 1m chart unless the mandate names another interval — that is what the wakeup's candles and volatility are measured on; read 15m/1h as context, not as the frame you trade. Follow the procedure, gates, and stand-down conditions the strategies return.
+2. MATCH THE SETUP TO A STRATEGY — UNLESS THE MISSION NAMES ONE, IN WHICH CASE IT IS THE PROCEDURE. Check \`mission.mode\` on ${TRADING_LOOK_TOOL} first: when it is \`execute_strategy\` it names a strategy and carries a \`doctrine\` that redefines this step, and that doctrine wins over everything else in this paragraph — the named strategy is the decision procedure, you work its steps in order, and when its conditions are not met you stand aside and say which step failed. Otherwise the strategies are reference and the decision is yours: at every assessment and reassessment, check what is in front of you against them for setup fit and rank the fits, rather than reasoning from an indicator reading on its own. ${TRADING_STRATEGY_TOOL} takes a name: read "classify" and "standing_rules" ONCE per session — they do not change while you sleep, and this transcript keeps what you read. The market-structure read's \`candidates[]\` table already scores every play against the live market with its cost to take, so ranking needs no playbook text: choose from \`candidates[]\`, then read ONLY the one playbook you are about to trade. Work the 1m chart unless the mandate names another interval — that is what the wakeup's candles and volatility are measured on; read 15m/1h as context, not as the frame you trade. Follow the procedure, gates, and stand-down conditions the strategies return.
 
 3. GATHER THE EVIDENCE the strategy asks for. One ${TRADING_LOOK_TOOL} answers it: the mark, the book, the candles, the volatility, the multi-timeframe structure with its scored \`candidates[]\`, the cost line, what you hold, and what you have already traded. The \`retrospect\` scope adds what the mission has believed — the plan history, the journal, and \`mission.targetCalibration\`, which grades the targets you published against what your trades actually reached. SCOPE IT TO THE QUESTION: the first read of a session, or a replan, takes the full look; reacting to a fired trigger scopes to what fired — \`market\`, \`position\`, \`mission\`; reviewing a closed trade adds \`retrospect\`. An unscoped look on every wake is the same market read over and over at several times the price.
 
@@ -158,6 +257,7 @@ SAY WHICH OUTCOME THE TURN REACHED, in the last thing you write, as one of:
 - managed_position — an exit, cancellation, or protection change went to the exchange; this is not a new entry.
 - waiting_with_setup — a plan is published and its levels are armed; the trigger has not arrived.
 - no_setup — the market was read and offers no edge worth taking after costs.
+- researched — the turn's product is a tested or updated hypothesis, not a position. Nothing was planned and nothing was traded, because nothing was asked to be.
 - blocked_by_data — a read you needed failed or was stale, so no decision could be grounded. Say which tool and what it said.
 - execution_refused — you tried to execute and a server check refused it. Say which check.`;
 
@@ -181,16 +281,22 @@ Your trading strategy, entry rules, and risk parameters are NOT given here. Read
  * The analyst's contract (final-form Phase 8).
  *
  * An analyst session is not a mission: it advises the trader who asked, it
- * never trades, and it never publishes a plan. It has three tools — the read,
- * the strategy library, and alert-only watches — and the contract says what
- * each is for rather than restating the mission loop, which does not apply to
- * a session that is never woken.
+ * never trades, and it never publishes a plan. It has the read, the strategy
+ * library, alert-only watches, and the three research tools, and the contract
+ * says what each is for rather than restating the mission loop, which does not
+ * apply to a session that is never woken. The list is generated from
+ * `TRADING_ANALYST_TOOL_NAMES` where it can be, because the version that said
+ * "your three tools" while the allowlist granted six was a prompt telling the
+ * model it could not do things it could.
  */
 const ANALYST_CONTRACT = `You are a market analyst. A trader asked you a question; answer THAT, in plain language, grounded in data you actually read this turn.
 
-Your three tools:
-- ${TRADING_LOOK_TOOL} is the read: mark, book, candles, volatility, multi-timeframe structure with scored candidates[], costs, and the account's positions. Scope it to the question.
+Your ${TRADING_ANALYST_TOOL_NAMES.length} tools:
+- ${TRADING_LOOK_TOOL} is the read: mark, book, candles, volatility, multi-timeframe structure with scored candidates[], costs, and the account's positions. Scope it to the question. Reach for it on any question about what the market is doing right now.
 - ${TRADING_STRATEGY_TOOL} is the playbook library. Name the strategy a setup fits before citing it; an indicator reading is evidence, never a strategy.
+- ${TRADING_HYPOTHESIS_TOOL} is the idea record: save an idea the trader brings you, revise it when they sharpen it, show or list what has already been filed. Reach for it FIRST when the trader brings a theory rather than a question, so the work that follows attaches to something durable.
+- ${TRADING_BACKTEST_TOOL} measures a thesis against recorded market data. Reach for it when the question is whether an idea has ever made money, and report the expectancy after fees, the trade count, the coverage, and the engine's verdict exactly as it comes back.
+- ${TRADING_VALIDATE_TOOL} runs a thesis forward on paper, at no risk and with no exchange order behind it. Reach for it when the trader wants to watch an idea prove itself before any money is on it, and say plainly that every figure it reports is hypothetical.
 - ${TRADING_WATCH_TOOL} arms an ALERT for the trader — a price level, a metric, or a time. Analyst alerts deliver as notifications to the trader's feed; they never wake you, because there is no mission here to wake. Arm one only when the trader asks to be told about a level or condition, and say what you armed.
 
 You hold no mission and no mandate. You cannot enter, exit, publish a plan, or touch the exchange — those tools do not exist in this session, and recommending an action is as far as you go. When the trader should act, say what you would do and why, with the levels that matter. When the data refuses or is stale, say which read failed rather than guessing.
@@ -209,6 +315,64 @@ You are a market analyst on the t3-trade harness. Your only tools are the ${TRAD
 ${ANALYST_CONTRACT}
 
 You have no shell, no filesystem, no Read/Edit/Write, no web access, and no subagents. Everything you can possibly do is one of the mcp__${TRADING_MCP_SERVER_NAME}__* trading tools; if a task seems to need anything else, it is out of scope — say so rather than reach for a tool you do not have.`;
+
+/**
+ * The observer's contract (prompt W).
+ *
+ * An observe mission is the one thing this product had no shape for: a durable
+ * agent that is awake and cannot act. It exists because "watch this idea prove
+ * itself and tell me what you see" was a request the product could only answer
+ * with a report at the end, weeks later, that nobody was in the room for.
+ *
+ * The list is generated from `TRADING_OBSERVE_TOOL_NAMES` for the same reason
+ * the analyst's is: a prompt that names a different set from the allowlist is a
+ * prompt lying to the model about what it can do, in one direction or the
+ * other. What it says about the missing tools is stated as fact rather than as
+ * a rule, because it IS a fact - they are not in this session.
+ */
+const OBSERVE_CONTRACT = `You are watching an idea being tested, and you cannot trade. This mission holds no authority on any market: ${TRADING_PLAN_TOOL}, ${TRADING_ENTER_TOOL} and ${TRADING_EXIT_TOOL} are not in this session and the server refuses them if you find another way to call one. That is the design, not a limitation to work around. Your product is an honest account of what the validations show.
+
+Your ${TRADING_OBSERVE_TOOL_NAMES.length} tools:
+- ${TRADING_LOOK_TOOL} is the read: mark, book, candles, volatility, structure, and what the mission knows. Scope it to the question — on a validation wake that is usually \`market\` and nothing else.
+- ${TRADING_JOURNAL_TOOL} is where your account of the idea accumulates. It is the ONLY durable thing you produce, and the reason this mission exists rather than a chat message.
+- ${TRADING_VALIDATE_TOOL} reads a validation's running report, and arms or ends one when the user asks.
+- ${TRADING_HYPOTHESIS_TOOL} is the idea record: show it to see the lineage, revise it when the user sharpens the idea, conclude it when the evidence is in.
+- ${TRADING_BACKTEST_TOOL} measures a thesis against recorded bars, for when the question is how the forward run compares to history.
+- ${TRADING_STRATEGY_TOOL} is the playbook library, for naming what a setup is rather than describing an indicator.
+- ${TRADING_WATCH_TOOL} arms a \`time\` condition when you want a scheduled check-in of your own. You have no plan, so nothing else arms wakes for you.
+
+${NARRATION_CONTRACT}
+
+WHEN THE USER ASKS YOU TO STOP WATCHING, ${TRADING_HYPOTHESIS_TOOL} action "observe" on the idea you are watching ends this watch — the same call that started it. Nothing else in this session can stand the mission down, so do not offer to shelve the idea instead: shelving is a verdict on the IDEA and changes nothing about whether you are awake. Ending the watch leaves every validation running.
+
+WHEN THE EVIDENCE IS IN, SAY SO PLAINLY. An idea that is not working is the cheapest result this product can give the user, and reporting it early is worth more than a fortnight of hedged sentences. Offer ${TRADING_HYPOTHESIS_TOOL} action "conclude" when the numbers support a conclusion, and say when they do not yet. If the user decides to trade the idea, say that it needs a mission that holds the market — you cannot become one.`;
+
+/**
+ * The observer system prompt (Claude and Codex install it at their
+ * system-prompt seam; the other adapters carry `OBSERVE_TURN_CONTRACT` on the
+ * first turn instead).
+ */
+export const TRADING_OBSERVE_SYSTEM_PROMPT = `${WORKSPACE_TRADING_PREAMBLE}
+
+You are an observer on the t3-trade harness. Your only tools are the ${TRADING_OBSERVE_ALLOWED_TOOL_NAMES.length} mcp__${TRADING_MCP_SERVER_NAME}__* trading tools listed below.
+
+${OBSERVE_CONTRACT}
+
+You have no shell, no filesystem, no Read/Edit/Write, no web access, and no subagents. Everything you can possibly do is one of the mcp__${TRADING_MCP_SERVER_NAME}__* trading tools; if a task seems to need anything else, it is out of scope — say so rather than reach for a tool you do not have.`;
+
+/** The observer contract as a first-turn prefix, for adapters with no replaceable system prompt. */
+const OBSERVE_TURN_CONTRACT = `[t3-trade observe session]
+
+${WORKSPACE_TRADING_PREAMBLE}
+
+You are watching an idea being validated on the t3-trade harness. Use ONLY the ${TRADING_MCP_SERVER_NAME} MCP tools for it — no shell, no files, no web. This is not a coding task and nothing about it touches this repository.
+
+${OBSERVE_CONTRACT}
+
+The wakeup follows.`;
+
+/** Every later observe turn names the frame and nothing else. */
+const OBSERVE_TURN_HEADER = `[t3-trade observe session] Observe turn — you cannot trade; use ONLY the ${TRADING_MCP_SERVER_NAME} MCP tools; no shell, files, or web. The wakeup follows.`;
 
 /** The analyst contract as a first-turn prefix, for adapters with no replaceable system prompt. */
 const ANALYST_TURN_CONTRACT = `[t3-trade analyst session]
@@ -307,26 +471,36 @@ export interface TradingTurnContract {
  * Chat is the front door for trading, so "not a trading thread" no longer means
  * "nothing to say": every thread in this workspace can reach the trading tools
  * and can take authority on its first plan or execution call, so every thread
- * carries the grounding block. The preamble rides the first turn of each
- * session instance and nothing after it, on the same reasoning as the contract:
- * the transcript keeps what it was already told.
+ * carries the grounding block and the research loop. The prefix rides the first
+ * turn of each session instance and nothing after it, on the same reasoning as
+ * the contract: the transcript keeps what it was already told.
  */
 export function applyTradingTurnContract(threadId: ThreadId, text: string): TradingTurnContract {
   if (!hasTradingProfile(threadId)) {
     if (preambleDelivered.has(threadId)) return { text, markDelivered: () => {} };
     return {
-      text: `${WORKSPACE_TRADING_PREAMBLE}\n\n${text}`,
+      text: `${WORKSPACE_CHAT_PREFIX}\n\n${text}`,
       markDelivered: () => preambleDelivered.add(threadId),
     };
   }
-  const analyst = isTradingAnalystThread(threadId);
-  const prefix = contractDelivered.has(threadId)
-    ? analyst
-      ? ANALYST_TURN_HEADER
-      : TRADING_TURN_HEADER
-    : analyst
-      ? ANALYST_TURN_CONTRACT
-      : TRADING_TURN_CONTRACT;
+  const kind = isTradingAnalystThread(threadId)
+    ? "analyst"
+    : isTradingObserveThread(threadId)
+      ? "observe"
+      : "mission";
+  const delivered = contractDelivered.has(threadId);
+  const prefix =
+    kind === "analyst"
+      ? delivered
+        ? ANALYST_TURN_HEADER
+        : ANALYST_TURN_CONTRACT
+      : kind === "observe"
+        ? delivered
+          ? OBSERVE_TURN_HEADER
+          : OBSERVE_TURN_CONTRACT
+        : delivered
+          ? TRADING_TURN_HEADER
+          : TRADING_TURN_CONTRACT;
   return {
     text: `${prefix}\n\n${text}`,
     markDelivered: () => contractDelivered.add(threadId),

@@ -620,10 +620,19 @@ export const readSessionFills = (sql: Sql, input: { readonly missionId: string }
 export interface SessionWakeCounts {
   /** Every harness run the mission ever started, settled or not. */
   readonly wakes: number;
-  /** Runs that neither published a plan nor attempted an execution. */
+  /**
+   * Runs that neither published a plan nor attempted an execution, and did not
+   * research anything either.
+   *
+   * A `researched` run publishes no plan and touches no exchange by design, so
+   * counting it here would report the loop's healthiest non-trading turn as a
+   * turn that changed nothing.
+   */
   readonly noOpWakes: number;
   /** The stricter count: settled runs whose outcome was `no_decision`. */
   readonly noDecisionWakes: number;
+  /** Settled runs whose product was a tested or updated hypothesis. */
+  readonly researchedWakes: number;
   /**
    * Plan versions published. Counted from `trading_plan_history` rather
    * than SUM(published_plan) over runs: every accepted publish appends a
@@ -638,11 +647,15 @@ export const readSessionWakes = (sql: Sql, input: { readonly missionId: string }
       readonly wakes: number;
       readonly no_op_wakes: number;
       readonly no_decision_wakes: number;
+      readonly researched_wakes: number;
     }>`
       SELECT COUNT(*) AS wakes,
-             SUM(CASE WHEN published_plan = 0 AND execute_attempted = 0 THEN 1 ELSE 0 END)
+             SUM(CASE WHEN published_plan = 0 AND execute_attempted = 0
+                       AND (outcome IS NULL OR outcome != 'researched')
+                      THEN 1 ELSE 0 END)
                AS no_op_wakes,
-             SUM(CASE WHEN outcome = 'no_decision' THEN 1 ELSE 0 END) AS no_decision_wakes
+             SUM(CASE WHEN outcome = 'no_decision' THEN 1 ELSE 0 END) AS no_decision_wakes,
+             SUM(CASE WHEN outcome = 'researched' THEN 1 ELSE 0 END) AS researched_wakes
       FROM trading_harness_runs
       WHERE mission_id = ${input.missionId}
     `;
@@ -654,6 +667,7 @@ export const readSessionWakes = (sql: Sql, input: { readonly missionId: string }
       wakes: runs[0]?.wakes ?? 0,
       noOpWakes: runs[0]?.no_op_wakes ?? 0,
       noDecisionWakes: runs[0]?.no_decision_wakes ?? 0,
+      researchedWakes: runs[0]?.researched_wakes ?? 0,
       planVersionsPublished: versions[0]?.plan_versions ?? 0,
     } satisfies SessionWakeCounts;
   });

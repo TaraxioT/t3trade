@@ -5,9 +5,14 @@
  * model runs it, create a real server thread, then navigate to it:
  *
  * - `useAskAnalyst` rides the analyst-thread registry: one analyst thread per
- *   market, reused, with the question sent as an ordinary turn. The server
- *   binds the `trading_analyst` session profile, so the thread runs with the
- *   three read tools and nothing else.
+ *   market, reused, with the question waiting in its composer. The server binds
+ *   the `trading_analyst` session profile, so the thread runs with the read,
+ *   the strategy library, alert-only watches, and the research tools.
+ *
+ * Neither launcher sends anything. A launch used to fire its prompt on the
+ * user's behalf, so a question they had no chance to read, let alone edit,
+ * became the thread's first turn and the model's first instruction. Both now
+ * prefill and stop, which is the same contract every trading card follows.
  * - `useMarketThreadLauncher` opens an ordinary chat thread with a market
  *   already noted on it, so the companion panel is up when the user arrives.
  *   No mission is created: the thread takes authority on the market only when
@@ -28,10 +33,11 @@ import {
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
-import { waitForServerThread, waitForStartedServerThread } from "../ChatView.logic";
+import { waitForServerThread } from "../ChatView.logic";
+import { prefillThreadComposer } from "./composerPrefill";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { resolveThreadActionProjectRef } from "../../lib/chatThreadActions";
-import { newMessageId, newThreadId } from "../../lib/utils";
+import { newThreadId } from "../../lib/utils";
 import { resolveDefaultProviderModelSelection } from "../../providerInstances";
 import {
   readThreadShell,
@@ -157,13 +163,16 @@ export interface AskAnalystHandle {
 
 /**
  * "Ask the analyst": resolve (or register) the market's analyst thread, create
- * it when it is new, send the question as a turn, and navigate to it.
+ * it when it is new, leave the question in its composer, and navigate to it.
+ *
+ * The prompt is a starting point, not an instruction that has already been
+ * given. It arrives in the composer with the cursor in it so the user can
+ * narrow it, replace it, or send it as it stands.
  */
 export function useAskAnalyst(environmentId: EnvironmentId): AskAnalystHandle {
   const context = useLaunchContext(environmentId);
   const ensureAnalystThread = useAtomCommand(orchestrationEnvironment.ensureTradingAnalystThread);
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
-  const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -210,22 +219,13 @@ export function useAskAnalyst(environmentId: EnvironmentId): AskAnalystHandle {
           }
         }
 
-        const sent = await startThreadTurn({
-          environmentId,
-          input: {
-            threadId,
-            message: { messageId: newMessageId(), role: "user", text: prompt, attachments: [] },
-            runtimeMode: DEFAULT_RUNTIME_MODE,
-            interactionMode: "default",
-            createdAt: new Date().toISOString(),
-          },
-        });
-        if (sent._tag === "Failure") {
-          setError("The analyst thread exists, but the question could not be sent.");
-          return;
-        }
+        prefillThreadComposer(scopeThreadRef(environmentId, threadId), prompt);
 
-        await waitForStartedServerThread(scopeThreadRef(environmentId, threadId));
+        // The route bounces a thread this client has not synced yet. Waiting
+        // for it to EXIST rather than to have STARTED is the whole change here:
+        // a thread whose question is sitting in the composer has no first turn
+        // to wait for.
+        await waitForServerThread(scopeThreadRef(environmentId, threadId));
         await router.navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
@@ -234,10 +234,37 @@ export function useAskAnalyst(environmentId: EnvironmentId): AskAnalystHandle {
         setBusy(false);
       }
     },
-    [busy, context, createThread, ensureAnalystThread, environmentId, router, startThreadTurn],
+    [busy, context, createThread, ensureAnalystThread, environmentId, router],
   );
 
   return { ask, busy, error };
+}
+
+/**
+ * Put a question in a thread that already exists, and go there.
+ *
+ * The launchers above create a thread first because they are reached from
+ * surfaces that have none. A validation already knows the conversation it was
+ * armed in, so there is nothing to create: the sentence goes into that
+ * thread's draft and the workspace navigates to it, with the composer holding
+ * a question the user can edit, delete or send. Nothing is sent here either.
+ */
+export function useAskInThread(
+  environmentId: EnvironmentId,
+): (input: { readonly threadId: ThreadId; readonly sentence: string }) => Promise<void> {
+  const router = useRouter();
+  return useCallback(
+    async ({ threadId, sentence }) => {
+      const ref = scopeThreadRef(environmentId, threadId);
+      prefillThreadComposer(ref, sentence);
+      await waitForServerThread(ref);
+      await router.navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(ref),
+      });
+    },
+    [environmentId, router],
+  );
 }
 
 /** The default analyst prompt for a market read. */
@@ -257,6 +284,17 @@ export function analystPositionPrompt(input: {
   );
 }
 
+/**
+ * The starter question a market thread opens with.
+ *
+ * Short on purpose: it is a prompt for the user, not for the model, and the
+ * shorter it is the more likely they are to rewrite it into what they actually
+ * wanted to ask.
+ */
+export function marketThreadStarterPrompt(asset: string): string {
+  return `What is ${asset} doing right now, and what would you watch here?`;
+}
+
 export interface MarketThreadLauncherHandle {
   readonly open: (asset: string) => Promise<void>;
   readonly busy: boolean;
@@ -266,11 +304,13 @@ export interface MarketThreadLauncherHandle {
 /**
  * "Trade in chat": open a fresh thread already about a market.
  *
- * The thread is created, the market is noted on it, and the workspace
- * navigates there. No mission is created and no turn is sent — the thread is
- * a conversation about a market, and it becomes an authority over that market
- * only when the agent's first plan or entry takes it. Seeding is what makes
- * the companion panel show the chart before a word has been said.
+ * The thread is created, the market is noted on it, a starter question is left
+ * in the composer, and the workspace navigates there. No mission is created and
+ * no turn is sent — the thread is a conversation about a market, and it becomes
+ * an authority over that market only when the agent's first plan or entry takes
+ * it. Seeding is what makes the companion panel show the chart before a word
+ * has been said; the starter question is what makes the composer something to
+ * edit rather than a blank the user has to fill from nothing.
  *
  * A failed seed is not a failed launch: the thread is real either way, and
  * arriving in it without its panel beats not arriving at all.
@@ -316,6 +356,11 @@ export function useMarketThreadLauncher(environmentId: EnvironmentId): MarketThr
         }
 
         await setThreadMarket({ environmentId, input: { threadId, asset } });
+
+        prefillThreadComposer(
+          scopeThreadRef(environmentId, threadId),
+          marketThreadStarterPrompt(asset),
+        );
 
         // The route bounces a thread this client has not synced yet, so the
         // navigation waits for it to exist rather than for it to have started:

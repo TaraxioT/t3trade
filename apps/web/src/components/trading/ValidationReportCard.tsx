@@ -13,6 +13,9 @@ import { ChevronDownIcon, ChevronRightIcon, FlaskConicalIcon } from "lucide-reac
 import { useState } from "react";
 
 import { cn } from "../../lib/utils";
+import { CardPrefillActions } from "./CardPrefillActions";
+import { reviseAndRevalidateSentence, validationStatusSentence } from "./cardPrefillSentences";
+import type { ComposerPrefill } from "./composerPrefill";
 import type { ValidationCard } from "./tradingValidation";
 
 const toneClass = (tone: "positive" | "negative" | "neutral") =>
@@ -22,7 +25,19 @@ const toneClass = (tone: "positive" | "negative" | "neutral") =>
       ? "text-destructive"
       : "text-foreground/85";
 
-export function ValidationReportCard({ card }: { card: ValidationCard }) {
+/**
+ * `prefill` is optional because this card has two homes. In a thread it sits
+ * under the tool call that produced it and the composer is right there; on the
+ * trade home the alert feed renders it with no conversation behind it, and the
+ * affordances correctly disappear.
+ */
+export function ValidationReportCard({
+  card,
+  prefill = null,
+}: {
+  card: ValidationCard;
+  prefill?: ComposerPrefill;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -78,6 +93,15 @@ export function ValidationReportCard({ card }: { card: ValidationCard }) {
           <p className="text-[11px] text-muted-foreground">{card.openLine}</p>
         )}
       </div>
+
+      <CardPrefillActions
+        prefill={prefill}
+        actions={
+          card.running
+            ? [{ label: "Ask how it is doing", sentence: validationStatusSentence() }]
+            : [{ label: "Revise and validate again", sentence: reviseAndRevalidateSentence() }]
+        }
+      />
 
       <button
         type="button"

@@ -311,6 +311,7 @@ export const formatSessionReport = (report: SessionReport): string => {
     `wakes taken: ${wakes.wakes}`,
     `wakes that changed nothing: ${wakes.noOpWakes}`,
     `wakes with no decision: ${wakes.noDecisionWakes}`,
+    `wakes that researched an idea: ${wakes.researchedWakes}`,
     `time in market: ${activity.timeInMarketPercent}%`,
   ];
 

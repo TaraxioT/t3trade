@@ -13,6 +13,7 @@ import {
   readEnrichmentEvidence,
   recordExchangeOutcome,
   recordExecutionRefusal,
+  readSessionWakes,
   recordToolCall,
   settleRunDecision,
 } from "./TradingRunTelemetry.ts";
@@ -160,6 +161,42 @@ layer("TradingRunTelemetry", (it) => {
       const run = yield* readRun;
       assert.strictEqual(run["published_plan"], 0);
       assert.strictEqual(run["tool_error_count"], 0);
+    }),
+  );
+
+  it.effect("settles a turn that measured an idea as researched, not no_decision", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed();
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_hypothesis", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_backtest", ok: true });
+
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
+
+      const run = yield* readRun;
+      assert.strictEqual(run["outcome"], "researched");
+      // Nothing was declined, so nothing is attributed to market evidence.
+      assert.strictEqual(run["stand_down_code"], null);
+      assert.strictEqual(run["published_plan"], 0);
+      assert.strictEqual(run["execute_attempted"], 0);
+    }),
+  );
+
+  it.effect("does not count a research wake as a wake that changed nothing", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed();
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_backtest", ok: true });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
+
+      const wakes = yield* readSessionWakes(sql, { missionId: MISSION });
+      assert.strictEqual(wakes.wakes, 1);
+      assert.strictEqual(wakes.researchedWakes, 1);
+      assert.strictEqual(wakes.noDecisionWakes, 0);
+      // The load-bearing one: a research turn publishes no plan and touches no
+      // exchange by design, and reporting it as a wake that changed nothing is
+      // how the funnel used to call the exploratory loop a defect.
+      assert.strictEqual(wakes.noOpWakes, 0);
     }),
   );
 
