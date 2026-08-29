@@ -313,6 +313,7 @@ export const bindThreadToMarket = Effect.fn("TradingAuthorityBinding.bindThreadT
         tradingAccountId: LOCAL_TRADING_ACCOUNT_ID,
         instruction: autoMandate(input.market),
         allocatedCapitalUsd: capital.allocatedCapitalUsd,
+        capitalSource: capital.source,
         market: input.market,
         harness: {
           provider,

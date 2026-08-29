@@ -32,6 +32,7 @@ import { resolveTestnetAuthority } from "./TestnetAuthority.ts";
 import {
   EvmAddress,
   TradingAuthority,
+  TradingCapitalSource,
   TradingHarnessBinding,
   TradingMarket,
   TradingMasterWallet,
@@ -48,6 +49,12 @@ export const CreateTradingMissionInput = Schema.Struct({
   tradingAccountId: Schema.String,
   instruction: Schema.String,
   allocatedCapitalUsd: Schema.Number,
+  /**
+   * Which precedence rule produced `allocatedCapitalUsd`, see `MissionCapital`.
+   * Frozen onto the authority envelope so a surface can tell a granted or
+   * measured mandate from the stand-in an unreadable account falls back to.
+   */
+  capitalSource: Schema.optional(TradingCapitalSource),
   /** The market the mission is mandated to trade. Absent means the default (ETH). */
   market: Schema.optional(TradingMarket),
   /** The wake budget the mandate names (Phase 8). Absent means unlimited. */
@@ -727,6 +734,7 @@ const makeTradingMissionService = Effect.gen(function* () {
       // the authority version's own `created_at`.
       const authority = {
         ...resolveTestnetAuthority(process.env, input.allocatedCapitalUsd),
+        ...(input.capitalSource === undefined ? {} : { capitalSource: input.capitalSource }),
         ...(input.maxWakes === undefined ? {} : { maxWakes: input.maxWakes }),
       };
       const control: TradingMissionControl = {

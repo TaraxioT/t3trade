@@ -30,6 +30,8 @@
  */
 import * as Effect from "effect/Effect";
 
+import type { TradingCapitalSource } from "@t3tools/trading-contracts/authority";
+
 /**
  * The mandate a mission gets when there is no explicit grant and the account is
  * unreadable. Small on purpose: it is the answer to "we do not know what this
@@ -47,8 +49,14 @@ const isPositiveFinite = (value: number | undefined): value is number =>
  * the operator granted it, the account sized it, or nobody could read the
  * account — and that is the first thing to check when a mission turns out to be
  * trading a mandate nobody expected.
+ *
+ * It is carried onto the mission's authority envelope as `capitalSource`, which
+ * is what lets a surface say "this mandate is a stand-in" instead of presenting
+ * `FALLBACK_MISSION_CAPITAL_USD` as a measured number. On an environment with
+ * no trading account at all, that fallback is what every mission would
+ * otherwise appear to be funded with.
  */
-export type MissionCapitalSource = "explicit" | "account" | "fallback";
+export type MissionCapitalSource = TradingCapitalSource;
 
 export interface ResolvedMissionCapital {
   readonly allocatedCapitalUsd: number;
