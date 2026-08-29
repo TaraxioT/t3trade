@@ -21,6 +21,7 @@ export {
   pocRiskPolicyDefaults,
   TradingAuthority,
   TradingAuthorityValidUntil,
+  TradingCapitalSource,
   TradingDirection,
   TradingMarginMode,
   TradingRiskPolicy,

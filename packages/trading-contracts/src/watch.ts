@@ -523,6 +523,16 @@ export const WatchRefusalCode = Schema.Literals([
   /** The thread's mission is gone, ended, or was never there. */
   "mission_not_found",
   /**
+   * A position-scoped condition on an environment with no trading account.
+   *
+   * `pnl`, `giveback` and `fill` are all read off account state. With no
+   * account row there is nothing to read, so such a watch arms and then never
+   * fires - a silence the model reads as "the level was not reached". Refusing
+   * at arm time says the true thing instead. Price, time, metric and derived
+   * conditions are unaffected: they are measured from public market data.
+   */
+  "needs_trading_account",
+  /**
    * The call named neither a `condition` to arm nor a `cancel` to retire — or
    * named both (plan 29 step 6.5). One call does one thing to the armed set.
    */

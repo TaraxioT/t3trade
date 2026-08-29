@@ -42,8 +42,24 @@ export const TradingRiskPolicy = Schema.Struct({
 });
 export type TradingRiskPolicy = typeof TradingRiskPolicy.Type;
 
+/**
+ * Where `allocatedCapitalUsd` came from.
+ *
+ * `explicit` is an operator's stated grant, `account` is the live balance at
+ * creation, `fallback` means nobody could read an account and the mandate is
+ * the documented stand-in rather than a measured number. The last one is the
+ * reason this is persisted: a mandate the surfaces present as real, when the
+ * environment has no readable account at all, is the one number a user must
+ * not be allowed to plan against. Absent on every mission created before the
+ * field existed.
+ */
+export const TradingCapitalSource = Schema.Literals(["explicit", "account", "fallback"]);
+export type TradingCapitalSource = typeof TradingCapitalSource.Type;
+
 export const TradingAuthority = Schema.Struct({
   allocatedCapitalUsd: PositiveUsdAmount,
+  /** Which precedence rule produced `allocatedCapitalUsd` - see `TradingCapitalSource`. */
+  capitalSource: Schema.optional(TradingCapitalSource),
   allowedDirections: Schema.Array(TradingDirection),
 
   maximumLeverage: Schema.Number.check(Schema.isGreaterThan(0)),

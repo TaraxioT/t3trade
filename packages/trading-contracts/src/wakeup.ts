@@ -340,6 +340,17 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   accountSnapshot: Schema.optional(AgentAccountSnapshot),
   /**
+   * The one honest line a wake carries when this environment has no trading
+   * account: no signer is armed, so nothing account-scoped could be read and
+   * nothing can be executed.
+   *
+   * Present only in that state, and rendered exactly once. Without it the wake
+   * still arrives - observation is public data and works - but `position` reads
+   * as a measured flat and the mandate reads as a measured mandate, and neither
+   * is true. Research (charts, backtests, validations) is unaffected.
+   */
+  accountUnavailable: Schema.optional(TradingText),
+  /**
    * The mission's resting patient ENTRY, when one is still working — and how
    * much of it has already filled.
    *

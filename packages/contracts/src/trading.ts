@@ -654,6 +654,19 @@ export const TradingAccountView = Schema.Struct({
   updatedAt: IsoDateTime,
   /** Same rider as on `TradingMissionSnapshot`, for the same reason. */
   archive: Schema.optional(TradingArchiveHealth),
+  /**
+   * Whether this environment has a Hyperliquid signer armed.
+   *
+   * False is a working state, not an error: charts, watchlists, price alerts,
+   * backtests, forward validations, missions and wakes all read public market
+   * data and run without a key. Only signing refuses. The surfaces say so
+   * quietly and up front, because the alternative is a user discovering it
+   * from a refusal after placing an order.
+   *
+   * Optional so an older server still decodes; absent reads as armed, which is
+   * what every server that predates the field was.
+   */
+  signerArmed: Schema.optional(Schema.Boolean),
 });
 export type TradingAccountView = typeof TradingAccountView.Type;
 
