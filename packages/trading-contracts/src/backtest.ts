@@ -783,6 +783,14 @@ export const TradingBacktestInput = Schema.Struct({
   lookbackDays: Schema.optional(Schema.Number),
   /** The notional each trade is priced at. Fixed, never compounded. */
   notionalUsd: Schema.optional(Schema.Number),
+  /**
+   * The filed idea this run tests, so the numbers attach to the version they
+   * were measured on rather than floating free. The submitted thesis has to be
+   * identical to that version's - otherwise the run would be filed under a
+   * version it did not measure, which is the one thing the link exists to
+   * prevent, and it is refused.
+   */
+  hypothesisId: Schema.optional(Schema.String),
 });
 export type TradingBacktestInput = typeof TradingBacktestInput.Type;
 

@@ -39,12 +39,16 @@ it("gives the analyst the reads and alert watches, and none of the acting tools"
     // so it is research an analyst may run. `trading_validate` writes, but only
     // to the paper ledger, and no surface reporting real money reads it — so it
     // is research too, and an analyst may arm one and read its verdict.
+    // `trading_hypothesis` is where that research becomes cumulative: three
+    // tables, no execution path, and the analyst is the session that does most
+    // of the work worth filing.
     [
       "trading_look",
       "trading_strategy",
       "trading_watch",
       "trading_backtest",
       "trading_validate",
+      "trading_hypothesis",
     ].sort(),
   );
   // …and the acting tools are exactly what it lacks.

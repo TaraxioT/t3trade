@@ -138,7 +138,21 @@ import { TradingBacktestService } from "../../../trading/TradingBacktestService.
 import { TradingThesisValidationService } from "../../../trading/TradingThesisValidationService.ts";
 import { renderTradingBacktestMenu } from "@t3tools/trading-contracts/backtest";
 import { renderForwardMenu, type TradingValidateResult } from "@t3tools/trading-contracts/forward";
+import {
+  HYPOTHESIS_SHOW_RUNS,
+  HYPOTHESIS_SHOW_VERSIONS,
+  describeHypothesisStatus,
+  renderTradingHypothesisMenu,
+  thesesMatch,
+  type HypothesisDetail,
+  type HypothesisValidationSummary,
+  type TradingHypothesisResult,
+} from "@t3tools/trading-contracts/hypothesis";
 import { describeThesis } from "@t3tools/trading-contracts/thesis";
+import {
+  TradingHypothesisService,
+  type HypothesisRecord,
+} from "../../../trading/TradingHypothesisService.ts";
 
 interface BoundCall {
   readonly threadId: string;
@@ -171,6 +185,9 @@ interface BoundCall {
  */
 const validateResult = (value: TradingValidateResult): TradingValidateResult => value;
 
+/** The same collapse for `trading_hypothesis`; see the note above. */
+const hypothesisResult = (value: TradingHypothesisResult): TradingHypothesisResult => value;
+
 const rejectCall = (input: {
   readonly reason:
     | "capability_not_granted"
@@ -183,7 +200,8 @@ const rejectCall = (input: {
     | "interval_not_archived"
     | "window_too_large"
     | "no_archived_bars"
-    | "validation_refused";
+    | "validation_refused"
+    | "hypothesis_refused";
   readonly threadId: string;
   readonly missionId: string | undefined;
   /** What to do about it, when the reason alone does not say (fetch keys). */
@@ -2947,21 +2965,62 @@ const handlers = {
       if (input.thesis === undefined) {
         return { menu: renderTradingBacktestMenu() };
       }
+      const thesis = input.thesis;
+      const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
+      const now = yield* Clock.currentTimeMillis;
+      const hypotheses = yield* TradingHypothesisService;
+
+      // The link is checked before the run, not after: filing a measurement
+      // under a version it did not measure is the one failure this whole
+      // stamp exists to prevent, and a run that cannot be filed correctly
+      // should not have cost the archive read either.
+      let stamp: { readonly hypothesisId: string; readonly hypothesisVersion: number } | undefined;
+      if (input.hypothesisId !== undefined) {
+        const current = yield* hypotheses.currentVersion(input.hypothesisId).pipe(Effect.orDie);
+        if (current === null) {
+          return yield* rejectCall({
+            reason: "hypothesis_refused",
+            threadId,
+            missionId: input.missionId,
+            detail: "no hypothesis with that id",
+          });
+        }
+        if (!thesesMatch(thesis, current.thesis)) {
+          return yield* rejectCall({
+            reason: "hypothesis_refused",
+            threadId,
+            missionId: input.missionId,
+            detail:
+              `this thesis is not version ${current.version} of that hypothesis, so the run would be ` +
+              "filed under a version it did not measure. Revise the hypothesis first, or drop the hypothesisId",
+          });
+        }
+        stamp = { hypothesisId: input.hypothesisId, hypothesisVersion: current.version };
+      }
+
       const backtest = yield* TradingBacktestService;
       const outcome = yield* backtest.run({
-        thesis: input.thesis,
+        thesis,
         ...(input.lookbackDays === undefined ? {} : { lookbackDays: input.lookbackDays }),
         ...(input.notionalUsd === undefined ? {} : { notionalUsd: input.notionalUsd }),
-        now: yield* Clock.currentTimeMillis,
+        now,
       });
       if (outcome.status === "refused") {
         return yield* rejectCall({
           reason: outcome.reason,
-          threadId: (yield* McpInvocationContext.McpInvocationContext).threadId,
+          threadId,
           missionId: input.missionId,
           detail: outcome.detail,
         });
       }
+
+      // Every completed run is kept, hypothesis or not. A measurement that
+      // lived only in the transcript was the reason "what did that idea
+      // actually score" had no answer a week later.
+      yield* hypotheses
+        .recordRun({ thesis, report: outcome.report, ...stamp, now })
+        .pipe(Effect.orDie);
+
       return { report: outcome.report, elapsedMillis: outcome.elapsedMillis };
     }),
 
@@ -3001,16 +3060,42 @@ const handlers = {
           if (input.durationHours === undefined) {
             return yield* refuse("arm needs durationHours; two weeks is 336");
           }
+
+          // Same check the backtest path makes, for the same reason: a
+          // validation stamped with a version whose thesis it is not testing
+          // would compare a forward run against the wrong backtest for weeks.
+          const hypotheses = yield* TradingHypothesisService;
+          let stamp:
+            | { readonly hypothesisId: string; readonly hypothesisVersion: number }
+            | undefined;
+          if (input.hypothesisId !== undefined) {
+            const current = yield* hypotheses.currentVersion(input.hypothesisId).pipe(Effect.orDie);
+            if (current === null) return yield* refuse("no hypothesis with that id");
+            if (!thesesMatch(input.thesis, current.thesis)) {
+              return yield* refuse(
+                `this thesis is not version ${current.version} of that hypothesis. ` +
+                  "Revise the hypothesis first, or arm without the hypothesisId",
+              );
+            }
+            stamp = { hypothesisId: input.hypothesisId, hypothesisVersion: current.version };
+          }
+
           const armed = yield* validations
             .arm({
               thesis: input.thesis,
               durationMs: input.durationHours * 60 * 60 * 1_000,
               ...(input.label === undefined ? {} : { label: input.label }),
               ...(threadId === undefined ? {} : { threadId }),
+              ...stamp,
               now,
             })
             .pipe(Effect.orDie);
           if (armed.outcome === "refused") return yield* refuse(armed.reason);
+          if (stamp !== undefined) {
+            yield* hypotheses
+              .noteTested({ hypothesisId: stamp.hypothesisId, now })
+              .pipe(Effect.orDie);
+          }
 
           // The baseline: what the backtest said about this idea at the moment
           // it was armed. Recorded now rather than computed later, because the
@@ -3029,11 +3114,18 @@ const handlers = {
           const report = yield* validations
             .report({ id: armed.validation.id, now })
             .pipe(Effect.orDie);
+          // Two things can have happened in this one call, and the user is
+          // owed both sentences rather than only the one they asked for.
+          const supersededLine =
+            armed.superseded === undefined
+              ? ""
+              : ` The earlier run of this idea (${armed.superseded}) was ended as superseded.`;
           return validateResult({
             ...(report === null ? {} : { report }),
             outcome:
               `Validating ${describeThesis(input.thesis)} on paper until ` +
-              `${new Date(armed.validation.expiresAt).toISOString()}. No order will be placed.`,
+              `${new Date(armed.validation.expiresAt).toISOString()}. No order will be placed.` +
+              supersededLine,
           });
         }
 
@@ -3106,6 +3198,203 @@ const handlers = {
               input.action === "end"
                 ? "Validation ended."
                 : `Validation ${input.action}d. It can be ${input.action === "pause" ? "resumed" : "paused"} again at any time.`,
+          });
+        }
+      }
+    }),
+
+  /**
+   * File an idea, refine it, look at everything filed against it, and end it.
+   *
+   * The one tool here whose whole subject is time. Everything else in the
+   * trading toolkit answers a question about now; this answers "what happened
+   * to that idea", which nothing in the product could answer before.
+   *
+   * Nothing below reaches an order. `conclude` with a verdict of `supported`
+   * writes one row and places nothing: trading a supported idea is still a
+   * sentence the user types, answered by `trading_plan` and `trading_enter`.
+   */
+  trading_hypothesis: (input) =>
+    Effect.gen(function* () {
+      if (input.action === undefined) {
+        return hypothesisResult({ menu: renderTradingHypothesisMenu() });
+      }
+
+      const hypotheses = yield* TradingHypothesisService;
+      const validations = yield* TradingThesisValidationService;
+      const now = yield* Clock.currentTimeMillis;
+      const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
+
+      const refuse = (detail: string) =>
+        rejectCall({ reason: "hypothesis_refused", threadId, missionId: input.missionId, detail });
+
+      /**
+       * Enrich the service's validation refs with the paper ledger's own
+       * arithmetic. The numbers come from the validation service because that
+       * is where `judgeForward` lives, and two expectancy figures that could
+       * disagree would be worse than the extra read. See its module note.
+       */
+      const enrich = (
+        record: HypothesisRecord,
+      ): Effect.Effect<ReadonlyArray<HypothesisValidationSummary>> =>
+        Effect.forEach(record.validations, (ref) =>
+          Effect.gen(function* () {
+            const report = yield* validations
+              .report({ id: ref.validationId, now })
+              .pipe(Effect.orDie);
+            return {
+              validationId: ref.validationId,
+              version: ref.version,
+              market: ref.market,
+              interval: ref.interval,
+              status: ref.status,
+              armedAt: ref.armedAt,
+              expiresAt: ref.expiresAt,
+              endedAt: ref.endedAt,
+              tradesTaken: report?.stats.tradesTaken ?? 0,
+              expectancyUsd: report?.stats.expectancyUsd ?? 0,
+              comparison: report?.comparison ?? "no_baseline",
+            } satisfies HypothesisValidationSummary;
+          }),
+        );
+
+      const detail = (record: HypothesisRecord) =>
+        Effect.gen(function* () {
+          const linked = yield* enrich(record);
+          return {
+            hypothesisId: record.hypothesisId,
+            threadId: record.threadId,
+            title: record.title,
+            status: record.status,
+            conclusion: record.conclusion,
+            currentVersion: record.currentVersion,
+            thesis: record.thesis,
+            currentNote: record.currentNote,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt,
+            versions: record.versions,
+            runs: record.runs,
+            validations: linked,
+            versionCount: record.versionCount,
+            runCount: record.runCount,
+          } satisfies HypothesisDetail;
+        });
+
+      /**
+       * Who wrote this version.
+       *
+       * Always `agent`, and deliberately so. The tool is only ever called by
+       * a model: a chat turn the user started still reaches here as the
+       * model's own arguments, and the invocation scope carries a thread and a
+       * provider session, never a person. Attributing those calls to the user
+       * would put a name on words the user did not write. The `user` value
+       * stays in the schema for a surface that can genuinely attribute one -
+       * a form the person fills in themselves - and until such a surface
+       * exists, nothing writes it.
+       */
+      const author = "agent" as const;
+
+      switch (input.action) {
+        case "save": {
+          if (input.title === undefined) return yield* refuse("save needs a title");
+          if (input.thesis === undefined) {
+            return yield* refuse("save needs a thesis; the shape is trading_backtest({})");
+          }
+          const saved = yield* hypotheses
+            .create({ title: input.title, thesis: input.thesis, threadId, author, now })
+            .pipe(Effect.orDie);
+          if (saved.outcome === "refused") return yield* refuse(saved.reason);
+          return hypothesisResult({
+            hypothesis: yield* detail(saved.hypothesis),
+            outcome:
+              `Saved "${saved.hypothesis.title}" as version 1. Pass hypothesisId ` +
+              `${saved.hypothesis.hypothesisId} to trading_backtest and trading_validate to file the numbers against it.`,
+          });
+        }
+
+        case "revise": {
+          if (input.hypothesisId === undefined) {
+            return yield* refuse("revise needs a hypothesisId");
+          }
+          if (input.thesis === undefined) return yield* refuse("revise needs the new thesis");
+          if (input.note === undefined) {
+            return yield* refuse("revise needs a note saying why this version exists");
+          }
+          const revised = yield* hypotheses
+            .revise({
+              hypothesisId: input.hypothesisId,
+              thesis: input.thesis,
+              note: input.note,
+              author,
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (revised.outcome === "refused") return yield* refuse(revised.reason);
+          return hypothesisResult({
+            hypothesis: yield* detail(revised.hypothesis),
+            outcome:
+              `Version ${revised.hypothesis.currentVersion} of "${revised.hypothesis.title}". ` +
+              "Earlier versions keep their own runs and validations.",
+          });
+        }
+
+        case "list": {
+          const summaries = yield* hypotheses
+            .list(input.scope === "all" ? {} : { threadId })
+            .pipe(Effect.orDie);
+          return hypothesisResult({
+            hypotheses: summaries,
+            outcome: `${summaries.length} ${input.scope === "all" ? "idea(s) on this environment" : "idea(s) from this conversation"}`,
+          });
+        }
+
+        case "show": {
+          if (input.hypothesisId === undefined) {
+            return yield* refuse("show needs a hypothesisId; trading_hypothesis({action:'list'})");
+          }
+          const record = yield* hypotheses.show(input.hypothesisId).pipe(Effect.orDie);
+          if (record === null) return yield* refuse("no hypothesis with that id");
+          const window =
+            record.versionCount > HYPOTHESIS_SHOW_VERSIONS || record.runCount > HYPOTHESIS_SHOW_RUNS
+              ? ` Showing the newest ${HYPOTHESIS_SHOW_VERSIONS} versions and ${HYPOTHESIS_SHOW_RUNS} runs of ${record.versionCount} and ${record.runCount}.`
+              : "";
+          return hypothesisResult({
+            hypothesis: yield* detail(record),
+            outcome:
+              `${describeHypothesisStatus(record.status)}: "${record.title}", version ` +
+              `${record.currentVersion}, ${record.runCount} backtest run(s), ` +
+              `${record.validations.length} validation(s).${window}`,
+          });
+        }
+
+        case "shelve":
+        case "conclude": {
+          if (input.hypothesisId === undefined) {
+            return yield* refuse(`${input.action} needs a hypothesisId`);
+          }
+          if (input.action === "conclude" && input.verdict === undefined) {
+            return yield* refuse("conclude needs a verdict of supported or unsupported");
+          }
+          const to = input.action === "shelve" ? ("shelved" as const) : input.verdict;
+          // The verdict is present on this branch: the guard above returned
+          // when it was not, and `shelve` does not read it.
+          if (to === undefined) return yield* refuse("conclude needs a verdict");
+          const moved = yield* hypotheses
+            .setStatus({
+              hypothesisId: input.hypothesisId,
+              to,
+              ...(input.conclusion === undefined ? {} : { conclusion: input.conclusion }),
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (moved.outcome === "refused") return yield* refuse(moved.reason);
+          return hypothesisResult({
+            hypothesis: yield* detail(moved.hypothesis),
+            outcome:
+              input.action === "shelve"
+                ? `"${moved.hypothesis.title}" is shelved. Revising it picks it back up.`
+                : `"${moved.hypothesis.title}" is ${describeHypothesisStatus(to).toLowerCase()}. ` +
+                  "Nothing was traded; that is still a decision you make out loud.",
           });
         }
       }

@@ -6,6 +6,7 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
 import { renderForwardMenu, TRADING_VALIDATE_TOOL } from "@t3tools/trading-contracts/forward";
+import { TRADING_HYPOTHESIS_TOOL } from "@t3tools/trading-contracts/hypothesis";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
@@ -35,6 +36,7 @@ it("exposes the read, the plan, the watch, the journal, the research, and the tw
       TRADING_EXIT_TOOL,
       TRADING_BACKTEST_TOOL,
       TRADING_VALIDATE_TOOL,
+      TRADING_HYPOTHESIS_TOOL,
     ].sort(),
   );
 });
@@ -218,7 +220,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 9 trading tools").toBe(9);
+  expect(tools.length, "expected exactly 10 trading tools").toBe(10);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   // Printed rather than only asserted: the budget is meant to be watched, and
@@ -227,10 +229,17 @@ it("keeps every description on a budget", () => {
   for (const tool of tools) {
     process.stdout.write(`  ${tool.name} ${(tool.description ?? "").length}\n`);
   }
-  // Raised from 4,000 when `trading_validate` became the ninth tool. The cap
-  // is a budget, not a discovered constant: it moved by one tool's worth,
-  // deliberately, rather than being widened until the measurement fitted.
-  expect(total, "total description chars must stay under 4,250").toBeLessThan(4_250);
+  // Raised from 4,000 when `trading_validate` became the ninth tool, and from
+  // 4,250 when `trading_hypothesis` became the tenth. The cap is a budget, not
+  // a discovered constant: each move is one tool's worth, taken deliberately,
+  // rather than widening it until the measurement fitted.
+  //
+  // The decision behind this one: the hypothesis loop is the product's centre.
+  // An idea that can be saved, revised, tested against its own versions and
+  // concluded is the thing the research layer was built to serve, and it
+  // cannot be reached without a name the model can call. One more description
+  // in every turn's system prompt is the price of that, and it is worth it.
+  expect(total, "total description chars must stay under 4,750").toBeLessThan(4_750);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;

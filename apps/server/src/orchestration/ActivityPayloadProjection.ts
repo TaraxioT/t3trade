@@ -238,10 +238,20 @@ function summarizeMcpResult(result: unknown): Record<string, unknown> | undefine
  * the ceiling below it is summarized like any other result, which costs a card
  * nobody needs on a list the model relays in prose anyway.
  *
+ * `trading_hypothesis` is the third, and the one that needed the cap written
+ * into the server rather than argued from the shape: a hypothesis accumulates
+ * versions and runs without limit, so `show` serves the newest ten of each and
+ * says what the totals are. Its validations are unbounded in principle and
+ * bounded in fact, since one market and interval holds one at a time.
+ *
  * Matched on the name's suffix because providers qualify it differently
  * (`trading_backtest` bare, `mcp__t3-trade__trading_backtest` under Claude).
  */
-const MCP_RESULTS_KEPT_WHOLE = ["trading_backtest", "trading_validate"] as const;
+const MCP_RESULTS_KEPT_WHOLE = [
+  "trading_backtest",
+  "trading_validate",
+  "trading_hypothesis",
+] as const;
 
 /**
  * The ceiling that keeps the exception honest. Measured at roughly 1.6 KB for

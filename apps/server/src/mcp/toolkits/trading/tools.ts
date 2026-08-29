@@ -24,6 +24,10 @@ import {
 import { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
 import { TradingBacktestInput, TradingBacktestResult } from "@t3tools/trading-contracts/backtest";
 import { TradingValidateInput, TradingValidateResult } from "@t3tools/trading-contracts/forward";
+import {
+  TradingHypothesisInput,
+  TradingHypothesisResult,
+} from "@t3tools/trading-contracts/hypothesis";
 import { TradingEnterInput } from "@t3tools/trading-contracts/entry";
 import { TradingExitInput } from "@t3tools/trading-contracts/exit";
 import { Playbook } from "@t3tools/trading-contracts/playbook";
@@ -57,6 +61,7 @@ import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.
 import { TradingThreadMarketService } from "../../../trading/TradingThreadMarketService.ts";
 import { TradingBacktestService } from "../../../trading/TradingBacktestService.ts";
 import { TradingThesisValidationService } from "../../../trading/TradingThesisValidationService.ts";
+import { TradingHypothesisService } from "../../../trading/TradingHypothesisService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -119,6 +124,9 @@ const dependencies = [
   // `trading_validate` writes the paper ledger and nothing else. Same claim,
   // and the same absence of a dependency behind it.
   TradingThesisValidationService,
+  // `trading_hypothesis` writes the idea record and reads the paper ledger for
+  // the lineage. Same absence of a dependency again: SQL and Crypto.
+  TradingHypothesisService,
   SqlClient.SqlClient,
 ];
 
@@ -267,6 +275,26 @@ export const TradingValidateTool = Tool.make("trading_validate", {
   // Live bars keep arriving, so the same report read twice differs.
   .annotate(Tool.OpenWorld, true);
 
+export const TradingHypothesisTool = Tool.make("trading_hypothesis", {
+  description:
+    "The durable record of an idea, so refinement has a history. `save` {title, thesis} files it as v1; `revise` {hypothesisId, thesis, note} writes the next version and reopens a concluded one. Pass `hypothesisId` to trading_backtest and to trading_validate arm and the numbers attach to the version measured. `show` gives versions, runs and validations together; also `list` `shelve` `conclude` {verdict, conclusion}. Never places an order. Menu: trading_hypothesis({})",
+  parameters: TradingHypothesisInput,
+  success: TradingHypothesisResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Hypothesis")
+  // `save`, `revise`, `shelve` and `conclude` write. The annotation describes
+  // the tool, so it takes the writing half.
+  .annotate(Tool.Readonly, false)
+  // Three research tables and nothing else. No surface that reports real money
+  // reads any of them.
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  // Runs and validations keep landing against a filed idea, so the same `show`
+  // read twice differs.
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
@@ -277,4 +305,5 @@ export const TradingToolkit = Toolkit.make(
   TradingExitTool,
   TradingBacktestTool,
   TradingValidateTool,
+  TradingHypothesisTool,
 );

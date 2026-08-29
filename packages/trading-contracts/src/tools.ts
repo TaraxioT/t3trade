@@ -117,6 +117,10 @@ export const TradingToolRejectionReason = Schema.Literals([
       that is out of range, the market already being validated, or the
       lifecycle move that does not apply from where the validation is. */
   "validation_refused",
+  /** A `trading_hypothesis` call that changed nothing: an id that names no
+      idea, a missing title, note or verdict, or a thesis that is not the
+      version it was filed against. The detail is the service's own sentence. */
+  "hypothesis_refused",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
 
@@ -157,6 +161,8 @@ const REJECTION_PROSE: Record<TradingToolRejectionReason, string> = {
     "Refused: the archive holds no bars for that market and window, so there is nothing to test. Tell the user how far back recording actually reaches.",
   validation_refused:
     "Refused: that forward validation was not changed, and nothing is running that was not already. The line below says what stopped it; no paper trade was taken and no order was ever in question.",
+  hypothesis_refused:
+    "Refused: nothing was written to the idea record. The line below says what stopped it; the hypothesis, its versions and everything filed against them are exactly as they were.",
 };
 
 export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToolRejectedError>()(
