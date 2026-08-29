@@ -64,6 +64,7 @@ import { TradingEntryServiceLive } from "./TradingEntryService.ts";
 import { TradingManualEntryServiceLive } from "./TradingManualEntryService.ts";
 import { TradingMarketArchiveLive } from "./TradingMarketArchive.ts";
 import { TradingBacktestServiceLive } from "./TradingBacktestService.ts";
+import { TradingHypothesisServiceLive } from "./TradingHypothesisService.ts";
 import { TradingThesisValidationServiceLive } from "./TradingThesisValidationService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
@@ -215,6 +216,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // is: the whole dependency set is meant to be readable at the wiring, and
   // this one is the claim that it cannot place an order.
   TradingThesisValidationServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
+  // The hypothesis record: ideas, their versions, and the runs against them.
+  // Its dependency set is SQL and Crypto, which is the same claim again - a
+  // filed idea is research, and nothing here can reach an order.
+  TradingHypothesisServiceLive,
   TradingMissionServiceLive,
   // The single-writer lease for this database. Merged here so every consumer
   // of the trading layer — the sweep below, the reactors above — sees the

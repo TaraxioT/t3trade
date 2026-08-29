@@ -152,6 +152,10 @@
       "types": "./src/backtest.ts",
       "import": "./src/backtest.ts"
     },
+    "./hypothesis": {
+      "types": "./src/hypothesis.ts",
+      "import": "./src/hypothesis.ts"
+    },
     "./forward": {
       "types": "./src/forward.ts",
       "import": "./src/forward.ts"

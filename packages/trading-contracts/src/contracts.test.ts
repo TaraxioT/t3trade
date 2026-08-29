@@ -892,6 +892,7 @@ describe("subpath exports", () => {
         "./thesis",
         "./backtest",
         "./forward",
+        "./hypothesis",
       ].sort(),
     );
 
