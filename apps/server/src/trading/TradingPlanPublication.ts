@@ -185,6 +185,12 @@ export const publishPlanWithAftermath = Effect.fn(
   // The mission was resolved a moment ago and its account row is immutable
   // for its life, so a miss here is an environment gap, not a refusal —
   // skip the reconcile and let the watchdog own convergence.
+  //
+  // On a keyless install that gap is permanent and expected: there is no
+  // account row because no signer is armed. The plan still publishes, because
+  // publishing is the agent's own read and the chart draws it, but the
+  // response has to say that nothing was placed on the venue, or the model
+  // reads an accepted publish as a stop and a target now resting on Hyperliquid.
   const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
     Effect.catchTags({
       TradingMissionNotFoundError: () => Effect.succeed(null),
@@ -193,7 +199,19 @@ export const publishPlanWithAftermath = Effect.fn(
       PersistenceSqlError: () => Effect.succeed(null),
     }),
   );
-  if (masterAddress === null) return nothingMore();
+  if (masterAddress === null) {
+    return {
+      published,
+      warnings: [
+        ...published.warnings,
+        "the plan is published and recorded, but nothing was placed on the venue: this " +
+          "environment has no trading account, so the stop and the target exist as your " +
+          "declared levels only and any order would be refused",
+      ],
+      reconciled: null,
+      withdrewRestingEntry: false,
+    } satisfies PlanPublicationOutcome;
+  }
 
   const planProtection = yield* TradingPlanProtectionService;
   const reconciled = yield* planProtection

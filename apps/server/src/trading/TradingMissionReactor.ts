@@ -524,6 +524,7 @@ const make = Effect.gen(function* () {
         tradingAccountId,
         instruction,
         allocatedCapitalUsd: capital.allocatedCapitalUsd,
+        capitalSource: capital.source,
         ...(market === undefined ? {} : { market }),
         ...(maxWakes === undefined ? {} : { maxWakes }),
         harness,
@@ -2061,6 +2062,11 @@ const make = Effect.gen(function* () {
     // One pass: retarget the follow set to the missions active *right now*.
     // Failures here are logged and retried on the next tick — a transient read
     // error must not leave the server permanently unsubscribed.
+    // The missions this pass could not follow because the environment has no
+    // trading account. Remembered only so the reason is logged once per mission
+    // instead of once per tick.
+    const unfollowableMissions = new Set<string>();
+
     const syncFollowedMissions = Effect.gen(function* () {
       const active = yield* missions.findActiveMissions(LOCAL_TRADING_USER_ID);
       const activeIds = new Set(active.map((mission) => mission.id));
@@ -2072,10 +2078,34 @@ const make = Effect.gen(function* () {
           yield* stopFollowingMission(missionId);
         }
       }
+      // A mission that ended is no longer worth remembering as unfollowable -
+      // and a signer armed since would give it an account on the next pass.
+      for (const missionId of Array.from(unfollowableMissions)) {
+        if (!activeIds.has(missionId)) unfollowableMissions.delete(missionId);
+      }
 
       for (const mission of active) {
         if (followedMissions.has(mission.id)) continue;
-        const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+        // Following a mission is entirely account-scoped: a position reconcile
+        // and a fill subscription. On a keyless install there is no
+        // `trading_accounts` row, so there is nothing to reconcile and nothing
+        // to subscribe to - and a miss used to abort the whole pass, taking
+        // every OTHER mission's follow down with it and warning on every tick.
+        // Skip this one, say so once, and carry on.
+        const masterAddress = yield* missions
+          .getMasterWalletAddress(mission.tradingAccountId)
+          .pipe(Effect.catchTag("TradingMissionNotFoundError", () => Effect.succeed(null)));
+        if (masterAddress === null) {
+          if (!unfollowableMissions.has(mission.id)) {
+            unfollowableMissions.add(mission.id);
+            yield* Effect.logInfo(
+              "trading not following a mission: this environment has no trading account, " +
+                "so there is no position to reconcile and no fill to follow",
+              { missionId: mission.id, tradingAccountId: mission.tradingAccountId },
+            );
+          }
+          continue;
+        }
         const scope = yield* Scope.make("sequential");
         // One reconcile and one fill follower per held market. They share the
         // mission's scope, so the whole set stops together when it does.

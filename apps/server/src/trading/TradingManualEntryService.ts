@@ -184,6 +184,31 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
       };
     }).pipe(Effect.orElseSucceed(() => null));
 
+  /**
+   * The keyless preview's one line: the honest refusal, carrying whatever the
+   * public book can still say about the ticket.
+   *
+   * The quote is best-effort by construction, an unreadable book costs the
+   * numbers, never the sentence. The sentence is the part the user needs.
+   */
+  const describeKeylessQuote = (request: ManualEntryRequest): Effect.Effect<string> =>
+    Effect.gen(function* () {
+      const refusal =
+        "no trading signer is configured on this environment, so this order would be refused; " +
+        "charts, watchlists, alerts, backtests and validations all work without one";
+      const book = yield* Effect.suspend(() => gateway.getOrderBook(request.market)).pipe(
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      const bestBid = book?.bestBidOffer.bidPrice;
+      const bestAsk = book?.bestBidOffer.askPrice;
+      if (bestBid === undefined || bestAsk === undefined) return refusal;
+      const fillNear = request.side === "buy" ? bestAsk : bestBid;
+      return (
+        `${refusal}. The book quotes ${request.market} bid ${bestBid} ask ${bestAsk}, so a ` +
+        `${request.side} now would fill near ${fillNear}`
+      );
+    });
+
   const prepare: TradingManualEntryService["Service"]["prepare"] = (request, options) =>
     Effect.gen(function* () {
       // The stop is the contract. Checked first, before any network read.
@@ -204,7 +229,19 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
         );
       }
 
-      const masterAddress = yield* missions.getMasterWalletAddress(request.accountId);
+      // No `trading_accounts` row means no signer is armed on this
+      // environment. Preview is a pure read and used to die here on a generic
+      // RPC error, which told the user nothing; it degrades instead. What it
+      // can still say comes from the public book, the side of the market this
+      // ticket would take and where it would fill, and what it cannot is that
+      // the order itself would be refused. Placement's own refusal is unchanged.
+      const resolvedAddress = yield* missions
+        .getMasterWalletAddress(request.accountId)
+        .pipe(Effect.catchTag("TradingMissionNotFoundError", () => Effect.succeed(null)));
+      if (resolvedAddress === null) {
+        return refused("no_trading_signer", yield* describeKeylessQuote(request));
+      }
+      const masterAddress = resolvedAddress;
 
       // Canonical account state, read fresh: the policy scales off the live
       // account value, and the margin bound and gross-notional aggregate both

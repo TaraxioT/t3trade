@@ -268,4 +268,27 @@ layer("TradingManualEntryService", (it) => {
       assert.ok(second.intent.executionSequence > first.intent.executionSequence);
     }),
   );
+  // The keyless install: no signer armed, so `TradingAccountBootstrap` wrote no
+  // `trading_accounts` row. Preview is a pure read and used to die here on a
+  // generic RPC error, which told the user nothing about why.
+  it.effect("degrades the preview to an honest quote when there is no signer", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_accounts`;
+
+      const service = yield* TradingManualEntryService;
+      const refused = yield* service.prepare(request);
+      assert.equal(refused.outcome, "refused");
+      if (refused.outcome !== "refused") return;
+      assert.equal(refused.reason, "no_trading_signer");
+      // What is wrong, and that everything else still works.
+      assert.include(refused.detail, "no trading signer is configured");
+      assert.include(refused.detail, "backtests and validations all work");
+      // And the public book still says where this ticket would fill: a buy
+      // takes the ask.
+      assert.include(refused.detail, "bid 3000 ask 3001");
+      assert.include(refused.detail, "fill near 3001");
+    }),
+  );
 });
