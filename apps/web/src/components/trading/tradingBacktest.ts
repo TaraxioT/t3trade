@@ -1,3 +1,4 @@
+import { describeSweepPath } from "@t3tools/trading-contracts/backtest";
 import {
   describeExits,
   describeThesis,
@@ -27,6 +28,35 @@ export interface BacktestStatLine {
   readonly tone: "positive" | "negative" | "neutral";
 }
 
+/** One line of a sweep table. Every figure is already formatted for display. */
+export interface BacktestSweepLine {
+  /** The value this variation ran at, as the reader would say it. */
+  readonly value: string;
+  readonly trades: string;
+  readonly winRate: string;
+  readonly expectancy: string;
+  readonly drawdown: string;
+  readonly verdictLabel: string;
+  readonly tone: "positive" | "negative" | "neutral";
+  /**
+   * The best after-fee row. Marked, never celebrated: the caption beside the
+   * table is what says the word "in sample", and this flag only decides which
+   * line is emphasised.
+   */
+  readonly best: boolean;
+}
+
+export interface BacktestSweepTable {
+  /** Which parameter moved, in the words a column heading uses. */
+  readonly parameter: string;
+  readonly lines: ReadonlyArray<BacktestSweepLine>;
+  /**
+   * The sentence under the table. Always present when a row is marked, and it
+   * says "best in sample" rather than anything that sounds like an edge.
+   */
+  readonly caption: string;
+}
+
 export interface BacktestCard {
   /** "Buy ETH 15m when RSI(14) is below 30 and price is above EMA(50)". */
   readonly headline: string;
@@ -41,6 +71,8 @@ export interface BacktestCard {
   readonly verdictReason: string;
   /** What the archive could and could not serve, in one line. */
   readonly coverageLine: string;
+  /** Set when the call swept a parameter. The single report above is the base run. */
+  readonly sweep: BacktestSweepTable | null;
   /** The raw payload, for the reader who wants the numbers behind the numbers. */
   readonly rawJson: string;
 }
@@ -164,6 +196,46 @@ function parseReport(text: string): unknown {
 }
 
 /**
+ * The sweep table, derived the same hand-parsed way as the rest of the card.
+ *
+ * Returns null for a call that swept nothing, which is most of them.
+ */
+const deriveSweepTable = (result: unknown): BacktestSweepTable | null => {
+  const sweep = asRecord(asRecord(result)?.sweep);
+  if (sweep === null) return null;
+  const rows = Array.isArray(sweep.rows) ? sweep.rows : [];
+  if (rows.length === 0) return null;
+  const bestIndex = readNumber(sweep.bestIndex);
+  const parameter = typeof sweep.path === "string" ? describeSweepPath(sweep.path) : "value";
+
+  const lines = rows.map((raw, index): BacktestSweepLine => {
+    const row = asRecord(raw) ?? {};
+    const expectancy = readNumber(row.expectancyUsd) ?? 0;
+    const verdict = typeof row.verdict === "string" ? row.verdict : "";
+    return {
+      value: String(readNumber(row.value) ?? ""),
+      trades: String(readNumber(row.tradesTaken) ?? 0),
+      winRate: `${(readNumber(row.winRatePercent) ?? 0).toFixed(1)}%`,
+      expectancy: formatSignedUsd(expectancy),
+      drawdown: formatUsd(readNumber(row.maxDrawdownUsd) ?? 0),
+      verdictLabel: VERDICT_LABELS[verdict] ?? "No verdict",
+      // An ungraded row is toneless whatever its expectancy says, because the
+      // number is not evidence of anything at that sample size.
+      tone: verdict === "insufficient_sample" ? "neutral" : signedTone(expectancy),
+      best: bestIndex !== null && bestIndex === index,
+    };
+  });
+
+  const best = bestIndex === null ? null : lines[bestIndex];
+  const caption =
+    best === null || best === undefined
+      ? "No variation took enough trades to be graded, so none of these is marked. The numbers are what was measured, not a ranking."
+      : `${parameter} ${best.value} is the best of ${lines.length} values in sample. That is the value most likely fitted to this window's noise, not an edge; validate it forward before believing it.`;
+
+  return { parameter, lines, caption };
+};
+
+/**
  * Read a card out of a `trading_backtest` tool call, or null when the payload
  * is not one.
  *
@@ -235,6 +307,7 @@ export function deriveBacktestCard(toolData: unknown): BacktestCard | null {
           : "neutral",
     verdictReason: typeof report.verdictReason === "string" ? report.verdictReason : "",
     coverageLine: `${notional > 0 ? `${formatUsd(notional)} a trade, ` : ""}${coverageLine(coverage, costs)}`,
+    sweep: deriveSweepTable(result),
     rawJson: JSON.stringify(result, null, 2),
   };
 }

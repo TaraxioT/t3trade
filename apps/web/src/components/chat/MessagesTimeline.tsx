@@ -2899,6 +2899,52 @@ function TradingBacktestTimelineRow({ card }: { card: BacktestCard }) {
         </p>
 
         <p className="text-[11px] text-muted-foreground">{card.coverageLine}</p>
+
+        {card.sweep === null ? null : (
+          <div className="border-border/45 border-t pt-2">
+            {/* Scrolls inside itself: a twelve row table on a phone must not
+                make the whole conversation scroll sideways. */}
+            <div className="-mx-1 overflow-x-auto px-1">
+              <table className="w-full min-w-[22rem] text-left">
+                <thead>
+                  <tr className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                    <th className="pr-3 pb-1 font-normal">{card.sweep.parameter}</th>
+                    <th className="pr-3 pb-1 font-normal">Trades</th>
+                    <th className="pr-3 pb-1 font-normal">Win</th>
+                    <th className="pr-3 pb-1 font-normal">Expectancy</th>
+                    <th className="pr-3 pb-1 font-normal">Drawdown</th>
+                    <th className="pb-1 font-normal">Verdict</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {card.sweep.lines.map((line) => (
+                    <tr
+                      key={line.value}
+                      className={cn(
+                        "font-mono text-xs tabular-nums",
+                        line.best ? "text-foreground" : "text-foreground/70",
+                      )}
+                    >
+                      <td className="pr-3 py-0.5">
+                        {line.best ? <span className="font-medium">{line.value}</span> : line.value}
+                      </td>
+                      <td className="pr-3 py-0.5">{line.trades}</td>
+                      <td className="pr-3 py-0.5">{line.winRate}</td>
+                      <td className={cn("pr-3 py-0.5", toneClass(line.tone))}>{line.expectancy}</td>
+                      <td className="pr-3 py-0.5">{line.drawdown}</td>
+                      <td className="py-0.5 font-sans text-[11px] text-muted-foreground">
+                        {line.verdictLabel}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {/* The honesty line, never optional: a marked row is the easiest
+                thing on this card to misread as a finding. */}
+            <p className="mt-1.5 text-[11px] text-muted-foreground">{card.sweep.caption}</p>
+          </div>
+        )}
       </div>
 
       <CardPrefillActions

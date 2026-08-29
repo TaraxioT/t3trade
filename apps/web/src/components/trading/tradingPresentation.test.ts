@@ -2463,6 +2463,63 @@ describe("deriveBacktestCard", () => {
     expect(card?.headline).toBe("Buy ETH 15m when RSI(14) is below 30");
   });
 
+  it("carries no sweep table for an ordinary run", () => {
+    expect(deriveBacktestCard(toolData)?.sweep).toBeNull();
+  });
+
+  describe("the sweep table", () => {
+    const row = (value: number, expectancyUsd: number, tradesTaken: number, verdict: string) => ({
+      value,
+      tradesTaken,
+      winRatePercent: 44.4,
+      expectancyUsd,
+      maxDrawdownUsd: 18.4,
+      totalNetUsd: expectancyUsd * tradesTaken,
+      verdict,
+    });
+    const sweptData = (bestIndex: number | null, rows: ReadonlyArray<unknown>) => ({
+      tool: "trading_backtest",
+      result: { report, sweep: { path: "after.withinBars", rows, bestIndex }, elapsedMillis: 40 },
+    });
+
+    it("renders one line per value and marks the best after-fee row", () => {
+      const card = deriveBacktestCard(
+        sweptData(1, [
+          row(4, -0.4, 31, "negative_after_fees"),
+          row(8, 1.2, 28, "positive_after_fees"),
+          row(12, 0.3, 25, "positive_after_fees"),
+        ]),
+      )!;
+      expect(card.sweep?.parameter).toBe("withinBars");
+      expect(card.sweep?.lines.map((line) => line.value)).toEqual(["4", "8", "12"]);
+      expect(card.sweep?.lines.map((line) => line.best)).toEqual([false, true, false]);
+      expect(card.sweep?.lines[1]?.expectancy).toBe("+$1.20");
+    });
+
+    it("says in sample, and never calls the marked row an edge", () => {
+      const card = deriveBacktestCard(
+        sweptData(0, [
+          row(4, 1.2, 28, "positive_after_fees"),
+          row(8, 0.3, 25, "positive_after_fees"),
+        ]),
+      )!;
+      const caption = card.sweep?.caption ?? "";
+      expect(caption).toContain("best of 2 values in sample");
+      expect(caption).toContain("most likely fitted to this window's noise");
+      expect(caption).toContain("not an edge");
+      expect(caption).toContain("validate it forward");
+    });
+
+    it("leaves an ungraded row toneless whatever its expectancy says", () => {
+      const card = deriveBacktestCard(sweptData(null, [row(4, 9.9, 3, "insufficient_sample")]))!;
+      // A three-trade row can post the best number in the table and mean
+      // nothing by it, so it is neither marked nor coloured.
+      expect(card.sweep?.lines[0]?.tone).toBe("neutral");
+      expect(card.sweep?.lines[0]?.best).toBe(false);
+      expect(card.sweep?.caption).toContain("none of these is marked");
+    });
+  });
+
   it("reads the projected string form, which is what actually crosses the wire", () => {
     // The server keeps this result whole but still collapses it to
     // `{content: "<json>"}`. That is the shape a real client receives.

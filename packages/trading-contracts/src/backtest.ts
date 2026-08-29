@@ -67,9 +67,11 @@ import {
   thesisIndicators,
   TradingThesis,
   type ThesisCondition,
+  validateThesis,
   type ThesisDistance,
   type ThesisOperand,
   type ThesisPredicate,
+  type ThesisSequence,
 } from "./thesis.ts";
 
 /**
@@ -862,6 +864,374 @@ export function checkBacktestBarBudget(input: {
 }
 
 // ---------------------------------------------------------------------------
+// the sweep
+// ---------------------------------------------------------------------------
+//
+// Testing "does 12 bars work better than 8" used to mean twelve calls, twelve
+// archive reads, and twelve reports the user had to hold in their head at
+// once. A sweep is one call: one window loaded, one parameter moved, one
+// table. It is a refinement tool and not a search - twelve values is a
+// question, and a thousand is a curve being fitted to noise.
+
+/**
+ * Values one sweep may name.
+ *
+ * Twelve is enough to walk a period from 5 to 60 in fives, or a stop from 0.5
+ * to 3.0 in quarters, which is the shape of the question people actually ask.
+ * It is deliberately small: the more variations a run reports, the better the
+ * best of them looks by luck alone, and a cap is the cheapest defence against
+ * reading that luck as an edge.
+ */
+export const BACKTEST_SWEEP_MAX_VALUES = 12;
+
+/**
+ * How much more work a sweep may do than a single run, in bars walked.
+ *
+ * A sweep loads the window ONCE and walks it once per value, so the archive
+ * read does not multiply but the arithmetic does. Four single runs' worth is
+ * the budget: it leaves the whole twelve values available on the windows
+ * people sweep in practice (20,000 bars and under) while refusing the
+ * combination that would sit far past the documented sync budget - twelve
+ * variations over the full 60,000 bar cap.
+ */
+export const BACKTEST_SWEEP_BAR_BUDGET_FACTOR = 4;
+
+/** Total bars a sweep may walk across every variation. */
+export const BACKTEST_SWEEP_MAX_BAR_WALKS = BACKTEST_MAX_BARS * BACKTEST_SWEEP_BAR_BUDGET_FACTOR;
+
+/**
+ * Which number a sweep moves.
+ *
+ * A path, not an expression: it addresses one numeric leaf of the thesis by
+ * name, and the set of addressable leaves is closed. Anything else refuses.
+ * Written the way the thesis object reads, so the model can point at a field
+ * it just wrote rather than learn a second naming scheme:
+ *
+ *   entry.predicates[0].left.period        an indicator period in the entry
+ *   entry.predicates[1].right.value        a constant the entry compares to
+ *   after.condition.predicates[0].left.period    the same, in the antecedent
+ *   after.withinBars                       how far back the antecedent counts
+ *   exits.stop.value | exits.stop.multiple       the stop size
+ *   exits.target.value | exits.target.multiple   the target size
+ *   exits.maxHoldBars                      the bar limit
+ */
+export const BacktestSweep = Schema.Struct({
+  path: Schema.String,
+  values: Schema.Array(Schema.Number),
+});
+export type BacktestSweep = typeof BacktestSweep.Type;
+
+/** One variation's line in the table. Deliberately narrow: the report has a ceiling. */
+export const BacktestSweepRow = Schema.Struct({
+  value: Schema.Number,
+  tradesTaken: Schema.Number,
+  winRatePercent: Schema.Number,
+  /** Net per trade after every fee and funding payment. What the table sorts on. */
+  expectancyUsd: Schema.Number,
+  maxDrawdownUsd: Schema.Number,
+  totalNetUsd: Schema.Number,
+  verdict: BacktestVerdict,
+});
+export type BacktestSweepRow = typeof BacktestSweepRow.Type;
+
+export const BacktestSweepReport = Schema.Struct({
+  path: Schema.String,
+  rows: Schema.Array(BacktestSweepRow),
+  /**
+   * The row with the highest expectancy among those with a gradeable sample,
+   * or null when none had one.
+   *
+   * "Best in sample" and nothing more. It is the top of twelve numbers measured
+   * on one window of one market, which is exactly the quantity a sweep is most
+   * likely to overfit; {@link sweepHonestyLine} is rendered beside it wherever
+   * it is shown, and neither the field nor the line ever calls it an edge.
+   */
+  bestIndex: Schema.NullOr(Schema.Number),
+  /** The window every variation was measured on. Reported once, not per row. */
+  coverage: BacktestCoverage,
+  costs: BacktestCosts,
+  notionalUsd: Schema.Number,
+  /** The thesis the sweep started from, before the path was moved. */
+  thesis: TradingThesis,
+});
+export type BacktestSweepReport = typeof BacktestSweepReport.Type;
+
+/**
+ * The sentence that has to travel with a marked best row.
+ *
+ * A sweep is the easiest way in this whole engine to fool yourself, and the
+ * defence is not a smaller number, it is saying plainly what the number is.
+ */
+export function sweepHonestyLine(report: BacktestSweepReport): string {
+  const best = report.bestIndex === null ? null : report.rows[report.bestIndex];
+  if (best === undefined || best === null) {
+    return `No variation reached ${MIN_REPLAY_SETUPS} trades, so none of these is graded. The numbers are what was measured, not a ranking`;
+  }
+  return `${describeSweepPath(report.path)} ${best.value} is the best of ${report.rows.length} values IN SAMPLE, on one window of ${report.thesis.market}. That is the value most likely to be fitted to this window's noise; validate it forward before believing it`;
+}
+
+/** The paths a sweep may address, as a shape rather than a list of strings. */
+const SWEEP_PREDICATE_LEAVES = ["period", "value"] as const;
+const SWEEP_SIDES = ["left", "right"] as const;
+
+/** One addressable leaf, parsed. `null` is a path outside the closed set. */
+const parseSweepPath = (
+  path: string,
+):
+  | {
+      readonly kind: "predicate";
+      readonly where: "entry" | "after";
+      readonly index: number;
+      readonly side: "left" | "right";
+      readonly leaf: "period" | "value";
+    }
+  | { readonly kind: "withinBars" }
+  | { readonly kind: "maxHoldBars" }
+  | {
+      readonly kind: "distance";
+      readonly which: "stop" | "target";
+      readonly leaf: "value" | "multiple";
+    }
+  | null => {
+  if (path === "after.withinBars") return { kind: "withinBars" };
+  if (path === "exits.maxHoldBars") return { kind: "maxHoldBars" };
+  for (const which of ["stop", "target"] as const) {
+    for (const leaf of ["value", "multiple"] as const) {
+      if (path === `exits.${which}.${leaf}`) return { kind: "distance", which, leaf };
+    }
+  }
+  const predicate =
+    /^(entry|after\.condition)\.predicates\[(\d+)\]\.(left|right)\.(period|value)$/.exec(path);
+  if (predicate === null) return null;
+  const index = Number(predicate[2]);
+  const side = predicate[3] as (typeof SWEEP_SIDES)[number];
+  const leaf = predicate[4] as (typeof SWEEP_PREDICATE_LEAVES)[number];
+  if (!Number.isInteger(index)) return null;
+  return {
+    kind: "predicate",
+    where: predicate[1] === "entry" ? "entry" : "after",
+    index,
+    side,
+    leaf,
+  };
+};
+
+/** A path in the words a table heading uses. */
+export function describeSweepPath(path: string): string {
+  const parsed = parseSweepPath(path);
+  if (parsed === null) return path;
+  switch (parsed.kind) {
+    case "withinBars":
+      return "withinBars";
+    case "maxHoldBars":
+      return "maxHoldBars";
+    case "distance":
+      return parsed.which;
+    case "predicate":
+      return `${parsed.where} ${parsed.side} ${parsed.leaf}`;
+  }
+}
+
+/**
+ * The thesis with one leaf moved to `value`, or a refusal naming why not.
+ *
+ * Refuses rather than silently doing nothing when the leaf the path names does
+ * not exist on THIS thesis - sweeping the ATR multiple of a percent stop is a
+ * question with no answer, and returning twelve identical rows would be a
+ * worse answer than saying so.
+ */
+export function applySweepValue(
+  thesis: TradingThesis,
+  path: string,
+  value: number,
+): TradingThesis | string {
+  const parsed = parseSweepPath(path);
+  if (parsed === null) {
+    return `vary.path "${path}" is not a parameter a sweep can move. Name one of entry.predicates[n].left|right.period|value, after.condition.predicates[n].left|right.period|value, after.withinBars, exits.stop|target.value|multiple, or exits.maxHoldBars`;
+  }
+  switch (parsed.kind) {
+    case "withinBars": {
+      if (thesis.after === undefined)
+        return "vary.path after.withinBars: this thesis has no after clause";
+      return { ...thesis, after: { ...thesis.after, withinBars: value } };
+    }
+    case "maxHoldBars": {
+      if (thesis.exits.maxHoldBars === undefined) {
+        return "vary.path exits.maxHoldBars: this thesis names no bar limit";
+      }
+      return { ...thesis, exits: { ...thesis.exits, maxHoldBars: value } };
+    }
+    case "distance": {
+      const distance = thesis.exits[parsed.which];
+      if (distance === undefined)
+        return `vary.path exits.${parsed.which}: this thesis has no ${parsed.which}`;
+      if (parsed.leaf === "value") {
+        if (distance.basis !== "percent") {
+          return `vary.path exits.${parsed.which}.value: that ${parsed.which} is measured in ${distance.basis}, so its size is .multiple`;
+        }
+        return { ...thesis, exits: { ...thesis.exits, [parsed.which]: { ...distance, value } } };
+      }
+      if (distance.basis === "percent") {
+        return `vary.path exits.${parsed.which}.multiple: that ${parsed.which} is a percent, so its size is .value`;
+      }
+      return {
+        ...thesis,
+        exits: { ...thesis.exits, [parsed.which]: { ...distance, multiple: value } },
+      };
+    }
+    case "predicate": {
+      const condition = parsed.where === "entry" ? thesis.entry : thesis.after?.condition;
+      if (condition === undefined)
+        return "vary.path after.condition: this thesis has no after clause";
+      const predicate = condition.predicates[parsed.index];
+      if (predicate === undefined) {
+        return `vary.path ${path}: that condition has ${condition.predicates.length} comparisons`;
+      }
+      const operand = predicate[parsed.side];
+      if (parsed.leaf === "period" && operand.source !== "indicator") {
+        return `vary.path ${path}: that operand is a ${operand.source}, and only an indicator has a period`;
+      }
+      if (parsed.leaf === "value" && operand.source !== "constant") {
+        return `vary.path ${path}: that operand is a ${operand.source}, and only a constant has a value`;
+      }
+      const moved =
+        parsed.leaf === "period" ? { ...operand, period: value } : { ...operand, value };
+      const predicates = condition.predicates.map((existing, index) =>
+        index === parsed.index ? { ...existing, [parsed.side]: moved } : existing,
+      );
+      const next = { ...condition, predicates };
+      return parsed.where === "entry"
+        ? { ...thesis, entry: next }
+        : { ...thesis, after: { ...(thesis.after as ThesisSequence), condition: next } };
+    }
+  }
+}
+
+/**
+ * Everything a sweep can be refused for before a bar is loaded. `null` to run.
+ *
+ * `bars` is the window the run would walk, so the budget refusal can say the
+ * arithmetic rather than just quoting a cap.
+ */
+export function checkBacktestSweep(input: {
+  readonly sweep: BacktestSweep;
+  readonly thesis: TradingThesis;
+  readonly bars: number;
+}): string | null {
+  const { sweep, bars } = input;
+  if (sweep.values.length === 0) return "vary.values: name at least one value to try";
+  if (sweep.values.length > BACKTEST_SWEEP_MAX_VALUES) {
+    return `vary.values: ${sweep.values.length} values, at most ${BACKTEST_SWEEP_MAX_VALUES}. A sweep is a refinement, not a search`;
+  }
+  const applied = applySweepValue(input.thesis, sweep.path, sweep.values[0] as number);
+  if (typeof applied === "string") return applied;
+  const walks = bars * sweep.values.length;
+  if (walks > BACKTEST_SWEEP_MAX_BAR_WALKS) {
+    return (
+      `that sweep walks ${walks.toLocaleString("en-US")} bars (${bars.toLocaleString("en-US")} x ` +
+      `${sweep.values.length}) and the budget is ${BACKTEST_SWEEP_MAX_BAR_WALKS.toLocaleString("en-US")}, ` +
+      `so try fewer values or a shorter window`
+    );
+  }
+  return null;
+}
+
+/**
+ * One window, walked once per value.
+ *
+ * The candles and funding are loaded by the caller and passed in whole, which
+ * is the entire performance argument for the feature: twelve variations cost
+ * twelve walks and ONE archive read. Every variation is a complete
+ * {@link BacktestRun}, so the caller can persist each as its own row rather
+ * than inventing a second, thinner record for swept runs.
+ *
+ * A variation whose value the thesis cannot take is not silently dropped - the
+ * whole sweep is refused up front by {@link checkBacktestSweep}, and a value
+ * the grammar refuses individually is reported through `refusals`.
+ */
+export function runBacktestSweep(input: {
+  readonly thesis: TradingThesis;
+  readonly sweep: BacktestSweep;
+  readonly candles: ReadonlyArray<MarketCandle>;
+  readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
+  readonly costs: BacktestCosts;
+  readonly coverage: BacktestCoverage;
+  readonly notionalUsd?: number;
+}): {
+  readonly report: BacktestSweepReport;
+  /** Every variation's full run, in the order the values were named. */
+  readonly runs: ReadonlyArray<{ readonly value: number; readonly run: BacktestRun }>;
+  /** Values the grammar would not take, each with the reason. */
+  readonly refusals: ReadonlyArray<{ readonly value: number; readonly reason: string }>;
+} {
+  const notionalUsd = input.notionalUsd ?? DEFAULT_BACKTEST_NOTIONAL_USD;
+  const runs: Array<{ readonly value: number; readonly run: BacktestRun }> = [];
+  const refusals: Array<{ readonly value: number; readonly reason: string }> = [];
+
+  for (const value of input.sweep.values) {
+    const varied = applySweepValue(input.thesis, input.sweep.path, value);
+    if (typeof varied === "string") {
+      refusals.push({ value, reason: varied });
+      continue;
+    }
+    const invalid = validateThesis(varied);
+    if (invalid !== null) {
+      refusals.push({ value, reason: invalid });
+      continue;
+    }
+    runs.push({
+      value,
+      run: runBacktest({
+        thesis: varied,
+        candles: input.candles,
+        ...(input.funding === undefined ? {} : { funding: input.funding }),
+        costs: input.costs,
+        coverage: input.coverage,
+        notionalUsd,
+      }),
+    });
+  }
+
+  const rows: Array<BacktestSweepRow> = runs.map(({ value, run }) => ({
+    value,
+    tradesTaken: run.report.stats.tradesTaken,
+    winRatePercent: run.report.stats.winRatePercent,
+    expectancyUsd: run.report.stats.expectancyUsd,
+    maxDrawdownUsd: run.report.stats.maxDrawdownUsd,
+    totalNetUsd: run.report.stats.totalNetUsd,
+    verdict: run.report.verdict,
+  }));
+
+  // The best row is chosen only among gradeable samples. A variation that took
+  // three trades can post the highest expectancy in the table and mean nothing
+  // by it, and marking it would be the sweep telling its own worst lie.
+  let bestIndex: number | null = null;
+  for (const [index, row] of rows.entries()) {
+    if (row.verdict === "insufficient_sample") continue;
+    if (
+      bestIndex === null ||
+      row.expectancyUsd > (rows[bestIndex] as BacktestSweepRow).expectancyUsd
+    ) {
+      bestIndex = index;
+    }
+  }
+
+  return {
+    report: {
+      path: input.sweep.path,
+      rows,
+      bestIndex,
+      coverage: input.coverage,
+      costs: input.costs,
+      notionalUsd,
+      thesis: input.thesis,
+    },
+    runs,
+    refusals,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // the tool surface
 // ---------------------------------------------------------------------------
 
@@ -896,11 +1266,21 @@ export const TradingBacktestInput = Schema.Struct({
    * prevent, and it is refused.
    */
   hypothesisId: Schema.optional(Schema.String),
+  /**
+   * Run the same window once per value of one parameter, and report the table.
+   *
+   * The refinement tool. Without it, asking whether a 12 bar reach beats an 8
+   * bar one is two calls and two archive reads, and comparing them is the
+   * user's job; with it the comparison IS the answer.
+   */
+  vary: Schema.optional(BacktestSweep),
 });
 export type TradingBacktestInput = typeof TradingBacktestInput.Type;
 
 export const TradingBacktestResult = Schema.Struct({
   report: Schema.optional(BacktestReport),
+  /** Set when the call named `vary`. The single `report` is then the base run. */
+  sweep: Schema.optional(BacktestSweepReport),
   /** How long the archive read and the walk took together. */
   elapsedMillis: Schema.optional(Schema.Number),
   /** The vocabulary, when this call was the menu call. */
@@ -929,7 +1309,9 @@ export function renderTradingBacktestMenu(): string {
       `maxHoldBars up to ${THESIS_MAX_HOLD_BARS}; opposite = a condition`,
     `metric operand = {source:metric, metric: ${ThesisMetricName.literals.join("|")}}; funding_rate_8h is the archived 8h rate at the bar close (0.0001 = 1bp/8h, signed), volume_ratio is the bar against its previous ${THESIS_VOLUME_RATIO_BARS} bars`,
     `after = {condition, withinBars 1-${THESIS_MAX_WITHIN_BARS}} makes the entry fire only when the condition matched within that many CLOSED bars before it; the entry bar never counts as its own antecedent, and after cannot nest`,
-    `lookbackDays defaults to everything archived; ${BACKTEST_MAX_BARS.toLocaleString("en-US")} bars a run, so ask a long 1m window on a coarser interval`,
+    `vary = {path, values} runs one window once per value, at most ${BACKTEST_SWEEP_MAX_VALUES}; path = entry.predicates[n].left|right.period|value, after.condition.predicates[n]..., after.withinBars, exits.stop|target.value|multiple, exits.maxHoldBars`,
+    "a sweep marks its best row BEST IN SAMPLE, which is the value most likely fitted to the window; validate it forward before believing it",
+    `lookbackDays defaults to everything archived; ${BACKTEST_MAX_BARS.toLocaleString("en-US")} bars a run, ${BACKTEST_SWEEP_MAX_BAR_WALKS.toLocaleString("en-US")} across a sweep, so ask a long 1m window on a coarser interval`,
     `signals read closed bars and fill at the next bar open; every trade pays ${BACKTEST_TAKER_FEE_BPS_PER_SIDE} bps taker a side plus crossing plus archived funding`,
     `under ${MIN_REPLAY_SETUPS} trades there is no verdict, only the numbers; this is research and never places an order`,
   ].join(" · ");

@@ -203,7 +203,8 @@ const rejectCall = (input: {
     | "no_archived_bars"
     | "validation_refused"
     | "hypothesis_refused"
-    | "mission_cannot_trade";
+    | "mission_cannot_trade"
+    | "sweep_invalid";
   readonly threadId: string;
   readonly missionId: string | undefined;
   /** What to do about it, when the reason alone does not say (fetch keys). */
@@ -3067,6 +3068,7 @@ const handlers = {
         thesis,
         ...(input.lookbackDays === undefined ? {} : { lookbackDays: input.lookbackDays }),
         ...(input.notionalUsd === undefined ? {} : { notionalUsd: input.notionalUsd }),
+        ...(input.vary === undefined ? {} : { sweep: input.vary }),
         now,
       });
       if (outcome.status === "refused") {
@@ -3085,7 +3087,21 @@ const handlers = {
         .recordRun({ thesis, report: outcome.report, ...stamp, now })
         .pipe(Effect.orDie);
 
-      return { report: outcome.report, elapsedMillis: outcome.elapsedMillis };
+      // A variation is a run like any other, so it is filed like any other -
+      // stamped with the same hypothesis when there is one. Without this the
+      // table would be the only place a swept number ever existed, and "which
+      // reach did we actually test" would have no answer a week later.
+      for (const variation of outcome.sweepRuns ?? []) {
+        yield* hypotheses
+          .recordRun({ thesis: variation.report.thesis, report: variation.report, ...stamp, now })
+          .pipe(Effect.orDie);
+      }
+
+      return {
+        report: outcome.report,
+        ...(outcome.sweep === undefined ? {} : { sweep: outcome.sweep }),
+        elapsedMillis: outcome.elapsedMillis,
+      };
     }),
 
   /**

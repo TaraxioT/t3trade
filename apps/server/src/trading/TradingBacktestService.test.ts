@@ -77,11 +77,18 @@ const thesis: TradingThesis = {
   exits: { stop: { basis: "percent", value: 1 }, target: { basis: "percent", value: 1 } },
 };
 
-const run = (archive: TradingMarketArchiveShape, input?: { readonly lookbackDays?: number }) =>
+const run = (
+  archive: TradingMarketArchiveShape,
+  input?: {
+    readonly lookbackDays?: number;
+    readonly sweep?: { readonly path: string; readonly values: ReadonlyArray<number> };
+  },
+) =>
   makeTradingBacktestService(archive).run({
     thesis,
     now: NOW,
     ...(input?.lookbackDays === undefined ? {} : { lookbackDays: input.lookbackDays }),
+    ...(input?.sweep === undefined ? {} : { sweep: input.sweep }),
   });
 
 describe("TradingBacktestService", () => {
@@ -196,6 +203,85 @@ describe("coarserIntervals", () => {
     expect(coarserIntervals("4h")).toEqual(["1d"]);
     expect(coarserIntervals("1d")).toEqual([]);
   });
+});
+
+describe("sweeping a parameter", () => {
+  /** An archive that counts what was asked of it. */
+  const countingArchive = () => {
+    const reads = { candles: 0, funding: 0 };
+    return {
+      reads,
+      archive: stubArchive({
+        candlesInWindow: () => {
+          reads.candles += 1;
+          return Effect.succeed(archivedBars(100));
+        },
+        fundingInWindow: () => {
+          reads.funding += 1;
+          return Effect.succeed([]);
+        },
+      }),
+    };
+  };
+
+  it.effect("reads the window once however many values it walks", () =>
+    Effect.gen(function* () {
+      // The whole performance argument for the feature. Six variations used to
+      // be six calls and six archive reads; here they are one of each.
+      const { archive, reads } = countingArchive();
+      const outcome = yield* run(archive, {
+        sweep: { path: "exits.target.value", values: [0.5, 1, 1.5, 2, 2.5, 3] },
+      });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+
+      expect(reads.candles, "one candle read for the whole sweep").toBe(1);
+      expect(reads.funding, "one funding read for the whole sweep").toBe(1);
+      expect(outcome.sweep?.rows).toHaveLength(6);
+      expect(outcome.sweepRuns).toHaveLength(6);
+    }),
+  );
+
+  it.effect("answers the base thesis as well as the table", () =>
+    Effect.gen(function* () {
+      const outcome = yield* run(stubArchive({}), {
+        sweep: { path: "exits.target.value", values: [1, 2] },
+      });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+      // The submitted thesis is still run: the table is read against it.
+      expect(outcome.report.thesis.exits.target).toEqual({ basis: "percent", value: 1 });
+      expect(outcome.sweep?.thesis.exits.target).toEqual({ basis: "percent", value: 1 });
+    }),
+  );
+
+  it.effect("refuses a bad sweep before it reads a single bar", () =>
+    Effect.gen(function* () {
+      const { archive, reads } = countingArchive();
+      const outcome = yield* run(archive, {
+        sweep: { path: "thesis.side", values: [1, 2] },
+      });
+      expect(outcome.status).toBe("refused");
+      if (outcome.status !== "refused") return;
+      expect(outcome.reason).toBe("sweep_invalid");
+      expect(outcome.detail).toContain("is not a parameter a sweep can move");
+      expect(reads.candles, "a refused sweep costs no archive read").toBe(0);
+    }),
+  );
+
+  it.effect("refuses a thirteenth value", () =>
+    Effect.gen(function* () {
+      const outcome = yield* run(stubArchive({}), {
+        sweep: {
+          path: "exits.target.value",
+          values: Array.from({ length: 13 }, (_, i) => (i + 1) / 2),
+        },
+      });
+      expect(outcome.status).toBe("refused");
+      if (outcome.status !== "refused") return;
+      expect(outcome.detail).toContain("13 values");
+    }),
+  );
 });
 
 describe("a funding rule on an unfunded market", () => {

@@ -71,6 +71,24 @@ And the "after" window reaches back at most a hundred bars, which on any
 interval is long enough that further back stops being a sequence and starts
 being a market regime you should say outright.
 
+## Try several values at once
+
+When the question is which number to use rather than whether the idea works:
+
+> Try that with the window at 4, 8, 12, 16 and 20 bars.
+
+You get one table instead of five conversations: each value with its trade
+count, win rate, expectancy after fees, worst drawdown and verdict. The window
+is read from the archive once, so a sweep costs about what one backtest costs.
+
+Up to twelve values, and every variation is filed against the idea like any
+other run, so the table is still there next week.
+
+The best row is marked, and the line under the table is the important part: it
+says best **in sample**. The top of twelve numbers measured on one window of one
+market is the value most likely to be fitted to that window's noise. It is a
+starting point for a forward validation, not a finding.
+
 ## Revise it
 
 When the numbers suggest a change, revise rather than starting over:

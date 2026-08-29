@@ -39,9 +39,13 @@ import {
   BACKTEST_TAKER_FEE_BPS_PER_SIDE,
   BACKTEST_MAX_BARS,
   checkBacktestBarBudget,
+  checkBacktestSweep,
   runBacktest,
+  runBacktestSweep,
   type BacktestCosts,
   type BacktestReport,
+  type BacktestSweep,
+  type BacktestSweepReport,
 } from "@t3tools/trading-contracts/backtest";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
 import { validateThesis, type TradingThesis } from "@t3tools/trading-contracts/thesis";
@@ -69,13 +73,26 @@ export interface BacktestRefusal {
     | "thesis_invalid"
     | "interval_not_archived"
     | "window_too_large"
-    | "no_archived_bars";
+    | "no_archived_bars"
+    /** The `vary` clause names a parameter, a value count or a budget it cannot have. */
+    | "sweep_invalid";
   readonly detail: string;
 }
 
 export interface BacktestOk {
   readonly status: "ok";
+  /**
+   * The run of the thesis as submitted. Present with or without a sweep: a
+   * swept call still answers "and what does the idea itself do", which is the
+   * baseline every row in the table is read against.
+   */
   readonly report: BacktestReport;
+  /** Set when the call named `vary`. */
+  readonly sweep?: BacktestSweepReport;
+  /** Every variation's own run, for the caller that persists them. */
+  readonly sweepRuns?: ReadonlyArray<{ readonly value: number; readonly report: BacktestReport }>;
+  /** Values the grammar would not take, each with its reason. */
+  readonly sweepRefusals?: ReadonlyArray<{ readonly value: number; readonly reason: string }>;
   readonly elapsedMillis: number;
 }
 
@@ -87,6 +104,8 @@ export interface TradingBacktestServiceShape {
     readonly lookbackDays?: number | undefined;
     readonly notionalUsd?: number | undefined;
     readonly now: number;
+    /** Run the same window once per value of one parameter. */
+    readonly sweep?: BacktestSweep | undefined;
   }) => Effect.Effect<BacktestOutcome>;
 }
 
@@ -148,7 +167,7 @@ export const makeTradingBacktestService = (
   archive: Context.Service.Shape<typeof TradingMarketArchive>,
 ): TradingBacktestServiceShape =>
   TradingBacktestService.of({
-    run: ({ thesis, lookbackDays, notionalUsd, now }) =>
+    run: ({ thesis, lookbackDays, notionalUsd, now, sweep }) =>
       Effect.gen(function* () {
         const invalid = validateThesis(thesis);
         if (invalid !== null) {
@@ -188,6 +207,20 @@ export const makeTradingBacktestService = (
         });
         if (tooLarge !== null) {
           return { status: "refused", reason: "window_too_large", detail: tooLarge } as const;
+        }
+
+        // Before the archive read, not after: a sweep refused for its path or
+        // its value count should cost nothing, and the bar budget is a
+        // statement about work not yet done.
+        if (sweep !== undefined) {
+          const badSweep = checkBacktestSweep({
+            sweep,
+            thesis,
+            bars: Math.min(requestedBars, BACKTEST_MAX_BARS),
+          });
+          if (badSweep !== null) {
+            return { status: "refused", reason: "sweep_invalid", detail: badSweep } as const;
+          }
         }
 
         const startedAt = yield* Clock.currentTimeMillis;
@@ -267,9 +300,21 @@ export const makeTradingBacktestService = (
 
         const { report } = runBacktest({ thesis, ...runInput });
 
+        // One archive read above, every variation below. The candles and the
+        // funding rows are handed to the sweep whole rather than re-fetched
+        // per value, which is the entire reason a sweep is one call.
+        const swept = sweep === undefined ? null : runBacktestSweep({ thesis, sweep, ...runInput });
+
         return {
           status: "ok",
           report,
+          ...(swept === null
+            ? {}
+            : {
+                sweep: swept.report,
+                sweepRuns: swept.runs.map(({ value, run }) => ({ value, report: run.report })),
+                sweepRefusals: swept.refusals,
+              }),
           elapsedMillis: (yield* Clock.currentTimeMillis) - startedAt,
         } as const;
       }),
