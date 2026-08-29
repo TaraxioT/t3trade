@@ -697,7 +697,6 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
   const advance = (validation: ThesisValidation, now: number) =>
     Effect.gen(function* () {
       const events: Array<{ readonly kind: ValidationEventKind; readonly line: string }> = [];
-      const direction = validation.thesis.side === "long" ? "long" : "short";
       const quiet: AdvanceResult = { events, previousComparison: null };
       const interval = validation.interval as ArchiveInterval;
       const width = INTERVAL_MS[interval];
@@ -784,7 +783,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
             kind: "paper_entry",
             line: describePaperEntry({
               market: validation.asset,
-              direction,
+              direction: validation.thesis.side,
               price: round4(step.entered.entryPrice),
             }),
           });
@@ -807,7 +806,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
             kind: "paper_exit",
             line: describePaperExit({
               market: validation.asset,
-              direction,
+              direction: validation.thesis.side,
               price: round4(step.exited.exitPrice),
               netUsd,
               reason: step.exited.exitReason,

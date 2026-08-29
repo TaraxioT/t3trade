@@ -1257,6 +1257,9 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
 
       const held = accountSnapshot?.positions.find((entry) => entry.market === market);
+      // The market's own read time stands in for the account's when there is no
+      // account: both halves of this gather ran on the same clock.
+      const freshness = accountSnapshot?.freshness ?? marketSnapshot.freshness;
       // With no account there is no position to report, and `position` is a
       // required field: zeros stand for "nothing is held here", which is the
       // literal truth when no account exists - and `accountUnavailable` beside
@@ -1269,7 +1272,7 @@ const make = Effect.gen(function* () {
               unrealisedPnl: 0,
               cumulativeFunding: 0,
               marginUsed: 0,
-              freshness: accountSnapshot?.freshness ?? marketSnapshot.freshness,
+              freshness,
             }
           : {
               market: held.market,
@@ -1278,7 +1281,7 @@ const make = Effect.gen(function* () {
               unrealisedPnl: held.unrealisedPnl,
               cumulativeFunding: held.cumulativeFunding,
               marginUsed: held.marginUsed,
-              freshness: accountSnapshot?.freshness ?? marketSnapshot.freshness,
+              freshness,
             };
 
       // The other held markets, a line each. Deliberately size and PnL and
