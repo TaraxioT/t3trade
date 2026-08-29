@@ -368,11 +368,26 @@ const FETCH_POINTER =
  */
 const TRIGGERED_LINE_BUDGET = 190;
 
+/**
+ * The dedupe-key prefix `WatchEvaluator` stamps on a validation wake's inbox
+ * event. Shared here rather than re-derived, because the composer's whole job
+ * on this cause is to find those events again.
+ */
+export const VALIDATION_EVENT_KEY_PREFIX = "validation:";
+
 const clampTriggeredLine = (line: string): string =>
   line.length <= TRIGGERED_LINE_BUDGET ? line : line.slice(0, TRIGGERED_LINE_BUDGET);
 
 const renderTriggeredLine = (wakeup: TradingHarnessWakeup): string | undefined => {
   const events = wakeup.pendingEvents;
+  // A validation wake's news is already its own field, and the fallback below
+  // would take the same summary off the same inbox event and print it twice -
+  // once clamped at 190 chars and once in full, reading as two facts. Measured
+  // live: 80 characters of every validation wake were a second copy of its
+  // first line.
+  if (wakeup.validationEvents !== undefined && wakeup.validationEvents.length > 0) {
+    return undefined;
+  }
   if (wakeup.triggeringWatch !== undefined) {
     const watch = wakeup.triggeringWatch;
     const line = describeTriggeringWatchLine(watch);
@@ -451,6 +466,11 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string => {
       ? {}
       : { alsoHeld: renderOtherMarkets(wakeup.otherMarkets) }),
     ...(triggered === undefined ? {} : { triggered }),
+    // Kept at the floor: a validation wake with its events trimmed away is a
+    // turn that was woken to narrate and told nothing to narrate.
+    ...(wakeup.validationEvents === undefined || wakeup.validationEvents.length === 0
+      ? {}
+      : { validationEvents: [...wakeup.validationEvents] }),
     fetch: FETCH_POINTER,
     note: "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
   });
@@ -506,6 +526,12 @@ const renderLeanWakeup = (
       ? {}
       : { workingOrders: describeWorkingEntryLine(wakeup.workingEntry) }),
     ...(triggered === undefined ? {} : { triggered }),
+    // The wake's own news on a validation_event cause, in full and unclamped:
+    // "paper long opened on ETH at 2451" is the entire reason this turn is
+    // running, and there is no second place to read it from.
+    ...(wakeup.validationEvents === undefined || wakeup.validationEvents.length === 0
+      ? {}
+      : { validationEvents: [...wakeup.validationEvents] }),
     // One cost line, either state (§1.2 row 5): the held position's round
     // trip while holding, the flat reference line otherwise. Never both —
     // compose only ever computes one.
@@ -1314,7 +1340,15 @@ const make = Effect.gen(function* () {
         { concurrency: "unbounded" },
       );
       const positionCosts = rawPositionCosts === null ? null : roundCostEstimate(rawPositionCosts);
-      const costContext = rawCostContext === null ? null : roundCostContext(rawCostContext);
+      // The flat cost line prices a hypothetical entry, and an observe mission
+      // has no hypothetical entry to price: it cannot trade, and its authority
+      // envelope carries the nominal $1 that a positive-amount schema forced on
+      // it, so the line would read `referenceNotionalUsd=1` on every wake and
+      // mean nothing. Measured live on the first narrated wake.
+      const costContext =
+        rawCostContext === null || mission.purpose === "observe"
+          ? null
+          : roundCostContext(rawCostContext);
 
       // What the entry actually got on, against what it asked for. A patient
       // entry fills when the market comes to it, which is frequently only
@@ -1346,6 +1380,14 @@ const make = Effect.gen(function* () {
             })
           : [];
 
+      // The validation news, lifted out of the pending events it arrived in.
+      // The inbox carries one event per wake and its summary IS the composed
+      // lines, so this is a read of what the evaluator already wrote rather
+      // than a second description of the same paper fills.
+      const validationEventLines = pendingEvents
+        .filter((event) => event.deduplicationKey.startsWith(VALIDATION_EVENT_KEY_PREFIX))
+        .map((event) => event.summary);
+
       const wakeup: TradingHarnessWakeup = {
         kind: "trading-harness-wakeup",
         missionId: mission.id,
@@ -1357,6 +1399,7 @@ const make = Effect.gen(function* () {
         // harness registered woke it for the reason the harness already knows.
         wakeReason: Option.isSome(triggeringWatch) ? triggeringWatch.value.armedReason : undefined,
         userMessage: input.userMessage,
+        ...(validationEventLines.length === 0 ? {} : { validationEvents: validationEventLines }),
         marketSnapshot: toObservedMarketSnapshot(marketSnapshot),
         position,
         ...(accountUnavailable === null ? {} : { accountUnavailable }),

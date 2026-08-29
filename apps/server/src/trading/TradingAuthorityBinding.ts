@@ -31,7 +31,8 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { setSessionProfile } from "../provider/SessionProfile.ts";
+import { clearSessionProfile, setSessionProfile } from "../provider/SessionProfile.ts";
+import { resetTradingContractDelivery } from "../provider/TradingSessionProfile.ts";
 import { resolveMissionCapitalUsd } from "./MissionCapital.ts";
 import { LOCAL_TRADING_ACCOUNT_ID } from "./TradingAccountBootstrap.ts";
 import { LOCAL_TRADING_USER_ID } from "./TradingMissionReactor.ts";
@@ -386,6 +387,171 @@ export const bindThreadToMarket = Effect.fn("TradingAuthorityBinding.bindThreadT
     });
 
     return { outcome: "bound", mission: created.mission };
+  },
+);
+
+/**
+ * The mandate an observe mission carries.
+ *
+ * Three clauses and no fourth, because a mandate is read back to the model on
+ * every wake and this one has to survive being read a hundred times without
+ * accumulating a permission it never had. The last clause is the whole mission.
+ */
+const observeMandate = (market: string, title: string): string =>
+  `Observe ${market} for the user, from this chat. Report what the validations of ` +
+  `"${title}" show, in one honest sentence per event. Never trade.`;
+
+/**
+ * Create the mission that watches an idea being validated.
+ *
+ * It is a mission in every way that matters to the runtime - a row, a thread
+ * binding, a status the panel draws, wakes it can be sent, a stand-down and a
+ * resume - and in no way that reaches the exchange. `createMission` takes no
+ * market row for it, so it neither holds nor blocks authority on the market it
+ * watches; the session profile grants no execution tool; and the handlers
+ * refuse one anyway.
+ *
+ * The caller is responsible for having been ASKED. There is no way to check
+ * that in code - a tool call is the model's own words either way - so it is
+ * doctrine in the observe and research contracts, and the mandate this
+ * synthesizes says out loud that the user asked.
+ *
+ * Calling it on a thread that is ALREADY watching stops the watch. That is the
+ * reverse state, and it lives at the same handle because an observer has no
+ * exit tool and no mission control in its allowlist, so without it "stop
+ * watching" was a request the product could not answer from where the user was
+ * standing. A thread holding a TRADE mission is refused rather than converted:
+ * it already receives `validation_event` wakes through the ordinary path, and
+ * turning one purpose into the other is a door this deliberately does not build.
+ */
+export const createObserveMission = Effect.fn("TradingAuthorityBinding.createObserveMission")(
+  function* (input: {
+    readonly threadId: string;
+    readonly providerInstanceId: string;
+    readonly market: TradingMarket;
+    /** The idea being watched, for the mandate the model reads back. */
+    readonly title: string;
+  }): Effect.fn.Return<
+    | { readonly outcome: "created"; readonly mission: TradingMission }
+    | { readonly outcome: "stood_down"; readonly detail: string }
+    | { readonly outcome: "refused"; readonly reason: string },
+    never,
+    | TradingMissionService
+    | TradingTurnCoordinator
+    | ProviderRegistry
+    | OrchestrationEngineService
+    | SqlClient.SqlClient
+    | Crypto.Crypto
+  > {
+    const missions = yield* TradingMissionService;
+    const registry = yield* ProviderRegistry;
+    const coordinator = yield* TradingTurnCoordinator;
+    const crypto = yield* Crypto.Crypto;
+
+    const threadId = ThreadId.make(input.threadId);
+    const existing = yield* missions.findMissionByThreadId(input.threadId).pipe(Effect.orDie);
+    if (existing._tag === "Some") {
+      // A trade mission is not an observer and must not become one.
+      if (existing.value.purpose !== "observe") {
+        return {
+          outcome: "refused",
+          reason:
+            "this chat already holds a trading mission, which receives validation events " +
+            "on its own wakes; watch from a new chat if you want a separate observer",
+        };
+      }
+      // The way out, at the same handle as the way in.
+      const version = yield* missions.getMissionVersion(existing.value.id).pipe(Effect.orDie);
+      yield* missions
+        .transition({ missionId: existing.value.id, to: "revoked", expectedVersion: version })
+        .pipe(Effect.orDie);
+      yield* Effect.sync(() => clearSessionProfile(threadId));
+      yield* Effect.logInfo("observe mission stood down", {
+        missionId: existing.value.id,
+        threadId: input.threadId,
+      });
+      return {
+        outcome: "stood_down",
+        detail:
+          "This chat has stopped watching. The validations themselves are untouched and still " +
+          "running; ask again to start watching, or read them any time with trading_validate.",
+      };
+    }
+
+    const missionId = TradingMissionId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
+    const driver = yield* registry.getProviders.pipe(
+      Effect.map(
+        (providers) =>
+          providers.find((snapshot) => snapshot.instanceId === input.providerInstanceId)?.driver ??
+          null,
+      ),
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
+    const provider: TradingProvider =
+      driver === "claude" || driver === "claudeAgent"
+        ? "claude"
+        : driver === "opencode"
+          ? "opencode"
+          : "codex";
+
+    const created = yield* missions
+      .createMission({
+        missionId,
+        userId: LOCAL_TRADING_USER_ID,
+        tradingAccountId: LOCAL_TRADING_ACCOUNT_ID,
+        instruction: observeMandate(input.market, input.title),
+        // An observer sizes nothing, and the envelope has no way to say that:
+        // `allocatedCapitalUsd` is a positive amount by schema, because for
+        // every other mission a zero allocation would be a mission that cannot
+        // work rather than one that must not. One dollar is the nearest thing
+        // to nothing it can hold, and no path here ever reads it - every
+        // execution call is refused before a size is computed.
+        allocatedCapitalUsd: 1,
+        purpose: "observe",
+        market: input.market,
+        harness: {
+          provider,
+          providerInstanceId: input.providerInstanceId,
+          threadId,
+          status: "available",
+        },
+      })
+      // The two refusals `createMission` can raise are both about holding a
+      // market, and an observe mission holds none, so neither is reachable
+      // here. A create that fails anyway is a defect.
+      .pipe(Effect.orDie);
+
+    // The profile, and the contract that goes with it. The reset is the
+    // load-bearing half: this thread is a chat thread that has already been
+    // handed the ordinary workspace prefix by the very turn that is asking for
+    // an observer, so without it the next wake would carry the header for a
+    // contract this session was never given, and the observe doctrine - the
+    // journal sentence above all - would never reach the model at all. Found
+    // live: the first narrated wake answered in prose and wrote no journal
+    // note, because it had never been told to.
+    yield* Effect.sync(() => {
+      setSessionProfile({ threadId, kind: "trading_observe" });
+      resetTradingContractDelivery(threadId);
+    });
+
+    // The same §11.1 walk a chat-bound mission takes, for the same reason: the
+    // turn asking for this is already running, so both edges are walked now.
+    yield* announce({ threadId, missionId, status: "initializing" });
+    yield* walk({ threadId, missionId, to: "analysing" });
+    yield* walk({ threadId, missionId, to: "waiting" });
+
+    yield* coordinator
+      .adoptTurn({ missionId, threadId: input.threadId })
+      .pipe(Effect.catchCause(() => Effect.succeed(false)));
+
+    yield* Effect.logInfo("observe mission created", {
+      missionId,
+      threadId: input.threadId,
+      market: input.market,
+      provider,
+    });
+
+    return { outcome: "created", mission: created };
   },
 );
 

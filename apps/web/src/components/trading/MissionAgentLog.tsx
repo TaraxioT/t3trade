@@ -11,6 +11,7 @@ import {
   BookOpen,
   CircleSlash,
   Crosshair,
+  FlaskConical,
   Eye,
   Hand,
   NotebookPen,
@@ -198,6 +199,12 @@ function turnCardLogIdentity(card: TurnTimelineCard): {
     };
   }
   if (card.kind === "note") return { Icon: NotebookPen, tone: "muted", word: "journal note" };
+  // Its own glyph and the info rail: a paper fill is an experiment reporting,
+  // and drawing it with the trade receipt would put a position on the log that
+  // nobody holds.
+  if (card.kind === "validation") {
+    return { Icon: FlaskConical, tone: "info", word: "validation event" };
+  }
   if (card.kind === "revision") {
     // A stop move and a plan publish share the `revision` kind, and the id
     // prefix is the only thing that separates them without reaching into

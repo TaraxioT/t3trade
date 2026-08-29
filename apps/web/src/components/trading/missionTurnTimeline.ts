@@ -19,7 +19,19 @@
 // composed (a stop move's justification, a journal note) is quoted, so the
 // only rewriting allowed is the em-dash swap — content is the author's own.
 
-import { humanizeLiteral, formatPrice, formatSize, formatSignedUsd } from "./tradingPresentation";
+import {
+  deEmDash,
+  describeWakeTrigger,
+  formatPrice,
+  formatSignedUsd,
+  formatSize,
+  humanizeLiteral,
+} from "./tradingPresentation";
+
+// Both moved down to `tradingPresentation` so the past-marker derivation
+// there can put a wake cause into words without importing back up into this
+// module. Re-exported because this is where every existing caller looks.
+export { deEmDash, describeWakeTrigger };
 
 /** How many turns the panel renders before it counts the rest. */
 export const MAX_TURN_CARDS = 30;
@@ -34,7 +46,7 @@ export const MAX_TURN_CARDS = 30;
 const TURN_WINDOW_MILLIS = 5 * 60_000;
 
 /** Which card kind a moment became. Drives the card's icon and tone. */
-export type TurnCardKind = "wake" | "revision" | "note" | "trade";
+export type TurnCardKind = "wake" | "revision" | "note" | "trade" | "validation";
 
 /** One card of the timeline. Every field is display-ready text or null. */
 export interface TurnTimelineCard {
@@ -59,39 +71,6 @@ export interface TurnTimelineCard {
   readonly priceLevel: number | null;
   /** Wakes the harness was owed and did not get, and losing trades. */
   readonly tone: "neutral" | "profit" | "loss";
-}
-
-/** Em-dashes are not allowed in card text; server prose arrives with them. */
-export function deEmDash(text: string): string {
-  return text.replaceAll(/\s*—\s*/g, " · ");
-}
-
-/**
- * Why a wake woke, in the plan's plain register.
- *
- * The timeline carries the run cause verbatim; a cause is a literal the
- * harness writes for itself, so the client translates. Unknown causes are
- * humanized rather than invented around: a new literal reads as itself.
- */
-export function describeWakeTrigger(cause: string | undefined): string {
-  switch (cause) {
-    case "mission_created":
-      return "The mission started";
-    case "market_watch_triggered":
-      return "A level it was watching was reached";
-    case "scheduled_reassessment":
-      return "A scheduled check-in came due";
-    case "order_updated":
-      return "The exchange reported an order change";
-    case "position_updated":
-      return "The exchange reported a position change";
-    case "user_message":
-      return "You wrote to it";
-    case "mission_resumed":
-      return "It was resumed";
-    default:
-      return cause === undefined ? "It woke" : deEmDash(humanizeLiteral(cause));
-  }
 }
 
 /**
@@ -142,6 +121,16 @@ function describeDecision(entry: { readonly kind: string; readonly label: string
   if (entry.kind === "journal") return "It wrote a note";
   return null;
 }
+
+/**
+ * A validation event's card kind.
+ *
+ * Its own kind rather than a note, because a note is something the agent
+ * wrote and this is something that happened to it. The card carries the
+ * composed sentence verbatim - the server built it from the paper ledger, and
+ * restating it here would be a second, worse description of the same fill.
+ */
+const VALIDATION_EVENT_KIND = "validation_event";
 
 /** A trade card's main line: what was bought or sold, and at what price. */
 export function describeFill(
@@ -251,7 +240,14 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
         .find((later) => later.kind === "wake" && later.at > entry.at);
       const bound = Math.min(entry.at + TURN_WINDOW_MILLIS, nextWakeAt?.at ?? Infinity);
       const decision = entries.find(
-        (later) => later.at > entry.at && later.at <= bound && later.kind !== "wake",
+        (later) =>
+          later.at > entry.at &&
+          later.at <= bound &&
+          later.kind !== "wake" &&
+          // A validation event is what the turn was TOLD, never what it
+          // decided; reading one as the wake's decision would put "it moved
+          // the stop" prose on a turn that only read a paper fill.
+          later.kind !== VALIDATION_EVENT_KIND,
       );
       cards.push({
         kind: "wake",
@@ -290,6 +286,20 @@ export function deriveTurnTimeline(input: TurnTimelineInput): {
         decisionLabel: null,
         detailLabel: deEmDash(entry.label),
         priceLevel: entry.priceLevel ?? null,
+        tone: "neutral",
+      });
+      return;
+    }
+    if (entry.kind === VALIDATION_EVENT_KIND) {
+      cards.push({
+        kind: "validation",
+        id: `validation-${index}-${entry.at}`,
+        atMillis: entry.at,
+        triggerLabel: "A validation moved",
+        readLabel: null,
+        decisionLabel: null,
+        detailLabel: deEmDash(entry.label),
+        priceLevel: null,
         tone: "neutral",
       });
       return;

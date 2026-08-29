@@ -39,6 +39,7 @@ import {
   TradingMission,
   TradingMissionBlockedReason,
   TradingMissionControl,
+  TradingMissionPurpose,
   TradingMissionStatus,
   TradingPendingExecution,
 } from "./Schemas.ts";
@@ -59,6 +60,11 @@ export const CreateTradingMissionInput = Schema.Struct({
   market: Schema.optional(TradingMarket),
   /** The wake budget the mandate names (Phase 8). Absent means unlimited. */
   maxWakes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  /**
+   * What the mission is for. Absent means `trade`, which is what every caller
+   * that predates observe missions means and what the column defaults to.
+   */
+  purpose: Schema.optional(TradingMissionPurpose),
   harness: TradingHarnessBinding,
 });
 export type CreateTradingMissionInput = typeof CreateTradingMissionInput.Type;
@@ -385,6 +391,7 @@ interface MissionRow {
   readonly status: string;
   readonly blocked_reason: string | null;
   readonly control_json: string;
+  readonly purpose: string;
   readonly authority_version: number;
   readonly version: number;
   readonly last_harness_run_id: string | null;
@@ -405,6 +412,7 @@ const encodeHarnessJson = Schema.encodeUnknownSync(HarnessJson);
 const encodeControlJson = Schema.encodeUnknownSync(ControlJson);
 const encodeAuthorityJson = Schema.encodeUnknownSync(AuthorityJson);
 const decodeStatus = Schema.decodeUnknownSync(TradingMissionStatus);
+const decodePurpose = Schema.decodeUnknownSync(TradingMissionPurpose);
 const decodeBlockedReason = Schema.decodeUnknownSync(TradingMissionBlockedReason);
 
 /**
@@ -435,6 +443,7 @@ const toMission = (
     ? {}
     : { blockedReason: decodeBlockedReason(row.blocked_reason) }),
   control: decodeControlJson(row.control_json),
+  purpose: decodePurpose(row.purpose),
   authorityVersion: row.authority_version,
   ...(row.last_harness_run_id === null ? {} : { lastHarnessRunId: row.last_harness_run_id }),
   createdAt: row.created_at,
@@ -703,29 +712,39 @@ const makeTradingMissionService = Effect.gen(function* () {
   const createMission: TradingMissionServiceShape["createMission"] = (input) =>
     Effect.gen(function* () {
       const market = input.market ?? DEFAULT_TRADING_MARKET;
-      // D4: at most one authority per {venue, market}. Mission-vs-mission is
-      // also enforced by the 075 partial unique index; checking here first is
-      // what turns a constraint violation into a named refusal.
-      const existing = yield* findActiveMissionOnMarket({
-        userId: input.userId,
-        venue: "hyperliquid",
-        market,
-      });
-      if (Option.isSome(existing)) {
-        return yield* new TradingMissionAlreadyActiveError({
+      // An observe mission takes no market. Exclusivity exists because the
+      // venue nets positions per asset, so two authorities on one asset would
+      // be two agents on one position - and a mission that cannot place an
+      // order is not a second agent on anything. Taking the market anyway
+      // would mean watching an idea on ETH locked ETH out of being traded,
+      // which is the opposite of what watching an idea is for. It keeps
+      // `market` as the market it is ABOUT, which is what every surface shows.
+      const holdsMarket = (input.purpose ?? "trade") !== "observe";
+      if (holdsMarket) {
+        // D4: at most one authority per {venue, market}. Mission-vs-mission is
+        // also enforced by the 075 partial unique index; checking here first is
+        // what turns a constraint violation into a named refusal.
+        const existing = yield* findActiveMissionOnMarket({
           userId: input.userId,
-          activeMissionId: existing.value.id,
-          activeStatus: existing.value.status,
+          venue: "hyperliquid",
           market,
-          activeThreadId: existing.value.harness.threadId,
         });
-      }
-      const manualExposure = yield* readManualExposure(market);
-      if (manualExposure !== null) {
-        return yield* new TradingMarketManualExposureError({
-          market,
-          exposure: manualExposure,
-        });
+        if (Option.isSome(existing)) {
+          return yield* new TradingMissionAlreadyActiveError({
+            userId: input.userId,
+            activeMissionId: existing.value.id,
+            activeStatus: existing.value.status,
+            market,
+            activeThreadId: existing.value.harness.threadId,
+          });
+        }
+        const manualExposure = yield* readManualExposure(market);
+        if (manualExposure !== null) {
+          return yield* new TradingMarketManualExposureError({
+            market,
+            exposure: manualExposure,
+          });
+        }
       }
 
       // The testnet lab preset, not the spec's $1,000 worked example — see
@@ -752,25 +771,29 @@ const makeTradingMissionService = Effect.gen(function* () {
       yield* sql`
         INSERT INTO trading_missions (
           mission_id, user_id, trading_account_id, instruction, market,
-          harness_json, status, blocked_reason, control_json,
+          harness_json, status, blocked_reason, control_json, purpose,
           authority_version, version, last_harness_run_id,
           created_at, updated_at
         ) VALUES (
           ${input.missionId}, ${input.userId}, ${input.tradingAccountId},
           ${input.instruction}, ${market},
           ${encodeHarnessJson(input.harness)}, 'initializing', NULL,
-          ${encodeControlJson(control)}, 1, 1, NULL, ${now}, ${now}
+          ${encodeControlJson(control)}, ${input.purpose ?? "trade"},
+          1, 1, NULL, ${now}, ${now}
         )
       `.pipe(Effect.mapError(sqlFail("createMission:mission")));
 
       // The first element of the held set. The unique index on this table is
       // the D4 invariant now, so this insert is what actually reserves the
-      // market against a concurrent creator.
-      yield* sql`
-        INSERT INTO trading_mission_markets
-          (mission_id, user_id, venue, market, bound_at, released_at)
-        VALUES (${input.missionId}, ${input.userId}, 'hyperliquid', ${market}, ${now}, NULL)
-      `.pipe(Effect.mapError(sqlFail("createMission:market")));
+      // market against a concurrent creator - and is exactly why an observe
+      // mission skips it. See `holdsMarket` above.
+      if (holdsMarket) {
+        yield* sql`
+          INSERT INTO trading_mission_markets
+            (mission_id, user_id, venue, market, bound_at, released_at)
+          VALUES (${input.missionId}, ${input.userId}, 'hyperliquid', ${market}, ${now}, NULL)
+        `.pipe(Effect.mapError(sqlFail("createMission:market")));
+      }
 
       return yield* getMission(input.missionId);
     });

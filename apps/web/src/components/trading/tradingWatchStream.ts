@@ -435,7 +435,7 @@ export function deriveWatchLifecycle(mission: {
   readonly watches: ReadonlyArray<PersistedWatch>;
   readonly missionTimeline: ReadonlyArray<{
     readonly at: string;
-    readonly kind: "wake" | "stop_adjusted" | "strategy_published" | "journal";
+    readonly kind: "wake" | "stop_adjusted" | "strategy_published" | "journal" | "validation_event";
     readonly label: string;
   }>;
 }): { readonly stream: ReadonlyArray<WatchStreamItem> } {
@@ -450,7 +450,12 @@ export function deriveWatchLifecycle(mission: {
     // The wake for this firing lands within moments; the decision it produced
     // (a publish, a stop move) lands within the turn. Prefer the decision.
     const after = timeline.filter((entry) => entry.at >= firedAt - 2_000);
-    const decision = after.find((entry) => entry.kind !== "wake");
+    // A validation event is news the turn was handed, not a decision it took.
+    // Attributing one to a fired price level would label the firing "paper
+    // long opened on ETH" — a sentence about a different market event.
+    const decision = after.find(
+      (entry) => entry.kind !== "wake" && entry.kind !== "validation_event",
+    );
     if (decision !== undefined) return decision.label;
     const wake = after.find((entry) => entry.kind === "wake");
     return wake === undefined ? null : wake.label;

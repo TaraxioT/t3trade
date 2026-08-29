@@ -92,7 +92,7 @@
 // invented: a missing denominator omits a figure rather than guessing.
 
 import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
@@ -111,6 +111,7 @@ import {
   deriveTargetPrice,
   MAX_DRAWN_CONDITIONS,
   type ChartLevelKind,
+  type ChartZoneInput,
 } from "./missionChartGeometry";
 import {
   deriveChartConditions,
@@ -138,7 +139,7 @@ import {
 import { AgentLog } from "./MissionAgentLog";
 import {
   CARD_CLASS,
-  ChartSlot,
+  ChartSlotWithBadge,
   MissionStatusBar,
   PANEL_SHELL_CLASS,
   POSITIONS_HEIGHT_CLASS,
@@ -413,6 +414,33 @@ export function MissionLivePanel({
         }
       : null;
 
+  // The projection's honest band, when the read is a range rather than a
+  // number. The plan has carried it since predictions were published and the
+  // chart has never drawn it - the point estimate got a dotted path and the
+  // interval around it was invisible, so a read the model itself called wide
+  // looked exactly as precise as one it called tight.
+  //
+  // A plan may carry no projection at all (a stand-aside states none), and one
+  // that carries a projection may still carry no zone. Both cases draw nothing
+  // rather than a band of zero width, which would claim a precision nobody
+  // stated.
+  const projectionZones = useMemo<ReadonlyArray<ChartZoneInput>>(() => {
+    const zone = strategy?.projection?.zone;
+    if (zone === undefined) return [];
+    return [
+      {
+        key: "projection-zone",
+        label: "projected",
+        priceLow: zone.low,
+        priceHigh: zone.high,
+        // The plan wedge's own family, because it is the same claim: the wedge
+        // is where the plan ends up, the band is how wide it says that is.
+        tone: "plan",
+        register: "hypothetical",
+      },
+    ];
+  }, [strategy?.projection?.zone]);
+
   // The next reassessment, as a mark on the axis rather than only as a
   // countdown in the header — "3m from now" is a moment, and the chart has an
   // axis of moments.
@@ -606,7 +634,9 @@ export function MissionLivePanel({
             come. The panel's own header carries the market, the mark and the
             day's move, so the card starts at the picture. */}
         <section className={cn(CARD_CLASS, "flex flex-none flex-col pt-2")}>
-          <ChartSlot
+          <ChartSlotWithBadge
+            threadRef={{ environmentId, threadId: mission.threadId }}
+            zones={projectionZones}
             data={chart.data}
             isLoading={chart.isLoading}
             error={chart.error}

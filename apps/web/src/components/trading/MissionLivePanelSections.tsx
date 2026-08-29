@@ -8,7 +8,7 @@
 // the readout rows, and the status bar. Nothing here owns state beyond its
 // own hooks; the panel remains the owner of the collapse store.
 
-import type { TradingMarketChartView } from "@t3tools/contracts";
+import type { ScopedThreadRef, TradingMarketChartView } from "@t3tools/contracts";
 import {
   Activity,
   ChartCandlestick,
@@ -21,6 +21,7 @@ import {
   Receipt,
   TrendingDown,
   TrendingUp,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
@@ -29,6 +30,8 @@ import { cn } from "~/lib/utils";
 import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
+import { useComposerPrefill } from "./composerPrefill";
+import { ThesisChartBadgeLine, paperMarkerSentence } from "./ThesisChartBadgeLine";
 import { describeWakeTrigger } from "./missionTurnTimeline";
 import { type MissionPlanRevision } from "./useMissionPlanRevision";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -36,6 +39,7 @@ import {
   selectVisibleCandles,
   MIN_VISIBLE_BARS,
   type ChartLevelKind,
+  type ChartZoneInput,
 } from "./missionChartGeometry";
 import {
   formatDuration,
@@ -347,8 +351,17 @@ export function ChartSlot(props: {
   readonly positionSize: number | null;
   readonly overflowCount?: number | null;
   readonly firedWatchIds?: ReadonlyArray<string>;
+  /** Price bands to wash under the plot - the plan's projection zone today. */
+  readonly zones?: ReadonlyArray<ChartZoneInput>;
+  /**
+   * The thread this chart lives in, so the validation badge and its paper
+   * markers can write a question into its composer.
+   */
+  readonly threadRef: ScopedThreadRef;
 }): ReactNode {
   const { data, isLoading, error } = props;
+  const thesis = data?.thesis ?? null;
+  const prefill = useComposerPrefill(props.threadRef);
 
   if (data === null && isLoading) {
     return <Skeleton className={CHART_HEIGHT_CLASS} />;
@@ -412,11 +425,38 @@ export function ChartSlot(props: {
         positionSize={props.positionSize}
         overflowCount={props.overflowCount ?? null}
         firedWatchIds={props.firedWatchIds}
+        {...(props.zones === undefined ? {} : { zones: props.zones })}
+        {...(thesis === null ? {} : { thesis })}
+        {...(prefill === null || thesis === null
+          ? {}
+          : {
+              onAskAboutMarker: (marker: { readonly at: number }) =>
+                prefill(paperMarkerSentence({ headline: thesis.headline, atMillis: marker.at })),
+            })}
         className={CHART_HEIGHT_CLASS}
       />
     );
   }
   return <Skeleton className={CHART_HEIGHT_CLASS} />;
+}
+
+/**
+ * The chart plus the validation badge under it.
+ *
+ * Split from `ChartSlot` only so the badge stays out of the four early
+ * returns above: a skeleton and an "unavailable" line have no validation to
+ * name, and the badge would have had to be repeated in each branch.
+ */
+export function ChartSlotWithBadge(
+  props: Parameters<typeof ChartSlot>[0] & { readonly threadRef: ScopedThreadRef },
+): ReactNode {
+  const prefill = useComposerPrefill(props.threadRef);
+  return (
+    <>
+      <ChartSlot {...props} />
+      <ThesisChartBadgeLine thesis={props.data?.thesis ?? null} prefill={prefill} />
+    </>
+  );
 }
 
 /** The oldest fill's moment, which the chart window has to reach back to. */
@@ -730,6 +770,60 @@ function PlanPopover({ plan }: { readonly plan: StrategyPlan }): ReactNode {
       <PopoverPopup side="top" align="start" className="w-[400px] max-w-[calc(100vw-2rem)]">
         <div className="max-h-[60vh] overflow-y-auto">
           <PlanBody plan={plan} />
+        </div>
+      </PopoverPopup>
+    </Popover>
+  );
+}
+
+/**
+ * What would make the plan wrong, on the bar next to the plan itself.
+ *
+ * The prose has always been on the plan and has only ever been readable from
+ * inside the plan popup, folded into one semicolon-joined line among nine
+ * other fields. That is the wrong place for it: the invalidation is not
+ * another parameter of the trade, it is the condition under which the trade
+ * stops being the trade, and it is the one thing an operator watching a
+ * position wants within reach.
+ *
+ * Its own disclosure, in the plan popup's visual family, opening upward for
+ * the same reason: the bar is the panel's bottom edge and the composer is
+ * directly under it. One line per clause, because they are separate
+ * conditions and joining them with semicolons made a paragraph out of a list.
+ *
+ * Not on the chart. The clauses are prose - "regime flips to mean-reverting"
+ * is not a price and has no y.
+ */
+function InvalidationPopover({
+  invalidation,
+}: {
+  readonly invalidation: ReadonlyArray<string>;
+}): ReactNode {
+  if (invalidation.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger
+        aria-haspopup="dialog"
+        data-testid="mission-invalidation-trigger"
+        className="inline-flex flex-none items-center gap-1.5 rounded-full border border-border/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none"
+      >
+        <TriangleAlert className="size-3" strokeWidth={2} aria-hidden />
+        Wrong if
+        {invalidation.length > 1 ? ` ×${invalidation.length}` : ""}
+      </PopoverTrigger>
+      <PopoverPopup side="top" align="start" className="w-[320px] max-w-[calc(100vw-2rem)]">
+        <div className="max-h-[60vh] overflow-y-auto text-[12px]">
+          <p className={cn(BAND_LEGEND_CLASS, "pb-2")}>this read is wrong if</p>
+          <ul className="space-y-1" data-testid="mission-invalidation-list">
+            {invalidation.map((line) => (
+              <li key={line} className="flex gap-1.5 text-foreground">
+                <span aria-hidden className="text-muted-foreground">
+                  ·
+                </span>
+                <span className="whitespace-pre-wrap">{line}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </PopoverPopup>
     </Popover>
@@ -1053,6 +1147,7 @@ export function MissionStatusBar({
           hides at any width: the ambient cluster on the right gives up its
           segments first, and the activity segment truncates before that. */}
       {plan === null ? null : <PlanPopover plan={plan} />}
+      {plan === null ? null : <InvalidationPopover invalidation={plan.invalidation} />}
       {countdown === null ? null : (
         <span
           data-testid="mission-next-reassessment"

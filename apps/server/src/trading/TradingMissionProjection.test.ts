@@ -787,6 +787,35 @@ describe("buildMissionTimeline", () => {
     assert.equal(timeline[2]?.cause, "scheduled_reassessment");
   });
 
+  // Prompt W: what the mission was TOLD, on the same axis as what it did.
+  it("files a delivered validation wake as its own kind, prose verbatim", () => {
+    const timeline = buildMissionTimeline({
+      wakes: [wake({ runId: "r1", cause: "validation_event", createdAt: 2_000 })],
+      stopAdjustments: [],
+      publishes: [],
+      validationEvents: [
+        { summary: "ETH cross of 3000: paper long opened on ETH at 3001", occurred_at: 1_900 },
+        // Blank rows are dropped: `label` is a non-empty string on the wire,
+        // and one empty summary would fail the whole timeline's encode.
+        { summary: "   ", occurred_at: 1_800 },
+      ],
+    });
+
+    assert.equal(timeline.length, 2, "the blank summary is dropped, not encoded");
+    // Newest first: the wake it produced, then the event that caused it.
+    assert.equal(timeline[0]?.kind, "wake");
+    assert.equal(timeline[0]?.cause, "validation_event");
+    assert.equal(timeline[1]?.kind, "validation_event");
+    assert.equal(
+      timeline[1]?.label,
+      "ETH cross of 3000: paper long opened on ETH at 3001",
+      "the server's composed sentence rides through, never a second description of it",
+    );
+    // It is not a wake, so it carries no cause and no tool list.
+    assert.isUndefined(timeline[1]?.cause);
+    assert.isUndefined(timeline[1]?.toolsCalled);
+  });
+
   // A run the mission was owed and did not get is the one wake worth reading
   // twice, so the label says so rather than leaving it to look like any other.
   it("names a failed run in its label but keeps the raw cause", () => {

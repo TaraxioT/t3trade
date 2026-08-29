@@ -42,6 +42,7 @@ export {
   TradingMission,
   TradingMissionBlockedReason,
   TradingMissionControl,
+  TradingMissionPurpose,
   TradingMissionStatus,
   TradingProvider,
 } from "@t3tools/trading-contracts/mission";

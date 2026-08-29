@@ -350,12 +350,13 @@ widened to both kinds.
 
 ## 5 · Migration ledger
 
-| Id  | Lands in   | Contents                                                                           | Risk                                                                                                                                                                                                |
-| --- | ---------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 074 | Phases 4+5 | `trading_watchlist`; `trading_watches` rebuild; `trading_alert_events`             | Recreate 035 indexes; backfill `deliver='wake'`, `venue='hyperliquid'`; wake behavior byte-identical                                                                                                |
-| 075 | Phase 7    | Six execution tables rebuilt; `trading_missions.venue`; per-market authority index | Landed. `account_id` carries `DEFAULT 'unattributed'` (the orphan-backfill sentinel); the position/account-snapshot uniqueness moved onto partial indexes, so upserts name the index `WHERE` clause |
-| 076 | Phase 8    | `trading_analyst_threads` — the per-market analyst-thread registry                 | Landed. Pure `CREATE TABLE IF NOT EXISTS`; also the boot source that re-binds analyst session profiles after a restart                                                                              |
-| —   | Phase 2    | Archive DB v1→v2 (venue columns) via its own version row                           | Never joins the app chain                                                                                                                                                                           |
+| Id  | Lands in   | Contents                                                                           | Risk                                                                                                                                                                                                  |
+| --- | ---------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 074 | Phases 4+5 | `trading_watchlist`; `trading_watches` rebuild; `trading_alert_events`             | Recreate 035 indexes; backfill `deliver='wake'`, `venue='hyperliquid'`; wake behavior byte-identical                                                                                                  |
+| 075 | Phase 7    | Six execution tables rebuilt; `trading_missions.venue`; per-market authority index | Landed. `account_id` carries `DEFAULT 'unattributed'` (the orphan-backfill sentinel); the position/account-snapshot uniqueness moved onto partial indexes, so upserts name the index `WHERE` clause   |
+| 076 | Phase 8    | `trading_analyst_threads` — the per-market analyst-thread registry                 | Landed. Pure `CREATE TABLE IF NOT EXISTS`; also the boot source that re-binds analyst session profiles after a restart                                                                                |
+| 085 | Prompt W   | `trading_thesis_validations.last_comparison`; `trading_missions.purpose`           | Landed. Both additive. `last_comparison` is nullable and NOT backfilled, so an existing validation reports no verdict change on its first pass after the upgrade; `purpose` carries `DEFAULT 'trade'` |
+| —   | Phase 2    | Archive DB v1→v2 (venue columns) via its own version row                           | Never joins the app chain                                                                                                                                                                             |
 
 ## 6 · Deliberately not doing
 
@@ -428,6 +429,76 @@ it is the same row from entry to settlement.
 Costs are frozen at arm time. The comparison is against a backtest priced once,
 and a fee assumption drifting underneath the run would report a change in the
 thesis that was really a change in the spread.
+
+### The live narrative
+
+Evaluation used to be silent. Paper fills landed in `trading_thesis_paper_fills`
+and no agent could see them, so an idea could be confirmed or killed over a
+fortnight with nothing said about it until the expiry alert.
+
+`advance` now collects what it did — `paper_entry`, `paper_exit`,
+`verdict_change`, `expiry` — and `onClosedBar`/`expireDue` return one
+`ValidationEventBatch` per validation per pass. Coalescing is structural rather
+than a consumer's discipline: a catch-up pass that opens and closes three trades
+produces one record, because after it the ledger holds three settled rows and no
+account of which pass they belong to.
+
+`verdict_change` needs a previous reading, which is `last_comparison` (migration
+085). Nullable, and deliberately not backfilled: a validation armed before the
+migration has no previous reading and must not report a change on its first pass
+after the upgrade.
+
+`WatchEvaluator.deliverValidationEvents` resolves each batch to a mission — the
+validation's own thread first, then the thread its hypothesis was filed in — and
+enqueues at most **one inbox event and one `requestRun` per mission per pass**,
+with cause `validation_event`. Past six such wakes in an hour the lines are
+folded into a count and the wake says it is a summary. A batch that resolves to
+no live mission falls back to the alert feed, which is where a validation armed
+from the trade home has always reported.
+
+The wake reaches the coordinator directly rather than through
+`trading.mission.watch-fired`: that command exists because a fired watch is a
+domain event the projection draws, and a paper fill on money nobody has is not.
+The composer lifts the lines back out of `pendingEvents` by their
+`validation:` dedupe prefix and renders them as `validationEvents`, unclamped,
+on both render rungs — a validation wake whose events were trimmed away is a
+turn woken to narrate and told nothing to narrate.
+
+The same inbox rows are the timeline source: `buildMissionTimeline` reads them
+as `kind: "validation_event"` with the composed summary as the label, so the
+agent log row, the chart tick's tooltip and the wake text are one sentence
+rather than three descriptions of one paper fill.
+
+### Observe missions
+
+A mission whose `purpose` is `observe` (migration 085, a column rather than a
+`control_json` field because purpose is fixed at creation and `control` is the
+mutable half). Created through `trading_hypothesis` action `observe`, which
+calls `createObserveMission`.
+
+It **takes no market**. `createMission` skips the D4 exclusivity check, the
+manual-exposure check and the `trading_mission_markets` insert for it, because
+exclusivity exists to stop two agents reaching one netted position and a mission
+that cannot place an order is not a second agent on anything. Watching ETH must
+not lock ETH out of being traded.
+
+"Cannot trade" is enforced twice. The `trading_observe` session profile grants
+`look`, `strategy`, `watch`, `journal`, `backtest`, `validate` and `hypothesis`
+and no execution tool; and `refuseIfObserving` refuses `trading_plan`,
+`trading_enter` and `trading_exit` server-side with reason
+`mission_cannot_trade`, so a resumed session whose profile the in-memory
+registry lost still cannot act. Both are asserted by tests.
+
+Its wakes are `validation_event` plus whatever `time` condition it armed for
+itself. `ensureNotDeaf` returns early for it: the staleness floor protects a
+position and a plan, and an observer has neither, so the floor would be a
+metronome. Its lifecycle — pause, resume, stand-down, boot survival — is the
+ordinary one; the boot sweep keys on a deleted thread, and an observe mission
+binds a real one.
+
+There is no conversion between the two purposes and none is planned. A trade
+mission on a validated market already receives `validation_event` wakes through
+the delivery above.
 
 ### Promotion
 

@@ -664,6 +664,11 @@ const make = Effect.gen(function* () {
       // "settle did not stop everything" the control is supposed to prevent.
       const mission = yield* missions.getMission(missionId);
       if (!isActiveMissionStatus(mission.status)) return;
+      // An observer holds no position and publishes no plan, so the staleness
+      // floor has nothing to protect and would be a metronome waking a mission
+      // whose only news arrives on its own clock. Its wakes are the validation
+      // events, plus whatever check-in it armed for itself.
+      if (mission.purpose === "observe") return;
 
       const rows = yield* sql<{
         readonly size: number;
@@ -888,8 +893,15 @@ const make = Effect.gen(function* () {
     // only binds it where a mission is created, so setting it again here is what
     // keeps a post-restart wake locked to the `mcp__t3-trade__*` toolset. It is
     // idempotent — re-setting an already-bound thread is a no-op.
+    // The profile follows the mission's purpose, so an observe mission resumed
+    // after a restart comes back with the observe toolset rather than the full
+    // one. The mission row is the source: the registry is in memory and knows
+    // nothing about a mission this process has not woken yet.
     yield* Effect.sync(() =>
-      setSessionProfile({ threadId: ThreadId.make(input.threadId), kind: "trading" }),
+      setSessionProfile({
+        threadId: ThreadId.make(input.threadId),
+        kind: mission.purpose === "observe" ? "trading_observe" : "trading",
+      }),
     );
 
     yield* engine.dispatch({

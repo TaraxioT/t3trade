@@ -24,8 +24,8 @@
  *
  * @module WatchEvaluator
  */
-import type { ThreadId, TradingMissionId } from "@t3tools/contracts";
-import { CommandId } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts";
+import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type {
@@ -34,7 +34,11 @@ import type {
 } from "@t3tools/trading-contracts/account-snapshot";
 import type { AgentMarketSnapshot } from "@t3tools/trading-contracts/market";
 import { unpaidExitFeeUsd } from "@t3tools/trading-contracts/costs";
-import { forwardEndSummary } from "@t3tools/trading-contracts/forward";
+import {
+  describeValidationEvents,
+  forwardEndSummary,
+  type ValidationEventBatch,
+} from "@t3tools/trading-contracts/forward";
 import type { BarInterval, DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import { HyperliquidWebSocketClient, type WsDelivery } from "@t3tools/hyperliquid/WebSocketClient";
 import * as Cause from "effect/Cause";
@@ -71,6 +75,8 @@ import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
+import { VALIDATION_EVENT_KEY_PREFIX } from "./TradingWakeupComposer.ts";
+import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { toPersistedWatch, TradingWatchService } from "./TradingWatchService.ts";
 
 /**
@@ -239,6 +245,15 @@ const candleFromDelivery = (delivery: WsDelivery): DeliveredCandle | undefined =
   };
 };
 
+/**
+ * How long a validation wake waits behind an active run, and for how many
+ * tries. Matched to the mission reactor's own queue retry: the constraint is
+ * the same one - a single decision lease per mission - so the patience should
+ * be too.
+ */
+const VALIDATION_QUEUE_RETRY_DELAY = "5 seconds";
+const VALIDATION_QUEUE_RETRY_LIMIT = 60;
+
 const make = Effect.gen(function* () {
   const ws = yield* HyperliquidWebSocketClient;
   const gateway = yield* HyperliquidGateway;
@@ -249,6 +264,12 @@ const make = Effect.gen(function* () {
   const archive = yield* TradingMarketArchive;
   const validations = yield* TradingThesisValidationService;
   const inbox = yield* TradingEventInbox;
+  // A validation event wakes its mission directly rather than through the
+  // orchestration stream. The watch-fired route exists because a fired watch is
+  // a domain event the projection draws; a paper fill on an idea nobody has
+  // money on is not, and adding a second command type to five layers of wiring
+  // to reach the same `requestRun` would be machinery for its own sake.
+  const coordinator = yield* TradingTurnCoordinator;
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
   const sql = yield* SqlClient.SqlClient;
@@ -1425,6 +1446,7 @@ const make = Effect.gen(function* () {
       // from the archive. Contained, because a validation is research and must
       // never be able to starve the watches that guard a real position.
       yield* validations.onClosedBar({ asset: market, interval, now }).pipe(
+        Effect.flatMap((events) => deliverValidationEvents(events, now)),
         Effect.catchCause((cause) =>
           Effect.logWarning("WatchEvaluator: a thesis validation pass failed; watches continue", {
             market,
@@ -1543,6 +1565,168 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * How many `validation_event` wakes one mission may take in an hour before
+   * they are compressed into one.
+   *
+   * A validation on a 1m interval that is entering and exiting every few bars
+   * can produce an event every minute, and six turns an hour on paper trades
+   * nobody has money on is a mission spending its whole life narrating. Past
+   * this the wake still arrives - going deaf would be worse - but it says so,
+   * and the model is told to summarise rather than to react bar by bar.
+   */
+  const VALIDATION_WAKE_HOURLY_CAP = 6;
+  const VALIDATION_WAKE_WINDOW_MS = 60 * 60 * 1_000;
+  /** Every validation wake's dedupe key starts with this, so the cap can count them. */
+  const VALIDATION_DEDUPE_PREFIX = VALIDATION_EVENT_KEY_PREFIX;
+
+  /**
+   * Which mission, if any, is narrating this validation.
+   *
+   * The validation's own thread first, then the thread its hypothesis was
+   * filed in: an idea saved in one chat and validated from the same chat has
+   * both, and an idea validated from a mission thread that was never filed has
+   * only the first. A thread with no LIVE mission resolves to nothing and the
+   * batch falls back to the alert feed, which is where a validation armed from
+   * the trade home has always been reported.
+   */
+  const missionForValidation = (batch: ValidationEventBatch) =>
+    Effect.gen(function* () {
+      const threads: Array<string> = [];
+      if (batch.threadId !== null) threads.push(batch.threadId);
+      if (batch.hypothesisId !== null) {
+        const rows = yield* sql<{ readonly thread_id: string }>`
+          SELECT thread_id FROM trading_hypotheses WHERE hypothesis_id = ${batch.hypothesisId}
+        `.pipe(Effect.orDie);
+        const filed = rows[0]?.thread_id;
+        if (filed !== undefined && !threads.includes(filed)) threads.push(filed);
+      }
+      for (const threadId of threads) {
+        const found = yield* missions.findMissionByThreadId(threadId).pipe(Effect.orDie);
+        if (found._tag === "Some" && isActiveMissionStatus(found.value.status)) {
+          return { missionId: found.value.id, threadId };
+        }
+      }
+      return null;
+    });
+
+  /** How many validation wakes this mission has been sent in the last hour. */
+  const validationWakesInWindow = (missionId: string, observedAt: number) =>
+    sql<{ readonly recent: number }>`
+      SELECT COUNT(*) AS recent FROM trading_event_inbox
+      WHERE mission_id = ${missionId}
+        AND deduplication_key LIKE ${`${VALIDATION_DEDUPE_PREFIX}%`}
+        AND occurred_at > ${observedAt - VALIDATION_WAKE_WINDOW_MS}
+    `.pipe(
+      Effect.orDie,
+      Effect.map((rows) => rows[0]?.recent ?? 0),
+    );
+
+  /**
+   * Turn a pass's validation events into at most one wake per mission.
+   *
+   * Two coalescing rules, both hard. Every batch a mission owns in this pass
+   * becomes ONE inbox event and ONE run request, whatever it covers - three
+   * validations on three markets are three lines in one wake, not three wakes.
+   * And past {@link VALIDATION_WAKE_HOURLY_CAP} in an hour the lines are folded
+   * into a count and the compression is stated in the wake itself, because a
+   * summary that does not say it is a summary is a lie about how much happened.
+   *
+   * A batch that resolves to no live mission is left to the alert feed. That is
+   * not a fallback so much as the original delivery: a validation armed from
+   * the trade home has no agent to narrate it and never did.
+   */
+  const deliverValidationEvents = (
+    batches: ReadonlyArray<ValidationEventBatch>,
+    observedAt: number,
+  ) =>
+    Effect.gen(function* () {
+      if (batches.length === 0) return;
+      const byMission = new Map<
+        string,
+        { readonly threadId: string; readonly batches: Array<ValidationEventBatch> }
+      >();
+      for (const batch of batches) {
+        const owner = yield* missionForValidation(batch);
+        if (owner === null) continue;
+        const existing = byMission.get(owner.missionId);
+        if (existing === undefined) {
+          byMission.set(owner.missionId, { threadId: owner.threadId, batches: [batch] });
+        } else {
+          existing.batches.push(batch);
+        }
+      }
+
+      for (const [missionId, group] of byMission) {
+        const recent = yield* validationWakesInWindow(missionId, observedAt);
+        const compressed = recent >= VALIDATION_WAKE_HOURLY_CAP;
+        const lines = group.batches.map(describeValidationEvents);
+        const summary = compressed
+          ? `${lines.length} validation event(s) on ${group.batches
+              .map((batch) => batch.market)
+              .join(", ")}; compressed after ${recent} wakes in the last hour. ` +
+            `Newest: ${lines[lines.length - 1] ?? ""}`
+          : lines.join(" | ");
+
+        const key = `${VALIDATION_DEDUPE_PREFIX}${missionId}:${observedAt}`;
+        yield* inbox.persist({
+          missionId: TradingMissionId.make(missionId),
+          // A paper fill is news from the market's own bars, arriving on the
+          // same clock a candle watch does.
+          category: "market",
+          deduplicationKey: key,
+          payload: { validationEvents: group.batches, compressed },
+          occurredAt: observedAt,
+          summary,
+        });
+
+        yield* requestValidationRun({ missionId, deduplicationKey: key });
+      }
+    });
+
+  /**
+   * Ask the coordinator for a run, retrying while another run holds the lease.
+   *
+   * The same shape the mission reactor uses for a fired watch, and forked for
+   * the same reason: a mission mid-turn must not stall the sweep behind it. It
+   * stops as soon as the inbox event stops being pending, which means a run has
+   * claimed it and the narration has been delivered.
+   */
+  const requestValidationRun = (input: {
+    readonly missionId: string;
+    readonly deduplicationKey: string;
+  }) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; attempt < VALIDATION_QUEUE_RETRY_LIMIT; attempt++) {
+        const outcome = yield* coordinator.requestRun({
+          missionId: input.missionId,
+          cause: "validation_event",
+        });
+        if (outcome.status === "started") return;
+        if (outcome.status === "blocked") {
+          yield* Effect.logInfo("WatchEvaluator: a validation wake could not start a run", {
+            missionId: input.missionId,
+            reason: outcome.reason,
+          });
+          return;
+        }
+        yield* Effect.sleep(VALIDATION_QUEUE_RETRY_DELAY);
+        const stillPending = yield* inbox.isPending(
+          TradingMissionId.make(input.missionId),
+          input.deduplicationKey,
+        );
+        if (!stillPending) return;
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("WatchEvaluator: the validation wake request failed", {
+          missionId: input.missionId,
+          cause: String(cause),
+        }),
+      ),
+      Effect.forkDetach,
+    );
+
+  /**
    * End every validation whose window has closed, and deliver its final report
    * as an alert.
    *
@@ -1555,7 +1739,7 @@ const make = Effect.gen(function* () {
   const expireValidations = (observedAt: number) =>
     Effect.gen(function* () {
       const finished = yield* validations.expireDue({ now: observedAt });
-      for (const report of finished) {
+      for (const report of finished.reports) {
         yield* alerts.append({
           venue: DEFAULT_TRADING_VENUE,
           asset: report.thesis.market,
@@ -1568,6 +1752,7 @@ const make = Effect.gen(function* () {
           payload: report,
         });
       }
+      yield* deliverValidationEvents(finished.events, observedAt);
     });
 
   /**

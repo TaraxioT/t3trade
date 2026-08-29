@@ -137,6 +137,7 @@ const mission: TradingMission = {
     reentryAllowed: true,
     pauseAfterPositionClose: false,
   },
+  purpose: "trade",
   authorityVersion: 1,
   lastHarnessRunId: "run_1",
   createdAt: 1_753_000_000_000,
@@ -319,14 +320,18 @@ describe("§14.3 mission tool contracts", () => {
 
   it("decodes both publish outcomes", () => {
     const decode = decodePublishResult;
-    expect(
-      decode({
-        outcome: "accepted",
-        strategy,
-        version: 3,
-        warnings: [],
-      }).outcome,
-    ).toBe("accepted");
+    const accepted = decode({
+      outcome: "accepted",
+      strategy,
+      version: 3,
+      warnings: [],
+      // Required, not optional: an accepted publish that stayed silent about
+      // its projection is what a live run could not distinguish from one that
+      // armed a prediction, so the sentence is part of the contract.
+      projectionNote:
+        "No projection was recorded: no projection wakes will arm for this plan, and the chart will draw no zone for it.",
+    });
+    expect(accepted.outcome).toBe("accepted");
     expect(
       decode({ outcome: "rejected", reason: "stale_mission_state", currentVersion: 4 }).outcome,
     ).toBe("rejected");
@@ -341,6 +346,7 @@ describe("§14.3 mission tool contracts", () => {
       // execute produces — the default, and the shape most reads carry.
       mode: { kind: "discretionary" },
       authority: mission.authority,
+      purpose: "trade",
       authorityVersion: 1,
       strategy,
       missionVersion: 2,

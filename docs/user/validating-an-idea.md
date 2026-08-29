@@ -56,6 +56,37 @@ withholding them would be its own kind of dishonesty — but nothing calls them
 evidence, because a handful of trades cannot tell a real edge from a lucky
 week.
 
+## Having it narrated while it runs
+
+Asking is one way. The other is to have the agent tell you, unprompted, as the
+run moves:
+
+> Watch this one for me and tell me what you see.
+
+That turns the chat into a watcher. It wakes whenever the validation opens a
+paper trade, closes one, changes its verdict, or expires, and writes one honest
+sentence about what the event means for the idea — confirming it, contradicting
+it, or noise, and why. A single paper trade in either direction is usually
+noise, and it will say so rather than reading a story into it.
+
+A watcher cannot trade. It holds no authority on any market, it has no way to
+publish a plan or place an order, and asking it to do either gets a refusal
+rather than a position. It also does not lock the market it is watching: you can
+still trade that market from another chat while the watcher reports on it.
+
+The events show up in three places: as rows in the agent log, as ticks on the
+chart's timeline where you can hover to read what happened, and as the agent's
+own notes in the conversation.
+
+If a fast idea starts producing events every few bars, the watcher folds them
+together rather than narrating each one, and says in its own words that it is
+summarising. You can pause it, resume it, or stand it down like any other
+mission, and it survives a restart.
+
+A chat that is already trading a market gets these events too, on its ordinary
+wakes, and answers them the same way — one sentence about what it means, and
+back to the position it was managing.
+
 ## Pausing, resuming and stopping
 
 - **Pause** stops evaluation and keeps everything: the idea, its trades so far,

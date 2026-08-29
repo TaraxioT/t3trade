@@ -41,6 +41,7 @@ import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
+import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { TradingWatchService, TradingWatchServiceLive } from "./TradingWatchService.ts";
 import { WatchEvaluator, WatchEvaluatorLive } from "./WatchEvaluator.ts";
 
@@ -250,6 +251,9 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_thesis_paper_fills`;
   yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_event_inbox`;
+  // The alert feed accumulates across tests on one in-memory database, and
+  // three of the validation tests count its rows.
+  yield* sql`DELETE FROM trading_alert_events`;
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_orders`;
   // The `pnl_above` watch resolves the master-wallet address for the mission's
@@ -383,6 +387,25 @@ const candleDelivery = (closeTime: number, closePrice: number): WsDelivery => ({
  * — so this proves the same fires-exactly-once invariant without racing a
  * forked fiber.
  */
+/**
+ * Every run the evaluator asked for, in order.
+ *
+ * The evaluator now asks the coordinator directly for a `validation_event`
+ * wake, so the fake is what these tests assert against: the real coordinator
+ * would drag the composer, the gateway and the provider registry into a suite
+ * whose whole subject is which wakes get requested and how many.
+ */
+const requestedRuns: Array<{ readonly missionId: string; readonly cause: string }> = [];
+const fakeCoordinator = Layer.succeed(TradingTurnCoordinator, {
+  requestRun: (input) =>
+    Effect.sync(() => {
+      requestedRuns.push({ missionId: input.missionId, cause: input.cause });
+      return { status: "started" as const, harnessRunId: `run_${requestedRuns.length}` };
+    }),
+  requestUserMessageRun: () => Effect.succeed(false),
+  adoptTurn: () => Effect.succeed(false),
+});
+
 /** Mutable stand-in for the lease so one test can observe the stand-down. */
 let leaseHeld = true;
 const fakeLease = Layer.succeed(TradingRuntimeLease, {
@@ -417,6 +440,7 @@ const layer = it.layer(
     // The evaluator stands its writers down when the lease is lost; tests
     // here hold it by default, and the stand-down test flips it.
     Layer.provideMerge(fakeLease),
+    Layer.provideMerge(fakeCoordinator),
   ),
 );
 
@@ -1793,6 +1817,140 @@ layer("WatchEvaluator and forward validation", (it) => {
       assert.equal(alerts[0]?.watch_id, armed.validation.id);
       assert.equal(alerts[0]?.asset, "ETH");
       assert.include(alerts[0]?.summary ?? "", "ran its course");
+    }),
+  );
+
+  // -------------------------------------------------------------------
+  // the live narrative (prompt W)
+  // -------------------------------------------------------------------
+
+  /** Every validation wake this mission has been sent, oldest first. */
+  const readValidationWakes = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{ readonly summary: string; readonly occurred_at: number }>`
+      SELECT summary, occurred_at FROM trading_event_inbox
+      WHERE deduplication_key LIKE 'validation:%'
+      ORDER BY occurred_at ASC, rowid ASC
+    `;
+  });
+
+  /** Arm a validation on the thread the seeded mission is bound to. */
+  const armOnMissionThread = (durationMs: number) =>
+    Effect.gen(function* () {
+      const validations = yield* TradingThesisValidationService;
+      const armedAt = VALIDATION_BARS[0]?.t ?? PAST_CLOSE;
+      const armed = yield* validations.arm({
+        thesis,
+        durationMs,
+        threadId: harness.threadId,
+        now: armedAt,
+      });
+      if (armed.outcome !== "armed") return yield* Effect.die("expected the thesis to arm");
+      return armed.validation;
+    });
+
+  it.effect("a validation on a mission's thread wakes that mission, once per pass", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* TestClock.setTime(PAST_CLOSE + 600_000);
+      yield* seed(candleCloseWatch);
+      requestedRuns.length = 0;
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+      yield* armOnMissionThread(14 * 86_400_000);
+
+      yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE, 3_150));
+      yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE + 300_000, 3_150));
+      yield* evaluator.drain;
+
+      const wakes = yield* readValidationWakes;
+      assert.equal(wakes.length, 1, "every event in one pass rides one wake");
+      assert.include(wakes[0]?.summary ?? "", "paper long opened on ETH at");
+
+      const validationRuns = requestedRuns.filter((run) => run.cause === "validation_event");
+      assert.equal(validationRuns.length, 1);
+      assert.equal(validationRuns[0]?.missionId, "mission_1");
+    }),
+  );
+
+  it.effect("a validation nobody is narrating wakes nothing and stays on the alert feed", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* TestClock.setTime(PAST_CLOSE + 600_000);
+      requestedRuns.length = 0;
+      const validations = yield* TradingThesisValidationService;
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+      // No mission and no thread: a validation armed from the trade home.
+      const armedAt = VALIDATION_BARS[0]?.t ?? PAST_CLOSE;
+      const armed = yield* validations.arm({ thesis, durationMs: 60 * 60_000, now: armedAt });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      assert.equal((yield* readValidationWakes).length, 0);
+      assert.equal(requestedRuns.length, 0);
+      // The delivery it has always had is untouched.
+      assert.equal((yield* readAlertRows).length, 1);
+    }),
+  );
+
+  it.effect("past six wakes in an hour the events are compressed and say so", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* TestClock.setTime(PAST_CLOSE + 600_000);
+      yield* seed(candleCloseWatch);
+      requestedRuns.length = 0;
+      const sql = yield* SqlClient.SqlClient;
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+      const validation = yield* armOnMissionThread(14 * 86_400_000);
+
+      // Six wakes already delivered inside the window. Written directly: what
+      // is under test is the cap's arithmetic, and driving six real deliveries
+      // would be testing the fixture's bar cadence instead.
+      const now = PAST_CLOSE + 600_000;
+      for (let i = 0; i < 6; i += 1) {
+        yield* sql`
+          INSERT INTO trading_event_inbox
+            (event_id, mission_id, category, deduplication_key, payload_json,
+             status, occurred_at, summary, created_at)
+          VALUES (${`prior_${i}`}, 'mission_1', 'market',
+                  ${`validation:mission_1:${now - 1_000 - i}`}, '{}', 'consumed',
+                  ${now - 1_000 - i}, 'earlier validation news', ${now - 1_000 - i})
+        `;
+      }
+
+      yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE, 3_150));
+      yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE + 300_000, 3_150));
+      yield* evaluator.drain;
+
+      const wakes = yield* readValidationWakes;
+      assert.equal(wakes.length, 7, "the seventh wake still arrives; going deaf would be worse");
+      const newest = wakes[wakes.length - 1]?.summary ?? "";
+      assert.include(newest, "compressed after 6 wakes in the last hour");
+      assert.include(newest, "Newest:");
+      assert.isDefined(validation.id);
+    }),
+  );
+
+  it.effect("an expiry on a mission's thread wakes it as well as filing the alert", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* TestClock.setTime(PAST_CLOSE + 600_000);
+      yield* seed(candleCloseWatch);
+      requestedRuns.length = 0;
+      const evaluator = yield* WatchEvaluator;
+      yield* armOnMissionThread(60 * 60_000);
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const wakes = yield* readValidationWakes;
+      assert.equal(wakes.length, 1);
+      assert.include(wakes[0]?.summary ?? "", "validation window closed after");
+      assert.equal((yield* readAlertRows).length, 1, "the alert feed still gets its report");
     }),
   );
 });

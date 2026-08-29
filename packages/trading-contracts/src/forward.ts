@@ -603,6 +603,119 @@ export function judgeForward(input: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// what a validation does while nobody is watching
+// ---------------------------------------------------------------------------
+
+/**
+ * What happened to a validation between one evaluation and the next.
+ *
+ * A validation used to be a thing that ran in silence and spoke once, at
+ * expiry. Everything interesting about it happens in between: it opens a paper
+ * trade, it closes one, and the verdict it is accumulating flips from
+ * `tracking` to `worse_than_backtest`. None of that reached any agent, so the
+ * only account of an idea being tested was a report nobody read until the
+ * clock ran out.
+ *
+ * These four are the moments worth waking someone for, and nothing else is.
+ * A bar that changed no state is not an event; neither is an unchanged
+ * verdict, which is the state a validation is in on nearly every bar.
+ */
+export const ValidationEventKind = Schema.Literals([
+  "paper_entry",
+  "paper_exit",
+  "verdict_change",
+  "expiry",
+]);
+export type ValidationEventKind = typeof ValidationEventKind.Type;
+
+/**
+ * Everything one validation did in one evaluation pass, as a single record.
+ *
+ * Coalesced by construction rather than by a consumer. A pass that catches up
+ * on a stretch of missed bars can open and close several paper trades, and
+ * delivering those as separate wakes would spend a turn each on a story that
+ * is one paragraph long. `lines` holds them in the order they happened; the
+ * numbers beside it are the state after all of them.
+ */
+export const ValidationEventBatch = Schema.Struct({
+  validationId: Schema.String,
+  /** The filed idea this run belongs to, when it belongs to one. */
+  hypothesisId: Schema.NullOr(Schema.String),
+  /** The thread that armed it, when one did. */
+  threadId: Schema.NullOr(Schema.String),
+  market: Schema.String,
+  interval: Schema.String,
+  /** The validation's own heading: its label, or its thesis in one line. */
+  label: Schema.String,
+  occurredAt: Schema.Number,
+  /** Deduplicated, in the order the kinds first occurred in this pass. */
+  kinds: Schema.Array(ValidationEventKind),
+  /** One composed sentence per event, oldest first. */
+  lines: Schema.Array(Schema.String),
+  /** The running verdict after this pass. */
+  comparison: ForwardComparison,
+  /** The verdict before it, present only when this pass changed it. */
+  previousComparison: Schema.optional(ForwardComparison),
+  /** Settled paper trades so far, and their net after fees and funding. */
+  tradesTaken: Schema.Number,
+  netUsd: Schema.Number,
+});
+export type ValidationEventBatch = typeof ValidationEventBatch.Type;
+
+const eventUsd = (value: number): string => `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
+
+/** How a comparison label reads in a sentence rather than as a token. */
+export const describeComparison = (comparison: ForwardComparison): string => {
+  switch (comparison) {
+    case "tracking":
+      return "tracking the backtest";
+    case "better_than_backtest":
+      return "better than the backtest";
+    case "worse_than_backtest":
+      return "worse than the backtest";
+    case "no_baseline":
+      return "running with no backtest to compare against";
+    case "too_few_trades":
+      return "still short of the trades a verdict needs";
+  }
+};
+
+/** `paper long opened on ETH at 2451` — one entry, in the register a rug uses. */
+export const describePaperEntry = (input: {
+  readonly market: string;
+  readonly direction: "long" | "short";
+  readonly price: number;
+}): string => `paper ${input.direction} opened on ${input.market} at ${input.price}`;
+
+/** `paper long closed on ETH at 2463, net $8.40 (target)` — one exit. */
+export const describePaperExit = (input: {
+  readonly market: string;
+  readonly direction: "long" | "short";
+  readonly price: number;
+  readonly netUsd: number;
+  readonly reason: string | null;
+}): string =>
+  `paper ${input.direction} closed on ${input.market} at ${input.price}, net ` +
+  `${eventUsd(input.netUsd)}${input.reason === null ? "" : ` (${input.reason})`}`;
+
+/** `verdict now worse than the backtest, was tracking the backtest`. */
+export const describeVerdictChange = (input: {
+  readonly from: ForwardComparison | null;
+  readonly to: ForwardComparison;
+}): string =>
+  `verdict now ${describeComparison(input.to)}` +
+  (input.from === null ? "" : `, was ${describeComparison(input.from)}`);
+
+/**
+ * The batch as one line, for an inbox summary or a timeline row.
+ *
+ * The label leads because a mission may be watching more than one idea and the
+ * lines alone do not say which moved.
+ */
+export const describeValidationEvents = (batch: ValidationEventBatch): string =>
+  `${batch.label}: ${batch.lines.join("; ")}`;
+
 /** The one-line heading a card or an alert uses for a validation. */
 export const describeValidation = (thesis: TradingThesis): string => describeThesis(thesis);
 

@@ -329,6 +329,17 @@ export const TradingHarnessWakeup = Schema.Struct({
   wakeReason: Schema.optional(WatchArmedReason),
   /** The user message that woke the run, when the cause is `user_message`. */
   userMessage: Schema.optional(TradingText),
+  /**
+   * What the forward validations this mission is narrating just did, one
+   * composed sentence each, oldest first.
+   *
+   * Present only on a `validation_event` wake, and it IS that wake's news the
+   * way `triggeringWatch` is a watch wake's. Carried as prose rather than as
+   * the structured batch because the turn's whole job here is to say what the
+   * events mean for the idea, and the numbers behind them are one
+   * `trading_validate` report away for a turn that wants them.
+   */
+  validationEvents: Schema.optional(Schema.Array(TradingText)),
   marketSnapshot: ObservedMarketSnapshot,
   /**
    * The live balance: what the account holds right now. This is information

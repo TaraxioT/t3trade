@@ -352,9 +352,13 @@ layer("TradingThesisValidationService", (it) => {
       if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
 
       const nothingYet = yield* service.expireDue({ now: START + 1 });
-      assert.equal(nothingYet.length, 0, "a validation still inside its window must not expire");
+      assert.equal(
+        nothingYet.reports.length,
+        0,
+        "a validation still inside its window must not expire",
+      );
 
-      const reports = yield* service.expireDue({ now: AFTER_ALL });
+      const { reports } = yield* service.expireDue({ now: AFTER_ALL });
       assert.equal(reports.length, 1);
       const report = reports[0];
       assert.equal(report?.endReason, "expired");
@@ -430,6 +434,124 @@ layer("TradingThesisValidationService", (it) => {
 
       assert.equal(second?.barsWatched, first?.barsWatched);
       assert.equal(secondTrades.length, firstTrades.length);
+    }),
+  );
+
+  // ---------------------------------------------------------------------
+  // the live narrative (prompt W)
+  // ---------------------------------------------------------------------
+
+  it.effect("one pass that entered and exited yields ONE batch carrying both", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      // One catch-up pass over the whole fixture: it takes several trades, and
+      // the coalescing rule says that is one record, not one per fill.
+      const batches = yield* service.onClosedBar({
+        asset: "ETH",
+        interval: "5m",
+        now: AFTER_ALL,
+      });
+      assert.equal(batches.length, 1, "one validation moved, so there is one batch");
+      const batch = batches[0];
+      assert.equal(batch?.validationId, armed.validation.id);
+      assert.equal(batch?.market, "ETH");
+      assert.include(batch?.kinds ?? [], "paper_entry");
+      assert.include(batch?.kinds ?? [], "paper_exit");
+      // Deduplicated: several trades, still one of each kind.
+      assert.equal(
+        (batch?.kinds ?? []).filter((kind) => kind === "paper_entry").length,
+        1,
+        "kinds are deduplicated even when the pass took several trades",
+      );
+      assert.isAbove((batch?.lines.length ?? 0) + 0, 1, "every event keeps its own line");
+      assert.match(batch?.lines[0] ?? "", /^paper long opened on ETH at /);
+
+      // A pass over bars already walked is not an event.
+      const quiet = yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+      assert.equal(quiet.length, 0, "a pass that changed nothing must wake nobody");
+    }),
+  );
+
+  it.effect("a verdict change is reported once, and never on the first reading", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      // First pass: a reading, not news. The label is recorded and no
+      // verdict_change is emitted, however it landed.
+      const halfway = (ALL_BARS[20]?.tClose ?? START) + 1;
+      const first = yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: halfway });
+      assert.notInclude(
+        first[0]?.kinds ?? [],
+        "verdict_change",
+        "a validation's FIRST comparison is a reading, not a change",
+      );
+      const afterFirst = yield* service.get(armed.validation.id);
+      assert.isNotNull(afterFirst?.lastComparison, "the reading is recorded for next time");
+
+      // Force the difference the same way a real regime change would: give it
+      // a baseline it did not have, so the next pass compares against one.
+      yield* service.setBaseline({
+        id: armed.validation.id,
+        baseline: {
+          setupsFound: MIN_REPLAY_SETUPS + 20,
+          tradesTaken: MIN_REPLAY_SETUPS + 20,
+          setupsUnpriced: 0,
+          wins: MIN_REPLAY_SETUPS + 18,
+          losses: 2,
+          breakEven: 0,
+          winRatePercent: 90,
+          averageWinUsd: 600,
+          averageLossUsd: -100,
+          expectancyUsd: 500,
+          totalGrossUsd: 5_200,
+          totalFeesUsd: 200,
+          totalFundingUsd: 0,
+          totalNetUsd: 5_000,
+          maxDrawdownUsd: 0,
+          timeInMarketPercent: 20,
+          buyAndHoldNetUsd: 0,
+          buyAndHoldReturnPercent: 0,
+        },
+      });
+
+      const second = yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+      assert.include(second[0]?.kinds ?? [], "verdict_change");
+      assert.isDefined(second[0]?.previousComparison);
+      assert.match(second[0]?.lines.join(" ") ?? "", /verdict now .*, was /);
+
+      // The new label is what the row now holds, so the change is not reported
+      // a second time on a pass that changes nothing else.
+      const stored = yield* sql<{ readonly last_comparison: string | null }>`
+        SELECT last_comparison FROM trading_thesis_validations
+        WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(stored[0]?.last_comparison, second[0]?.comparison);
+    }),
+  );
+
+  it.effect("expiry hands back both the report and an expiry event", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: MINUTE * 60, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      const finished = yield* service.expireDue({ now: AFTER_ALL });
+      assert.equal(finished.reports.length, 1);
+      assert.equal(finished.events.length, 1, "an expiry is always worth one event");
+      assert.include(finished.events[0]?.kinds ?? [], "expiry");
+      assert.match(
+        finished.events[0]?.lines.join(" ") ?? "",
+        /validation window closed after \d+ bars/,
+      );
     }),
   );
 

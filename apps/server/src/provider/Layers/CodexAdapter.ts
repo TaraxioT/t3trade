@@ -49,6 +49,7 @@ import {
   markTradingContractDelivered,
   resetTradingContractDelivery,
   TRADING_ANALYST_SYSTEM_PROMPT,
+  TRADING_OBSERVE_SYSTEM_PROMPT,
   TRADING_SYSTEM_PROMPT,
 } from "../TradingSessionProfile.ts";
 
@@ -1756,7 +1757,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 baseInstructions:
                   tradingProfileKind === "trading_analyst"
                     ? TRADING_ANALYST_SYSTEM_PROMPT
-                    : TRADING_SYSTEM_PROMPT,
+                    : tradingProfileKind === "trading_observe"
+                      ? TRADING_OBSERVE_SYSTEM_PROMPT
+                      : TRADING_SYSTEM_PROMPT,
               }
             : {}),
           ...(mcpSession

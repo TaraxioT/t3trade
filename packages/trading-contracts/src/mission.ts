@@ -70,6 +70,29 @@ export const TradingMissionControl = Schema.Struct({
 });
 export type TradingMissionControl = typeof TradingMissionControl.Type;
 
+/**
+ * What a mission is for: trading, or watching.
+ *
+ * `trade` is every mission that has ever existed - it holds authority on its
+ * markets, it publishes plans, and it can reach the exchange. `observe` is a
+ * mission whose whole job is to watch a hypothesis being validated and say
+ * what it sees. It wakes, it reads, it journals, and it has no path to an
+ * order: its session profile grants no execution tool and the handlers refuse
+ * one anyway, so "cannot trade" is enforced twice and asserted by tests rather
+ * than promised by a prompt.
+ *
+ * Stored on the mission row, never derived from the mandate. `readMissionMode`
+ * derives execute-vs-discretionary from the operator's words because that is a
+ * reading of an instruction and the instruction is what the model obeys. This
+ * is not a reading of anything: it is a capability boundary, and a boundary
+ * that moves when a sentence is reworded is not a boundary.
+ *
+ * There is no conversion between the two. An observe mission that should trade
+ * is a trade mission the user asks for, in a thread that does not hold one.
+ */
+export const TradingMissionPurpose = Schema.Literals(["trade", "observe"]);
+export type TradingMissionPurpose = typeof TradingMissionPurpose.Type;
+
 export const TradingMission = Schema.Struct({
   id: TradingId,
   userId: TradingId,
@@ -104,6 +127,8 @@ export const TradingMission = Schema.Struct({
   blockedReason: Schema.optional(TradingMissionBlockedReason),
 
   control: TradingMissionControl,
+  /** What this mission is for. @see TradingMissionPurpose */
+  purpose: TradingMissionPurpose,
 
   authorityVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   lastHarnessRunId: Schema.optional(TradingId),
@@ -121,6 +146,16 @@ export const TradingHarnessRunCause = Schema.Literals([
   "position_updated",
   "user_message",
   "mission_resumed",
+  /**
+   * A forward validation this mission is bound to did something: opened or
+   * closed a paper trade, changed its verdict, or ran out of clock.
+   *
+   * The only cause that is not about money at risk. It exists because
+   * validation used to be evaluated in silence server-side - the paper fills
+   * landed in a table no agent could see - so an idea could be confirmed or
+   * killed over two weeks and nobody narrated a word of it.
+   */
+  "validation_event",
 ]);
 export type TradingHarnessRunCause = typeof TradingHarnessRunCause.Type;
 

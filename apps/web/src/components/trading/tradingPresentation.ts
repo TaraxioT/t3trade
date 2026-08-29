@@ -568,6 +568,41 @@ export function plannedReassessmentAt(
 }
 
 /** One past event, ready to hand to the chart's `pastMarkers` input. */
+/** Em-dashes are not allowed in card text; server prose arrives with them. */
+export function deEmDash(text: string): string {
+  return text.replaceAll(/\s*—\s*/g, " · ");
+}
+
+/**
+ * Why a wake woke, in the plan's plain register.
+ *
+ * The timeline carries the run cause verbatim; a cause is a literal the
+ * harness writes for itself, so the client translates. Unknown causes are
+ * humanized rather than invented around: a new literal reads as itself.
+ */
+export function describeWakeTrigger(cause: string | undefined): string {
+  switch (cause) {
+    case "mission_created":
+      return "The mission started";
+    case "market_watch_triggered":
+      return "A level it was watching was reached";
+    case "scheduled_reassessment":
+      return "A scheduled check-in came due";
+    case "order_updated":
+      return "The exchange reported an order change";
+    case "position_updated":
+      return "The exchange reported a position change";
+    case "user_message":
+      return "You wrote to it";
+    case "mission_resumed":
+      return "It was resumed";
+    case "validation_event":
+      return "A validation it is watching moved";
+    default:
+      return cause === undefined ? "It woke" : deEmDash(humanizeLiteral(cause));
+  }
+}
+
 export interface ChartPastMarkerInput {
   readonly key: string;
   readonly kind: string;
@@ -575,6 +610,15 @@ export interface ChartPastMarkerInput {
   readonly at: number;
   readonly cause?: string;
   readonly failed?: boolean;
+  /**
+   * The event in words, for the tick's tooltip.
+   *
+   * The projection has always sent it and the rug always dropped it, so every
+   * tick announced itself as its kind and a clock time — twenty ticks, twenty
+   * variations of "wake at 14:32", and no way to tell which was the one that
+   * moved the stop.
+   */
+  readonly label?: string;
 }
 
 /**
@@ -610,6 +654,10 @@ export function deriveChartPastMarkers(mission: {
       key: `${entry.kind}-${index}-${entry.at}`,
       kind: entry.kind,
       at,
+      // A wake's label is the run cause verbatim, a literal the harness writes
+      // for itself, so it is put into words the same way the status bar puts
+      // it. Every other kind is already composed prose.
+      label: entry.kind === "wake" ? describeWakeTrigger(entry.cause ?? entry.label) : entry.label,
       ...(entry.cause === undefined ? {} : { cause: entry.cause }),
       ...(entry.label.endsWith("(failed)") ? { failed: true } : {}),
     });

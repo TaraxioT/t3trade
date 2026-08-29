@@ -64,6 +64,12 @@ import {
   type PaperTrade,
   type ThesisValidationEndReason,
   type ThesisValidationStatus,
+  describePaperEntry,
+  describePaperExit,
+  describeVerdictChange,
+  type ForwardComparison,
+  type ValidationEventBatch,
+  type ValidationEventKind,
 } from "@t3tools/trading-contracts/forward";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
 import { describeThesis, validateThesis, TradingThesis } from "@t3tools/trading-contracts/thesis";
@@ -125,6 +131,12 @@ export interface ThesisValidation {
   readonly hypothesisId: string | null;
   /** The version of that idea whose thesis this is. */
   readonly hypothesisVersion: number | null;
+  /**
+   * The comparison label this validation last reported, or null before its
+   * first evaluation. A verdict change is a difference, and without the
+   * previous reading there is nothing to take a difference against.
+   */
+  readonly lastComparison: ForwardComparison | null;
 }
 
 export type ArmValidationResult =
@@ -198,15 +210,20 @@ export interface TradingThesisValidationServiceShape {
     readonly asset: string;
     readonly interval: string;
     readonly now: number;
-  }) => Effect.Effect<void, PersistenceSqlError>;
+  }) => Effect.Effect<ReadonlyArray<ValidationEventBatch>, PersistenceSqlError>;
 
   /**
-   * End every validation whose clock has run out, and return the final report
-   * for each so the caller can deliver it.
+   * End every validation whose clock has run out, and return both deliveries
+   * it earns: the final report for the alert feed, and the event batch for a
+   * mission that is narrating it.
    */
-  readonly expireDue: (input: {
-    readonly now: number;
-  }) => Effect.Effect<ReadonlyArray<ForwardReport>, PersistenceSqlError>;
+  readonly expireDue: (input: { readonly now: number }) => Effect.Effect<
+    {
+      readonly reports: ReadonlyArray<ForwardReport>;
+      readonly events: ReadonlyArray<ValidationEventBatch>;
+    },
+    PersistenceSqlError
+  >;
 
   /**
    * Record the backtest figures the forward run will be scored against.
@@ -285,6 +302,7 @@ interface ValidationRow {
   readonly last_bar_time: number | null;
   readonly hypothesis_id: string | null;
   readonly hypothesis_version: number | null;
+  readonly last_comparison: string | null;
 }
 
 interface PaperFillRow {
@@ -304,6 +322,16 @@ interface PaperFillRow {
   readonly funding_usd: number | null;
   readonly net_usd: number | null;
   readonly adverse_excursion_usd: number | null;
+}
+
+/** What one `advance` pass produced. @see ValidationEventBatch */
+interface AdvanceResult {
+  readonly events: ReadonlyArray<{
+    readonly kind: ValidationEventKind;
+    readonly line: string;
+  }>;
+  /** The label the run held before this pass, when this pass changed it. */
+  readonly previousComparison: ForwardComparison | null;
 }
 
 const toPaperTrade = (row: PaperFillRow): PaperTrade => ({
@@ -385,6 +413,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         lastBarTime: row.last_bar_time,
         hypothesisId: row.hypothesis_id,
         hypothesisVersion: row.hypothesis_version,
+        lastComparison: (row.last_comparison ?? null) as ForwardComparison | null,
       } satisfies ThesisValidation;
     });
 
@@ -646,14 +675,28 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
             updated_at = ${input.now}
         WHERE paper_trade_id = ${input.tradeId}
       `.pipe(Effect.mapError(sqlFail("settleFill")));
+      // Returned rather than re-read: the exit event quotes the same number the
+      // ledger row just took, and a second read could quote a different one.
+      return round2(grossUsd - feesUsd + fundingUsd);
     });
 
-  /** Walk one validation over every archived bar it has not seen yet. */
+  /**
+   * Walk one validation over every archived bar it has not seen yet, and say
+   * what happened on the way.
+   *
+   * The lines are collected here rather than derived afterwards from the
+   * ledger because a catch-up pass can open and close the same trade inside
+   * one call: after it, the ledger holds one settled row and no record that
+   * both halves happened in this pass rather than in two.
+   */
   const advance = (validation: ThesisValidation, now: number) =>
     Effect.gen(function* () {
+      const events: Array<{ readonly kind: ValidationEventKind; readonly line: string }> = [];
+      const direction = validation.thesis.side === "long" ? "long" : "short";
+      const quiet: AdvanceResult = { events, previousComparison: null };
       const interval = validation.interval as ArchiveInterval;
       const width = INTERVAL_MS[interval];
-      if (width === undefined) return;
+      if (width === undefined) return quiet;
 
       const warmup = forwardWarmupBars(validation.thesis);
       // Reach back far enough for every indicator to converge before the first
@@ -670,13 +713,13 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
           maxBars: warmup + MAX_CATCHUP_BARS,
         })
         .pipe(Effect.mapError(sqlFail("advance.candles")));
-      if (rows.length === 0) return;
+      if (rows.length === 0) return quiet;
 
       const candles = rows.map(toCandle);
       // Only bars that have closed. The archiver can store a forming bar, and
       // a rule read on one fires on numbers that are still moving.
       const closed = candles.filter((candle) => candle.closeTime <= now);
-      if (closed.length === 0) return;
+      if (closed.length === 0) return quiet;
 
       // Bars this validation has not evaluated yet. On the first pass that is
       // every closed bar since it was armed: a bar that closed between arming
@@ -686,7 +729,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       const firstUnseen = closed.findIndex((candle) =>
         lastSeen === null ? candle.openTime >= validation.armedAt : candle.openTime > lastSeen,
       );
-      if (firstUnseen < 0) return;
+      if (firstUnseen < 0) return quiet;
 
       let state = validation.state;
       let barsWatched = validation.barsWatched;
@@ -718,10 +761,18 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
               NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, 0, ${now}, ${now}
             )
           `.pipe(Effect.mapError(sqlFail("advance.enter")));
+          events.push({
+            kind: "paper_entry",
+            line: describePaperEntry({
+              market: validation.asset,
+              direction,
+              price: round4(step.entered.entryPrice),
+            }),
+          });
         }
 
         if (step.exited !== null) {
-          yield* settleFill({
+          const netUsd = yield* settleFill({
             validation,
             tradeId: step.exited.tradeId,
             entryTime: step.exited.entryTime,
@@ -732,6 +783,16 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
             barsHeld: step.exited.barsHeld,
             adverseExcursionUsd: step.exited.adverseExcursionUsd,
             now,
+          });
+          events.push({
+            kind: "paper_exit",
+            line: describePaperExit({
+              market: validation.asset,
+              direction,
+              price: round4(step.exited.exitPrice),
+              netUsd,
+              reason: step.exited.exitReason,
+            }),
           });
         }
 
@@ -761,6 +822,69 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
             updated_at = ${now}
         WHERE validation_id = ${validation.id}
       `.pipe(Effect.mapError(sqlFail("advance.state")));
+
+      // The verdict, taken after the writes above so it reads the same ledger
+      // the next `report` will. A validation whose label has never been
+      // recorded is not reported as having changed: its FIRST reading is a
+      // reading, not news, and every validation armed before migration 085 has
+      // no previous one.
+      const comparison = (yield* report({ id: validation.id, now }))?.comparison ?? null;
+      let previousComparison: ForwardComparison | null = null;
+      if (comparison !== null && comparison !== validation.lastComparison) {
+        if (validation.lastComparison !== null) {
+          previousComparison = validation.lastComparison;
+          events.push({
+            kind: "verdict_change",
+            line: describeVerdictChange({ from: validation.lastComparison, to: comparison }),
+          });
+        }
+        yield* sql`
+          UPDATE trading_thesis_validations
+          SET last_comparison = ${comparison}, updated_at = ${now}
+          WHERE validation_id = ${validation.id}
+        `.pipe(Effect.mapError(sqlFail("advance.comparison")));
+      }
+
+      return { events, previousComparison } satisfies AdvanceResult;
+    });
+
+  /**
+   * One validation's batch, or null when the pass produced nothing worth
+   * waking anyone for. Composed here so the candle path and the expiry path
+   * cannot describe the same events two different ways.
+   */
+  const toEventBatch = (input: {
+    readonly validation: ThesisValidation;
+    readonly advanced: AdvanceResult;
+    readonly extra?: { readonly kind: ValidationEventKind; readonly line: string } | undefined;
+    readonly now: number;
+  }) =>
+    Effect.gen(function* () {
+      const all = [...input.advanced.events, ...(input.extra === undefined ? [] : [input.extra])];
+      if (all.length === 0) return null;
+      const final = yield* report({ id: input.validation.id, now: input.now });
+      if (final === null) return null;
+      // Deduplicated in first-occurrence order: a catch-up pass that took three
+      // trades has three lines and one `paper_entry`.
+      const kinds: Array<ValidationEventKind> = [];
+      for (const event of all) if (!kinds.includes(event.kind)) kinds.push(event.kind);
+      return {
+        validationId: input.validation.id,
+        hypothesisId: input.validation.hypothesisId,
+        threadId: input.validation.threadId,
+        market: input.validation.asset,
+        interval: input.validation.interval,
+        label: final.headline,
+        occurredAt: input.now,
+        kinds,
+        lines: all.map((event) => event.line),
+        comparison: final.comparison,
+        ...(input.advanced.previousComparison === null
+          ? {}
+          : { previousComparison: input.advanced.previousComparison }),
+        tradesTaken: final.stats.tradesTaken,
+        netUsd: final.stats.totalNetUsd,
+      } satisfies ValidationEventBatch;
     });
 
   const onClosedBar: TradingThesisValidationServiceShape["onClosedBar"] = (input) =>
@@ -769,10 +893,14 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         SELECT * FROM trading_thesis_validations
         WHERE status = 'armed' AND asset = ${input.asset} AND interval = ${input.interval}
       `.pipe(Effect.mapError(sqlFail("onClosedBar")));
+      const batches: Array<ValidationEventBatch> = [];
       for (const row of rows) {
         const validation = yield* hydrate(row);
-        yield* advance(validation, input.now);
+        const advanced = yield* advance(validation, input.now);
+        const batch = yield* toEventBatch({ validation, advanced, now: input.now });
+        if (batch !== null) batches.push(batch);
       }
+      return batches;
     });
 
   const report: TradingThesisValidationServiceShape["report"] = (input) =>
@@ -791,11 +919,15 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("expireDue")));
 
       const reports: Array<ForwardReport> = [];
+      const events: Array<ValidationEventBatch> = [];
       for (const row of rows) {
         // Evaluate the last bars before ending, so the final report covers the
         // whole window rather than stopping wherever the last delivery landed.
         const live = yield* hydrate(row);
-        if (live.status === "armed") yield* advance(live, input.now);
+        const advanced =
+          live.status === "armed"
+            ? yield* advance(live, input.now)
+            : ({ events: [], previousComparison: null } satisfies AdvanceResult);
         yield* sql`
           UPDATE trading_thesis_validations
           SET status = 'ended', ended_at = ${input.now}, end_reason = 'expired',
@@ -804,8 +936,26 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         `.pipe(Effect.mapError(sqlFail("expireDue.end")));
         const final = yield* report({ id: row.validation_id, now: input.now });
         if (final !== null) reports.push(final);
+        // The expiry itself is always an event, even on a validation that took
+        // nothing: "the window closed and here is what it showed" is the whole
+        // point of having watched. Composed against the ENDED row so the batch
+        // reports the same verdict the final report does.
+        const ended = yield* get(row.validation_id);
+        const batch =
+          ended === null
+            ? null
+            : yield* toEventBatch({
+                validation: ended,
+                advanced,
+                extra: {
+                  kind: "expiry",
+                  line: `validation window closed after ${ended.barsWatched} bars`,
+                },
+                now: input.now,
+              });
+        if (batch !== null) events.push(batch);
       }
-      return reports;
+      return { reports, events };
     });
 
   const forChart: TradingThesisValidationServiceShape["forChart"] = (input) =>

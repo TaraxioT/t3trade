@@ -76,6 +76,8 @@ import { TradingTradeHistoryServiceLive } from "../../../trading/TradingTradeHis
 import { TradingWatchServiceLive } from "../../../trading/TradingWatchService.ts";
 import { TradingJournalServiceLive } from "../../../trading/TradingJournalService.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "../../../trading/TradingEventInbox.ts";
+import { TradingHypothesisServiceLive } from "../../../trading/TradingHypothesisService.ts";
+import { TradingThesisValidationServiceLive } from "../../../trading/TradingThesisValidationService.ts";
 import {
   makeTradingMarketArchive,
   TradingMarketArchive,
@@ -512,6 +514,13 @@ const tradingLayerOverExchange = (
     // The fetch path's archive seam and inbox peek (plan 38 §2).
     Layer.succeed(TradingMarketArchive, makeTradingMarketArchive(archivePath)),
     TradingEventInboxLive,
+    // The idea record and its paper ledger. Both read the same memory database
+    // the rest of this layer does, and the validation service is here because
+    // `trading_hypothesis` enriches a filed idea's runs with its verdicts.
+    TradingHypothesisServiceLive,
+    TradingThesisValidationServiceLive.pipe(
+      Layer.provide(Layer.succeed(TradingMarketArchive, makeTradingMarketArchive(archivePath))),
+    ),
     TradingMissionServiceLive,
     TradingStrategyServiceLive,
     TradingWatchServiceLive,
@@ -4203,3 +4212,145 @@ it.effect("publishes a plan with no account, and says nothing reached the venue"
     tradingLayerOverExchange(fake),
   );
 });
+
+// -- prompt W: the observe mission -------------------------------------------
+//
+// A mission whose whole job is to watch a hypothesis being validated. It is a
+// mission in every way the runtime cares about, and it has no path to an order:
+// the session profile grants no execution tool and these tests prove the
+// handlers refuse one even when the model finds a way to emit the call.
+
+const OBSERVE_CHAT_THREAD = ThreadId.make("thread-observe-chat");
+
+/** The thesis an observe mission is created against. */
+const observeThesis = {
+  market: "ETH",
+  interval: "5m",
+  side: "long",
+  entry: {
+    predicates: [
+      {
+        left: { source: "price" },
+        comparator: "crosses_above",
+        right: { source: "constant", value: 3_000 },
+      },
+    ],
+  },
+  exits: { stop: { basis: "percent", value: 2 }, target: { basis: "percent", value: 1 } },
+};
+
+it.effect("an observe mission is created from a filed idea and cannot trade", () =>
+  withMcpServer(
+    ({ callTool, missions, seedLocalTradingAccount }) =>
+      Effect.gen(function* () {
+        // The account an auto-created mission is opened against, exactly as
+        // the bind-on-first-use tests seed it.
+        yield* seedLocalTradingAccount();
+
+        const saved = yield* callTool(OBSERVE_CHAT_THREAD, "trading_hypothesis", {
+          action: "save",
+          title: "ETH holds above 3000",
+          thesis: observeThesis,
+        });
+        if (saved.result.isError === true) {
+          return assert.fail(`save refused: ${saved.result.content[0].text}`);
+        }
+        const hypothesisId = saved.result.body.hypothesis.hypothesisId as string;
+
+        const watching = yield* callTool(OBSERVE_CHAT_THREAD, "trading_hypothesis", {
+          action: "observe",
+          hypothesisId,
+        });
+        if (watching.result.isError === true) {
+          return assert.fail(`observe refused: ${watching.result.content[0].text}`);
+        }
+        assert.match(watching.result.body.outcome, /Watching "ETH holds above 3000" on ETH/);
+        assert.match(watching.result.body.outcome, /cannot plan, enter or exit/);
+
+        // The mission exists, is bound to this thread, and says what it is for.
+        const bound = yield* missions.findMissionByThreadId(OBSERVE_CHAT_THREAD).pipe(Effect.orDie);
+        assert.equal(bound._tag, "Some");
+        if (bound._tag !== "Some") return;
+        assert.equal(bound.value.purpose, "observe");
+        assert.equal(bound.value.market, "ETH");
+
+        // It holds NO market. Exclusivity exists because the venue nets
+        // positions per asset, and a mission that cannot place an order is not
+        // a second agent on anything - so watching ETH must not lock ETH out of
+        // being traded. The market is unheld under the observer's own user.
+        const holder = yield* missions
+          .findActiveMissionOnMarket({
+            userId: LOCAL_TRADING_USER_ID,
+            venue: "hyperliquid",
+            market: "ETH",
+          })
+          .pipe(Effect.orDie);
+        assert.equal(holder._tag, "None", "an observe mission must not reserve its market");
+
+        // The server refuses every execution call, whatever the allowlist did.
+        const plan = yield* callTool(OBSERVE_CHAT_THREAD, "trading_plan", {
+          expectedMissionVersion: 1,
+          strategy: strategyBody("v1"),
+        });
+        assert.equal(plan.result.isError, true);
+        assert.match(plan.result.content[0].text, /mission_cannot_trade/);
+
+        const enter = yield* callTool(OBSERVE_CHAT_THREAD, "trading_enter", {
+          market: "ETH",
+          side: "buy",
+          stopPrice: 2_900,
+        });
+        assert.equal(enter.result.isError, true);
+        assert.match(enter.result.content[0].text, /mission_cannot_trade/);
+
+        const exit = yield* callTool(OBSERVE_CHAT_THREAD, "trading_exit", { action: "close" });
+        assert.equal(exit.result.isError, true);
+        assert.match(exit.result.content[0].text, /mission_cannot_trade/);
+        assert.match(exit.result.content[0].text, /watching, not trading/);
+
+        // It survives the boot sweep exactly like a trade mission: the sweep
+        // keys on a deleted thread, and this thread is alive.
+        const orphans = yield* missions.listOrphanedMissions();
+        assert.isFalse(orphans.some((row) => row.missionId === bound.value.id));
+
+        // …and its lifecycle moves are the ordinary ones.
+        const version = yield* missions.getMissionVersion(bound.value.id);
+        yield* missions.transition({
+          missionId: bound.value.id,
+          to: "paused",
+          expectedVersion: version,
+        });
+        const paused = yield* missions.getMission(bound.value.id);
+        assert.equal(paused.status, "paused");
+        assert.equal(paused.purpose, "observe", "purpose survives a lifecycle move");
+        yield* missions.transition({
+          missionId: bound.value.id,
+          to: "analysing",
+          expectedVersion: yield* missions.getMissionVersion(bound.value.id),
+        });
+        assert.equal((yield* missions.getMission(bound.value.id)).status, "analysing");
+
+        // The way out is at the way in. Found live: an observer asked to stand
+        // down had no exit tool and no mission control in its allowlist, so
+        // "stop watching" was a request nothing in the session could answer.
+        const stopped = yield* callTool(OBSERVE_CHAT_THREAD, "trading_hypothesis", {
+          action: "observe",
+          hypothesisId,
+        });
+        assert.notEqual(stopped.result.isError, true);
+        assert.match(stopped.result.body.outcome, /stopped watching/);
+        assert.match(stopped.result.body.outcome, /validations themselves are untouched/);
+        assert.equal((yield* missions.getMission(bound.value.id)).status, "revoked");
+        // The thread is free again, so asking to watch once more starts a new one.
+        const restarted = yield* callTool(OBSERVE_CHAT_THREAD, "trading_hypothesis", {
+          action: "observe",
+          hypothesisId,
+        });
+        assert.notEqual(restarted.result.isError, true);
+        assert.match(restarted.result.body.outcome, /Watching "ETH holds above 3000"/);
+
+        clearAllSessionProfiles();
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);

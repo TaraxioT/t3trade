@@ -68,6 +68,7 @@ const mission = {
   market: "ETH",
   markets: ["ETH"],
   status: "position_open",
+  purpose: "trade",
   authorityVersion: 1,
   authority: pocAuthorityDefaults(1_000),
   control: {},
@@ -557,6 +558,98 @@ layer("TradingWakeupComposer", (it) => {
       assert.notInclude(line, "observed=");
       // The budget the plan set for the fold.
       assert.isAtMost(line.length, 190);
+    }),
+  );
+
+  // Prompt W. A validation wake's news is not a watch and not a position: it
+  // is prose the evaluator already composed from the paper ledger, and the
+  // whole point of the turn is to answer it. It rides the wake in full and
+  // unclamped, because there is no second place to read it from.
+  it.effect("carries a validation wake's own events, in full", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const lines = [
+        "ETH cross of 3000: paper long opened on ETH at 3001; " +
+          "paper long closed on ETH at 3031, net $9.40 (target)",
+        "ETH 1m fade: verdict now worse than the backtest, was tracking the backtest",
+      ];
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "validation_event",
+        occurredAt: NOW,
+        pendingEvents: lines.map((summary, index) => ({
+          category: "market" as const,
+          deduplicationKey: `validation:mission_1:${NOW - index}`,
+          occurredAt: NOW - index,
+          summary,
+        })),
+        activeStrategy: strategy,
+      });
+
+      assert.equal(composed.wakeup.cause, "validation_event");
+      assert.deepEqual([...(composed.wakeup.validationEvents ?? [])], lines);
+      // Verbatim in the rendered text, past the 190-char triggered-line clamp
+      // that would have cut the first one in half.
+      for (const line of lines) assert.include(composed.text, line);
+      assert.include(composed.text, "validationEvents:");
+      // Still a lean wake: no candles, no book, no volatility.
+      assert.notInclude(composed.text, "recentCandles");
+      assert.notInclude(composed.text, "microstructure");
+      // …and the events are NOT also printed as `triggered:`. The fallback
+      // there reads the newest pending event's summary, which on this cause is
+      // the same inbox row - once clamped at 190 chars and once in full,
+      // reading as two facts. Measured live: 80 duplicated characters on every
+      // validation wake.
+      assert.notInclude(composed.text, "triggered:");
+      const first = lines[0] ?? "";
+      assert.equal(composed.text.split(first).length - 1, 1, "the event line appears exactly once");
+    }),
+  );
+
+  // An observer cannot trade, so the line that prices a hypothetical entry is
+  // not context for it - and its authority carries the nominal $1 a
+  // positive-amount schema forced on a mission that spends nothing, so the line
+  // would read `referenceNotionalUsd=1` forever. Measured live.
+  it.effect("prices no hypothetical entry for a mission that cannot trade", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const observing = { ...mission, purpose: "observe" as const };
+      const composed = yield* composer.compose({
+        mission: observing,
+        harnessRunId: "run_1",
+        cause: "validation_event",
+        occurredAt: NOW,
+        pendingEvents: [
+          {
+            category: "market" as const,
+            deduplicationKey: `validation:${observing.id}:${NOW}`,
+            occurredAt: NOW,
+            summary: "BTC EMA20 crossover: paper long opened on BTC at 78088",
+          },
+        ],
+      });
+      assert.notInclude(composed.text, "referenceNotionalUsd");
+      assert.isUndefined(composed.wakeup.costContext);
+      // The news still rides it. Trimming the cost line must not trim the wake.
+      assert.include(composed.text, "paper long opened on BTC at 78088");
+    }),
+  );
+
+  // An ordinary wake must not grow a validation block it has no events for.
+  it.effect("leaves the validation block off a wake that carries none", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "scheduled_reassessment",
+        occurredAt: NOW,
+        pendingEvents: [],
+        activeStrategy: strategy,
+      });
+      assert.isUndefined(composed.wakeup.validationEvents);
+      assert.notInclude(composed.text, "validationEvents");
     }),
   );
 

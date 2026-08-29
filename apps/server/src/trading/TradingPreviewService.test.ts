@@ -60,6 +60,7 @@ const goodMission = (overrides: Partial<TradingMission> = {}): TradingMission =>
     status: "executing",
     blockedReason: undefined,
     control: { entriesAllowed: true, reentryAllowed: true, pauseAfterPositionClose: false },
+    purpose: "trade",
     authorityVersion: 1,
     createdAt: "2026-07-31T00:00:00Z",
     updatedAt: "2026-07-31T00:00:00Z",

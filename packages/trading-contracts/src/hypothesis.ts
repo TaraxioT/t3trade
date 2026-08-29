@@ -243,6 +243,20 @@ export const TradingHypothesisAction = Schema.Literals([
   "show",
   "shelve",
   "conclude",
+  /**
+   * Put a durable watcher on this idea: a mission that wakes when its
+   * validations move and narrates what they mean, and that cannot trade.
+   *
+   * It lives on the hypothesis tool rather than on `trading_validate` because
+   * what is being watched is the IDEA, not one run of it - a validation
+   * superseded by the next version keeps the same observer.
+   *
+   * Calling it on a chat that is already watching STOPS the watch. The reverse
+   * state lives at the same handle because an observer's allowlist has no exit
+   * tool and no mission control, so without it "stop watching" was a request
+   * nothing in the session could answer.
+   */
+  "observe",
 ]);
 export type TradingHypothesisAction = typeof TradingHypothesisAction.Type;
 
@@ -268,7 +282,7 @@ export const TradingHypothesisInput = Schema.Struct({
 export type TradingHypothesisInput = typeof TradingHypothesisInput.Type;
 
 export const TradingHypothesisResult = Schema.Struct({
-  /** Set by `save`, `revise`, `show`, `shelve` and `conclude`. */
+  /** Set by `save`, `revise`, `show`, `shelve`, `conclude` and `observe`. */
   hypothesis: Schema.optional(HypothesisDetail),
   /** Set by `list`. */
   hypotheses: Schema.optional(Schema.Array(HypothesisSummary)),
@@ -284,12 +298,13 @@ export type TradingHypothesisResult = typeof TradingHypothesisResult.Type;
 /** The vocabulary, served to the call that asked rather than to every turn. */
 export function renderTradingHypothesisMenu(): string {
   return [
-    "save {title, thesis} files an idea as version 1; thesis is trading_backtest's shape",
-    "revise {hypothesisId, thesis, note} writes the next version and reopens a concluded or shelved idea",
-    "show {hypothesisId} gives the versions, every backtest run against them, and every linked validation",
+    "save {title, thesis} files an idea as v1; thesis is trading_backtest's shape",
+    "revise {hypothesisId, thesis, note} writes the next version and reopens a concluded or shelved one",
+    "show {hypothesisId} gives the versions, their backtest runs, and the linked validations",
     "list {scope: thread|all}; shelve {hypothesisId, conclusion?}; conclude {hypothesisId, verdict: supported|unsupported, conclusion}",
-    "pass hypothesisId alone to trading_backtest or to trading_validate arm and it runs that idea's current version, filed against it; restating the thesis is allowed but has to match that version",
-    "arming a second validation for the SAME hypothesis on one market and interval supersedes the first; a different idea's still refuses",
+    "observe {hypothesisId} makes this chat a watcher: woken by its validations, journals what each means, never trades; call again to stop",
+    "hypothesisId alone on trading_backtest or trading_validate arm runs that idea's current version, filed against it; a restated thesis must match it",
+    "a second validation of the SAME idea on one market and interval supersedes the first; another idea's refuses",
     "nothing here places an order; a supported idea is traded the ordinary way, when the user says so",
   ].join(" · ");
 }

@@ -325,6 +325,19 @@ interface JournalNoteRow {
   readonly author?: string;
 }
 
+/**
+ * One delivered validation wake (prompt W).
+ *
+ * Read off the mission's own inbox rather than a table of its own: the
+ * evaluator already writes exactly one durable row per wake, carrying the
+ * composed lines as its summary, and a second table would be a second copy of
+ * a fact that is already recorded and already bounded.
+ */
+interface ValidationEventRow {
+  readonly summary: string;
+  readonly occurred_at: number;
+}
+
 /** A strategy publish. */
 interface StrategyVersionRow {
   readonly version: number;
@@ -345,6 +358,7 @@ export function buildMissionTimeline(input: {
   readonly stopAdjustments: ReadonlyArray<StopAdjustmentRow>;
   readonly publishes: ReadonlyArray<StrategyVersionRow>;
   readonly journal?: ReadonlyArray<JournalNoteRow>;
+  readonly validationEvents?: ReadonlyArray<ValidationEventRow>;
 }): ReadonlyArray<TradingMissionTimelineEntry> {
   const entries: Array<TradingMissionTimelineEntry & { readonly atMillis: number }> = [];
 
@@ -390,6 +404,21 @@ export function buildMissionTimeline(input: {
       // Narrowed rather than passed through: the column is NOT NULL DEFAULT
       // 'model', so anything else is a row nothing in this codebase wrote.
       author: note.author === "user" ? "user" : "model",
+    });
+  }
+
+  // The summary IS the composed sentence, the same one the wake carried, so
+  // the log row and the wake text cannot describe the same paper fill two
+  // different ways. A blank one is dropped: `label` is a non-empty string on
+  // the wire and one empty summary would fail the whole timeline's encode.
+  for (const event of input.validationEvents ?? []) {
+    const label = event.summary.trim();
+    if (label === "") continue;
+    entries.push({
+      atMillis: event.occurred_at,
+      at: toIso(event.occurred_at),
+      kind: "validation_event",
+      label,
     });
   }
 
@@ -904,7 +933,20 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         ORDER BY created_at DESC, rowid DESC LIMIT ${MISSION_TIMELINE_LIMIT}
       `.pipe(Effect.mapError(sqlFail("timeline:journal")));
 
-      return buildMissionTimeline({ wakes, stopAdjustments, publishes, journal });
+      const validationEvents = yield* sql<ValidationEventRow>`
+        SELECT summary, occurred_at
+        FROM trading_event_inbox
+        WHERE mission_id = ${missionId} AND deduplication_key LIKE 'validation:%'
+        ORDER BY occurred_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:validationEvents")));
+
+      return buildMissionTimeline({
+        wakes,
+        stopAdjustments,
+        publishes,
+        journal,
+        validationEvents,
+      });
     });
 
   /** The mission row's own optimistic-lock version, live. */

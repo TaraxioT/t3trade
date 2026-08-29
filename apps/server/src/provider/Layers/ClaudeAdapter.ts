@@ -4352,7 +4352,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               systemPrompt:
                 tradingProfileKind === "trading_analyst"
                   ? TradingSessionProfile.TRADING_ANALYST_SYSTEM_PROMPT
-                  : TRADING_SYSTEM_PROMPT,
+                  : tradingProfileKind === "trading_observe"
+                    ? TradingSessionProfile.TRADING_OBSERVE_SYSTEM_PROMPT
+                    : TRADING_SYSTEM_PROMPT,
             }
           : {
               // Chat is the front door for trading: an ordinary thread here
@@ -4400,7 +4402,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               allowedTools:
                 tradingProfileKind === "trading_analyst"
                   ? [...TradingSessionProfile.TRADING_ANALYST_ALLOWED_TOOL_NAMES]
-                  : [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
+                  : tradingProfileKind === "trading_observe"
+                    ? [...TradingSessionProfile.TRADING_OBSERVE_ALLOWED_TOOL_NAMES]
+                    : [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
               strictMcpConfig: true,
             }
           : {}),

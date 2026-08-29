@@ -85,6 +85,7 @@ import { isTradingAnalystThread } from "../../../provider/SessionProfile.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import {
   bindThreadToMarket,
+  createObserveMission,
   extendMissionToMarket,
   releaseMissionMarket,
 } from "../../../trading/TradingAuthorityBinding.ts";
@@ -201,7 +202,8 @@ const rejectCall = (input: {
     | "window_too_large"
     | "no_archived_bars"
     | "validation_refused"
-    | "hypothesis_refused";
+    | "hypothesis_refused"
+    | "mission_cannot_trade";
   readonly threadId: string;
   readonly missionId: string | undefined;
   /** What to do about it, when the reason alone does not say (fetch keys). */
@@ -256,6 +258,39 @@ const noteThreadMarket = (input: {
  * is reachable. A `missionId` argument is checked against that binding rather
  * than trusted; an omitted `missionId` resolves to the bound mission.
  */
+/**
+ * Refuse an execution call from a mission whose purpose is to watch.
+ *
+ * The observe session profile does not hand the model `trading_plan`,
+ * `trading_enter` or `trading_exit`, so under normal operation this never
+ * fires. It exists because an allowlist is the model's view of the world and
+ * this is the server's: a resumed session whose profile the registry lost, a
+ * provider that ignores its allowlist, or a prompt that talks a model into
+ * emitting the call anyway all arrive here, and all of them get the same
+ * sentence rather than a position.
+ *
+ * One honest sentence, and it says what the mission IS rather than only what
+ * it may not do - a refusal the model cannot explain to the user is a refusal
+ * it will retry.
+ */
+const refuseIfObserving = Effect.fn("TradingToolkit.refuseIfObserving")(function* (input: {
+  readonly mission: TradingMission;
+  readonly threadId: string;
+  readonly missionId: string | undefined;
+  readonly verb: string;
+}) {
+  if (input.mission.purpose !== "observe") return;
+  return yield* rejectCall({
+    reason: "mission_cannot_trade",
+    threadId: input.threadId,
+    missionId: input.missionId,
+    detail:
+      `This mission is watching ${input.mission.market}, not trading it: it holds no authority ` +
+      `on any market and cannot ${input.verb}. Say what the validations show; if the user wants ` +
+      "the idea traded, that needs a mission that holds the market, which this one cannot become.",
+  });
+});
+
 const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* (
   missionId: string | undefined,
 ): Effect.fn.Return<
@@ -350,6 +385,15 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
 
   if (Option.isSome(bound)) {
     const mission = bound.value;
+    // Before anything is taken or resolved: an observe mission reaches this
+    // gate only on a plan or an entry, and it may do neither. Refusing here
+    // also stops it taking authority on a market it named.
+    yield* refuseIfObserving({
+      mission,
+      threadId: scope.threadId,
+      missionId: input.missionId,
+      verb: "publish a plan or place an order",
+    });
     // Already held, or nothing named: the call is about a market this mission
     // is already the authority on, and there is nothing to take.
     if (named === undefined || named === "" || mission.markets.includes(named)) {
@@ -2433,6 +2477,16 @@ const handlers = {
    */
   trading_exit: (input) =>
     Effect.gen(function* () {
+      // Before the request is even read: an observe mission has nothing to
+      // exit, and `release_market` would withdraw an authority it never held.
+      const observing = yield* resolveBoundCall(input.missionId);
+      yield* refuseIfObserving({
+        mission: observing.mission,
+        threadId: observing.threadId,
+        missionId: input.missionId,
+        verb: "close, cancel or move a stop",
+      });
+
       const refusal = readExitRequest(input);
       if (refusal !== null) {
         return {
@@ -3381,6 +3435,36 @@ const handlers = {
               `${describeHypothesisStatus(record.status)}: "${record.title}", version ` +
               `${record.currentVersion}, ${record.runCount} backtest run(s), ` +
               `${record.validations.length} validation(s).${window}`,
+          });
+        }
+
+        case "observe": {
+          if (input.hypothesisId === undefined) {
+            return yield* refuse("observe needs a hypothesisId");
+          }
+          const record = yield* hypotheses.show(input.hypothesisId).pipe(Effect.orDie);
+          if (record === null) return yield* refuse("no hypothesis with that id");
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          const created = yield* createObserveMission({
+            threadId,
+            providerInstanceId: scope.providerInstanceId,
+            market: record.thesis.market,
+            title: record.title,
+          });
+          if (created.outcome === "refused") return yield* refuse(created.reason);
+          if (created.outcome === "stood_down") {
+            return hypothesisResult({
+              hypothesis: yield* detail(record),
+              outcome: created.detail,
+            });
+          }
+          return hypothesisResult({
+            hypothesis: yield* detail(record),
+            outcome:
+              `Watching "${record.title}" on ${record.thesis.market} from this chat. You will be ` +
+              "woken when its validations open or close a paper trade, change verdict, or expire, " +
+              "and this mission holds no authority: it cannot plan, enter or exit. Call observe " +
+              "again on this chat to stop watching.",
           });
         }
 

@@ -121,6 +121,10 @@ export const TradingToolRejectionReason = Schema.Literals([
       idea, a missing title, note or verdict, or a thesis that is not the
       version it was filed against. The detail is the service's own sentence. */
   "hypothesis_refused",
+  /** An execution call from an observe mission - a mission that exists to
+      watch a hypothesis being validated and holds authority on nothing. The
+      detail names the market it is watching. */
+  "mission_cannot_trade",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
 
@@ -163,6 +167,8 @@ const REJECTION_PROSE: Record<TradingToolRejectionReason, string> = {
     "Refused: that forward validation was not changed, and nothing is running that was not already. The line below says what stopped it; no paper trade was taken and no order was ever in question.",
   hypothesis_refused:
     "Refused: nothing was written to the idea record. The line below says what stopped it; the hypothesis, its versions and everything filed against them are exactly as they were.",
+  mission_cannot_trade:
+    "Refused: this mission is watching, not trading, so nothing was planned, placed or closed. Say what you see and tell the user that trading the idea needs a mission that holds the market.",
 };
 
 export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToolRejectedError>()(
@@ -411,6 +417,16 @@ export const TradingPublishPlanResult = Schema.Union([
      * told what changed.
      */
     warnings: Schema.Array(Schema.String),
+    /**
+     * What the publish actually recorded about the prediction, in one sentence.
+     *
+     * `projection` is optional on the input, and an accepted publish that
+     * carried none used to look exactly like one that carried a projection:
+     * same `accepted`, same version, no warning either way. A live run had no
+     * way to tell whether its horizon and invalidation wakes had armed, so it
+     * assumed they had. This says which happened, every time.
+     */
+    projectionNote: Schema.String,
   }),
   Schema.Struct({
     outcome: Schema.Literal("rejected"),
