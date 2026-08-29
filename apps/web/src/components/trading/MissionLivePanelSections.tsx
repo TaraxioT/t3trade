@@ -31,7 +31,7 @@ import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
 import { useComposerPrefill } from "./composerPrefill";
-import { ThesisChartBadgeLine, paperMarkerSentence } from "./ThesisChartBadgeLine";
+import { ThesisChartBadgeLine, askAboutPaperMarker } from "./ThesisChartBadgeLine";
 import { describeWakeTrigger } from "./missionTurnTimeline";
 import { type MissionPlanRevision } from "./useMissionPlanRevision";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -429,10 +429,7 @@ export function ChartSlot(props: {
         {...(thesis === null ? {} : { thesis })}
         {...(prefill === null || thesis === null
           ? {}
-          : {
-              onAskAboutMarker: (marker: { readonly at: number }) =>
-                prefill(paperMarkerSentence({ headline: thesis.headline, atMillis: marker.at })),
-            })}
+          : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
         className={CHART_HEIGHT_CLASS}
       />
     );

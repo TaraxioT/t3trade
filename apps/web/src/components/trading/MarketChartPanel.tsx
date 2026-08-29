@@ -32,7 +32,7 @@ import { useState } from "react";
 
 import { refreshTradingWatches } from "../../lib/tradingAccountState";
 import { useComposerPrefill } from "./composerPrefill";
-import { ThesisChartBadgeLine, paperMarkerSentence } from "./ThesisChartBadgeLine";
+import { ThesisChartBadgeLine, askAboutPaperMarker } from "./ThesisChartBadgeLine";
 import { useTradingMarketChart, type ChartInterval } from "../../lib/tradingMarketChartState";
 import { cn } from "../../lib/utils";
 import { orchestrationEnvironment } from "../../state/orchestration";
@@ -143,10 +143,7 @@ export function MarketChartPanel({
           {...(thesis === null ? {} : { thesis })}
           {...(prefill === null || thesis === null
             ? {}
-            : {
-                onAskAboutMarker: (marker: { readonly at: number }) =>
-                  prefill(paperMarkerSentence({ headline: thesis.headline, atMillis: marker.at })),
-              })}
+            : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
           {...(armable ? { onArmAtPrice: armAtPrice } : {})}
           {...(className === undefined ? {} : { className })}
         />

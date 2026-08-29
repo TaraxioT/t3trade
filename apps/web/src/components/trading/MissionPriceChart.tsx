@@ -704,6 +704,17 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     selectEvent({ eventId: event.id, atMillis: event.atMillis, source: "chart" });
   };
 
+  // Reading a past tick is one gesture with two effects: the timeline join the
+  // fills use, and the tick's own tooltip, which only exists for these.
+  const showPastTooltip = (marker: { readonly key: string; readonly at: number }): void => {
+    setHoveredPastKey(marker.key);
+    hoverChartEvent({ id: marker.key, atMillis: marker.at });
+  };
+  const hidePastTooltip = (): void => {
+    setHoveredPastKey(null);
+    hoverChartEvent(null);
+  };
+
   // --- The validation's overlays, derived once per served thesis. ----------
   //
   // Memoised on the served object, so a re-render that brought no new chart
@@ -721,23 +732,20 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     () => (thesis === null || thesis === undefined ? [] : thesisChartConditions(thesis)),
     [thesis],
   );
-  // The mission's own armed watches come FIRST. Both lists compete for the
-  // same drawn-condition cap, and a watch that will actually wake the mission
+  // The same merge for every list the thesis adds to: nothing added hands the
+  // caller's own value back (undefined stays undefined), and the mission's own
+  // armed watches come FIRST, because both lists compete for the same
+  // drawn-condition cap and a watch that will actually wake the mission
   // outranks a level nothing is watching. Anything the cap folds away is
   // counted into the overflow chip either way.
+  const mergeOverlays = <T,>(base: ReadonlyArray<T> | undefined, extra: ReadonlyArray<T>) =>
+    extra.length === 0 ? base : [...(base ?? []), ...extra];
   const allConditions = useMemo(
-    () =>
-      thesisConditions.length === 0 ? conditions : [...(conditions ?? []), ...thesisConditions],
+    () => mergeOverlays(conditions, thesisConditions),
     [conditions, thesisConditions],
   );
-  const allZones = useMemo(
-    () => (thesisZones.length === 0 ? zones : [...(zones ?? []), ...thesisZones]),
-    [zones, thesisZones],
-  );
-  const allFills = useMemo(
-    () => (thesisMarkers.length === 0 ? fills : [...(fills ?? []), ...thesisMarkers]),
-    [fills, thesisMarkers],
-  );
+  const allZones = useMemo(() => mergeOverlays(zones, thesisZones), [zones, thesisZones]);
+  const allFills = useMemo(() => mergeOverlays(fills, thesisMarkers), [fills, thesisMarkers]);
 
   const geometry = computeChartGeometry({
     candles,
@@ -1707,22 +1715,10 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           // every tick on the rug announced itself as its kind and a clock
           // time, which is the same announcement twenty times over.
           aria-label={`${marker.label ?? marker.kind} at ${new Date(marker.at).toLocaleTimeString()}`}
-          onFocus={() => {
-            setHoveredPastKey(marker.key);
-            hoverChartEvent({ id: marker.key, atMillis: marker.at });
-          }}
-          onBlur={() => {
-            setHoveredPastKey(null);
-            hoverChartEvent(null);
-          }}
-          onMouseEnter={() => {
-            setHoveredPastKey(marker.key);
-            hoverChartEvent({ id: marker.key, atMillis: marker.at });
-          }}
-          onMouseLeave={() => {
-            setHoveredPastKey(null);
-            hoverChartEvent(null);
-          }}
+          onFocus={() => showPastTooltip(marker)}
+          onBlur={hidePastTooltip}
+          onMouseEnter={() => showPastTooltip(marker)}
+          onMouseLeave={hidePastTooltip}
         />
       ))}
 

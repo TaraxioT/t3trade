@@ -40,6 +40,18 @@ export function paperMarkerSentence(input: {
   return `What happened with the paper validation of "${input.headline}" at ${at}?`;
 }
 
+/**
+ * The chart's `onAskAboutMarker` prop, built here so every surface wires the
+ * same click the same way: the question goes into the thread's composer and
+ * the user sends it, or does not.
+ */
+export function askAboutPaperMarker(
+  prefill: Exclude<ComposerPrefill, null>,
+  headline: string,
+): (marker: { readonly at: number }) => void {
+  return (marker) => prefill(paperMarkerSentence({ headline, atMillis: marker.at }));
+}
+
 const TONE_CLASS = {
   positive: "text-profit",
   negative: "text-loss",
