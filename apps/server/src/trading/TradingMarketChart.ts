@@ -38,9 +38,9 @@ import type {
   TradingMarketChartView,
 } from "@t3tools/contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
-import { describeThesis } from "@t3tools/trading-contracts/thesis";
+import { describeThesis, thesisEntryPriceLevels } from "@t3tools/trading-contracts/thesis";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
-import { TradingThesisValidationService } from "./TradingThesisValidationService.ts";
+import { composeReport, TradingThesisValidationService } from "./TradingThesisValidationService.ts";
 
 export interface TradingMarketChartReadInput {
   readonly market: string;
@@ -176,6 +176,12 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       const { validation } = found;
       if (validation.status === "ended") return null;
       const intervalMatches = validation.interval === interval;
+      // The running verdict, off the same pure composition the report card and
+      // the expiry alert use. Composed rather than re-derived so the badge on
+      // the chart and the card in the thread cannot disagree about whether a
+      // run is tracking; the whole read is behind this module's own cache, so
+      // it costs one composition per cache window, not one per poll.
+      const comparison = composeReport(validation, found.trades).comparison;
       return {
         validationId: validation.id,
         headline: validation.label ?? describeThesis(validation.thesis),
@@ -183,6 +189,13 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         status: validation.status,
         expiresAt: validation.expiresAt,
         intervalMatches,
+        side: validation.thesis.side,
+        comparison,
+        // Levels, not markers: they are true on every timeframe, because the
+        // rule's number does not change with the bars it is read on. The
+        // interval gate above is about WHEN the rule fired, which is a claim
+        // about times, and this is a claim about a price.
+        entryLevels: thesisEntryPriceLevels(validation.thesis),
         trades: intervalMatches
           ? found.trades.map((trade) => ({
               id: trade.id,
@@ -192,6 +205,15 @@ export const makeTradingMarketChart = Effect.gen(function* () {
               exitPrice: trade.exitPrice,
               netUsd: trade.netUsd,
               exitReason: trade.exitReason,
+              // Only the OPEN trade carries its bracket. The chart bands the
+              // trade that is still running and nothing else - a settled
+              // trade's stop is a fact about a moment that has passed - and
+              // this array is uncapped, so sending two numbers per settled
+              // trade cost 5.2 KB on a 134-trade validation, on a 15s poll,
+              // for a pair of levels nothing reads.
+              ...(trade.exitTime === null
+                ? { stopPrice: trade.stopPrice, targetPrice: trade.targetPrice }
+                : { stopPrice: null, targetPrice: null }),
             }))
           : [],
       };

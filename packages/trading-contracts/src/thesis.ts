@@ -192,6 +192,49 @@ export const operandIndicator = (operand: ThesisOperand): IndicatorRequest | nul
       }
     : null;
 
+/**
+ * The entry rule's price constants, as levels a chart can draw.
+ *
+ * Only predicates that compare the bar's price against a number the user named
+ * yield one: "close above 3900" is a line, "close above the 50 EMA" is a line
+ * that moves and the chart already draws the average itself. The operand order
+ * is read rather than assumed - `3900 below close` is the same rule written
+ * backwards, and it fires on the same side.
+ *
+ * Deduplicated, because a rule that names the same level twice is still one
+ * level. Bounded by {@link THESIS_MAX_PREDICATES}, so there is no cap here.
+ */
+export function thesisEntryPriceLevels(
+  thesis: TradingThesis,
+): ReadonlyArray<{ readonly price: number; readonly direction: "above" | "below" }> {
+  const seen = new Set<string>();
+  const levels: Array<{ readonly price: number; readonly direction: "above" | "below" }> = [];
+  for (const predicate of thesis.entry.predicates) {
+    // Which side price sits on when the relation holds. `crosses_above` is
+    // `above` plus a memory of the previous bar, and both fire with price on
+    // the same side of the number, so the chart draws them alike.
+    const priceIsAbove =
+      predicate.comparator === "above" || predicate.comparator === "crosses_above";
+    const forward =
+      predicate.left.source === "price" && predicate.right.source === "constant"
+        ? { price: predicate.right.value, direction: priceIsAbove ? "above" : "below" }
+        : null;
+    const reversed =
+      predicate.left.source === "constant" && predicate.right.source === "price"
+        ? // The constant is the left operand, so the comparator describes where
+          // the NUMBER sits. Price sits on the other side of it.
+          { price: predicate.left.value, direction: priceIsAbove ? "below" : "above" }
+        : null;
+    const level = forward ?? reversed;
+    if (level === null) continue;
+    const key = `${level.price}:${level.direction}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    levels.push(level as { readonly price: number; readonly direction: "above" | "below" });
+  }
+  return levels;
+}
+
 /** Every distinct indicator a thesis needs computed, deduplicated. */
 export const thesisIndicators = (thesis: TradingThesis): ReadonlyArray<IndicatorRequest> => {
   const requests = new Map<string, IndicatorRequest>();

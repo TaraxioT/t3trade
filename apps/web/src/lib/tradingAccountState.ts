@@ -18,6 +18,7 @@ import type {
   TradingAccountView,
   TradingAccountWatch,
   TradingAlertEvent,
+  TradingIdeaRow,
   TradingWatchlistEntry,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -49,6 +50,10 @@ function alertsAtom(environmentId: EnvironmentId) {
   });
 }
 
+function ideasAtom(environmentId: EnvironmentId) {
+  return orchestrationEnvironment.tradingIdeas({ environmentId, input: {} });
+}
+
 export function refreshTradingWatchlist(environmentId: EnvironmentId): void {
   appAtomRegistry.refresh(watchlistAtom(environmentId));
 }
@@ -59,6 +64,10 @@ export function refreshTradingWatches(environmentId: EnvironmentId): void {
 
 export function refreshTradingAlerts(environmentId: EnvironmentId): void {
   appAtomRegistry.refresh(alertsAtom(environmentId));
+}
+
+export function refreshTradingIdeas(environmentId: EnvironmentId): void {
+  appAtomRegistry.refresh(ideasAtom(environmentId));
 }
 
 export function refreshTradingAccountView(environmentId: EnvironmentId): void {
@@ -134,4 +143,21 @@ export function useTradingAlerts(
   environmentId: EnvironmentId,
 ): QueryState<{ readonly alerts: ReadonlyArray<TradingAlertEvent> }> {
   return useDoorbellQuery(environmentId, alertsAtom, "Failed to load the alert feed.");
+}
+
+/**
+ * The ideas in testing: validations on the clock, and filed ideas whose runs
+ * have finished. Newest first, capped server-side.
+ *
+ * On the doorbell like everything else in this module, which is deliberately
+ * the same cadence class as the alert feed sitting next to it. A paper run
+ * settles a trade on a closed bar, and the reconcile pass that follows any
+ * trading activity rings the same bell the account view refetches on - so the
+ * panel is current without a poll of its own, and a backgrounded tab does no
+ * work at all.
+ */
+export function useTradingIdeas(
+  environmentId: EnvironmentId,
+): QueryState<{ readonly ideas: ReadonlyArray<TradingIdeaRow> }> {
+  return useDoorbellQuery(environmentId, ideasAtom, "Failed to load the ideas in testing.");
 }

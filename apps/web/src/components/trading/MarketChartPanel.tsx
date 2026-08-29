@@ -27,11 +27,12 @@
  *
  * @module MarketChartPanel
  */
-import type { EnvironmentId, TradingArmWatchInput } from "@t3tools/contracts";
-import { useMemo, useState } from "react";
+import type { EnvironmentId, ScopedThreadRef, TradingArmWatchInput } from "@t3tools/contracts";
+import { useState } from "react";
 
 import { refreshTradingWatches } from "../../lib/tradingAccountState";
-import { thesisChartBadge, thesisChartMarkers } from "./thesisChartMarkers";
+import { useComposerPrefill } from "./composerPrefill";
+import { ThesisChartBadgeLine, paperMarkerSentence } from "./ThesisChartBadgeLine";
 import { useTradingMarketChart, type ChartInterval } from "../../lib/tradingMarketChartState";
 import { cn } from "../../lib/utils";
 import { orchestrationEnvironment } from "../../state/orchestration";
@@ -56,6 +57,7 @@ export function MarketChartPanel({
   asset,
   className,
   armable = true,
+  threadRef,
 }: {
   environmentId: EnvironmentId;
   asset: string;
@@ -63,6 +65,15 @@ export function MarketChartPanel({
   className?: string;
   /** Whether hovering the plot offers the arm-at-price chip. */
   armable?: boolean;
+  /**
+   * The thread this chart is docked in, when it is docked in one.
+   *
+   * Only the chat affordances read it: clicking the validation badge or one of
+   * its paper markers writes a question into that thread's composer. Absent on
+   * the trade home, where there is no conversation to put a sentence into, and
+   * then those affordances are plain text rather than buttons that do nothing.
+   */
+  threadRef?: ScopedThreadRef | undefined;
 }) {
   const [interval, setChartInterval] = useState<ChartInterval>("5m");
   const chart = useTradingMarketChart(environmentId, asset, interval, { enabled: true });
@@ -74,13 +85,15 @@ export function MarketChartPanel({
 
   const data = chart.data;
 
-  // A thesis being validated on this market. Both derivations are memoised on
-  // the served object, so a re-render that did not bring new chart data
-  // rebuilds no markers — the markers change when a bar closes and the poll
-  // brings a new trade, and at no other time.
+  // The validation running on this market, handed to the chart whole: the
+  // chart derives its own markers, bands and levels from it (see
+  // `MissionPriceChart`'s `thesis` prop), so this panel wires one thing and
+  // every other chart surface gets the same picture from the same seam.
   const thesis = data?.thesis ?? null;
-  const paperMarkers = useMemo(() => (thesis === null ? [] : thesisChartMarkers(thesis)), [thesis]);
-  const badge = useMemo(() => (thesis === null ? null : thesisChartBadge(thesis)), [thesis]);
+  // Cards ask; they never act. On a thread this writes the question into that
+  // thread's composer, and on the trade home there is no thread, so the badge
+  // and the markers are read-only. @see composerPrefill
+  const prefill = useComposerPrefill(threadRef ?? null);
 
   const armAtPrice = (price: number) => {
     if (isArming || data === null) return;
@@ -127,7 +140,13 @@ export function MarketChartPanel({
           {...(data.sessionLevels === undefined ? {} : { sessionLevels: data.sessionLevels })}
           {...(data.recordingSince === undefined ? {} : { recordingSince: data.recordingSince })}
           {...(data.gaps === undefined ? {} : { gaps: data.gaps })}
-          {...(paperMarkers.length === 0 ? {} : { fills: paperMarkers })}
+          {...(thesis === null ? {} : { thesis })}
+          {...(prefill === null || thesis === null
+            ? {}
+            : {
+                onAskAboutMarker: (marker: { readonly at: number }) =>
+                  prefill(paperMarkerSentence({ headline: thesis.headline, atMillis: marker.at })),
+              })}
           {...(armable ? { onArmAtPrice: armAtPrice } : {})}
           {...(className === undefined ? {} : { className })}
         />
@@ -149,22 +168,7 @@ export function MarketChartPanel({
             : `Not enough ${interval} bars recorded for ${asset} yet.`}
         </div>
       )}
-      {badge === null ? null : (
-        <div
-          className="flex items-baseline gap-1.5 px-1 text-[10.5px] leading-tight"
-          data-testid="market-chart-thesis-badge"
-        >
-          <span
-            aria-hidden
-            className={cn(
-              "size-1.5 shrink-0 translate-y-[-1px] rounded-full border border-dashed",
-              badge.paused ? "border-muted-foreground/60" : "border-foreground/70",
-            )}
-          />
-          <span className="truncate font-medium text-foreground/90">{badge.headline}</span>
-          <span className="shrink-0 text-muted-foreground">{badge.note}</span>
-        </div>
-      )}
+      <ThesisChartBadgeLine thesis={thesis} prefill={prefill} />
       <div className="flex items-center gap-2 px-1">
         <div
           className="flex overflow-hidden rounded-md border border-border/60 font-mono text-[10.5px] leading-none"

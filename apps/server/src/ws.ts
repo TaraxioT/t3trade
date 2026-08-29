@@ -39,6 +39,8 @@ import {
   type TradingWatchlistEntry,
   type TradingWatchlistMutationResult,
   ORCHESTRATION_WS_METHODS,
+  TRADING_IDEA_ROW_CAP,
+  type TradingIdeaRow,
   type ProjectId,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
@@ -99,11 +101,14 @@ import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
 import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { marketRef } from "@t3tools/trading-contracts/primitives";
+import { describeThesis } from "@t3tools/trading-contracts/thesis";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService, type AccountWatch } from "./trading/TradingAlertService.ts";
 import { TradingThesisValidationService } from "./trading/TradingThesisValidationService.ts";
+import { TradingHypothesisService } from "./trading/TradingHypothesisService.ts";
+import { selectIdeaCandidates, toIdeaRow } from "./trading/tradingIdeaRows.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import {
   TradingThreadMarketService,
@@ -555,6 +560,7 @@ const makeWsRpcLayer = (
       const tradingAccountProjection = yield* TradingAccountProjection;
       const tradingAlertService = yield* TradingAlertService;
       const tradingValidations = yield* TradingThesisValidationService;
+      const tradingHypotheses = yield* TradingHypothesisService;
       const tradingAnalystService = yield* TradingAnalystService;
       const tradingThreadMarket = yield* TradingThreadMarketService;
       const tradingWatchlistService = yield* TradingWatchlistService;
@@ -1949,6 +1955,56 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to read the validation report",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listTradingIdeas]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listTradingIdeas,
+            Effect.gen(function* () {
+              const now = DateTime.toEpochMillis(yield* DateTime.now);
+              // Ended runs are read too, because a hypothesis in `testing`
+              // whose runs have all finished is described by its newest one.
+              // The selection below is what keeps that from meaning a report
+              // per validation that ever existed.
+              const validations = yield* tradingValidations.list({ includeEnded: true });
+              const hypotheses = yield* tradingHypotheses.list({});
+              const candidates = selectIdeaCandidates({
+                validations: validations.map((validation) => ({
+                  id: validation.id,
+                  threadId: validation.threadId,
+                  asset: validation.asset,
+                  interval: validation.interval,
+                  label: validation.label,
+                  headline: describeThesis(validation.thesis),
+                  status: validation.status,
+                  armedAt: validation.armedAt,
+                  hypothesisId: validation.hypothesisId,
+                })),
+                hypotheses,
+                cap: TRADING_IDEA_ROW_CAP,
+              });
+              // One ledger read per SERVED row. The cap is the bound on this
+              // loop, which is why the selection happens before the reports
+              // rather than after them.
+              const ideas: Array<TradingIdeaRow> = [];
+              for (const candidate of candidates) {
+                const report = yield* tradingValidations.report({
+                  id: candidate.reportValidationId,
+                  now,
+                });
+                ideas.push(toIdeaRow(candidate, report));
+              }
+              return { ideas };
+            }).pipe(
+              Effect.tapError((cause) => Effect.logError("trading ideas read failed", { cause })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to list the ideas in testing",
                     cause,
                   }),
               ),

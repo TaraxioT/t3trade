@@ -41,6 +41,7 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.cancelTradingWatch]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.listTradingWatches]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.listTradingAlerts]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.listTradingIdeas]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTradingValidationReport]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.removeTradingWatchlistEntry]: AuthOrchestrationOperateScope,

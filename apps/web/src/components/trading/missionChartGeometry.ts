@@ -183,6 +183,10 @@ export interface ChartLevel {
    * would reach first.
    */
   readonly count?: number;
+  /** A caption the caller supplied, in place of the kind's own. @see ChartCondition.label */
+  readonly label?: string;
+  /** Armed, or merely claimed. @see ChartCondition.register */
+  readonly register?: ChartRegister;
 }
 
 /**
@@ -223,6 +227,21 @@ export interface ChartCondition {
    * selection joins a level chip back to its watch-stream row by id.
    */
   readonly id?: string;
+  /**
+   * The caption for this level's chip, when the caller has a better one than
+   * the direction. A thesis's entry rule is a level with a NAME - the idea it
+   * belongs to - and "above" is the least of what can be said about it.
+   */
+  readonly label?: string;
+  /**
+   * Whether the level is armed or merely claimed. Defaults to `actual`.
+   *
+   * A validation's entry rule is a claim on every chart it appears on: nothing
+   * is watching that price, and a paper fill there costs nothing. Drawn in the
+   * same register the future gutter's projections use, so the reader can tell
+   * it from a watch that will actually wake the mission.
+   */
+  readonly register?: ChartRegister;
 }
 
 /** One placed fill: where on the plot the mission traded, and what it was. */
@@ -236,6 +255,68 @@ export interface ChartFillPoint {
   readonly at: number;
   /** The marker's tooltip line, carried from the projection row. */
   readonly label: string | null;
+}
+
+/**
+ * Whether a drawn thing is a record or a claim.
+ *
+ * The chart has always drawn the distinction to the right of `now` - thinner,
+ * dashed, three quarters opacity - but only ever for the future gutter's own
+ * projections. A hypothesis's levels are claims everywhere on the x axis, not
+ * only after now, so the register had to become a property a caller can set
+ * rather than a consequence of where a thing sits.
+ */
+export type ChartRegister = "actual" | "hypothetical";
+
+/**
+ * What a price band is about, for colour only.
+ *
+ * Deliberately not a list of meanings. `plan` is the projection's own family,
+ * `risk` and `reward` are the two ends of a bracket, and `neutral` is a band
+ * with no valence. The geometry never reads this; the renderer maps it to ink.
+ */
+export type ChartZoneTone = "plan" | "risk" | "reward" | "neutral";
+
+/** A price band a caller wants washed across the plot. */
+export interface ChartZoneInput {
+  readonly key: string;
+  /** The gutter chip's caption. Composed by the caller; never derived here. */
+  readonly label: string;
+  readonly priceLow: number;
+  readonly priceHigh: number;
+  readonly tone: ChartZoneTone;
+  readonly register: ChartRegister;
+}
+
+/**
+ * A price band, placed and clipped to the frame.
+ *
+ * The chart's only band before this was the time-axis `CoverageBand`, which is
+ * a statement about a stretch of the x axis. This is its twin on the y axis: a
+ * range of PRICE that means something - the projection's honest interval, the
+ * distance between a paper trade's stop and its target - drawn as a quiet wash
+ * rather than as two lines the reader has to pair up themselves.
+ *
+ * `height` is zero for a band entirely outside the domain. The renderer draws
+ * no rect for those but still docks the chip, with `offScale` pointing at the
+ * edge it lies beyond - the same courtesy an off-scale level gets, and for the
+ * same reason: a band the frame cannot reach is still a fact about the plan.
+ */
+export interface ChartZone {
+  readonly key: string;
+  readonly label: string;
+  readonly priceLow: number;
+  readonly priceHigh: number;
+  readonly tone: ChartZoneTone;
+  readonly register: ChartRegister;
+  /** ViewBox y of the band's top edge, after clipping. */
+  readonly y: number;
+  /** The band's clipped height in viewBox units. Zero when fully off-scale. */
+  readonly height: number;
+  /** Where the chip is drawn, after the shared gutter collision pass. */
+  readonly labelY: number;
+  /** Which edge the band lies beyond, when the domain does not reach it. */
+  readonly offScale: "above" | "below" | null;
 }
 
 /**
@@ -259,6 +340,10 @@ export interface GutterTag {
   readonly count?: number;
   /** The watch id behind a condition tag, carried for hover selection. */
   readonly id?: string;
+  /** A caption the caller supplied, in place of the kind's own. */
+  readonly label?: string;
+  /** Armed, or merely claimed. @see ChartCondition.register */
+  readonly register?: ChartRegister;
 }
 
 /**
@@ -381,6 +466,11 @@ export interface ChartGeometry {
   readonly projectionPoints: ReadonlyArray<ChartPoint>;
   /** Every right-gutter price tag, already resolved against collisions. */
   readonly gutterTags: ReadonlyArray<GutterTag>;
+  /**
+   * Price bands, placed and clipped, with their chips laid out against the
+   * gutter tags above. Empty when the caller passed none.
+   */
+  readonly zones: ReadonlyArray<ChartZone>;
   /** Scheduled future events, placed on the x axis in the future gutter. */
   readonly timeMarkers: ReadonlyArray<ChartTimeMarker>;
   /** Events that already happened, placed inside the drawn window. */
@@ -433,6 +523,15 @@ export interface ChartPastMarker {
   readonly cause?: string;
   /** True when the run this marker stands for did not complete. */
   readonly failed?: boolean;
+  /**
+   * The event's own composed sentence, carried from the timeline row.
+   *
+   * The projection has always shipped it and the rug always dropped it, so a
+   * tick's only name was its kind and its clock time - "wake at 14:32" for
+   * every one of twenty ticks, which is a rug of moments with nothing to say
+   * about any of them. The renderer draws it on hover and focus.
+   */
+  readonly label?: string;
 }
 
 /** Input shape for {@link computeChartGeometry}. */
@@ -523,7 +622,13 @@ export interface ComputeChartGeometryInput {
     readonly at: number;
     readonly cause?: string | undefined;
     readonly failed?: boolean | undefined;
+    readonly label?: string | undefined;
   }>;
+  /**
+   * Price bands to wash across the plot. Generic: the geometry places them and
+   * has no opinion on what any of them means. @see ChartZoneInput
+   */
+  readonly zones?: ReadonlyArray<ChartZoneInput>;
 }
 
 /**
@@ -832,17 +937,112 @@ const GUTTER_PRIORITY: Record<ChartLevelKind | "mark", number> = {
 };
 
 /**
- * Build the gutter tags for a set of levels plus the mark, resolving overlaps.
+ * Where a zone's chip sits in the same contest. Below every level.
  *
- * The entry/mark merge is handled before the layout runs: two tags a few units
- * apart reading nearly the same price are one fact, not two, and nudging them
- * apart only makes the chart look like it has more levels than it has.
+ * A band is a range, so its chip has a whole band's height to be nudged inside
+ * before it stops pointing at its own subject - which is exactly the property
+ * that makes it the right thing to move when a stop chip and a zone chip want
+ * the same eighteen units of gutter.
  */
-function buildGutterTags(
+const GUTTER_ZONE_PRIORITY = 7;
+
+/**
+ * Place the price bands, then lay their chips out against the level tags.
+ *
+ * One pass, not two: a zone chip and a stop chip in the same price region are
+ * competing for the same gutter, and two independent collision passes would
+ * each be satisfied while the two chips sat on top of each other. So both go
+ * into `layoutGutterLabels` together and the result is split back apart.
+ */
+function buildZonesAndTags(input: {
+  readonly zones: ReadonlyArray<ChartZoneInput>;
+  readonly levels: ReadonlyArray<ChartLevel>;
+  readonly markPoint: ChartPoint | null;
+  readonly markPrice: number | null;
+  readonly yForPrice: (price: number) => number;
+  readonly domainMin: number;
+  readonly domainMax: number;
+}): { readonly zones: ReadonlyArray<ChartZone>; readonly gutterTags: ReadonlyArray<GutterTag> } {
+  const placed = input.zones.map((zone) => {
+    // Written low-then-high whatever order the caller passed them in: a band is
+    // a range, and a caller that swapped its own endpoints still means one.
+    const low = Math.min(zone.priceLow, zone.priceHigh);
+    const high = Math.max(zone.priceLow, zone.priceHigh);
+    const offScale: "above" | "below" | null =
+      low > input.domainMax ? "above" : high < input.domainMin ? "below" : null;
+    // Clipped, not clamped: a band that runs off the top of the frame is drawn
+    // from the top edge down to where it ends, which is the true picture of
+    // the part of it the reader can see.
+    const topY = clamp(input.yForPrice(high), 0, CHART_VIEWBOX_HEIGHT);
+    const bottomY = clamp(input.yForPrice(low), 0, CHART_VIEWBOX_HEIGHT);
+    const height = offScale === null ? Math.max(0, bottomY - topY) : 0;
+    return {
+      zone,
+      low,
+      high,
+      offScale,
+      y: topY,
+      height,
+      // Mid-band, so the chip names the range rather than one of its edges. An
+      // off-scale band has no visible middle, so its chip docks at the edge it
+      // is beyond, exactly where an off-scale level's does.
+      anchorY:
+        offScale === null ? (topY + bottomY) / 2 : offScale === "above" ? 0 : CHART_VIEWBOX_HEIGHT,
+    };
+  });
+
+  const levelCandidates = gutterCandidates(input.levels, input.markPoint, input.markPrice);
+  const zoneCandidates = placed.map((entry, index) => ({
+    key: `zone-${index}`,
+    y: entry.anchorY,
+    priority: GUTTER_ZONE_PRIORITY,
+  }));
+
+  const laid = layoutGutterLabels([
+    ...levelCandidates.map((candidate) => ({ ...candidate, isZone: false as const })),
+    ...zoneCandidates.map((candidate) => ({ ...candidate, isZone: true as const })),
+  ]);
+
+  const zoneLabelYs = new Map<string, number>();
+  for (const entry of laid) {
+    if (entry.isZone) zoneLabelYs.set(entry.key, entry.labelY);
+  }
+
+  return {
+    zones: placed.map((entry, index) => ({
+      key: entry.zone.key,
+      label: entry.zone.label,
+      priceLow: entry.low,
+      priceHigh: entry.high,
+      tone: entry.zone.tone,
+      register: entry.zone.register,
+      y: entry.y,
+      height: entry.height,
+      labelY: zoneLabelYs.get(`zone-${index}`) ?? entry.anchorY,
+      offScale: entry.offScale,
+    })),
+    gutterTags: laid
+      .filter((entry) => !entry.isZone)
+      .map(({ priority: _priority, isZone: _isZone, ...tag }) => tag as GutterTag),
+  };
+}
+
+/**
+ * The gutter's tag candidates, before any collision pass.
+ *
+ * Split out from the layout so the zone chips can be laid out in the SAME pass
+ * as these (see `buildZonesAndTags`): two passes would each be internally
+ * consistent and still let a zone chip land on top of a stop chip.
+ *
+ * The entry/mark merge is handled here, before the layout runs: two tags a few
+ * units apart reading nearly the same price are one fact, not two, and nudging
+ * them apart only makes the chart look like it has more levels than it has.
+ */
+function gutterCandidates(
   levels: ReadonlyArray<ChartLevel>,
   markPoint: ChartPoint | null,
   markPrice: number | null,
-): GutterTag[] {
+) {
   const entry = levels.find((level) => level.kind === "entry") ?? null;
   const mergeEntry =
     entry !== null &&
@@ -860,6 +1060,8 @@ function buildGutterTags(
     readonly mergedPrice?: number;
     readonly count?: number;
     readonly id?: string;
+    readonly label?: string;
+    readonly register?: ChartRegister;
     readonly priority: number;
   }> = [];
 
@@ -886,11 +1088,13 @@ function buildGutterTags(
       ...(level.met === undefined ? {} : { met: level.met }),
       ...(level.count === undefined ? {} : { count: level.count }),
       ...(level.id === undefined ? {} : { id: level.id }),
+      ...(level.label === undefined ? {} : { label: level.label }),
+      ...(level.register === undefined ? {} : { register: level.register }),
       priority: GUTTER_PRIORITY[level.kind],
     });
   });
 
-  return layoutGutterLabels(candidates).map(({ priority: _priority, ...tag }) => tag);
+  return candidates;
 }
 
 /**
@@ -951,6 +1155,7 @@ function buildLevels(input: {
     met?: boolean,
     count?: number,
     id?: string,
+    extra?: { readonly label?: string | undefined; readonly register?: ChartRegister | undefined },
   ): void => {
     const offScale: "above" | "below" | null =
       price > input.domainMax ? "above" : price < input.domainMin ? "below" : null;
@@ -972,6 +1177,8 @@ function buildLevels(input: {
       ...(met === undefined ? {} : { met }),
       ...(count === undefined || count <= 1 ? {} : { count }),
       ...(id === undefined ? {} : { id }),
+      ...(extra?.label === undefined ? {} : { label: extra.label }),
+      ...(extra?.register === undefined ? {} : { register: extra.register }),
     });
   };
 
@@ -1006,6 +1213,7 @@ function buildLevels(input: {
       condition.met,
       condition.count,
       condition.id,
+      { label: condition.label, register: condition.register },
     );
   }
 
@@ -1066,17 +1274,27 @@ export function clusterConditions(
 ): ReadonlyArray<ChartCondition> {
   if (tolerance <= 0) return conditions;
 
-  const clusters: Array<{ direction: "above" | "below"; members: ChartCondition[] }> = [];
+  const clusters: Array<{
+    direction: "above" | "below";
+    register: ChartRegister;
+    members: ChartCondition[];
+  }> = [];
   for (const condition of [...conditions].sort((a, b) => a.price - b.price)) {
     const open = clusters[clusters.length - 1];
+    const register = condition.register ?? "actual";
     const joins =
       open !== undefined &&
       open.direction === condition.direction &&
+      // Never across registers. An armed watch and a thesis's claimed entry
+      // can sit a few dollars apart, and merged into one chip the result
+      // states one register about both - either that the mission is watching
+      // a price nothing is armed on, or that a live watch is only a claim.
+      open.register === register &&
       condition.price - open.members[open.members.length - 1]!.price <= tolerance;
     if (joins) {
       open.members.push(condition);
     } else {
-      clusters.push({ direction: condition.direction, members: [condition] });
+      clusters.push({ direction: condition.direction, register, members: [condition] });
     }
   }
 
@@ -1092,6 +1310,11 @@ export function clusterConditions(
       // The representative member's watch id, so the cluster's chip still
       // selects its row in the watch stream.
       ...(nearest.id === undefined ? {} : { id: nearest.id }),
+      // And its caption and register: a cluster that dropped them rendered a
+      // thesis's entry rule as an anonymous armed level, which is the one
+      // thing the hypothetical register exists to prevent.
+      ...(nearest.label === undefined ? {} : { label: nearest.label }),
+      ...(nearest.register === undefined ? {} : { register: nearest.register }),
     };
   });
 }
@@ -1428,8 +1651,20 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
       x: clamp(xForTime(marker.at), 0, nowX),
       ...(marker.cause === undefined ? {} : { cause: marker.cause }),
       ...(marker.failed === undefined ? {} : { failed: marker.failed }),
+      ...(marker.label === undefined ? {} : { label: marker.label }),
     });
   }
+
+  // --- price bands, and the one gutter pass they share with the levels. ----
+  const gutter = buildZonesAndTags({
+    zones: input.zones ?? [],
+    levels,
+    markPoint,
+    markPrice,
+    yForPrice,
+    domainMin,
+    domainMax,
+  });
 
   return {
     viewBoxWidth: CHART_VIEWBOX_WIDTH,
@@ -1452,7 +1687,8 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     fillPoints,
     markPoint,
     projectionPoints,
-    gutterTags: buildGutterTags(levels, markPoint, markPrice),
+    gutterTags: gutter.gutterTags,
+    zones: gutter.zones,
     timeMarkers,
     pastMarkers,
     droppedConditions,

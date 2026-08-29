@@ -33,6 +33,25 @@ import {
   TradingPublishPlanResult,
 } from "./Schemas.ts";
 import type { PublishedStrategySummary } from "@t3tools/trading-contracts/tools";
+import { describeProjection } from "@t3tools/trading-contracts/strategy";
+
+/**
+ * What an accepted publish recorded about its prediction, said plainly.
+ *
+ * `projection` is optional, and a plan published without one arms no horizon
+ * wake, no invalidation wake, and draws no zone on the chart. Nothing in the
+ * old accepted result said so, so a run could not distinguish "armed" from
+ * "silently nothing" and reasonably assumed the former. The sentence is built
+ * here rather than in the tool handler because the chart-drag revision path
+ * publishes through the same function and deserves the same honesty.
+ */
+export function describeRecordedProjection(strategy: TradingPlanState): string {
+  if (strategy.projection !== undefined) {
+    return `Projection recorded: ${describeProjection(strategy.projection)}. Its horizon and invalidation wakes are armed for this version, and the chart draws the zone.`;
+  }
+  const standAside = strategy.intent === "stand_aside" ? "This plan stands aside, so n" : "N";
+  return `${standAside}o projection was recorded: no projection wakes will arm for this plan, and the chart will draw no zone for it.`;
+}
 
 export interface TradingStrategyServiceShape {
   /**
@@ -456,6 +475,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
         strategy,
         // The prediction's id: the plan-history row this publish just wrote.
         version: written.version,
+        projectionNote: describeRecordedProjection(strategy),
         // Everything that was not worth refusing the publish over: any prose
         // the server clipped.
         warnings: [...proseWarnings],

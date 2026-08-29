@@ -35,6 +35,13 @@ export interface ValidationCard {
   readonly exits: ReadonlyArray<string>;
   /** "Validating on paper · 4 days left" — state and clock in one line. */
   readonly statusLine: string;
+  /**
+   * Whether the run is still going. Prose alone could not answer it: the card's
+   * affordances ask a different question of a validation that is still on the
+   * clock than of one that has finished, and parsing `statusLine` back out to
+   * find that would be reading our own sentence.
+   */
+  readonly running: boolean;
   /** The headline number, with the sample-size caveat carried on it. */
   readonly expectancy: ValidationStatLine;
   readonly stats: ReadonlyArray<ValidationStatLine>;
@@ -60,6 +67,40 @@ const COMPARISON_LABELS: Record<string, string> = {
   no_baseline: "No backtest to compare against",
   too_few_trades: "Too few trades for a verdict",
 };
+
+/** The short form, for a chip or a badge that has no room for a sentence. */
+const COMPARISON_SHORT_LABELS: Record<string, string> = {
+  tracking: "tracking",
+  better_than_backtest: "better than backtest",
+  worse_than_backtest: "worse than backtest",
+  no_baseline: "no backtest to compare",
+  too_few_trades: "too few trades",
+};
+
+/**
+ * The comparison in words, with the tone that goes with it.
+ *
+ * Exported because three surfaces now state the same verdict - the report
+ * card, the chart's badge and the ideas panel's rows - and they cannot be
+ * allowed to call the same literal different things. `tracking` reads positive
+ * for the same reason the engine says it is not a compliment: a forward run
+ * that matches its backtest is the outcome the validation was armed to find.
+ */
+export function describeComparison(
+  comparison: string,
+  form: "long" | "short" = "long",
+): { readonly label: string; readonly tone: "positive" | "negative" | "neutral" } {
+  const labels = form === "short" ? COMPARISON_SHORT_LABELS : COMPARISON_LABELS;
+  return {
+    label: labels[comparison] ?? (form === "short" ? "no verdict" : "No verdict"),
+    tone:
+      comparison === "better_than_backtest" || comparison === "tracking"
+        ? "positive"
+        : comparison === "worse_than_backtest"
+          ? "negative"
+          : "neutral",
+  };
+}
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -155,6 +196,7 @@ export function validationCardFromReport(
     headline: label ?? describeThesis(thesis as unknown as TradingThesis),
     exits: describeExits((thesis.exits ?? {}) as TradingThesis["exits"]),
     statusLine: statusLine(report),
+    running: report.status !== "ended",
     expectancy: {
       label: "Paper expectancy after fees",
       value: `${formatSignedUsd(expectancy)} a trade`,
@@ -179,13 +221,8 @@ export function validationCardFromReport(
             },
           ]),
     ],
-    comparisonLabel: COMPARISON_LABELS[comparison] ?? "No verdict",
-    comparisonTone:
-      comparison === "better_than_backtest" || comparison === "tracking"
-        ? "positive"
-        : comparison === "worse_than_backtest"
-          ? "negative"
-          : "neutral",
+    comparisonLabel: describeComparison(comparison).label,
+    comparisonTone: describeComparison(comparison).tone,
     verdictReason: typeof report.verdictReason === "string" ? report.verdictReason : "",
     openLine:
       openEntry === null

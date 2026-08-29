@@ -32,8 +32,10 @@ import { SidebarInset } from "../ui/sidebar";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { AccountPositionsPanel } from "./AccountPositionsPanel";
 import { AlertFeedPanel } from "./AlertFeedPanel";
+import { IdeasPanel } from "./IdeasPanel";
 import { MarketChartPanel } from "./MarketChartPanel";
 import { MissionPriceChart } from "./MissionPriceChart";
+import { ThesisChartBadgeLine } from "./ThesisChartBadgeLine";
 import { OrderTicket } from "./OrderTicket";
 import { describeArchiveHealth, describeSignerState } from "./tradeHomePresentation";
 import { useTradingUniverseAssets } from "./UniverseAssetSearch";
@@ -134,17 +136,28 @@ function TradeHomeChart({
         ) : null}
       </header>
       {mission !== null && data !== null && data.candles.length >= 2 ? (
-        <MissionPriceChart
-          candles={data.candles}
-          entryPrice={position?.entryPrice ?? null}
-          stopPrice={null}
-          targetPrice={null}
-          liquidationPrice={position?.liquidationPrice ?? null}
-          entryTime={null}
-          markPrice={data.markPrice}
-          pnlSign={position === null ? null : position.unrealisedPnl >= 0 ? "profit" : "loss"}
-          className={CHART_HEIGHT_CLASS}
-        />
+        <>
+          <MissionPriceChart
+            candles={data.candles}
+            entryPrice={position?.entryPrice ?? null}
+            stopPrice={null}
+            targetPrice={null}
+            liquidationPrice={position?.liquidationPrice ?? null}
+            entryTime={null}
+            markPrice={data.markPrice}
+            pnlSign={position === null ? null : position.unrealisedPnl >= 0 ? "profit" : "loss"}
+            // The same seam every other chart surface uses. This one reads the
+            // same RPC the market panel does, so the validation was already in
+            // hand here and simply never handed on.
+            {...(data.thesis === undefined ? {} : { thesis: data.thesis })}
+            className={CHART_HEIGHT_CLASS}
+          />
+          {/* No prefill: the trade home is not a conversation, so the badge is
+              a line of text rather than a button that would write into a
+              composer nobody is looking at. The ideas panel on the right is
+              where a row asks its thread a question. */}
+          <ThesisChartBadgeLine thesis={data.thesis ?? null} prefill={null} />
+        </>
       ) : mission !== null ? (
         <div
           className={`${CHART_HEIGHT_CLASS} flex items-center justify-center rounded-md border border-border/60 text-xs text-muted-foreground`}
@@ -252,7 +265,14 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
               onSelect={setPickedAsset}
             />
           </div>
-          <AlertFeedPanel environmentId={environmentId} />
+          {/* The right column is two lists: what has fired, and what is being
+              found out. Stacked rather than tabbed, because they answer
+              different questions and a tab would hide one of them behind the
+              other on a page whose whole point is one screen. */}
+          <div className="flex min-h-0 flex-col gap-4">
+            <AlertFeedPanel environmentId={environmentId} />
+            <IdeasPanel environmentId={environmentId} onSelectMarket={setPickedAsset} />
+          </div>
         </div>
       </div>
     </ScrollArea>

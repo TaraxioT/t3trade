@@ -127,6 +127,68 @@ layer("trading_plan (§14.3)", (it) => {
     }),
   );
 
+  it.effect("says what it recorded about the projection, either way", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      // A plan that carried a projection: the result echoes the prediction, so
+      // a run can see that its horizon and invalidation wakes are armed.
+      const predicted = yield* strategies.publishPlan({
+        missionId: "mission_1",
+        expectedMissionVersion: 1,
+        strategy: {
+          ...body("breakout continuation"),
+          projection: {
+            direction: "long",
+            price: 3_900,
+            byMinutes: 45,
+            invalidationPrice: 3_700,
+          },
+        },
+      });
+      assert.equal(predicted.outcome, "accepted");
+      if (predicted.outcome === "accepted") {
+        assert.match(predicted.projectionNote, /^Projection recorded: /);
+        assert.ok(predicted.projectionNote.includes("long to 3900"));
+        assert.ok(predicted.projectionNote.includes("within 45m"));
+        assert.ok(predicted.projectionNote.includes("wakes are armed"));
+      }
+
+      // And a plan that carried none says so, rather than reading exactly like
+      // the one above. This is the whole point: `projection: null` used to be
+      // accepted, echoed back as nothing, and warned about not at all.
+      const silent = yield* strategies.publishPlan({
+        missionId: "mission_1",
+        expectedMissionVersion: yield* missionVersion,
+        strategy: body("no prediction on this one"),
+      });
+      assert.equal(silent.outcome, "accepted");
+      if (silent.outcome === "accepted") {
+        assert.equal(
+          silent.projectionNote,
+          "No projection was recorded: no projection wakes will arm for this plan, and the chart will draw no zone for it.",
+        );
+      }
+
+      // A stand-aside is the one plan with no projection by design, and its
+      // sentence says which of the two situations it is in.
+      const aside = yield* strategies.publishPlan({
+        missionId: "mission_1",
+        expectedMissionVersion: yield* missionVersion,
+        strategy: {
+          ...body("costs exceed the move on offer"),
+          intent: "stand_aside",
+          entry: { triggers: [], urgency: "now" },
+        },
+      });
+      assert.equal(aside.outcome, "accepted");
+      if (aside.outcome === "accepted") {
+        assert.ok(aside.projectionNote.startsWith("This plan stands aside, so no projection"));
+      }
+    }),
+  );
+
   it.effect("bumps the mission row's optimistic-lock version on acceptance", () =>
     Effect.gen(function* () {
       yield* setup;

@@ -491,7 +491,7 @@ it.effect("falls back to the exchange when the archive was not recording then", 
  * did not happen where it says they did. So the trades are served only on the
  * thesis's own interval, and the badge goes out either way.
  */
-const validationOn = (interval: string) =>
+const validationOn = (interval: string, options: { readonly open?: boolean } = {}) =>
   Layer.succeed(TradingThesisValidationService, {
     forChart: () =>
       Effect.succeed({
@@ -501,7 +501,32 @@ const validationOn = (interval: string) =>
           status: "armed",
           expiresAt: 9_000,
           label: "The 5m fade",
-          thesis: { market: "ETH", interval, side: "long" },
+          armedAt: 0,
+          endedAt: null,
+          endReason: null,
+          notionalUsd: 1_000,
+          // Whole enough for `composeReport`, which the badge's running
+          // verdict now goes through: a stub missing `entry` or `barsWatched`
+          // fails the composition, and the read's own catch turns any failure
+          // into no thesis at all - so an incomplete fixture here looks
+          // exactly like a market with no validation on it.
+          barsWatched: 500,
+          baseline: null,
+          thesis: {
+            market: "ETH",
+            interval,
+            side: "long",
+            entry: {
+              predicates: [
+                {
+                  left: { source: "price", field: "close" },
+                  comparator: "above",
+                  right: { source: "constant", value: 3_900 },
+                },
+              ],
+            },
+            exits: { stop: { basis: "percent", value: 1 } },
+          },
         },
         trades: [
           {
@@ -512,10 +537,52 @@ const validationOn = (interval: string) =>
             exitPrice: 3_030,
             netUsd: 9.4,
             exitReason: "target",
+            signalTime: 1_000,
+            stopPrice: 2_970,
+            targetPrice: 3_030,
+            barsHeld: 2,
+            grossUsd: 10,
+            feesUsd: 0.6,
+            fundingUsd: 0,
+            adverseExcursionUsd: 0,
           },
+          ...(options.open === true
+            ? [
+                {
+                  id: "paper-open",
+                  entryTime: 3_000,
+                  entryPrice: 3_020,
+                  signalTime: 3_000,
+                  exitTime: null,
+                  exitPrice: null,
+                  netUsd: null,
+                  exitReason: null,
+                  stopPrice: 2_990,
+                  targetPrice: 3_060,
+                  barsHeld: 1,
+                  grossUsd: null,
+                  feesUsd: null,
+                  fundingUsd: null,
+                  adverseExcursionUsd: null,
+                },
+              ]
+            : []),
         ],
       }),
   } as unknown as (typeof TradingThesisValidationService)["Service"]);
+
+/** The same validation, with its newest paper trade still running. */
+const withOpenPaperTrade = (interval: string) =>
+  Effect.provide(
+    Layer.merge(
+      TradingMarketChartLive.pipe(
+        Layer.provide(
+          Layer.mergeAll(stubGateway, emptyArchive, validationOn(interval, { open: true })),
+        ),
+      ),
+      TestClock.layer(),
+    ),
+  );
 
 const withValidation = (interval: string) =>
   Effect.provide(
@@ -542,7 +609,32 @@ it.effect("draws the thesis's paper trades when the chart is on its own interval
     assert.equal(view?.thesis?.trades[0]?.exitReason, "target");
     // The label the user gave it, not a re-derived sentence.
     assert.equal(view?.thesis?.headline, "The 5m fade");
+    // A settled trade sends no bracket: only the open trade is banded, and
+    // this array is uncapped.
+    assert.equal(view?.thesis?.trades[0]?.stopPrice, null);
+    assert.equal(view?.thesis?.trades[0]?.targetPrice, null);
+    // The running verdict, composed off the same ledger the report card reads.
+    assert.equal(view?.thesis?.comparison, "too_few_trades");
+    assert.equal(view?.thesis?.side, "long");
+    // A price is a price on any bars: the entry constant travels whatever the
+    // chart's interval is, unlike the trade markers.
+    assert.deepEqual(view?.thesis?.entryLevels, [{ price: 3_900, direction: "above" }]);
   }).pipe(withValidation("1m")),
+);
+
+it.effect("bands the open paper trade, and only that one", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 60 });
+
+    const open = view?.thesis?.trades.find((trade) => trade.exitTime === null);
+    assert.isDefined(open);
+    assert.equal(open?.stopPrice, 2_990);
+    assert.equal(open?.targetPrice, 3_060);
+  }).pipe(withOpenPaperTrade("1m")),
 );
 
 it.effect("sends the badge without markers when the chart is on another interval", () =>
@@ -557,6 +649,8 @@ it.effect("sends the badge without markers when the chart is on another interval
     // The badge still says what is running; the markers do not lie about where.
     assert.equal(view?.thesis?.interval, "5m");
     assert.deepEqual(view?.thesis?.trades, []);
+    // The levels are not withheld with them - see the assertion above.
+    assert.deepEqual(view?.thesis?.entryLevels, [{ price: 3_900, direction: "above" }]);
   }).pipe(withValidation("5m")),
 );
 

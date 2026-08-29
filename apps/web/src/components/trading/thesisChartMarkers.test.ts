@@ -8,7 +8,12 @@
  */
 import { describe, expect, it } from "vite-plus/test";
 
-import { thesisChartBadge, thesisChartMarkers } from "./thesisChartMarkers";
+import {
+  thesisChartBadge,
+  thesisChartConditions,
+  thesisChartMarkers,
+  thesisChartZones,
+} from "./thesisChartMarkers";
 
 const thesis = (over: Partial<Parameters<typeof thesisChartMarkers>[0]> = {}) =>
   ({
@@ -19,6 +24,9 @@ const thesis = (over: Partial<Parameters<typeof thesisChartMarkers>[0]> = {}) =>
     expiresAt: 9_000,
     intervalMatches: true,
     trades: [],
+    side: "long",
+    comparison: "tracking",
+    entryLevels: [],
     ...over,
   }) as Parameters<typeof thesisChartMarkers>[0];
 
@@ -35,6 +43,8 @@ describe("thesisChartMarkers", () => {
             exitPrice: 3_030,
             netUsd: 9.4,
             exitReason: "target",
+            stopPrice: null,
+            targetPrice: null,
           },
         ],
       }),
@@ -66,6 +76,8 @@ describe("thesisChartMarkers", () => {
             exitPrice: 3_001,
             netUsd: -0.6,
             exitReason: "max_hold",
+            stopPrice: null,
+            targetPrice: null,
           },
         ],
       }),
@@ -85,6 +97,8 @@ describe("thesisChartMarkers", () => {
             exitPrice: null,
             netUsd: null,
             exitReason: null,
+            stopPrice: null,
+            targetPrice: null,
           },
         ],
       }),
@@ -110,6 +124,8 @@ describe("thesisChartMarkers", () => {
               exitPrice: 3_030,
               netUsd: 9.4,
               exitReason: "target",
+              stopPrice: null,
+              targetPrice: null,
             },
           ],
         }),
@@ -129,6 +145,8 @@ describe("thesisChartMarkers", () => {
             exitPrice: 3_030,
             netUsd: 9.4,
             exitReason: "target",
+            stopPrice: null,
+            targetPrice: null,
           },
           {
             id: "t2",
@@ -138,6 +156,8 @@ describe("thesisChartMarkers", () => {
             exitPrice: 3_000,
             netUsd: -30,
             exitReason: "stop",
+            stopPrice: null,
+            targetPrice: null,
           },
         ],
       }),
@@ -174,5 +194,88 @@ describe("thesisChartBadge", () => {
   it("carries the headline through unchanged", () => {
     const badge = thesisChartBadge(thesis({ headline: "The 5m fade" }));
     expect(badge.headline).toBe("The 5m fade");
+  });
+});
+
+describe("thesisChartZones", () => {
+  const open = (over: Record<string, unknown> = {}) => ({
+    id: "t9",
+    entryTime: 5_000,
+    entryPrice: 3_000,
+    exitTime: null,
+    exitPrice: null,
+    netUsd: null,
+    exitReason: null,
+    stopPrice: 2_950,
+    targetPrice: 3_090,
+    ...over,
+  });
+
+  it("splits the open trade's bracket at the entry, so the boundary is the entry", () => {
+    const zones = thesisChartZones(thesis({ trades: [open()] }));
+    expect(zones.map((zone) => [zone.tone, zone.priceLow, zone.priceHigh])).toEqual([
+      ["risk", 2_950, 3_000],
+      ["reward", 3_000, 3_090],
+    ]);
+    // Nothing is resting at either price: the whole band is a claim.
+    expect(zones.every((zone) => zone.register === "hypothetical")).toBe(true);
+  });
+
+  it("draws the half of the bracket the thesis named and no more", () => {
+    const zones = thesisChartZones(thesis({ trades: [open({ targetPrice: null })] }));
+    expect(zones.map((zone) => zone.tone)).toEqual(["risk"]);
+  });
+
+  it("draws nothing for a settled trade", () => {
+    const zones = thesisChartZones(
+      thesis({ trades: [open({ exitTime: 6_000, exitPrice: 3_090, netUsd: 8 })] }),
+    );
+    expect(zones).toEqual([]);
+  });
+
+  it("withholds the bands on the wrong interval, as it withholds the markers", () => {
+    const zones = thesisChartZones(thesis({ intervalMatches: false, trades: [open()] }));
+    expect(zones).toEqual([]);
+  });
+});
+
+describe("thesisChartConditions", () => {
+  it("draws the entry constants as claimed levels named after the thesis", () => {
+    const conditions = thesisChartConditions(
+      thesis({ entryLevels: [{ price: 3_900, direction: "above" }] }),
+    );
+    expect(conditions).toEqual([
+      {
+        price: 3_900,
+        direction: "above",
+        met: false,
+        label: "Buy ETH 5m when RSI(14) is below 30",
+        register: "hypothetical",
+      },
+    ]);
+  });
+
+  it("draws them on the wrong interval too: a price is a price on any bars", () => {
+    const conditions = thesisChartConditions(
+      thesis({ intervalMatches: false, entryLevels: [{ price: 3_900, direction: "above" }] }),
+    );
+    expect(conditions).toHaveLength(1);
+  });
+
+  it("draws nothing for a rule with no constant in it", () => {
+    expect(thesisChartConditions(thesis({ entryLevels: [] }))).toEqual([]);
+  });
+});
+
+describe("thesisChartBadge comparison", () => {
+  it("carries the running verdict and its tone", () => {
+    expect(thesisChartBadge(thesis({ comparison: "worse_than_backtest" }))).toMatchObject({
+      comparisonLabel: "worse than backtest",
+      comparisonTone: "negative",
+    });
+    expect(thesisChartBadge(thesis({ comparison: "tracking" })).comparisonTone).toBe("positive");
+    expect(thesisChartBadge(thesis({ comparison: "too_few_trades" })).comparisonTone).toBe(
+      "neutral",
+    );
   });
 });

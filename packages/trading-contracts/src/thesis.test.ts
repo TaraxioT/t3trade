@@ -13,6 +13,7 @@ import {
   describeExits,
   describeThesis,
   THESIS_MAX_PREDICATES,
+  thesisEntryPriceLevels,
   thesisIndicators,
   validateThesis,
   type TradingThesis,
@@ -223,5 +224,88 @@ describe("prose", () => {
       "MACD crosses below MACD signal or bar low is below Bollinger(20) lower band",
     );
     expect(line).not.toContain("_");
+  });
+});
+
+describe("thesisEntryPriceLevels", () => {
+  const thesis = (predicates: ReadonlyArray<unknown>) =>
+    ({
+      market: "ETH",
+      interval: "5m",
+      side: "long",
+      entry: { predicates },
+      exits: { stop: { basis: "percent", value: 1 } },
+    }) as never;
+
+  it("reads a price against a constant, on the side the rule fires", () => {
+    expect(
+      thesisEntryPriceLevels(
+        thesis([
+          {
+            left: { source: "price", field: "close" },
+            comparator: "above",
+            right: { source: "constant", value: 3_900 },
+          },
+        ]),
+      ),
+    ).toEqual([{ price: 3_900, direction: "above" }]);
+  });
+
+  it("treats a cross as the side it crosses to", () => {
+    expect(
+      thesisEntryPriceLevels(
+        thesis([
+          {
+            left: { source: "price" },
+            comparator: "crosses_below",
+            right: { source: "constant", value: 3_000 },
+          },
+        ]),
+      ),
+    ).toEqual([{ price: 3_000, direction: "below" }]);
+  });
+
+  it("reads the same rule written backwards as the same rule", () => {
+    // "3900 below close" is "close above 3900": the comparator describes where
+    // the NUMBER sits, so price sits on the other side of it.
+    expect(
+      thesisEntryPriceLevels(
+        thesis([
+          {
+            left: { source: "constant", value: 3_900 },
+            comparator: "below",
+            right: { source: "price" },
+          },
+        ]),
+      ),
+    ).toEqual([{ price: 3_900, direction: "above" }]);
+  });
+
+  it("says nothing about a rule with no constant in it", () => {
+    expect(
+      thesisEntryPriceLevels(
+        thesis([
+          {
+            left: { source: "price" },
+            comparator: "above",
+            right: { source: "indicator", indicator: "ema", period: 50 },
+          },
+          {
+            left: { source: "indicator", indicator: "rsi" },
+            comparator: "below",
+            right: { source: "constant", value: 30 },
+          },
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("names one level once, however many predicates name it", () => {
+    const predicate = {
+      left: { source: "price" },
+      comparator: "above",
+      right: { source: "constant", value: 3_900 },
+    };
+    expect(thesisEntryPriceLevels(thesis([predicate, predicate]))).toHaveLength(1);
   });
 });

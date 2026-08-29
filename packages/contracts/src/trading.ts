@@ -227,6 +227,17 @@ export const TradingChartPaperTrade = Schema.Struct({
   /** Net after fees and funding. Null while the trade is open. */
   netUsd: Schema.NullOr(Schema.Number),
   exitReason: Schema.NullOr(Schema.String),
+  /**
+   * Where the paper trade's own bracket sits, when the thesis named one.
+   *
+   * Carried so the chart can draw the OPEN trade's risk as a band rather than
+   * as two circles and a gap. Null on every settled trade, even one that had a
+   * bracket: the chart bands only the trade still running, and this array is
+   * uncapped, so filling them in throughout cost kilobytes per poll for levels
+   * nothing draws.
+   */
+  stopPrice: Schema.NullOr(Schema.Number),
+  targetPrice: Schema.NullOr(Schema.Number),
 });
 export type TradingChartPaperTrade = typeof TradingChartPaperTrade.Type;
 
@@ -252,6 +263,36 @@ export const TradingChartThesis = Schema.Struct({
   intervalMatches: Schema.Boolean,
   /** Empty when the intervals differ; the badge still says what is running. */
   trades: Schema.Array(TradingChartPaperTrade),
+  /** Which way the thesis trades. Decides which side of a band is the risk. */
+  side: Schema.Literals(["long", "short"]),
+  /**
+   * How the paper run compares to the backtest that armed it, as the running
+   * verdict already computes it. The literal travels and the client says the
+   * words, the same split every other trading card takes.
+   */
+  comparison: Schema.Literals([
+    "tracking",
+    "better_than_backtest",
+    "worse_than_backtest",
+    "no_baseline",
+    "too_few_trades",
+  ]),
+  /**
+   * The entry rule's price constants, when the rule compares price against
+   * one - "close above 3900" is a level the chart can draw, and drawing it is
+   * the difference between a badge that names a rule and a chart that shows
+   * where the rule fires.
+   *
+   * Numbers only: the label is the thesis's own headline, which the client
+   * already has. A predicate that compares price against an indicator has no
+   * constant to send and contributes nothing here.
+   */
+  entryLevels: Schema.Array(
+    Schema.Struct({
+      price: Schema.Number,
+      direction: Schema.Literals(["above", "below"]),
+    }),
+  ),
 });
 export type TradingChartThesis = typeof TradingChartThesis.Type;
 
@@ -351,7 +392,18 @@ export type TradingMissionResultView = typeof TradingMissionResultView.Type;
  */
 export const TradingMissionTimelineEntry = Schema.Struct({
   at: IsoDateTime,
-  kind: Schema.Literals(["wake", "stop_adjusted", "strategy_published", "journal"]),
+  kind: Schema.Literals([
+    "wake",
+    "stop_adjusted",
+    "strategy_published",
+    "journal",
+    /**
+     * A forward validation moved: a paper trade opened or closed, the verdict
+     * changed, or the window ran out. The one timeline kind that is about an
+     * idea rather than about money.
+     */
+    "validation_event",
+  ]),
   /** Already-composed prose, so the client renders rather than interprets. */
   label: TrimmedNonEmptyString,
   /** The price the event happened at, where it had one — a stop step's new stop. */
@@ -791,6 +843,65 @@ export const TradingValidationReportView = Schema.Struct({
   report: Schema.NullOr(ForwardReport),
 });
 export type TradingValidationReportView = typeof TradingValidationReportView.Type;
+
+/**
+ * One idea the trade home is watching: a forward validation on the clock, or a
+ * filed hypothesis whose runs have all finished.
+ *
+ * Numbers only. Every sentence on the panel - the status line, the time left,
+ * the comparison prose - is composed client-side off these fields, so the row
+ * stays small on a read that rides the account doorbell and mobile can render
+ * the same panel natively from the same contract.
+ */
+export const TradingIdeaRow = Schema.Struct({
+  /**
+   * `validation` is a run on the clock; `hypothesis` is a filed idea in
+   * testing whose runs have all ended. The two are one list because the
+   * question the panel answers - what am I currently testing - does not
+   * distinguish them.
+   */
+  kind: Schema.Literals(["validation", "hypothesis"]),
+  /** The validation id, or the hypothesis id. Unique within the page. */
+  id: TrimmedNonEmptyString,
+  /** The user's label, the idea's title, or the thesis composed into a line. */
+  title: TrimmedNonEmptyString,
+  market: TrimmedNonEmptyString,
+  interval: TradingChartInterval,
+  status: Schema.Literals(["armed", "paused", "testing"]),
+  /** After-fee expectancy per settled paper trade. Null with no settled trade. */
+  expectancyUsd: Schema.NullOr(Schema.Number),
+  /** Settled paper trades. An open one is not counted, as everywhere else. */
+  trades: NonNegativeInt,
+  /** When the run's clock runs out. Null when no run is on the clock. */
+  expiresAt: Schema.NullOr(Schema.Number),
+  comparison: Schema.Literals([
+    "tracking",
+    "better_than_backtest",
+    "worse_than_backtest",
+    "no_baseline",
+    "too_few_trades",
+  ]),
+  /** The thread the idea lives in, so a row can prefill its composer. */
+  threadId: Schema.NullOr(ThreadId),
+  /** The filed idea behind the row, when there is one. */
+  hypothesisId: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type TradingIdeaRow = typeof TradingIdeaRow.Type;
+
+/** Newest first, capped server-side. @see TRADING_IDEA_ROW_CAP */
+export const TradingIdeasView = Schema.Struct({
+  ideas: Schema.Array(TradingIdeaRow),
+});
+export type TradingIdeasView = typeof TradingIdeasView.Type;
+
+/**
+ * How many rows the ideas panel is served.
+ *
+ * The panel is a standing surface on a page that already carries four other
+ * reads, and an idea list is not a history: past the newest twenty the answer
+ * to "what am I testing" is in the thread, not in a longer list.
+ */
+export const TRADING_IDEA_ROW_CAP = 20;
 
 // -- the watchlist (final-form phase 4) --------------------------------------
 

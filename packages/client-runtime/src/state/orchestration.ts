@@ -101,6 +101,12 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-alerts",
       tag: ORCHESTRATION_WS_METHODS.listTradingAlerts,
     }),
+    // The ideas panel's rows: the validations on the clock and the filed ideas
+    // in testing. Same doorbell, same cadence class as the feed beside it.
+    tradingIdeas: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-ideas",
+      tag: ORCHESTRATION_WS_METHODS.listTradingIdeas,
+    }),
     // The report behind a validation-expiry alert. A command rather than a
     // query atom because it is fetched on a click - a feed of fifty alerts
     // should not read fifty reports to render the ones nobody opened.

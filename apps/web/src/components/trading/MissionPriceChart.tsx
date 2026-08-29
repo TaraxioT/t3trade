@@ -28,16 +28,18 @@
 // rather than `<text>` inside it: undistorted at any width, and it gets
 // ellipsis and wrapping for free.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import type {
   TradingChartCandle,
   TradingChartGap,
   TradingChartSessionLevels,
+  TradingChartThesis,
 } from "@t3tools/contracts";
 
 import { coverageBands, layoutSessionLabelYs, sessionLevelLines } from "./marketChartOverlays";
+import { thesisChartConditions, thesisChartMarkers, thesisChartZones } from "./thesisChartMarkers";
 import { useMissionChartMode } from "./missionChartModeStore";
 import { isMomentSelected, useMissionSelection } from "./missionSelectionStore";
 import { cn } from "~/lib/utils";
@@ -55,6 +57,8 @@ import {
   type ChartLevel,
   type ChartLevelKind,
   type ChartPoint,
+  type ChartZoneInput,
+  type ChartZoneTone,
   type GutterTag,
 } from "./missionChartGeometry";
 import { formatPrice, type ChartFillKind, type ChartFillMarker } from "./tradingPresentation";
@@ -138,7 +142,38 @@ interface MissionPriceChartProps {
     readonly at: number;
     readonly cause?: string | undefined;
     readonly failed?: boolean | undefined;
+    /** The event's own sentence, shown on hover and focus. */
+    readonly label?: string | undefined;
   }>;
+  /**
+   * Price bands to wash across the plot, under everything else.
+   *
+   * A generic layer: it takes a list and knows nothing about what a band means.
+   * The projection's honest interval and an open paper trade's bracket are the
+   * two callers today, and neither of them is special-cased here.
+   */
+  readonly zones?: ReadonlyArray<ChartZoneInput>;
+  /**
+   * The forward validation running on this market, if any.
+   *
+   * One prop rather than five, and one seam rather than three: the badge, the
+   * paper markers, the bracket bands and the entry levels are all derived from
+   * this inside the chart, so every surface that draws a chart of a market
+   * draws the same validation on it without wiring four things each. The badge
+   * itself is `ThesisChartBadgeLine`, rendered by the caller, because only the
+   * caller knows what its own layout reserves for a line of text.
+   */
+  readonly thesis?: TradingChartThesis | null;
+  /**
+   * What a click on one of the validation's paper markers asks about.
+   *
+   * Absent on a chart with no conversation behind it, and then the markers
+   * stay the read-only circles they were. Never a mutation: the callback puts
+   * a sentence in a composer and the user presses send, or does not. The two
+   * deliberate exceptions to that rule on this chart are `onArmAtPrice` and
+   * `onLevelDragEnd`, both marked at their own call sites.
+   */
+  readonly onAskAboutMarker?: (marker: { readonly key: string; readonly at: number }) => void;
   /**
    * Which levels the operator may drag, and what to do when they let go.
    *
@@ -258,8 +293,13 @@ function pastMarkerColor(marker: {
   // amber a triggered wake uses would put a level on the rug that never
   // existed.
   if (marker.kind === "journal") return "var(--color-muted-foreground)";
+  // A paper fill is news about an idea, not about the position: drawn in the
+  // info blue the hypothetical register already owns on this chart, so a rug
+  // of validation ticks never reads as a run of levels being reached.
+  if (marker.kind === "validation_event") return "var(--color-info)";
   // A wake the market caused is the one worth seeing; a scheduled one is the
   // backstop, and the rug should read as quieter where the clock did the work.
+  if (marker.cause === "validation_event") return "var(--color-info)";
   return marker.cause === "scheduled_reassessment"
     ? "var(--color-muted-foreground)"
     : "var(--color-armed)";
@@ -291,6 +331,35 @@ function levelBaseColor(kind: ChartLevelKind | "mark"): string {
 }
 
 /** Chip ink is text and must stay legible, so it is near full strength. */
+/**
+ * The ink a price band is washed in, by what the band is about.
+ *
+ * Exhaustive on purpose, like every other mapping in this file: a tone added
+ * to the geometry without a colour here is a build failure rather than a band
+ * that renders transparent on somebody's screen.
+ */
+function zoneInkColor(tone: ChartZoneTone): string {
+  switch (tone) {
+    case "plan":
+      return "var(--color-info)";
+    case "risk":
+      return "var(--color-loss)";
+    case "reward":
+      return "var(--color-profit)";
+    case "neutral":
+      return "var(--color-muted-foreground)";
+  }
+}
+
+/**
+ * How strongly a band is washed in.
+ *
+ * Quiet is the whole point: a band spans the full width of the plot, so at the
+ * strength a level chip is drawn at it would be the loudest thing on a chart
+ * whose subject is the price. A claim is quieter still than a record.
+ */
+const ZONE_FILL_PERCENT = { actual: 10, hypothetical: 7 } as const;
+
 const INK_MIX = 85;
 
 /** The colour a level's chip is written in. */
@@ -310,6 +379,9 @@ function tagGlyph(tag: GutterTag): string {
 
 /** The short word that says which price a tag is, under the number. */
 function tagCaption(tag: GutterTag): string {
+  // A caller-supplied caption wins: it names the thing the level belongs to
+  // ("The 5m fade"), which is strictly more than the direction the kind knows.
+  if (tag.label !== undefined && tag.label !== "") return tag.label;
   switch (tag.kind) {
     case "mark":
       return tag.mergedPrice === undefined ? "" : `entry ${formatPrice(tag.mergedPrice)}`;
@@ -532,6 +604,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     projection,
     timeMarkers,
     pastMarkers,
+    zones,
+    thesis,
+    onAskAboutMarker,
     draggableKinds,
     onLevelDragEnd,
     refusedLevel,
@@ -584,6 +659,10 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // the tab order too.
   const [hoveredTagKey, setHoveredTagKey] = useState<string | null>(null);
   const [hoveredTimeKey, setHoveredTimeKey] = useState<string | null>(null);
+  // Which past tick is being read. The rug's ticks all look alike, so the only
+  // thing that says which moment one of them is is its own sentence, and the
+  // only place there is room for that sentence is a tooltip.
+  const [hoveredPastKey, setHoveredPastKey] = useState<string | null>(null);
 
   // Candles or the close line (final-form phase 6). One persisted preference
   // shared by every mounted chart, so the live panel and the review read the
@@ -625,6 +704,41 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     selectEvent({ eventId: event.id, atMillis: event.atMillis, source: "chart" });
   };
 
+  // --- The validation's overlays, derived once per served thesis. ----------
+  //
+  // Memoised on the served object, so a re-render that brought no new chart
+  // data rebuilds nothing: the markers change when a bar closes and the poll
+  // brings a new paper trade, and at no other time.
+  const thesisMarkers = useMemo(
+    () => (thesis === null || thesis === undefined ? [] : thesisChartMarkers(thesis)),
+    [thesis],
+  );
+  const thesisZones = useMemo(
+    () => (thesis === null || thesis === undefined ? [] : thesisChartZones(thesis)),
+    [thesis],
+  );
+  const thesisConditions = useMemo(
+    () => (thesis === null || thesis === undefined ? [] : thesisChartConditions(thesis)),
+    [thesis],
+  );
+  // The mission's own armed watches come FIRST. Both lists compete for the
+  // same drawn-condition cap, and a watch that will actually wake the mission
+  // outranks a level nothing is watching. Anything the cap folds away is
+  // counted into the overflow chip either way.
+  const allConditions = useMemo(
+    () =>
+      thesisConditions.length === 0 ? conditions : [...(conditions ?? []), ...thesisConditions],
+    [conditions, thesisConditions],
+  );
+  const allZones = useMemo(
+    () => (thesisZones.length === 0 ? zones : [...(zones ?? []), ...thesisZones]),
+    [zones, thesisZones],
+  );
+  const allFills = useMemo(
+    () => (thesisMarkers.length === 0 ? fills : [...(fills ?? []), ...thesisMarkers]),
+    [fills, thesisMarkers],
+  );
+
   const geometry = computeChartGeometry({
     candles,
     entryPrice,
@@ -633,8 +747,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     liquidationPrice,
     entryTime,
     markPrice,
-    ...(conditions === undefined ? {} : { conditions }),
-    ...(fills === undefined ? {} : { fills }),
+    ...(allConditions === undefined ? {} : { conditions: allConditions }),
+    ...(allZones === undefined ? {} : { zones: allZones }),
+    ...(allFills === undefined ? {} : { fills: allFills }),
     ...(pendingOrder === undefined ? {} : { pendingOrder }),
     ...(nowMillis === undefined ? {} : { nowMillis }),
     ...(triggerExpiryAt === undefined ? {} : { triggerExpiryAt }),
@@ -872,6 +987,12 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     if (drag === null) return;
     event.currentTarget.releasePointerCapture(event.pointerId);
     setDrag(null);
+    // A deliberate exception to the prefill rule: a level drag mutates the
+    // plan directly rather than writing a sentence into the composer. The
+    // gesture IS the statement - the operator has already put the rule where
+    // they want it, and a chat round trip to restate a price they have just
+    // dragged to would be the slowest possible way to move a stop. Every
+    // other chart affordance asks; these two act. @see onAskAboutMarker
     onLevelDragEnd?.(drag.kind, drag.price);
   };
 
@@ -1031,6 +1152,57 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               fill="color-mix(in oklab, var(--color-muted-foreground) 8%, transparent)"
               stroke="none"
             />
+          );
+        })}
+
+        {/* Price bands: the y-axis twin of the coverage shading above. A
+            projection's honest interval, a paper trade's bracket — anything
+            whose subject is a RANGE of price rather than a single level. Drawn
+            here, under the price line and the levels, because a band is
+            ground: it is what the price is moving through, not a thing on top
+            of it.
+
+            The layer is generic. It takes a list and knows nothing about what
+            any band means; the edges are dashed and the wash is thinner in the
+            hypothetical register, which is the same treatment the future
+            gutter's projections get and for the same reason. */}
+        {geometry.zones.map((zone) => {
+          const ink = zoneInkColor(zone.tone);
+          // A band the domain never reaches has no rect to draw. Its chip is
+          // still docked in the gutter with an edge arrow, so the plan it
+          // belongs to is not silently missing from the picture.
+          if (zone.height <= 0) return null;
+          return (
+            <g key={`zone-${zone.key}`} data-testid={`mission-chart-zone-${zone.key}`}>
+              <rect
+                x={0}
+                y={zone.y}
+                width={PLOT_WIDTH}
+                height={zone.height}
+                fill={`color-mix(in oklab, ${ink} ${ZONE_FILL_PERCENT[zone.register]}%, transparent)`}
+                stroke="none"
+              />
+              {(
+                [
+                  ["top", zone.y],
+                  ["bottom", zone.y + zone.height],
+                ] as const
+              ).map(([edge, edgeY]) => (
+                <line
+                  key={`zone-edge-${edge}`}
+                  x1={0}
+                  y1={edgeY}
+                  x2={PLOT_WIDTH}
+                  y2={edgeY}
+                  stroke={`color-mix(in oklab, ${ink} 45%, transparent)`}
+                  strokeWidth={zone.register === "hypothetical" ? HYPOTHETICAL_STROKE_WIDTH : 1}
+                  {...(zone.register === "hypothetical"
+                    ? { strokeDasharray: HYPOTHETICAL_DASH_ARRAY, opacity: HYPOTHETICAL_OPACITY }
+                    : {})}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+            </g>
           );
         })}
 
@@ -1469,6 +1641,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           they stay in register with the plot at any size and stay round. */}
       {geometry.fillPoints.map((fill) => {
         const style = fillMarkerStyle(fill.kind);
+        // Only the paper markers ask. A real fill is already explained by the
+        // agent log's own receipt, and a mission's fills are not a validation.
+        const isPaperMarker = fill.kind.startsWith("paper_");
         const selected = selection?.eventId === fill.key || isMomentSelected(selection, fill.at);
         return (
           <span
@@ -1485,6 +1660,14 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             }}
             tabIndex={0}
             aria-label={fill.label ?? undefined}
+            {...(isPaperMarker && onAskAboutMarker !== undefined
+              ? {
+                  role: "button" as const,
+                  // Prefill, not mutation: the marker asks the thread what
+                  // happened here and the user sends the question themselves.
+                  onClick: () => onAskAboutMarker({ key: fill.key, at: fill.at }),
+                }
+              : {})}
             onFocus={() => hoverChartEvent({ id: fill.key, atMillis: fill.at })}
             onBlur={() => hoverChartEvent(null)}
             onMouseEnter={() => hoverChartEvent({ id: fill.key, atMillis: fill.at })}
@@ -1513,19 +1696,69 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       {geometry.pastMarkers.map((marker) => (
         <span
           key={`pasthit-${marker.key}`}
+          data-testid={`mission-past-hit-${marker.key}`}
           className="absolute h-4 w-3 -translate-x-1/2 translate-y-[-100%] rounded-sm outline-none"
           style={{
             left: `${(marker.x / CHART_VIEWBOX_WIDTH) * 100}%`,
             bottom: 0,
           }}
           tabIndex={0}
-          aria-label={`${marker.kind} at ${new Date(marker.at).toLocaleTimeString()}`}
-          onFocus={() => hoverChartEvent({ id: marker.key, atMillis: marker.at })}
-          onBlur={() => hoverChartEvent(null)}
-          onMouseEnter={() => hoverChartEvent({ id: marker.key, atMillis: marker.at })}
-          onMouseLeave={() => hoverChartEvent(null)}
+          // The event's own sentence when the projection sent one. Without it
+          // every tick on the rug announced itself as its kind and a clock
+          // time, which is the same announcement twenty times over.
+          aria-label={`${marker.label ?? marker.kind} at ${new Date(marker.at).toLocaleTimeString()}`}
+          onFocus={() => {
+            setHoveredPastKey(marker.key);
+            hoverChartEvent({ id: marker.key, atMillis: marker.at });
+          }}
+          onBlur={() => {
+            setHoveredPastKey(null);
+            hoverChartEvent(null);
+          }}
+          onMouseEnter={() => {
+            setHoveredPastKey(marker.key);
+            hoverChartEvent({ id: marker.key, atMillis: marker.at });
+          }}
+          onMouseLeave={() => {
+            setHoveredPastKey(null);
+            hoverChartEvent(null);
+          }}
         />
       ))}
+
+      {/* The read of a past tick, in the crosshair readout's own register and
+          clamped the same way so it never leaves the frame at either end.
+
+          An HTML tooltip rather than a `title` attribute: a native tooltip
+          waits a second, cannot be styled to match the readout it sits beside,
+          and never appears at all for a keyboard reader — and this rug is
+          focusable precisely so a keyboard reader can walk the session's
+          moments. It sits at the BOTTOM because the ticks do. */}
+      {(() => {
+        const marker =
+          hoveredPastKey === null
+            ? null
+            : (geometry.pastMarkers.find((entry) => entry.key === hoveredPastKey) ?? null);
+        if (marker === null || marker.label === undefined) return null;
+        return (
+          <span
+            data-testid="mission-past-tooltip"
+            className="pointer-events-none absolute bottom-3 max-w-[70%] -translate-x-1/2 truncate rounded-sm bg-background/90 px-1.5 py-0.5 text-[10.5px] leading-none text-foreground"
+            style={{
+              left: `clamp(4rem, ${(marker.x / CHART_VIEWBOX_WIDTH) * 100}%, calc(100% - 4rem))`,
+            }}
+          >
+            {marker.label}
+            <span className="text-muted-foreground">
+              {" · "}
+              {new Date(marker.at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
+          </span>
+        );
+      })()}
 
       {/* The mark: a solid dot inside a pulsing ring. The ring is what carries
           the motion, so the dot itself stays a crisp, readable point. */}
@@ -1721,6 +1954,11 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           className="absolute right-1 z-10 flex -translate-y-1/2 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border border-armed/50 bg-background/85 px-1.5 py-[1.5px] font-mono text-[10px] leading-none text-armed outline-none backdrop-blur-sm hover:border-armed focus-visible:border-armed"
           style={{ top: `${(armHover.y / CHART_VIEWBOX_HEIGHT) * 100}%` }}
           aria-label={`Arm an alert at ${formatPrice(armHover.price)}`}
+          // The second deliberate exception to the prefill rule. Arming a
+          // notify watch changes nothing about a position and nothing about a
+          // plan: it is the chart's own bookmark, undone from the alert panel
+          // beside it, so putting it behind a chat turn would be ceremony
+          // around a reversible click. @see onAskAboutMarker
           onClick={() => onArmAtPrice(armHover.price)}
         >
           <span aria-hidden>+</span>
@@ -1821,6 +2059,10 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               className={cn(
                 "mission-chip flex max-w-full cursor-default items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-[1.5px] font-mono text-[10.5px] outline-none backdrop-blur-sm transition-[box-shadow,border-color] duration-150",
                 hovered || selected ? "border-current/60" : "border-border/50",
+                // The hypothetical register, on a chip: dashed like the rules
+                // in the future gutter, because a level nothing is watching is
+                // a claim wherever on the axis it sits.
+                tag.register === "hypothetical" && "border-dashed",
                 tag.id !== undefined &&
                   firedWatchIds !== undefined &&
                   firedWatchIds.includes(tag.id) &&
@@ -1832,6 +2074,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
                 top: `${(tag.labelY / CHART_VIEWBOX_HEIGHT) * 100}%`,
                 position: "absolute",
                 right: 2,
+                ...(tag.register === "hypothetical" ? { opacity: HYPOTHETICAL_OPACITY } : {}),
                 ...(selected
                   ? { boxShadow: `0 0 0 1px color-mix(in oklab, ${ink} 45%, transparent)` }
                   : {}),
@@ -1874,6 +2117,37 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             </span>
           );
         })}
+        {/* A band's own chip, docked at the band and laid out in the SAME
+            collision pass as the level tags above — see `buildZonesAndTags`.
+            It carries the caller's caption and the range, because a band's
+            subject is the interval and not either of its edges. */}
+        {geometry.zones.map((zone) => (
+          <span
+            key={`zonechip-${zone.key}`}
+            data-testid={`mission-zone-chip-${zone.key}`}
+            className={cn(
+              "mission-chip pointer-events-none absolute flex max-w-full items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-[1.5px] font-mono text-[10px] backdrop-blur-sm",
+              zone.register === "hypothetical" ? "border-dashed" : "",
+            )}
+            style={{
+              color: zoneInkColor(zone.tone),
+              borderColor: "color-mix(in oklab, currentColor 40%, transparent)",
+              top: `${(zone.labelY / CHART_VIEWBOX_HEIGHT) * 100}%`,
+              right: 2,
+              ...(zone.register === "hypothetical" ? { opacity: HYPOTHETICAL_OPACITY } : {}),
+            }}
+            role="note"
+            aria-label={`${zone.label} ${formatPrice(zone.priceLow)} to ${formatPrice(zone.priceHigh)}`}
+          >
+            <span className="truncate opacity-80">{zone.label}</span>
+            <span>
+              {formatPrice(zone.priceLow)}–{formatPrice(zone.priceHigh)}
+            </span>
+            {zone.offScale === null ? null : (
+              <span aria-hidden>{zone.offScale === "above" ? "↑" : "↓"}</span>
+            )}
+          </span>
+        ))}
         {/* The retire ghosts (phase 4): a chip whose watch settled fades out
             once at its last dock, then is removed. One element per retire,
             transform/opacity only, gone when the fade ends. */}

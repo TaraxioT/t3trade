@@ -125,6 +125,7 @@ import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService } from "./trading/TradingAlertService.ts";
 import { TradingThesisValidationService } from "./trading/TradingThesisValidationService.ts";
+import { TradingHypothesisService } from "./trading/TradingHypothesisService.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import { TradingThreadMarketServiceLive } from "./trading/TradingThreadMarketService.ts";
 import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
@@ -945,12 +946,22 @@ const buildAppUnderTest = (options?: {
         // The alert feed labels the rows that are validation endings, and the
         // report RPC reads one back. These tests arm no validation, so an
         // empty answer to both is the honest one.
+        // Merged rather than piped as a second `Layer.provide`: this chain is
+        // already at `pipe`'s twenty-argument ceiling.
         Layer.provide(
-          Layer.mock(TradingThesisValidationService)({
-            knownIds: () => Effect.succeed(new Set<string>()),
-            get: () => Effect.succeed(null),
-            report: () => Effect.succeed(null),
-          }),
+          Layer.mergeAll(
+            Layer.mock(TradingThesisValidationService)({
+              knownIds: () => Effect.succeed(new Set<string>()),
+              get: () => Effect.succeed(null),
+              report: () => Effect.succeed(null),
+              list: () => Effect.succeed([]),
+            }),
+            // The ideas panel reads the hypothesis record beside the
+            // validations. Same posture: these tests file no idea.
+            Layer.mock(TradingHypothesisService)({
+              list: () => Effect.succeed([]),
+            }),
+          ),
         ),
         Layer.provide(
           Layer.mock(TradingWatchlistService)({

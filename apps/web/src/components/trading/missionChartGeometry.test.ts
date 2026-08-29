@@ -15,6 +15,7 @@ import {
   MIN_VISIBLE_BARS,
   PLOT_WIDTH,
   computeChartGeometry,
+  clusterConditions,
   dedupeConditions,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
@@ -1667,5 +1668,262 @@ describe("computeChartGeometry — the series slides at a constant rate", () => 
 
     expect(perSecond).toBeGreaterThan(0);
     expect(perSecond).toBeLessThan(0.5);
+  });
+});
+
+describe("computeChartGeometry zones", () => {
+  // A flat 100-price window, so every price maps to a y that is easy to state.
+  const candles = [
+    { openTime: 1_000, open: 100, high: 102, low: 98, close: 100 },
+    { openTime: 2_000, open: 100, high: 102, low: 98, close: 100 },
+    { openTime: 3_000, open: 100, high: 102, low: 98, close: 100 },
+  ];
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: null,
+  };
+
+  it("places a band inside the domain between the y of its two prices", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      zones: [
+        {
+          key: "z",
+          label: "projected",
+          priceLow: 99,
+          priceHigh: 101,
+          tone: "plan",
+          register: "hypothetical",
+        },
+      ],
+    });
+    expect(geometry).not.toBeNull();
+    const zone = geometry!.zones[0]!;
+    expect(zone.y).toBeCloseTo(geometry!.yForPrice(101), 6);
+    expect(zone.height).toBeCloseTo(geometry!.yForPrice(99) - geometry!.yForPrice(101), 6);
+    expect(zone.offScale).toBeNull();
+    expect(zone.register).toBe("hypothetical");
+  });
+
+  it("orders the band's own endpoints, so a caller cannot invert one", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      zones: [
+        {
+          key: "z",
+          label: "projected",
+          priceLow: 101,
+          priceHigh: 99,
+          tone: "plan",
+          register: "hypothetical",
+        },
+      ],
+    });
+    expect(geometry!.zones[0]).toMatchObject({ priceLow: 99, priceHigh: 101 });
+    expect(geometry!.zones[0]!.height).toBeGreaterThan(0);
+  });
+
+  it("clips a band that runs off the top to the part inside the frame", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      zones: [
+        {
+          key: "z",
+          label: "projected",
+          priceLow: 100,
+          priceHigh: 10_000,
+          tone: "plan",
+          register: "hypothetical",
+        },
+      ],
+    });
+    const zone = geometry!.zones[0]!;
+    expect(zone.y).toBe(0);
+    expect(zone.height).toBeCloseTo(geometry!.yForPrice(100), 6);
+    expect(zone.height).toBeLessThanOrEqual(CHART_VIEWBOX_HEIGHT);
+  });
+
+  it("draws no rect for a band the domain never reaches, and says which way", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      zones: [
+        {
+          key: "high",
+          label: "projected",
+          priceLow: 5_000,
+          priceHigh: 6_000,
+          tone: "plan",
+          register: "hypothetical",
+        },
+        {
+          key: "low",
+          label: "projected",
+          priceLow: 1,
+          priceHigh: 2,
+          tone: "plan",
+          register: "hypothetical",
+        },
+      ],
+    });
+    const [high, low] = geometry!.zones;
+    expect(high).toMatchObject({ offScale: "above", height: 0 });
+    expect(low).toMatchObject({ offScale: "below", height: 0 });
+    // Off-scale or not, the chip is still docked inside the frame.
+    expect(high!.labelY).toBeGreaterThanOrEqual(GUTTER_LABEL_EDGE_INSET);
+    expect(low!.labelY).toBeLessThanOrEqual(CHART_VIEWBOX_HEIGHT - GUTTER_LABEL_EDGE_INSET);
+  });
+
+  it("holds a zone chip apart from the level chips it crowds", () => {
+    // A stop, a target and a band all inside a few units of price of each
+    // other: without a shared layout pass the zone chip lands on a level chip.
+    const geometry = computeChartGeometry({
+      ...base,
+      entryPrice: 100,
+      stopPrice: 99.5,
+      targetPrice: 100.5,
+      markPrice: 100.1,
+      zones: [
+        {
+          key: "z",
+          label: "projected",
+          priceLow: 99.9,
+          priceHigh: 100.2,
+          tone: "plan",
+          register: "hypothetical",
+        },
+      ],
+    });
+    const ys = [
+      ...geometry!.gutterTags.map((tag) => tag.labelY),
+      ...geometry!.zones.map((zone) => zone.labelY),
+    ].sort((left, right) => left - right);
+    for (let index = 1; index < ys.length; index += 1) {
+      expect(ys[index]! - ys[index - 1]!).toBeGreaterThanOrEqual(
+        GUTTER_LABEL_MIN_SEPARATION - 1e-6,
+      );
+    }
+  });
+
+  it("leaves the gutter exactly as it was when no zone is passed", () => {
+    const withoutZones = computeChartGeometry({ ...base, entryPrice: 100, markPrice: 100.4 });
+    const withEmptyZones = computeChartGeometry({
+      ...base,
+      entryPrice: 100,
+      markPrice: 100.4,
+      zones: [],
+    });
+    expect(withEmptyZones!.zones).toEqual([]);
+    expect(withEmptyZones!.gutterTags).toEqual(withoutZones!.gutterTags);
+  });
+});
+
+describe("computeChartGeometry past-marker labels", () => {
+  const candles = [
+    { openTime: 1_000, open: 100, high: 102, low: 98, close: 100 },
+    { openTime: 2_000, open: 100, high: 102, low: 98, close: 100 },
+  ];
+
+  it("carries the timeline's own sentence through to the tick", () => {
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+      nowMillis: 2_500,
+      pastMarkers: [
+        { key: "a", kind: "wake", at: 1_500, label: "A level it was watching was reached" },
+        { key: "b", kind: "journal", at: 1_800 },
+      ],
+    });
+    expect(geometry!.pastMarkers[0]!.label).toBe("A level it was watching was reached");
+    // Absent rather than empty: a tick with no sentence draws no tooltip.
+    expect(geometry!.pastMarkers[1]!.label).toBeUndefined();
+  });
+});
+
+describe("clusterConditions and the hypothetical register", () => {
+  it("carries the representative's caption and register through a cluster", () => {
+    const clustered = clusterConditions(
+      [
+        {
+          price: 100,
+          direction: "above",
+          met: false,
+          label: "The 5m fade",
+          register: "hypothetical",
+        },
+        {
+          price: 100.5,
+          direction: "above",
+          met: false,
+          label: "The 5m fade",
+          register: "hypothetical",
+        },
+      ],
+      2,
+      99,
+    );
+    expect(clustered).toHaveLength(1);
+    expect(clustered[0]).toMatchObject({
+      label: "The 5m fade",
+      register: "hypothetical",
+      count: 2,
+    });
+  });
+
+  it("never merges an armed watch with a claimed level", () => {
+    // A few cents apart and the same direction, so only the register keeps
+    // them apart. Merged, one chip would state one register about both.
+    const clustered = clusterConditions(
+      [
+        { price: 100, direction: "above", met: false, id: "watch-1" },
+        {
+          price: 100.2,
+          direction: "above",
+          met: false,
+          label: "The 5m fade",
+          register: "hypothetical",
+        },
+      ],
+      2,
+      99,
+    );
+    expect(clustered).toHaveLength(2);
+    expect(clustered.map((c) => c.register)).toEqual([undefined, "hypothetical"]);
+    expect(clustered[0]!.id).toBe("watch-1");
+  });
+
+  it("draws a claimed entry level as a chip that says which thesis it belongs to", () => {
+    const geometry = computeChartGeometry({
+      candles: [
+        { openTime: 1_000, open: 100, high: 102, low: 98, close: 100 },
+        { openTime: 2_000, open: 100, high: 102, low: 98, close: 100 },
+      ],
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 100,
+      conditions: [
+        {
+          price: 101,
+          direction: "above",
+          met: false,
+          label: "The 5m fade",
+          register: "hypothetical",
+        },
+      ],
+    });
+    const chip = geometry!.gutterTags.find((tag) => tag.kind === "condition_above");
+    expect(chip).toMatchObject({ label: "The 5m fade", register: "hypothetical" });
   });
 });

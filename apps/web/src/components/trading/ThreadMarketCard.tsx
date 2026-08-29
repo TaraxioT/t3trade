@@ -27,7 +27,12 @@
  *
  * @module ThreadMarketCard
  */
-import type { EnvironmentId, OrchestrationTradingMission, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationTradingMission,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useCallback } from "react";
 
@@ -53,10 +58,13 @@ function UnboundMarketBody({
   environmentId,
   asset,
   missions,
+  threadRef,
 }: {
   environmentId: EnvironmentId;
   asset: string;
   missions: ReadonlyArray<OrchestrationTradingMission>;
+  /** The thread this card is docked in, for the chart's chat affordances. */
+  threadRef: ScopedThreadRef;
 }) {
   const account = useTradingAccountView(environmentId);
   const accounts = account.data?.accounts ?? [];
@@ -80,6 +88,9 @@ function UnboundMarketBody({
         // The armed watch would land in the alert list on the trade home, one
         // surface away from the chart that armed it.
         armable={false}
+        // This chart IS in a conversation, so the validation badge and its
+        // paper markers can ask it questions.
+        threadRef={threadRef}
       />
       {account.error === null ? null : (
         <p className="px-1 text-xs text-destructive">{account.error}</p>
@@ -243,7 +254,12 @@ export function ThreadMarketCard({
       {isOpen ? (
         <div className={cn("max-h-[46vh] overflow-y-auto pt-1")}>
           {mission === null ? (
-            <UnboundMarketBody environmentId={environmentId} asset={asset} missions={missions} />
+            <UnboundMarketBody
+              environmentId={environmentId}
+              asset={asset}
+              missions={missions}
+              threadRef={{ environmentId, threadId }}
+            />
           ) : (
             <div className="flex flex-col gap-3">
               {/* One chart, of the market the switcher selected. */}
