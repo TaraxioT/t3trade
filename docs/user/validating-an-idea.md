@@ -69,6 +69,17 @@ week.
 Ask for any of these in plain words, or ask "what am I validating?" to see
 everything currently running.
 
+## Keeping the history
+
+A validation on its own is one measurement. To keep the whole arc of an idea -
+its versions, every backtest against each one, and every validation that has run
+on it - save it as an idea first and validate that. See
+[Developing an idea](developing-an-idea.md).
+
+Saving also buys the one exception to the one-per-market-and-timeframe rule: a
+revised version of the same idea supersedes its own earlier run rather than
+being refused.
+
 ## Trading a validated idea
 
 Nothing is automatic. If an idea holds up and you want to trade it, say so:
