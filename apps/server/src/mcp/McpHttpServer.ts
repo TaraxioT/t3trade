@@ -465,7 +465,7 @@ const McpTransportLive = McpServer.layerHttp({
 
 /**
  * The trading-only transport. A trading session pays for every tool definition
- * on its list on every API call; this endpoint lists the seven trading tools
+ * on its list on every API call; this endpoint lists the nine trading tools
  * and nothing else, so the fifteen preview tools stop riding trading floors.
  * `McpSessionRegistry` hands trading threads this endpoint's URL.
  */

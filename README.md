@@ -111,9 +111,14 @@ Supported agent providers (install and log in to at least one):
 | Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `agent login`         | coding only      |
 | Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok login`          | coding only      |
 
-Without a signer key, T3 Trade runs in **read-only mode**. You can create
-missions, watch markets, and review the agent's proposed actions, but T3 Trade
-will not sign or submit orders.
+Without a signer key, T3 Trade runs in **research mode**. Charts, the
+watchlist, price and metric alerts, backtests, forward validations, missions and
+their wakes all read public market data and work exactly as they do with a key.
+Only signing refuses, and it refuses in words: the order ticket previews the
+book and says the order would be refused, position-scoped alerts are refused
+when you arm them rather than armed and left silent, and a mission is told on
+every wake that no account is attached. See
+[Research mode](docs/user/research-mode.md).
 
 ## The interim signer key
 
@@ -126,8 +131,8 @@ you provide. The presence of this key enables order execution:
   override the base directory with `T3TRADE_HOME` or set
   `T3_TRADES_INTERIM_SIGNER_KEY`. The dev server, worktrees, and packaged
   desktop app all use this location.
-- **With the key, the server can place testnet orders. Without the key, the
-  server is read-only.** There is no additional execution flag.
+- **With the key, the server can place testnet orders. Without the key,
+  everything but signing still works.** There is no additional execution flag.
 - The key never appears in logs, reports, or the database, and must never be
   committed. Use a testnet-funded key only.
 
