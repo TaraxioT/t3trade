@@ -15,6 +15,8 @@ import {
   THESIS_MAX_PREDICATES,
   thesisEntryPriceLevels,
   thesisIndicators,
+  thesisMetrics,
+  thesisReadsFunding,
   validateThesis,
   type TradingThesis,
 } from "./thesis.ts";
@@ -307,5 +309,139 @@ describe("thesisEntryPriceLevels", () => {
       right: { source: "constant", value: 3_900 },
     };
     expect(thesisEntryPriceLevels(thesis([predicate, predicate]))).toHaveLength(1);
+  });
+});
+
+describe("the after clause", () => {
+  const sequenced = (after: TradingThesis["after"]): TradingThesis => ({
+    ...meanReversion,
+    ...(after === undefined ? {} : { after }),
+  });
+
+  const dip: TradingThesis["after"] = {
+    condition: {
+      predicates: [
+        {
+          left: { source: "metric", metric: "funding_rate_8h" },
+          comparator: "below",
+          right: { source: "constant", value: 0 },
+        },
+      ],
+    },
+    withinBars: 12,
+  };
+
+  it("accepts a bounded antecedent and reads it as a leading clause", () => {
+    const thesis = sequenced(dip);
+    expect(validateThesis(thesis)).toBeNull();
+    expect(describeThesis(thesis)).toBe(
+      "Buy ETH 15m when after 8h funding is below 0, within 12 bars, " +
+        "RSI(14) is below 30 and price is above EMA(50)",
+    );
+  });
+
+  it("refuses an antecedent with no comparisons in it", () => {
+    expect(sequenced({ condition: { predicates: [] }, withinBars: 4 })).toBeDefined();
+    expect(validateThesis(sequenced({ condition: { predicates: [] }, withinBars: 4 }))).toBe(
+      "after: name at least one comparison",
+    );
+  });
+
+  it("bounds the reach at both ends", () => {
+    for (const withinBars of [0, 101, 2.5]) {
+      const reason = validateThesis(sequenced({ ...dip, withinBars }));
+      expect(reason, `withinBars ${withinBars} must refuse`).toContain("after: withinBars");
+      expect(reason).toContain("1 to 100");
+    }
+    expect(validateThesis(sequenced({ ...dip, withinBars: 1 }))).toBeNull();
+    expect(validateThesis(sequenced({ ...dip, withinBars: 100 }))).toBeNull();
+  });
+
+  it("holds the antecedent to the same predicate cap as any other condition", () => {
+    const predicate = {
+      left: { source: "price" },
+      comparator: "above",
+      right: { source: "constant", value: 1 },
+    } as const;
+    const reason = validateThesis(
+      sequenced({
+        condition: {
+          predicates: Array.from({ length: THESIS_MAX_PREDICATES + 1 }, () => predicate),
+        },
+        withinBars: 4,
+      }),
+    );
+    expect(reason).toContain("after: 5 comparisons");
+  });
+
+  it("computes the antecedent's indicators too", () => {
+    const thesis = sequenced({
+      condition: {
+        predicates: [
+          {
+            left: { source: "price" },
+            comparator: "below",
+            right: { source: "indicator", indicator: "sma", period: 200 },
+          },
+        ],
+      },
+      withinBars: 5,
+    });
+    // Without this the antecedent would read `undefined` on every bar and the
+    // entry would never fire, silently.
+    expect(thesisIndicators(thesis)).toContainEqual({ kind: "sma", period: 200 });
+  });
+});
+
+describe("metric operands", () => {
+  const reading = (metric: "funding_rate_8h" | "volume" | "volume_ratio"): TradingThesis => ({
+    ...meanReversion,
+    entry: {
+      predicates: [
+        {
+          left: { source: "metric", metric },
+          comparator: "above",
+          right: { source: "constant", value: 1 },
+        },
+      ],
+    },
+  });
+
+  it("accepts every metric the archive can serve", () => {
+    for (const metric of ["funding_rate_8h", "volume", "volume_ratio"] as const) {
+      expect(validateThesis(reading(metric)), metric).toBeNull();
+    }
+  });
+
+  it("reports which metrics a thesis reads, across every clause", () => {
+    expect(thesisMetrics(reading("volume_ratio"))).toEqual(["volume_ratio"]);
+    expect(thesisReadsFunding(reading("funding_rate_8h"))).toBe(true);
+    expect(thesisReadsFunding(reading("volume"))).toBe(false);
+    expect(thesisReadsFunding(meanReversion)).toBe(false);
+  });
+
+  it("refuses a funding rule on a market the archive does not fund", () => {
+    const thesis = reading("funding_rate_8h");
+    // Nothing changes while the caller has no archive to ask.
+    expect(validateThesis(thesis)).toBeNull();
+    expect(validateThesis(thesis, { fundingArchived: true })).toBeNull();
+
+    const reason = validateThesis(thesis, { fundingArchived: false });
+    expect(reason).toContain("no funding history for ETH");
+    // The refusal exists so zero trades never reads as "the idea does not work".
+    expect(reason).toContain("would read nothing on every bar");
+  });
+
+  it("does not refuse a non-funding thesis on an unfunded market", () => {
+    expect(validateThesis(reading("volume"), { fundingArchived: false })).toBeNull();
+    expect(validateThesis(meanReversion, { fundingArchived: false })).toBeNull();
+  });
+
+  it("says each metric in the words a card shows", () => {
+    expect(describeCondition(reading("funding_rate_8h").entry)).toBe("8h funding is above 1");
+    expect(describeCondition(reading("volume").entry)).toBe("bar volume is above 1");
+    expect(describeCondition(reading("volume_ratio").entry)).toBe(
+      "volume vs its 20-bar pace is above 1",
+    );
   });
 });

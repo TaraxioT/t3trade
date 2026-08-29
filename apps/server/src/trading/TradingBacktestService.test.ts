@@ -197,3 +197,54 @@ describe("coarserIntervals", () => {
     expect(coarserIntervals("1d")).toEqual([]);
   });
 });
+
+describe("a funding rule on an unfunded market", () => {
+  const fundingThesis: TradingThesis = {
+    ...thesis,
+    entry: {
+      predicates: [
+        {
+          left: { source: "metric", metric: "funding_rate_8h" },
+          comparator: "below",
+          right: { source: "constant", value: 0 },
+        },
+      ],
+    },
+  };
+
+  it.effect("refuses rather than reporting zero trades", () =>
+    Effect.gen(function* () {
+      // Zero trades would read as "the idea does not work". It was never
+      // testable here, and the refusal is the honest answer.
+      const outcome = yield* makeTradingBacktestService(stubArchive({})).run({
+        thesis: fundingThesis,
+        now: NOW,
+      });
+      expect(outcome.status).toBe("refused");
+      if (outcome.status !== "refused") return;
+      expect(outcome.reason).toBe("thesis_invalid");
+      expect(outcome.detail).toContain("no funding history for ETH");
+    }),
+  );
+
+  it.effect("runs it when the archive does fund the market", () =>
+    Effect.gen(function* () {
+      const outcome = yield* makeTradingBacktestService(
+        stubArchive({
+          fundingInWindow: () =>
+            Effect.succeed(
+              Array.from({ length: 20 }, (_, i) => ({
+                coin: "ETH",
+                time: NOW - (20 - i) * 60 * MINUTE,
+                fundingRate: -0.00001,
+                premium: 0,
+              })),
+            ),
+        }),
+      ).run({ thesis: fundingThesis, now: NOW });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+      expect(outcome.report.coverage.fundingServed).toBe(true);
+    }),
+  );
+});

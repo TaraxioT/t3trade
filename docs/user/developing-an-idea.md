@@ -43,6 +43,34 @@ can see whether the refinements are actually improving anything.
 Backtests you run without saving an idea first are kept too. They just are not
 attached to anything, which is fine for a question you asked once.
 
+## Say more than a price
+
+An idea can compare more than the price and the usual indicators.
+
+> Buy when funding has gone negative and the bar traded twice its recent
+> volume.
+
+Funding is the 8h rate the exchange charged at the moment the bar closed, with
+its sign, and volume can be read either as the bar's own volume or as a ratio
+against the previous twenty bars. Two means the bar traded at twice its recent
+pace.
+
+Ideas often have an order to them, and that can be said directly:
+
+> After funding flips negative, buy the first close above 3,900, as long as it
+> happens within twelve bars.
+
+The "after" part is checked on the closed bars before the entry, never on the
+entry bar itself. If the thing you were waiting for and the entry happen on the
+same bar, that is not a sequence, and it will not fire.
+
+Two things to know. Funding history is only recorded for some markets; asking
+for a funding rule on a market with none is refused rather than quietly
+returning no trades, because no trades would read as "the idea does not work".
+And the "after" window reaches back at most a hundred bars, which on any
+interval is long enough that further back stops being a sequence and starts
+being a market regime you should say outright.
+
 ## Revise it
 
 When the numbers suggest a change, revise rather than starting over:

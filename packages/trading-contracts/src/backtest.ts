@@ -61,6 +61,9 @@ import {
   BacktestInterval,
   THESIS_MAX_HOLD_BARS,
   THESIS_MAX_PREDICATES,
+  THESIS_MAX_WITHIN_BARS,
+  THESIS_VOLUME_RATIO_BARS,
+  ThesisMetricName,
   thesisIndicators,
   TradingThesis,
   type ThesisCondition,
@@ -325,9 +328,22 @@ export function summarizeTrades(input: {
 export function makeThesisSignals(input: {
   readonly thesis: TradingThesis;
   readonly candles: ReadonlyArray<MarketCandle>;
+  /**
+   * The archive's hourly funding rows for this market, oldest first. Only a
+   * `funding_rate_8h` operand reads them; every other thesis ignores the
+   * argument entirely, and omitting it leaves that operand undefined rather
+   * than guessing a rate.
+   */
+  readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
 }): {
   /** Whether a condition holds on the closed bar at `index`. */
   readonly conditionHolds: (condition: ThesisCondition, index: number) => boolean;
+  /**
+   * Whether the ENTRY fires on the closed bar at `index` - the entry condition
+   * plus the `after` clause when the thesis carries one. This, not
+   * `conditionHolds(thesis.entry, ...)`, is what both engines ask.
+   */
+  readonly entryFires: (index: number) => boolean;
   /**
    * A stop or target distance in price, measured from readings at the SIGNAL
    * bar. `undefined` means a reading the distance needs is not defined there
@@ -341,6 +357,54 @@ export function makeThesisSignals(input: {
   ) => number | undefined;
 } {
   const { thesis, candles } = input;
+  const funding = input.funding ?? [];
+
+  // -- funding, as a stepwise lookup ------------------------------------------
+  //
+  // The rate in force at an instant is the one from the most recent row at or
+  // before it. The rows are hourly and the bars are usually shorter, so many
+  // bars share a rate; that is the point, and interpolating between rows would
+  // invent a number the exchange never quoted. Rows before the first one are
+  // undefined rather than zero: "no rate was recorded yet" and "the rate was
+  // zero" are different facts and only one of them should fire a rule.
+  const fundingTimesForRead = funding.map((row) => row.time);
+  const fundingRateAt = (time: number): number | undefined => {
+    let lo = 0;
+    let hi = fundingTimesForRead.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((fundingTimesForRead[mid] as number) <= time) lo = mid + 1;
+      else hi = mid;
+    }
+    // `lo` is now one past the last row at or before `time`.
+    return lo === 0 ? undefined : funding[lo - 1]?.fundingRate;
+  };
+
+  // -- volume pace, as a rolling prefix sum -----------------------------------
+  //
+  // Built once so `volume_ratio` costs a subtraction per read rather than a
+  // twenty-bar loop, which matters when a sweep walks the same window twelve
+  // times.
+  const volumePrefix: Array<number> = new Array(candles.length + 1).fill(0);
+  for (let i = 0; i < candles.length; i += 1) {
+    volumePrefix[i + 1] = (volumePrefix[i] as number) + (candles[i]?.volume ?? 0);
+  }
+  /**
+   * The bar's volume against the mean of the {@link THESIS_VOLUME_RATIO_BARS}
+   * bars BEFORE it. Undefined until that many priors exist, and undefined when
+   * they sum to zero - a ratio against no trading is not a large number, it is
+   * not a number.
+   */
+  const volumeRatioAt = (index: number): number | undefined => {
+    if (index < THESIS_VOLUME_RATIO_BARS) return undefined;
+    const bar = candles[index];
+    if (bar === undefined) return undefined;
+    const priorSum =
+      (volumePrefix[index] as number) - (volumePrefix[index - THESIS_VOLUME_RATIO_BARS] as number);
+    if (!(priorSum > 0)) return undefined;
+    return bar.volume / (priorSum / THESIS_VOLUME_RATIO_BARS);
+  };
+
   // -- indicator series, computed once over the whole run ---------------------
   const series = new Map<string, ReadonlyArray<IndicatorPoint | undefined>>();
   for (const request of thesisIndicators(thesis)) {
@@ -380,6 +444,23 @@ export function makeThesisSignals(input: {
         });
         return componentOf(points[index], operand.component);
       }
+      case "metric": {
+        const bar = candles[index];
+        if (bar === undefined) return undefined;
+        switch (operand.metric) {
+          case "funding_rate_8h": {
+            // The archive stores the HOURLY rate - `fundingUsdOver` sums those
+            // rows directly to price a hold. The watch metric, and therefore
+            // this operand, is the 8h rate, so eight hourly hours of it.
+            const hourly = fundingRateAt(bar.closeTime);
+            return hourly === undefined ? undefined : hourly * 8;
+          }
+          case "volume":
+            return bar.volume;
+          case "volume_ratio":
+            return volumeRatioAt(index);
+        }
+      }
     }
   };
 
@@ -416,6 +497,26 @@ export function makeThesisSignals(input: {
       : condition.predicates.every((predicate) => predicateHolds(predicate, index));
 
   /**
+   * The entry, with its `after` clause applied.
+   *
+   * The antecedent window is `[index - withinBars, index - 1]`: closed bars
+   * strictly BEFORE the entry bar, clipped at the start of the series. The
+   * entry bar is excluded on purpose (see {@link ThesisSequence}), and because
+   * the window only ever looks backwards, adding an `after` clause cannot make
+   * a signal depend on a bar the engine had not reached yet.
+   */
+  const entryFires = (index: number): boolean => {
+    if (!conditionHolds(thesis.entry, index)) return false;
+    const after = thesis.after;
+    if (after === undefined) return true;
+    const earliest = Math.max(0, index - after.withinBars);
+    for (let prior = index - 1; prior >= earliest; prior -= 1) {
+      if (conditionHolds(after.condition, prior)) return true;
+    }
+    return false;
+  };
+
+  /**
    * A distance in price, measured from readings at the SIGNAL bar. Never at
    * the fill bar: at the moment of the fill that bar has not closed.
    */
@@ -442,7 +543,7 @@ export function makeThesisSignals(input: {
     }
   };
 
-  return { conditionHolds, distanceInPrice };
+  return { conditionHolds, entryFires, distanceInPrice };
 }
 
 /**
@@ -468,7 +569,11 @@ export function runBacktest(input: {
   const long = thesis.side === "long";
   const bars = candles.length;
 
-  const { conditionHolds, distanceInPrice } = makeThesisSignals({ thesis, candles });
+  const { conditionHolds, entryFires, distanceInPrice } = makeThesisSignals({
+    thesis,
+    candles,
+    funding,
+  });
 
   // -- funding, as a prefix sum so a hold costs one subtraction ---------------
   const fundingTimes = funding.map((row) => row.time);
@@ -516,7 +621,7 @@ export function runBacktest(input: {
   const entrySignal: Array<boolean> = new Array(bars).fill(false);
   const exitSignal: Array<boolean> = new Array(bars).fill(false);
   for (let index = 0; index < bars; index += 1) {
-    entrySignal[index] = conditionHolds(thesis.entry, index);
+    entrySignal[index] = entryFires(index);
     if (thesis.exits.opposite !== undefined) {
       exitSignal[index] = conditionHolds(thesis.exits.opposite, index);
     }
@@ -822,6 +927,8 @@ export function renderTradingBacktestMenu(): string {
     "comparator = crosses_above crosses_below above below; a cross means the relation holds on this closed bar and did not on the one before",
     "exits, at least one = stop/target {basis:percent, value} | {basis:atr, multiple, period?}; target also {basis:r, multiple}, which needs a stop; " +
       `maxHoldBars up to ${THESIS_MAX_HOLD_BARS}; opposite = a condition`,
+    `metric operand = {source:metric, metric: ${ThesisMetricName.literals.join("|")}}; funding_rate_8h is the archived 8h rate at the bar close (0.0001 = 1bp/8h, signed), volume_ratio is the bar against its previous ${THESIS_VOLUME_RATIO_BARS} bars`,
+    `after = {condition, withinBars 1-${THESIS_MAX_WITHIN_BARS}} makes the entry fire only when the condition matched within that many CLOSED bars before it; the entry bar never counts as its own antecedent, and after cannot nest`,
     `lookbackDays defaults to everything archived; ${BACKTEST_MAX_BARS.toLocaleString("en-US")} bars a run, so ask a long 1m window on a coarser interval`,
     `signals read closed bars and fill at the next bar open; every trade pays ${BACKTEST_TAKER_FEE_BPS_PER_SIDE} bps taker a side plus crossing plus archived funding`,
     `under ${MIN_REPLAY_SETUPS} trades there is no verdict, only the numbers; this is research and never places an order`,

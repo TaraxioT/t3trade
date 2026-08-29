@@ -49,6 +49,42 @@ import { TradingMarket } from "./primitives.ts";
 export const BacktestInterval = Schema.Literals(["1m", "3m", "5m", "15m", "1h", "4h", "1d"]);
 export type BacktestInterval = typeof BacktestInterval.Type;
 
+/**
+ * The archive-backed numbers a thesis can compare against, beyond the bar's
+ * own price and the indicator library.
+ *
+ * Deliberately short, and bounded by what the archive actually records. Open
+ * interest and the premium index are not here because the archive stores no
+ * history of either, and an operand the archive cannot serve is a rule that
+ * silently never fires.
+ *
+ * - `funding_rate_8h` is the archived funding rate in force at the bar's close
+ *   time, held STEPWISE between the hourly rows the archive writes: the rate
+ *   from the most recent row at or before the close, never interpolated
+ *   towards the next one, because the rate genuinely is a step. Expressed as
+ *   the 8h rate (0.0001 = 1bp/8h) and signed, which is the same number and the
+ *   same units the `funding_rate_8h` watch metric compares against, so a
+ *   threshold moves between a watch and a thesis unchanged.
+ * - `volume` is the bar's own traded volume, in the units the archive stores.
+ * - `volume_ratio` is the bar's volume over the simple mean of the previous
+ *   {@link THESIS_VOLUME_RATIO_BARS} closed bars' volumes. 2.0 means the bar
+ *   traded twice its recent pace. Undefined until that many priors exist, and
+ *   undefined when they sum to zero.
+ */
+export const ThesisMetricName = Schema.Literals(["funding_rate_8h", "volume", "volume_ratio"]);
+export type ThesisMetricName = typeof ThesisMetricName.Type;
+
+/**
+ * Bars the `volume_ratio` mean is taken over, counting backwards from the bar
+ * before the one being read.
+ *
+ * Fixed rather than a parameter, and fixed at the number the `volume_ratio`
+ * WATCH metric already averages over, so "volume is twice its recent pace"
+ * means one thing in this fork rather than two. Making it settable would also
+ * make every thesis that used it incomparable with every other one.
+ */
+export const THESIS_VOLUME_RATIO_BARS = 20;
+
 /** Which price of a bar an operand reads. Defaults to the close. */
 export const ThesisPriceField = Schema.Literals(["open", "high", "low", "close"]);
 export type ThesisPriceField = typeof ThesisPriceField.Type;
@@ -73,6 +109,10 @@ export const ThesisOperand = Schema.Union([
     /** The kind's own default when absent. For `macd` this is the fast leg. */
     period: Schema.optional(Schema.Number),
     component: Schema.optional(IndicatorComponent),
+  }),
+  Schema.Struct({
+    source: Schema.Literal("metric"),
+    metric: ThesisMetricName,
   }),
   Schema.Struct({
     source: Schema.Literal("constant"),
@@ -167,11 +207,44 @@ export type ThesisExits = typeof ThesisExits.Type;
 /** The longest hold a thesis may name, in bars. */
 export const THESIS_MAX_HOLD_BARS = 5_000;
 
+/**
+ * "X, but only if Y happened first."
+ *
+ * The one thing the flat predicate list could not say. `condition` is the
+ * antecedent and `withinBars` is how recently it has to have matched, counted
+ * in closed bars ending at the bar BEFORE the entry bar. The entry bar itself
+ * never counts as its own antecedent: a rule that fires because the thing it
+ * was waiting for happened on the same bar is just a two-predicate `all`, and
+ * writing it as a sequence would say something the data does not.
+ *
+ * No nesting: an antecedent is a flat condition like any other and cannot
+ * carry its own `after`. Two-step sequences are the shape people actually
+ * hypothesize, three-step ones are usually a curve being fitted, and the cap
+ * is the honest place to stop.
+ */
+export const ThesisSequence = Schema.Struct({
+  condition: ThesisCondition,
+  /** Closed bars before the entry bar the antecedent may have matched on. */
+  withinBars: Schema.Number,
+});
+export type ThesisSequence = typeof ThesisSequence.Type;
+
+/**
+ * The longest lookback an antecedent may be given.
+ *
+ * A hundred bars is a long memory on any interval this engine runs, and past
+ * it "Y happened first" stops being a sequence and becomes a regime the thesis
+ * should name directly.
+ */
+export const THESIS_MAX_WITHIN_BARS = 100;
+
 export const TradingThesis = Schema.Struct({
   market: TradingMarket,
   interval: BacktestInterval,
   side: Schema.Literals(["long", "short"]),
   entry: ThesisCondition,
+  /** When present, the entry only fires on a bar this antecedent preceded. */
+  after: Schema.optional(ThesisSequence),
   exits: ThesisExits,
 });
 export type TradingThesis = typeof TradingThesis.Type;
@@ -235,6 +308,33 @@ export function thesisEntryPriceLevels(
   return levels;
 }
 
+/**
+ * Every metric a thesis reads, across the entry, the antecedent and the exit
+ * condition, deduplicated.
+ *
+ * The callers that matter are the ones deciding what a run has to load and
+ * what it can refuse before loading anything: a funding operand needs archived
+ * funding rows, and `volume_ratio` needs a warm-up the price rules do not.
+ */
+export const thesisMetrics = (thesis: TradingThesis): ReadonlyArray<ThesisMetricName> => {
+  const found = new Set<ThesisMetricName>();
+  const addCondition = (condition: ThesisCondition | undefined): void => {
+    for (const predicate of condition?.predicates ?? []) {
+      for (const operand of [predicate.left, predicate.right]) {
+        if (operand.source === "metric") found.add(operand.metric);
+      }
+    }
+  };
+  addCondition(thesis.entry);
+  addCondition(thesis.after?.condition);
+  addCondition(thesis.exits.opposite);
+  return [...found];
+};
+
+/** Whether any rule in the thesis reads the archive's funding history. */
+export const thesisReadsFunding = (thesis: TradingThesis): boolean =>
+  thesisMetrics(thesis).includes("funding_rate_8h");
+
 /** Every distinct indicator a thesis needs computed, deduplicated. */
 export const thesisIndicators = (thesis: TradingThesis): ReadonlyArray<IndicatorRequest> => {
   const requests = new Map<string, IndicatorRequest>();
@@ -249,6 +349,7 @@ export const thesisIndicators = (thesis: TradingThesis): ReadonlyArray<Indicator
     }
   };
   addCondition(thesis.entry);
+  addCondition(thesis.after?.condition);
   addCondition(thesis.exits.opposite);
   for (const distance of [thesis.exits.stop, thesis.exits.target]) {
     if (distance?.basis === "atr") {
@@ -296,12 +397,48 @@ const validateCondition = (condition: ThesisCondition, where: string): string | 
 };
 
 /**
+ * What the caller knows about the archive that the thesis itself cannot.
+ *
+ * Only the funding question so far. A funding operand on a market the archive
+ * holds no funding for is not a grammar error, it is a rule that would read
+ * `undefined` on every bar and therefore never fire, and a thesis that can
+ * never fire should refuse loudly rather than come back with zero trades and
+ * let the user conclude the idea was wrong. Optional because the grammar check
+ * is also run in places that have no archive to ask - the menus and the
+ * contract tests - and there it stays a pure check of the shape.
+ */
+export interface ThesisArchiveContext {
+  /** True when the archive holds funding rows for this thesis's market. */
+  readonly fundingArchived?: boolean;
+}
+
+/**
  * Everything the schema deliberately does not check, as one refusal string the
  * model can act on. `null` means the thesis is testable as written.
  */
-export function validateThesis(thesis: TradingThesis): string | null {
+export function validateThesis(
+  thesis: TradingThesis,
+  archive: ThesisArchiveContext = {},
+): string | null {
   const entry = validateCondition(thesis.entry, "entry");
   if (entry !== null) return entry;
+
+  const after = thesis.after;
+  if (after !== undefined) {
+    const antecedent = validateCondition(after.condition, "after");
+    if (antecedent !== null) return antecedent;
+    if (
+      !Number.isInteger(after.withinBars) ||
+      after.withinBars < 1 ||
+      after.withinBars > THESIS_MAX_WITHIN_BARS
+    ) {
+      return `after: withinBars is a whole number of bars from 1 to ${THESIS_MAX_WITHIN_BARS}`;
+    }
+  }
+
+  if (archive.fundingArchived === false && thesisReadsFunding(thesis)) {
+    return `funding_rate_8h: the archive holds no funding history for ${thesis.market}, so this rule would read nothing on every bar. Test it on a market the archive funds, or drop the funding comparison`;
+  }
 
   const exits = thesis.exits;
   if (exits.opposite !== undefined) {
@@ -374,6 +511,12 @@ const COMPONENT_PROSE: Readonly<Record<IndicatorComponent, string>> = {
   lower: " lower band",
 };
 
+const METRIC_PROSE: Readonly<Record<ThesisMetricName, string>> = {
+  funding_rate_8h: "8h funding",
+  volume: "bar volume",
+  volume_ratio: "volume vs its 20-bar pace",
+};
+
 const INDICATOR_PROSE: Readonly<Record<IndicatorKind, string>> = {
   ema: "EMA",
   sma: "SMA",
@@ -391,6 +534,8 @@ export function describeOperand(operand: ThesisOperand): string {
       return operand.field === undefined || operand.field === "close"
         ? "price"
         : `bar ${operand.field}`;
+    case "metric":
+      return METRIC_PROSE[operand.metric];
     case "constant":
       return String(operand.value);
     case "indicator": {
@@ -435,8 +580,17 @@ export function describeExits(exits: ThesisExits): ReadonlyArray<string> {
   return lines;
 }
 
+/**
+ * The antecedent as a leading clause: "after 8h funding is below 0, within 12
+ * bars". Reads before the entry it qualifies, the way the user said it.
+ */
+export function describeSequence(sequence: ThesisSequence): string {
+  return `after ${describeCondition(sequence.condition)}, within ${sequence.withinBars} bars`;
+}
+
 /** The whole thesis in one line, for a card heading. */
 export function describeThesis(thesis: TradingThesis): string {
   const side = thesis.side === "long" ? "Buy" : "Sell";
-  return `${side} ${thesis.market} ${thesis.interval} when ${describeCondition(thesis.entry)}`;
+  const lead = thesis.after === undefined ? "" : `${describeSequence(thesis.after)}, `;
+  return `${side} ${thesis.market} ${thesis.interval} when ${lead}${describeCondition(thesis.entry)}`;
 }

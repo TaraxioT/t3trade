@@ -226,6 +226,16 @@ export const makeTradingBacktestService = (
           toT: servedToT ?? requestedToT,
         });
 
+        // The grammar passed above; this is the same check re-asked now that
+        // the archive has answered whether it funds this market at all. A
+        // funding rule with no funding history would read nothing on every bar
+        // and report zero trades, which the user would read as "the idea does
+        // not work" rather than "the data was never there".
+        const unfunded = validateThesis(thesis, { fundingArchived: funding.length > 0 });
+        if (unfunded !== null) {
+          return { status: "refused", reason: "thesis_invalid", detail: unfunded } as const;
+        }
+
         const book = yield* archive.bookHistory({
           coin: thesis.market,
           n: SLIPPAGE_SAMPLE_ROWS,
@@ -237,23 +247,25 @@ export const makeTradingBacktestService = (
           slippageSource: measured === null ? "assumed" : "archived_book",
         };
 
-        const { report } = runBacktest({
-          thesis,
+        const coverage = {
+          requestedFromT,
+          requestedToT,
+          servedFromT,
+          servedToT,
+          barsServed: candles.length,
+          gaps: coverageDetail.gaps,
+          recordingSince: coverageDetail.recordingSince,
+          fundingServed: funding.length > 0,
+        };
+        const runInput = {
           candles,
           funding,
           costs,
+          coverage,
           ...(notionalUsd === undefined ? {} : { notionalUsd }),
-          coverage: {
-            requestedFromT,
-            requestedToT,
-            servedFromT,
-            servedToT,
-            barsServed: candles.length,
-            gaps: coverageDetail.gaps,
-            recordingSince: coverageDetail.recordingSince,
-            fundingServed: funding.length > 0,
-          },
-        });
+        };
+
+        const { report } = runBacktest({ thesis, ...runInput });
 
         return {
           status: "ok",

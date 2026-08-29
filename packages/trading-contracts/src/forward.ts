@@ -64,7 +64,9 @@ import type { MarketCandle } from "./market.ts";
 import { MIN_REPLAY_SETUPS } from "./replay.ts";
 import {
   describeThesis,
+  THESIS_VOLUME_RATIO_BARS,
   thesisIndicators,
+  thesisMetrics,
   TradingThesis,
   type BacktestInterval,
 } from "./thesis.ts";
@@ -268,6 +270,13 @@ export function stepForward(input: {
   readonly notionalUsd: number;
   /** Identity for a position this bar opens. The caller supplies it. */
   readonly nextTradeId: string;
+  /**
+   * The archive's hourly funding rows covering the window, oldest first. Only
+   * a `funding_rate_8h` operand reads them, and it reads them through the same
+   * stepwise lookup the batch engine uses - which is the whole reason the
+   * rows are passed in here rather than looked up separately.
+   */
+  readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
 }): ForwardStep {
   const { thesis, candles, notionalUsd } = input;
   const index = candles.length - 1;
@@ -277,7 +286,11 @@ export function stepForward(input: {
   }
 
   const long = thesis.side === "long";
-  const signals = makeThesisSignals({ thesis, candles });
+  const signals = makeThesisSignals({
+    thesis,
+    candles,
+    ...(input.funding === undefined ? {} : { funding: input.funding }),
+  });
   let state = input.state;
   let entered: ForwardEntryEffect | null = null;
   let exited: ForwardExitEffect | null = null;
@@ -401,7 +414,7 @@ export function stepForward(input: {
   //    which is the batch engine's own resume rule, stated forward.
   const willBeFlat = state.open === null || state.pendingExitReason !== null;
   if (willBeFlat && state.pendingEntrySignalTime === null) {
-    if (signals.conditionHolds(thesis.entry, index)) {
+    if (signals.entryFires(index)) {
       state = { ...state, pendingEntrySignalTime: bar.openTime };
     }
   }
@@ -464,7 +477,15 @@ function settleAgainstBar(input: {
  * never should have existed.
  */
 export function forwardWarmupBars(thesis: TradingThesis): number {
-  return indicatorLookbackBars(thesisIndicators(thesis)) + 10;
+  // The antecedent has to be evaluable on every bar of its own window, so the
+  // reach is its lookback PLUS how far back the entry is allowed to look for
+  // it. `volume_ratio` carries a lookback the indicator library knows nothing
+  // about, and a thesis reading it on an under-warmed window would score the
+  // early bars as "no signal" rather than "not known yet".
+  const metrics = thesisMetrics(thesis);
+  const paceBars = metrics.includes("volume_ratio") ? THESIS_VOLUME_RATIO_BARS : 0;
+  const sequenceBars = thesis.after?.withinBars ?? 0;
+  return Math.max(indicatorLookbackBars(thesisIndicators(thesis)), paceBars) + sequenceBars + 10;
 }
 
 // ---------------------------------------------------------------------------
@@ -742,6 +763,7 @@ export function renderForwardMenu(): string {
     "actions: arm list pause resume end report; the last four take validationId",
     `durationHours 1 to ${MAX_VALIDATION_HOURS}; under ${MIN_REPLAY_SETUPS} paper trades there is no verdict, only the numbers`,
     "paper only: signals read closed bars and fill at the next bar open, costed like a backtest, and no order is ever placed",
+    "metric operands and an after clause evaluate here exactly as in the backtest, off the same archive",
     "to trade a validated idea, publish a plan and enter as normal with this record as context",
   ].join(" · ");
 }

@@ -72,7 +72,12 @@ import {
   type ValidationEventKind,
 } from "@t3tools/trading-contracts/forward";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
-import { describeThesis, validateThesis, TradingThesis } from "@t3tools/trading-contracts/thesis";
+import {
+  describeThesis,
+  thesisReadsFunding,
+  validateThesis,
+  TradingThesis,
+} from "@t3tools/trading-contracts/thesis";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { INTERVAL_MS, type ArchiveInterval } from "./archive/config.ts";
@@ -716,6 +721,19 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       if (rows.length === 0) return quiet;
 
       const candles = rows.map(toCandle);
+      // Only fetched when a rule actually reads it. A funding operand has to
+      // resolve through the SAME stepwise lookup the batch engine uses, or a
+      // validation would disagree with the backtest that armed it on the one
+      // thing the comparison exists to measure.
+      const signalFunding = thesisReadsFunding(validation.thesis)
+        ? yield* archive
+            .fundingInWindow({
+              coin: validation.asset,
+              fromT,
+              toT: now,
+            })
+            .pipe(Effect.mapError(sqlFail("advance.funding")))
+        : [];
       // Only bars that have closed. The archiver can store a forming bar, and
       // a rule read on one fires on numbers that are still moving.
       const closed = candles.filter((candle) => candle.closeTime <= now);
@@ -744,6 +762,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
           state,
           notionalUsd: validation.notionalUsd,
           nextTradeId: tradeId,
+          funding: signalFunding,
         });
 
         if (step.entered !== null) {
