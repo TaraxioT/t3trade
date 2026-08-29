@@ -1033,6 +1033,15 @@ export const WsOrchestrationListTradingAlertsRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationGetTradingValidationReportRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getTradingValidationReport,
+  {
+    payload: OrchestrationRpcSchemas.getTradingValidationReport.input,
+    success: OrchestrationRpcSchemas.getTradingValidationReport.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationAddTradingWatchlistEntryRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry,
   {
@@ -1289,6 +1298,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationCancelTradingWatchRpc,
   WsOrchestrationListTradingWatchesRpc,
   WsOrchestrationListTradingAlertsRpc,
+  WsOrchestrationGetTradingValidationReportRpc,
   WsOrchestrationAddTradingWatchlistEntryRpc,
   WsOrchestrationRemoveTradingWatchlistEntryRpc,
   WsOrchestrationListTradingWatchlistRpc,

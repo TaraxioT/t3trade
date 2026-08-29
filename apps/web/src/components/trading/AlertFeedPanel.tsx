@@ -14,8 +14,13 @@
  *
  * @module AlertFeedPanel
  */
-import type { EnvironmentId, TradingAccountWatch, TradingArmWatchInput } from "@t3tools/contracts";
-import { BellIcon, XIcon } from "lucide-react";
+import type {
+  EnvironmentId,
+  TradingAccountWatch,
+  TradingAlertEvent,
+  TradingArmWatchInput,
+} from "@t3tools/contracts";
+import { BellIcon, ChevronDownIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -30,7 +35,9 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { UniverseAssetSearch } from "./UniverseAssetSearch";
+import { ValidationReportCard } from "./ValidationReportCard";
 import { alertNotificationText, selectNewAlerts } from "./tradeHomePresentation";
+import { validationCardFromReport, type ValidationCard } from "./tradingValidation";
 import { describeControlFailure } from "./useMissionControls";
 
 /** The repeat cooldown the form arms when "repeat" is chosen: 5 minutes. */
@@ -231,6 +238,97 @@ function ArmedWatches({
 }
 
 /**
+ * One alert in the feed, expandable when there is a report behind it.
+ *
+ * A validation runs for a fortnight and ends with one line in this list. The
+ * whole report has been written into the alert's payload since the day
+ * validations shipped and no client could ask for it, so the delivery of two
+ * weeks of paper trading was a sentence. Expanding fetches it and draws the
+ * same card the chat draws.
+ *
+ * The fetch happens on the click rather than with the feed: a page of fifty
+ * alerts should not read fifty reports to render the handful anybody opens.
+ */
+function AlertRow({
+  alert,
+  environmentId,
+}: {
+  alert: TradingAlertEvent;
+  environmentId: EnvironmentId;
+}) {
+  const fetchReport = useAtomCommand(orchestrationEnvironment.getTradingValidationReport);
+  const [expanded, setExpanded] = useState(false);
+  const [card, setCard] = useState<ValidationCard | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const validationId = alert.validationId;
+
+  const toggle = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (!next || validationId === undefined || card !== null || isLoading) return;
+    setIsLoading(true);
+    setError(null);
+    void fetchReport({ environmentId, input: { validationId } }).then((result) => {
+      setIsLoading(false);
+      const failure = describeControlFailure(result);
+      if (failure !== null) {
+        setError(failure);
+        return;
+      }
+      if (result._tag !== "Success") return;
+      const report = result.value.report;
+      if (report === null) {
+        setError("That report is no longer available on this environment.");
+        return;
+      }
+      setCard(validationCardFromReport(report as unknown as Record<string, unknown>));
+    });
+  };
+
+  const firedLine = `${alert.market.asset} · ${new Date(alert.firedAt).toLocaleString()}`;
+
+  if (validationId === undefined) {
+    return (
+      <li className="flex flex-col gap-0.5 px-1 py-1.5">
+        <span className="text-sm text-foreground">{alert.summary}</span>
+        <span className="text-[11px] tabular-nums text-muted-foreground">{firedLine}</span>
+      </li>
+    );
+  }
+
+  return (
+    <li className="flex flex-col gap-0.5 px-1 py-1.5">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={toggle}
+        className="flex items-start gap-1.5 text-left"
+      >
+        <span className="mt-0.5 flex size-3.5 flex-none items-center justify-center text-muted-foreground">
+          {expanded ? (
+            <ChevronDownIcon className="size-3" />
+          ) : (
+            <ChevronRightIcon className="size-3" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm text-foreground">{alert.summary}</span>
+          <span className="block text-[11px] tabular-nums text-muted-foreground">{firedLine}</span>
+        </span>
+      </button>
+      {!expanded ? null : isLoading ? (
+        <p className="px-1 text-[11px] text-muted-foreground">Reading the report…</p>
+      ) : error !== null ? (
+        <p className="px-1 text-[11px] text-destructive">{error}</p>
+      ) : card === null ? null : (
+        <ValidationReportCard card={card} />
+      )}
+    </li>
+  );
+}
+
+/**
  * Raise an OS notification for each alert that arrives after the first read.
  * Desktop-only by feature detection; a web tab has no bridge and skips.
  */
@@ -301,12 +399,7 @@ export function AlertFeedPanel({
       ) : (
         <ul className="min-h-0 divide-y divide-border/40 overflow-y-auto">
           {alerts.map((alert) => (
-            <li key={alert.id} className="flex flex-col gap-0.5 px-1 py-1.5">
-              <span className="text-sm text-foreground">{alert.summary}</span>
-              <span className="text-[11px] tabular-nums text-muted-foreground">
-                {alert.market.asset} · {new Date(alert.firedAt).toLocaleString()}
-              </span>
-            </li>
+            <AlertRow key={alert.id} alert={alert} environmentId={environmentId} />
           ))}
         </ul>
       )}

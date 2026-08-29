@@ -101,6 +101,13 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-alerts",
       tag: ORCHESTRATION_WS_METHODS.listTradingAlerts,
     }),
+    // The report behind a validation-expiry alert. A command rather than a
+    // query atom because it is fetched on a click - a feed of fifty alerts
+    // should not read fifty reports to render the ones nobody opened.
+    getTradingValidationReport: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:validation-report",
+      tag: ORCHESTRATION_WS_METHODS.getTradingValidationReport,
+    }),
     // Watch + watchlist mutations. RPC commands rather than dispatched
     // orchestration commands for the same reason `reviseTradingPlan` is one:
     // the user needs the refusal reason on screen, not an acknowledgement.

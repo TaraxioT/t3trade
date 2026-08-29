@@ -65,6 +65,8 @@ import {
   TradingWatchListView,
   TradingListAlertsInput,
   TradingAlertFeedView,
+  TradingValidationReportInput,
+  TradingValidationReportView,
   TradingWatchlistMutationInput,
   TradingWatchlistMutationResult,
   TradingWatchlistView,
@@ -86,6 +88,7 @@ export const ORCHESTRATION_WS_METHODS = {
   cancelTradingWatch: "orchestration.cancelTradingWatch",
   listTradingWatches: "orchestration.listTradingWatches",
   listTradingAlerts: "orchestration.listTradingAlerts",
+  getTradingValidationReport: "orchestration.getTradingValidationReport",
   addTradingWatchlistEntry: "orchestration.addTradingWatchlistEntry",
   removeTradingWatchlistEntry: "orchestration.removeTradingWatchlistEntry",
   listTradingWatchlist: "orchestration.listTradingWatchlist",
@@ -1953,6 +1956,10 @@ export const OrchestrationRpcSchemas = {
   listTradingAlerts: {
     input: TradingListAlertsInput,
     output: TradingAlertFeedView,
+  },
+  getTradingValidationReport: {
+    input: TradingValidationReportInput,
+    output: TradingValidationReportView,
   },
   addTradingWatchlistEntry: {
     input: TradingWatchlistMutationInput,

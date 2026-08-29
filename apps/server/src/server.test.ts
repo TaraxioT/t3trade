@@ -124,6 +124,7 @@ import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService } from "./trading/TradingAlertService.ts";
+import { TradingThesisValidationService } from "./trading/TradingThesisValidationService.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import { TradingThreadMarketServiceLive } from "./trading/TradingThreadMarketService.ts";
 import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
@@ -939,6 +940,16 @@ const buildAppUnderTest = (options?: {
             listWatches: Effect.succeed([]),
             append: () => Effect.void,
             listAlerts: () => Effect.succeed([]),
+          }),
+        ),
+        // The alert feed labels the rows that are validation endings, and the
+        // report RPC reads one back. These tests arm no validation, so an
+        // empty answer to both is the honest one.
+        Layer.provide(
+          Layer.mock(TradingThesisValidationService)({
+            knownIds: () => Effect.succeed(new Set<string>()),
+            get: () => Effect.succeed(null),
+            report: () => Effect.succeed(null),
           }),
         ),
         Layer.provide(

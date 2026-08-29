@@ -103,6 +103,7 @@ import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService, type AccountWatch } from "./trading/TradingAlertService.ts";
+import { TradingThesisValidationService } from "./trading/TradingThesisValidationService.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import {
   TradingThreadMarketService,
@@ -553,6 +554,7 @@ const makeWsRpcLayer = (
       const tradingMissionProjection = yield* TradingMissionProjection;
       const tradingAccountProjection = yield* TradingAccountProjection;
       const tradingAlertService = yield* TradingAlertService;
+      const tradingValidations = yield* TradingThesisValidationService;
       const tradingAnalystService = yield* TradingAnalystService;
       const tradingThreadMarket = yield* TradingThreadMarketService;
       const tradingWatchlistService = yield* TradingWatchlistService;
@@ -1879,7 +1881,16 @@ const makeWsRpcLayer = (
             tradingAlertService
               .listAlerts(input.limit === undefined ? {} : { limit: input.limit })
               .pipe(
-                Effect.map((alerts) => ({
+                // A validation ending is filed under the validation's own id,
+                // so one lookup over the page says which rows have a report
+                // behind them. Without it the client sees an opaque id and
+                // cannot tell an expandable row from an ordinary alert.
+                Effect.flatMap((alerts) =>
+                  tradingValidations
+                    .knownIds(alerts.map((alert) => alert.watchId))
+                    .pipe(Effect.map((validationIds) => ({ alerts, validationIds }))),
+                ),
+                Effect.map(({ alerts, validationIds }) => ({
                   alerts: alerts.map((alert) => ({
                     id: alert.id,
                     market: alert.market,
@@ -1887,6 +1898,7 @@ const makeWsRpcLayer = (
                     watchId: alert.watchId,
                     firedAt: DateTime.formatIso(DateTime.makeUnsafe(alert.firedAt)),
                     summary: alert.summary,
+                    ...(validationIds.has(alert.watchId) ? { validationId: alert.watchId } : {}),
                   })),
                 })),
                 Effect.tapError((cause) => Effect.logError("trading alert list failed", { cause })),
@@ -1898,6 +1910,49 @@ const makeWsRpcLayer = (
                     }),
                 ),
               ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTradingValidationReport]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingValidationReport,
+            Effect.gen(function* () {
+              const now = DateTime.toEpochMillis(yield* DateTime.now);
+              const validation = yield* tradingValidations.get(input.validationId);
+              if (validation === null) return { report: null };
+              // Guarded the way the chart read is, and against the same list:
+              // a market this install pays attention to, held by a mission or
+              // in the follow set. A windowed shape, because a validation
+              // whose report anybody wants to read has usually ended, and
+              // refusing a terminal mission's market would refuse every
+              // post-mortem there is.
+              const missions = yield* tradingMissionProjection.list();
+              const followed = yield* followSetRegistry.list;
+              if (
+                !isChartReadEntitled(
+                  { market: validation.asset, startTime: validation.armedAt, endTime: now },
+                  missions,
+                  followed.map((market) => market.asset),
+                )
+              ) {
+                return { report: null };
+              }
+              const report = yield* tradingValidations.report({
+                id: input.validationId,
+                now,
+              });
+              return { report };
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("trading validation report read failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to read the validation report",
+                    cause,
+                  }),
+              ),
+            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry]: (input) =>

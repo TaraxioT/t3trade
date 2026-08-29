@@ -40,6 +40,7 @@ import {
   TradingWatchRearm,
   WatchCondition,
 } from "@t3tools/trading-contracts";
+import { ForwardReport } from "@t3tools/trading-contracts/forward";
 import * as Schema from "effect/Schema";
 
 import {
@@ -749,6 +750,13 @@ export const TradingAlertEvent = Schema.Struct({
   watchId: TrimmedNonEmptyString,
   firedAt: IsoDateTime,
   summary: Schema.String,
+  /**
+   * Set when this alert is a forward validation ending rather than a watch
+   * firing, in which case there is a full report to expand into. Resolved
+   * server-side because `watchId` carries the validation's id for these rows
+   * and the client cannot tell one opaque id from another.
+   */
+  validationId: Schema.optional(Schema.String),
 });
 export type TradingAlertEvent = typeof TradingAlertEvent.Type;
 
@@ -762,6 +770,27 @@ export const TradingAlertFeedView = Schema.Struct({
   alerts: Schema.Array(TradingAlertEvent),
 });
 export type TradingAlertFeedView = typeof TradingAlertFeedView.Type;
+
+/**
+ * The report behind a validation-expiry alert.
+ *
+ * The evaluator has always written the whole report into the alert's payload
+ * and no client had a way to ask for it, so the one line in the feed was the
+ * entire delivery of a run that watched the market for a fortnight. This is
+ * the read path that was missing. It is composed fresh rather than served out
+ * of the payload, so a report expanded today reflects the same arithmetic the
+ * chat card shows rather than a snapshot of an older build's fields.
+ */
+export const TradingValidationReportInput = Schema.Struct({
+  validationId: TrimmedNonEmptyString,
+});
+export type TradingValidationReportInput = typeof TradingValidationReportInput.Type;
+
+/** Null when the id names no validation, or names one on an unentitled market. */
+export const TradingValidationReportView = Schema.Struct({
+  report: Schema.NullOr(ForwardReport),
+});
+export type TradingValidationReportView = typeof TradingValidationReportView.Type;
 
 // -- the watchlist (final-form phase 4) --------------------------------------
 
