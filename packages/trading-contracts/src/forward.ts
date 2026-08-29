@@ -86,8 +86,20 @@ import {
 export const ThesisValidationStatus = Schema.Literals(["armed", "paused", "ended"]);
 export type ThesisValidationStatus = typeof ThesisValidationStatus.Type;
 
-/** Why a validation stopped. */
-export const ThesisValidationEndReason = Schema.Literals(["expired", "ended_by_user"]);
+/**
+ * Why a validation stopped.
+ *
+ * `superseded` is the refinement ending: a hypothesis whose next version is
+ * armed on the same market and interval ends the version before it, in the
+ * same call, rather than colliding with the one-per-slot rule. It is not
+ * `ended_by_user`, because nobody asked for the old one to stop, and it is not
+ * `expired`, because its clock had not run out. The record has to say which.
+ */
+export const ThesisValidationEndReason = Schema.Literals([
+  "expired",
+  "ended_by_user",
+  "superseded",
+]);
 export type ThesisValidationEndReason = typeof ThesisValidationEndReason.Type;
 
 /**
@@ -601,7 +613,12 @@ export const describeValidation = (thesis: TradingThesis): string => describeThe
  * carries the rest.
  */
 export function forwardEndSummary(report: ForwardReport): string {
-  const why = report.endReason === "expired" ? "ran its course" : "was ended";
+  const why =
+    report.endReason === "expired"
+      ? "ran its course"
+      : report.endReason === "superseded"
+        ? "was superseded by a newer version of the idea"
+        : "was ended";
   return `Validation ${why}: ${report.headline}. ${report.verdictReason}`;
 }
 
@@ -664,6 +681,13 @@ export const TradingValidateInput = Schema.Struct({
   validationId: Schema.optional(Schema.String),
   /** Ended validations are off the list unless asked for. */
   includeEnded: Schema.optional(Schema.Boolean),
+  /**
+   * The filed idea this run validates. On `arm` it stamps the validation with
+   * the hypothesis and its current version, and it buys the supersede rule:
+   * an armed run of an EARLIER version of the same idea, on the same market
+   * and interval, is ended rather than colliding with the one-per-slot limit.
+   */
+  hypothesisId: Schema.optional(Schema.String),
 });
 export type TradingValidateInput = typeof TradingValidateInput.Type;
 

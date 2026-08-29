@@ -121,10 +121,23 @@ export interface ThesisValidation {
   readonly barsWatched: number;
   readonly state: ForwardState;
   readonly lastBarTime: number | null;
+  /** The filed idea this run belongs to, when it belongs to one. */
+  readonly hypothesisId: string | null;
+  /** The version of that idea whose thesis this is. */
+  readonly hypothesisVersion: number | null;
 }
 
 export type ArmValidationResult =
-  | { readonly outcome: "armed"; readonly validation: ThesisValidation }
+  | {
+      readonly outcome: "armed";
+      readonly validation: ThesisValidation;
+      /**
+       * The validation this one replaced, when the slot was held by an earlier
+       * version of the same hypothesis. Reported rather than done quietly: two
+       * things happened in one call and the user is owed both.
+       */
+      readonly superseded?: string;
+    }
   | { readonly outcome: "refused"; readonly reason: string };
 
 export interface TradingThesisValidationServiceShape {
@@ -134,6 +147,15 @@ export interface TradingThesisValidationServiceShape {
     readonly label?: string | undefined;
     readonly threadId?: string | undefined;
     readonly notionalUsd?: number | undefined;
+    /**
+     * The filed idea this run tests. Naming one also buys the supersede rule:
+     * an armed or paused validation on the same market and interval that
+     * belongs to the SAME hypothesis is ended as `superseded` and this one
+     * takes the slot, because a refinement is not a second opinion. A
+     * collision with any other validation still refuses.
+     */
+    readonly hypothesisId?: string | undefined;
+    readonly hypothesisVersion?: number | undefined;
     readonly now: number;
   }) => Effect.Effect<ArmValidationResult, PersistenceSqlError>;
 
@@ -199,6 +221,16 @@ export interface TradingThesisValidationServiceShape {
     readonly baseline: BacktestStats;
   }) => Effect.Effect<void, PersistenceSqlError>;
 
+  /**
+   * Which of these ids are validations at all.
+   *
+   * The alert feed carries one opaque id per row and cannot tell a watch from
+   * a validation; this is the one query that answers the whole page.
+   */
+  readonly knownIds: (
+    ids: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlySet<string>, PersistenceSqlError>;
+
   /** The armed validation on a market, with its paper trades, for the chart. */
   readonly forChart: (input: {
     readonly asset: string;
@@ -251,6 +283,8 @@ interface ValidationRow {
   readonly pending_entry_signal_time: number | null;
   readonly pending_exit_reason: string | null;
   readonly last_bar_time: number | null;
+  readonly hypothesis_id: string | null;
+  readonly hypothesis_version: number | null;
 }
 
 interface PaperFillRow {
@@ -349,6 +383,8 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         barsWatched: row.bars_watched,
         state: toForwardState(row, open[0]),
         lastBarTime: row.last_bar_time,
+        hypothesisId: row.hypothesis_id,
+        hypothesisVersion: row.hypothesis_version,
       } satisfies ThesisValidation;
     });
 
@@ -406,18 +442,41 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
 
       // One armed validation per market and interval. Two rules watching the
       // same bars is not twice the evidence, and the chart has one badge.
-      const existing = yield* sql<{ readonly validation_id: string }>`
-        SELECT validation_id FROM trading_thesis_validations
+      //
+      // The one exception is a refinement of the idea already in the slot.
+      // Without it the loop this whole layer exists for - test, revise, test
+      // again - would dead-end at "end that one first", and the version the
+      // user just improved on would sit there collecting bars nobody wants.
+      // A collision with anything else keeps the refusal, because that really
+      // is a second opinion competing for one badge.
+      const existing = yield* sql<{
+        readonly validation_id: string;
+        readonly hypothesis_id: string | null;
+      }>`
+        SELECT validation_id, hypothesis_id FROM trading_thesis_validations
         WHERE status IN ('armed', 'paused') AND asset = ${input.thesis.market}
           AND interval = ${input.thesis.interval}
       `.pipe(Effect.mapError(sqlFail("arm.existing")));
-      if (existing.length > 0) {
-        return {
-          outcome: "refused",
-          reason:
-            `${input.thesis.market} ${input.thesis.interval} is already being validated. ` +
-            "End that one first, or validate this idea on another interval",
-        } as const;
+      const held = existing[0];
+      let superseded: string | null = null;
+      if (held !== undefined) {
+        const sameIdea =
+          input.hypothesisId !== undefined && held.hypothesis_id === input.hypothesisId;
+        if (!sameIdea) {
+          return {
+            outcome: "refused",
+            reason:
+              `${input.thesis.market} ${input.thesis.interval} is already being validated. ` +
+              "End that one first, or validate this idea on another interval",
+          } as const;
+        }
+        yield* sql`
+          UPDATE trading_thesis_validations
+          SET status = 'ended', ended_at = ${input.now}, end_reason = 'superseded',
+              updated_at = ${input.now}
+          WHERE validation_id = ${held.validation_id}
+        `.pipe(Effect.mapError(sqlFail("arm.supersede")));
+        superseded = held.validation_id;
       }
 
       const id = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -430,19 +489,25 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
           validation_id, thread_id, venue, asset, interval, thesis_json, label,
           status, armed_at, expires_at, ended_at, end_reason, notional_usd,
           costs_json, baseline_json, bars_watched, pending_entry_signal_time,
-          pending_exit_reason, last_bar_time, created_at, updated_at
+          pending_exit_reason, last_bar_time, hypothesis_id, hypothesis_version,
+          created_at, updated_at
         ) VALUES (
           ${id}, ${input.threadId ?? null}, ${DEFAULT_TRADING_VENUE}, ${input.thesis.market},
           ${input.thesis.interval}, ${encodeThesisJson(input.thesis)}, ${input.label ?? null},
           'armed', ${now}, ${now + input.durationMs}, NULL, NULL, ${notionalUsd},
-          ${JSON.stringify(costs)}, NULL, 0, NULL, NULL, NULL, ${now}, ${now}
+          ${JSON.stringify(costs)}, NULL, 0, NULL, NULL, NULL,
+          ${input.hypothesisId ?? null}, ${input.hypothesisVersion ?? null}, ${now}, ${now}
         )
       `.pipe(Effect.mapError(sqlFail("arm.insert")));
 
       const validation = yield* get(id);
       return validation === null
         ? ({ outcome: "refused", reason: "the validation could not be read back" } as const)
-        : ({ outcome: "armed", validation } as const);
+        : ({
+            outcome: "armed",
+            validation,
+            ...(superseded === null ? {} : { superseded }),
+          } as const);
     });
 
   /**
@@ -756,10 +821,22 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       return { validation, trades: yield* trades(validation.id) };
     });
 
+  const knownIds: TradingThesisValidationServiceShape["knownIds"] = (ids) =>
+    ids.length === 0
+      ? Effect.succeed(new Set<string>())
+      : sql<{ readonly validation_id: string }>`
+          SELECT validation_id FROM trading_thesis_validations
+          WHERE validation_id IN ${sql.in(ids)}
+        `.pipe(
+          Effect.mapError(sqlFail("knownIds")),
+          Effect.map((rows) => new Set(rows.map((row) => row.validation_id))),
+        );
+
   return {
     arm,
     list,
     get,
+    knownIds,
     setStatus,
     trades,
     report,

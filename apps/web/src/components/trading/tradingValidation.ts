@@ -78,7 +78,12 @@ const signedTone = (value: number): "positive" | "negative" | "neutral" =>
 function statusLine(report: Record<string, unknown>): string {
   const status = typeof report.status === "string" ? report.status : "";
   if (status === "ended") {
-    const reason = report.endReason === "expired" ? "ran its course" : "ended";
+    const reason =
+      report.endReason === "expired"
+        ? "ran its course"
+        : report.endReason === "superseded"
+          ? "was superseded by a newer version"
+          : "ended";
     return `Paper validation ${reason}`;
   }
   const expiresAt = readNumber(report.expiresAt);
@@ -110,7 +115,23 @@ export function deriveValidationCard(toolData: unknown): ValidationCard | null {
   const result = readValidateResult(toolData);
   const report = asRecord(asRecord(result)?.report);
   if (report === null) return null;
+  return validationCardFromReport(report, result);
+}
 
+/**
+ * The same card, from a report that did not arrive on a tool call.
+ *
+ * The alert feed's expiry rows pull their report over its own RPC, and it is
+ * the same report and must read as the same card. Split out rather than
+ * duplicated so a change to what the card says lands in both places at once.
+ *
+ * `raw` is what the "every number behind this" drawer prints; the report
+ * itself when nothing wrapped it.
+ */
+export function validationCardFromReport(
+  report: Record<string, unknown>,
+  raw: unknown = report,
+): ValidationCard | null {
   const stats = asRecord(report.stats);
   const thesis = asRecord(report.thesis);
   if (stats === null || thesis === null) return null;
@@ -170,7 +191,7 @@ export function deriveValidationCard(toolData: unknown): ValidationCard | null {
       openEntry === null
         ? null
         : `One paper position is open, entered at ${formatPrice(openEntry)}`,
-    rawJson: JSON.stringify(result, null, 2),
+    rawJson: JSON.stringify(raw, null, 2),
   };
 }
 
