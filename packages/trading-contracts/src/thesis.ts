@@ -266,13 +266,51 @@ export const operandIndicator = (operand: ThesisOperand): IndicatorRequest | nul
     : null;
 
 /**
+ * A predicate split into the side that reads the market and the fixed number
+ * it is compared against, whichever order it was written in. `null` when the
+ * comparison holds no constant, or when it is constant on both sides.
+ *
+ * `3900 below close` is `close above 3900` written backwards, so the direction
+ * flips with the operand order. Shared rather than read twice because two
+ * surfaces the user sees side by side depend on it agreeing: the chart draws
+ * the level from {@link thesisEntryPriceLevels}, and the alert layer arms the
+ * watch from it. A rule drawn on one side of a number and fired on the other
+ * would look correct on each surface alone.
+ */
+export function readThresholdPredicate(predicate: ThesisPredicate): {
+  readonly subject: ThesisOperand;
+  readonly value: number;
+  /** Which side the SUBJECT sits on when the relation holds. */
+  readonly direction: "above" | "below";
+} | null {
+  // `crosses_above` is `above` plus a memory of the previous bar, and both
+  // hold with the subject on the same side of the number, so a chart draws
+  // them alike.
+  const straight =
+    predicate.comparator === "above" || predicate.comparator === "crosses_above"
+      ? "above"
+      : "below";
+  if (predicate.right.source === "constant" && predicate.left.source !== "constant") {
+    return { subject: predicate.left, value: predicate.right.value, direction: straight };
+  }
+  if (predicate.left.source === "constant" && predicate.right.source !== "constant") {
+    // The constant is the left operand, so the comparator describes where the
+    // NUMBER sits. The market side is on the other side of it.
+    return {
+      subject: predicate.right,
+      value: predicate.left.value,
+      direction: straight === "above" ? "below" : "above",
+    };
+  }
+  return null;
+}
+
+/**
  * The entry rule's price constants, as levels a chart can draw.
  *
  * Only predicates that compare the bar's price against a number the user named
  * yield one: "close above 3900" is a line, "close above the 50 EMA" is a line
- * that moves and the chart already draws the average itself. The operand order
- * is read rather than assumed - `3900 below close` is the same rule written
- * backwards, and it fires on the same side.
+ * that moves and the chart already draws the average itself.
  *
  * Deduplicated, because a rule that names the same level twice is still one
  * level. Bounded by {@link THESIS_MAX_PREDICATES}, so there is no cap here.
@@ -283,30 +321,26 @@ export function thesisEntryPriceLevels(
   const seen = new Set<string>();
   const levels: Array<{ readonly price: number; readonly direction: "above" | "below" }> = [];
   for (const predicate of thesis.entry.predicates) {
-    // Which side price sits on when the relation holds. `crosses_above` is
-    // `above` plus a memory of the previous bar, and both fire with price on
-    // the same side of the number, so the chart draws them alike.
-    const priceIsAbove =
-      predicate.comparator === "above" || predicate.comparator === "crosses_above";
-    const forward =
-      predicate.left.source === "price" && predicate.right.source === "constant"
-        ? { price: predicate.right.value, direction: priceIsAbove ? "above" : "below" }
-        : null;
-    const reversed =
-      predicate.left.source === "constant" && predicate.right.source === "price"
-        ? // The constant is the left operand, so the comparator describes where
-          // the NUMBER sits. Price sits on the other side of it.
-          { price: predicate.left.value, direction: priceIsAbove ? "below" : "above" }
-        : null;
-    const level = forward ?? reversed;
-    if (level === null) continue;
-    const key = `${level.price}:${level.direction}`;
+    const threshold = readThresholdPredicate(predicate);
+    if (threshold === null || threshold.subject.source !== "price") continue;
+    const key = `${threshold.value}:${threshold.direction}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    levels.push(level as { readonly price: number; readonly direction: "above" | "below" });
+    levels.push({ price: threshold.value, direction: threshold.direction });
   }
   return levels;
 }
+
+/**
+ * Every condition a thesis evaluates: the entry, the antecedent, the exit
+ * rule. Named once so a fourth slot cannot be added to one reader and
+ * forgotten in the other, which would surface as a rule that never fires
+ * rather than as an error.
+ */
+const thesisConditions = (thesis: TradingThesis): ReadonlyArray<ThesisCondition> =>
+  [thesis.entry, thesis.after?.condition, thesis.exits.opposite].filter(
+    (condition): condition is ThesisCondition => condition !== undefined,
+  );
 
 /**
  * Every metric a thesis reads, across the entry, the antecedent and the exit
@@ -316,18 +350,16 @@ export function thesisEntryPriceLevels(
  * what it can refuse before loading anything: a funding operand needs archived
  * funding rows, and `volume_ratio` needs a warm-up the price rules do not.
  */
+
 export const thesisMetrics = (thesis: TradingThesis): ReadonlyArray<ThesisMetricName> => {
   const found = new Set<ThesisMetricName>();
-  const addCondition = (condition: ThesisCondition | undefined): void => {
-    for (const predicate of condition?.predicates ?? []) {
+  for (const condition of thesisConditions(thesis)) {
+    for (const predicate of condition.predicates) {
       for (const operand of [predicate.left, predicate.right]) {
         if (operand.source === "metric") found.add(operand.metric);
       }
     }
-  };
-  addCondition(thesis.entry);
-  addCondition(thesis.after?.condition);
-  addCondition(thesis.exits.opposite);
+  }
   return [...found];
 };
 
@@ -342,15 +374,12 @@ export const thesisIndicators = (thesis: TradingThesis): ReadonlyArray<Indicator
     if (request === null) return;
     requests.set(`${request.kind}:${request.period ?? "default"}`, request);
   };
-  const addCondition = (condition: ThesisCondition | undefined): void => {
-    for (const predicate of condition?.predicates ?? []) {
+  for (const condition of thesisConditions(thesis)) {
+    for (const predicate of condition.predicates) {
       add(operandIndicator(predicate.left));
       add(operandIndicator(predicate.right));
     }
-  };
-  addCondition(thesis.entry);
-  addCondition(thesis.after?.condition);
-  addCondition(thesis.exits.opposite);
+  }
   for (const distance of [thesis.exits.stop, thesis.exits.target]) {
     if (distance?.basis === "atr") {
       add({ kind: "atr", ...(distance.period === undefined ? {} : { period: distance.period }) });

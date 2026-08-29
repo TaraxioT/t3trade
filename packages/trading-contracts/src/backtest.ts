@@ -48,7 +48,6 @@ import * as Schema from "effect/Schema";
 import { pocRiskPolicyDefaults } from "./authority.ts";
 import {
   computeIndicatorSeries,
-  DEFAULT_INDICATOR_PERIODS,
   INDICATOR_COMPONENTS,
   INDICATOR_KINDS,
   type IndicatorComponent,
@@ -231,6 +230,26 @@ const round4 = (value: number): number => Math.round(value * 10_000) / 10_000;
 const requestKey = (request: IndicatorRequest): string =>
   `${request.kind}:${request.period ?? "default"}`;
 
+/**
+ * How many funding rows are stamped at or before `time`, by binary search over
+ * their times.
+ *
+ * The one number both funding readers want. The rate in force at an instant is
+ * the row before this index, and what a hold paid is the rows between two of
+ * them, so writing the search once keeps the stepwise lookup and the half-open
+ * window from drifting apart.
+ */
+const fundingRowsThrough = (times: ReadonlyArray<number>, time: number): number => {
+  let lo = 0;
+  let hi = times.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((times[mid] as number) <= time) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+};
+
 const componentOf = (
   point: IndicatorPoint | undefined,
   component: IndicatorComponent | undefined,
@@ -371,15 +390,8 @@ export function makeThesisSignals(input: {
   // zero" are different facts and only one of them should fire a rule.
   const fundingTimesForRead = funding.map((row) => row.time);
   const fundingRateAt = (time: number): number | undefined => {
-    let lo = 0;
-    let hi = fundingTimesForRead.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if ((fundingTimesForRead[mid] as number) <= time) lo = mid + 1;
-      else hi = mid;
-    }
-    // `lo` is now one past the last row at or before `time`.
-    return lo === 0 ? undefined : funding[lo - 1]?.fundingRate;
+    const through = fundingRowsThrough(fundingTimesForRead, time);
+    return through === 0 ? undefined : funding[through - 1]?.fundingRate;
   };
 
   // -- volume pace, as a rolling prefix sum -----------------------------------
@@ -387,10 +399,16 @@ export function makeThesisSignals(input: {
   // Built once so `volume_ratio` costs a subtraction per read rather than a
   // twenty-bar loop, which matters when a sweep walks the same window twelve
   // times.
-  const volumePrefix: Array<number> = new Array(candles.length + 1).fill(0);
-  for (let i = 0; i < candles.length; i += 1) {
-    volumePrefix[i + 1] = (volumePrefix[i] as number) + (candles[i]?.volume ?? 0);
-  }
+  let volumePrefix: Array<number> | null = null;
+  const volumePrefixSums = (): Array<number> => {
+    if (volumePrefix !== null) return volumePrefix;
+    const sums: Array<number> = new Array(candles.length + 1).fill(0);
+    for (let i = 0; i < candles.length; i += 1) {
+      sums[i + 1] = (sums[i] as number) + (candles[i]?.volume ?? 0);
+    }
+    volumePrefix = sums;
+    return sums;
+  };
   /**
    * The bar's volume against the mean of the {@link THESIS_VOLUME_RATIO_BARS}
    * bars BEFORE it. Undefined until that many priors exist, and undefined when
@@ -401,8 +419,8 @@ export function makeThesisSignals(input: {
     if (index < THESIS_VOLUME_RATIO_BARS) return undefined;
     const bar = candles[index];
     if (bar === undefined) return undefined;
-    const priorSum =
-      (volumePrefix[index] as number) - (volumePrefix[index - THESIS_VOLUME_RATIO_BARS] as number);
+    const sums = volumePrefixSums();
+    const priorSum = (sums[index] as number) - (sums[index - THESIS_VOLUME_RATIO_BARS] as number);
     if (!(priorSum > 0)) return undefined;
     return bar.volume / (priorSum / THESIS_VOLUME_RATIO_BARS);
   };
@@ -437,7 +455,6 @@ export function makeThesisSignals(input: {
           case "close":
             return bar.close;
         }
-        return bar.close;
       }
       case "indicator": {
         const points = seriesFor({
@@ -535,7 +552,7 @@ export function makeThesisSignals(input: {
       case "atr": {
         const points = seriesFor({
           kind: "atr",
-          period: distance.period ?? DEFAULT_INDICATOR_PERIODS.atr,
+          ...(distance.period === undefined ? {} : { period: distance.period }),
         });
         const atr = points[signalIndex]?.value;
         return atr === undefined ? undefined : atr * distance.multiple;
@@ -583,17 +600,6 @@ export function runBacktest(input: {
   for (let i = 0; i < funding.length; i += 1) {
     fundingPrefix[i + 1] = (fundingPrefix[i] as number) + (funding[i]?.fundingRate ?? 0);
   }
-  /** Index of the first funding row at or after `time`. */
-  const fundingLowerBound = (time: number): number => {
-    let lo = 0;
-    let hi = fundingTimes.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if ((fundingTimes[mid] as number) < time) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
   /**
    * What funding did to a position held across `(from, to]`, in USD.
    *
@@ -608,8 +614,8 @@ export function runBacktest(input: {
    */
   const fundingUsdOver = (from: number, to: number): number => {
     if (funding.length === 0) return 0;
-    const start = fundingLowerBound(from + 1);
-    const end = fundingLowerBound(to + 1);
+    const start = fundingRowsThrough(fundingTimes, from);
+    const end = fundingRowsThrough(fundingTimes, to);
     const rate = (fundingPrefix[end] as number) - (fundingPrefix[start] as number);
     return (long ? -1 : 1) * rate * notionalUsd;
   };
@@ -621,12 +627,21 @@ export function runBacktest(input: {
   // position happened to be open. `setupsFound` counts them all; the trades
   // below take the ones that were not already inside one.
   const entrySignal: Array<boolean> = new Array(bars).fill(false);
-  const exitSignal: Array<boolean> = new Array(bars).fill(false);
   for (let index = 0; index < bars; index += 1) {
     entrySignal[index] = entryFires(index);
-    if (thesis.exits.opposite !== undefined) {
-      exitSignal[index] = conditionHolds(thesis.exits.opposite, index);
+  }
+  // `nextExitAt[i]` is the first bar at or after `i` whose close fires the exit
+  // condition, or -1 when none does. Built backwards in one pass so a trade
+  // reads its exit rather than scanning forward for it, which on a rule that
+  // rarely fires cost a walk of the rest of the window per trade.
+  const opposite = thesis.exits.opposite;
+  let nextExitAt: Array<number> | null = null;
+  if (opposite !== undefined) {
+    const found: Array<number> = new Array(bars).fill(-1);
+    for (let index = bars - 1; index >= 0; index -= 1) {
+      found[index] = conditionHolds(opposite, index) ? index : (found[index + 1] ?? -1);
     }
+    nextExitAt = found;
   }
   // A signal on the last bar has no next bar to fill at, so it is not a setup
   // this window could have traded.
@@ -680,28 +695,25 @@ export function runBacktest(input: {
     // The bar whose OPEN a close-based exit would fill at: the bar after the
     // first exit signal, or the bar the hold limit lands on, whichever is
     // first. Both are capped at the last bar there is.
-    let closeExitIndex: number | undefined;
-    let closeExitReason: BacktestExitReason | undefined;
-    if (thesis.exits.opposite !== undefined) {
-      for (let u = entryIndex; u <= bars - 2; u += 1) {
-        if (exitSignal[u] === true) {
-          closeExitIndex = u + 1;
-          closeExitReason = "exit_condition";
-          break;
-        }
+    let closeExit: { readonly index: number; readonly reason: BacktestExitReason } | undefined;
+    if (nextExitAt !== null) {
+      const signalled = nextExitAt[entryIndex] as number;
+      // A signal on the last bar has no next bar to fill at, which is why the
+      // forward scan this replaced stopped at `bars - 2`.
+      if (signalled >= 0 && signalled <= bars - 2) {
+        closeExit = { index: signalled + 1, reason: "exit_condition" };
       }
     }
     if (maxHoldBars !== undefined) {
       const limit = entryIndex + maxHoldBars;
-      if (limit <= bars - 1 && (closeExitIndex === undefined || limit < closeExitIndex)) {
-        closeExitIndex = limit;
-        closeExitReason = "max_hold";
+      if (limit <= bars - 1 && (closeExit === undefined || limit < closeExit.index)) {
+        closeExit = { index: limit, reason: "max_hold" };
       }
     }
 
     // Level exits are checked over the bars fully held. The bar a close-based
     // exit fills on is NOT one of them — the position left at its open.
-    const walkEnd = closeExitIndex === undefined ? bars - 1 : closeExitIndex - 1;
+    const walkEnd = closeExit === undefined ? bars - 1 : closeExit.index - 1;
     const size = notionalUsd / entryPrice;
     const settlement = settleOnBars({
       long,
@@ -712,30 +724,31 @@ export function runBacktest(input: {
       bars: candles.slice(entryIndex, walkEnd + 1),
     });
 
-    let exitIndex: number;
+    const exitIndex =
+      settlement.outcome !== "open"
+        ? entryIndex + settlement.barsHeld - 1
+        : (closeExit?.index ?? bars - 1);
+    const exitBar = candles[exitIndex] as MarketCandle;
     let exitPrice: number;
     let exitTime: number;
     let exitReason: BacktestExitReason;
     let barsHeld: number;
     if (settlement.outcome !== "open") {
-      exitIndex = entryIndex + settlement.barsHeld - 1;
       exitPrice = settlement.exitPrice;
       // The level was touched somewhere inside the bar and OHLC cannot say
       // where, so the bar's close time is the honest stamp for the funding it
       // has to pay.
-      exitTime = (candles[exitIndex] as MarketCandle).closeTime;
+      exitTime = exitBar.closeTime;
       exitReason = settlement.outcome;
       barsHeld = settlement.barsHeld;
-    } else if (closeExitIndex !== undefined) {
-      exitIndex = closeExitIndex;
-      exitPrice = (candles[exitIndex] as MarketCandle).open;
-      exitTime = (candles[exitIndex] as MarketCandle).openTime;
-      exitReason = closeExitReason as BacktestExitReason;
+    } else if (closeExit !== undefined) {
+      exitPrice = exitBar.open;
+      exitTime = exitBar.openTime;
+      exitReason = closeExit.reason;
       barsHeld = exitIndex - entryIndex;
     } else {
-      exitIndex = bars - 1;
-      exitPrice = (candles[exitIndex] as MarketCandle).close;
-      exitTime = (candles[exitIndex] as MarketCandle).closeTime;
+      exitPrice = exitBar.close;
+      exitTime = exitBar.closeTime;
       exitReason = "window_end";
       barsHeld = exitIndex - entryIndex + 1;
     }
@@ -943,8 +956,8 @@ export const BacktestSweepReport = Schema.Struct({
    *
    * "Best in sample" and nothing more. It is the top of twelve numbers measured
    * on one window of one market, which is exactly the quantity a sweep is most
-   * likely to overfit; {@link sweepHonestyLine} is rendered beside it wherever
-   * it is shown, and neither the field nor the line ever calls it an edge.
+   * likely to overfit; every surface that shows it says so in words beside it,
+   * and neither the field nor that line ever calls it an edge.
    */
   bestIndex: Schema.NullOr(Schema.Number),
   /** The window every variation was measured on. Reported once, not per row. */
@@ -955,24 +968,6 @@ export const BacktestSweepReport = Schema.Struct({
   thesis: TradingThesis,
 });
 export type BacktestSweepReport = typeof BacktestSweepReport.Type;
-
-/**
- * The sentence that has to travel with a marked best row.
- *
- * A sweep is the easiest way in this whole engine to fool yourself, and the
- * defence is not a smaller number, it is saying plainly what the number is.
- */
-export function sweepHonestyLine(report: BacktestSweepReport): string {
-  const best = report.bestIndex === null ? null : report.rows[report.bestIndex];
-  if (best === undefined || best === null) {
-    return `No variation reached ${MIN_REPLAY_SETUPS} trades, so none of these is graded. The numbers are what was measured, not a ranking`;
-  }
-  return `${describeSweepPath(report.path)} ${best.value} is the best of ${report.rows.length} values IN SAMPLE, on one window of ${report.thesis.market}. That is the value most likely to be fitted to this window's noise; validate it forward before believing it`;
-}
-
-/** The paths a sweep may address, as a shape rather than a list of strings. */
-const SWEEP_PREDICATE_LEAVES = ["period", "value"] as const;
-const SWEEP_SIDES = ["left", "right"] as const;
 
 /** One addressable leaf, parsed. `null` is a path outside the closed set. */
 const parseSweepPath = (
@@ -1004,15 +999,13 @@ const parseSweepPath = (
     /^(entry|after\.condition)\.predicates\[(\d+)\]\.(left|right)\.(period|value)$/.exec(path);
   if (predicate === null) return null;
   const index = Number(predicate[2]);
-  const side = predicate[3] as (typeof SWEEP_SIDES)[number];
-  const leaf = predicate[4] as (typeof SWEEP_PREDICATE_LEAVES)[number];
   if (!Number.isInteger(index)) return null;
   return {
     kind: "predicate",
     where: predicate[1] === "entry" ? "entry" : "after",
     index,
-    side,
-    leaf,
+    side: predicate[3] === "left" ? "left" : "right",
+    leaf: predicate[4] === "period" ? "period" : "value",
   };
 };
 

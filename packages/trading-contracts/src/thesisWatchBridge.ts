@@ -35,13 +35,10 @@ import { TradingTimeframe } from "./strategy.ts";
 import {
   describeCondition,
   describeOperand,
-  type ThesisComparator,
-  type ThesisCondition,
-  type ThesisOperand,
-  type ThesisPredicate,
+  readThresholdPredicate,
   type TradingThesis,
 } from "./thesis.ts";
-import type { WatchCondition, WatchCrossDirection } from "./watch.ts";
+import type { WatchCondition } from "./watch.ts";
 
 /** What a thesis translated to, and what it could not. */
 export interface ThesisSetupAlerts {
@@ -55,43 +52,11 @@ export interface ThesisSetupAlerts {
   readonly inexpressible: ReadonlyArray<string>;
 }
 
-/** Which side of the level the watch fires on, given where price has to sit. */
-const directionOf = (comparator: ThesisComparator): WatchCrossDirection =>
-  comparator === "above" || comparator === "crosses_above" ? "above" : "below";
-
-/**
- * A predicate split into the side that reads the market and the number it is
- * compared against, whichever order it was written in.
- *
- * `3900 below close` is `close above 3900` written backwards, so the direction
- * flips with the operand order - the same reading {@link thesisEntryPriceLevels}
- * already applies to the chart.
- */
-const readComparison = (
-  predicate: ThesisPredicate,
-): {
-  readonly subject: ThesisOperand;
-  readonly value: number;
-  readonly direction: WatchCrossDirection;
-} | null => {
-  const straight = directionOf(predicate.comparator);
-  if (predicate.right.source === "constant" && predicate.left.source !== "constant") {
-    return { subject: predicate.left, value: predicate.right.value, direction: straight };
-  }
-  if (predicate.left.source === "constant" && predicate.right.source !== "constant") {
-    return {
-      subject: predicate.right,
-      value: predicate.left.value,
-      // The comparator describes where the NUMBER sits, so the market side is
-      // on the other side of it.
-      direction: straight === "above" ? "below" : "above",
-    };
-  }
-  return null;
-};
-
 const isTimeframe = (interval: string): interval is TradingTimeframe =>
   (TradingTimeframe.literals as ReadonlyArray<string>).includes(interval);
+
+/** The coarsest bar the alert layer confirms on, for the refusals that name it. */
+const LONGEST_ALERT_BAR = TradingTimeframe.literals[TradingTimeframe.literals.length - 1];
 
 /**
  * The alerts a thesis's entry can be watched by, and a sentence for every part
@@ -114,7 +79,7 @@ export function thesisSetupAlerts(thesis: TradingThesis): ThesisSetupAlerts {
   };
 
   for (const predicate of thesis.entry.predicates) {
-    const comparison = readComparison(predicate);
+    const comparison = readThresholdPredicate(predicate);
     if (comparison === null) {
       cannot(
         `"${describeOperand(predicate.left)} vs ${describeOperand(predicate.right)}"`,
@@ -128,7 +93,7 @@ export function thesisSetupAlerts(thesis: TradingThesis): ThesisSetupAlerts {
         if (!isTimeframe(interval)) {
           cannot(
             `"${describeOperand(subject)} ${predicate.comparator} ${value}"`,
-            `an alert confirms on bars up to ${TradingTimeframe.literals[TradingTimeframe.literals.length - 1]} and this thesis runs on ${interval}`,
+            `an alert confirms on bars up to ${LONGEST_ALERT_BAR} and this thesis runs on ${interval}`,
           );
           continue;
         }
@@ -145,36 +110,46 @@ export function thesisSetupAlerts(thesis: TradingThesis): ThesisSetupAlerts {
         });
         continue;
       }
-      case "metric": {
-        if (subject.metric === "funding_rate_8h") {
-          // Same number, same units, same sign convention on both sides.
-          conditions.push({ kind: "metric", market, metric: "funding_rate_8h", direction, value });
-          continue;
-        }
-        if (subject.metric === "volume_ratio") {
-          if (!isTimeframe(interval)) {
-            cannot(
-              `"volume vs its recent pace ${predicate.comparator} ${value}"`,
-              `the alert measures the pace on bars up to ${TradingTimeframe.literals[TradingTimeframe.literals.length - 1]} and this thesis runs on ${interval}`,
-            );
+      // Switched over the closed set rather than falling through to the raw
+      // volume refusal, so a fourth metric is a compile error here instead of
+      // silently inheriting a sentence written about a different one.
+      case "metric":
+        switch (subject.metric) {
+          case "funding_rate_8h":
+            // Same number, same units, same sign convention on both sides.
+            conditions.push({
+              kind: "metric",
+              market,
+              metric: "funding_rate_8h",
+              direction,
+              value,
+            });
+            continue;
+          case "volume_ratio": {
+            if (!isTimeframe(interval)) {
+              cannot(
+                `"volume vs its recent pace ${predicate.comparator} ${value}"`,
+                `the alert measures the pace on bars up to ${LONGEST_ALERT_BAR} and this thesis runs on ${interval}`,
+              );
+              continue;
+            }
+            conditions.push({
+              kind: "metric",
+              market,
+              metric: "volume_ratio",
+              direction,
+              value,
+              interval,
+            });
             continue;
           }
-          conditions.push({
-            kind: "metric",
-            market,
-            metric: "volume_ratio",
-            direction,
-            value,
-            interval,
-          });
-          continue;
+          case "volume":
+            cannot(
+              `"bar volume ${predicate.comparator} ${value}"`,
+              "the alert layer measures volume as a 24h notional or as a pace ratio, never as one bar's raw volume",
+            );
+            continue;
         }
-        cannot(
-          `"bar volume ${predicate.comparator} ${value}"`,
-          "the alert layer measures volume as a 24h notional or as a pace ratio, never as one bar's raw volume",
-        );
-        continue;
-      }
       case "indicator": {
         cannot(
           `"${describeOperand(subject)} ${predicate.comparator} ${value}"`,

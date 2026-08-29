@@ -55,7 +55,6 @@ import {
   BacktestStats,
   makeThesisSignals,
   summarizeTrades,
-  type BacktestCosts,
   type BacktestExitReason,
   type BacktestTrade,
 } from "./backtest.ts";
@@ -63,12 +62,10 @@ import { indicatorLookbackBars } from "./indicators.ts";
 import type { MarketCandle } from "./market.ts";
 import { MIN_REPLAY_SETUPS } from "./replay.ts";
 import {
-  describeThesis,
   THESIS_VOLUME_RATIO_BARS,
   thesisIndicators,
   thesisMetrics,
   TradingThesis,
-  type BacktestInterval,
 } from "./thesis.ts";
 
 // ---------------------------------------------------------------------------
@@ -107,7 +104,7 @@ export type ThesisValidationEndReason = typeof ThesisValidationEndReason.Type;
 /**
  * The intervals a validation may be armed on.
  *
- * Narrower than {@link BacktestInterval} on purpose. Forward evaluation is
+ * Narrower than the backtest's own interval set on purpose. Forward evaluation is
  * driven by the candle subscriptions the watch evaluator already holds, and
  * those cover the five direct intervals. Arming on 4h or 1d would produce a
  * validation whose bars never arrive — a thing that looks armed and is deaf,
@@ -314,28 +311,34 @@ export function stepForward(input: {
 
   // 1. A decided exit leaves at this bar's open. The bar is not held, so its
   //    levels are never consulted — the position was gone before it printed.
-  if (state.pendingExitReason !== null && state.open !== null) {
+  //    `settle` clears the flag itself; the trailing clear is for the case
+  //    where an exit was pending with no position left to settle.
+  if (state.pendingExitReason !== null) {
     settle(bar.open, bar.openTime, state.pendingExitReason);
-  } else if (state.pendingExitReason !== null) {
     state = { ...state, pendingExitReason: null };
   }
 
   // 2. Levels, on a position held through this bar.
   if (state.open !== null) {
     const held = { ...state.open, barsHeld: state.open.barsHeld + 1 };
-    state = { ...state, open: held };
     const level = settleAgainstBar({ long, bar, open: held, notionalUsd });
     state = { ...state, open: { ...held, adverseExcursionUsd: level.adverseExcursionUsd } };
     if (level.exitPrice !== null) {
-      settle(level.exitPrice, bar.closeTime, level.reason as BacktestExitReason);
+      settle(level.exitPrice, bar.closeTime, level.reason);
     }
   }
 
   // 3. A pending entry fills at this bar's open, then faces this bar itself.
-  if (state.pendingEntrySignalTime !== null && state.open === null) {
-    const signalIndex = candles.findIndex(
-      (candle) => candle.openTime === state.pendingEntrySignalTime,
-    );
+  //    Every path below clears the pending signal: filled, unpriced, or not
+  //    flat to take it.
+  const pendingSignalTime = state.pendingEntrySignalTime;
+  if (pendingSignalTime !== null) {
+    // Scanned from the end: the signal bar is the one before this one, so a
+    // forward scan would walk the whole window to reach it.
+    const signalIndex =
+      state.open === null
+        ? candles.findLastIndex((candle) => candle.openTime === pendingSignalTime)
+        : -1;
     const entryPrice = bar.open;
     if (signalIndex >= 0 && entryPrice > 0) {
       const stopDistance = signals.distanceInPrice(
@@ -371,30 +374,18 @@ export function stepForward(input: {
         entered = {
           entryTime: bar.openTime,
           entryPrice,
-          signalTime: state.pendingEntrySignalTime,
+          signalTime: pendingSignalTime,
           stopPrice,
           targetPrice,
         };
-        const open = {
-          id: input.nextTradeId,
-          entryTime: bar.openTime,
-          entryPrice,
-          signalTime: state.pendingEntrySignalTime,
-          stopPrice,
-          targetPrice,
-          barsHeld: 1,
-          adverseExcursionUsd: 0,
-        };
-        state = { ...state, open };
+        const open = { id: input.nextTradeId, ...entered, barsHeld: 1, adverseExcursionUsd: 0 };
         const level = settleAgainstBar({ long, bar, open, notionalUsd });
         state = { ...state, open: { ...open, adverseExcursionUsd: level.adverseExcursionUsd } };
         if (level.exitPrice !== null) {
-          settle(level.exitPrice, bar.closeTime, level.reason as BacktestExitReason);
+          settle(level.exitPrice, bar.closeTime, level.reason);
         }
       }
     }
-    state = { ...state, pendingEntrySignalTime: null };
-  } else if (state.pendingEntrySignalTime !== null) {
     state = { ...state, pendingEntrySignalTime: null };
   }
 
@@ -413,10 +404,8 @@ export function stepForward(input: {
   //    pending, because by the next bar's open the position will be gone —
   //    which is the batch engine's own resume rule, stated forward.
   const willBeFlat = state.open === null || state.pendingExitReason !== null;
-  if (willBeFlat && state.pendingEntrySignalTime === null) {
-    if (signals.entryFires(index)) {
-      state = { ...state, pendingEntrySignalTime: bar.openTime };
-    }
+  if (willBeFlat && state.pendingEntrySignalTime === null && signals.entryFires(index)) {
+    state = { ...state, pendingEntrySignalTime: bar.openTime };
   }
 
   return { state, entered, exited };
@@ -436,11 +425,13 @@ function settleAgainstBar(input: {
     readonly adverseExcursionUsd: number;
   };
   readonly notionalUsd: number;
-}): {
-  readonly exitPrice: number | null;
-  readonly reason: string;
-  readonly adverseExcursionUsd: number;
-} {
+}):
+  | {
+      readonly exitPrice: number;
+      readonly reason: BacktestExitReason;
+      readonly adverseExcursionUsd: number;
+    }
+  | { readonly exitPrice: null; readonly adverseExcursionUsd: number } {
   const { long, bar, open, notionalUsd } = input;
   const size = open.entryPrice > 0 ? notionalUsd / open.entryPrice : 0;
   const worst = long ? bar.low : bar.high;
@@ -449,22 +440,17 @@ function settleAgainstBar(input: {
     (long ? open.entryPrice - worst : worst - open.entryPrice) * size,
   );
 
-  const stopHit =
-    open.stopPrice !== null && (long ? bar.low <= open.stopPrice : bar.high >= open.stopPrice);
-  if (stopHit) {
-    return { exitPrice: open.stopPrice as number, reason: "stop", adverseExcursionUsd: excursion };
+  // Tested in this order so a bar holding both levels settles as the stop.
+  if (open.stopPrice !== null && (long ? bar.low <= open.stopPrice : bar.high >= open.stopPrice)) {
+    return { exitPrice: open.stopPrice, reason: "stop", adverseExcursionUsd: excursion };
   }
-  const targetHit =
+  if (
     open.targetPrice !== null &&
-    (long ? bar.high >= open.targetPrice : bar.low <= open.targetPrice);
-  if (targetHit) {
-    return {
-      exitPrice: open.targetPrice as number,
-      reason: "target",
-      adverseExcursionUsd: excursion,
-    };
+    (long ? bar.high >= open.targetPrice : bar.low <= open.targetPrice)
+  ) {
+    return { exitPrice: open.targetPrice, reason: "target", adverseExcursionUsd: excursion };
   }
-  return { exitPrice: null, reason: "open", adverseExcursionUsd: excursion };
+  return { exitPrice: null, adverseExcursionUsd: excursion };
 }
 
 /**
@@ -684,8 +670,6 @@ export const ValidationEventBatch = Schema.Struct({
 });
 export type ValidationEventBatch = typeof ValidationEventBatch.Type;
 
-const eventUsd = (value: number): string => `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
-
 /** How a comparison label reads in a sentence rather than as a token. */
 export const describeComparison = (comparison: ForwardComparison): string => {
   switch (comparison) {
@@ -718,7 +702,7 @@ export const describePaperExit = (input: {
   readonly reason: string | null;
 }): string =>
   `paper ${input.direction} closed on ${input.market} at ${input.price}, net ` +
-  `${eventUsd(input.netUsd)}${input.reason === null ? "" : ` (${input.reason})`}`;
+  `${usd(input.netUsd)}${input.reason === null ? "" : ` (${input.reason})`}`;
 
 /** `verdict now worse than the backtest, was tracking the backtest`. */
 export const describeVerdictChange = (input: {
@@ -736,9 +720,6 @@ export const describeVerdictChange = (input: {
  */
 export const describeValidationEvents = (batch: ValidationEventBatch): string =>
   `${batch.label}: ${batch.lines.join("; ")}`;
-
-/** The one-line heading a card or an alert uses for a validation. */
-export const describeValidation = (thesis: TradingThesis): string => describeThesis(thesis);
 
 /**
  * The alert summary delivered when a validation ends.
@@ -767,8 +748,6 @@ export function renderForwardMenu(): string {
     "to trade a validated idea, publish a plan and enter as normal with this record as context",
   ].join(" · ");
 }
-
-export type { BacktestCosts, BacktestInterval };
 
 // ---------------------------------------------------------------------------
 // the tool surface
