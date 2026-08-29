@@ -88,6 +88,14 @@ export const TradingEventSet = Schema.Struct({
 export type TradingEventSet = typeof TradingEventSet.Type;
 
 /**
+ * Who wrote an occurrence. The tool is only ever called by a model, so it
+ * writes `agent`; the `user` value exists for a surface that can genuinely
+ * attribute one, the same rule the hypothesis author follows.
+ */
+export const EventSetAuthor = Schema.Literals(["user", "agent"]);
+export type EventSetAuthor = typeof EventSetAuthor.Type;
+
+/**
  * Everything the schema deliberately does not check about one occurrence, as
  * one refusal the caller can act on. `null` when the occurrence is sound.
  */
