@@ -7,6 +7,8 @@ import {
   alertNotificationText,
   describeArchiveHealth,
   describeProtection,
+  describeSignerState,
+  RESEARCH_MODE_LINE,
   selectNewAlerts,
 } from "./tradeHomePresentation";
 
@@ -103,5 +105,23 @@ describe("alertNotificationText", () => {
     const text = alertNotificationText(alert("a"));
     expect(text.title).toBe("ETH alert");
     expect(text.body).toContain("crossed above");
+  });
+});
+
+describe("describeSignerState", () => {
+  it("says nothing when a signer is armed", () => {
+    expect(describeSignerState(true)).toBeNull();
+  });
+
+  // Absent, not false: every server that predates the field had a signer.
+  it("says nothing when the server does not report the field", () => {
+    expect(describeSignerState(undefined)).toBeNull();
+  });
+
+  it("names research mode, and what still works in it", () => {
+    const message = describeSignerState(false);
+    expect(message).toBe(RESEARCH_MODE_LINE);
+    expect(message).toContain("backtests and validations work");
+    expect(message).toContain("orders will be refused");
   });
 });

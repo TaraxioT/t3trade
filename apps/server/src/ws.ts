@@ -1708,10 +1708,23 @@ const makeWsRpcLayer = (
               // health is what says whether derived numbers are real.
               const snapshotSequence = yield* orchestrationEngine.latestSequence;
               const archive = yield* archiveSupervisor.health;
+              // Whether this environment can sign at all. The `trading_accounts`
+              // row is the thing every execution path actually needs, and
+              // `TradingAccountBootstrap` writes it only when a signer is armed,
+              // so its presence is the honest answer. Rides this view rather
+              // than getting a subscription of its own: the trade home already
+              // reads it for the archiver line, and this belongs beside that one.
+              const signerArmed = yield* tradingMissionService
+                .getMasterWalletAddress(LOCAL_TRADING_ACCOUNT_ID)
+                .pipe(
+                  Effect.as(true),
+                  Effect.catchCause(() => Effect.succeed(false)),
+                );
               return {
                 snapshotSequence,
                 accounts: assembled.accounts,
                 updatedAt: assembled.updatedAt,
+                signerArmed,
                 archive: {
                   running: archive.running,
                   lastHeartbeat: archive.lastHeartbeat,

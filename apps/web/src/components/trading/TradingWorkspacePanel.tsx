@@ -2,10 +2,11 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, OrchestrationTradingMission, ThreadId } from "@t3tools/contracts";
 import { pocRiskPolicyDefaults } from "@t3tools/trading-contracts/authority";
 import { useRouter } from "@tanstack/react-router";
-import { HistoryIcon, RefreshCwIcon, TrendingUpIcon } from "lucide-react";
+import { HistoryIcon, KeyRoundIcon, RefreshCwIcon, TrendingUpIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
+import { useTradingAccountView } from "../../lib/tradingAccountState";
 import { useTradingMissions } from "../../lib/tradingMissionsState";
 import { useProjects } from "../../state/entities";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -14,6 +15,7 @@ import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
+import { describeSignerState } from "./tradeHomePresentation";
 import { useMissionControls, type MissionControls } from "./useMissionControls";
 import {
   deriveMissionHistoryRow,
@@ -91,6 +93,14 @@ function Mandate({ mission }: { mission: OrchestrationTradingMission }) {
 
   return (
     <SettingsSection title="Mandate">
+      {/* A mandate nobody could size is a stand-in, and every number below is
+          derived from it. Saying so beats presenting the fallback as measured. */}
+      {authority.capitalSource === "fallback" ? (
+        <p className="px-3 py-1.5 text-sm text-muted-foreground sm:px-4">
+          No account could be read when this mission was created, so the capital below is a stand-in
+          rather than a balance. Sizing is unavailable and orders will be refused.
+        </p>
+      ) : null}
       <Field label="Allocated capital" value={usd(authority.allocatedCapitalUsd)} />
       <Field label="Maximum gross notional" value={usd(authority.maximumGrossNotionalUsd)} />
       <Field label="Maximum leverage" value={`${authority.maximumLeverage}x`} />
@@ -424,6 +434,23 @@ function TradeHomeDefaultSection() {
   );
 }
 
+/**
+ * The research-mode line, in the settings register: the same sentence the trade
+ * home shows, plus the pointer to the doc that says exactly what still works.
+ */
+function SignerStateSection({ environmentId }: { environmentId: EnvironmentId }) {
+  const account = useTradingAccountView(environmentId);
+  const message = describeSignerState(account.data?.signerArmed);
+  if (message === null) return null;
+  return (
+    <SettingsSection title="Trading key" icon={<KeyRoundIcon className="size-4" />}>
+      <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
+        {message} See docs/user/research-mode.md for exactly what runs without a key.
+      </p>
+    </SettingsSection>
+  );
+}
+
 export function TradingWorkspacePanel() {
   const projects = useProjects();
   const environmentId = useMemo<EnvironmentId | null>(
@@ -453,6 +480,7 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
   return (
     <SettingsPageContainer>
       <TradeHomeDefaultSection />
+      <SignerStateSection environmentId={environmentId} />
       <SettingsSection
         title="Trading"
         icon={<TrendingUpIcon className="size-4" />}

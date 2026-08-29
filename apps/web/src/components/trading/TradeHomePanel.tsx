@@ -35,7 +35,7 @@ import { AlertFeedPanel } from "./AlertFeedPanel";
 import { MarketChartPanel } from "./MarketChartPanel";
 import { MissionPriceChart } from "./MissionPriceChart";
 import { OrderTicket } from "./OrderTicket";
-import { describeArchiveHealth } from "./tradeHomePresentation";
+import { describeArchiveHealth, describeSignerState } from "./tradeHomePresentation";
 import { useTradingUniverseAssets } from "./UniverseAssetSearch";
 import { WatchlistPanel } from "./WatchlistPanel";
 import { formatPrice } from "./tradingPresentation";
@@ -66,6 +66,22 @@ function ArchiveHealthLine({ message }: { message: string | null }) {
     <div
       className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-sm text-foreground"
       data-testid="archive-health-line"
+    >
+      {message}
+    </div>
+  );
+}
+
+/**
+ * The research-mode one-liner, in the same quiet register as the archiver line
+ * and directly under it. Absent whenever a signer is armed.
+ */
+function SignerStateLine({ message }: { message: string | null }) {
+  if (message === null) return null;
+  return (
+    <div
+      className="rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-sm text-muted-foreground"
+      data-testid="signer-state-line"
     >
       {message}
     </div>
@@ -190,11 +206,13 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
   const mission = selectedAsset === null ? null : liveMissionOnAsset(missions, selectedAsset);
 
   const archiveMessage = describeArchiveHealth(account.data?.archive, Date.now());
+  const signerMessage = describeSignerState(account.data?.signerArmed);
 
   return (
     <ScrollArea className="min-h-0 flex-1">
       <div className="flex flex-col gap-3 px-4 py-3 sm:px-5">
         <ArchiveHealthLine message={archiveMessage} />
+        <SignerStateLine message={signerMessage} />
         {account.error === null ? null : (
           <p className="text-sm text-destructive">{account.error}</p>
         )}

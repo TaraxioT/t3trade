@@ -54,6 +54,24 @@ export function describeArchiveHealth(
 }
 
 /**
+ * The one line that says this environment cannot sign, and what that does and
+ * does not cost.
+ *
+ * Null when a signer is armed, and null when the server does not report the
+ * field at all, every server that predates it had one. Deliberately not a
+ * modal, not a nag, and not an onboarding flow: research mode is a working
+ * state, and the only thing a user needs is to know it before an order is
+ * refused rather than after.
+ */
+export const RESEARCH_MODE_LINE =
+  "Research mode: no trading key is configured. Observation, backtests and validations work; " +
+  "orders will be refused.";
+
+export function describeSignerState(signerArmed: boolean | undefined): string | null {
+  return signerArmed === false ? RESEARCH_MODE_LINE : null;
+}
+
+/**
  * The D5 provenance label. "Unprotected" is a state, not an absence — a
  * position with no stop is exactly the thing this column exists to surface.
  */
