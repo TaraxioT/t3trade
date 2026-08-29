@@ -116,6 +116,9 @@ describe("prose", () => {
     const menu = renderTradingHypothesisMenu();
     expect(menu).toContain("supersedes");
     expect(menu).toContain("nothing here places an order");
+    // A live agent's first move was to pass the id alone and get the
+    // vocabulary back. The menu now says what that call does.
+    expect(menu).toContain("current version");
     // The vocabulary rides one call, not every turn: keep it short enough to
     // stay a menu rather than a second system prompt.
     expect(menu.length).toBeLessThan(900);

@@ -288,7 +288,7 @@ export function renderTradingHypothesisMenu(): string {
     "revise {hypothesisId, thesis, note} writes the next version and reopens a concluded or shelved idea",
     "show {hypothesisId} gives the versions, every backtest run against them, and every linked validation",
     "list {scope: thread|all}; shelve {hypothesisId, conclusion?}; conclude {hypothesisId, verdict: supported|unsupported, conclusion}",
-    "pass hypothesisId to trading_backtest and to trading_validate arm so the numbers attach to the version they were measured on",
+    "pass hypothesisId alone to trading_backtest or to trading_validate arm and it runs that idea's current version, filed against it; restating the thesis is allowed but has to match that version",
     "arming a second validation for the SAME hypothesis on one market and interval supersedes the first; a different idea's still refuses",
     "nothing here places an order; a supported idea is traded the ordinary way, when the user says so",
   ].join(" · ");

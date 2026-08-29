@@ -2962,10 +2962,12 @@ const handlers = {
    */
   trading_backtest: (input) =>
     Effect.gen(function* () {
-      if (input.thesis === undefined) {
+      // A bare call is the menu. A call naming only a hypothesis is not bare:
+      // that idea already holds a thesis, and answering it with the vocabulary
+      // was the first thing a live agent got wrong here.
+      if (input.thesis === undefined && input.hypothesisId === undefined) {
         return { menu: renderTradingBacktestMenu() };
       }
-      const thesis = input.thesis;
       const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
       const now = yield* Clock.currentTimeMillis;
       const hypotheses = yield* TradingHypothesisService;
@@ -2975,6 +2977,7 @@ const handlers = {
       // stamp exists to prevent, and a run that cannot be filed correctly
       // should not have cost the archive read either.
       let stamp: { readonly hypothesisId: string; readonly hypothesisVersion: number } | undefined;
+      let thesis = input.thesis;
       if (input.hypothesisId !== undefined) {
         const current = yield* hypotheses.currentVersion(input.hypothesisId).pipe(Effect.orDie);
         if (current === null) {
@@ -2985,7 +2988,11 @@ const handlers = {
             detail: "no hypothesis with that id",
           });
         }
-        if (!thesesMatch(thesis, current.thesis)) {
+        // Naming the idea and nothing else runs its current version. Restating
+        // the thesis is then a redundancy the caller may use to be explicit,
+        // and it has to agree.
+        if (thesis === undefined) thesis = current.thesis;
+        else if (!thesesMatch(thesis, current.thesis)) {
           return yield* rejectCall({
             reason: "hypothesis_refused",
             threadId,
@@ -2997,6 +3004,9 @@ const handlers = {
         }
         stamp = { hypothesisId: input.hypothesisId, hypothesisVersion: current.version };
       }
+      // Unreachable: the guard above returns when both are absent, and the
+      // branch above fills it in from the hypothesis.
+      if (thesis === undefined) return { menu: renderTradingBacktestMenu() };
 
       const backtest = yield* TradingBacktestService;
       const outcome = yield* backtest.run({
@@ -3054,24 +3064,29 @@ const handlers = {
 
       switch (input.action) {
         case "arm": {
-          if (input.thesis === undefined) {
-            return yield* refuse("arm needs a thesis; the shape is trading_validate({})");
+          if (input.thesis === undefined && input.hypothesisId === undefined) {
+            return yield* refuse(
+              "arm needs a thesis or a hypothesisId; the shape is trading_validate({})",
+            );
           }
           if (input.durationHours === undefined) {
             return yield* refuse("arm needs durationHours; two weeks is 336");
           }
 
-          // Same check the backtest path makes, for the same reason: a
-          // validation stamped with a version whose thesis it is not testing
-          // would compare a forward run against the wrong backtest for weeks.
+          // Same rule the backtest path follows: naming the idea and nothing
+          // else validates its current version, and restating the thesis has
+          // to agree. A validation stamped with a version whose thesis it is
+          // not testing would compare against the wrong backtest for weeks.
           const hypotheses = yield* TradingHypothesisService;
           let stamp:
             | { readonly hypothesisId: string; readonly hypothesisVersion: number }
             | undefined;
+          let thesis = input.thesis;
           if (input.hypothesisId !== undefined) {
             const current = yield* hypotheses.currentVersion(input.hypothesisId).pipe(Effect.orDie);
             if (current === null) return yield* refuse("no hypothesis with that id");
-            if (!thesesMatch(input.thesis, current.thesis)) {
+            if (thesis === undefined) thesis = current.thesis;
+            else if (!thesesMatch(thesis, current.thesis)) {
               return yield* refuse(
                 `this thesis is not version ${current.version} of that hypothesis. ` +
                   "Revise the hypothesis first, or arm without the hypothesisId",
@@ -3079,10 +3094,12 @@ const handlers = {
             }
             stamp = { hypothesisId: input.hypothesisId, hypothesisVersion: current.version };
           }
+          if (thesis === undefined) return yield* refuse("arm needs a thesis");
+          const armThesis = thesis;
 
           const armed = yield* validations
             .arm({
-              thesis: input.thesis,
+              thesis: armThesis,
               durationMs: input.durationHours * 60 * 60 * 1_000,
               ...(input.label === undefined ? {} : { label: input.label }),
               ...(threadId === undefined ? {} : { threadId }),
@@ -3104,7 +3121,7 @@ const handlers = {
           // cannot run leaves the baseline null, which the report states
           // rather than papering over with a zero.
           const backtest = yield* TradingBacktestService;
-          const priced = yield* backtest.run({ thesis: input.thesis, now });
+          const priced = yield* backtest.run({ thesis: armThesis, now });
           if (priced.status === "ok") {
             yield* validations
               .setBaseline({ id: armed.validation.id, baseline: priced.report.stats })
@@ -3123,7 +3140,7 @@ const handlers = {
           return validateResult({
             ...(report === null ? {} : { report }),
             outcome:
-              `Validating ${describeThesis(input.thesis)} on paper until ` +
+              `Validating ${describeThesis(armThesis)} on paper until ` +
               `${new Date(armed.validation.expiresAt).toISOString()}. No order will be placed.` +
               supersededLine,
           });
