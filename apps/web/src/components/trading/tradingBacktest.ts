@@ -5,6 +5,7 @@ import {
   type TradingThesis,
 } from "@t3tools/trading-contracts/thesis";
 import { formatSignedUsd, formatUsd } from "./tradingFormat";
+import { asRecord, readNumber, readTradingCardResult, signedTone } from "./cardPayload";
 
 // ---------------------------------------------------------------------------
 // backtest result cards
@@ -90,22 +91,11 @@ const VERDICT_LABELS: Record<string, string> = {
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-const readNumber = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-
 const formatDays = (millis: number): string => {
   const days = millis / DAY_MS;
   if (days < 1) return `${Math.max(1, Math.round(days * 24))} hours`;
   return `${Math.round(days)} days`;
 };
-
-const signedTone = (value: number): "positive" | "negative" | "neutral" =>
-  value > 0 ? "positive" : value < 0 ? "negative" : "neutral";
 
 /**
  * The coverage sentence: what was asked for, what was actually served, and
@@ -147,52 +137,6 @@ function coverageLine(coverage: Record<string, unknown>, costs: Record<string, u
     );
   }
   return parts.join(", ");
-}
-
-/**
- * The tool's own answer, out of the MCP envelope it arrives in.
- *
- * The transport wraps every result as `content: [{type: "text", text}]` with
- * the JSON inside the text, so it is unwrapped one level and parsed. A result
- * that is already an object is taken as it is, because that is what the
- * handler returns before the transport touches it and what the tests build.
- */
-function readBacktestResult(toolData: unknown): unknown {
-  const item = asRecord(toolData);
-  if (item === null) return null;
-  // The ACP adapters name the tool bare in `tool`; the Claude adapter names it
-  // MCP-qualified in `toolName` (`mcp__t3-trade__trading_backtest`). Matching
-  // the suffix covers both without caring which server mounted it.
-  const name = typeof item.tool === "string" ? item.tool : item.toolName;
-  if (typeof name !== "string" || !name.endsWith("trading_backtest")) return null;
-  const result = asRecord(item.result);
-  if (result === null) return null;
-
-  const content = result.content;
-  // The server's activity projection collapses an MCP result to `{content:
-  // "<text>"}` on the way to a client. For this tool it keeps the whole text
-  // rather than a one-line summary (see `MCP_RESULTS_KEPT_WHOLE`), so the
-  // string case is the one that actually arrives over the wire; the array case
-  // is the raw transport shape, and the bare object is what the handler
-  // returns before either touches it.
-  if (typeof content === "string") return parseReport(content);
-  if (!Array.isArray(content)) return result;
-  for (const entry of content) {
-    const text = asRecord(entry)?.text;
-    if (typeof text !== "string") continue;
-    return parseReport(text);
-  }
-  return null;
-}
-
-/** JSON, or null when it is a summary line rather than a report. */
-function parseReport(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    // Truncated or not JSON at all. The ordinary tool row still renders it.
-    return null;
-  }
 }
 
 /**
@@ -245,7 +189,7 @@ const deriveSweepTable = (result: unknown): BacktestSweepTable | null => {
  * back to the ordinary tool row rather than rendering an empty card.
  */
 export function deriveBacktestCard(toolData: unknown): BacktestCard | null {
-  const result = readBacktestResult(toolData);
+  const result = readTradingCardResult(toolData, "trading_backtest");
   const report = asRecord(asRecord(result)?.report);
   if (report === null) return null;
 

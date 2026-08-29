@@ -21,6 +21,7 @@ import {
 } from "@t3tools/trading-contracts/thesis";
 
 import { formatPrice, formatSignedUsd, formatUsd } from "./tradingFormat";
+import { asRecord, readNumber, readTradingCardResult, signedTone } from "./cardPayload";
 
 export interface ValidationStatLine {
   readonly label: string;
@@ -104,17 +105,6 @@ export function describeComparison(
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-const readNumber = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-
-const signedTone = (value: number): "positive" | "negative" | "neutral" =>
-  value > 0 ? "positive" : value < 0 ? "negative" : "neutral";
-
 /** "4 days left", "6 hours left", or what ended it. */
 function statusLine(report: Record<string, unknown>): string {
   const status = typeof report.status === "string" ? report.status : "";
@@ -153,7 +143,7 @@ function statusLine(report: Record<string, unknown>): string {
  * still render.
  */
 export function deriveValidationCard(toolData: unknown): ValidationCard | null {
-  const result = readValidateResult(toolData);
+  const result = readTradingCardResult(toolData, "trading_validate");
   const report = asRecord(asRecord(result)?.report);
   if (report === null) return null;
   return validationCardFromReport(report, result);
@@ -230,36 +220,4 @@ export function validationCardFromReport(
         : `One paper position is open, entered at ${formatPrice(openEntry)}`,
     rawJson: JSON.stringify(raw, null, 2),
   };
-}
-
-/**
- * The result out of the tool call, through whichever shape the transport used.
- * Mirrors the backtest card's reader; see its notes on the three shapes.
- */
-function readValidateResult(toolData: unknown): unknown {
-  const item = asRecord(toolData);
-  if (item === null) return null;
-  const name = typeof item.tool === "string" ? item.tool : item.toolName;
-  if (typeof name !== "string" || !name.endsWith("trading_validate")) return null;
-  const result = asRecord(item.result);
-  if (result === null) return null;
-
-  const content = result.content;
-  if (typeof content === "string") return parseJson(content);
-  if (!Array.isArray(content)) return result;
-  for (const entry of content) {
-    const text = asRecord(entry)?.text;
-    if (typeof text !== "string") continue;
-    return parseJson(text);
-  }
-  return null;
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    // Truncated or a summary line. The ordinary tool row still renders it.
-    return null;
-  }
 }

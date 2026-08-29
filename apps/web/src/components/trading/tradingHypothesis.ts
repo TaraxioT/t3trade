@@ -28,6 +28,14 @@ import {
 } from "@t3tools/trading-contracts/thesis";
 
 import { formatSignedUsd, formatUsd } from "./tradingFormat";
+import {
+  asArray,
+  asRecord,
+  readNumber,
+  readString,
+  readTradingCardResult,
+  signedTone,
+} from "./cardPayload";
 
 export type CardTone = "positive" | "negative" | "neutral";
 
@@ -105,22 +113,6 @@ const STATUS_TONES: Record<HypothesisStatus, CardTone> = {
   shelved: "neutral",
 };
 
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-const asArray = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : []);
-
-const readNumber = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-
-const readString = (value: unknown): string | null =>
-  typeof value === "string" && value.length > 0 ? value : null;
-
-const signedTone = (value: number): CardTone =>
-  value > 0 ? "positive" : value < 0 ? "negative" : "neutral";
-
 const versionLabel = (value: unknown): string => {
   const version = readNumber(value);
   return version === null ? "unversioned" : `v${version}`;
@@ -185,7 +177,7 @@ function validationLine(raw: unknown): HypothesisValidationLine | null {
  * must still render.
  */
 export function deriveHypothesisCard(toolData: unknown): HypothesisCard | null {
-  const result = readHypothesisResult(toolData);
+  const result = readTradingCardResult(toolData, "trading_hypothesis");
   const record = asRecord(asRecord(result)?.hypothesis);
   if (record === null) return null;
 
@@ -224,36 +216,4 @@ export function deriveHypothesisCard(toolData: unknown): HypothesisCard | null {
     windowNote,
     rawJson: JSON.stringify(result, null, 2),
   };
-}
-
-/**
- * The result out of the tool call, through whichever shape the transport used.
- * Mirrors the validation card's reader; see its notes on the three shapes.
- */
-function readHypothesisResult(toolData: unknown): unknown {
-  const item = asRecord(toolData);
-  if (item === null) return null;
-  const name = typeof item.tool === "string" ? item.tool : item.toolName;
-  if (typeof name !== "string" || !name.endsWith("trading_hypothesis")) return null;
-  const result = asRecord(item.result);
-  if (result === null) return null;
-
-  const content = result.content;
-  if (typeof content === "string") return parseJson(content);
-  if (!Array.isArray(content)) return result;
-  for (const entry of content) {
-    const text = asRecord(entry)?.text;
-    if (typeof text !== "string") continue;
-    return parseJson(text);
-  }
-  return null;
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    // Truncated or a summary line. The ordinary tool row still renders it.
-    return null;
-  }
 }
