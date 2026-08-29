@@ -17,6 +17,7 @@ import {
   computeChartGeometry,
   clusterConditions,
   dedupeConditions,
+  MIN_EVENT_BAND_WIDTH,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
@@ -1925,5 +1926,95 @@ describe("clusterConditions and the hypothetical register", () => {
     });
     const chip = geometry!.gutterTags.find((tag) => tag.kind === "condition_above");
     expect(chip).toMatchObject({ label: "The 5m fade", register: "hypothetical" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// event bands
+// ---------------------------------------------------------------------------
+//
+// A band claims a span of wall-clock time. What is pinned here is the
+// placement only: clipping at both edges, the wholly-outside drop, and the
+// visible minimum a zero-width occurrence still gets.
+
+describe("computeChartGeometry — event bands", () => {
+  const base = 1_700_000_000_000;
+  const candles = fiveWalkingCandles();
+  // Five candles spaced a minute apart, no clock: timeStart is the first
+  // open, timeEnd the last, and the whole plot spans four minutes.
+  const first = base;
+  const last = base + 4 * 60_000;
+
+  const bandAt = (startAt: number, endAt: number, upcoming = false) => ({
+    key: `band-${startAt}`,
+    label: "Devcon",
+    startAt,
+    endAt,
+    upcoming,
+  });
+
+  const geometryWith = (bands: ReadonlyArray<ReturnType<typeof bandAt>>) =>
+    computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+      eventBands: bands,
+    });
+
+  it("clips a band that overhangs the left edge, keeping its right edge", () => {
+    // Half the span is before the window; the visible half must keep its
+    // honest width rather than being pinned to a marker-thin sliver.
+    const geometry = geometryWith([bandAt(first - 120_000, first + 60_000)]);
+    expect(geometry?.timeBands).toHaveLength(1);
+    const band = geometry?.timeBands[0];
+    expect(band?.x1).toBe(0);
+    expect(band?.x2).toBeGreaterThan(MIN_EVENT_BAND_WIDTH);
+    expect(band?.width).toBe(band?.x2 ?? 0);
+  });
+
+  it("drops a band wholly outside the plot rather than pinning it", () => {
+    const geometry = geometryWith([bandAt(last + 60_000, last + 120_000)]);
+    expect(geometry?.timeBands).toHaveLength(0);
+  });
+
+  it("gives a zero-width occurrence the visible minimum", () => {
+    const geometry = geometryWith([bandAt(base + 120_000, base + 120_000)]);
+    expect(geometry?.timeBands).toHaveLength(1);
+    const band = geometry?.timeBands[0];
+    expect(band?.width).toBe(MIN_EVENT_BAND_WIDTH);
+  });
+
+  it("keeps every field the renderer labels the band by", () => {
+    const geometry = geometryWith([bandAt(base + 60_000, base + 120_000, true)]);
+    const band = geometry?.timeBands[0];
+    expect(band?.key).toBe(`band-${base + 60_000}`);
+    expect(band?.label).toBe("Devcon");
+    expect(band?.upcoming).toBe(true);
+    expect(band?.startAt).toBe(base + 60_000);
+    expect(band?.endAt).toBe(base + 120_000);
+  });
+
+  it("clamps an upcoming band into the future gutter when a clock is running", () => {
+    const nowMillis = base + 4 * 60_000;
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 102,
+      nowMillis,
+      // Far beyond the gutter: pinned at the plot's right edge, visibly.
+      eventBands: [bandAt(base + 30 * 60_000, base + 31 * 60_000, true)],
+    });
+    const band = geometry?.timeBands[0];
+    expect(band).toBeDefined();
+    expect(band?.x1).toBeGreaterThanOrEqual(geometry?.nowX ?? 0);
+    expect(band?.width).toBeGreaterThanOrEqual(MIN_EVENT_BAND_WIDTH);
   });
 });

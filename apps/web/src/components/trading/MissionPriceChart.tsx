@@ -55,6 +55,7 @@ import {
   medianBarInterval,
   type ChartCondition,
   type ChartLevel,
+  type ChartTimeBandInput,
   type ChartLevelKind,
   type ChartPoint,
   type ChartZoneInput,
@@ -164,6 +165,17 @@ interface MissionPriceChartProps {
    * caller knows what its own layout reserves for a line of text.
    */
   readonly thesis?: TradingChartThesis | null;
+  /**
+   * Event occurrences of the thesis in view, drawn as vertical bands.
+   *
+   * Part of the same one-seam story as `thesis`: the panel hands the chart the
+   * wire's band list and the chart derives its own geometry, so every surface
+   * that draws a market draws the same calendar on it. Unlike the paper
+   * trades, the bands are interval-agnostic - an event is a claim about
+   * wall-clock time, like a price level is a claim about a price - so they
+   * render at whatever interval the chart is on.
+   */
+  readonly eventBands?: ReadonlyArray<ChartTimeBandInput>;
   /**
    * What a click on one of the validation's paper markers asks about.
    *
@@ -606,6 +618,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     pastMarkers,
     zones,
     thesis,
+    eventBands,
     onAskAboutMarker,
     draggableKinds,
     onLevelDragEnd,
@@ -764,6 +777,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(projection === undefined ? {} : { projection }),
     ...(timeMarkers === undefined ? {} : { timeMarkers }),
     ...(pastMarkers === undefined ? {} : { pastMarkers }),
+    ...(eventBands === undefined ? {} : { eventBands }),
   });
 
   // Too few candles → the parent renders a skeleton / "chart unavailable".
@@ -1162,6 +1176,39 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             />
           );
         })}
+
+        {/* Event bands: the thesis's external calendar, as vertical washes
+            behind the price. Ground like the coverage shading rather than
+            claims like the zones: the occurrence happened, whatever the price
+            did through it. The upcoming one takes the hypothetical register -
+            a thinner wash and dashed edges - because it has not happened yet,
+            and the chart must not draw the future as record. */}
+        {geometry.timeBands.map((band) => (
+          <g key={`event-band-${band.key}`} data-testid={`mission-chart-event-band-${band.key}`}>
+            <rect
+              x={band.x1}
+              y={0}
+              width={band.width}
+              height={CHART_VIEWBOX_HEIGHT}
+              fill={
+                band.upcoming
+                  ? "color-mix(in oklab, var(--color-muted-foreground) 6%, transparent)"
+                  : "color-mix(in oklab, var(--color-muted-foreground) 11%, transparent)"
+              }
+              stroke="none"
+            />
+            <line
+              x1={band.x2}
+              y1={0}
+              x2={band.x2}
+              y2={CHART_VIEWBOX_HEIGHT}
+              stroke="color-mix(in oklab, var(--color-muted-foreground) 35%, transparent)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+              strokeDasharray={band.upcoming ? "2 3" : undefined}
+            />
+          </g>
+        ))}
 
         {/* Price bands: the y-axis twin of the coverage shading above. A
             projection's honest interval, a paper trade's bracket — anything
@@ -1809,6 +1856,28 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           across the divider and labels the record with a time that has not
           happened. The frame is still safe because the chip may not grow past
           the remaining width, and its text truncates rather than overflowing. */}
+      {/* The event bands' names, at the top of the band each one belongs to.
+          HTML rather than SVG text because the viewBox scales non-uniformly
+          and text is the one thing that must not stretch. Pinned to the
+          band's left edge and truncated against the frame, so a long name
+          flags a band without fencing the price line in. */}
+      {geometry.timeBands.map((band) => (
+        <span
+          key={`event-label-${band.key}`}
+          data-testid={`mission-chart-event-label-${band.key}`}
+          className={cn(
+            "pointer-events-none absolute top-0.5 max-w-[10rem] truncate font-mono text-[9px] leading-none",
+            band.upcoming ? "text-muted-foreground/80" : "text-muted-foreground",
+          )}
+          style={{
+            left: `${(band.x1 / CHART_VIEWBOX_WIDTH) * 100}%`,
+            maxWidth: `calc(${((CHART_VIEWBOX_WIDTH - band.x1) / CHART_VIEWBOX_WIDTH) * 100}% - 4px)`,
+          }}
+        >
+          {band.label}
+        </span>
+      ))}
+
       {geometry.timeMarkers.map((marker) => (
         <span
           key={`timechip-${marker.key}`}

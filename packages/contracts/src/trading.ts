@@ -296,6 +296,19 @@ export const TradingChartThesis = Schema.Struct({
 });
 export type TradingChartThesis = typeof TradingChartThesis.Type;
 
+/** One event occurrence drawn as a vertical band behind the price. */
+export const TradingChartEventBand = Schema.Struct({
+  key: TrimmedNonEmptyString,
+  label: Schema.String,
+  /** Epoch millis, inclusive start of the occurrence. */
+  startAt: Schema.Number,
+  /** Epoch millis, the exclusive anchor every "after the event" reading uses. */
+  endAt: Schema.Number,
+  /** True when the occurrence has not ended yet; it lands in the future gutter. */
+  upcoming: Schema.Boolean,
+});
+export type TradingChartEventBand = typeof TradingChartEventBand.Type;
+
 /**
  * Candles plus the snapshot figures for one market. The chart needs both a
  * price series and the current mark/funding/OI/volume/change to render its
@@ -344,6 +357,16 @@ export const TradingMarketChartView = Schema.Struct({
    * Paper trades only — nothing here is a position, and the chart says so.
    */
   thesis: Schema.optional(TradingChartThesis),
+  /**
+   * The event occurrences of the thesis in view, drawn as bands.
+   *
+   * Sent at EVERY interval, unlike the paper trades above: trades are claims
+   * produced at one interval, but an event is a claim about a wall-clock time,
+   * like a price level is a claim about a price, so its band is true on every
+   * timeframe the chart can be asked for. Absent when no thesis is in view or
+   * it anchors on no event set.
+   */
+  eventBands: Schema.optional(Schema.Array(TradingChartEventBand)),
 });
 export type TradingMarketChartView = typeof TradingMarketChartView.Type;
 

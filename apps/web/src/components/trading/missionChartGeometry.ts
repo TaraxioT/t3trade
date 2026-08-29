@@ -475,6 +475,8 @@ export interface ChartGeometry {
   readonly timeMarkers: ReadonlyArray<ChartTimeMarker>;
   /** Events that already happened, placed inside the drawn window. */
   readonly pastMarkers: ReadonlyArray<ChartPastMarker>;
+  /** Event occurrences as placed bands, clipped to the plot. */
+  readonly timeBands: ReadonlyArray<ChartTimeBand>;
   /** Armed conditions the chart did not draw, so the panel can say how many. */
   readonly droppedConditions: number;
 }
@@ -497,6 +499,39 @@ export interface ChartTimeMarker {
    */
   readonly tone: ChartTimeMarkerTone;
 }
+
+/**
+ * An event occurrence the chart draws as a vertical band behind the price.
+ *
+ * Input shape: `startAt`/`endAt` in epoch millis, and `upcoming` when the
+ * occurrence has not ended yet, so the renderer can draw the not-yet-happened
+ * in the hypothetical register the future gutter already owns.
+ */
+export interface ChartTimeBandInput {
+  readonly key: string;
+  readonly label: string;
+  readonly startAt: number;
+  readonly endAt: number;
+  readonly upcoming: boolean;
+}
+
+/** A band the geometry has placed: viewBox x positions, clipped to the plot. */
+export interface ChartTimeBand {
+  readonly key: string;
+  readonly label: string;
+  readonly startAt: number;
+  readonly endAt: number;
+  readonly upcoming: boolean;
+  /** Left edge, never left of the plot. */
+  readonly x1: number;
+  /** Right edge, never right of the plot. */
+  readonly x2: number;
+  /** x2 - x1, at least the visible minimum a zero-width occurrence still gets. */
+  readonly width: number;
+}
+
+/** A band narrower than this reads as nothing at all, so it never goes below. */
+export const MIN_EVENT_BAND_WIDTH = 3;
 
 /** @see ChartTimeMarker.tone */
 export type ChartTimeMarkerTone = "auto" | "planned";
@@ -624,6 +659,14 @@ export interface ComputeChartGeometryInput {
     readonly failed?: boolean | undefined;
     readonly label?: string | undefined;
   }>;
+  /**
+   * Event occurrences to draw as vertical bands behind the price. Unlike every
+   * marker above, a band claims a SPAN of wall-clock time rather than a moment,
+   * and unlike the paper trades it is interval-agnostic: the occurrence
+   * happened at those times whatever bar size the chart is drawn on. Upcoming
+   * bands may sit past `now`, in the future gutter.
+   */
+  readonly eventBands?: ReadonlyArray<ChartTimeBandInput>;
   /**
    * Price bands to wash across the plot. Generic: the geometry places them and
    * has no opinion on what any of them means. @see ChartZoneInput
@@ -1655,6 +1698,29 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     });
   }
 
+  // --- event bands: spans of wall-clock time, behind the price. -----------
+  // A band wholly outside the plot is dropped rather than pinned: unlike a
+  // moment, a span pinned to an edge would claim a width it does not have.
+  // Edges that merely overhang are clipped. An upcoming band clamps into the
+  // future gutter the way a time marker does, so the next date stays on
+  // screen however far out it is.
+  const timeBands: ChartTimeBand[] = [];
+  for (const band of input.eventBands ?? []) {
+    const raw1 = xForTime(band.startAt);
+    const raw2 = xForTime(band.endAt);
+    // The gutter clamp below only exists with a clock, so an upcoming band
+    // past the axis end is dropped without one, exactly like a time marker.
+    const clampsIntoGutter = band.upcoming && hasClock;
+    if (raw2 < 0 || (!clampsIntoGutter && raw1 > PLOT_WIDTH)) continue;
+    const floor = clampsIntoGutter ? nowX : 0;
+    let x1 = clamp(raw1, floor, PLOT_WIDTH);
+    // A zero-width occurrence (or one pinned flat at an edge) still gets the
+    // visible minimum, shifted to stay inside the plot.
+    x1 = Math.min(x1, PLOT_WIDTH - MIN_EVENT_BAND_WIDTH);
+    const x2 = Math.max(clamp(raw2, floor, PLOT_WIDTH), x1 + MIN_EVENT_BAND_WIDTH);
+    timeBands.push({ ...band, x1, x2, width: x2 - x1 });
+  }
+
   // --- price bands, and the one gutter pass they share with the levels. ----
   const gutter = buildZonesAndTags({
     zones: input.zones ?? [],
@@ -1691,6 +1757,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     zones: gutter.zones,
     timeMarkers,
     pastMarkers,
+    timeBands,
     droppedConditions,
   };
 }

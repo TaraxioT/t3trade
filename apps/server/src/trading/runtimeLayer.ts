@@ -109,6 +109,8 @@ export const TradingCoreLayerLive = Layer.mergeAll(
         Layer.provide(TradingEventServiceLive),
       ),
     ),
+    // The same thesis's event bands, off the same calendar.
+    Layer.provide(TradingEventServiceLive),
   ),
   // What the venue lists, for the picker and the watchlist search. Same read
   // gateway again, so the universe and a resolve of one asset never disagree.

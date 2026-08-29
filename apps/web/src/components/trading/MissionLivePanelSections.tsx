@@ -427,6 +427,7 @@ export function ChartSlot(props: {
         firedWatchIds={props.firedWatchIds}
         {...(props.zones === undefined ? {} : { zones: props.zones })}
         {...(thesis === null ? {} : { thesis })}
+        {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
         {...(prefill === null || thesis === null
           ? {}
           : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}

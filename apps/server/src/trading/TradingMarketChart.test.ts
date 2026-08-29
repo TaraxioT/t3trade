@@ -17,6 +17,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type {
   AgentMarketSnapshot,
@@ -24,6 +26,10 @@ import type {
   MarketHistory,
 } from "@t3tools/trading-contracts/market";
 
+import { runMigrations } from "../persistence/Migrations.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import { TradingEventService, TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { TradingThesisValidationService } from "./TradingThesisValidationService.ts";
 import { TradingMarketChart, TradingMarketChartLive } from "./TradingMarketChart.ts";
@@ -118,7 +124,11 @@ const testLayer = () =>
   Effect.provide(
     Layer.merge(
       TradingMarketChartLive.pipe(
-        Layer.provide(Layer.mergeAll(stubGateway, emptyArchive, noValidations)),
+        Layer.provide(
+          Layer.mergeAll(stubGateway, emptyArchive, noValidations, TradingEventServiceLive),
+        ),
+        Layer.provideMerge(NodeSqliteClient.layerMemory()),
+        Layer.provideMerge(NodeServices.layer),
       ),
       TestClock.layer(),
     ),
@@ -340,6 +350,9 @@ it.effect("draws a closed window from the archive instead of asking the exchange
       Layer.merge(
         TradingMarketChartLive.pipe(
           Layer.provide(noValidations),
+          Layer.provideMerge(TradingEventServiceLive),
+          Layer.provideMerge(NodeSqliteClient.layerMemory()),
+          Layer.provideMerge(NodeServices.layer),
           Layer.provide(
             Layer.merge(
               stubGateway,
@@ -412,6 +425,9 @@ it.effect("serves latest bars from the archive while its tail is fresh", () =>
       Layer.merge(
         TradingMarketChartLive.pipe(
           Layer.provide(noValidations),
+          Layer.provideMerge(TradingEventServiceLive),
+          Layer.provideMerge(NodeSqliteClient.layerMemory()),
+          Layer.provideMerge(NodeServices.layer),
           Layer.provide(
             Layer.merge(
               stubGateway,
@@ -579,6 +595,9 @@ const withOpenPaperTrade = (interval: string) =>
         Layer.provide(
           Layer.mergeAll(stubGateway, emptyArchive, validationOn(interval, { open: true })),
         ),
+        Layer.provideMerge(TradingEventServiceLive),
+        Layer.provideMerge(NodeSqliteClient.layerMemory()),
+        Layer.provideMerge(NodeServices.layer),
       ),
       TestClock.layer(),
     ),
@@ -589,6 +608,9 @@ const withValidation = (interval: string) =>
     Layer.merge(
       TradingMarketChartLive.pipe(
         Layer.provide(Layer.mergeAll(stubGateway, emptyArchive, validationOn(interval))),
+        Layer.provideMerge(TradingEventServiceLive),
+        Layer.provideMerge(NodeSqliteClient.layerMemory()),
+        Layer.provideMerge(NodeServices.layer),
       ),
       TestClock.layer(),
     ),
@@ -671,6 +693,9 @@ it.effect("still draws the chart when the paper ledger cannot be read", () =>
     Effect.provide(
       Layer.merge(
         TradingMarketChartLive.pipe(
+          Layer.provideMerge(TradingEventServiceLive),
+          Layer.provideMerge(NodeSqliteClient.layerMemory()),
+          Layer.provideMerge(NodeServices.layer),
           Layer.provide(
             Layer.mergeAll(
               stubGateway,
@@ -686,3 +711,124 @@ it.effect("still draws the chart when the paper ledger cannot be read", () =>
     ),
   ),
 );
+
+// -- the event bands of the thesis in view ------------------------------------
+//
+// Bands are decoration beside the thesis read: served only on a live window,
+// from the calendar the thesis anchors on, at every interval. What is pinned
+// here is the selection (window overlap plus the single next upcoming date)
+// and the newest-first ordering the cap keeps.
+
+/** An archive that actually serves bars, so a live read stays off the gateway. */
+const servingArchive = Layer.succeed(TradingMarketArchive, {
+  candlesInWindow: (input: { readonly fromT: number; readonly toT: number }) =>
+    Effect.succeed(
+      Array.from({ length: 200 }, (_, i) => {
+        const t = input.toT - (200 - i) * 60_000;
+        return { t, tClose: t + 59_999, o: 100, h: 101, l: 99, c: 100, v: 10, n: 5 };
+      }),
+    ),
+  coverage: () => Effect.succeed({ recordingSince: null, gaps: [] }),
+  sessionLevels: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
+} as unknown as (typeof TradingMarketArchive)["Service"]);
+
+it.effect("derives the thesis's event bands: window overlap, the next date, newest first", () => {
+  // The stub names the set the (mutable) id below resolves to, so the thesis
+  // can anchor on a calendar recorded inside the same effect.
+  let anchoredSetId = "unset";
+  const validations = Layer.succeed(TradingThesisValidationService, {
+    forChart: () =>
+      Effect.succeed({
+        validation: {
+          id: "validation-chart",
+          interval: "1m",
+          status: "armed",
+          label: null,
+          notionalUsd: 1_000,
+          barsWatched: 0,
+          baseline: null,
+          thesis: {
+            market: "ETH",
+            interval: "1m",
+            side: "long",
+            entry: {
+              predicates: [
+                {
+                  left: { source: "event", eventSetId: anchoredSetId, label: "Devcon" },
+                  comparator: "below",
+                  right: { source: "constant", value: 30 },
+                },
+              ],
+            },
+            exits: { maxHoldBars: 10 },
+          },
+        },
+        trades: [],
+      } as never),
+  } as unknown as (typeof TradingThesisValidationService)["Service"]);
+
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({});
+    yield* sql`DELETE FROM trading_event_sets`;
+    yield* sql`DELETE FROM trading_event_occurrences`;
+
+    const eventService = yield* TradingEventService;
+    const recorded = yield* eventService.record({
+      name: "Devcon",
+      occurrences: [
+        // Inside the window, already ended.
+        { startAt: 30_000, endAt: 90_000, label: "Devcon SEA", source: "url" },
+        // Straddles now: overlapping and upcoming both at once.
+        { startAt: 950_000, endAt: 1_050_000, source: "url" },
+        // Wholly in the future, and NOT the next date: dropped.
+        { startAt: 2_000_000, endAt: 2_060_000, source: "url" },
+        // Wholly in the past, before the window: dropped.
+        { startAt: -9_000_000, endAt: -8_900_000, source: "url" },
+      ],
+      threadId: "thread-chart",
+      author: "agent",
+      now: 1_000_000,
+    });
+    assert.equal(recorded.outcome, "ok");
+    if (recorded.outcome !== "ok") return;
+    anchoredSetId = recorded.set.eventSetId;
+
+    // The live clock both the cache window and the band selection read.
+    yield* TestClock.adjust(Duration.millis(1_000_000));
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
+    assert.notEqual(view, null);
+    // Newest first: the straddling date, then the past one. The occurrence
+    // with no label of its own falls back to the set's name.
+    assert.deepEqual(view?.eventBands, [
+      {
+        key: `${anchoredSetId}:950000`,
+        label: "Devcon",
+        startAt: 950_000,
+        endAt: 1_050_000,
+        upcoming: true,
+      },
+      {
+        key: `${anchoredSetId}:30000`,
+        label: "Devcon SEA",
+        startAt: 30_000,
+        endAt: 90_000,
+        upcoming: false,
+      },
+    ]);
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        TradingMarketChartLive.pipe(
+          Layer.provide(Layer.mergeAll(stubGateway, servingArchive, validations)),
+          Layer.provideMerge(TradingEventServiceLive),
+          Layer.provideMerge(NodeSqliteClient.layerMemory()),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+        TestClock.layer(),
+      ),
+    ),
+  );
+});

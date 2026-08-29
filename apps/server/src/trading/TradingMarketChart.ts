@@ -32,15 +32,29 @@ import * as Ref from "effect/Ref";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import type {
   TradingChartCandle,
+  TradingChartEventBand,
   TradingChartInterval,
   TradingChartSessionLevels,
   TradingChartThesis,
   TradingMarketChartView,
 } from "@t3tools/contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
-import { describeThesis, thesisEntryPriceLevels } from "@t3tools/trading-contracts/thesis";
+import {
+  describeThesis,
+  thesisEntryPriceLevels,
+  thesisEventSets,
+} from "@t3tools/trading-contracts/thesis";
+import { TradingEventService } from "./TradingEventService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { composeReport, TradingThesisValidationService } from "./TradingThesisValidationService.ts";
+
+/**
+ * How many event bands one chart read carries. Twelve is more occurrences
+ * than a thesis anchored on one set can show inside a window (the set caps at
+ * 200, but a window overlaps a handful), and the number exists so a densely
+ * recorded calendar can never fence the price line in behind verticals.
+ */
+const MAX_EVENT_BANDS = 12;
 
 export interface TradingMarketChartReadInput {
   readonly market: string;
@@ -155,6 +169,7 @@ export const makeTradingMarketChart = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const archive = yield* TradingMarketArchive;
   const validations = yield* TradingThesisValidationService;
+  const events = yield* TradingEventService;
   const cache = yield* Ref.make(new Map<string, CachedChart>());
 
   /**
@@ -169,7 +184,13 @@ export const makeTradingMarketChart = Effect.gen(function* () {
   const readThesis = (
     market: string,
     interval: TradingChartInterval,
-  ): Effect.Effect<TradingChartThesis | null> =>
+    windowFrom: number,
+    windowTo: number,
+    now: number,
+  ): Effect.Effect<{
+    readonly wire: TradingChartThesis;
+    readonly bands: ReadonlyArray<TradingChartEventBand>;
+  } | null> =>
     Effect.gen(function* () {
       const found = yield* validations.forChart({ asset: market });
       if (found === null) return null;
@@ -182,40 +203,73 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       // run is tracking; the whole read is behind this module's own cache, so
       // it costs one composition per cache window, not one per poll.
       const comparison = composeReport(validation, found.trades).comparison;
+
+      // The event bands of the thesis in view: occurrences overlapping the
+      // served window, plus the single next upcoming occurrence per set so
+      // the gutter shows the date being waited on. Newest first, capped at
+      // MAX_EVENT_BANDS so a densely recorded calendar cannot fence the price
+      // line in behind verticals. Served at EVERY interval: trades are claims
+      // produced at one interval, but an event is a claim about a wall-clock
+      // time, like a price level is a claim about a price, so its band is
+      // true wherever the chart is drawn.
+      const bands: Array<TradingChartEventBand> = [];
+      for (const setId of thesisEventSets(validation.thesis)) {
+        const set = yield* events.show(setId);
+        if (set === null) continue;
+        const nextUpcoming = set.occurrences.find((row) => row.endAt > now) ?? null;
+        for (const row of set.occurrences) {
+          const overlapsWindow = row.startAt <= windowTo && row.endAt >= windowFrom;
+          const isTheNextUpcoming = nextUpcoming !== null && row.startAt === nextUpcoming.startAt;
+          if (!overlapsWindow && !isTheNextUpcoming) continue;
+          bands.push({
+            key: `${set.eventSetId}:${row.startAt}`,
+            label: row.label ?? set.name,
+            startAt: row.startAt,
+            endAt: row.endAt,
+            upcoming: row.endAt > now,
+          });
+        }
+      }
+      // Newest first, so the cap keeps the bands the window actually shows.
+      bands.sort((a, b) => b.startAt - a.startAt);
+
       return {
-        validationId: validation.id,
-        headline: validation.label ?? describeThesis(validation.thesis),
-        interval: validation.interval as TradingChartInterval,
-        status: validation.status,
-        expiresAt: validation.expiresAt,
-        intervalMatches,
-        side: validation.thesis.side,
-        comparison,
-        // Levels, not markers: they are true on every timeframe, because the
-        // rule's number does not change with the bars it is read on. The
-        // interval gate above is about WHEN the rule fired, which is a claim
-        // about times, and this is a claim about a price.
-        entryLevels: thesisEntryPriceLevels(validation.thesis),
-        trades: intervalMatches
-          ? found.trades.map((trade) => ({
-              id: trade.id,
-              entryTime: trade.entryTime,
-              entryPrice: trade.entryPrice,
-              exitTime: trade.exitTime,
-              exitPrice: trade.exitPrice,
-              netUsd: trade.netUsd,
-              exitReason: trade.exitReason,
-              // Only the OPEN trade carries its bracket. The chart bands the
-              // trade that is still running and nothing else - a settled
-              // trade's stop is a fact about a moment that has passed - and
-              // this array is uncapped, so sending two numbers per settled
-              // trade cost 5.2 KB on a 134-trade validation, on a 15s poll,
-              // for a pair of levels nothing reads.
-              ...(trade.exitTime === null
-                ? { stopPrice: trade.stopPrice, targetPrice: trade.targetPrice }
-                : { stopPrice: null, targetPrice: null }),
-            }))
-          : [],
+        wire: {
+          validationId: validation.id,
+          headline: validation.label ?? describeThesis(validation.thesis),
+          interval: validation.interval as TradingChartInterval,
+          status: validation.status,
+          expiresAt: validation.expiresAt,
+          intervalMatches,
+          side: validation.thesis.side,
+          comparison,
+          // Levels, not markers: they are true on every timeframe, because the
+          // rule's number does not change with the bars it is read on. The
+          // interval gate above is about WHEN the rule fired, which is a claim
+          // about times, and this is a claim about a price.
+          entryLevels: thesisEntryPriceLevels(validation.thesis),
+          trades: intervalMatches
+            ? found.trades.map((trade) => ({
+                id: trade.id,
+                entryTime: trade.entryTime,
+                entryPrice: trade.entryPrice,
+                exitTime: trade.exitTime,
+                exitPrice: trade.exitPrice,
+                netUsd: trade.netUsd,
+                exitReason: trade.exitReason,
+                // Only the OPEN trade carries its bracket. The chart bands the
+                // trade that is still running and nothing else - a settled
+                // trade's stop is a fact about a moment that has passed - and
+                // this array is uncapped, so sending two numbers per settled
+                // trade cost 5.2 KB on a 134-trade validation, on a 15s poll,
+                // for a pair of levels nothing reads.
+                ...(trade.exitTime === null
+                  ? { stopPrice: trade.stopPrice, targetPrice: trade.targetPrice }
+                  : { stopPrice: null, targetPrice: null }),
+              }))
+            : [],
+        },
+        bands: bands.slice(0, MAX_EVENT_BANDS),
       };
     }).pipe(
       Effect.catchCause((cause) =>
@@ -345,13 +399,16 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       //
       // Only on a live window. A post-mortem chart of last week is not where
       // a running validation belongs, and its markers would be outside it.
-      const thesis = windowed ? null : yield* readThesis(market, interval);
+      const thesis = windowed
+        ? null
+        : yield* readThesis(market, interval, windowFrom, windowTo, now);
 
       const view: TradingMarketChartView = {
         market,
         interval,
         candles: history.candles,
-        ...(thesis === null ? {} : { thesis }),
+        ...(thesis === null ? {} : { thesis: thesis.wire }),
+        ...(thesis === null || thesis.bands.length === 0 ? {} : { eventBands: thesis.bands }),
         ...(sessionLevels === null ? {} : { sessionLevels }),
         ...(coverage.recordingSince === null ? {} : { recordingSince: coverage.recordingSince }),
         ...(coverage.gaps.length === 0 ? {} : { gaps: coverage.gaps }),

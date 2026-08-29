@@ -141,6 +141,7 @@ export function MarketChartPanel({
           {...(data.recordingSince === undefined ? {} : { recordingSince: data.recordingSince })}
           {...(data.gaps === undefined ? {} : { gaps: data.gaps })}
           {...(thesis === null ? {} : { thesis })}
+          {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
           {...(prefill === null || thesis === null
             ? {}
             : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
