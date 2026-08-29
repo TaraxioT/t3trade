@@ -149,7 +149,7 @@ import {
   type HypothesisValidationSummary,
   type TradingHypothesisResult,
 } from "@t3tools/trading-contracts/hypothesis";
-import { describeThesis } from "@t3tools/trading-contracts/thesis";
+import { describeThesis, type TradingThesis } from "@t3tools/trading-contracts/thesis";
 import {
   describeSetupAlerts,
   thesisSetupAlerts,
@@ -263,39 +263,6 @@ const noteThreadMarket = (input: {
  * is reachable. A `missionId` argument is checked against that binding rather
  * than trusted; an omitted `missionId` resolves to the bound mission.
  */
-/**
- * Refuse an execution call from a mission whose purpose is to watch.
- *
- * The observe session profile does not hand the model `trading_plan`,
- * `trading_enter` or `trading_exit`, so under normal operation this never
- * fires. It exists because an allowlist is the model's view of the world and
- * this is the server's: a resumed session whose profile the registry lost, a
- * provider that ignores its allowlist, or a prompt that talks a model into
- * emitting the call anyway all arrive here, and all of them get the same
- * sentence rather than a position.
- *
- * One honest sentence, and it says what the mission IS rather than only what
- * it may not do - a refusal the model cannot explain to the user is a refusal
- * it will retry.
- */
-const refuseIfObserving = Effect.fn("TradingToolkit.refuseIfObserving")(function* (input: {
-  readonly mission: TradingMission;
-  readonly threadId: string;
-  readonly missionId: string | undefined;
-  readonly verb: string;
-}) {
-  if (input.mission.purpose !== "observe") return;
-  return yield* rejectCall({
-    reason: "mission_cannot_trade",
-    threadId: input.threadId,
-    missionId: input.missionId,
-    detail:
-      `This mission is watching ${input.mission.market}, not trading it: it holds no authority ` +
-      `on any market and cannot ${input.verb}. Say what the validations show; if the user wants ` +
-      "the idea traded, that needs a mission that holds the market, which this one cannot become.",
-  });
-});
-
 const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* (
   missionId: string | undefined,
 ): Effect.fn.Return<
@@ -335,6 +302,79 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
   }
 
   return { threadId: scope.threadId, mission: bound.value, boundNow: false };
+});
+
+/**
+ * Refuse an execution call from a mission whose purpose is to watch.
+ *
+ * The observe session profile does not hand the model `trading_plan`,
+ * `trading_enter` or `trading_exit`, so under normal operation this never
+ * fires. It exists because an allowlist is the model's view of the world and
+ * this is the server's: a resumed session whose profile the registry lost, a
+ * provider that ignores its allowlist, or a prompt that talks a model into
+ * emitting the call anyway all arrive here, and all of them get the same
+ * sentence rather than a position.
+ *
+ * One honest sentence, and it says what the mission IS rather than only what
+ * it may not do - a refusal the model cannot explain to the user is a refusal
+ * it will retry.
+ */
+const refuseIfObserving = Effect.fn("TradingToolkit.refuseIfObserving")(function* (input: {
+  readonly mission: TradingMission;
+  readonly threadId: string;
+  readonly missionId: string | undefined;
+  readonly verb: string;
+}) {
+  if (input.mission.purpose !== "observe") return;
+  return yield* rejectCall({
+    reason: "mission_cannot_trade",
+    threadId: input.threadId,
+    missionId: input.missionId,
+    detail:
+      `This mission is watching ${input.mission.market}, not trading it: it holds no authority ` +
+      `on any market and cannot ${input.verb}. Say what the validations show; if the user wants ` +
+      "the idea traded, that needs a mission that holds the market, which this one cannot become.",
+  });
+});
+
+/**
+ * Resolve what a run should measure when a call names an idea, a thesis, or
+ * both: naming the idea and nothing else runs its current version, and
+ * restating the thesis is a redundancy the caller may use to be explicit that
+ * then has to agree with that version.
+ *
+ * The link is checked before the run, not after: filing a measurement under a
+ * version it did not measure is the one failure the stamp exists to prevent,
+ * and a run that cannot be filed correctly should not have cost the archive
+ * read either. A validation stamped with a version whose thesis it is not
+ * testing would compare against the wrong backtest for weeks.
+ */
+const resolveRunThesis = Effect.fn("TradingToolkit.resolveRunThesis")(function* (input: {
+  readonly hypothesisId?: string | undefined;
+  readonly thesis?: TradingThesis | undefined;
+}) {
+  if (input.hypothesisId === undefined) {
+    if (input.thesis === undefined) return { outcome: "needs_input" } as const;
+    return { outcome: "ok", thesis: input.thesis, stamp: undefined } as const;
+  }
+  const hypotheses = yield* TradingHypothesisService;
+  const current = yield* hypotheses.currentVersion(input.hypothesisId).pipe(Effect.orDie);
+  if (current === null) return { outcome: "not_found" } as const;
+  if (input.thesis === undefined) {
+    return {
+      outcome: "ok",
+      thesis: current.thesis,
+      stamp: { hypothesisId: input.hypothesisId, hypothesisVersion: current.version },
+    } as const;
+  }
+  if (!thesesMatch(input.thesis, current.thesis)) {
+    return { outcome: "mismatch", version: current.version } as const;
+  }
+  return {
+    outcome: "ok",
+    thesis: input.thesis,
+    stamp: { hypothesisId: input.hypothesisId, hypothesisVersion: current.version },
+  } as const;
 });
 
 /**
@@ -3021,51 +3061,35 @@ const handlers = {
    */
   trading_backtest: (input) =>
     Effect.gen(function* () {
+      const resolved = yield* resolveRunThesis(input);
       // A bare call is the menu. A call naming only a hypothesis is not bare:
       // that idea already holds a thesis, and answering it with the vocabulary
       // was the first thing a live agent got wrong here.
-      if (input.thesis === undefined && input.hypothesisId === undefined) {
+      if (resolved.outcome === "needs_input") {
         return { menu: renderTradingBacktestMenu() };
       }
       const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
       const now = yield* Clock.currentTimeMillis;
       const hypotheses = yield* TradingHypothesisService;
-
-      // The link is checked before the run, not after: filing a measurement
-      // under a version it did not measure is the one failure this whole
-      // stamp exists to prevent, and a run that cannot be filed correctly
-      // should not have cost the archive read either.
-      let stamp: { readonly hypothesisId: string; readonly hypothesisVersion: number } | undefined;
-      let thesis = input.thesis;
-      if (input.hypothesisId !== undefined) {
-        const current = yield* hypotheses.currentVersion(input.hypothesisId).pipe(Effect.orDie);
-        if (current === null) {
-          return yield* rejectCall({
-            reason: "hypothesis_refused",
-            threadId,
-            missionId: input.missionId,
-            detail: "no hypothesis with that id",
-          });
-        }
-        // Naming the idea and nothing else runs its current version. Restating
-        // the thesis is then a redundancy the caller may use to be explicit,
-        // and it has to agree.
-        if (thesis === undefined) thesis = current.thesis;
-        else if (!thesesMatch(thesis, current.thesis)) {
-          return yield* rejectCall({
-            reason: "hypothesis_refused",
-            threadId,
-            missionId: input.missionId,
-            detail:
-              `this thesis is not version ${current.version} of that hypothesis, so the run would be ` +
-              "filed under a version it did not measure. Revise the hypothesis first, or drop the hypothesisId",
-          });
-        }
-        stamp = { hypothesisId: input.hypothesisId, hypothesisVersion: current.version };
+      if (resolved.outcome === "not_found") {
+        return yield* rejectCall({
+          reason: "hypothesis_refused",
+          threadId,
+          missionId: input.missionId,
+          detail: "no hypothesis with that id",
+        });
       }
-      // Unreachable: the guard above returns when both are absent, and the
-      // branch above fills it in from the hypothesis.
-      if (thesis === undefined) return { menu: renderTradingBacktestMenu() };
+      if (resolved.outcome === "mismatch") {
+        return yield* rejectCall({
+          reason: "hypothesis_refused",
+          threadId,
+          missionId: input.missionId,
+          detail:
+            `this thesis is not version ${resolved.version} of that hypothesis, so the run would be ` +
+            "filed under a version it did not measure. Revise the hypothesis first, or drop the hypothesisId",
+        });
+      }
+      const { thesis, stamp } = resolved;
 
       const backtest = yield* TradingBacktestService;
       const outcome = yield* backtest.run({
@@ -3138,7 +3162,8 @@ const handlers = {
 
       switch (input.action) {
         case "arm": {
-          if (input.thesis === undefined && input.hypothesisId === undefined) {
+          const resolved = yield* resolveRunThesis(input);
+          if (resolved.outcome === "needs_input") {
             return yield* refuse(
               "arm needs a thesis or a hypothesisId; the shape is trading_validate({})",
             );
@@ -3146,34 +3171,20 @@ const handlers = {
           if (input.durationHours === undefined) {
             return yield* refuse("arm needs durationHours; two weeks is 336");
           }
-
-          // Same rule the backtest path follows: naming the idea and nothing
-          // else validates its current version, and restating the thesis has
-          // to agree. A validation stamped with a version whose thesis it is
-          // not testing would compare against the wrong backtest for weeks.
-          const hypotheses = yield* TradingHypothesisService;
-          let stamp:
-            | { readonly hypothesisId: string; readonly hypothesisVersion: number }
-            | undefined;
-          let thesis = input.thesis;
-          if (input.hypothesisId !== undefined) {
-            const current = yield* hypotheses.currentVersion(input.hypothesisId).pipe(Effect.orDie);
-            if (current === null) return yield* refuse("no hypothesis with that id");
-            if (thesis === undefined) thesis = current.thesis;
-            else if (!thesesMatch(thesis, current.thesis)) {
-              return yield* refuse(
-                `this thesis is not version ${current.version} of that hypothesis. ` +
-                  "Revise the hypothesis first, or arm without the hypothesisId",
-              );
-            }
-            stamp = { hypothesisId: input.hypothesisId, hypothesisVersion: current.version };
+          if (resolved.outcome === "not_found") {
+            return yield* refuse("no hypothesis with that id");
           }
-          if (thesis === undefined) return yield* refuse("arm needs a thesis");
-          const armThesis = thesis;
+          if (resolved.outcome === "mismatch") {
+            return yield* refuse(
+              `this thesis is not version ${resolved.version} of that hypothesis. ` +
+                "Revise the hypothesis first, or arm without the hypothesisId",
+            );
+          }
+          const { thesis, stamp } = resolved;
 
           const armed = yield* validations
             .arm({
-              thesis: armThesis,
+              thesis,
               durationMs: input.durationHours * 60 * 60 * 1_000,
               ...(input.label === undefined ? {} : { label: input.label }),
               ...(threadId === undefined ? {} : { threadId }),
@@ -3183,6 +3194,7 @@ const handlers = {
             .pipe(Effect.orDie);
           if (armed.outcome === "refused") return yield* refuse(armed.reason);
           if (stamp !== undefined) {
+            const hypotheses = yield* TradingHypothesisService;
             yield* hypotheses
               .noteTested({ hypothesisId: stamp.hypothesisId, now })
               .pipe(Effect.orDie);
@@ -3195,7 +3207,7 @@ const handlers = {
           // cannot run leaves the baseline null, which the report states
           // rather than papering over with a zero.
           const backtest = yield* TradingBacktestService;
-          const priced = yield* backtest.run({ thesis: armThesis, now });
+          const priced = yield* backtest.run({ thesis, now });
           if (priced.status === "ok") {
             yield* validations
               .setBaseline({ id: armed.validation.id, baseline: priced.report.stats })
@@ -3214,7 +3226,7 @@ const handlers = {
           return validateResult({
             ...(report === null ? {} : { report }),
             outcome:
-              `Validating ${describeThesis(armThesis)} on paper until ` +
+              `Validating ${describeThesis(thesis)} on paper until ` +
               `${new Date(armed.validation.expiresAt).toISOString()}. No order will be placed.` +
               supersededLine,
           });
@@ -3350,26 +3362,10 @@ const handlers = {
         );
 
       const detail = (record: HypothesisRecord) =>
-        Effect.gen(function* () {
-          const linked = yield* enrich(record);
-          return {
-            hypothesisId: record.hypothesisId,
-            threadId: record.threadId,
-            title: record.title,
-            status: record.status,
-            conclusion: record.conclusion,
-            currentVersion: record.currentVersion,
-            thesis: record.thesis,
-            currentNote: record.currentNote,
-            createdAt: record.createdAt,
-            updatedAt: record.updatedAt,
-            versions: record.versions,
-            runs: record.runs,
-            validations: linked,
-            versionCount: record.versionCount,
-            runCount: record.runCount,
-          } satisfies HypothesisDetail;
-        });
+        Effect.map(
+          enrich(record),
+          (validations) => ({ ...record, validations }) satisfies HypothesisDetail,
+        );
 
       /**
        * Who wrote this version.

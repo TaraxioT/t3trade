@@ -475,22 +475,16 @@ export const makeTradingHypothesisService = Effect.gen(function* () {
       if (row === null)
         return { outcome: "refused", reason: "no hypothesis with that id" } as const;
 
+      // Shelving without a reason is allowed: putting an idea down is often
+      // the whole of what happened to it. Concluding is not.
+      if (input.to !== "shelved" && input.conclusion === undefined) {
+        return {
+          outcome: "refused",
+          reason: "concluding needs one sentence saying what the evidence showed",
+        } as const;
+      }
       let conclusion: string | null = null;
-      if (input.to === "shelved") {
-        // Shelving without a reason is allowed: putting an idea down is often
-        // the whole of what happened to it.
-        if (input.conclusion !== undefined) {
-          const read = readText(input.conclusion, "conclusion", HYPOTHESIS_NOTE_MAX_CHARS);
-          if ("reason" in read) return { outcome: "refused", reason: read.reason } as const;
-          conclusion = read.text;
-        }
-      } else {
-        if (input.conclusion === undefined) {
-          return {
-            outcome: "refused",
-            reason: "concluding needs one sentence saying what the evidence showed",
-          } as const;
-        }
+      if (input.conclusion !== undefined) {
         const read = readText(input.conclusion, "conclusion", HYPOTHESIS_NOTE_MAX_CHARS);
         if ("reason" in read) return { outcome: "refused", reason: read.reason } as const;
         conclusion = read.text;
