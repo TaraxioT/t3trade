@@ -12,6 +12,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   checkEventStudy,
   EVENT_STUDY_MAX_HORIZON_BARS,
+  parseTradingEventsOccurrence,
   runEventStudy,
   validateEventOccurrence,
   type TradingEventOccurrence,
@@ -225,5 +226,48 @@ describe("the caps and the occurrence validator", () => {
       "source cannot be empty",
     );
     expect(validateEventOccurrence({ startAt: 0, endAt: 1, source: "user provided" })).toBeNull();
+  });
+});
+
+describe("the tool's ISO conventions", () => {
+  const parse = (input: { start: string; end?: string; label?: string; source: string }) =>
+    parseTradingEventsOccurrence(input);
+
+  it("reads a date-only start as UTC midnight, ending at the next one", () => {
+    const parsed = parse({ start: "2024-11-12", source: "url" });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T00:00:00Z"));
+    // The whole day, exclusively: after Devcon means after the LAST day.
+    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-13T00:00:00Z"));
+  });
+
+  it("a date-only end is the exclusive next midnight of THAT day", () => {
+    const parsed = parse({ start: "2024-11-12", end: "2024-11-15", source: "url" });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-16T00:00:00Z"));
+  });
+
+  it("a timed start with no end still ends at its day's exclusive midnight", () => {
+    const parsed = parse({ start: "2024-11-12T09:30:00Z", source: "url" });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T09:30:00Z"));
+    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-13T00:00:00Z"));
+  });
+
+  it("a timed end is the instant it names", () => {
+    const parsed = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T18:00:00Z",
+      source: "u",
+    });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-12T18:00:00Z"));
+  });
+
+  it("refuses a string that is not a date, naming the field", () => {
+    const bad = parse({ start: "Devcon, probably", source: "url" });
+    if ("reason" in bad) expect(bad.reason).toContain("start");
+    const badEnd = parse({ start: "2024-11-12", end: "soon after", source: "url" });
+    if ("reason" in badEnd) expect(badEnd.reason).toContain("end");
   });
 });

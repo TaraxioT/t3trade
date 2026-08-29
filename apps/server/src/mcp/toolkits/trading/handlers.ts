@@ -135,9 +135,27 @@ import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistory
 import { TradingEventInbox } from "../../../trading/TradingEventInbox.ts";
 import { TradingMarketArchive } from "../../../trading/TradingMarketArchive.ts";
 import { TradingToolkit } from "./tools.ts";
-import { TradingBacktestService } from "../../../trading/TradingBacktestService.ts";
+import {
+  coarserIntervals,
+  toCandle,
+  TradingBacktestService,
+} from "../../../trading/TradingBacktestService.ts";
 import { TradingThesisValidationService } from "../../../trading/TradingThesisValidationService.ts";
-import { renderTradingBacktestMenu } from "@t3tools/trading-contracts/backtest";
+import {
+  BACKTEST_MAX_BARS,
+  checkBacktestBarBudget,
+  renderTradingBacktestMenu,
+} from "@t3tools/trading-contracts/backtest";
+import {
+  checkEventStudy,
+  EVENT_STUDY_DEFAULT_HORIZON_BARS,
+  parseTradingEventsOccurrence,
+  renderTradingEventsMenu,
+  runEventStudy,
+  type TradingEventsResult,
+  type TradingEventsOccurrenceInput,
+  type TradingEventOccurrence,
+} from "@t3tools/trading-contracts/eventSets";
 import { renderForwardMenu, type TradingValidateResult } from "@t3tools/trading-contracts/forward";
 import {
   HYPOTHESIS_SHOW_RUNS,
@@ -163,6 +181,14 @@ import {
   type HypothesisRecord,
 } from "../../../trading/TradingHypothesisService.ts";
 import { TradingEventService } from "../../../trading/TradingEventService.ts";
+import {
+  ARCHIVE_INTERVALS,
+  INTERVAL_MS,
+  type ArchiveInterval,
+} from "../../../trading/archive/config.ts";
+
+/** A day, for the study window default. */
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 interface BoundCall {
   readonly threadId: string;
@@ -198,6 +224,9 @@ const validateResult = (value: TradingValidateResult): TradingValidateResult => 
 /** The same collapse for `trading_hypothesis`; see the note above. */
 const hypothesisResult = (value: TradingHypothesisResult): TradingHypothesisResult => value;
 
+/** The same collapse for `trading_events`; see the note above. */
+const eventsResult = (value: TradingEventsResult): TradingEventsResult => value;
+
 const rejectCall = (input: {
   readonly reason:
     | "capability_not_granted"
@@ -212,6 +241,7 @@ const rejectCall = (input: {
     | "no_archived_bars"
     | "validation_refused"
     | "hypothesis_refused"
+    | "events_refused"
     | "mission_cannot_trade"
     | "sweep_invalid";
   readonly threadId: string;
@@ -3586,6 +3616,203 @@ const handlers = {
                 : `"${moved.hypothesis.title}" is ${describeHypothesisStatus(to).toLowerCase()}. ` +
                   "Nothing was traded; that is still a decision you make out loud.",
           });
+        }
+      }
+    }),
+
+  /**
+   * The external calendar: record it, study it, and keep it honest.
+   *
+   * The tool never reaches the network. Dates arrive researched, each with
+   * the source it came from, and an occurrence without one is refused: a
+   * date nobody can check is a number every later number silently rests on.
+   * `study` is descriptive arithmetic over archived bars, the same read
+   * pattern `trading_backtest` uses; profit simulation stays the backtest's
+   * job, through a thesis whose operand anchors on the set.
+   */
+  trading_events: (input) =>
+    Effect.gen(function* () {
+      if (input.action === undefined) {
+        return eventsResult({ menu: renderTradingEventsMenu() });
+      }
+
+      const eventService = yield* TradingEventService;
+      const now = yield* Clock.currentTimeMillis;
+      const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
+
+      // `missionId` is attribution, never authority: an event set takes no
+      // mission state and can reach no order, whether or not one is named.
+      const refuse = (detail: string) =>
+        rejectCall({ reason: "events_refused", threadId, missionId: input.missionId, detail });
+
+      /**
+       * Who wrote this occurrence. Always `agent`, for the same reason the
+       * hypothesis handler gives: the invocation scope carries a thread and a
+       * provider session, never a person, and attributing a model's own
+       * arguments to the user would put a name on words they did not write.
+       */
+      const author = "agent" as const;
+
+      /** Tool ISO input to domain occurrences, refusing at the first bad one. */
+      const parseAll = (
+        rows: ReadonlyArray<TradingEventsOccurrenceInput>,
+      ):
+        | { readonly occurrences: ReadonlyArray<TradingEventOccurrence> }
+        | { readonly reason: string } => {
+        const parsed: Array<TradingEventOccurrence> = [];
+        for (const [index, row] of rows.entries()) {
+          const read = parseTradingEventsOccurrence(row);
+          if ("reason" in read) return { reason: `occurrence ${index + 1}: ${read.reason}` };
+          parsed.push(read.occurrence);
+        }
+        return { occurrences: parsed };
+      };
+
+      switch (input.action) {
+        case "record": {
+          if (input.name === undefined) return yield* refuse("record needs a name");
+          if (input.occurrences === undefined) {
+            return yield* refuse("record needs occurrences: [{start, end?, label?, source}]");
+          }
+          const parsed = parseAll(input.occurrences);
+          if ("reason" in parsed) return yield* refuse(parsed.reason);
+          const written = yield* eventService
+            .record({
+              name: input.name,
+              ...(input.description === undefined ? {} : { description: input.description }),
+              occurrences: parsed.occurrences,
+              threadId,
+              author,
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (written.outcome === "refused") return yield* refuse(written.reason);
+          const upcoming = written.set.occurrences.filter((row) => row.endAt > now).length;
+          return eventsResult({
+            eventSet: written.set,
+            outcome:
+              `${written.set.occurrences.length} occurrence(s) on record for "${written.set.name}"` +
+              (upcoming === 0
+                ? ""
+                : `, ${upcoming} still in the future: the event operand reads undefined until a date ends, then its window opens`) +
+              ". Re-record the same name to correct a date.",
+          });
+        }
+
+        case "add": {
+          if (input.eventSetId === undefined) return yield* refuse("add needs an eventSetId");
+          if (input.occurrences === undefined) {
+            return yield* refuse("add needs occurrences: [{start, end?, label?, source}]");
+          }
+          const parsed = parseAll(input.occurrences);
+          if ("reason" in parsed) return yield* refuse(parsed.reason);
+          const written = yield* eventService
+            .add({ eventSetId: input.eventSetId, occurrences: parsed.occurrences, author, now })
+            .pipe(Effect.orDie);
+          if (written.outcome === "refused") return yield* refuse(written.reason);
+          return eventsResult({
+            eventSet: written.set,
+            outcome: `"${written.set.name}" now holds ${written.set.occurrences.length} occurrence(s).`,
+          });
+        }
+
+        case "list": {
+          const rows = yield* eventService.list({ now }).pipe(Effect.orDie);
+          return eventsResult({
+            eventSets: rows,
+            outcome: `${rows.length} active event set(s)`,
+          });
+        }
+
+        case "show": {
+          if (input.eventSetId === undefined) {
+            return yield* refuse("show needs an eventSetId; trading_events({action:'list'})");
+          }
+          const set = yield* eventService.show(input.eventSetId).pipe(Effect.orDie);
+          if (set === null) return yield* refuse("no event set with that id");
+          const retired =
+            set.retiredAt === null
+              ? ""
+              : " The set is retired: new theses refuse it, saved ones keep evaluating.";
+          return eventsResult({
+            eventSet: set,
+            outcome: `"${set.name}", ${set.occurrences.length} occurrence(s).${retired}`,
+          });
+        }
+
+        case "retire": {
+          if (input.eventSetId === undefined) return yield* refuse("retire needs an eventSetId");
+          const retired = yield* eventService
+            .retire({ eventSetId: input.eventSetId, now })
+            .pipe(Effect.orDie);
+          if (retired.outcome === "refused") return yield* refuse(retired.reason);
+          return eventsResult({
+            eventSet: retired.set,
+            outcome:
+              `"${retired.set.name}" is retired. New theses refuse it; theses saved while it was ` +
+              "live keep evaluating its dates. Record the name again to bring it back.",
+          });
+        }
+
+        case "study": {
+          if (input.eventSetId === undefined) return yield* refuse("study needs an eventSetId");
+          if (input.market === undefined) return yield* refuse("study needs a market");
+          const set = yield* eventService.show(input.eventSetId).pipe(Effect.orDie);
+          if (set === null) return yield* refuse("no event set with that id");
+
+          const horizonBars = input.horizonBars ?? EVENT_STUDY_DEFAULT_HORIZON_BARS;
+          const badHorizon = checkEventStudy({ horizonBars });
+          if (badHorizon !== null) return yield* refuse(badHorizon);
+
+          // The TradingBacktestService read pattern, in miniature: probe what
+          // the archive holds, refuse a window too large to walk before the
+          // read, then take the bars and answer over them.
+          const interval = (input.interval ?? "1d") as ArchiveInterval;
+          const width = INTERVAL_MS[interval];
+          if (width === undefined) {
+            return yield* refuse(
+              `${interval} is not recorded; the archive holds ${ARCHIVE_INTERVALS.join(", ")}`,
+            );
+          }
+          const archive = yield* TradingMarketArchive;
+          const coverageProbe = yield* archive
+            .coverage({ coin: input.market, interval, fromT: 0, toT: now })
+            .pipe(Effect.orDie);
+          // Everything the archive holds, like a backtest with no lookback.
+          const requestedFromT = coverageProbe.recordingSince ?? now - 30 * DAY_MS;
+          const requestedBars = Math.ceil(Math.max(0, now - requestedFromT) / width);
+          const tooLarge = checkBacktestBarBudget({
+            interval,
+            bars: requestedBars,
+            coarser: coarserIntervals(interval),
+          });
+          if (tooLarge !== null) return yield* refuse(tooLarge);
+
+          const rows = yield* archive
+            .candlesInWindow({
+              coin: input.market,
+              interval,
+              fromT: requestedFromT,
+              toT: now,
+              maxBars: BACKTEST_MAX_BARS,
+            })
+            .pipe(Effect.orDie);
+          if (rows.length === 0) {
+            return yield* refuse(
+              `the archive holds no ${interval} bars for ${input.market} in that window` +
+                (coverageProbe.recordingSince === null
+                  ? " (nothing is recorded for this market at all)"
+                  : ""),
+            );
+          }
+
+          const study = runEventStudy({
+            occurrences: set.occurrences,
+            candles: rows.map(toCandle),
+            intervalMs: width,
+            horizonBars,
+          });
+          return eventsResult({ study, outcome: study.verdict });
         }
       }
     }),

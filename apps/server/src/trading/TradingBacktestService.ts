@@ -130,7 +130,7 @@ export const coarserIntervals = (interval: string): ReadonlyArray<string> => {
 };
 
 /** The archive's row shape, in the shape the pure engine reads. */
-const toCandle = (row: CandleRow): MarketCandle =>
+export const toCandle = (row: CandleRow): MarketCandle =>
   ({
     openTime: row.t,
     closeTime: row.tClose,

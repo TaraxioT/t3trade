@@ -36,7 +36,8 @@
 import * as Schema from "effect/Schema";
 
 import type { MarketCandle } from "./market.ts";
-import { UnixMillis } from "./primitives.ts";
+import { UnixMillis, TradingMarket } from "./primitives.ts";
+import { BacktestInterval } from "./thesis.ts";
 
 /**
  * Occurrences one set may hold.
@@ -49,6 +50,9 @@ export const EVENT_SET_MAX_OCCURRENCES = 200;
 
 /** Bars forward one event study may measure. A thousand and a day is enough. */
 export const EVENT_STUDY_MAX_HORIZON_BARS = 500;
+
+/** The horizon a study runs when the call does not name one: a month of bars. */
+export const EVENT_STUDY_DEFAULT_HORIZON_BARS = 30;
 
 /**
  * One dated occurrence of the event, in UTC milliseconds.
@@ -114,30 +118,31 @@ export function validateEventOccurrence(occurrence: TradingEventOccurrence): str
 // ---------------------------------------------------------------------------
 
 /** What the study could measure for one occurrence, and what it could not. */
-export interface EventStudyRow {
-  readonly startAt: number;
-  readonly endAt: number;
+export const EventStudyRow = Schema.Struct({
+  startAt: UnixMillis,
+  endAt: UnixMillis,
   /** The occurrence's own label, when it carries one. */
-  readonly label: string | undefined;
+  label: Schema.optional(Schema.String),
   /** Where the date came from, so the row can be checked. */
-  readonly source: string;
-  readonly covered: boolean;
+  source: Schema.String,
+  covered: Schema.Boolean,
   /** Present on every uncovered row: why the archive could not measure it. */
-  readonly reason: string | undefined;
-  readonly entryTime: number | undefined;
-  readonly entryPrice: number | undefined;
-  readonly exitTime: number | undefined;
-  readonly exitPrice: number | undefined;
+  reason: Schema.optional(Schema.String),
+  entryTime: Schema.optional(UnixMillis),
+  entryPrice: Schema.optional(Schema.Number),
+  exitTime: Schema.optional(UnixMillis),
+  exitPrice: Schema.optional(Schema.Number),
   /**
    * Signed, long convention: (exit - entry) / entry as a percentage. The
    * study takes no view on side; a short reads the same number negated.
    */
-  readonly returnPct: number | undefined;
+  returnPct: Schema.optional(Schema.Number),
   /** True when the window ran out before the horizon did. */
-  readonly truncated: boolean;
+  truncated: Schema.Boolean,
   /** Bars actually measured, horizonBars when not truncated. */
-  readonly barsCovered: number | undefined;
-}
+  barsCovered: Schema.optional(Schema.Number),
+});
+export type EventStudyRow = typeof EventStudyRow.Type;
 
 /**
  * The same question asked of every bar rather than every event: what did a
@@ -146,31 +151,33 @@ export interface EventStudyRow {
  * Breakpoint" is only interesting if the market was not going up 8 percent
  * over every 30 bars anyway.
  */
-export interface EventStudyBaseline {
-  readonly samples: number;
-  readonly meanReturnPct: number;
-  readonly medianReturnPct: number;
-}
+export const EventStudyBaseline = Schema.Struct({
+  samples: Schema.Number,
+  meanReturnPct: Schema.Number,
+  medianReturnPct: Schema.Number,
+});
+export type EventStudyBaseline = typeof EventStudyBaseline.Type;
 
-export interface EventStudyReport {
-  readonly horizonBars: number;
+export const EventStudyReport = Schema.Struct({
+  horizonBars: Schema.Number,
   /** The horizon in wall-clock time, for the surfaces that say it in words. */
-  readonly horizonMs: number;
-  readonly n: number;
-  readonly nCovered: number;
+  horizonMs: Schema.Number,
+  n: Schema.Number,
+  nCovered: Schema.Number,
   /** Null when nothing was covered. Never guessed, never zero. */
-  readonly meanReturnPct: number | null;
-  readonly medianReturnPct: number | null;
+  meanReturnPct: Schema.NullOr(Schema.Number),
+  medianReturnPct: Schema.NullOr(Schema.Number),
   /** Share of covered occurrences with a return above zero. */
-  readonly hitRatePercent: number | null;
-  readonly bestReturnPct: number | null;
-  readonly worstReturnPct: number | null;
+  hitRatePercent: Schema.NullOr(Schema.Number),
+  bestReturnPct: Schema.NullOr(Schema.Number),
+  worstReturnPct: Schema.NullOr(Schema.Number),
   /** Null when the served window is shorter than the horizon. */
-  readonly baseline: EventStudyBaseline | null;
-  readonly rows: ReadonlyArray<EventStudyRow>;
+  baseline: Schema.NullOr(EventStudyBaseline),
+  rows: Schema.Array(EventStudyRow),
   /** Coverage first, numbers second, and never a claim of significance. */
-  readonly verdict: string;
-}
+  verdict: Schema.String,
+});
+export type EventStudyReport = typeof EventStudyReport.Type;
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
@@ -402,4 +409,142 @@ function composeVerdict(input: {
       ? ""
       : `, against a baseline of ${input.baseline.meanReturnPct}% over the same horizon sampled at every archived bar`;
   return `${coverage}. Mean forward return ${round2(input.mean)}% over ${input.horizonBars} bars${against}. ${honesty}`;
+}
+
+// ---------------------------------------------------------------------------
+// the tool surface
+// ---------------------------------------------------------------------------
+
+/** One set as `list` shows it. */
+export const TradingEventSetSummary = Schema.Struct({
+  eventSetId: Schema.String,
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  occurrenceCount: Schema.Number,
+  /** The next occurrence that has not ended yet, when there is one. */
+  nextUpcomingEndAt: Schema.NullOr(UnixMillis),
+  updatedAt: UnixMillis,
+});
+export type TradingEventSetSummary = typeof TradingEventSetSummary.Type;
+
+export const TRADING_EVENTS_TOOL = "trading_events";
+
+export const TradingEventsAction = Schema.Literals([
+  "record",
+  "add",
+  "list",
+  "show",
+  "study",
+  "retire",
+]);
+export type TradingEventsAction = typeof TradingEventsAction.Type;
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * One occurrence as the tool takes it: ISO strings, per the wire contract.
+ *
+ * A date-only string means 00:00 UTC; a date-only `end` means the exclusive
+ * next midnight; a missing `end` means the start day's exclusive midnight, so
+ * "after Devcon" means after the LAST day and a multi-day event is one
+ * occurrence, anchored on its end.
+ */
+export const TradingEventsOccurrenceInput = Schema.Struct({
+  start: Schema.String,
+  end: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
+  source: Schema.String,
+});
+export type TradingEventsOccurrenceInput = typeof TradingEventsOccurrenceInput.Type;
+
+/** The instant an ISO string names, treating a date-only string as UTC midnight. */
+const parseInstant = (text: string): number | null => {
+  const iso = /^\d{4}-\d{2}-\d{2}$/.exec(text.trim()) ? `${text.trim()}T00:00:00Z` : text.trim();
+  const parsed = Date.parse(iso);
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+/**
+ * Tool input to domain occurrence, or the refusal naming which one broke.
+ *
+ * Pure, and the only place the ISO conventions live: every caller that reads
+ * tool input goes through here, so "date-only means midnight UTC" means one
+ * thing rather than one thing per caller.
+ */
+export function parseTradingEventsOccurrence(
+  input: TradingEventsOccurrenceInput,
+): { readonly occurrence: TradingEventOccurrence } | { readonly reason: string } {
+  const startAt = parseInstant(input.start);
+  if (startAt === null) {
+    return { reason: `start "${input.start}" is not an ISO date` };
+  }
+  let endAt: number;
+  if (input.end === undefined) {
+    // The start day's exclusive midnight: the whole day, whatever time it began.
+    endAt = Math.floor(startAt / DAY_MS) * DAY_MS + DAY_MS;
+  } else {
+    const parsedEnd = parseInstant(input.end);
+    if (parsedEnd === null) {
+      return { reason: `end "${input.end}" is not an ISO date` };
+    }
+    endAt = /^\d{4}-\d{2}-\d{2}$/.test(input.end.trim()) ? parsedEnd + DAY_MS : parsedEnd;
+  }
+  return {
+    occurrence: {
+      startAt,
+      endAt,
+      ...(input.label === undefined ? {} : { label: input.label }),
+      source: input.source,
+    },
+  };
+}
+
+export const TradingEventsInput = Schema.Struct({
+  /** Attribution, never authority: an event set takes no mission state. */
+  missionId: Schema.optional(Schema.String),
+  action: Schema.optional(TradingEventsAction),
+  /** Required by everything except `record` and `list`. */
+  eventSetId: Schema.optional(Schema.String),
+  /** Required by `record`. */
+  name: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  /** Required by `record` and `add`: the dated occurrences with their sources. */
+  occurrences: Schema.optional(Schema.Array(TradingEventsOccurrenceInput)),
+  /** Required by `study`: the market whose archived bars answer it. */
+  market: Schema.optional(TradingMarket),
+  interval: Schema.optional(BacktestInterval),
+  /** Bars forward the study measures. Defaults to 30. */
+  horizonBars: Schema.optional(Schema.Number),
+});
+export type TradingEventsInput = typeof TradingEventsInput.Type;
+
+export const TradingEventsResult = Schema.Struct({
+  /** Set by `record`, `add`, `show` and `retire`. */
+  eventSet: Schema.optional(TradingEventSet),
+  /** Set by `list`. */
+  eventSets: Schema.optional(Schema.Array(TradingEventSetSummary)),
+  /** Set by `study`, with the composed honesty sentence in `verdict`. */
+  study: Schema.optional(EventStudyReport),
+  /** What the call did, in one sentence the model can relay. */
+  outcome: Schema.optional(Schema.String),
+  /** Why a call changed nothing. Present only on a refusal. */
+  refused: Schema.optional(Schema.String),
+  /** The vocabulary, when this call was the menu call. */
+  menu: Schema.optional(Schema.String),
+});
+export type TradingEventsResult = typeof TradingEventsResult.Type;
+
+/**
+ * The vocabulary, served to the call that asked. Composed from the constants
+ * that enforce it, the same discipline the backtest menu follows, so a cap
+ * moved here changes the sentence without anybody remembering to.
+ */
+export function renderTradingEventsMenu(): string {
+  return [
+    "record {name, description?, occurrences: [{start, end?, label?, source}]} creates the set or fully replaces its dates (case-insensitive name, a retired set revives); re-recording is the correction path",
+    `dates are ISO; date-only means UTC midnight, a date-only end means the next midnight, a missing end means the start day's end; every occurrence needs a source (the URL, or "user provided"), at most ${EVENT_SET_MAX_OCCURRENCES} a set`,
+    "add {eventSetId, occurrences} appends; show {eventSetId}; retire {eventSetId} takes the set out of new theses but keeps evaluating saved ones; list",
+    `study {eventSetId, market, interval?, horizonBars?} measures the forward return after each occurrence against an every-bar baseline over the same horizon, horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS} up to ${EVENT_STUDY_MAX_HORIZON_BARS}; no fees, no sizing, occurrences outside archived history are reported rather than dropped`,
+    "theses anchor with operand {source: event, eventSetId, label}: bars since the most recent ended occurrence; profit simulation stays trading_backtest's job",
+  ].join(" · ");
 }

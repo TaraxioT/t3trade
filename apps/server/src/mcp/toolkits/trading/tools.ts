@@ -28,6 +28,7 @@ import {
   TradingHypothesisInput,
   TradingHypothesisResult,
 } from "@t3tools/trading-contracts/hypothesis";
+import { TradingEventsInput, TradingEventsResult } from "@t3tools/trading-contracts/eventSets";
 import { TradingEnterInput } from "@t3tools/trading-contracts/entry";
 import { TradingExitInput } from "@t3tools/trading-contracts/exit";
 import { Playbook } from "@t3tools/trading-contracts/playbook";
@@ -300,6 +301,25 @@ export const TradingHypothesisTool = Tool.make("trading_hypothesis", {
   // read twice differs.
   .annotate(Tool.OpenWorld, true);
 
+export const TradingEventsTool = Tool.make("trading_events", {
+  description:
+    "The external calendar a thesis can anchor on. record {name, occurrences:[{start, end?, label?, source}]} stores dates you researched in this chat, each with its source URL; never invent one, and this tool fetches nothing. add, list, show, retire. study {eventSetId, market, interval?, horizonBars?} reports per-occurrence forward returns against an every-bar baseline and says how many the archive can actually see. Menu: trading_events({})",
+  parameters: TradingEventsInput,
+  success: TradingEventsResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Events")
+  // `record`, `add` and `retire` write; `list`, `show` and `study` read. The
+  // annotation describes the tool, so it takes the writing half.
+  .annotate(Tool.Readonly, false)
+  // Two research tables and nothing else. No surface that reports real money
+  // reads either, and nothing here can reach an order.
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  // The archive keeps growing, so the same study read twice differs.
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
@@ -311,4 +331,5 @@ export const TradingToolkit = Toolkit.make(
   TradingBacktestTool,
   TradingValidateTool,
   TradingHypothesisTool,
+  TradingEventsTool,
 );

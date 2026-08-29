@@ -251,6 +251,7 @@ const MCP_RESULTS_KEPT_WHOLE = [
   "trading_backtest",
   "trading_validate",
   "trading_hypothesis",
+  "trading_events",
 ] as const;
 
 /**

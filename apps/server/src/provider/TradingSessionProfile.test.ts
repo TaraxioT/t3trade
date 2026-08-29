@@ -57,6 +57,8 @@ it("gives the analyst the reads and alert watches, and none of the acting tools"
       "trading_backtest",
       "trading_validate",
       "trading_hypothesis",
+      // The external calendar: research tables, no execution path.
+      "trading_events",
     ].sort(),
   );
   // …and the acting tools are exactly what it lacks.
@@ -114,6 +116,7 @@ it("gives an observe mission every research tool and no way to act", () => {
       "trading_backtest",
       "trading_validate",
       "trading_hypothesis",
+      "trading_events",
     ].sort(),
   );
   // The three execution tools are exactly what it lacks, and this is the

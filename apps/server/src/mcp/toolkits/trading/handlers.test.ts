@@ -4374,3 +4374,109 @@ it.effect("an observe mission is created from a filed idea and cannot trade", ()
     tradingLayerOverExchange(makeFakeExchange()),
   ),
 );
+
+// -- prompt AA: the event calendar tool --------------------------------------
+//
+// The dispatch shape over the real endpoint: the menu, the sourced-date
+// refusal, and a study over a seeded archive whose coverage the verdict has
+// to state plainly. The engine's arithmetic and the service's lifecycle are
+// pinned in their own files; what is pinned here is the tool boundary.
+
+/**
+ * A temp archive seeded with 700 daily ETH bars, opening 100 and closing 101:
+ * long enough that the real Devcon SEA dates (November 2024) sit inside it,
+ * and Devcon Bogota (October 2022) sits before it, which is the exact
+ * coverage split the verdict has to state.
+ */
+const seededDailyArchive = (): string => {
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-trading-events-"));
+  const archivePath = NodePath.join(dir, "market-archive.sqlite");
+  const db = openArchiveDatabase(archivePath);
+  const DAY = 24 * 60 * 60 * 1_000;
+  // @effect-diagnostics globalDate:off - the live-clock fixture seeds archive rows around a real epoch.
+  const now = Date.now();
+  const todayStart = Math.floor(now / DAY) * DAY;
+  upsertCandles(
+    db,
+    Array.from({ length: 700 }, (_, i) => ({
+      coin: "ETH",
+      interval: "1d",
+      t: todayStart - (700 - i) * DAY,
+      tClose: todayStart - (700 - i) * DAY + DAY - 1,
+      o: 100,
+      h: 101,
+      l: 99,
+      c: 101,
+      v: 10,
+      n: 5,
+    })),
+  );
+  db.close();
+  return archivePath;
+};
+
+it.live("serves the trading_events menu, records sourced dates, and studies them", () => {
+  const archivePath = seededDailyArchive();
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const menu = yield* callTool(BOUND_THREAD, "trading_events", {});
+        assert.equal(menu.result.isError, false);
+        assert.include(menu.result.body.menu, "record {name");
+
+        // A date with no source is refused before anything is written.
+        const unsourced = yield* callTool(BOUND_THREAD, "trading_events", {
+          action: "record",
+          name: "Devcon",
+          occurrences: [{ start: "2024-11-12", end: "2024-11-15", source: "  " }],
+        });
+        assert.equal(unsourced.result.isError, true);
+
+        // Devcon SEA, inside the archive's 90-day reach.
+        const recorded = yield* callTool(BOUND_THREAD, "trading_events", {
+          action: "record",
+          name: "Devcon",
+          occurrences: [
+            {
+              start: "2024-11-12",
+              end: "2024-11-15",
+              label: "Devcon SEA",
+              source: "https://devcon.org/en/past-editions/",
+            },
+            {
+              start: "2022-10-11",
+              end: "2022-10-14",
+              label: "Devcon Bogota",
+              source: "https://devcon.org/en/past-editions/",
+            },
+          ],
+        });
+        assert.equal(recorded.result.isError, false);
+        assert.equal(recorded.result.body.eventSet.name, "Devcon");
+
+        const eventSetId = recorded.result.body.eventSet.eventSetId as string;
+        const studied = yield* callTool(BOUND_THREAD, "trading_events", {
+          action: "study",
+          eventSetId,
+          market: "ETH",
+          interval: "1d",
+          horizonBars: 30,
+        });
+        assert.equal(studied.result.isError, false);
+        const study = studied.result.body.study;
+        // The honesty sentence states coverage over the whole set...
+        assert.match(studied.result.body.outcome, /1 of 2 occurrences fall inside archived data/);
+        // ...and never claims significance.
+        assert.include(studied.result.body.outcome, "not evidence");
+        // The 2022 date predates the archive and is reported, not dropped.
+        assert.equal(study.n, 2);
+        assert.equal(study.nCovered, 1);
+        const uncovered = study.rows.find(
+          (row: { label?: string; covered: boolean }) => row.label === "Devcon Bogota",
+        );
+        assert.isDefined(uncovered);
+        assert.isFalse(uncovered.covered);
+      }),
+    tradingLayerOverExchange(makeFakeExchange(), archivePath),
+  );
+});

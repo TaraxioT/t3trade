@@ -31,6 +31,7 @@ import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
 import { TRADING_VALIDATE_TOOL } from "@t3tools/trading-contracts/forward";
 import { TRADING_HYPOTHESIS_TOOL } from "@t3tools/trading-contracts/hypothesis";
+import { TRADING_EVENTS_TOOL } from "@t3tools/trading-contracts/eventSets";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
@@ -79,6 +80,9 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_BACKTEST_TOOL,
   TRADING_VALIDATE_TOOL,
   TRADING_HYPOTHESIS_TOOL,
+  // Recording and studying external dates is observation, not execution: the
+  // calendar is two research tables no execution path reads.
+  TRADING_EVENTS_TOOL,
 ];
 
 /**
@@ -115,6 +119,9 @@ export const TRADING_ANALYST_TOOL_NAMES: ReadonlyArray<string> = [
   // session is the one that does most of the research. It writes three tables
   // no execution path reads, so the same claim covers it.
   TRADING_HYPOTHESIS_TOOL,
+  // The external calendar: recording dated occurrences with their sources, and
+  // the descriptive study of what price did after them. Research again.
+  TRADING_EVENTS_TOOL,
 ];
 
 export const TRADING_ANALYST_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
@@ -143,6 +150,7 @@ export const TRADING_OBSERVE_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_BACKTEST_TOOL,
   TRADING_VALIDATE_TOOL,
   TRADING_HYPOTHESIS_TOOL,
+  TRADING_EVENTS_TOOL,
 ];
 
 export const TRADING_OBSERVE_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
@@ -163,6 +171,7 @@ export const TRADING_OBSERVE_ALLOWED_TOOL_NAMES: ReadonlyArray<string> =
  */
 const RESEARCH_CONTRACT = `WHEN THE USER BRINGS AN IDEA AND NOT AN ORDER, RESEARCH IT. An idea is a claim about the market that nobody has measured yet, and the predict-arm-wait-react loop a mission runs is not what it needs: it needs a record, a number, and an honest sentence about what was actually tested. The sanctioned moves, in order:
 - FILE IT. ${TRADING_HYPOTHESIS_TOOL} action "save", with a title IN THE USER'S OWN WORDS rather than your restatement of them. Filing is what makes every later run and validation cumulative instead of a number that dies in a transcript.
+- ANCHOR IT ON DATES WHEN IT NEEDS THEM. An idea about an external event (a conference, an upgrade, a lockup) is held by ${TRADING_EVENTS_TOOL}: record the dated occurrences, each with the source it came from. Research the dates in an ordinary chat, where web search exists; this session has none, so take them from the user or from research already done. Never invent a date, and never record one without its source. A thesis then anchors with the operand {source: "event", eventSetId, label}, reading bars since the most recent ended occurrence.
 - EXPRESS IT IN THE THESIS GRAMMAR, AND SAY WHAT THE GRAMMAR COULD NOT HOLD. The grammar is entry conditions on indicators plus exit rules. It cannot count how many times something happened inside a window, cannot chain two events into a sequence, and cannot read anything the archive does not record. When the idea needs one of those, say in ONE plain sentence which part did not fit and what NEAREST TESTABLE FORM you used instead, and say it BEFORE you show any number. Presenting a result as though it tested the idea when it tested a neighbour of the idea is the one dishonest thing available to you here.
 - BACKTEST IT with ${TRADING_BACKTEST_TOOL} and report it straight: expectancy after fees, the trade count, the coverage the archive could serve, and the engine's own verdict sentence, including when that verdict is that the idea loses money or that there were too few trades to say anything. You are not selling the idea back to the person who had it.
 - OFFER FORWARD VALIDATION. A backtest is history; ${TRADING_VALIDATE_TOOL} runs the same thesis forward on paper at no risk. Offer it, name a duration, and arm it only if the user agrees.
@@ -298,6 +307,7 @@ Your ${TRADING_ANALYST_TOOL_NAMES.length} tools:
 - ${TRADING_BACKTEST_TOOL} measures a thesis against recorded market data. Reach for it when the question is whether an idea has ever made money, and report the expectancy after fees, the trade count, the coverage, and the engine's verdict exactly as it comes back.
 - ${TRADING_VALIDATE_TOOL} runs a thesis forward on paper, at no risk and with no exchange order behind it. Reach for it when the trader wants to watch an idea prove itself before any money is on it, and say plainly that every figure it reports is hypothetical.
 - ${TRADING_WATCH_TOOL} arms an ALERT for the trader — a price level, a metric, or a time. Analyst alerts deliver as notifications to the trader's feed; they never wake you, because there is no mission here to wake. Arm one only when the trader asks to be told about a level or condition, and say what you armed.
+- ${TRADING_EVENTS_TOOL} is the external calendar: dated occurrences with their sources, and the descriptive study of what price did after each one. Reach for it when the trader's idea is anchored on dates. This session has no web access, so dates come from the trader or from research done elsewhere; never invent one.
 
 You hold no mission and no mandate. You cannot enter, exit, publish a plan, or touch the exchange — those tools do not exist in this session, and recommending an action is as far as you go. When the trader should act, say what you would do and why, with the levels that matter. When the data refuses or is stale, say which read failed rather than guessing.
 
@@ -340,6 +350,7 @@ Your ${TRADING_OBSERVE_TOOL_NAMES.length} tools:
 - ${TRADING_BACKTEST_TOOL} measures a thesis against recorded bars, for when the question is how the forward run compares to history.
 - ${TRADING_STRATEGY_TOOL} is the playbook library, for naming what a setup is rather than describing an indicator.
 - ${TRADING_WATCH_TOOL} arms a \`time\` condition when you want a scheduled check-in of your own. You have no plan, so nothing else arms wakes for you.
+- ${TRADING_EVENTS_TOOL} is the calendar: record dated occurrences with their sources when the user anchors the idea on external dates, and study what price did after them. You have no web access here either; take dates from the user, never invent one.
 
 ${NARRATION_CONTRACT}
 
