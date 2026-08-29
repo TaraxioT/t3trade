@@ -66,6 +66,7 @@ import { TradingMarketArchiveLive } from "./TradingMarketArchive.ts";
 import { TradingBacktestServiceLive } from "./TradingBacktestService.ts";
 import { TradingHypothesisServiceLive } from "./TradingHypothesisService.ts";
 import { TradingThesisValidationServiceLive } from "./TradingThesisValidationService.ts";
+import { TradingEventServiceLive } from "./TradingEventService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -102,7 +103,12 @@ export const TradingCoreLayerLive = Layer.mergeAll(
     // The chart draws an armed thesis's paper trades as markers. A read, and
     // one that can never fail the chart: a price series must still render when
     // the paper ledger does not answer.
-    Layer.provide(TradingThesisValidationServiceLive.pipe(Layer.provide(TradingMarketArchiveLive))),
+    Layer.provide(
+      TradingThesisValidationServiceLive.pipe(
+        Layer.provide(TradingMarketArchiveLive),
+        Layer.provide(TradingEventServiceLive),
+      ),
+    ),
   ),
   // What the venue lists, for the picker and the watchlist search. Same read
   // gateway again, so the universe and a resolve of one asset never disagree.
@@ -210,16 +216,24 @@ export const TradingLayerLive = Layer.mergeAll(
   // `trading_backtest` reads the same archive and nothing else. Provided the
   // archive layer explicitly rather than relying on merge order, so the one
   // dependency it has is visible at the wiring.
-  TradingBacktestServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
+  TradingBacktestServiceLive.pipe(
+    Layer.provide(TradingMarketArchiveLive),
+    Layer.provide(TradingEventServiceLive),
+  ),
   // Forward validation reads the same archive and writes only its own paper
   // tables. Provided the archive explicitly for the same reason the backtest
   // is: the whole dependency set is meant to be readable at the wiring, and
   // this one is the claim that it cannot place an order.
-  TradingThesisValidationServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
+  TradingThesisValidationServiceLive.pipe(
+    Layer.provide(TradingMarketArchiveLive),
+    Layer.provide(TradingEventServiceLive),
+  ),
   // The hypothesis record: ideas, their versions, and the runs against them.
   // Its dependency set is SQL and Crypto, which is the same claim again - a
   // filed idea is research, and nothing here can reach an order.
   TradingHypothesisServiceLive,
+  // The event calendar the engines read. Same dependency set, same claim.
+  TradingEventServiceLive,
   TradingMissionServiceLive,
   // The single-writer lease for this database. Merged here so every consumer
   // of the trading layer — the sweep below, the reactors above — sees the

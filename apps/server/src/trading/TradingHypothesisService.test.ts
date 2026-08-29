@@ -34,6 +34,7 @@ import {
   TradingThesisValidationService,
   TradingThesisValidationServiceLive,
 } from "./TradingThesisValidationService.ts";
+import { TradingEventServiceLive } from "./TradingEventService.ts";
 
 const MINUTE = 60_000;
 const START = 1_800_000_000_000;
@@ -67,8 +68,12 @@ const stubArchive = Layer.succeed(TradingMarketArchive, {
 const layer = it.layer(
   Layer.mergeAll(
     TradingHypothesisServiceLive,
-    TradingThesisValidationServiceLive.pipe(Layer.provide(stubArchive)),
+    TradingThesisValidationServiceLive.pipe(
+      Layer.provide(stubArchive),
+      Layer.provide(TradingEventServiceLive),
+    ),
   ).pipe(
+    Layer.provideMerge(TradingEventServiceLive),
     Layer.provideMerge(stubArchive),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
     Layer.provideMerge(NodeServices.layer),

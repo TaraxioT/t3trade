@@ -358,8 +358,9 @@ export function makeThesisSignals(input: {
    */
   readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
   /**
-   * Every ended occurrence of every event set the thesis anchors on, any
-   * order, future ones included. Only an `event` operand reads them, and
+   * Every occurrence of every event set the thesis anchors on, past and
+   * future alike, any order; the reading below only ever matches one that
+   * had ended by the bar being read. Only an `event` operand reads them, and
    * omitting the argument leaves that operand undefined rather than guessing
    * a calendar.
    */

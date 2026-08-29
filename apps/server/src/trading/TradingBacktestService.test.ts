@@ -19,6 +19,7 @@ import {
   halfSpreadBps,
   makeTradingBacktestService,
 } from "./TradingBacktestService.ts";
+import type { TradingEventServiceShape } from "./TradingEventService.ts";
 import type { TradingMarketArchiveShape } from "./TradingMarketArchive.ts";
 
 const MINUTE = 60_000;
@@ -77,6 +78,17 @@ const thesis: TradingThesis = {
   exits: { stop: { basis: "percent", value: 1 }, target: { basis: "percent", value: 1 } },
 };
 
+/** The calendar, stubbed: the service only reads it, never writes it. */
+const stubEvents = (
+  activeIds: ReadonlyArray<string> = ["set-devcon"],
+  occurrences: ReadonlyArray<{ readonly eventSetId: string; readonly endAt: number }> = [],
+): TradingEventServiceShape =>
+  ({
+    activeSetIds: () => Effect.succeed([...activeIds]),
+    occurrencesFor: () => Effect.succeed([...occurrences]),
+    upcomingFor: () => Effect.succeed([]),
+  }) as unknown as TradingEventServiceShape;
+
 const run = (
   archive: TradingMarketArchiveShape,
   input?: {
@@ -84,7 +96,7 @@ const run = (
     readonly sweep?: { readonly path: string; readonly values: ReadonlyArray<number> };
   },
 ) =>
-  makeTradingBacktestService(archive).run({
+  makeTradingBacktestService(archive, stubEvents()).run({
     thesis,
     now: NOW,
     ...(input?.lookbackDays === undefined ? {} : { lookbackDays: input.lookbackDays }),
@@ -110,7 +122,7 @@ describe("TradingBacktestService", () => {
 
   it.effect("refuses a thesis the engine cannot run, in the validator's own words", () =>
     Effect.gen(function* () {
-      const outcome = yield* makeTradingBacktestService(stubArchive({})).run({
+      const outcome = yield* makeTradingBacktestService(stubArchive({}), stubEvents()).run({
         thesis: { ...thesis, exits: {} },
         now: NOW,
       });
@@ -123,7 +135,7 @@ describe("TradingBacktestService", () => {
 
   it.effect("refuses a window past the bar cap and names a coarser interval", () =>
     Effect.gen(function* () {
-      const outcome = yield* makeTradingBacktestService(stubArchive({})).run({
+      const outcome = yield* makeTradingBacktestService(stubArchive({}), stubEvents()).run({
         thesis: { ...thesis, interval: "1m" },
         // A year of one-minute bars.
         lookbackDays: 365,
@@ -302,7 +314,7 @@ describe("a funding rule on an unfunded market", () => {
     Effect.gen(function* () {
       // Zero trades would read as "the idea does not work". It was never
       // testable here, and the refusal is the honest answer.
-      const outcome = yield* makeTradingBacktestService(stubArchive({})).run({
+      const outcome = yield* makeTradingBacktestService(stubArchive({}), stubEvents()).run({
         thesis: fundingThesis,
         now: NOW,
       });
@@ -327,10 +339,89 @@ describe("a funding rule on an unfunded market", () => {
               })),
             ),
         }),
+        stubEvents(),
       ).run({ thesis: fundingThesis, now: NOW });
       expect(outcome.status).toBe("ok");
       if (outcome.status !== "ok") return;
       expect(outcome.report.coverage.fundingServed).toBe(true);
+    }),
+  );
+});
+
+describe("an event-anchored thesis", () => {
+  // Bars of 5m. The event ends one millisecond into bar 50, so the operand
+  // reads distance 0 on bar 51, 1 on 52, 2 on 53, and nothing anywhere else:
+  // `below 3` holds on exactly 51, 52 and 53.
+  const bars = archivedBars(100).map((candle, index) => ({
+    ...candle,
+    c: index >= 51 && index <= 53 ? 200 : 100,
+  }));
+  const endAt = (bars[50]?.t ?? 0) + 1;
+  const anchored: TradingThesis = {
+    ...thesis,
+    entry: {
+      predicates: [
+        {
+          left: { source: "event", eventSetId: "set-devcon", label: "Devcon" },
+          comparator: "below",
+          right: { source: "constant", value: 3 },
+        },
+      ],
+    },
+  };
+  const handBuilt: TradingThesis = {
+    ...thesis,
+    entry: {
+      predicates: [
+        {
+          left: { source: "price" },
+          comparator: "above",
+          right: { source: "constant", value: 150 },
+        },
+      ],
+    },
+  };
+  const archive = stubArchive({ candlesInWindow: () => Effect.succeed(bars) });
+  const events = stubEvents(["set-devcon"], [{ eventSetId: "set-devcon", endAt }]);
+
+  it.effect("produces the same trades as the equivalent hand-built condition", () =>
+    Effect.gen(function* () {
+      const fromEvent = yield* makeTradingBacktestService(archive, events).run({
+        thesis: anchored,
+        now: NOW,
+      });
+      const fromPrice = yield* makeTradingBacktestService(archive, stubEvents()).run({
+        thesis: handBuilt,
+        now: NOW,
+      });
+      expect(fromEvent.status).toBe("ok");
+      expect(fromPrice.status).toBe("ok");
+      if (fromEvent.status !== "ok" || fromPrice.status !== "ok") return;
+
+      expect(fromEvent.report.stats).toEqual(fromPrice.report.stats);
+      expect(fromEvent.report.stats.tradesTaken).toBeGreaterThan(0);
+    }),
+  );
+
+  it.effect("refuses an unknown set before any candle is read", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const counted = stubArchive({
+        candlesInWindow: () => {
+          reads += 1;
+          return Effect.succeed(bars);
+        },
+      });
+      const outcome = yield* makeTradingBacktestService(counted, stubEvents([], [])).run({
+        thesis: anchored,
+        now: NOW,
+      });
+      expect(outcome.status).toBe("refused");
+      if (outcome.status !== "refused") return;
+      expect(outcome.reason).toBe("thesis_invalid");
+      expect(outcome.detail).toContain("Devcon");
+      expect(outcome.detail).toContain("no active event set");
+      expect(reads, "the refusal must cost no archive read").toBe(0);
     }),
   );
 });

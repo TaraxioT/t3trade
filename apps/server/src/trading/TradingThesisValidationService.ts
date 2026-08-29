@@ -8,8 +8,9 @@
  *
  * ## It cannot place an order
  *
- * Not by policy — by construction. This service depends on the market archive
- * and the SQL client, and on nothing else. `TradingEntryService`,
+ * Not by policy — by construction. This service depends on the market
+ * archive, the SQL client and the event calendar service (itself SQL and
+ * Crypto and nothing else), and on nothing else. `TradingEntryService`,
  * `TradingExitService`, `HyperliquidExecutionService` and the gateway are not
  * in its dependency set, so there is no expression here that could reach an
  * order even by mistake. Its writes go to `trading_thesis_validations` and
@@ -74,6 +75,7 @@ import {
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
 import {
   describeThesis,
+  thesisEventSets,
   thesisReadsFunding,
   validateThesis,
   TradingThesis,
@@ -84,6 +86,7 @@ import { INTERVAL_MS, type ArchiveInterval } from "./archive/config.ts";
 import type { CandleRow } from "./archive/candles.ts";
 import { DEFAULT_TRADING_VENUE, type TradingVenue } from "./Schemas.ts";
 import { halfSpreadBps } from "./TradingBacktestService.ts";
+import { TradingEventService } from "./TradingEventService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 
 /**
@@ -385,6 +388,10 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
   const archive = yield* TradingMarketArchive;
+  // Named `eventService`, not `events`: `advance` keeps its narration lines
+  // in a local `events` array, and a service shadowed by an array of sentences
+  // fails in a way no type check catches.
+  const eventService = yield* TradingEventService;
 
   const openFillFor = (validationId: string) =>
     sql<PaperFillRow>`
@@ -456,7 +463,17 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
 
   const arm: TradingThesisValidationServiceShape["arm"] = (input) =>
     Effect.gen(function* () {
-      const invalid = validateThesis(input.thesis);
+      // The same event-calendar refusal the backtest makes: arming a thesis
+      // whose set is unknown or retired would score a rule that never fires.
+      const anchoredSets = thesisEventSets(input.thesis);
+      let knownEventSets: ReadonlyArray<string> | undefined = undefined;
+      if (anchoredSets.length > 0) {
+        knownEventSets = yield* eventService.activeSetIds();
+      }
+      const invalid = validateThesis(
+        input.thesis,
+        knownEventSets === undefined ? {} : { knownEventSets },
+      );
       if (invalid !== null) return { outcome: "refused", reason: invalid } as const;
 
       if (!isForwardInterval(input.thesis.interval)) {
@@ -738,6 +755,19 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       const closed = candles.filter((candle) => candle.closeTime <= now);
       if (closed.length === 0) return quiet;
 
+      // The event calendar is re-read on EVERY sweep, not frozen at arm time:
+      // a future occurrence is the whole point of arming early (the operand
+      // reads undefined until the date passes, then the window opens on live
+      // bars), and a date recorded mid-validation takes effect on the next
+      // bar. The table is tiny; the freshness is not optional.
+      const anchoredSets = thesisEventSets(validation.thesis);
+      let eventOccurrences: ReadonlyArray<{ readonly eventSetId: string; readonly endAt: number }> =
+        [];
+      if (anchoredSets.length > 0) {
+        const loaded = eventService.occurrencesFor(anchoredSets);
+        eventOccurrences = yield* loaded;
+      }
+
       // Bars this validation has not evaluated yet. On the first pass that is
       // every closed bar since it was armed: a bar that closed between arming
       // and the first delivery is one the thesis was live for, and skipping it
@@ -762,6 +792,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
           notionalUsd: validation.notionalUsd,
           nextTradeId: tradeId,
           funding: signalFunding,
+          eventOccurrences,
         });
 
         if (step.entered !== null) {
@@ -1076,5 +1107,5 @@ export function composeReport(
 export const TradingThesisValidationServiceLive: Layer.Layer<
   TradingThesisValidationService,
   never,
-  TradingMarketArchive | SqlClient.SqlClient | Crypto.Crypto
+  TradingMarketArchive | SqlClient.SqlClient | Crypto.Crypto | TradingEventService
 > = Layer.effect(TradingThesisValidationService, makeTradingThesisValidationService);

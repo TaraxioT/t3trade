@@ -78,6 +78,7 @@ import { TradingJournalServiceLive } from "../../../trading/TradingJournalServic
 import { TradingEventInbox, TradingEventInboxLive } from "../../../trading/TradingEventInbox.ts";
 import { TradingHypothesisServiceLive } from "../../../trading/TradingHypothesisService.ts";
 import { TradingThesisValidationServiceLive } from "../../../trading/TradingThesisValidationService.ts";
+import { TradingEventServiceLive } from "../../../trading/TradingEventService.ts";
 import {
   makeTradingMarketArchive,
   TradingMarketArchive,
@@ -518,8 +519,11 @@ const tradingLayerOverExchange = (
     // the rest of this layer does, and the validation service is here because
     // `trading_hypothesis` enriches a filed idea's runs with its verdicts.
     TradingHypothesisServiceLive,
+    // The event calendar: read by the engines and by alert_when_setup.
+    TradingEventServiceLive,
     TradingThesisValidationServiceLive.pipe(
       Layer.provide(Layer.succeed(TradingMarketArchive, makeTradingMarketArchive(archivePath))),
+      Layer.provide(TradingEventServiceLive),
     ),
     TradingMissionServiceLive,
     TradingStrategyServiceLive,

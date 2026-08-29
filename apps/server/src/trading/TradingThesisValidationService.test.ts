@@ -25,6 +25,7 @@ import type { TradingThesis } from "@t3tools/trading-contracts/thesis";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import type { CandleRow } from "./archive/candles.ts";
+import { TradingEventService, TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingMarketArchive, type TradingMarketArchiveShape } from "./TradingMarketArchive.ts";
 import {
   TradingThesisValidationService,
@@ -71,6 +72,7 @@ const stubArchive = Layer.succeed(TradingMarketArchive, {
 const layer = it.layer(
   TradingThesisValidationServiceLive.pipe(
     Layer.provideMerge(stubArchive),
+    Layer.provideMerge(TradingEventServiceLive),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
     Layer.provideMerge(NodeServices.layer),
   ),
@@ -81,6 +83,8 @@ const migrated = Effect.gen(function* () {
   yield* runMigrations({});
   yield* sql`DELETE FROM trading_thesis_validations`;
   yield* sql`DELETE FROM trading_thesis_paper_fills`;
+  yield* sql`DELETE FROM trading_event_sets`;
+  yield* sql`DELETE FROM trading_event_occurrences`;
 });
 
 /** Buy the cross of 100, take a wide stop and a reachable target. */
@@ -570,6 +574,98 @@ layer("TradingThesisValidationService", (it) => {
 
       // A market with nothing armed on it has no badge to draw.
       assert.isNull(yield* service.forChart({ asset: "SOL" }));
+    }),
+  );
+  it.effect("an event-anchored validation stays undefined until the date passes, then opens", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TradingThesisValidationService;
+      const events = yield* TradingEventService;
+
+      // The set starts with one long-past occurrence, so arming against it is
+      // legal and the operand reads a large distance on every early bar.
+      const recorded = yield* events.record({
+        name: "Devcon",
+        occurrences: [
+          { startAt: START - 30 * DAY, endAt: START - 29 * DAY, source: "user provided" },
+        ],
+        threadId: "thread-events",
+        author: "agent",
+        now: START,
+      });
+      assert.equal(recorded.outcome, "ok");
+      if (recorded.outcome !== "ok") return;
+      const eventSetId = recorded.set.eventSetId;
+
+      const anchored: TradingThesis = {
+        ...thesis,
+        entry: {
+          predicates: [
+            {
+              left: { source: "event", eventSetId, label: "Devcon" },
+              comparator: "below",
+              right: { source: "constant", value: 1 },
+            },
+          ],
+        },
+      };
+
+      const armed = yield* service.arm({ thesis: anchored, durationMs: 14 * DAY, now: START });
+      assert.equal(armed.outcome, "armed");
+
+      // Every bar before the date passes reads undefined, not zero: the sweep
+      // walks them and takes nothing.
+      const beforeBar40 = (ALL_BARS[39]?.tClose ?? START) + 1;
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: beforeBar40 });
+      const early = yield* sql`SELECT COUNT(*) AS n FROM trading_thesis_paper_fills`;
+      assert.equal(early[0]?.n, 0);
+
+      // The future date arrives MID-validation: the sweep reloads the calendar
+      // rather than using the one it armed with. It ends one millisecond into
+      // bar 40, so bar 41 is the first open at or after it and reads distance 0.
+      const endAt = (ALL_BARS[40]?.t ?? START) + 1;
+      const added = yield* events.add({
+        eventSetId,
+        occurrences: [{ startAt: endAt - 5 * MINUTE, endAt, source: "user provided" }],
+        author: "agent",
+        now: beforeBar40,
+      });
+      assert.equal(added.outcome, "ok");
+
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const fills = yield* sql`
+        SELECT signal_time, entry_time FROM trading_thesis_paper_fills ORDER BY entry_time
+      `;
+      // One signal, on exactly the bar whose open is at or after the end, and
+      // the fill one bar later at that bar's open.
+      assert.equal(fills.length, 1);
+      assert.equal(fills[0]?.signal_time, ALL_BARS[41]?.t);
+      assert.equal(fills[0]?.entry_time, ALL_BARS[42]?.t);
+    }),
+  );
+
+  it.effect("refuses to arm against a set that is not on record", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+
+      const anchored: TradingThesis = {
+        ...thesis,
+        entry: {
+          predicates: [
+            {
+              left: { source: "event", eventSetId: "no-such-set", label: "Devcon" },
+              comparator: "below",
+              right: { source: "constant", value: 30 },
+            },
+          ],
+        },
+      };
+      const refused = yield* service.arm({ thesis: anchored, durationMs: 14 * DAY, now: START });
+      assert.equal(refused.outcome, "refused");
+      if (refused.outcome === "refused") assert.include(refused.reason, "no active event set");
     }),
   );
 });

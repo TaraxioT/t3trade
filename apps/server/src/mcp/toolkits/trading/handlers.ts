@@ -149,7 +149,11 @@ import {
   type HypothesisValidationSummary,
   type TradingHypothesisResult,
 } from "@t3tools/trading-contracts/hypothesis";
-import { describeThesis, type TradingThesis } from "@t3tools/trading-contracts/thesis";
+import {
+  describeThesis,
+  thesisEventSets,
+  type TradingThesis,
+} from "@t3tools/trading-contracts/thesis";
 import {
   describeSetupAlerts,
   thesisSetupAlerts,
@@ -158,6 +162,7 @@ import {
   TradingHypothesisService,
   type HypothesisRecord,
 } from "../../../trading/TradingHypothesisService.ts";
+import { TradingEventService } from "../../../trading/TradingEventService.ts";
 
 interface BoundCall {
   readonly threadId: string;
@@ -3508,7 +3513,13 @@ const handlers = {
           }
 
           const alerts = yield* TradingAlertService;
-          const translated = thesisSetupAlerts(thesis);
+          // An event predicate can arm a time watch when its set holds a
+          // future date, so the calendar comes along for the bridge to read.
+          const events = yield* TradingEventService;
+          const upcoming = yield* events
+            .upcomingFor({ setIds: thesisEventSets(thesis), now })
+            .pipe(Effect.orDie);
+          const translated = thesisSetupAlerts(thesis, upcoming);
           if (translated.conditions.length === 0) {
             // Nothing armed, so nothing is said about legs. The refusal names
             // every predicate and where it is still being watched.

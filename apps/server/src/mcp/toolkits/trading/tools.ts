@@ -62,6 +62,7 @@ import { TradingThreadMarketService } from "../../../trading/TradingThreadMarket
 import { TradingBacktestService } from "../../../trading/TradingBacktestService.ts";
 import { TradingThesisValidationService } from "../../../trading/TradingThesisValidationService.ts";
 import { TradingHypothesisService } from "../../../trading/TradingHypothesisService.ts";
+import { TradingEventService } from "../../../trading/TradingEventService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -127,6 +128,10 @@ const dependencies = [
   // `trading_hypothesis` writes the idea record and reads the paper ledger for
   // the lineage. Same absence of a dependency again: SQL and Crypto.
   TradingHypothesisService,
+  // The event calendar: read by the engines behind `trading_backtest` and
+  // `trading_validate`, and by `alert_when_setup` for future dates. SQL and
+  // Crypto, the same claim.
+  TradingEventService,
   SqlClient.SqlClient,
 ];
 

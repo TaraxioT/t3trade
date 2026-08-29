@@ -37,6 +37,7 @@ import {
   TradingThesisValidationService,
   TradingThesisValidationServiceLive,
 } from "./TradingThesisValidationService.ts";
+import { TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingRuntimeLease } from "./TradingRuntimeLease.ts";
@@ -428,6 +429,7 @@ const layer = it.layer(
     // real service over the fake archive, so a delivery that reaches it here
     // is the delivery that reaches it in production.
     Layer.provideMerge(TradingThesisValidationServiceLive),
+    Layer.provideMerge(TradingEventServiceLive),
     Layer.provideMerge(FollowSetRegistryLive),
     Layer.provideMerge(TradingAccountProjectionLive),
     Layer.provideMerge(TradingEventInboxLive),

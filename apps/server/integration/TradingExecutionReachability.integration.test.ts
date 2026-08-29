@@ -90,6 +90,7 @@ import {
   TradingMissionReactorLive,
 } from "../src/trading/TradingMissionReactor.ts";
 import { TradingMarketArchiveLive } from "../src/trading/TradingMarketArchive.ts";
+import { TradingEventServiceLive } from "../src/trading/TradingEventService.ts";
 import { TradingThesisValidationServiceLive } from "../src/trading/TradingThesisValidationService.ts";
 import { TradingRuntimeLease } from "../src/trading/TradingRuntimeLease.ts";
 import { FollowSetRegistry } from "../src/trading/FollowSetRegistry.ts";
@@ -537,7 +538,10 @@ function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
         // proof — it takes paper trades and this test drives no thesis — but
         // present, because the evaluator now depends on it.
         Layer.provide(
-          TradingThesisValidationServiceLive.pipe(Layer.provide(TradingMarketArchiveLive)),
+          TradingThesisValidationServiceLive.pipe(
+            Layer.provide(TradingMarketArchiveLive),
+            Layer.provide(TradingEventServiceLive),
+          ),
         ),
         // The notify delivery route and the follow-set-driven subscriptions
         // (final-form Phase 5). This proof only drives wake watches, so both

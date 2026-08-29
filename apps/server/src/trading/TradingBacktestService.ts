@@ -9,8 +9,9 @@
  * their provenance attached.
  *
  * Read-only, and structurally so: every call goes through
- * {@link TradingMarketArchive}, which opens the archive file read-only. There
- * is no path from here to an order, a position, or a mission's state. That is
+ * {@link TradingMarketArchive}, which opens the archive file read-only, and
+ * the event calendar service, which this reads but never writes. There is no
+ * path from here to an order, a position, or a mission's state. That is
  * not a convention to be careful about — it is the absence of a dependency.
  *
  * ## Why there is no queue behind this
@@ -48,10 +49,15 @@ import {
   type BacktestSweepReport,
 } from "@t3tools/trading-contracts/backtest";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
-import { validateThesis, type TradingThesis } from "@t3tools/trading-contracts/thesis";
+import {
+  validateThesis,
+  thesisEventSets,
+  type TradingThesis,
+} from "@t3tools/trading-contracts/thesis";
 
 import { ARCHIVE_INTERVALS, INTERVAL_MS, type ArchiveInterval } from "./archive/config.ts";
 import type { CandleRow } from "./archive/candles.ts";
+import { TradingEventService, type TradingEventServiceShape } from "./TradingEventService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 
 /**
@@ -165,14 +171,31 @@ export const halfSpreadBps = (
 
 export const makeTradingBacktestService = (
   archive: Context.Service.Shape<typeof TradingMarketArchive>,
+  events: TradingEventServiceShape,
 ): TradingBacktestServiceShape =>
   TradingBacktestService.of({
     run: ({ thesis, lookbackDays, notionalUsd, now, sweep }) =>
       Effect.gen(function* () {
-        const invalid = validateThesis(thesis);
+        // The event calendar first, before any archive read: an anchored
+        // thesis whose set is unknown or retired would read undefined on
+        // every bar, and that refusal costs nothing to make.
+        const anchoredSets = thesisEventSets(thesis);
+        // A calendar read cannot fail a run halfway: the service's contract
+        // is a synchronous answer, so a broken state store is a defect the
+        // boundary surfaces, not a typed refusal the tool reads.
+        const knownEventSets =
+          anchoredSets.length === 0 ? undefined : yield* events.activeSetIds().pipe(Effect.orDie);
+        const invalid = validateThesis(
+          thesis,
+          knownEventSets === undefined ? {} : { knownEventSets },
+        );
         if (invalid !== null) {
           return { status: "refused", reason: "thesis_invalid", detail: invalid } as const;
         }
+        const eventOccurrences =
+          anchoredSets.length === 0
+            ? []
+            : yield* events.occurrencesFor(anchoredSets).pipe(Effect.orDie);
 
         const interval = thesis.interval as ArchiveInterval;
         const width = INTERVAL_MS[interval];
@@ -293,6 +316,7 @@ export const makeTradingBacktestService = (
         const runInput = {
           candles,
           funding,
+          eventOccurrences,
           costs,
           coverage,
           ...(notionalUsd === undefined ? {} : { notionalUsd }),
@@ -323,11 +347,12 @@ export const makeTradingBacktestService = (
 export const TradingBacktestServiceLive: Layer.Layer<
   TradingBacktestService,
   never,
-  TradingMarketArchive
+  TradingMarketArchive | TradingEventService
 > = Layer.effect(
   TradingBacktestService,
   Effect.gen(function* () {
     const archive = yield* TradingMarketArchive;
-    return makeTradingBacktestService(archive);
+    const events = yield* TradingEventService;
+    return makeTradingBacktestService(archive, events);
   }),
 );
