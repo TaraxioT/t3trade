@@ -339,7 +339,7 @@ export const makeTradingEventService = Effect.gen(function* () {
         rows.map((row) => ({
           eventSetId: row.event_set_id,
           name: row.name,
-          ...(row.description === null ? {} : { description: row.description }),
+          description: row.description === null ? undefined : row.description,
           occurrenceCount: row.occurrence_count,
           nextUpcomingEndAt: row.next_end_at,
           updatedAt: row.updated_at,
