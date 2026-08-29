@@ -56,6 +56,7 @@ import {
   CircleAlertIcon,
   EyeIcon,
   FlaskConicalIcon,
+  LightbulbIcon,
   PlayIcon,
   RadioTowerIcon,
   ReceiptIcon,
@@ -124,12 +125,14 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
+import { ValidationReportCard } from "../trading/ValidationReportCard";
 import {
   deriveBacktestCard,
+  deriveHypothesisCard,
   deriveValidationCard,
   deriveWakeupCard,
   type BacktestCard,
-  type ValidationCard,
+  type HypothesisCard,
   type WakeupCard,
 } from "../trading/tradingPresentation";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
@@ -2921,7 +2924,19 @@ function TradingBacktestTimelineRow({ card }: { card: BacktestCard }) {
  * rather than in a footnote. A card of green numbers that turns out to have
  * been hypothetical is the one way this feature could mislead somebody.
  */
-function TradingValidationTimelineRow({ card }: { card: ValidationCard }) {
+// One card, two callers: this row and the alert feed's expiry expansion.
+// See `ValidationReportCard`.
+const TradingValidationTimelineRow = ValidationReportCard;
+
+/**
+ * The idea, its runs, and whatever is still running against it.
+ *
+ * Laid out as a lineage rather than a stat block: the title and status first,
+ * then the current version's rule, then one line per run and per validation
+ * with the version it belongs to on the left of it. A reader scanning down
+ * the runs column should be able to see the refinement working, or not.
+ */
+function TradingHypothesisTimelineRow({ card }: { card: HypothesisCard }) {
   const [expanded, setExpanded] = useState(false);
   const toneClass = (tone: "positive" | "negative" | "neutral") =>
     tone === "positive"
@@ -2932,55 +2947,83 @@ function TradingValidationTimelineRow({ card }: { card: ValidationCard }) {
 
   return (
     <div
-      className="my-1 rounded-xl border border-border/60 border-dashed bg-muted/20"
-      data-testid="trading-validation-card"
+      className="my-1 rounded-xl border border-border/60 bg-muted/20"
+      data-testid="trading-hypothesis-card"
     >
       <div className="flex flex-col gap-2 px-3 py-2.5">
         <div className="flex items-start gap-2">
           <span className="flex size-6 flex-none items-center justify-center rounded-md bg-foreground/[0.06] text-muted-foreground">
-            <FlaskConicalIcon className="size-3.5" strokeWidth={2} aria-hidden />
+            <LightbulbIcon className="size-3.5" strokeWidth={2} aria-hidden />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-sm leading-snug text-foreground/90">{card.headline}</p>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
-              {card.statusLine}
-              {card.exits.length > 0 ? ` · ${card.exits.join(", ")}` : ""}
+            <p className="text-sm font-medium leading-snug text-foreground/90">{card.title}</p>
+            <p className={cn("mt-0.5 text-[11px]", toneClass(card.statusTone))}>
+              {card.statusLabel}
             </p>
           </div>
         </div>
 
-        <div className="flex items-baseline gap-2 border-border/45 border-t pt-2">
-          <span className="text-[11px] text-muted-foreground">{card.expectancy.label}</span>
-          <span className={cn("font-mono font-medium text-base", toneClass(card.expectancy.tone))}>
-            {card.expectancy.value}
-          </span>
+        <div className="border-border/45 border-t pt-2">
+          <p className="text-xs leading-relaxed text-foreground/85">{card.headline}</p>
+          {card.exits.length === 0 ? null : (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{card.exits.join(", ")}</p>
+          )}
+          {card.currentNote.length === 0 ? null : (
+            <p className="mt-0.5 text-[11px] italic text-muted-foreground">{card.currentNote}</p>
+          )}
         </div>
 
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
-          {card.stats.map((stat) => (
-            <div key={stat.label} className="min-w-0">
-              <dt className="truncate text-[10px] text-muted-foreground uppercase tracking-wide">
-                {stat.label}
-              </dt>
-              <dd className={cn("font-mono text-xs tabular-nums", toneClass(stat.tone))}>
-                {stat.value}
-              </dd>
-            </div>
-          ))}
-        </dl>
+        {card.runs.length === 0 ? null : (
+          <div className="border-border/45 border-t pt-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Backtests</p>
+            <ul className="mt-1 flex flex-col gap-1">
+              {card.runs.map((run) => (
+                <li key={run.runId} className="flex items-baseline gap-2 text-xs">
+                  <span className="w-10 flex-none font-mono text-[11px] text-muted-foreground">
+                    {run.versionLabel}
+                  </span>
+                  <span className={cn("font-mono tabular-nums", toneClass(run.tone))}>
+                    {run.expectancy}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                    {run.detail}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-        <p
-          className={cn(
-            "border-border/45 border-t pt-2 text-xs leading-relaxed",
-            toneClass(card.comparisonTone),
-          )}
-        >
-          <span className="font-medium">{card.comparisonLabel}.</span>{" "}
-          <span className="text-muted-foreground">{card.verdictReason}</span>
-        </p>
+        {card.validations.length === 0 ? null : (
+          <div className="border-border/45 border-t pt-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Forward validations
+            </p>
+            <ul className="mt-1 flex flex-col gap-1">
+              {card.validations.map((validation) => (
+                <li key={validation.validationId} className="flex items-baseline gap-2 text-xs">
+                  <span className="w-10 flex-none font-mono text-[11px] text-muted-foreground">
+                    {validation.versionLabel}
+                  </span>
+                  <span className={cn("truncate", toneClass(validation.tone))}>
+                    {validation.comparisonLabel}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                    {validation.statusLine} · {validation.detail}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-        {card.openLine === null ? null : (
-          <p className="text-[11px] text-muted-foreground">{card.openLine}</p>
+        {card.conclusion === null ? null : (
+          <p className="border-border/45 border-t pt-2 text-xs leading-relaxed text-foreground/85">
+            {card.conclusion}
+          </p>
+        )}
+        {card.windowNote === null ? null : (
+          <p className="text-[11px] text-muted-foreground">{card.windowNote}</p>
         )}
       </div>
 
@@ -2996,7 +3039,7 @@ function TradingValidationTimelineRow({ card }: { card: ValidationCard }) {
         ) : (
           <ChevronRightIcon className="size-3 flex-none" />
         )}
-        Every number behind this
+        Every version behind this
       </button>
       {expanded ? (
         <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all px-3 pb-2 text-[11px] text-muted-foreground">
@@ -3032,6 +3075,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     workEntry.itemType === "mcp_tool_call" ? deriveValidationCard(workEntry.toolData) : null;
   if (validationCard !== null) {
     return <TradingValidationTimelineRow card={validationCard} />;
+  }
+  // And the idea record itself. `save`, `revise`, `show`, `shelve` and
+  // `conclude` all carry the hypothesis; `list` and the menu call do not, and
+  // fall through.
+  const hypothesisCard =
+    workEntry.itemType === "mcp_tool_call" ? deriveHypothesisCard(workEntry.toolData) : null;
+  if (hypothesisCard !== null) {
+    return <TradingHypothesisTimelineRow card={hypothesisCard} />;
   }
   return (
     <PlainWorkEntryRow
