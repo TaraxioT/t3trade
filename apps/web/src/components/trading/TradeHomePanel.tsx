@@ -150,6 +150,7 @@ function TradeHomeChart({
             // same RPC the market panel does, so the validation was already in
             // hand here and simply never handed on.
             {...(data.thesis === undefined ? {} : { thesis: data.thesis })}
+            {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
             className={CHART_HEIGHT_CLASS}
           />
           {/* No prefill: the trade home is not a conversation, so the badge is

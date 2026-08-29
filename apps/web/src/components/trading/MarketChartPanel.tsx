@@ -28,7 +28,7 @@
  * @module MarketChartPanel
  */
 import type { EnvironmentId, ScopedThreadRef, TradingArmWatchInput } from "@t3tools/contracts";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { refreshTradingWatches } from "../../lib/tradingAccountState";
 import { useComposerPrefill } from "./composerPrefill";
@@ -84,6 +84,12 @@ export function MarketChartPanel({
   const analyst = useAskAnalyst(environmentId);
 
   const data = chart.data;
+
+  // A clock stamped per poll, not per tick: the axis reaches now and the
+  // future gutter exists, which is where an event set's next upcoming
+  // occurrence draws. It moves only when the poll brings new data, so nothing
+  // here repaints continuously.
+  const nowMillis = useMemo(() => Date.now(), [data]);
 
   // The validation running on this market, handed to the chart whole: the
   // chart derives its own markers, bands and levels from it (see
@@ -142,6 +148,7 @@ export function MarketChartPanel({
           {...(data.gaps === undefined ? {} : { gaps: data.gaps })}
           {...(thesis === null ? {} : { thesis })}
           {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
+          nowMillis={nowMillis}
           {...(prefill === null || thesis === null
             ? {}
             : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
