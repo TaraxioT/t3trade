@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { TradingMissionNotFoundError } from "./Errors.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 
@@ -31,6 +32,8 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import {
   MAX_WAKEUP_CHARS,
+  NO_TRADING_ACCOUNT_KEY_REASON,
+  NO_TRADING_ACCOUNT_WAKE_LINE,
   renderLeanWakeForReplay,
   TradingWakeupComposer,
   TradingWakeupComposerLive,
@@ -249,8 +252,19 @@ const stubCosts = Layer.succeed(TradingCostEstimator)({
     }),
 } as unknown as TradingCostEstimator["Service"]);
 
+/**
+ * Whether this environment has a `trading_accounts` row.
+ *
+ * False is the keyless install: no signer armed, so the bootstrap wrote no row
+ * and `getMasterWalletAddress` misses. Reset by the tests that clear it.
+ */
+let accountRowExists = true;
+
 const stubMissions = Layer.succeed(TradingMissionService)({
-  getMasterWalletAddress: () => Effect.succeed("0x00000000000000000000000000000000000000ff"),
+  getMasterWalletAddress: (accountId: string) =>
+    accountRowExists
+      ? Effect.succeed("0x00000000000000000000000000000000000000ff")
+      : Effect.fail(new TradingMissionNotFoundError({ missionId: accountId })),
   // No high-water mark recorded: the composer publishes the exchange's position
   // untouched. The enriched case has its own test below.
   readPeakUnrealisedPnl: () => Effect.succeed(null),
@@ -1282,9 +1296,83 @@ layer("TradingWakeupComposer", (it) => {
       assert.isDefined(facts.microstructure?.aggressorFlow);
       // ...and everything the observation is actually defined by survived it.
       assert.equal(facts.marketSnapshot.markPrice, MARK);
-      assert.equal(facts.position.size, 0);
+      assert.equal(facts.position?.size, 0);
       assert.isAbove(facts.recentCandles.candles.length, 0);
       assert.isDefined(facts.observedVolatility);
     }),
+  );
+  // -- the keyless install ----------------------------------------------------
+  //
+  // No signer armed means no `trading_accounts` row, and the row - not the key -
+  // is what every account read needs. Before this, a missing row failed the
+  // whole gather: a keyless install could not wake a mission at all, and lost
+  // the entire market half of `trading_look` (candles, volatility, the book,
+  // structure), none of which needs an address or a credential.
+  const keyless = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.suspend(() => {
+      accountRowExists = false;
+      return effect;
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          accountRowExists = true;
+        }),
+      ),
+    );
+
+  it.effect("composes a wake on the market half alone when there is no account", () =>
+    keyless(
+      Effect.gen(function* () {
+        const composer = yield* TradingWakeupComposer;
+        const composed = yield* composer.compose({
+          mission,
+          harnessRunId: "run_1",
+          cause: "scheduled_reassessment",
+          occurredAt: NOW,
+          pendingEvents: [],
+          activeStrategy: strategy,
+        });
+
+        // The market half arrived in full: this is the whole point.
+        assert.equal(composed.wakeup.marketSnapshot.markPrice, MARK);
+        assert.equal(composed.wakeup.marketSnapshot.market, "ETH");
+
+        // And the account half says so, once, in words.
+        assert.equal(composed.wakeup.accountUnavailable, NO_TRADING_ACCOUNT_WAKE_LINE);
+        assert.include(composed.text, "sizing is unavailable and orders will be refused");
+        assert.equal(
+          composed.text.split("sizing is unavailable and orders will be refused").length - 1,
+          1,
+        );
+
+        // Nothing was priced against an account that does not exist.
+        assert.isUndefined(composed.wakeup.positionCosts);
+        assert.isUndefined(composed.wakeup.costContext);
+      }),
+    ),
+  );
+
+  it.effect("degrades the observation's account half and nothing above it", () =>
+    keyless(
+      Effect.gen(function* () {
+        const composer = yield* TradingWakeupComposer;
+        const facts = yield* composer.observe({ mission, occurredAt: NOW });
+
+        // Everything public is still gathered, exactly as on an armed install.
+        assert.equal(facts.marketSnapshot.markPrice, MARK);
+        assert.isAbove(facts.recentCandles.candles.length, 0);
+        assert.isDefined(facts.observedVolatility);
+        assert.equal(facts.orderBook?.bids[0]?.size, 3);
+        assert.isDefined(facts.microstructure?.aggressorFlow);
+
+        // The account half is absent with a reason, not fabricated as a flat.
+        assert.equal(facts.address, null);
+        assert.equal(facts.accountSnapshot, null);
+        assert.equal(facts.position, null);
+        assert.equal(facts.accountUnavailable, NO_TRADING_ACCOUNT_KEY_REASON);
+        assert.equal(facts.positionCosts, null);
+        assert.equal(facts.costContext, null);
+      }),
+    ),
   );
 });

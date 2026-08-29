@@ -805,6 +805,7 @@ const withMcpServer = <A, E>(
             '{"privyWalletId":"wal_mcp_trading","address":"0x0000000000000000000000000000000000000001","hyperliquidAgentName":"t3","status":"ready"}',
             'ready', 1, 1
           )
+          ON CONFLICT (account_id) DO NOTHING
         `.pipe(Effect.asVoid, Effect.orDie);
       const seedPosition = (input: {
         readonly size: number;
@@ -1919,8 +1920,12 @@ it.effect("registers a watch before the first plan is published", () =>
 // call accepts — a harness that re-armed what it read would be writing
 // `pnl_giveback` into a tool that only takes `giveback`.
 it.effect("reads a watch back in the vocabulary it can re-arm it with", () =>
-  withMcpServer(({ callTool }) =>
+  withMcpServer(({ callTool, seedTradingAccount }) =>
     Effect.gen(function* () {
+      // A `giveback` is account-scoped, so it needs an install that has an
+      // account: without one the arm is refused at the door (see the keyless
+      // suite below), and this test is about the vocabulary, not the refusal.
+      yield* seedTradingAccount();
       yield* callTool(BOUND_THREAD, "trading_watch", {
         missionId: MISSION_ID,
         condition: { kind: "giveback", market: "ETH", drawdownUsd: 4 },
@@ -4083,3 +4088,118 @@ it.effect(
       tradingLayerOverExchange(makeFakeExchange()),
     ),
 );
+
+// -- the keyless install ------------------------------------------------------
+//
+// A T3 Trade install with no Hyperliquid signer has no `trading_accounts` row,
+// because `TradingAccountBootstrap` writes one only when a signer is armed. That
+// row - not the key - is what every account read needs, and its absence used to
+// take the whole market half of a bound `trading_look` down with it: candles,
+// volatility, the book and structure are public data and need neither an address
+// nor a credential. The base fixture here IS a keyless install; the tests that
+// want an armed one seed the account row explicitly.
+
+it.effect("serves the market half of a bound look with no trading account", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          fetch: ["snapshot", "volatility", "candles:5m:10", "position", "account", "cost"],
+        });
+        assert.notEqual(look.result.isError, true);
+        const body = look.result.body;
+
+        // The public half answered in full.
+        assert.isDefined(body.snapshot);
+        assert.isDefined(body.volatility);
+        assert.isDefined(body.candles);
+
+        // The account half degraded one key at a time, each with the same
+        // honest reason - not one `marketReadFailed` swallowing the call.
+        assert.equal(body.marketReadFailed, undefined);
+        assert.equal(body.position, undefined);
+        assert.equal(body.account, undefined);
+        assert.equal(body.cost, undefined);
+        const refusedKeys = (body.unavailable as ReadonlyArray<{ key: string; reason: string }>)
+          .filter((entry) => entry.reason.includes("no trading account exists"))
+          .map((entry) => entry.key);
+        assert.deepEqual(refusedKeys.sort(), ["account", "cost", "position"]);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("refuses a position-scoped watch that could never fire", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        // A `pnl` watch on an environment with no account arms cleanly and then
+        // never fires, and silence reads to the model as "the level was not
+        // reached". One honest refusal at arm time instead.
+        const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: { kind: "pnl", market: "ETH", direction: "above", valueUsd: 25 },
+        });
+        assert.notEqual(refused.result.isError, true);
+        assert.equal(refused.result.body.outcome, "refused");
+        assert.equal(refused.result.body.reason, "needs_trading_account");
+        assert.match(refused.result.body.detail, /no trading account/);
+
+        // A price level on the same call path is measured from public market
+        // data, so it arms exactly as it always did.
+        const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            direction: "above",
+            price: 4_500,
+            confirm: "touch",
+          },
+        });
+        assert.equal(armed.result.body.outcome, "armed");
+
+        // And the same pnl condition arms once the environment has an account:
+        // the refusal is about the install, not about the condition.
+        yield* seedTradingAccount();
+        const rearmed = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: { kind: "pnl", market: "ETH", direction: "above", valueUsd: 25 },
+        });
+        assert.equal(rearmed.result.body.outcome, "armed");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("publishes a plan with no account, and says nothing reached the venue", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const published = yield* callTool(BOUND_THREAD, "trading_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 1,
+          strategy: strategyBody("keyless"),
+        });
+        assert.notEqual(published.result.isError, true);
+        // The plan is the agent's own read and the chart draws it, so it
+        // publishes and records.
+        assert.equal(published.result.body.outcome, "accepted");
+        // But an accepted publish normally rests a stop and a target on the
+        // venue, and here nothing did.
+        assert.isTrue(
+          (published.result.body.warnings as ReadonlyArray<string>).some((warning) =>
+            warning.includes("nothing was placed on the venue"),
+          ),
+        );
+
+        // And it is readable back, which is the half that still works.
+        const look = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["plan"] });
+        assert.equal(look.result.body.mission.strategy.because, "keyless");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});

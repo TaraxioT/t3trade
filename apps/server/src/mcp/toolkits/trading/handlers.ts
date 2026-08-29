@@ -1560,22 +1560,49 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
           if (levelHistory.length > 0) sections.levelHistory = levelHistory;
         }
 
-        if (wants("position") && facts !== null) sections.position = facts.position;
-        if (wants("account") && facts !== null) sections.account = facts.accountSnapshot;
-        if (wants("orders") && facts !== null) {
-          sections.openOrders = yield* gateway
-            .getOpenOrders(facts.address as `0x${string}`)
-            .pipe(Effect.catchCause(() => Effect.succeed([])));
+        // The account-scoped keys. These are the only ones that need a trading
+        // account; every key above and below reads public market data. When
+        // there is no account the gather still ran and still answered the whole
+        // market half, and these five degrade one line each rather than taking
+        // the call down with them. `facts.accountUnavailable` carries the line.
+        const accountUnavailable = facts?.accountUnavailable ?? null;
+        if (wants("position")) {
+          if (accountUnavailable !== null) {
+            refuseKeys(keysFor("position"), accountUnavailable);
+          } else if (facts?.position != null) {
+            sections.position = facts.position;
+          }
+        }
+        if (wants("account")) {
+          if (accountUnavailable !== null) {
+            refuseKeys(keysFor("account"), accountUnavailable);
+          } else if (facts?.accountSnapshot != null) {
+            sections.account = facts.accountSnapshot;
+          }
+        }
+        if (wants("orders")) {
+          if (accountUnavailable !== null) {
+            refuseKeys(keysFor("orders"), accountUnavailable);
+          } else if (facts !== null && facts.address !== null) {
+            const address = facts.address;
+            sections.openOrders = yield* gateway
+              .getOpenOrders(address as `0x${string}`)
+              .pipe(Effect.catchCause(() => Effect.succeed([])));
+          }
         }
         if (wants("position_costs")) {
-          if (facts?.positionCosts == null) {
+          if (accountUnavailable !== null) {
+            refuseKeys(keysFor("position_costs"), accountUnavailable);
+          } else if (facts?.positionCosts == null) {
             refuseKeys(keysFor("position_costs"), "no open position to price");
           } else {
             sections.positionCosts = facts.positionCosts;
           }
         }
         if (wants("cost")) {
-          if (facts?.costContext != null) {
+          if (accountUnavailable !== null) {
+            refuseKeys(keysFor("cost"), accountUnavailable);
+          } else if (facts?.costContext != null) {
             sections.cost = facts.costContext;
           } else if (facts !== null) {
             // The composer prices a hypothetical entry only while flat; holding,
@@ -2546,6 +2573,41 @@ const handlers = {
           detail: derived.detail,
           recovery: classifyFailure({ tag: "TradingWatchRefusal", reason: derived.code }),
         };
+      }
+
+      // `pnl`, `giveback` and `fill` are all evaluated against account state.
+      // With no `trading_accounts` row there is none, so such a watch arms
+      // cleanly and then never fires, and a watch that never fires is read by
+      // the model as a level that was never reached. Refusing at arm time says
+      // the true thing once, instead of buying silence for the rest of the
+      // mission. Price, time, metric and derived conditions are measured from
+      // public market data and are untouched by this.
+      if (
+        input.condition.kind === "pnl" ||
+        input.condition.kind === "giveback" ||
+        input.condition.kind === "fill"
+      ) {
+        const missions = yield* TradingMissionService;
+        const account = yield* missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
+          Effect.catchTag("TradingMissionNotFoundError", () => Effect.succeed(null)),
+          // A missing row is a state this branch is about; an unreadable
+          // database is not, and must not be reported as "no account".
+          Effect.orDie,
+        );
+        if (account === null) {
+          return {
+            outcome: "refused" as const,
+            reason: "needs_trading_account" as const,
+            detail:
+              `a ${input.condition.kind} watch is measured against account state, and this ` +
+              "environment has no trading account, so it could never fire. Arm a price, time, " +
+              "metric or derived condition instead; those are measured from public market data",
+            recovery: classifyFailure({
+              tag: "TradingWatchRefusal",
+              reason: "needs_trading_account",
+            }),
+          };
+        }
       }
 
       // A `giveback` the position has already given back is true the moment it

@@ -442,6 +442,9 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string => {
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
+    // Kept at the floor for the same reason it is kept above: without it the
+    // zeros read as a measured flat.
+    ...(wakeup.accountUnavailable === undefined ? {} : { account: wakeup.accountUnavailable }),
     // Kept even at the floor: a held market nobody mentioned is a position
     // this turn does not know it owns.
     ...(wakeup.otherMarkets === undefined || wakeup.otherMarkets.length === 0
@@ -487,6 +490,10 @@ const renderLeanWakeup = (
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
+    // Immediately under the position, because it is what the position means:
+    // nothing was read, so nothing is held, and nothing can be ordered. Once
+    // per wake, on both render rungs, never twice.
+    ...(wakeup.accountUnavailable === undefined ? {} : { account: wakeup.accountUnavailable }),
     // The other markets this mission holds, one line each. The wake's OWN
     // market carries the detail; these say only whether anything is on them.
     ...(wakeup.otherMarkets === undefined || wakeup.otherMarkets.length === 0
@@ -628,13 +635,33 @@ export interface ObserveInput {
  * and `trading_look` returns it as a structure.
  */
 export interface ObservedFacts {
-  readonly address: string;
+  /**
+   * The master-wallet address every account read is made with, or `null` when
+   * this environment has no trading account.
+   *
+   * Null is the keyless install, and it degrades the ACCOUNT half only: the
+   * market half below is public data and is gathered either way. See
+   * `accountUnavailable`.
+   */
+  readonly address: string | null;
   readonly market: TradingMission["market"];
   readonly primaryTimeframe: TradingTimeframe;
   readonly marketSnapshot: AgentMarketSnapshot;
-  readonly accountSnapshot: AgentAccountSnapshot;
-  /** The position, carrying T3's own high-water mark when one is recorded. */
-  readonly position: AgentNetPosition;
+  /** The live balance, or `null` when there is no account to read one from. */
+  readonly accountSnapshot: AgentAccountSnapshot | null;
+  /**
+   * The position, carrying T3's own high-water mark when one is recorded.
+   *
+   * `null`, never a fabricated flat, when there is no account: "we did not
+   * look" and "we looked and you hold nothing" are different answers, and only
+   * one of them is true here.
+   */
+  readonly position: AgentNetPosition | null;
+  /**
+   * The one honest line for the account half when there is no trading account,
+   * else `null`. Every account-scoped key degrades to this and nothing else.
+   */
+  readonly accountUnavailable: string | null;
   /** The full lookback window the measurements were taken over. */
   readonly history: MarketHistory;
   /** The bounded tail of `history` a wakeup carries. */
@@ -696,6 +723,26 @@ const fail = (reason: string, cause?: unknown): ComposeWakeupError => ({
   reason,
   cause,
 });
+
+/**
+ * What a wake says when this environment has no trading account.
+ *
+ * One sentence, carried once per wake, and deliberately naming both halves:
+ * what will not work (sizing, orders) and what still does. A keyless install is
+ * a research terminal, not a broken one, and a wake that only said "no account"
+ * would read as a fault to be fixed before anything else could proceed.
+ */
+export const NO_TRADING_ACCOUNT_WAKE_LINE =
+  "no trading account is attached here: no signer is armed, so sizing is unavailable and " +
+  "orders will be refused; observation, backtests and validations are unaffected";
+
+/**
+ * The same fact as a `trading_look` key refusal, in that surface's register:
+ * one short phrase per degraded key, matching "the order book could not be
+ * read" and "no open position to price".
+ */
+export const NO_TRADING_ACCOUNT_KEY_REASON =
+  "no trading account exists on this environment; arm a Hyperliquid signer to read account state";
 
 const make = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
@@ -849,6 +896,28 @@ const make = Effect.gen(function* () {
         Effect.catchCause(() => Effect.succeed(null)),
       );
 
+  /**
+   * The master-wallet address every account read uses, or `null` when this
+   * environment has no `trading_accounts` row at all.
+   *
+   * The missing row is the KEYLESS install: `TradingAccountBootstrap` writes it
+   * only when a signer is armed. It used to fail the whole gather, which cost a
+   * keyless install every wake and the entire market half of `trading_look` -
+   * candles, volatility, the book, structure - none of which needs an address
+   * or a credential. So the two scopes are separated here, at the one seam both
+   * the wake and the look come through, rather than in either caller.
+   *
+   * A genuine read failure (a locked database) still fails: that is a fault,
+   * not a state.
+   */
+  const resolveAddress = (
+    mission: TradingMission,
+  ): Effect.Effect<`0x${string}` | null, ComposeWakeupError> =>
+    missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
+      Effect.catchTag("TradingMissionNotFoundError", () => Effect.succeed(null)),
+      Effect.mapError((error) => fail("address_resolution_failed", error)),
+    );
+
   const resolveTriggeringWatch = (
     watchId: string | undefined,
   ): Effect.Effect<Option.Option<PersistedWatch>, ComposeWakeupError> =>
@@ -867,9 +936,9 @@ const make = Effect.gen(function* () {
       const market = input.market ?? mission.market;
 
       // §10.6: account reads always use the master-wallet address as identity.
-      const address = yield* missions
-        .getMasterWalletAddress(mission.tradingAccountId)
-        .pipe(Effect.mapError((error) => fail("address_resolution_failed", error)));
+      // Null means there is no account here at all - see `resolveAddress`.
+      const address = yield* resolveAddress(mission);
+      const accountUnavailable = address === null ? NO_TRADING_ACCOUNT_KEY_REASON : null;
 
       // Fresh snapshots — the whole point of the wake path. The gateway enforces
       // its own freshness windows (BBO 2s, asset context 5s, §13); the composer
@@ -880,11 +949,28 @@ const make = Effect.gen(function* () {
       // The mandate's interval, or 5m — see `runtimeTimeframe`. The plan no
       // longer names a timeframe of its own (plan 29 step 4.1).
       const primaryTimeframe = runtimeTimeframe(mission.instruction);
-      const [marketSnapshot, accountSnapshot, position, history] = yield* Effect.all(
+      // The market half is public data - no address, no credential - and is
+      // gathered identically on a keyed and a keyless install. The account half
+      // rides the same concurrent batch when there IS an account, so an armed
+      // install still pays one round trip, and stands down to nulls when there
+      // is not. A read failure on either half still fails the gather exactly as
+      // it did: absence of an account is a state, an exchange that will not
+      // answer for an account that exists is a fault.
+      const accountReads: Effect.Effect<
+        readonly [AgentAccountSnapshot, AgentNetPosition] | null,
+        unknown
+      > =
+        address === null
+          ? Effect.succeed(null)
+          : Effect.all(
+              [gateway.getAccountSnapshot(address), gateway.getPosition(address, market)],
+              {
+                concurrency: "unbounded",
+              },
+            );
+      const [marketSnapshot, history, accountHalf] = yield* Effect.all(
         [
           gateway.getMarketSnapshot(market),
-          gateway.getAccountSnapshot(address),
-          gateway.getPosition(address, market),
           // One read serves both halves of "what did price just do?": the last
           // 20 bars the harness reads directly, and the longer window the
           // volatility measurement needs to say anything trustworthy.
@@ -893,9 +979,12 @@ const make = Effect.gen(function* () {
             interval: primaryTimeframe,
             maxBars: VOLATILITY_LOOKBACK_BARS,
           }),
+          accountReads,
         ],
         { concurrency: "unbounded" },
       ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
+      const accountSnapshot = accountHalf === null ? null : accountHalf[0];
+      const position = accountHalf === null ? null : accountHalf[1];
 
       // §12.2 bounds `recentCandles` at 20 bars; the measurement reads the whole
       // window. A target derived from 20 bars of the primary timeframe is a
@@ -921,7 +1010,7 @@ const make = Effect.gen(function* () {
         .readPeakUnrealisedPnl({ missionId: mission.id, market })
         .pipe(Effect.mapError((error) => fail("peak_pnl_read_failed", error)));
       const positionWithPeak =
-        peak === null
+        position === null || peak === null
           ? position
           : {
               ...position,
@@ -949,16 +1038,20 @@ const make = Effect.gen(function* () {
       // arrives at all. A flat wake gets its one cost line here too — the
       // plan's intended entry notional when the plan names one, else the
       // allocated capital.
+      // Both cost lines are priced FOR an account, so both stand down with the
+      // account half rather than being priced against a fabricated one.
       const [higherTimeframeVolatility, positionCosts, costContext, orderBook] = yield* Effect.all(
         [
           measureHigherTimeframe(market, pairedTimeframe(primaryTimeframe)),
-          costOpenPosition(
-            market,
-            position.size,
-            address,
-            mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
-          ),
-          position.size === 0
+          address === null || position === null
+            ? Effect.succeed<TradingCostEstimate | null>(null)
+            : costOpenPosition(
+                market,
+                position.size,
+                address,
+                mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+              ),
+          address !== null && position !== null && position.size === 0
             ? costFlatWakeup(
                 market,
                 fundableNotionalUsd ?? declaredEntryNotionalUsd,
@@ -1044,7 +1137,7 @@ const make = Effect.gen(function* () {
       // behind it, read off the entry the server committed to. Absent while
       // flat, and absent (not asserted) when the row cannot be read.
       const enteredWithoutScoredSetup =
-        position.size === 0
+        position === null || position.size === 0
           ? undefined
           : yield* sql<{ readonly setup_kind: string | null }>`
               SELECT setup_kind FROM trading_entry_context
@@ -1072,6 +1165,7 @@ const make = Effect.gen(function* () {
       // which field each read model derives.
       return {
         address,
+        accountUnavailable,
         market,
         primaryTimeframe,
         marketSnapshot,
@@ -1117,19 +1211,30 @@ const make = Effect.gen(function* () {
         : undefined;
       const market =
         causedBy !== undefined && mission.markets.includes(causedBy) ? causedBy : mission.market;
-      const address = yield* missions
-        .getMasterWalletAddress(mission.tradingAccountId)
-        .pipe(Effect.mapError((error) => fail("address_resolution_failed", error)));
+      // Null on a keyless install; the wake still composes, on the market half
+      // plus one honest line. See `resolveAddress`.
+      const address = yield* resolveAddress(mission);
+      const accountUnavailable = address === null ? NO_TRADING_ACCOUNT_WAKE_LINE : null;
 
-      // One account read serves the wake's own position AND every other held
-      // market's line: `getPosition` calls `getAccountSnapshot` underneath, so
-      // this is the same number of exchange reads a single-market wake made.
+      // The mark is public and is read either way. One account read then serves
+      // the wake's own position AND every other held market's line:
+      // `getPosition` calls `getAccountSnapshot` underneath, so this is the same
+      // number of exchange reads a single-market wake made.
       const [marketSnapshot, accountSnapshot] = yield* Effect.all(
-        [gateway.getMarketSnapshot(market), gateway.getAccountSnapshot(address)],
+        [
+          gateway.getMarketSnapshot(market),
+          address === null
+            ? Effect.succeed<AgentAccountSnapshot | null>(null)
+            : gateway.getAccountSnapshot(address),
+        ],
         { concurrency: "unbounded" },
       ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
 
-      const held = accountSnapshot.positions.find((entry) => entry.market === market);
+      const held = accountSnapshot?.positions.find((entry) => entry.market === market);
+      // With no account there is no position to report, and `position` is a
+      // required field: zeros stand for "nothing is held here", which is the
+      // literal truth when no account exists - and `accountUnavailable` beside
+      // them is what stops the model reading them as a measured flat.
       const exchangePosition: AgentNetPosition =
         held === undefined
           ? {
@@ -1138,7 +1243,7 @@ const make = Effect.gen(function* () {
               unrealisedPnl: 0,
               cumulativeFunding: 0,
               marginUsed: 0,
-              freshness: accountSnapshot.freshness,
+              freshness: accountSnapshot?.freshness ?? marketSnapshot.freshness,
             }
           : {
               market: held.market,
@@ -1147,7 +1252,7 @@ const make = Effect.gen(function* () {
               unrealisedPnl: held.unrealisedPnl,
               cumulativeFunding: held.cumulativeFunding,
               marginUsed: held.marginUsed,
-              freshness: accountSnapshot.freshness,
+              freshness: accountSnapshot?.freshness ?? marketSnapshot.freshness,
             };
 
       // The other held markets, a line each. Deliberately size and PnL and
@@ -1157,7 +1262,7 @@ const make = Effect.gen(function* () {
       const otherMarkets = mission.markets
         .filter((other) => other !== market)
         .map((other) => {
-          const position = accountSnapshot.positions.find((entry) => entry.market === other);
+          const position = accountSnapshot?.positions.find((entry) => entry.market === other);
           return {
             market: other,
             size: position?.size ?? 0,
@@ -1184,13 +1289,15 @@ const make = Effect.gen(function* () {
       // never the wake.
       const [rawPositionCosts, rawCostContext] = yield* Effect.all(
         [
-          costOpenPosition(
-            market,
-            position.size,
-            address,
-            mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
-          ),
-          position.size === 0
+          address === null
+            ? Effect.succeed<TradingCostEstimate | null>(null)
+            : costOpenPosition(
+                market,
+                position.size,
+                address,
+                mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+              ),
+          address !== null && position.size === 0
             ? costFlatWakeup(
                 market,
                 activeStrategy !== undefined &&
@@ -1252,6 +1359,7 @@ const make = Effect.gen(function* () {
         userMessage: input.userMessage,
         marketSnapshot: toObservedMarketSnapshot(marketSnapshot),
         position,
+        ...(accountUnavailable === null ? {} : { accountUnavailable }),
         ...(otherMarkets.length === 0 ? {} : { otherMarkets }),
         ...(workingEntry === null ? {} : { workingEntry }),
         ...(positionCosts === null ? {} : { positionCosts }),
