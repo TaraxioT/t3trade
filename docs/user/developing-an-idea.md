@@ -71,6 +71,11 @@ And the "after" window reaches back at most a hundred bars, which on any
 interval is long enough that further back stops being a sequence and starts
 being a market regime you should say outright.
 
+Ideas can also anchor on things that happened outside the market entirely:
+conferences, upgrades, unlocks. Those dates are recorded once, with their
+sources, and the rule can ask how many bars it has been since the most recent
+one ended. See [Studying events](studying-events.md) for how that works.
+
 ## Try several values at once
 
 When the question is which number to use rather than whether the idea works:

@@ -14,6 +14,7 @@
 - [Keyboard shortcuts](./user/keybindings.md)
 - [Organizing threads](./user/thread-sidebar.md)
 - [Developing an idea](./user/developing-an-idea.md)
+- [Studying events](./user/studying-events.md)
 - [Validating a trading idea](./user/validating-an-idea.md)
 - [Review usage](./user/usage.md)
 - [Customize a project icon](./user/project-settings.md)
