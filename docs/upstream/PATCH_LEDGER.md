@@ -505,3 +505,20 @@ the `macroscopeapp` installation; both org apps are being removed.
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workflow definitions | `.github/workflows/**` | All 14 upstream workflows deleted (`bdf852fa2`) — every one ran on `blacksmith-*` runners. A sync restores them; delete again, or port selectively via the free-tier CI plan (PR #4). |
 | Macroscope agents    | `.macroscope/**`       | Deleted. Inert once `macroscopeapp` is uninstalled; it exists only to instruct that app. A sync restores the directory — delete it again.                                             |
+
+## Z1 · Fork relay and hosted-app defaults (2026-08-29)
+
+Upstream's relay rejected this fork's environments with `not_authorized` because
+nothing in code pointed a fresh build at the fork's own relay: the relay URL was
+pure configuration that failed closed when unset, the hosted app default still
+named upstream's deployment, and the channel router's host was a literal. The
+fork self-hosts its relay and web app, so the defaults are now the fork's own.
+
+### Applied
+
+| Date       | Seam                  | File(s)                                                                                                             | Change                                                                                                                                                                                                                                                                                        |
+| ---------- | --------------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-29 | Hosted app default    | `packages/shared/src/connectAuth.ts`                                                                                | `DEFAULT_HOSTED_APP_URL` repointed from `https://app.t3.codes` to `https://app.athelstan.xyz`. **Sync patch: keep.**                                                                                                                                                                          |
+| 2026-08-29 | Relay URL default     | `packages/shared/src/connectAuth.ts`, `apps/server/src/cloud/publicConfig.ts`, `apps/web/src/cloud/publicConfig.ts` | New `DEFAULT_RELAY_URL = "https://relay.athelstan.xyz"`, used as the final fallback in `makeRelayUrlConfig` (server) and `resolveCloudPublicConfig` (web). Precedence stays env var, then build-time value, then default; only the previously fail-closed case changes. **Sync patch: keep.** |
+| 2026-08-29 | Channel router host   | `apps/web/vercel.ts`                                                                                                | `ROUTER_HOST` and the latest/nightly channel origins now derive from `VITE_HOSTED_APP_URL` (visible to the config file at deploy time) with the fork's literal as fallback, replacing the three `app.t3.codes` literals.                                                                      |
+| 2026-08-29 | Example and doc hosts | `.env.example`, `docs/internals/t3-connect.md`, `docs/user/remote-access.md`                                        | Hostnames repointed to the fork's relay and hosted app, so a fresh clone links against the fork rather than upstream.                                                                                                                                                                         |

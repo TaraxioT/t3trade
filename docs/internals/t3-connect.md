@@ -82,7 +82,7 @@ In **Clerk Dashboard > OAuth applications**:
 2. Enable the **Public** option so authorization-code exchange uses PKCE.
 3. Add **both** allowed redirect URIs:
    - `http://127.0.0.1:34338/callback` for the loopback listener;
-   - `https://app.t3.codes/connect/callback` for the hosted out-of-band flow. This is
+   - `https://app.athelstan.xyz/connect/callback` for the hosted out-of-band flow. This is
      `connectCallbackUrl(DEFAULT_HOSTED_APP_URL)` from `packages/shared/src/connectAuth.ts`, so a
      custom `T3CODE_HOSTED_APP_URL` means `$T3CODE_HOSTED_APP_URL/connect/callback` instead.
      Omitting it breaks headless and SSH authorization.
