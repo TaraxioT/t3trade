@@ -148,6 +148,10 @@
       "types": "./src/thesis.ts",
       "import": "./src/thesis.ts"
     },
+    "./thesisWatchBridge": {
+      "types": "./src/thesisWatchBridge.ts",
+      "import": "./src/thesisWatchBridge.ts"
+    },
     "./backtest": {
       "types": "./src/backtest.ts",
       "import": "./src/backtest.ts"

@@ -257,6 +257,19 @@ export const TradingHypothesisAction = Schema.Literals([
    * nothing in the session could answer.
    */
   "observe",
+  /**
+   * Arm notify-only alerts for the parts of this idea's entry the watch
+   * vocabulary can express, and say plainly which parts it cannot.
+   *
+   * It lives here rather than on `trading_validate` for the reason `observe`
+   * does - what is being alerted on is the IDEA - and for one more: at the
+   * time it was added `trading_hypothesis` had 31 characters of description
+   * budget left and `trading_validate` had 7, and the menu carries the detail
+   * either way.
+   *
+   * Never arms a consequence. Every watch it creates delivers `notify`.
+   */
+  "alert_when_setup",
 ]);
 export type TradingHypothesisAction = typeof TradingHypothesisAction.Type;
 
@@ -266,6 +279,13 @@ export const TradingHypothesisInput = Schema.Struct({
   action: Schema.optional(TradingHypothesisAction),
   /** Required by everything except `save` and `list`. */
   hypothesisId: Schema.optional(Schema.String),
+  /**
+   * An alternative subject for `alert_when_setup`: the thesis a live
+   * validation is running, rather than an idea's current version. The two can
+   * differ once an idea has been revised, and alerting on the version that is
+   * actually being validated is usually what was meant.
+   */
+  validationId: Schema.optional(Schema.String),
   /** Required by `save`. */
   title: Schema.optional(Schema.String),
   /** Required by `save` and `revise`; the shape `trading_backtest` takes. */
@@ -282,10 +302,13 @@ export const TradingHypothesisInput = Schema.Struct({
 export type TradingHypothesisInput = typeof TradingHypothesisInput.Type;
 
 export const TradingHypothesisResult = Schema.Struct({
-  /** Set by `save`, `revise`, `show`, `shelve`, `conclude` and `observe`. */
+  /** Set by `save`, `revise`, `show`, `shelve`, `conclude`, `observe` and
+      `alert_when_setup` (when it was given a hypothesis). */
   hypothesis: Schema.optional(HypothesisDetail),
   /** Set by `list`. */
   hypotheses: Schema.optional(Schema.Array(HypothesisSummary)),
+  /** Set by `alert_when_setup`: the ids of the notify-only watches it armed. */
+  armedWatchIds: Schema.optional(Schema.Array(Schema.String)),
   /** What the call did, in one sentence the model can relay. */
   outcome: Schema.optional(Schema.String),
   /** Why a call changed nothing. Present only on a refusal. */
@@ -303,6 +326,7 @@ export function renderTradingHypothesisMenu(): string {
     "show {hypothesisId} gives the versions, their backtest runs, and the linked validations",
     "list {scope: thread|all}; shelve {hypothesisId, conclusion?}; conclude {hypothesisId, verdict: supported|unsupported, conclusion}",
     "observe {hypothesisId} makes this chat a watcher: woken by its validations, journals what each means, never trades; call again to stop",
+    "alert_when_setup {hypothesisId|validationId} arms notify-only alerts for the entry legs a watch can say (price, funding, volume pace), names what it cannot, and never means the entry fired",
     "hypothesisId alone on trading_backtest or trading_validate arm runs that idea's current version, filed against it; a restated thesis must match it",
     "a second validation of the SAME idea on one market and interval supersedes the first; another idea's refuses",
     "nothing here places an order; a supported idea is traded the ordinary way, when the user says so",

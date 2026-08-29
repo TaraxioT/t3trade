@@ -121,6 +121,13 @@ describe("prose", () => {
     expect(menu).toContain("current version");
     // The vocabulary rides one call, not every turn: keep it short enough to
     // stay a menu rather than a second system prompt.
-    expect(menu.length).toBeLessThan(900);
+    // Raised from 900 when `alert_when_setup` became the eighth action. The
+    // cap is a budget taken deliberately, not a number widened until the
+    // measurement fitted: the menu rides ONE call rather than every turn, and
+    // the action it bought carries three facts a caller cannot infer - that it
+    // takes either id, that it is notify-only, and that armed legs are not a
+    // fired entry. The last of those is the misreading the whole feature
+    // risks, so it is worth its characters.
+    expect(menu.length).toBeLessThan(1_150);
   });
 });

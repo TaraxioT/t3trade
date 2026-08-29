@@ -277,7 +277,7 @@ export const TradingValidateTool = Tool.make("trading_validate", {
 
 export const TradingHypothesisTool = Tool.make("trading_hypothesis", {
   description:
-    "The durable record of an idea. `save` {title, thesis} files it as v1; `revise` {hypothesisId, thesis, note} writes the next version. Pass `hypothesisId` ALONE to trading_backtest or trading_validate arm and it runs that idea's current version. `show` gives versions, runs and validations; `observe` {hypothesisId} puts a non-trading watcher on this chat that narrates its validations. Also `list` `shelve` `conclude`. Never places an order. Menu: trading_hypothesis({})",
+    "The durable record of an idea. `save` {title, thesis} files it as v1; `revise` {hypothesisId, thesis, note} writes the next version. Pass `hypothesisId` ALONE to trading_backtest or trading_validate arm and it runs that idea's current version. `show` gives versions, runs and validations; `observe` {hypothesisId} puts a non-trading watcher on this chat that narrates its validations. Also `list` `shelve` `conclude` `alert_when_setup`. Never places an order. Menu: trading_hypothesis({})",
   parameters: TradingHypothesisInput,
   success: TradingHypothesisResult,
   failure: TradingToolRejectedError,

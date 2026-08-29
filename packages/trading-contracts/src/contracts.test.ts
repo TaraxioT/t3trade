@@ -896,6 +896,7 @@ describe("subpath exports", () => {
         // Prompt K's thesis schema and backtest engine, and the forward
         // validation that runs one on live bars.
         "./thesis",
+        "./thesisWatchBridge",
         "./backtest",
         "./forward",
         "./hypothesis",

@@ -87,6 +87,29 @@ A chat that is already trading a market gets these events too, on its ordinary
 wakes, and answers them the same way — one sentence about what it means, and
 back to the position it was managing.
 
+## Being told when the setup is forming
+
+The validation watches every bar, but you do not. If you want a nudge when the
+idea's entry starts lining up:
+
+> Alert me when that setup is forming.
+
+What can be armed is armed, as an alert only: it lands in your feed, it wakes
+nothing, and it can never place an order.
+
+Not every rule can become an alert, and the reply says which could not and why.
+Price levels, funding thresholds and the volume pace all translate. An indicator
+reading does not, raw bar volume does not, and neither does the ordering in an
+"after" clause, because an alert has no memory of what came before it. Those
+parts are not lost: the paper validation is evaluating all of them on every
+closed bar, which is what the reply points you back to.
+
+One thing worth being clear about. If the entry has several conditions, you get
+one alert per condition, and they fire independently. Getting all of them is not
+the same as the entry firing, because they may have happened days apart. The
+validation is the thing that decides a setup actually fired; the alerts just
+tell you to look.
+
 ## Pausing, resuming and stopping
 
 - **Pause** stops evaluation and keeps everything: the idea, its trades so far,

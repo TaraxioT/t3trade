@@ -151,6 +151,10 @@ import {
 } from "@t3tools/trading-contracts/hypothesis";
 import { describeThesis } from "@t3tools/trading-contracts/thesis";
 import {
+  describeSetupAlerts,
+  thesisSetupAlerts,
+} from "@t3tools/trading-contracts/thesisWatchBridge";
+import {
   TradingHypothesisService,
   type HypothesisRecord,
 } from "../../../trading/TradingHypothesisService.ts";
@@ -3481,6 +3485,68 @@ const handlers = {
               "woken when its validations open or close a paper trade, change verdict, or expire, " +
               "and this mission holds no authority: it cannot plan, enter or exit. Call observe " +
               "again on this chat to stop watching.",
+          });
+        }
+
+        case "alert_when_setup": {
+          // A validation names the thesis actually being run, which after a
+          // revision is not the idea's current version. Preferred when both
+          // are given, because it is the more specific of the two.
+          const subject =
+            input.validationId !== undefined
+              ? yield* validations.get(input.validationId).pipe(Effect.orDie)
+              : null;
+          if (input.validationId !== undefined && subject === null) {
+            return yield* refuse("no validation with that id");
+          }
+          const record =
+            input.hypothesisId === undefined
+              ? null
+              : yield* hypotheses.show(input.hypothesisId).pipe(Effect.orDie);
+          if (input.hypothesisId !== undefined && record === null) {
+            return yield* refuse("no hypothesis with that id");
+          }
+          const thesis = subject?.thesis ?? record?.thesis;
+          if (thesis === undefined) {
+            return yield* refuse("alert_when_setup needs a hypothesisId or a validationId");
+          }
+
+          const alerts = yield* TradingAlertService;
+          const translated = thesisSetupAlerts(thesis);
+          if (translated.conditions.length === 0) {
+            // Nothing armed, so nothing is said about legs. The refusal names
+            // every predicate and where it is still being watched.
+            return yield* refuse(`${describeSetupAlerts(thesis, translated)} Nothing was armed.`);
+          }
+
+          const armedIds: Array<string> = [];
+          const armedConditions: Array<(typeof translated.conditions)[number]> = [];
+          const rejectedLegs: Array<string> = [];
+          for (const condition of translated.conditions) {
+            const armed = yield* alerts
+              .armWatch({ condition, deliver: "notify" })
+              .pipe(Effect.orDie);
+            if (armed.outcome === "rejected") {
+              rejectedLegs.push(armed.reason);
+              continue;
+            }
+            armedIds.push(armed.watch.id);
+            // Tracked alongside the ids rather than counted: a leg the alert
+            // layer refuses in the middle of the list would otherwise make the
+            // sentence describe the wrong legs.
+            armedConditions.push(condition);
+          }
+          if (armedIds.length === 0) {
+            return yield* refuse(`no leg of that entry could be armed: ${rejectedLegs.join("; ")}`);
+          }
+
+          const notArmed = [...translated.inexpressible, ...rejectedLegs];
+          return hypothesisResult({
+            ...(record === null ? {} : { hypothesis: yield* detail(record) }),
+            armedWatchIds: armedIds,
+            outcome:
+              describeSetupAlerts(thesis, { ...translated, conditions: armedConditions }) +
+              (notArmed.length === 0 ? "" : ` Not armed: ${notArmed.join(". ")}`),
           });
         }
 
