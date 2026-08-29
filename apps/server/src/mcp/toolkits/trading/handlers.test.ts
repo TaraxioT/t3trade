@@ -4239,6 +4239,22 @@ const observeThesis = {
   exits: { stop: { basis: "percent", value: 2 }, target: { basis: "percent", value: 1 } },
 };
 
+it.effect("validates an arm request before resolving its hypothesis", () =>
+  withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        const refused = yield* callTool(OBSERVE_CHAT_THREAD, "trading_validate", {
+          action: "arm",
+          hypothesisId: "missing-hypothesis",
+        });
+        assert.equal(refused.result.isError, true);
+        assert.match(refused.result.content[0].text, /arm needs durationHours/);
+        assert.notMatch(refused.result.content[0].text, /no hypothesis with that id/);
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  ),
+);
+
 it.effect("an observe mission is created from a filed idea and cannot trade", () =>
   withMcpServer(
     ({ callTool, missions, seedLocalTradingAccount }) =>

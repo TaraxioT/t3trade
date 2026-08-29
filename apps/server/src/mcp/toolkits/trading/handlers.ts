@@ -3162,8 +3162,7 @@ const handlers = {
 
       switch (input.action) {
         case "arm": {
-          const resolved = yield* resolveRunThesis(input);
-          if (resolved.outcome === "needs_input") {
+          if (input.thesis === undefined && input.hypothesisId === undefined) {
             return yield* refuse(
               "arm needs a thesis or a hypothesisId; the shape is trading_validate({})",
             );
@@ -3171,6 +3170,7 @@ const handlers = {
           if (input.durationHours === undefined) {
             return yield* refuse("arm needs durationHours; two weeks is 336");
           }
+          const resolved = yield* resolveRunThesis(input);
           if (resolved.outcome === "not_found") {
             return yield* refuse("no hypothesis with that id");
           }

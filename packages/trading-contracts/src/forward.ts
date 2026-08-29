@@ -55,6 +55,7 @@ import {
   BacktestStats,
   makeThesisSignals,
   summarizeTrades,
+  type BacktestCosts,
   type BacktestExitReason,
   type BacktestTrade,
 } from "./backtest.ts";
@@ -62,10 +63,12 @@ import { indicatorLookbackBars } from "./indicators.ts";
 import type { MarketCandle } from "./market.ts";
 import { MIN_REPLAY_SETUPS } from "./replay.ts";
 import {
+  describeThesis,
   THESIS_VOLUME_RATIO_BARS,
   thesisIndicators,
   thesisMetrics,
   TradingThesis,
+  type BacktestInterval,
 } from "./thesis.ts";
 
 // ---------------------------------------------------------------------------
@@ -721,6 +724,9 @@ export const describeVerdictChange = (input: {
 export const describeValidationEvents = (batch: ValidationEventBatch): string =>
   `${batch.label}: ${batch.lines.join("; ")}`;
 
+/** The one-line heading a card or an alert uses for a validation. */
+export const describeValidation = (thesis: TradingThesis): string => describeThesis(thesis);
+
 /**
  * The alert summary delivered when a validation ends.
  *
@@ -748,6 +754,8 @@ export function renderForwardMenu(): string {
     "to trade a validated idea, publish a plan and enter as normal with this record as context",
   ].join(" · ");
 }
+
+export type { BacktestCosts, BacktestInterval };
 
 // ---------------------------------------------------------------------------
 // the tool surface

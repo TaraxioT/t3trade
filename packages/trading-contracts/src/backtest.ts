@@ -969,6 +969,20 @@ export const BacktestSweepReport = Schema.Struct({
 });
 export type BacktestSweepReport = typeof BacktestSweepReport.Type;
 
+/**
+ * The sentence that has to travel with a marked best row.
+ *
+ * A sweep is the easiest way in this whole engine to fool yourself, and the
+ * defence is not a smaller number, it is saying plainly what the number is.
+ */
+export function sweepHonestyLine(report: BacktestSweepReport): string {
+  const best = report.bestIndex === null ? null : report.rows[report.bestIndex];
+  if (best === undefined || best === null) {
+    return `No variation reached ${MIN_REPLAY_SETUPS} trades, so none of these is graded. The numbers are what was measured, not a ranking`;
+  }
+  return `${describeSweepPath(report.path)} ${best.value} is the best of ${report.rows.length} values IN SAMPLE, on one window of ${report.thesis.market}. That is the value most likely to be fitted to this window's noise; validate it forward before believing it`;
+}
+
 /** One addressable leaf, parsed. `null` is a path outside the closed set. */
 const parseSweepPath = (
   path: string,
