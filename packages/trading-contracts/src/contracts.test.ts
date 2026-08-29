@@ -900,6 +900,8 @@ describe("subpath exports", () => {
         "./backtest",
         "./forward",
         "./hypothesis",
+        // The event calendar an anchored thesis reads its distance from.
+        "./eventSets",
       ].sort(),
     );
 

@@ -277,6 +277,15 @@ export function stepForward(input: {
    * rows are passed in here rather than looked up separately.
    */
   readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
+  /**
+   * Every ended occurrence of every event set the thesis anchors on. Loaded
+   * fresh by the caller on each sweep, so a date recorded mid-validation
+   * takes effect on the next bar.
+   */
+  readonly eventOccurrences?: ReadonlyArray<{
+    readonly eventSetId: string;
+    readonly endAt: number;
+  }>;
 }): ForwardStep {
   const { thesis, candles, notionalUsd } = input;
   const index = candles.length - 1;
@@ -290,6 +299,7 @@ export function stepForward(input: {
     thesis,
     candles,
     ...(input.funding === undefined ? {} : { funding: input.funding }),
+    ...(input.eventOccurrences === undefined ? {} : { eventOccurrences: input.eventOccurrences }),
   });
   let state = input.state;
   let entered: ForwardEntryEffect | null = null;

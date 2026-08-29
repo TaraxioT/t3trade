@@ -163,6 +163,10 @@
     "./forward": {
       "types": "./src/forward.ts",
       "import": "./src/forward.ts"
+    },
+    "./eventSets": {
+      "types": "./src/eventSets.ts",
+      "import": "./src/eventSets.ts"
     }
   },
   "scripts": {

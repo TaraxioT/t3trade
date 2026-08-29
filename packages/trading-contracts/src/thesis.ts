@@ -50,6 +50,24 @@ export const BacktestInterval = Schema.Literals(["1m", "3m", "5m", "15m", "1h", 
 export type BacktestInterval = typeof BacktestInterval.Type;
 
 /**
+ * One bar of each interval, in milliseconds.
+ *
+ * The event operand needs it to turn wall-clock time since an occurrence into
+ * whole bars of the interval the thesis itself names, so the distance a rule
+ * reads is the same number the backtest's `withinBars` and `maxHoldBars`
+ * already count. Lives here, beside the interval vocabulary it measures.
+ */
+export const BACKTEST_INTERVAL_MILLIS: Readonly<Record<BacktestInterval, number>> = {
+  "1m": 60_000,
+  "3m": 180_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "1h": 3_600_000,
+  "4h": 14_400_000,
+  "1d": 86_400_000,
+};
+
+/**
  * The archive-backed numbers a thesis can compare against, beyond the bar's
  * own price and the indicator library.
  *
@@ -91,7 +109,7 @@ export type ThesisPriceField = typeof ThesisPriceField.Type;
 
 /**
  * One side of a comparison: a price off the bar, a reading off an indicator,
- * or a number the user named.
+ * a number the user named, or the calendar distance since an external event.
  *
  * `component` picks which number a multi-part indicator contributes — the
  * signal line rather than the MACD line, the upper band rather than the basis.
@@ -117,6 +135,22 @@ export const ThesisOperand = Schema.Union([
   Schema.Struct({
     source: Schema.Literal("constant"),
     value: Schema.Number,
+  }),
+  Schema.Struct({
+    /**
+     * Bars since the most recent ended occurrence of an event set: an event is
+     * the one operand the market data itself carries no trace of, so the set
+     * it points at is an authored record rather than an archived series.
+     *
+     * `eventSetId` is the semantic reference; `label` is a display snapshot
+     * ("Devcon") so the prose helpers stay pure and a chart can caption the
+     * band without a lookup. Renaming a set later does not rewrite stored
+     * theses, and that is fine: the id still resolves, and the label a thesis
+     * froze is the name the idea was written under.
+     */
+    source: Schema.Literal("event"),
+    eventSetId: Schema.String,
+    label: Schema.String,
   }),
 ]);
 export type ThesisOperand = typeof ThesisOperand.Type;
@@ -367,6 +401,28 @@ export const thesisMetrics = (thesis: TradingThesis): ReadonlyArray<ThesisMetric
 export const thesisReadsFunding = (thesis: TradingThesis): boolean =>
   thesisMetrics(thesis).includes("funding_rate_8h");
 
+/**
+ * Every event set a thesis anchors on, deduplicated, in first-mention order.
+ *
+ * The callers are the ones resolving authored records before a run loads
+ * anything: an event operand whose set is unknown would read undefined on
+ * every bar and report zero trades, which the user would read as "the idea
+ * does not work" rather than "the calendar was never recorded".
+ */
+export const thesisEventSets = (thesis: TradingThesis): ReadonlyArray<string> => {
+  const found: Array<string> = [];
+  for (const condition of thesisConditions(thesis)) {
+    for (const predicate of condition.predicates) {
+      for (const operand of [predicate.left, predicate.right]) {
+        if (operand.source === "event" && !found.includes(operand.eventSetId)) {
+          found.push(operand.eventSetId);
+        }
+      }
+    }
+  }
+  return found;
+};
+
 /** Every distinct indicator a thesis needs computed, deduplicated. */
 export const thesisIndicators = (thesis: TradingThesis): ReadonlyArray<IndicatorRequest> => {
   const requests = new Map<string, IndicatorRequest>();
@@ -389,6 +445,12 @@ export const thesisIndicators = (thesis: TradingThesis): ReadonlyArray<Indicator
 };
 
 const validateOperand = (operand: ThesisOperand, where: string): string | null => {
+  if (operand.source === "event") {
+    if (operand.eventSetId.trim().length === 0 || operand.label.trim().length === 0) {
+      return `${where}: an event operand needs both an eventSetId and a label`;
+    }
+    return null;
+  }
   if (operand.source !== "indicator") return null;
   const period = operand.period;
   if (period !== undefined) {
@@ -428,17 +490,19 @@ const validateCondition = (condition: ThesisCondition, where: string): string | 
 /**
  * What the caller knows about the archive that the thesis itself cannot.
  *
- * Only the funding question so far. A funding operand on a market the archive
- * holds no funding for is not a grammar error, it is a rule that would read
- * `undefined` on every bar and therefore never fire, and a thesis that can
- * never fire should refuse loudly rather than come back with zero trades and
- * let the user conclude the idea was wrong. Optional because the grammar check
- * is also run in places that have no archive to ask - the menus and the
- * contract tests - and there it stays a pure check of the shape.
+ * The funding question and the event-set question, for the same reason: an
+ * operand that would read `undefined` on every bar is not a grammar error, it
+ * is a rule that can never fire, and a thesis that can never fire should
+ * refuse loudly rather than come back with zero trades and let the user
+ * conclude the idea was wrong. Optional because the grammar check is also run
+ * in places that have no archive to ask - the menus and the contract tests -
+ * and there it stays a pure check of the shape.
  */
 export interface ThesisArchiveContext {
   /** True when the archive holds funding rows for this thesis's market. */
   readonly fundingArchived?: boolean;
+  /** The event sets on record (active ones), when the caller can ask. */
+  readonly knownEventSets?: ReadonlyArray<string>;
 }
 
 /**
@@ -467,6 +531,24 @@ export function validateThesis(
 
   if (archive.fundingArchived === false && thesisReadsFunding(thesis)) {
     return `funding_rate_8h: the archive holds no funding history for ${thesis.market}, so this rule would read nothing on every bar. Test it on a market the archive funds, or drop the funding comparison`;
+  }
+
+  // Same refusal, one layer up: an event operand whose set is not on record
+  // has no calendar to read. `knownEventSets` lists only active sets, so a
+  // retired set refuses here too - while still evaluating inside a thesis
+  // saved while it was live, which never re-validates its grammar.
+  const known = archive.knownEventSets;
+  if (known !== undefined) {
+    for (const condition of thesisConditions(thesis)) {
+      for (const predicate of condition.predicates) {
+        for (const operand of [predicate.left, predicate.right]) {
+          if (operand.source !== "event") continue;
+          if (!known.includes(operand.eventSetId)) {
+            return `${operand.label}: no active event set with that id is on record, so this rule would read nothing on every bar. Record the set first, or drop the event comparison`;
+          }
+        }
+      }
+    }
   }
 
   const exits = thesis.exits;
@@ -567,6 +649,8 @@ export function describeOperand(operand: ThesisOperand): string {
       return METRIC_PROSE[operand.metric];
     case "constant":
       return String(operand.value);
+    case "event":
+      return `bars since ${operand.label}`;
     case "indicator": {
       const name = INDICATOR_PROSE[operand.indicator];
       const period = operand.period === undefined ? "" : `(${operand.period})`;

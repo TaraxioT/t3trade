@@ -339,3 +339,69 @@ describe("what the sweep puts on the wire", () => {
     expect(bytes, `the sweep report was ${bytes} chars`).toBeLessThan(8_000);
   });
 });
+
+describe("sweeping an event-anchored rule", () => {
+  // The natural question for an anchored rule is "how wide should the window
+  // be", and the window is the constant the event distance compares against.
+  // The existing right.value path has to reach it with no sweep changes, and
+  // every variation has to see the same occurrences the standalone run does.
+  const anchored: TradingThesis = {
+    ...base,
+    entry: {
+      predicates: [
+        {
+          left: { source: "event", eventSetId: "set-devcon", label: "Devcon" },
+          comparator: "below",
+          right: { source: "constant", value: 20 },
+        },
+      ],
+    },
+  };
+  const occurrences = [{ eventSetId: "set-devcon", endAt: 100 * MINUTE }];
+
+  it("moves the paired constant and matches the standalone run at each value", () => {
+    const values = [10, 40, 90];
+    const { report, runs, refusals } = runBacktestSweep({
+      thesis: anchored,
+      sweep: { path: "entry.predicates[0].right.value", values },
+      candles,
+      costs,
+      coverage: coverageOver(candles),
+      eventOccurrences: occurrences,
+    });
+    expect(refusals).toEqual([]);
+    expect(report.rows.map((row) => row.value)).toEqual(values);
+    const anchorPredicate = anchored.entry.predicates[0];
+    if (anchorPredicate === undefined) throw new Error("fixture lost its predicate");
+    for (const variation of runs) {
+      const alone = runBacktest({
+        thesis: {
+          ...anchored,
+          entry: {
+            predicates: [
+              {
+                left: anchorPredicate.left,
+                comparator: anchorPredicate.comparator,
+                right: { source: "constant", value: variation.value },
+              },
+            ],
+          },
+        },
+        candles,
+        costs,
+        coverage: coverageOver(candles),
+        eventOccurrences: occurrences,
+      });
+      expect(variation.run.report.stats).toEqual(alone.report.stats);
+    }
+    // Wider windows find more setups: the sweep is not silently ignoring the
+    // operand it cannot name.
+    const taken = report.rows.map((row) => row.tradesTaken);
+    expect(taken[0]).toBeLessThan(taken[2] as number);
+  });
+
+  it("still refuses a period on an operand that has none", () => {
+    const applied = applySweepValue(anchored, "entry.predicates[0].left.period", 10);
+    expect(applied).toContain("only an indicator has a period");
+  });
+});

@@ -412,3 +412,99 @@ describe("the sequence reads only backwards", () => {
     expect(holdsAt(sequenced, mixed, FUNDING).filter(Boolean).length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// the event operand
+// ---------------------------------------------------------------------------
+//
+// The reading is wall-clock arithmetic: floor((openTime - endAt) / intervalMs)
+// against the most recent occurrence that had ENDED by that open. Undefined
+// until one has, zero on the first bar that opens at or after an end.
+
+const DEVCON = "set-devcon";
+const anchored = (value: number): TradingThesis =>
+  thesisWith({
+    predicates: [
+      {
+        left: { source: "event", eventSetId: DEVCON, label: "Devcon" },
+        comparator: "below",
+        right: { source: "constant", value },
+      },
+    ],
+  });
+
+const firedAt = (
+  value: number,
+  candles: ReadonlyArray<MarketCandle>,
+  occurrences: ReadonlyArray<{ readonly eventSetId: string; readonly endAt: number }>,
+): ReadonlyArray<boolean> => {
+  const signals = makeThesisSignals({
+    thesis: anchored(value),
+    candles,
+    eventOccurrences: occurrences,
+  });
+  return candles.map((_, index) => signals.entryFires(index));
+};
+
+describe("the event operand", () => {
+  const minuteBars = (count: number): ReadonlyArray<MarketCandle> =>
+    Array.from({ length: count }, (_, i) => bar(i, 100));
+
+  it("reads nothing until an occurrence has ended, then zero on the first bar at or after the end", () => {
+    // The event ends halfway through bar 5. Bars 0 through 4 open before it
+    // and cannot see it at all; bar 6 is the first open at or after the end
+    // and reads distance 0; bar 7 reads 1.
+    const within0 = firedAt(1, minuteBars(8), [{ eventSetId: DEVCON, endAt: 5 * MINUTE + 30_000 }]);
+    expect(within0).toEqual([false, false, false, false, false, false, true, false]);
+  });
+
+  it("measures against the most recent ended occurrence", () => {
+    // Two ends, at bar 3's open and bar 10's open. Distance 0 at each of
+    // those bars, counting up after, and resetting at the second.
+    const ends = [
+      { eventSetId: DEVCON, endAt: 3 * MINUTE },
+      { eventSetId: DEVCON, endAt: 10 * MINUTE },
+    ];
+    const fired = firedAt(1, minuteBars(12), ends);
+    expect(fired.slice(3, 5)).toEqual([true, false]);
+    expect(fired.slice(10, 12)).toEqual([true, false]);
+    // And only the named set counts: a different set's dates are not its.
+    const other = firedAt(1, minuteBars(12), [{ eventSetId: "set-other", endAt: 3 * MINUTE }]);
+    expect(other.filter(Boolean)).toHaveLength(0);
+  });
+
+  it("a pre-window occurrence still reads, as a defined large distance", () => {
+    // An occurrence that ended long before the served window is not missing
+    // data: every bar reads a large distance, so a wide-enough window holds
+    // and a narrow one does not.
+    const ancient = [{ eventSetId: DEVCON, endAt: -100 * 24 * 60 * MINUTE }];
+    const wide = firedAt(200_000, minuteBars(3), ancient);
+    expect(wide).toEqual([true, true, true]);
+    const narrow = firedAt(100_000, minuteBars(3), ancient);
+    expect(narrow).toEqual([false, false, false]);
+  });
+
+  it("reads nothing at all when no occurrences were passed", () => {
+    // Not zero: a calendar that was never loaded is absent, not empty history.
+    expect(firedAt(1_000_000, minuteBars(4), []).filter(Boolean)).toHaveLength(0);
+  });
+
+  it("gives the same answer at a bar however much data comes after it", () => {
+    // The prefix doctrine, on the operand that reads wall time: truncating the
+    // window after bar `end` must not change the verdict on any bar at or
+    // before it, because a bar's distance never depends on a later bar.
+    const candles = minuteBars(40);
+    const occurrences = [
+      { eventSetId: DEVCON, endAt: 7 * MINUTE + 30_000 },
+      { eventSetId: DEVCON, endAt: 31 * MINUTE },
+    ];
+    const whole = firedAt(9, candles, occurrences);
+    expect(whole.filter(Boolean).length).toBeGreaterThan(0);
+    for (let end = 1; end < candles.length; end += 1) {
+      const prefix = firedAt(9, candles.slice(0, end + 1), occurrences);
+      expect(prefix, `a window ending at bar ${end} must agree with the full run`).toEqual(
+        whole.slice(0, end + 1),
+      );
+    }
+  });
+});

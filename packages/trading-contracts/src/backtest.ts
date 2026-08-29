@@ -57,6 +57,7 @@ import {
 import type { MarketCandle } from "./market.ts";
 import { MIN_REPLAY_SETUPS, settleOnBars } from "./replay.ts";
 import {
+  BACKTEST_INTERVAL_MILLIS,
   BacktestInterval,
   THESIS_MAX_HOLD_BARS,
   THESIS_MAX_PREDICATES,
@@ -356,6 +357,16 @@ export function makeThesisSignals(input: {
    * than guessing a rate.
    */
   readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
+  /**
+   * Every ended occurrence of every event set the thesis anchors on, any
+   * order, future ones included. Only an `event` operand reads them, and
+   * omitting the argument leaves that operand undefined rather than guessing
+   * a calendar.
+   */
+  readonly eventOccurrences?: ReadonlyArray<{
+    readonly eventSetId: string;
+    readonly endAt: number;
+  }>;
 }): {
   /** Whether a condition holds on the closed bar at `index`. */
   readonly conditionHolds: (condition: ThesisCondition, index: number) => boolean;
@@ -425,6 +436,42 @@ export function makeThesisSignals(input: {
     return bar.volume / (priorSum / THESIS_VOLUME_RATIO_BARS);
   };
 
+  // -- events, as wall-clock arithmetic ----------------------------------------
+  //
+  // The reading at bar i is floor((openTime - endAt) / intervalMs) against
+  // the most recent occurrence that had ENDED by that bar's open, and
+  // undefined when none had. Undefined is not zero: "no event has happened
+  // yet" and "zero bars since the event ended" are different facts, the same
+  // doctrine the funding and volume-priors follow. The first bar whose open
+  // is at or after endAt reads distance 0, so `below 30` means within the
+  // first 30 closed bars after the event ended, and no bar that opens before
+  // an occurrence ends can see it at all: no lookahead, by construction.
+  //
+  // The arithmetic form means an occurrence long before the served window
+  // still yields a defined (large) distance, and archive gaps do not shrink
+  // the distance, because it measures wall time in whole intervals, not
+  // served bars.
+  const intervalMs = BACKTEST_INTERVAL_MILLIS[thesis.interval];
+  const eventEnds = new Map<string, ReadonlyArray<number>>();
+  for (const occurrence of input.eventOccurrences ?? []) {
+    const ends = [...(eventEnds.get(occurrence.eventSetId) ?? []), occurrence.endAt];
+    ends.sort((a, b) => a - b);
+    eventEnds.set(occurrence.eventSetId, ends);
+  }
+  const eventDistanceAt = (eventSetId: string, openTime: number): number | undefined => {
+    const ends = eventEnds.get(eventSetId);
+    if (ends === undefined || ends.length === 0) return undefined;
+    let lo = 0;
+    let hi = ends.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((ends[mid] as number) <= openTime) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo === 0) return undefined;
+    return Math.floor((openTime - (ends[lo - 1] as number)) / intervalMs);
+  };
+
   // -- indicator series, computed once over the whole run ---------------------
   const series = new Map<string, ReadonlyArray<IndicatorPoint | undefined>>();
   for (const request of thesisIndicators(thesis)) {
@@ -479,6 +526,11 @@ export function makeThesisSignals(input: {
           case "volume_ratio":
             return volumeRatioAt(index);
         }
+      }
+      case "event": {
+        const bar = candles[index];
+        if (bar === undefined) return undefined;
+        return eventDistanceAt(operand.eventSetId, bar.openTime);
       }
     }
   };
@@ -578,6 +630,10 @@ export function runBacktest(input: {
   readonly thesis: TradingThesis;
   readonly candles: ReadonlyArray<MarketCandle>;
   readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
+  readonly eventOccurrences?: ReadonlyArray<{
+    readonly eventSetId: string;
+    readonly endAt: number;
+  }>;
   readonly costs: BacktestCosts;
   readonly coverage: BacktestCoverage;
   readonly notionalUsd?: number;
@@ -592,6 +648,7 @@ export function runBacktest(input: {
     thesis,
     candles,
     funding,
+    ...(input.eventOccurrences === undefined ? {} : { eventOccurrences: input.eventOccurrences }),
   });
 
   // -- funding, as a prefix sum so a hold costs one subtraction ---------------
@@ -1096,10 +1153,10 @@ export function applySweepValue(
       }
       const operand = predicate[parsed.side];
       if (parsed.leaf === "period" && operand.source !== "indicator") {
-        return `vary.path ${path}: that operand is a ${operand.source}, and only an indicator has a period`;
+        return `vary.path ${path}: that operand reads ${operand.source}, and only an indicator has a period`;
       }
       if (parsed.leaf === "value" && operand.source !== "constant") {
-        return `vary.path ${path}: that operand is a ${operand.source}, and only a constant has a value`;
+        return `vary.path ${path}: that operand reads ${operand.source}, and only a constant has a value`;
       }
       const moved =
         parsed.leaf === "period" ? { ...operand, period: value } : { ...operand, value };
@@ -1161,6 +1218,10 @@ export function runBacktestSweep(input: {
   readonly sweep: BacktestSweep;
   readonly candles: ReadonlyArray<MarketCandle>;
   readonly funding?: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>;
+  readonly eventOccurrences?: ReadonlyArray<{
+    readonly eventSetId: string;
+    readonly endAt: number;
+  }>;
   readonly costs: BacktestCosts;
   readonly coverage: BacktestCoverage;
   readonly notionalUsd?: number;
@@ -1192,6 +1253,9 @@ export function runBacktestSweep(input: {
         thesis: varied,
         candles: input.candles,
         ...(input.funding === undefined ? {} : { funding: input.funding }),
+        ...(input.eventOccurrences === undefined
+          ? {}
+          : { eventOccurrences: input.eventOccurrences }),
         costs: input.costs,
         coverage: input.coverage,
         notionalUsd,
@@ -1309,7 +1373,8 @@ export function renderTradingBacktestMenu(): string {
   return [
     `thesis={market, interval, side, entry, exits}; interval=${BacktestInterval.literals.join("|")}; side=long|short`,
     `entry and exits.opposite = {match: all|any, predicates: [{left, comparator, right}]}, at most ${THESIS_MAX_PREDICATES}, one level deep, no nesting`,
-    "operand = {source:price, field:open|high|low|close} | {source:indicator, indicator, period?, component?} | {source:constant, value}",
+    "operand = {source:price, field:open|high|low|close} | {source:indicator, indicator, period?, component?} | {source:constant, value} | {source:event, eventSetId, label}",
+    "an event operand reads bars since the set's most recent ended occurrence (undefined until one ends, 0 on the first bar at or after the end); trading_events records the sets",
     `indicator = ${INDICATOR_KINDS.join(" ")}; component ${components}, every other kind reports value only`,
     "comparator = crosses_above crosses_below above below; a cross means the relation holds on this closed bar and did not on the one before",
     "exits, at least one = stop/target {basis:percent, value} | {basis:atr, multiple, period?}; target also {basis:r, multiple}, which needs a stop; " +

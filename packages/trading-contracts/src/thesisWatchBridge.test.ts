@@ -231,3 +231,36 @@ describe("the sentence the user reads", () => {
     expect(line).toContain("Nothing in this entry can be armed");
   });
 });
+
+describe("an event predicate", () => {
+  const anchored = thesisWith(
+    one({
+      left: { source: "event", eventSetId: "set-devcon", label: "Devcon" },
+      comparator: "below",
+      right: { source: "constant", value: 30 },
+    }),
+  );
+
+  it("arms a time watch at the next future occurrence when one is recorded", () => {
+    const alerts = thesisSetupAlerts(anchored, [
+      { eventSetId: "set-devcon", endAt: 2_000 },
+      { eventSetId: "set-devcon", endAt: 1_000 },
+      { eventSetId: "set-other", endAt: 500 },
+    ]);
+    expect(alerts.inexpressible).toEqual([]);
+    // The earliest future date for THIS set wins: that is the one being
+    // waited on.
+    expect(alerts.conditions).toEqual([{ kind: "time", runAt: 1_000 }]);
+  });
+
+  it("refuses honestly when the set holds no upcoming date, naming the set", () => {
+    const alerts = thesisSetupAlerts(anchored);
+    expect(alerts.conditions).toEqual([]);
+    expect(alerts.inexpressible).toEqual([
+      '"bars since Devcon below 30" cannot be armed as an alert because the alert ' +
+        "engine cannot watch a calendar with no upcoming date; record a future occurrence " +
+        "of Devcon, or leave this predicate to the paper validation; the paper validation " +
+        "evaluates it on every closed bar, which is where that predicate is still being watched",
+    ]);
+  });
+});

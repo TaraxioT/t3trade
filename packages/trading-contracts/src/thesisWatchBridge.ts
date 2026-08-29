@@ -65,8 +65,16 @@ const LONGEST_ALERT_BAR = TradingTimeframe.literals[TradingTimeframe.literals.le
  * The `after` clause is read only to report that it was dropped. Exits are not
  * read at all: an alert says a setup is forming, and a stop on a position
  * nobody has opened is not a thing to be told about.
+ *
+ * `upcoming` carries the future occurrences of the thesis's event sets, so an
+ * event predicate can arm a `time` watch at the next date rather than nothing.
+ * Without one the predicate refuses honestly: a calendar with no upcoming date
+ * is a thing nothing in the alert layer can watch.
  */
-export function thesisSetupAlerts(thesis: TradingThesis): ThesisSetupAlerts {
+export function thesisSetupAlerts(
+  thesis: TradingThesis,
+  upcoming: ReadonlyArray<{ readonly eventSetId: string; readonly endAt: number }> = [],
+): ThesisSetupAlerts {
   const conditions: Array<WatchCondition> = [];
   const inexpressible: Array<string> = [];
   const market = thesis.market;
@@ -154,6 +162,26 @@ export function thesisSetupAlerts(thesis: TradingThesis): ThesisSetupAlerts {
         cannot(
           `"${describeOperand(subject)} ${predicate.comparator} ${value}"`,
           "an alert holds a threshold against a market number, and an indicator reading is computed off a bar series the alert layer does not carry",
+        );
+        continue;
+      }
+      case "event": {
+        // The one thing the alert layer CAN say about a calendar: the date
+        // has arrived. A time watch at the next occurrence's end reopens the
+        // question of whether the setup window behind it is open, which is
+        // the whole alert. The earliest future date wins when there are
+        // several, because that is the one the user is waiting on.
+        const next = upcoming
+          .filter((occurrence) => occurrence.eventSetId === subject.eventSetId)
+          .map((occurrence) => occurrence.endAt)
+          .sort((a, b) => a - b)[0];
+        if (next !== undefined) {
+          conditions.push({ kind: "time", runAt: next });
+          continue;
+        }
+        cannot(
+          `"${describeOperand(subject)} ${predicate.comparator} ${value}"`,
+          `the alert engine cannot watch a calendar with no upcoming date; record a future occurrence of ${subject.label}, or leave this predicate to the paper validation`,
         );
         continue;
       }

@@ -14,6 +14,7 @@ import {
   describeThesis,
   THESIS_MAX_PREDICATES,
   thesisEntryPriceLevels,
+  thesisEventSets,
   thesisIndicators,
   thesisMetrics,
   thesisReadsFunding,
@@ -443,5 +444,82 @@ describe("metric operands", () => {
     expect(describeCondition(reading("volume_ratio").entry)).toBe(
       "volume vs its 20-bar pace is above 1",
     );
+  });
+});
+
+describe("the event operand", () => {
+  const anchored = (eventSetId: string, label: string): TradingThesis => ({
+    ...meanReversion,
+    entry: {
+      match: "all",
+      predicates: [
+        {
+          left: { source: "event", eventSetId, label },
+          comparator: "below",
+          right: { source: "constant", value: 30 },
+        },
+      ],
+    },
+  });
+
+  it("accepts an anchored rule and reads it as bars since the label", () => {
+    const thesis = anchored("set-devcon", "Devcon");
+    expect(validateThesis(thesis)).toBeNull();
+    expect(describeCondition(thesis.entry)).toBe("bars since Devcon is below 30");
+  });
+
+  it("refuses an operand with no id or no label", () => {
+    expect(validateThesis(anchored("", "Devcon"))).toBe(
+      "entry comparison 1: an event operand needs both an eventSetId and a label",
+    );
+    expect(validateThesis(anchored("set-devcon", " "))).toContain(
+      "needs both an eventSetId and a label",
+    );
+  });
+
+  it("refuses a set the caller does not know, naming the label", () => {
+    const thesis = anchored("set-devcon", "Devcon");
+    // Without the archive context the grammar has nothing to check against.
+    expect(validateThesis(thesis)).toBeNull();
+    expect(validateThesis(thesis, { knownEventSets: ["set-devcon"] })).toBeNull();
+
+    const reason = validateThesis(thesis, { knownEventSets: ["set-breakpoint"] });
+    expect(reason).toContain("Devcon: no active event set");
+    expect(reason).toContain("would read nothing on every bar");
+  });
+
+  it("does not refuse a non-event thesis against an empty calendar", () => {
+    expect(validateThesis(meanReversion, { knownEventSets: [] })).toBeNull();
+  });
+
+  it("collects every set the rules anchor on, once, across all three slots", () => {
+    const thesis: TradingThesis = {
+      ...anchored("set-devcon", "Devcon"),
+      after: {
+        condition: {
+          predicates: [
+            {
+              left: { source: "event", eventSetId: "set-breakpoint", label: "Breakpoint" },
+              comparator: "below",
+              right: { source: "constant", value: 20 },
+            },
+          ],
+        },
+        withinBars: 40,
+      },
+      exits: {
+        maxHoldBars: 10,
+        opposite: {
+          predicates: [
+            {
+              left: { source: "event", eventSetId: "set-devcon", label: "Devcon" },
+              comparator: "above",
+              right: { source: "constant", value: 100 },
+            },
+          ],
+        },
+      },
+    };
+    expect(thesisEventSets(thesis)).toEqual(["set-devcon", "set-breakpoint"]);
   });
 });
