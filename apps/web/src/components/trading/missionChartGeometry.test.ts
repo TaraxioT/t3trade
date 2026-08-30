@@ -1937,7 +1937,7 @@ describe("clusterConditions and the hypothetical register", () => {
 // placement only: clipping at both edges, the wholly-outside drop, and the
 // visible minimum a zero-width occurrence still gets.
 
-describe("computeChartGeometry — event bands", () => {
+describe("computeChartGeometry: event bands", () => {
   const base = 1_700_000_000_000;
   const candles = fiveWalkingCandles();
   // Five candles spaced a minute apart, no clock: timeStart is the first

@@ -8,7 +8,7 @@
  *
  * ## It cannot place an order
  *
- * Not by policy — by construction. This service depends on the market
+ * Not by policy: by construction. This service depends on the market
  * archive, the SQL client and the event calendar service (itself SQL and
  * Crypto and nothing else), and on nothing else. `TradingEntryService`,
  * `TradingExitService`, `HyperliquidExecutionService` and the gateway are not
