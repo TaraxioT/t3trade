@@ -64,3 +64,6 @@ assets/.asset-theme-state.json
 
 # Local test directory
 test/
+
+# generated icon variant mirrors (not for git unless confirmed)
+assets/themed-t3trade-v*/
