@@ -44,6 +44,12 @@ export interface InfoClient {
   /** POST one Info body; `null` when every attempt failed. */
   readonly post: (operation: string, body: unknown) => Promise<unknown>;
   readonly stats: InfoStats;
+  /**
+   * Whether the most recent failure the exchange reported was a 429. The
+   * adaptive pace already reacts to it; this lets a caller (on-demand
+   * hydration) name the outcome honestly instead of guessing from silence.
+   */
+  readonly lastFailureWasRateLimit: () => boolean;
 }
 
 /** Non-2xx responses worth waiting out rather than abandoning. */
@@ -53,6 +59,7 @@ function isTransientStatus(status: number): boolean {
 
 export function makeInfoClient(url: string = MAINNET_INFO_URL): InfoClient {
   const stats: InfoStats = { requests: 0, failures: 0, retries: 0, paceMs: MIN_REQUEST_GAP_MS };
+  let lastFailureWasRateLimit = false;
   // Serialises the whole client: each call chains onto the previous one's
   // completion, so "one request at a time" holds even if two loops overlap.
   let queue: Promise<unknown> = Promise.resolve();
@@ -76,8 +83,15 @@ export function makeInfoClient(url: string = MAINNET_INFO_URL): InfoClient {
       const detail = `${operation} http ${response.status}`;
       if (response.status === 429) {
         // The exchange is pacing us, not failing us. Widen the gap for every
-        // request from here so the backoff is not re-learned page by page.
+        // request from here so the backoff is not re-learned page by page, and
+        // let the rate-limit answer surface: hydration names `rate_limited`
+        // from this flag rather than guessing from silence.
         stats.paceMs = Math.min(stats.paceMs * 2, MAX_REQUEST_GAP_MS);
+        lastFailureWasRateLimit = true;
+      } else if (isTransientStatus(response.status)) {
+        lastFailureWasRateLimit = false;
+      } else {
+        lastFailureWasRateLimit = false;
       }
       if (isTransientStatus(response.status)) {
         throw new Error(detail);
@@ -89,7 +103,10 @@ export function makeInfoClient(url: string = MAINNET_INFO_URL): InfoClient {
       return null;
     }
 
-    // A clean landing earns a little of the pace back.
+    // A clean landing earns a little of the pace back, and retires any
+    // stale rate-limit memory: the most recent thing the exchange said was
+    // yes.
+    lastFailureWasRateLimit = false;
     stats.paceMs = Math.max(MIN_REQUEST_GAP_MS, stats.paceMs * REQUEST_GAP_DECAY);
     return await response.json();
   };
@@ -123,5 +140,6 @@ export function makeInfoClient(url: string = MAINNET_INFO_URL): InfoClient {
       return next;
     },
     stats,
+    lastFailureWasRateLimit: () => lastFailureWasRateLimit,
   };
 }

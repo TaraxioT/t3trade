@@ -5,6 +5,7 @@ import {
   ThreadId,
   type OrchestrationShellSnapshot,
   type OrchestrationThread,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Option from "effect/Option";
@@ -89,6 +90,7 @@ const THREAD_SHELL = {
   title: "Thread",
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
   runtimeMode: "full-access",
+  workspaceMode: DEFAULT_WORKSPACE_MODE,
   interactionMode: "default",
   branch: null,
   worktreePath: null,
@@ -355,6 +357,7 @@ describe("environment entity projections", () => {
             status: "ready",
             providerName: "codex",
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: "2026-06-01T00:01:00.000Z",

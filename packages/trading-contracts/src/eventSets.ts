@@ -113,6 +113,63 @@ export function validateEventOccurrence(occurrence: TradingEventOccurrence): str
   return null;
 }
 
+/**
+ * The window an event study needs the archive to hold before it runs: from
+ * the first required entry bar (the first grid-aligned open at or after the
+ * earliest ended occurrence) to the last required exit bar (the declared
+ * horizon's final bar after the latest ended occurrence).
+ *
+ * Occurrences that have not ended yet are excluded — their entry bars do not
+ * exist to fetch — and a set with nothing ended, or whose first entry bar has
+ * not opened yet, needs nothing: `null`, and the study reports those rows
+ * uncovered with their reasons instead of pretending a recovery was possible.
+ * This is the bounded context the study itself measures; bars between
+ * occurrences arrive with the same window because it is contiguous.
+ */
+export function eventStudyHydrationWindow(
+  occurrences: ReadonlyArray<TradingEventOccurrence>,
+  input: { readonly intervalMs: number; readonly horizonBars: number; readonly now: number },
+): { readonly fromT: number; readonly toT: number } | null {
+  const ended = occurrences
+    .map((occurrence) => occurrence.endAt)
+    .filter((endAt) => endAt <= input.now);
+  if (ended.length === 0 || input.intervalMs <= 0 || input.horizonBars < 1) return null;
+  const firstEntryT = Math.ceil(Math.min(...ended) / input.intervalMs) * input.intervalMs;
+  const lastEntryT = Math.ceil(Math.max(...ended) / input.intervalMs) * input.intervalMs;
+  const lastExitT = lastEntryT + (input.horizonBars - 1) * input.intervalMs;
+  const toT = Math.min(input.now, lastExitT);
+  // A horizon-one study of a single occurrence needs exactly one bar — a
+  // window whose bounds meet is that bar, not an empty window.
+  if (toT < firstEntryT) return null;
+  // The first entry bar has not opened yet (an occurrence that ended between
+  // grid opens, or exactly at a boundary where that bar is still open):
+  // nothing to fetch, the rows stay uncovered with their reason.
+  if (firstEntryT >= input.now) return null;
+  return { fromT: firstEntryT, toT };
+}
+
+/**
+ * The window a study READS and budget-checks: the hydration window when any
+ * occurrence has ended, and otherwise a two-bar recent tail. The tail exists
+ * so a set of only-future occurrences still gets the newest archived bar —
+ * `runEventStudy` then reports each row honestly as "still in the future"
+ * instead of "the archive holds no bars for this market".
+ *
+ * This is the one rule both study callers (the `trading_events` study action
+ * and `trading_chart`'s publish action) measure against, so the window that
+ * is hydrated, the window the bar budget judges, and the window the candles
+ * are read from are the same window — never the archive's whole history,
+ * which would refuse a small study merely because recording has outgrown it.
+ */
+export function eventStudyReadWindow(
+  occurrences: ReadonlyArray<TradingEventOccurrence>,
+  input: { readonly intervalMs: number; readonly horizonBars: number; readonly now: number },
+): { readonly fromT: number; readonly toT: number } {
+  const hydration = eventStudyHydrationWindow(occurrences, input);
+  if (hydration !== null) return hydration;
+  return { fromT: input.now - 2 * input.intervalMs, toT: input.now };
+}
+
 // ---------------------------------------------------------------------------
 // the study
 // ---------------------------------------------------------------------------
@@ -227,6 +284,7 @@ export function runEventStudy(input: {
 }): EventStudyReport {
   const { occurrences, candles, intervalMs, horizonBars } = input;
   const rows: Array<EventStudyRow> = [];
+  const rawReturns: Array<number> = [];
 
   const firstOpen = candles[0]?.openTime;
   const lastOpen = candles.length === 0 ? undefined : candles[candles.length - 1]?.openTime;
@@ -314,7 +372,37 @@ export function runEventStudy(input: {
       });
       continue;
     }
+    // A recording gap across the event's end would otherwise pass silently:
+    // the first bar at or after `endAt` would sit whole intervals later, and
+    // measuring from it would present a much later candle as the event entry.
+    // An occurrence whose entry region is missing is uncovered, the same as
+    // one the window never held at all.
+    //
+    // A first bar exactly one interval after the event ended means the bar at
+    // the event boundary is missing. Measuring from the next bar would shift
+    // the declared entry silently, so the boundary is inclusive.
+    const entryGapMs = entryBar.openTime - occurrence.endAt;
+    if (entryGapMs >= intervalMs) {
+      const missingBars = Math.floor(entryGapMs / intervalMs);
+      rows.push({
+        ...base,
+        covered: false,
+        reason:
+          `a recording gap covers the ${missingBars} bar(s) right after this event ended, ` +
+          "so the bar its entry would have measured from is not archived",
+        entryTime: undefined,
+        entryPrice: undefined,
+        exitTime: undefined,
+        exitPrice: undefined,
+        returnPct: undefined,
+        truncated: false,
+        barsCovered: undefined,
+      });
+      continue;
+    }
     const truncated = exitIndex < exitWanted;
+    const returnPct = ((exitBar.close - entryBar.open) / entryBar.open) * 100;
+    rawReturns.push(returnPct);
     rows.push({
       ...base,
       covered: true,
@@ -323,14 +411,16 @@ export function runEventStudy(input: {
       entryPrice: entryBar.open,
       exitTime: exitBar.closeTime,
       exitPrice: exitBar.close,
-      returnPct: round2(((exitBar.close - entryBar.open) / entryBar.open) * 100),
+      returnPct: round2(returnPct),
       truncated,
       barsCovered: exitIndex - entryIndex + 1,
     });
   }
 
   const covered = rows.filter((row) => row.covered);
-  const returns = covered.map((row) => row.returnPct as number);
+  // Aggregate from the measured values, not the display-rounded rows. Early
+  // rounding can move the reported center by a basis point on a small set.
+  const returns = rawReturns;
   const mean =
     returns.length === 0 ? null : returns.reduce((sum, value) => sum + value, 0) / returns.length;
 

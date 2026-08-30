@@ -10,6 +10,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -95,6 +96,7 @@ const BASE_THREAD: OrchestrationThread = {
     model: "gpt-5.4",
   },
   runtimeMode: "full-access",
+  workspaceMode: DEFAULT_WORKSPACE_MODE,
   interactionMode: "default",
   branch: "main",
   worktreePath: null,

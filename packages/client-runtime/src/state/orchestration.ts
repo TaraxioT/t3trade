@@ -65,6 +65,13 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-market-chart",
       tag: ORCHESTRATION_WS_METHODS.getTradingMarketChart,
     }),
+    // One thread's published research scenes. Not held: the interesting
+    // moment is exactly when a scene appears, and the graph panel re-asks on
+    // its own cadence.
+    tradingResearchScenes: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-research-scenes",
+      tag: ORCHESTRATION_WS_METHODS.getTradingResearchScenes,
+    }),
     // The venue's listed assets. Held long because the list changes when a
     // market is added or delisted, which is not a per-keystroke event; the
     // server caches under it too.

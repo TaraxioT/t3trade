@@ -41,10 +41,99 @@ import {
   TradingAccountProjection,
   TradingAccountProjectionLive,
 } from "./TradingAccountProjection.ts";
-import { acquire, heartbeatLoop } from "./TradingRuntimeLease.ts";
+import { acquire, heartbeatLoop, readLease } from "./TradingRuntimeLease.ts";
+
+/**
+ * The writer's state in one explicit word, derived from the lease and the
+ * archiver's heartbeat rather than inferred by whoever reads it. The old
+ * surface (a stoppedReason string, a restart count, and silence when things
+ * looked fine) forced every reader to guess; these are the six guesses any
+ * careful reader would have made, named once here instead.
+ *
+ * - `owned-writer`: this process holds the lease and the archiver heartbeats.
+ * - `healthy-external-writer`: another process holds the lease and its lease
+ *   heartbeat is fresh. Recording continues; this process just reads.
+ * - `restarting`: the supervisor is between runs with a restart pending.
+ * - `stopped`: no writer and none expected (never started, entry missing, or
+ *   a supervisor that stood down without a successor).
+ * - `stale`: someone claims to be writing but the heartbeat is old.
+ */
+export type ArchiveWriterStatus =
+  | "owned-writer"
+  | "healthy-external-writer"
+  | "restarting"
+  | "stopped"
+  | "stale"
+  | "unavailable";
+
+/**
+ * How long an archiver heartbeat may be quiet before `owned-writer` stops
+ * being an honest word. The archiver prints one heartbeat per poll loop
+ * (~60s apart), so two minutes of silence is a stall, not jitter. The same
+ * threshold classifies an external lease holder, whose lease heartbeat runs
+ * on the lease's own faster cadence.
+ */
+export const WRITER_STALE_AFTER_MS = 120_000;
+
+/**
+ * The one-word status, derived. Pure and exported so the mapping is tested,
+ * not just re-implemented by every reader. Assumes the lease holder, when
+ * one is named, was read from the lock file at the same moment as `now`.
+ */
+export function deriveArchiveWriterStatus(input: {
+  readonly running: boolean;
+  readonly lastHeartbeatAt: number | null;
+  readonly stoppedReason: string | null;
+  readonly now: number;
+  /**
+   * The lease holder as `readLease` reported it. `unreadableLock` and
+   * `external` are mutually exclusive; `external.pidAlive` is null for a
+   * foreign host (not probeable, never guessed) and the signal-0 answer for
+   * a local holder.
+   */
+  readonly lease:
+    | { readonly unreadableLock: true }
+    | {
+        readonly unreadableLock: false;
+        readonly external: {
+          readonly heartbeatAt: number;
+          readonly pidAlive: boolean | null;
+        } | null;
+      };
+}): ArchiveWriterStatus {
+  if (input.running) {
+    return input.lastHeartbeatAt !== null &&
+      input.now - input.lastHeartbeatAt >= WRITER_STALE_AFTER_MS
+      ? "stale"
+      : "owned-writer";
+  }
+  if (input.lease.unreadableLock) {
+    // A lock file exists that nobody can parse. Who owns the write side is
+    // exactly the thing we cannot know, and "stopped" would claim more. The
+    // read gate refuses in this state; the label says why.
+    return "unavailable";
+  }
+  if (input.stoppedReason === "restarting") return "restarting";
+  const external = input.lease.external;
+  if (external !== null) {
+    if (input.now - external.heartbeatAt >= WRITER_STALE_AFTER_MS) return "stale";
+    // Fresh lease heartbeat, but a local holder whose pid is provably dead
+    // wrote that heartbeat from somewhere that no longer exists: the lease
+    // is stale in fact even though it is fresh on paper. A foreign host
+    // cannot be probed, so its heartbeat is the only evidence, and it is
+    // fresh.
+    if (external.pidAlive === false) return "stale";
+    return "healthy-external-writer";
+  }
+  return "stopped";
+}
 
 /** What the supervisor knows about the archiver right now. */
 export interface ArchiveHealth {
+  /** The derived one-word status. Every reader renders this, not a guess. */
+  readonly status: ArchiveWriterStatus;
+  /** The other process holding the writer lease, when one is. */
+  readonly externalWriter: { readonly pid: number; readonly host: string } | null;
   /** Whether a child is running at this moment. */
   readonly running: boolean;
   /** The running child's pid, or null when nothing is running. */
@@ -58,6 +147,13 @@ export interface ArchiveHealth {
   /** Why the archiver is not running, when it is not. */
   readonly stoppedReason: string | null;
 }
+
+/**
+ * The raw facts the supervisor tracks; `status` and `externalWriter` are
+ * derived on every health read (the lock file may have changed hands since
+ * the last transition) and so are deliberately not stored.
+ */
+export type ArchiveRuntimeFacts = Omit<ArchiveHealth, "status" | "externalWriter">;
 
 export interface ArchiveSupervisorShape {
   readonly health: Effect.Effect<ArchiveHealth>;
@@ -79,6 +175,13 @@ const BACKOFF_MAX = Duration.minutes(1);
  * boot, so anything past this actually ran.
  */
 const HEALTHY_AFTER = Duration.minutes(2);
+/**
+ * How often a non-owning server re-attempts lease acquisition while it waits
+ * for the other writer to exit. Bounded recovery: every attempt is the
+ * lease's own safe stale-takeover, so a shorter interval only means a faster
+ * honest takeover after a crash and never a stolen live lease.
+ */
+const REACQUIRE_INTERVAL = Duration.seconds(30);
 
 /**
  * Where the archiver's entry file is, from wherever this module ended up.
@@ -136,8 +239,10 @@ export const makeArchiveSupervisor = Effect.gen(function* () {
   const network: ArchiveNetwork = isTestnetEndpoints(endpoints) ? "testnet" : "mainnet";
   /** Flipped by the heartbeat if another process takes the archive lock. */
   let ownsArchive = false;
+  /** The writer lock path, set by start(); read by the health derivation. */
+  let lockPathRef = "";
 
-  const state = yield* Ref.make<ArchiveHealth>({
+  const state = yield* Ref.make<ArchiveRuntimeFacts>({
     running: false,
     pid: null,
     lastHeartbeatAt: null,
@@ -256,34 +361,95 @@ export const makeArchiveSupervisor = Effect.gen(function* () {
       }
     });
 
+  /**
+   * The reacquisition loop: the supported recovery path.
+   *
+   * A server that lost (or never held) the lease used to stay a reader
+   * forever, and the only way back was restarting or hand-deleting a lock,
+   * and deleting a live holder's lock is the one unsafe move there is. This
+   * loop instead re-runs `acquire` on a bounded cadence: acquire takes over
+   * EXACTLY when the holder's lease is stale (its own PID/host/heartbeat
+   * checks, its own atomic rename), never before, so recovery needs no
+   * deletion, no kill, and no guessing. While the other writer is healthy
+   * the loop is a quiet poll; the moment that process exits for good, this
+   * one becomes the writer again on its own.
+   */
+  const superviseWithReacquisition = (entry: string) =>
+    Effect.gen(function* () {
+      let firstMissLogged = false;
+      while (true) {
+        // Acquire only when the lease is not already ours: start() may have
+        // taken it synchronously, and acquiring at our own live lock would
+        // read as "held by another process" (it names this pid).
+        if (!ownsArchive) {
+          const lock = yield* acquire(lockPathRef);
+          if (lock.acquired) {
+            firstMissLogged = false;
+            ownsArchive = true;
+            const leaseScope = yield* Effect.scope;
+            yield* heartbeatLoop(lockPathRef, lock.record, () => {
+              ownsArchive = false;
+            }).pipe(Effect.forkScoped, Effect.provideService(Scope.Scope, leaseScope));
+            // Only remove a lock this process still owns: the heartbeat
+            // clears `ownsArchive` the moment the file names somebody else,
+            // and deleting a live holder's lock would let a third process in
+            // behind them. A prior heartbeat from an earlier ownership has
+            // already stood itself down on the loss it reacted to.
+            yield* Scope.addFinalizer(
+              leaseScope,
+              Effect.sync(() => {
+                if (ownsArchive) NodeFS.rmSync(lockPathRef, { force: true });
+              }),
+            );
+          } else if (!firstMissLogged) {
+            firstMissLogged = true;
+            yield* stopped(`pid ${lock.holder.pid} on ${lock.holder.host} is writing the archive`);
+            yield* Effect.logInfo("ArchiveSupervisor: another process is archiving", {
+              holder: lock.holder.pid,
+              host: lock.holder.host,
+            });
+          }
+        }
+        if (ownsArchive) {
+          yield* supervise(entry);
+          // supervise only returns without the lease (another process took
+          // it over mid-flight); the loop waits out that usurper the same
+          // way, and never deletes a lock by hand to do it.
+        }
+        yield* Effect.sleep(REACQUIRE_INTERVAL);
+      }
+    });
+
   const start: ArchiveSupervisorShape["start"] = () =>
     Effect.gen(function* () {
       const archivePath = archiveDatabasePath();
-      const lockPath = `${archivePath}.writer.lock`;
-      yield* Effect.sync(() => NodeFS.mkdirSync(NodePath.dirname(lockPath), { recursive: true }));
-      const lock = yield* acquire(lockPath);
-      if (!lock.acquired) {
+      lockPathRef = `${archivePath}.writer.lock`;
+      yield* Effect.sync(() =>
+        NodeFS.mkdirSync(NodePath.dirname(lockPathRef), { recursive: true }),
+      );
+      // The first acquire keeps start()'s contract: it returns after one
+      // attempt, owning the lease or honestly not. Ownership from then on is
+      // the lifecycle loop's job.
+      const lock = yield* acquire(lockPathRef);
+      if (lock.acquired) {
+        ownsArchive = true;
+        const scope = yield* Effect.scope;
+        yield* heartbeatLoop(lockPathRef, lock.record, () => {
+          ownsArchive = false;
+        }).pipe(Effect.forkScoped, Effect.provideService(Scope.Scope, scope));
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            if (ownsArchive) NodeFS.rmSync(lockPathRef, { force: true });
+          }),
+        );
+      } else {
         yield* stopped(`pid ${lock.holder.pid} on ${lock.holder.host} is writing the archive`);
         yield* Effect.logInfo("ArchiveSupervisor: another process is archiving", {
           holder: lock.holder.pid,
           host: lock.holder.host,
         });
-        return;
       }
-      ownsArchive = true;
-      const scope = yield* Effect.scope;
-      yield* heartbeatLoop(lockPath, lock.record, () => {
-        ownsArchive = false;
-      }).pipe(Effect.forkScoped, Effect.provideService(Scope.Scope, scope));
-      // Only remove a lock this process still owns: the heartbeat clears
-      // `ownsArchive` the moment the file names somebody else, and deleting a
-      // live holder's lock would let a third process in behind them.
-      yield* Scope.addFinalizer(
-        scope,
-        Effect.sync(() => {
-          if (ownsArchive) NodeFS.rmSync(lockPath, { force: true });
-        }),
-      );
 
       const entry = resolveArchiverEntry(import.meta.url);
       if (entry === null) {
@@ -291,10 +457,46 @@ export const makeArchiveSupervisor = Effect.gen(function* () {
         yield* Effect.logWarning("ArchiveSupervisor: could not find the archiver entry file");
         return;
       }
-      yield* Effect.forkScoped(supervise(entry));
+      // The lifecycle loop owns supervision AND reacquisition from here: it
+      // supervises while this process holds the lease and quietly retries
+      // acquisition when it does not, so recovery after the other writer
+      // exits is automatic and never requires deleting a lock by hand.
+      yield* Effect.forkScoped(superviseWithReacquisition(entry));
     });
 
-  return { health: Ref.get(state), start } satisfies ArchiveSupervisorShape;
+  // The writer's lock, read passively on every health read so a lease that
+  // changed hands between transitions is classified by what is true now,
+  // not by what was true at the last transition. readLease never writes,
+  // so reporting health cannot disturb the lease it describes.
+  const health: ArchiveSupervisorShape["health"] = Effect.gen(function* () {
+    const facts = yield* Ref.get(state);
+    const now = yield* Clock.currentTimeMillis;
+    const lease = yield* Effect.sync(() => readLease(lockPathRef));
+    // A lock this process owns is not an external writer; the supervisor
+    // only runs its archiver while it holds the lease, so a self-held lock
+    // alongside running=false means "between runs", classified below.
+    const ownPid = NodeProcess.pid;
+    const externalWriter =
+      lease.status === "held" && lease.pid !== ownPid ? { pid: lease.pid, host: lease.host } : null;
+    const status = deriveArchiveWriterStatus({
+      running: facts.running,
+      lastHeartbeatAt: facts.lastHeartbeatAt,
+      stoppedReason: facts.stoppedReason,
+      now,
+      lease:
+        lease.status === "unreadable"
+          ? { unreadableLock: true }
+          : lease.status === "held" && lease.pid !== ownPid
+            ? {
+                unreadableLock: false,
+                external: { heartbeatAt: lease.heartbeatAt, pidAlive: lease.pidAlive },
+              }
+            : { unreadableLock: false, external: null },
+    });
+    return { ...facts, status, externalWriter };
+  });
+
+  return { health, start } satisfies ArchiveSupervisorShape;
 });
 
 /**

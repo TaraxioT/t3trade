@@ -99,6 +99,8 @@ import Migration0083 from "./Migrations/083_TradingThesisValidation.ts";
 import Migration0084 from "./Migrations/084_TradingHypothesis.ts";
 import Migration0085 from "./Migrations/085_TradingObserveMissions.ts";
 import Migration0086 from "./Migrations/086_TradingEventSets.ts";
+import Migration0087 from "./Migrations/087_TradingResearchScenes.ts";
+import Migration0088 from "./Migrations/088_ProjectionWorkspaceMode.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -202,6 +204,8 @@ export const migrationEntries = [
   [84, "TradingHypothesis", Migration0084],
   [85, "TradingObserveMissions", Migration0085],
   [86, "TradingEventSets", Migration0086],
+  [87, "TradingResearchScenes", Migration0087],
+  [88, "ProjectionWorkspaceMode", Migration0088],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

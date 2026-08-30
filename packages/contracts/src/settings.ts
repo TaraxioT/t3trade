@@ -231,11 +231,25 @@ export const ClientSettingsSchema = Schema.Struct({
   // old keys, so everyone, including prior beta opt-outs, resets to the new
   // default sidebar.
   legacySidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  // T3 Trade (final-form Phase 4): whether opening the app lands on the
-  // trading home (/trade) instead of the coding draft. Trading-first is the
-  // fork's identity, so the default is on; client-side so each device can
-  // choose, and coding threads stay one sidebar click away either way.
-  openOnTradeHome: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // T3 Trade: where the app opens. Chat is the front door — research,
+  // observation, and ordinary questions all start by telling the agent what
+  // you want — and /trade is the operations console (watchlist, positions,
+  // alerts, pause/cancel/reduce/close/revoke, manual orders), not the place
+  // workflows have to be discovered through buttons.
+  //
+  // A fresh key on purpose: this replaced `openOnTradeHome`, whose schema
+  // default was TRUE from birth while the persistence layer stores the whole
+  // decoded settings object. A stored true was therefore indistinguishable
+  // from the baked-in default, and flipping the default under the old key
+  // would either do nothing (stored blobs win) or silently reinterpret
+  // someone's explicit choice. Dropping the old key on decode — the same
+  // move `legacySidebarEnabled` made — resets only the implicit default:
+  // every device lands on chat unless its user re-opts into Trade here.
+  // That one-time re-opt-in for prior explicit Trade-home users is the
+  // accepted compatibility cost; it is visible in Settings → Trading.
+  landingSurface: Schema.Literals(["chat", "trade"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("chat")),
+  ),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
@@ -946,7 +960,7 @@ export const ClientSettingsPatch = Schema.Struct({
   planModeEnabled: Schema.optionalKey(Schema.Boolean),
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
   legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
-  openOnTradeHome: Schema.optionalKey(Schema.Boolean),
+  landingSurface: Schema.optionalKey(Schema.Literals(["chat", "trade"])),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),

@@ -149,6 +149,8 @@ import {
 import {
   checkEventStudy,
   EVENT_STUDY_DEFAULT_HORIZON_BARS,
+  eventStudyHydrationWindow,
+  eventStudyReadWindow,
   parseTradingEventsOccurrence,
   renderTradingEventsMenu,
   runEventStudy,
@@ -156,6 +158,17 @@ import {
   type TradingEventsOccurrenceInput,
   type TradingEventOccurrence,
 } from "@t3tools/trading-contracts/eventSets";
+import {
+  composeEventStudyScene,
+  RESEARCH_CALCULATION_VERSIONS,
+  RESEARCH_DISCLAIMER,
+  RESEARCH_SCENE_MAX_TRADES,
+  validateTradingChartScene,
+  renderTradingChartMenu,
+  type ResearchOccurrenceWindow,
+  type ResearchSceneView,
+  type TradingChartResult,
+} from "@t3tools/trading-contracts/researchScenes";
 import { renderForwardMenu, type TradingValidateResult } from "@t3tools/trading-contracts/forward";
 import {
   HYPOTHESIS_SHOW_RUNS,
@@ -181,14 +194,15 @@ import {
   type HypothesisRecord,
 } from "../../../trading/TradingHypothesisService.ts";
 import { TradingEventService } from "../../../trading/TradingEventService.ts";
+import { TradingResearchSceneService } from "../../../trading/TradingResearchSceneService.ts";
 import {
   ARCHIVE_INTERVALS,
+  archiveDatabasePath,
   INTERVAL_MS,
   type ArchiveInterval,
 } from "../../../trading/archive/config.ts";
-
-/** A day, for the study window default. */
-const DAY_MS = 24 * 60 * 60 * 1_000;
+import { gridBarCount } from "../../../trading/archive/hydration.ts";
+import { archiveOwnershipRefusal } from "../../../trading/TradingRuntimeLease.ts";
 
 interface BoundCall {
   readonly threadId: string;
@@ -226,6 +240,7 @@ const hypothesisResult = (value: TradingHypothesisResult): TradingHypothesisResu
 
 /** The same collapse for `trading_events`; see the note above. */
 const eventsResult = (value: TradingEventsResult): TradingEventsResult => value;
+const chartResult = (value: TradingChartResult): TradingChartResult => value;
 
 const rejectCall = (input: {
   readonly reason:
@@ -239,9 +254,11 @@ const rejectCall = (input: {
     | "interval_not_archived"
     | "window_too_large"
     | "no_archived_bars"
+    | "market_data_unavailable"
     | "validation_refused"
     | "hypothesis_refused"
     | "events_refused"
+    | "chart_refused"
     | "mission_cannot_trade"
     | "sweep_invalid";
   readonly threadId: string;
@@ -2383,7 +2400,8 @@ const targetRungWarning = (input: {
   `${input.verdict.floorUsd.toFixed(2)} USD floor, so the plan stands; the target wakes you for a ` +
   `move that barely pays for itself.`;
 
-const handlers = {
+/** Exported for direct handler tests: the study path is pinned outside the toolkit layer. */
+export const handlers = {
   trading_look: (input) => readObservation(input),
 
   trading_plan: (input) =>
@@ -3207,6 +3225,11 @@ const handlers = {
             return yield* refuse("arm needs durationHours; two weeks is 336");
           }
           const resolved = yield* resolveRunThesis(input);
+          if (resolved.outcome === "needs_input") {
+            return yield* refuse(
+              "arm needs a thesis or a hypothesisId; the shape is trading_validate({})",
+            );
+          }
           if (resolved.outcome === "not_found") {
             return yield* refuse("no hypothesis with that id");
           }
@@ -3263,7 +3286,7 @@ const handlers = {
             ...(report === null ? {} : { report }),
             outcome:
               `Validating ${describeThesis(thesis)} on paper until ` +
-              `${new Date(armed.validation.expiresAt).toISOString()}. No order will be placed.` +
+              `${DateTime.formatIso(DateTime.makeUnsafe(armed.validation.expiresAt))}. No order will be placed.` +
               supersededLine,
           });
         }
@@ -3404,6 +3427,21 @@ const handlers = {
         );
 
       /**
+       * The active event-set ids for a thesis being filed. A new hypothesis
+       * (or a revision, which is a new thesis) is exactly where an unknown or
+       * retired set must refuse, so save and revise resolve the calendar here
+       * and hand it to the service's validateThesis rather than persisting a
+       * rule that would read undefined on every bar.
+       */
+      const knownEventSetsFor = (thesis: TradingThesis) =>
+        Effect.gen(function* () {
+          const anchored = thesisEventSets(thesis);
+          if (anchored.length === 0) return undefined;
+          const events = yield* TradingEventService;
+          return yield* events.activeSetIds().pipe(Effect.orDie);
+        });
+
+      /**
        * Who wrote this version.
        *
        * Always `agent`, and deliberately so. The tool is only ever called by
@@ -3423,8 +3461,16 @@ const handlers = {
           if (input.thesis === undefined) {
             return yield* refuse("save needs a thesis; the shape is trading_backtest({})");
           }
+          const knownEventSets = yield* knownEventSetsFor(input.thesis);
           const saved = yield* hypotheses
-            .create({ title: input.title, thesis: input.thesis, threadId, author, now })
+            .create({
+              title: input.title,
+              thesis: input.thesis,
+              threadId,
+              author,
+              now,
+              ...(knownEventSets === undefined ? {} : { knownEventSets }),
+            })
             .pipe(Effect.orDie);
           if (saved.outcome === "refused") return yield* refuse(saved.reason);
           return hypothesisResult({
@@ -3443,6 +3489,7 @@ const handlers = {
           if (input.note === undefined) {
             return yield* refuse("revise needs a note saying why this version exists");
           }
+          const knownEventSets = yield* knownEventSetsFor(input.thesis);
           const revised = yield* hypotheses
             .revise({
               hypothesisId: input.hypothesisId,
@@ -3450,6 +3497,7 @@ const handlers = {
               note: input.note,
               author,
               now,
+              ...(knownEventSets === undefined ? {} : { knownEventSets }),
             })
             .pipe(Effect.orDie);
           if (revised.outcome === "refused") return yield* refuse(revised.reason);
@@ -3760,6 +3808,14 @@ const handlers = {
           if (input.market === undefined) return yield* refuse("study needs a market");
           const set = yield* eventService.show(input.eventSetId).pipe(Effect.orDie);
           if (set === null) return yield* refuse("no event set with that id");
+          // A study is the conversation turning to this market: note it so
+          // the market panel — and the scene this study may publish — has a
+          // thread to draw beside. Best effort, exactly like a look.
+          yield* noteThreadMarket({
+            threadId,
+            market: input.market,
+            source: "look",
+          });
 
           const horizonBars = input.horizonBars ?? EVENT_STUDY_DEFAULT_HORIZON_BARS;
           const badHorizon = checkEventStudy({ horizonBars });
@@ -3776,12 +3832,51 @@ const handlers = {
             );
           }
           const archive = yield* TradingMarketArchive;
-          const coverageProbe = yield* archive
-            .coverage({ coin: input.market, interval, fromT: 0, toT: now })
-            .pipe(Effect.orDie);
-          // Everything the archive holds, like a backtest with no lookback.
-          const requestedFromT = coverageProbe.recordingSince ?? now - 30 * DAY_MS;
-          const requestedBars = Math.ceil(Math.max(0, now - requestedFromT) / width);
+          // The read gate, same as a backtest: an unverifiable writer lock
+          // refuses before any archive read is made.
+          const ownership = archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`);
+          if (ownership !== null) {
+            return yield* refuse(ownership);
+          }
+          // On-demand hydration before the window math, exactly as a backtest
+          // — but the window is the study's own: from the first required
+          // entry bar to the last required exit bar of the ended
+          // occurrences. The same window is what the bar budget judges and
+          // what the candles are read from (eventStudyReadWindow), so a small
+          // study succeeds no matter how much the archive has recorded
+          // around it, and no full-archive read happens for a bounded set of
+          // events. Occurrences outside the served window stay visible as
+          // uncovered rows with their reasons; nothing is dropped.
+          const studyWindow = eventStudyReadWindow(set.occurrences, {
+            intervalMs: width,
+            horizonBars,
+            now,
+          });
+          const hydrationWindow = eventStudyHydrationWindow(set.occurrences, {
+            intervalMs: width,
+            horizonBars,
+            now,
+          });
+          const ensureWindow =
+            hydrationWindow === null
+              ? null
+              : yield* archive
+                  .ensureCoverage({
+                    coin: input.market,
+                    interval,
+                    fromT: hydrationWindow.fromT,
+                    toT: hydrationWindow.toT,
+                    purpose: "study",
+                    now,
+                  })
+                  .pipe(Effect.orDie);
+          const coverageProbe = ensureWindow?.coverage ?? null;
+          const hydrationNote =
+            ensureWindow === null || ensureWindow.outcome === "already_covered"
+              ? null
+              : `on-demand recovery from Hyperliquid: ${ensureWindow.outcome}` +
+                (ensureWindow.reason === null ? "" : ` (${ensureWindow.reason})`);
+          const requestedBars = gridBarCount(studyWindow.fromT, studyWindow.toT, width);
           const tooLarge = checkBacktestBarBudget({
             interval,
             bars: requestedBars,
@@ -3793,17 +3888,18 @@ const handlers = {
             .candlesInWindow({
               coin: input.market,
               interval,
-              fromT: requestedFromT,
-              toT: now,
+              fromT: studyWindow.fromT,
+              toT: studyWindow.toT,
               maxBars: BACKTEST_MAX_BARS,
             })
             .pipe(Effect.orDie);
           if (rows.length === 0) {
             return yield* refuse(
               `the archive holds no ${interval} bars for ${input.market} in that window` +
-                (coverageProbe.recordingSince === null
+                (coverageProbe?.recordingSince == null
                   ? " (nothing is recorded for this market at all)"
-                  : ""),
+                  : "") +
+                (hydrationNote === null ? "" : `; ${hydrationNote}`),
             );
           }
 
@@ -3814,6 +3910,392 @@ const handlers = {
             horizonBars,
           });
           return eventsResult({ study, outcome: study.verdict });
+        }
+      }
+    }),
+
+  /**
+   * The graph's publisher: research, made durable and visible.
+   *
+   * Every scene this tool writes is computed output, produced by the same
+   * deterministic engines the study and backtest tools use, and this handler
+   * does no math of its own: it loads the archive exactly the way
+   * `trading_events`' study action does, hands the bars to `runEventStudy`
+   * or the thesis to the backtest service, and persists what came back. The
+   * tool holds no exchange authority; it cannot arm a validation or place an
+   * order, and the disclaimer riding every scene says so in fixed words.
+   */
+  trading_chart: (input) =>
+    Effect.gen(function* () {
+      if (input.action === undefined) {
+        return chartResult({ menu: renderTradingChartMenu() });
+      }
+
+      const scenes = yield* TradingResearchSceneService;
+      const eventService = yield* TradingEventService;
+      const now = yield* Clock.currentTimeMillis;
+      const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
+
+      // Attribution, never authority: a scene takes no mission state, the
+      // same sentence the events handler carries.
+      const refuse = (detail: string) =>
+        rejectCall({ reason: "chart_refused", threadId, missionId: input.missionId, detail });
+
+      /**
+       * Reference honesty: a scene renders its recorded summary forever, but
+       * if the event set it was computed from has since been retired (or
+       * vanished), the view says so instead of implying the recipe still
+       * resolves. Storage defaults to "unknown"; only a reader holding both
+       * services can say better — and only for the kinds whose reference this
+       * reader actually resolves. A strategy replay or annotation keeps the
+       * honest "unknown" rather than an unverified "ok".
+       */
+      const withReferenceStatus = (scene: ResearchSceneView): Effect.Effect<ResearchSceneView> =>
+        Effect.gen(function* () {
+          const eventStudy = scene.eventStudy;
+          if (eventStudy === undefined) return scene;
+          const set = yield* eventService.show(eventStudy.eventSetId).pipe(Effect.orDie);
+          // The composed layers are derived here, server-side, from the
+          // recorded summary: the model never writes layers, and the graph
+          // never re-derives numbers.
+          const composed = { ...composeEventStudyScene(eventStudy), sceneId: scene.sceneId };
+          const invalidScene = validateTradingChartScene(composed);
+          return {
+            ...scene,
+            referenceStatus:
+              set === null
+                ? "retired"
+                : set.retiredAt === null
+                  ? ("ok" as const)
+                  : ("retired" as const),
+            ...(invalidScene === null ? { scene: composed } : {}),
+          };
+        });
+
+      switch (input.action) {
+        case "publish_event_study": {
+          if (input.eventSetId === undefined) {
+            return yield* refuse(
+              "publish_event_study needs an eventSetId; trading_events({action:'list'}) shows the sets",
+            );
+          }
+          if (input.market === undefined) {
+            return yield* refuse("publish_event_study needs a market to measure the set against");
+          }
+          // The published scene draws in the thread's market panel; note the
+          // market so there is a panel to draw in. Best effort, like a look.
+          yield* noteThreadMarket({ threadId, market: input.market, source: "look" });
+          const set = yield* eventService.show(input.eventSetId).pipe(Effect.orDie);
+          if (set === null) return yield* refuse("no event set with that id");
+          if (set.occurrences.length === 0) {
+            return yield* refuse("the set holds no occurrences, so there is nothing to publish");
+          }
+          const horizonBars = input.horizonBars ?? EVENT_STUDY_DEFAULT_HORIZON_BARS;
+          const badHorizon = checkEventStudy({ horizonBars });
+          if (badHorizon !== null) return yield* refuse(badHorizon);
+          const interval = (input.interval ?? "1d") as ArchiveInterval;
+          const width = INTERVAL_MS[interval];
+          if (width === undefined) {
+            return yield* refuse(
+              `${interval} is not recorded; the archive holds ${ARCHIVE_INTERVALS.join(", ")}`,
+            );
+          }
+
+          // The TradingBacktestService read pattern, in miniature, exactly as
+          // the events study action reads it: probe, window, budget, read.
+          const archive = yield* TradingMarketArchive;
+          // The read gate, same as a backtest: an unverifiable writer lock
+          // refuses before any archive read is made.
+          const ownership = archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`);
+          if (ownership !== null) {
+            return yield* refuse(ownership);
+          }
+          // The study action's rule verbatim: hydrate the study's own bounded
+          // window (first required entry to last required exit of the ended
+          // occurrences), and budget and read that same window
+          // (eventStudyReadWindow) — never the archive's whole history, so a
+          // small study succeeds however much has been recorded around it.
+          // Nothing ended needs no recovery; the graph shows those rows
+          // uncovered with reasons.
+          const studyWindow = eventStudyReadWindow(set.occurrences, {
+            intervalMs: width,
+            horizonBars,
+            now,
+          });
+          const hydrationWindow = eventStudyHydrationWindow(set.occurrences, {
+            intervalMs: width,
+            horizonBars,
+            now,
+          });
+          const ensureWindow =
+            hydrationWindow === null
+              ? null
+              : yield* archive
+                  .ensureCoverage({
+                    coin: input.market,
+                    interval,
+                    fromT: hydrationWindow.fromT,
+                    toT: hydrationWindow.toT,
+                    purpose: "study",
+                    now,
+                  })
+                  .pipe(Effect.orDie);
+          const hydrationNote =
+            ensureWindow === null || ensureWindow.outcome === "already_covered"
+              ? null
+              : `on-demand recovery from Hyperliquid: ${ensureWindow.outcome}` +
+                (ensureWindow.reason === null ? "" : ` (${ensureWindow.reason})`);
+          const requestedBars = gridBarCount(studyWindow.fromT, studyWindow.toT, width);
+          const tooLarge = checkBacktestBarBudget({
+            interval,
+            bars: requestedBars,
+            coarser: coarserIntervals(interval),
+          });
+          if (tooLarge !== null) return yield* refuse(tooLarge);
+          const rows = yield* archive
+            .candlesInWindow({
+              coin: input.market,
+              interval,
+              fromT: studyWindow.fromT,
+              toT: studyWindow.toT,
+              maxBars: BACKTEST_MAX_BARS,
+            })
+            .pipe(Effect.orDie);
+          if (rows.length === 0) {
+            return yield* refuse(
+              `the archive holds no ${interval} bars for ${input.market} in that window` +
+                (hydrationNote === null ? "" : `; ${hydrationNote}`),
+            );
+          }
+          const candles = rows.map(toCandle);
+          const report = runEventStudy({
+            occurrences: set.occurrences,
+            candles,
+            intervalMs: width,
+            horizonBars,
+          });
+          const servedFromT = candles[0]?.openTime ?? now;
+          const servedToT = candles[candles.length - 1]?.openTime ?? now;
+          // The scene's provenance: the study's own bounded window, the bars
+          // actually served inside it, and the archive's recording start — one
+          // scoped coverage read, never a full-archive walk.
+          const coverageDetail = yield* archive
+            .coverage({
+              coin: input.market,
+              interval,
+              fromT: studyWindow.fromT,
+              toT: studyWindow.toT,
+            })
+            .pipe(Effect.orDie);
+          // The windows the client fetches per occurrence: the event span
+          // plus the measured horizon, so Calendar mode draws each occurrence
+          // with its own entry and exit bars without shipping years of bars.
+          const occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow> = report.rows.map(
+            (row) => ({
+              startAt: row.startAt,
+              endAt: row.endAt,
+              ...(row.label === undefined ? {} : { label: row.label }),
+              source: row.source,
+              covered: row.covered,
+              ...(row.entryTime === undefined ? {} : { entryTime: row.entryTime }),
+              ...(row.exitTime === undefined ? {} : { exitTime: row.exitTime }),
+            }),
+          );
+          const title =
+            input.title ??
+            `${set.name} on ${input.market}, ${interval} bars, ${horizonBars} forward`;
+          const published = yield* scenes
+            .publish({
+              threadId,
+              kind: "event_study",
+              title,
+              market: input.market,
+              interval,
+              calculationVersion: RESEARCH_CALCULATION_VERSIONS.eventStudy,
+              payload: {
+                kind: "eventStudy",
+                document: {
+                  priceSource: "hyperliquid",
+                  ...(input.illustrativeNotionalUsd === undefined
+                    ? {}
+                    : { illustrativeNotionalUsd: input.illustrativeNotionalUsd }),
+                  requestedFromT: studyWindow.fromT,
+                  requestedToT: studyWindow.toT,
+                  eventSetId: set.eventSetId,
+                  eventSetName: set.name,
+                  market: input.market,
+                  interval,
+                  horizonBars,
+                  report,
+                  occurrenceWindows,
+                  archiveBounds: {
+                    recordingSince: coverageDetail.recordingSince,
+                    fromT: servedFromT,
+                    toT: servedToT,
+                  },
+                },
+              },
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (published.outcome === "refused") return yield* refuse(published.reason);
+          const scene = yield* withReferenceStatus(published.scene);
+          const coveredWindows = occurrenceWindows.filter((w) => w.covered).length;
+          return chartResult({
+            scene,
+            outcome:
+              `${report.verdict} Shown on graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
+              `calendar and event-aligned views above this chat. ${RESEARCH_DISCLAIMER}`,
+          });
+        }
+
+        case "publish_strategy_replay": {
+          let thesis = input.thesis;
+          if (thesis === undefined) {
+            if (input.hypothesisId === undefined) {
+              return yield* refuse(
+                "publish_strategy_replay needs a thesis, or a hypothesisId to replay its current version",
+              );
+            }
+            const hypotheses = yield* TradingHypothesisService;
+            const record = yield* hypotheses.show(input.hypothesisId).pipe(Effect.orDie);
+            if (record === null) {
+              return yield* refuse("no hypothesis with that id to replay");
+            }
+            thesis = record.thesis;
+          }
+          const backtest = yield* TradingBacktestService;
+          const run = yield* backtest.run({ thesis, now }).pipe(Effect.orDie);
+          if (run.status === "refused") {
+            return yield* refuse(`the replay was not run: ${run.detail}`);
+          }
+          const { report, trades } = run;
+          const interval = thesis.interval;
+          // The replayed thesis's market is the conversation's market now:
+          // note it so the published scene has a panel to draw in.
+          yield* noteThreadMarket({ threadId, market: thesis.market, source: "look" });
+          const title =
+            input.title ??
+            `replay of "${report.thesis.market} ${interval}", ${report.stats.tradesTaken} trade(s)`;
+          const published = yield* scenes
+            .publish({
+              threadId,
+              kind: "strategy_replay",
+              title,
+              market: report.thesis.market,
+              interval,
+              calculationVersion: RESEARCH_CALCULATION_VERSIONS.strategyReplay,
+              payload: {
+                kind: "strategyReplay",
+                document: {
+                  thesis,
+                  notionalUsd: report.notionalUsd,
+                  interval,
+                  verdict: report.verdict,
+                  verdictReason: report.verdictReason,
+                  tradesTaken: report.stats.tradesTaken,
+                  winRatePercent: report.stats.winRatePercent,
+                  expectancyUsd: report.stats.expectancyUsd,
+                  totalFeesUsd: report.stats.totalFeesUsd,
+                  trades: trades.slice(0, RESEARCH_SCENE_MAX_TRADES).map((trade) => ({
+                    entryTime: trade.entryTime,
+                    entryPrice: trade.entryPrice,
+                    exitTime: trade.exitTime,
+                    exitPrice: trade.exitPrice,
+                    exitReason: trade.exitReason,
+                    netUsd: trade.netUsd,
+                  })),
+                  archiveBounds: {
+                    recordingSince: report.coverage.recordingSince ?? null,
+                    fromT: report.coverage.servedFromT ?? now,
+                    toT: report.coverage.servedToT ?? now,
+                  },
+                },
+              },
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (published.outcome === "refused") return yield* refuse(published.reason);
+          return chartResult({
+            scene: published.scene,
+            outcome:
+              `${report.verdictReason} Shown on graph: the replay's ` +
+              `${Math.min(trades.length, RESEARCH_SCENE_MAX_TRADES)} trade marker(s). ${RESEARCH_DISCLAIMER}`,
+          });
+        }
+
+        case "annotate": {
+          if (input.market === undefined) return yield* refuse("annotate needs a market");
+          if (input.at === undefined) return yield* refuse("annotate needs an ISO date for `at`");
+          if (input.text === undefined || input.text.trim().length === 0) {
+            return yield* refuse("annotate needs text; an empty note pins nothing");
+          }
+          const at = Date.parse(input.at);
+          if (Number.isNaN(at)) {
+            return yield* refuse(`at "${input.at}" is not an ISO date`);
+          }
+          const published = yield* scenes
+            .publish({
+              threadId,
+              kind: "annotated_market",
+              title: input.title ?? `note on ${input.market}`,
+              market: input.market,
+              interval: null,
+              calculationVersion: RESEARCH_CALCULATION_VERSIONS.annotation,
+              payload: {
+                kind: "annotation",
+                document: { market: input.market, at, text: input.text.trim() },
+              },
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (published.outcome === "refused") return yield* refuse(published.reason);
+          return chartResult({
+            scene: published.scene,
+            outcome:
+              "The note is pinned to the graph with an authored-note label; it is not a computed layer.",
+          });
+        }
+
+        case "show": {
+          if (input.sceneId === undefined) {
+            return yield* refuse(
+              "show needs a sceneId; trading_chart({action:'list'}) shows this chat's scenes",
+            );
+          }
+          const shown = yield* scenes.show(input.sceneId).pipe(Effect.orDie);
+          if (shown === null || shown.threadId !== threadId) {
+            return yield* refuse("no scene of this chat with that id");
+          }
+          const scene = yield* withReferenceStatus(shown);
+          return chartResult({ scene, outcome: scene.title });
+        }
+
+        case "list": {
+          const rows = yield* scenes.list(threadId).pipe(Effect.orDie);
+          const decorated = yield* Effect.forEach(rows, withReferenceStatus);
+          const active = decorated.filter((scene) => scene.status === "active");
+          const historyCount = decorated.length - active.length;
+          return chartResult({
+            scenes: active,
+            outcome:
+              `${active.length} scene(s) on this chat's graph` +
+              (historyCount === 0 ? "" : ` (${historyCount} superseded or cleared in history)`),
+          });
+        }
+
+        case "clear": {
+          const removed = yield* scenes
+            .clear({ threadId, ...(input.sceneId === undefined ? {} : { sceneId: input.sceneId }) })
+            .pipe(Effect.orDie);
+          return chartResult({
+            outcome:
+              input.sceneId === undefined
+                ? `cleared ${removed} scene(s) from this chat's graph`
+                : removed === 1
+                  ? "the scene is off the graph"
+                  : "no scene of this chat with that id, so nothing changed",
+          });
         }
       }
     }),

@@ -30,3 +30,4 @@ export * from "./exit.ts";
 export * from "./recovery.ts";
 export * from "./policy.ts";
 export * from "./replay.ts";
+export * from "./researchScenes.ts";

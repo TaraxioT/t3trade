@@ -31,13 +31,16 @@ function tradingMarketChartAtom(
   market: string,
   interval: ChartInterval,
   window: ChartWindow | null,
+  maxBars: number | null,
 ) {
   return orchestrationEnvironment.tradingMarketChart({
     environmentId,
-    input:
-      window === null
-        ? { market, interval }
-        : { market, interval, startTime: window.startTime, endTime: window.endTime },
+    input: {
+      market,
+      interval,
+      ...(window === null ? {} : { startTime: window.startTime, endTime: window.endTime }),
+      ...(maxBars === null ? {} : { maxBars }),
+    },
   });
 }
 
@@ -47,7 +50,7 @@ export function refreshTradingMarketChart(
   interval: ChartInterval,
   window: ChartWindow | null = null,
 ): void {
-  appAtomRegistry.refresh(tradingMarketChartAtom(environmentId, market, interval, window));
+  appAtomRegistry.refresh(tradingMarketChartAtom(environmentId, market, interval, window, null));
 }
 
 /**
@@ -139,11 +142,19 @@ export function useTradingMarketChart(
      * the series polls; the reader that borrows a number from it does not.
      */
     readonly poll?: boolean;
+    /**
+     * A wider window than the server's default. The server clamps to its own
+     * cap, so this is a request, not a promise. Research views pass it so a
+     * long-horizon occurrence window is cut by the cap rather than by the
+     * client default; the live chart never names it.
+     */
+    readonly maxBars?: number;
   },
 ): TradingMarketChartState {
   const enabled = options.enabled && market !== null;
   const polls = options.poll ?? true;
   const chartWindow = options.window ?? null;
+  const maxBars = options.maxBars ?? null;
   const windowStart = chartWindow?.startTime ?? null;
   const windowEnd = chartWindow?.endTime ?? null;
 
@@ -160,8 +171,8 @@ export function useTradingMarketChart(
       windowStart === null || windowEnd === null
         ? null
         : { startTime: windowStart, endTime: windowEnd };
-    return tradingMarketChartAtom(environmentId, market, interval, bounds);
-  }, [enabled, market, environmentId, interval, windowStart, windowEnd]);
+    return tradingMarketChartAtom(environmentId, market, interval, bounds, maxBars);
+  }, [enabled, market, environmentId, interval, windowStart, windowEnd, maxBars]);
 
   const result = useAtomValue(atom);
   const fresh = Option.getOrNull(AsyncResult.value(result));

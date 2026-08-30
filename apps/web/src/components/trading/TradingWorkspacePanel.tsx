@@ -414,18 +414,20 @@ function MissionView({
  * connected, which is why it renders outside the environment gate below.
  */
 function TradeHomeDefaultSection() {
-  const openOnTradeHome = useClientSettings((settings) => settings.openOnTradeHome);
+  const landingSurface = useClientSettings((settings) => settings.landingSurface);
   const updateSettings = useUpdateClientSettings();
 
   return (
     <SettingsSection title="Trade home">
       <SettingsRow
         title="Open on the trade home"
-        description="Opening the app lands on the trading workspace (watchlist, positions, alerts). Turn off to land on a coding draft instead; threads stay reachable from the sidebar either way."
+        description="Opening the app lands on your chat threads, where you tell the agent what you want. Turn on to land on the trading workspace (watchlist, positions, alerts) instead; both stay reachable from the sidebar either way."
         control={
           <Switch
-            checked={openOnTradeHome}
-            onCheckedChange={(checked) => updateSettings({ openOnTradeHome: Boolean(checked) })}
+            checked={landingSurface === "trade"}
+            onCheckedChange={(checked) =>
+              updateSettings({ landingSurface: checked ? "trade" : "chat" })
+            }
             aria-label="Open on the trade home"
           />
         }

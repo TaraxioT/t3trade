@@ -119,6 +119,14 @@ export interface TradingEventServiceShape {
 
   /** The ids a new thesis may anchor on: the active sets, and only those. */
   readonly activeSetIds: () => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
+
+  /**
+   * Every id on record, retired sets included. The read side of the retire
+   * rule: new theses refuse a retired set (activeSetIds), but a run of a
+   * thesis that anchored the set while it was live keeps evaluating its dates,
+   * so the backtest asks this question instead.
+   */
+  readonly knownSetIds: () => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
 }
 
 export class TradingEventService extends Context.Service<
@@ -160,7 +168,18 @@ const validateAll = (occurrences: ReadonlyArray<TradingEventOccurrence>): string
   if (occurrences.length > EVENT_SET_MAX_OCCURRENCES) {
     return `${occurrences.length} occurrences, at most ${EVENT_SET_MAX_OCCURRENCES}. Drop the oldest, or split the calendar into two sets`;
   }
+  // Duplicate starts are refused BEFORE any write because the table keys on
+  // (event_set_id, start_at): the second row of a pair would fail mid-write,
+  // and a replacement that dies halfway has already deleted the old dates.
+  const starts = new Set<number>();
   for (const [index, occurrence] of occurrences.entries()) {
+    if (starts.has(occurrence.startAt)) {
+      return (
+        `occurrence ${index + 1} starts at a time another occurrence in this list ` +
+        "already holds; one start time, one occurrence, and a re-record replaces the whole list anyway"
+      );
+    }
+    starts.add(occurrence.startAt);
     const reason = validateEventOccurrence(occurrence);
     if (reason !== null) return `occurrence ${index + 1}: ${reason}`;
   }
@@ -236,29 +255,39 @@ export const makeTradingEventService = Effect.gen(function* () {
       const existing = yield* setRowForName(name);
       const eventSetId = existing?.event_set_id ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie));
 
-      if (existing === null) {
-        yield* sql`
-          INSERT INTO trading_event_sets (
-            event_set_id, thread_id, name, description, retired_at, created_at, updated_at
-          ) VALUES (
-            ${eventSetId}, ${input.threadId}, ${name},
-            ${input.description?.trim() || null}, NULL, ${input.now}, ${input.now}
-          )
-        `.pipe(Effect.mapError(sqlFail("record.insert")));
-      } else {
-        // Replacement is the correction path: the old dates go, the typed
-        // dates arrive, and a retired set comes back active in the same move.
-        yield* sql`
-          UPDATE trading_event_sets
-          SET name = ${name}, description = ${input.description?.trim() || null},
-              retired_at = NULL, updated_at = ${input.now}
-          WHERE event_set_id = ${eventSetId}
-        `.pipe(Effect.mapError(sqlFail("record.update")));
-        yield* sql`
-          DELETE FROM trading_event_occurrences WHERE event_set_id = ${eventSetId}
-        `.pipe(Effect.mapError(sqlFail("record.clear")));
-      }
-      yield* insertOccurrences(eventSetId, input.occurrences, input.author, input.now);
+      // One transaction around the whole replacement: the correction path
+      // deletes the old dates before writing the new ones, so a write that
+      // died halfway would leave neither. Rolling back restores the previous
+      // complete set, which is the only acceptable failure state.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (existing === null) {
+              yield* sql`
+                INSERT INTO trading_event_sets (
+                  event_set_id, thread_id, name, description, retired_at, created_at, updated_at
+                ) VALUES (
+                  ${eventSetId}, ${input.threadId}, ${name},
+                  ${input.description?.trim() || null}, NULL, ${input.now}, ${input.now}
+                )
+              `.pipe(Effect.mapError(sqlFail("record.insert")));
+            } else {
+              // Replacement is the correction path: the old dates go, the typed
+              // dates arrive, and a retired set comes back active in the same move.
+              yield* sql`
+                UPDATE trading_event_sets
+                SET name = ${name}, description = ${input.description?.trim() || null},
+                    retired_at = NULL, updated_at = ${input.now}
+                WHERE event_set_id = ${eventSetId}
+              `.pipe(Effect.mapError(sqlFail("record.update")));
+              yield* sql`
+                DELETE FROM trading_event_occurrences WHERE event_set_id = ${eventSetId}
+              `.pipe(Effect.mapError(sqlFail("record.clear")));
+            }
+            yield* insertOccurrences(eventSetId, input.occurrences, input.author, input.now);
+          }),
+        )
+        .pipe(Effect.mapError(sqlFail("record.transaction")));
 
       const set = yield* show(eventSetId);
       return set === null
@@ -304,11 +333,20 @@ export const makeTradingEventService = Effect.gen(function* () {
         starts.add(occurrence.startAt);
       }
 
-      yield* insertOccurrences(input.eventSetId, input.occurrences, input.author, input.now);
-      yield* sql`
-        UPDATE trading_event_sets SET updated_at = ${input.now}
-        WHERE event_set_id = ${input.eventSetId}
-      `.pipe(Effect.mapError(sqlFail("add.touch")));
+      // The append is a transaction for the same reason the replacement is:
+      // all rows arrive or none do, so a half-written add never stands in for
+      // the calendar the caller asked for.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* insertOccurrences(input.eventSetId, input.occurrences, input.author, input.now);
+            yield* sql`
+              UPDATE trading_event_sets SET updated_at = ${input.now}
+              WHERE event_set_id = ${input.eventSetId}
+            `.pipe(Effect.mapError(sqlFail("add.touch")));
+          }),
+        )
+        .pipe(Effect.mapError(sqlFail("add.transaction")));
 
       const set = yield* show(input.eventSetId);
       return set === null
@@ -402,6 +440,14 @@ export const makeTradingEventService = Effect.gen(function* () {
       Effect.map((rows) => rows.map((row) => row.event_set_id)),
     );
 
+  const knownSetIds: TradingEventServiceShape["knownSetIds"] = () =>
+    sql<{ readonly event_set_id: string }>`
+      SELECT event_set_id FROM trading_event_sets
+    `.pipe(
+      Effect.mapError(sqlFail("knownSetIds")),
+      Effect.map((rows) => rows.map((row) => row.event_set_id)),
+    );
+
   return {
     record,
     add,
@@ -411,6 +457,7 @@ export const makeTradingEventService = Effect.gen(function* () {
     occurrencesFor,
     upcomingFor,
     activeSetIds,
+    knownSetIds,
   } satisfies TradingEventServiceShape;
 });
 

@@ -128,6 +128,10 @@ export const TradingToolRejectionReason = Schema.Literals([
       unknown or retired set, a horizon out of range, or an archive that holds
       nothing for the study. The detail is the refusal sentence. */
   "events_refused",
+  /** A `trading_chart` call that published nothing: a missing set, market,
+   * date or note, a study or replay the engines refused, or an archive that
+   * holds nothing for the window. The detail is the refusal sentence. */
+  "chart_refused",
   /** An execution call from an observe mission - a mission that exists to
       watch a hypothesis being validated and holds authority on nothing. The
       detail names the market it is watching. */
@@ -178,6 +182,8 @@ const REJECTION_PROSE: Record<TradingToolRejectionReason, string> = {
     "Refused: nothing was written to the idea record. The line below says what stopped it; the hypothesis, its versions and everything filed against them are exactly as they were.",
   events_refused:
     "Refused: the calendar and every study are exactly as they were. The line below says what stopped it; nothing was recorded and no date was changed.",
+  chart_refused:
+    "Refused: the graph is exactly as it was. The line below says what stopped it; no scene was published and nothing else changed.",
   mission_cannot_trade:
     "Refused: this mission is watching, not trading, so nothing was planned, placed or closed. Say what you see and tell the user that trading the idea needs a mission that holds the market.",
 };

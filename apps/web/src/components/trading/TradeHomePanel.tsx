@@ -241,8 +241,15 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
           />
           <div className="flex min-w-0 flex-col gap-4">
             {selectedAsset === null ? (
-              <div className="flex h-[300px] items-center justify-center rounded-md border border-border/60 px-6 text-center text-sm text-muted-foreground">
-                Pick a watchlist market or open a position to chart it here.
+              // A sentence, not an instruction manual: the chart follows
+              // attention (a pick, a position), and attention can also be
+              // declared in chat, where the market's chart rides along.
+              <div
+                className="flex h-[300px] items-center justify-center rounded-md border border-border/60 px-6 text-center text-sm text-muted-foreground"
+                data-testid="trade-chart-empty"
+              >
+                The chart follows what you watch or hold. Ask the agent about any market and its
+                chart is in that conversation.
               </div>
             ) : (
               <>

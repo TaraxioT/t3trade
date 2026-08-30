@@ -582,7 +582,33 @@ export type OrchestrationTradingMission = typeof OrchestrationTradingMission.Typ
  * detail — it is the difference between a number and a refusal, and a surface
  * that shows one has to be able to explain the other.
  */
+export const TradingArchiveWriterStatus = Schema.Literals([
+  /** This process holds the writer lease and the archiver heartbeats. */
+  "owned-writer",
+  /** Another process holds the lease, freshly; recording continues there. */
+  "healthy-external-writer",
+  /** The supervisor is between runs with a restart pending. */
+  "restarting",
+  /** No writer, and none expected. The detail says why. */
+  "stopped",
+  /** Someone claims to be writing, but the heartbeat is old. */
+  "stale",
+]);
+export type TradingArchiveWriterStatus = typeof TradingArchiveWriterStatus.Type;
+
 export const TradingArchiveHealth = Schema.Struct({
+  /**
+   * The one-word status, derived by the server that owns the lease. Absent
+   * from servers that predate it, and `unavailable` is what a reader should
+   * call that absence: health it cannot see is not health it can promise.
+   */
+  status: Schema.optional(
+    Schema.Union([TradingArchiveWriterStatus, Schema.Literal("unavailable")]),
+  ),
+  /** The other process holding the writer lease, when one is. */
+  externalWriter: Schema.optional(
+    Schema.NullOr(Schema.Struct({ pid: Schema.Number, host: Schema.String })),
+  ),
   running: Schema.Boolean,
   /** The heartbeat line the archiver last printed, verbatim. */
   lastHeartbeat: Schema.NullOr(Schema.String),

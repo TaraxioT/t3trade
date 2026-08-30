@@ -48,7 +48,7 @@ const clientSettings: ClientSettings = {
   sidebarThreadSortOrder: "created_at",
   sidebarThreadPreviewCount: 6,
   legacySidebarEnabled: false,
-  openOnTradeHome: true,
+  landingSurface: "trade",
   timestampFormat: "24-hour",
   wordWrap: true,
 };

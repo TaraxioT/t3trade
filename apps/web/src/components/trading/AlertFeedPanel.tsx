@@ -48,9 +48,14 @@ function describeAccountWatch(watch: TradingAccountWatch): string {
   if (condition.kind === "price") {
     return `${condition.market} crosses ${condition.direction} ${condition.price}`;
   }
+  // A time watch names no market, so the moment it fires is the whole alert:
+  // "clock: time" would list it without saying when. The date is local, the
+  // same way every other clock time on this page is read.
+  if (condition.kind === "time") {
+    return `clock: ${new Date(condition.runAt).toLocaleString()}`;
+  }
   // The form only arms price watches today, but the list serves whatever the
-  // server holds; fall back to the shared vocabulary for the rest. A time
-  // watch names no market, so the clock is the only name it gets.
+  // server holds; fall back to the shared vocabulary for the rest.
   return `${watch.market === null ? "clock" : watch.market.asset}: ${condition.kind}`;
 }
 

@@ -4,6 +4,7 @@ import type {
   ProviderSessionRuntimeStatus,
   RuntimeMode,
   ThreadId,
+  WorkspaceMode,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Context from "effect/Context";
@@ -28,6 +29,12 @@ export interface ProviderRuntimeBinding {
   readonly resumeCursor?: unknown | null;
   readonly runtimePayload?: unknown | null;
   readonly runtimeMode?: RuntimeMode;
+  /**
+   * The workspace fence the session runs under. Absent only on writes that
+   * do not change it; bindings read back always carry it so session
+   * recovery cannot silently drop (or widen) the fence.
+   */
+  readonly workspaceMode?: WorkspaceMode;
 }
 
 export interface ProviderRuntimeBindingWithMetadata extends ProviderRuntimeBinding {

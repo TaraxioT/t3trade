@@ -83,6 +83,7 @@ export function applyThreadDetailEvent(
           title: event.payload.title,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
+          workspaceMode: event.payload.workspaceMode,
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
@@ -243,6 +244,16 @@ export function applyThreadDetailEvent(
         },
       };
 
+    case "thread.workspace-mode-set":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          workspaceMode: event.payload.workspaceMode,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
     case "thread.interaction-mode-set":
       return {
         kind: "updated",
@@ -263,6 +274,7 @@ export function applyThreadDetailEvent(
             ? { modelSelection: event.payload.modelSelection }
             : {}),
           runtimeMode: event.payload.runtimeMode,
+          workspaceMode: event.payload.workspaceMode,
           interactionMode: event.payload.interactionMode,
           updatedAt: event.occurredAt,
         },

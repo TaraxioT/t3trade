@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off -- Tests exercise local calendar snooze boundaries.
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, DEFAULT_WORKSPACE_MODE } from "@t3tools/contracts";
 import { TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -43,6 +43,7 @@ function makeShell(input: {
             status: input.sessionStatus,
             providerName: "Codex",
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: input.sessionStatus === "error" ? "boom" : null,
             updatedAt: "2026-04-10T11:00:00.000Z",

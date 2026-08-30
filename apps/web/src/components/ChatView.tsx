@@ -20,6 +20,7 @@ import {
   ProviderInteractionMode,
   ProviderDriverKind,
   RuntimeMode,
+  WorkspaceMode,
   TerminalOpenInput,
 } from "@t3tools/contracts";
 import {
@@ -123,6 +124,7 @@ import {
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  DEFAULT_WORKSPACE_MODE,
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
@@ -1325,6 +1327,9 @@ function ChatViewContent(props: ChatViewProps) {
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
   });
+  const setThreadWorkspaceMode = useAtomCommand(threadEnvironment.setWorkspaceMode, {
+    reportFailure: false,
+  });
   const setThreadInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
     reportFailure: false,
   });
@@ -1662,6 +1667,10 @@ function ChatViewContent(props: ChatViewProps) {
   // the branch mismatch banner.
   const [, setThreadErrorBannerDismissTick] = useState(0);
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+  // Not part of the composer draft: the workspace fence is a property of the
+  // thread's work, not a per-message setting, so it reads straight off the
+  // server thread or the draft session and changes through the set command.
+  const workspaceMode = activeThread?.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
   // Plan mode is legacy (Settings → Beta). With the flag off the effective
   // mode is forced to "default" — even for threads with a stored plan mode —
   // so nobody is trapped in plan mode while its toggle is hidden. The next
@@ -2087,6 +2096,7 @@ function ChatViewContent(props: ChatViewProps) {
           threadId: activeDraftSession.threadId,
           createdAt: activeDraftSession.createdAt,
           runtimeMode: activeDraftSession.runtimeMode,
+          workspaceMode: activeDraftSession.workspaceMode,
           interactionMode: activeDraftSession.interactionMode,
           ...input,
         });
@@ -2099,6 +2109,7 @@ function ChatViewContent(props: ChatViewProps) {
         threadId: nextThreadId,
         createdAt: new Date().toISOString(),
         runtimeMode: DEFAULT_RUNTIME_MODE,
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
@@ -3443,6 +3454,34 @@ function ChatViewContent(props: ChatViewProps) {
     [activeProject, persistProjectScripts],
   );
 
+  const handleWorkspaceModeChange = useCallback(
+    (mode: WorkspaceMode) => {
+      if (mode === workspaceMode) return;
+      if (isLocalDraftThread) {
+        setDraftThreadContext(composerDraftTarget, { workspaceMode: mode });
+      } else if (activeThread?.id) {
+        void setThreadWorkspaceMode({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            workspaceMode: mode,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      }
+      scheduleComposerFocus();
+    },
+    [
+      activeThread?.id,
+      environmentId,
+      isLocalDraftThread,
+      workspaceMode,
+      scheduleComposerFocus,
+      setDraftThreadContext,
+      setThreadWorkspaceMode,
+    ],
+  );
+
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
       if (mode === runtimeMode) return;
@@ -3871,6 +3910,7 @@ function ChatViewContent(props: ChatViewProps) {
       modelSelection?: ModelSelection;
       branch?: string;
       runtimeMode: RuntimeMode;
+      workspaceMode: WorkspaceMode;
       interactionMode: ProviderInteractionMode;
     }): Promise<AtomCommandResult<void, unknown>> => {
       if (!serverThread) {
@@ -3917,6 +3957,23 @@ function ChatViewContent(props: ChatViewProps) {
         }
       }
 
+      if (input.workspaceMode !== (serverThread.workspaceMode ?? DEFAULT_WORKSPACE_MODE)) {
+        result = mapAtomCommandResult(
+          await setThreadWorkspaceMode({
+            environmentId,
+            input: {
+              threadId: input.threadId,
+              workspaceMode: input.workspaceMode,
+              createdAt: input.createdAt,
+            },
+          }),
+          () => undefined,
+        );
+        if (result._tag === "Failure") {
+          return result;
+        }
+      }
+
       if (input.interactionMode !== serverThread.interactionMode) {
         result = mapAtomCommandResult(
           await setThreadInteractionMode({
@@ -3937,6 +3994,7 @@ function ChatViewContent(props: ChatViewProps) {
       serverThread,
       setThreadInteractionMode,
       setThreadRuntimeMode,
+      setThreadWorkspaceMode,
       updateThreadMetadata,
     ],
   );
@@ -5838,6 +5896,7 @@ function ChatViewContent(props: ChatViewProps) {
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
         runtimeMode,
+        workspaceMode,
         interactionMode,
       });
       if (settingsResult._tag === "Failure") {
@@ -5862,6 +5921,7 @@ function ChatViewContent(props: ChatViewProps) {
                       title,
                       modelSelection: threadCreateModelSelection,
                       runtimeMode,
+                      workspaceMode,
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
@@ -5903,6 +5963,7 @@ function ChatViewContent(props: ChatViewProps) {
           modelSelection: ctxSelectedModelSelection,
           titleSeed: title,
           runtimeMode,
+          workspaceMode,
           interactionMode,
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
@@ -6292,6 +6353,7 @@ function ChatViewContent(props: ChatViewProps) {
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
         runtimeMode,
+        workspaceMode,
         interactionMode: nextInteractionMode,
       });
       let failure: AtomCommandResult<unknown, unknown> | null =
@@ -6318,6 +6380,7 @@ function ChatViewContent(props: ChatViewProps) {
             modelSelection: ctxSelectedModelSelection,
             titleSeed: activeThread.title,
             runtimeMode,
+            workspaceMode,
             interactionMode: nextInteractionMode,
             ...(nextInteractionMode === "default" && activeProposedPlan
               ? {
@@ -6431,6 +6494,10 @@ function ChatViewContent(props: ChatViewProps) {
         title: nextThreadTitle,
         modelSelection: nextThreadModelSelection,
         runtimeMode,
+        // Implementing a proposed plan is an explicit software-development
+        // task started by the user: the new thread keeps the full coding
+        // surface instead of the market_research fence.
+        workspaceMode: "coding",
         interactionMode: "default",
         branch: activeThreadBranch,
         worktreePath: activeThread.worktreePath,
@@ -6454,6 +6521,7 @@ function ChatViewContent(props: ChatViewProps) {
           modelSelection: ctxSelectedModelSelection,
           titleSeed: nextThreadTitle,
           runtimeMode,
+          workspaceMode: "coding",
           interactionMode: "default",
           sourceProposedPlan: {
             threadId: activeThread.id,
@@ -7157,6 +7225,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeTasksProgress={activeComposerTasksProgress}
                             activeTaskSteps={activeComposerTaskSteps}
                             runtimeMode={runtimeMode}
+                            workspaceMode={workspaceMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
                             providerStatuses={providerStatuses as ServerProvider[]}
@@ -7194,6 +7263,7 @@ function ChatViewContent(props: ChatViewProps) {
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}
+                            handleWorkspaceModeChange={handleWorkspaceModeChange}
                             handleInteractionModeChange={handleInteractionModeChange}
                             focusComposer={focusComposer}
                             scheduleComposerFocus={scheduleComposerFocus}

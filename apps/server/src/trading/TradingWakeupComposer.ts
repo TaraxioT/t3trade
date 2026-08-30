@@ -25,7 +25,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import { HyperliquidGateway, type GatewayError } from "@t3tools/hyperliquid/Gateway";
 import type {
   AgentAccountSnapshot,
   AgentNetPosition,
@@ -984,7 +984,7 @@ const make = Effect.gen(function* () {
       // answer for an account that exists is a fault.
       const accountReads: Effect.Effect<
         readonly [AgentAccountSnapshot, AgentNetPosition] | null,
-        unknown
+        GatewayError
       > =
         address === null
           ? Effect.succeed(null)

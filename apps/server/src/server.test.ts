@@ -9,6 +9,7 @@ import {
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
   CommandId,
+  DEFAULT_WORKSPACE_MODE,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
@@ -126,6 +127,7 @@ import { TradingAccountProjectionLive } from "./trading/TradingAccountProjection
 import { TradingAlertService } from "./trading/TradingAlertService.ts";
 import { TradingThesisValidationService } from "./trading/TradingThesisValidationService.ts";
 import { TradingHypothesisService } from "./trading/TradingHypothesisService.ts";
+import { TradingResearchSceneService } from "./trading/TradingResearchSceneService.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import { TradingThreadMarketServiceLive } from "./trading/TradingThreadMarketService.ts";
 import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
@@ -257,6 +259,7 @@ const makeDefaultOrchestrationReadModel = () => {
         modelSelection: defaultModelSelection,
         interactionMode: "default" as const,
         runtimeMode: "full-access" as const,
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         branch: null,
         worktreePath: null,
         createdAt: now,
@@ -286,6 +289,7 @@ const makeDefaultOrchestrationThreadShell = (
     title: "Default Thread",
     modelSelection: defaultModelSelection,
     runtimeMode: "full-access",
+    workspaceMode: DEFAULT_WORKSPACE_MODE,
     interactionMode: "default",
     branch: null,
     worktreePath: null,
@@ -912,6 +916,8 @@ const buildAppUnderTest = (options?: {
           Layer.mock(ArchiveSupervisor)({
             start: () => Effect.void,
             health: Effect.succeed({
+              status: "stopped" as const,
+              externalWriter: null,
               running: false,
               pid: null,
               lastHeartbeatAt: null,
@@ -959,6 +965,11 @@ const buildAppUnderTest = (options?: {
             // The ideas panel reads the hypothesis record beside the
             // validations. Same posture: these tests file no idea.
             Layer.mock(TradingHypothesisService)({
+              list: () => Effect.succeed([]),
+            }),
+            // The graph's scene record: these tests publish no scene, so the
+            // list every scene read sees is empty and nothing persists.
+            Layer.mock(TradingResearchSceneService)({
               list: () => Effect.succeed([]),
             }),
           ),
@@ -5620,6 +5631,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           title: "Analytics test",
           modelSelection: defaultModelSelection,
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           interactionMode: "default",
           branch: null,
           worktreePath: null,
@@ -6484,6 +6496,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             modelSelection: defaultModelSelection,
             interactionMode: "default" as const,
             runtimeMode: "full-access" as const,
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             branch: null,
             worktreePath: null,
             createdAt: now,
@@ -7432,6 +7445,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                       status: "ready",
                       providerName: "claudeAgent",
                       runtimeMode: "full-access",
+                      workspaceMode: DEFAULT_WORKSPACE_MODE,
                       activeTurnId: null,
                       lastError: null,
                       updatedAt: now,
@@ -7510,6 +7524,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                           status: "ready",
                           providerName: "claudeAgent",
                           runtimeMode: "full-access",
+                          workspaceMode: DEFAULT_WORKSPACE_MODE,
                           activeTurnId: null,
                           lastError: null,
                           updatedAt: now,
@@ -7634,6 +7649,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                         status: "stopped",
                         providerName: "claudeAgent",
                         runtimeMode: "full-access",
+                        workspaceMode: DEFAULT_WORKSPACE_MODE,
                         activeTurnId: null,
                         lastError: null,
                         updatedAt: now,
@@ -7700,6 +7716,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                       status: "ready",
                       providerName: "claudeAgent",
                       runtimeMode: "full-access",
+                      workspaceMode: DEFAULT_WORKSPACE_MODE,
                       activeTurnId: null,
                       lastError: null,
                       updatedAt: now,
@@ -7827,6 +7844,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                       status: "ready",
                       providerName: "claudeAgent",
                       runtimeMode: "full-access",
+                      workspaceMode: DEFAULT_WORKSPACE_MODE,
                       activeTurnId: null,
                       lastError: null,
                       updatedAt: now,
@@ -7899,6 +7917,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                       status: "ready",
                       providerName: "claudeAgent",
                       runtimeMode: "full-access",
+                      workspaceMode: DEFAULT_WORKSPACE_MODE,
                       activeTurnId: null,
                       lastError: null,
                       updatedAt: now,
@@ -8050,6 +8069,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               },
               modelSelection: defaultModelSelection,
               runtimeMode: "full-access",
+              workspaceMode: DEFAULT_WORKSPACE_MODE,
               interactionMode: "default",
               bootstrap: {
                 createThread: {
@@ -8057,6 +8077,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   title: "Bootstrap Thread",
                   modelSelection: defaultModelSelection,
                   runtimeMode: "full-access",
+                  workspaceMode: DEFAULT_WORKSPACE_MODE,
                   interactionMode: "default",
                   branch: "main",
                   worktreePath: null,
@@ -8196,6 +8217,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               },
               modelSelection: defaultModelSelection,
               runtimeMode: "full-access",
+              workspaceMode: DEFAULT_WORKSPACE_MODE,
               interactionMode: "default",
               bootstrap: {
                 createThread: {
@@ -8203,6 +8225,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   title: "Bootstrap Thread",
                   modelSelection: defaultModelSelection,
                   runtimeMode: "full-access",
+                  workspaceMode: DEFAULT_WORKSPACE_MODE,
                   interactionMode: "default",
                   branch: "main",
                   worktreePath: null,
@@ -8299,6 +8322,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             },
             modelSelection: defaultModelSelection,
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             interactionMode: "default",
             bootstrap: {
               createThread: {
@@ -8306,6 +8330,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
+                workspaceMode: DEFAULT_WORKSPACE_MODE,
                 interactionMode: "default",
                 branch: "main",
                 worktreePath: null,
@@ -8420,6 +8445,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             },
             modelSelection: defaultModelSelection,
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             interactionMode: "default",
             bootstrap: {
               createThread: {
@@ -8427,6 +8453,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
+                workspaceMode: DEFAULT_WORKSPACE_MODE,
                 interactionMode: "default",
                 branch: "main",
                 worktreePath: null,
@@ -8527,6 +8554,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               },
               modelSelection: defaultModelSelection,
               runtimeMode: "full-access",
+              workspaceMode: DEFAULT_WORKSPACE_MODE,
               interactionMode: "default",
               bootstrap: {
                 createThread: {
@@ -8534,6 +8562,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   title: "Bootstrap Thread",
                   modelSelection: defaultModelSelection,
                   runtimeMode: "full-access",
+                  workspaceMode: DEFAULT_WORKSPACE_MODE,
                   interactionMode: "default",
                   branch: "main",
                   worktreePath: null,
@@ -8617,6 +8646,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             },
             modelSelection: defaultModelSelection,
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             interactionMode: "default",
             bootstrap: {
               createThread: {
@@ -8624,6 +8654,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
+                workspaceMode: DEFAULT_WORKSPACE_MODE,
                 interactionMode: "default",
                 branch: "main",
                 worktreePath: null,
@@ -8864,6 +8895,7 @@ it.live(
                       },
                       modelSelection: transferModelSelection(provider),
                       runtimeMode: "approval-required",
+                      workspaceMode: DEFAULT_WORKSPACE_MODE,
                       interactionMode: "default",
                       createdAt: TRANSFER_MEASURED_TURN_CREATED_AT,
                     });

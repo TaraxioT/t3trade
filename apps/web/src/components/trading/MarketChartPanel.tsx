@@ -28,7 +28,7 @@
  * @module MarketChartPanel
  */
 import type { EnvironmentId, ScopedThreadRef, TradingArmWatchInput } from "@t3tools/contracts";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { refreshTradingWatches } from "../../lib/tradingAccountState";
 import { useComposerPrefill } from "./composerPrefill";
@@ -43,6 +43,9 @@ import { formatPrice } from "./tradingPresentation";
 import { MissionPriceChart } from "./MissionPriceChart";
 import { describeControlFailure } from "./useMissionControls";
 import { analystMarketPrompt, useAskAnalyst } from "./useTradingThreadLaunch";
+import { ResearchScenePanel } from "./ResearchScenePanel";
+import { nextGraphViewMode } from "./researchScenePresentation.ts";
+import { useTradingResearchScenes } from "../../lib/tradingResearchScenesState";
 
 /** The intervals offered, in axis order — the archive's own set. */
 const INTERVALS: ReadonlyArray<ChartInterval> = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"];
@@ -76,7 +79,15 @@ export function MarketChartPanel({
   threadRef?: ScopedThreadRef | undefined;
 }) {
   const [interval, setChartInterval] = useState<ChartInterval>("5m");
+  const [view, setView] = useState<"live" | "calendar" | "aligned">("live");
   const chart = useTradingMarketChart(environmentId, asset, interval, { enabled: true });
+  // Research scenes belong to the conversation: only a chart docked in a
+  // thread reads them, and the trade home's chart stays live-first with no
+  // research modes at all. Loading follows the dock, not the current view —
+  // every research view of the same scenes reads the same cache.
+  const scenes = useTradingResearchScenes(environmentId, threadRef?.threadId ?? null, {
+    enabled: threadRef !== undefined,
+  });
   const arm = useAtomCommand(orchestrationEnvironment.armTradingWatch);
   const [armStatus, setArmStatus] = useState<ArmStatus | null>(null);
   const [isArming, setIsArming] = useState(false);
@@ -130,9 +141,63 @@ export function MarketChartPanel({
     });
   };
 
+  const hasScenes = (scenes.scenes?.length ?? 0) > 0;
+  // Live is the default and stays first. A published study adds Calendar and
+  // Event aligned beside it, one click away, only in a thread, and returning
+  // to Live never clears the artifact behind them.
+  const showLive = view === "live" || !hasScenes;
+  // A scene arriving while Live is showing selects the useful first view
+  // once; the user's own Live choice afterwards is sticky.
+  const scenesCountRef = useRef(hasScenes);
+  useEffect(() => {
+    setView((current) =>
+      nextGraphViewMode({ current, hasScenes, previouslyHadScenes: scenesCountRef.current }),
+    );
+    scenesCountRef.current = hasScenes;
+  }, [hasScenes]);
+
   return (
     <div className="flex flex-col gap-1">
-      {data !== null && data.candles.length >= 2 ? (
+      {hasScenes ? (
+        <div
+          className="flex items-center gap-1 px-1 text-[10.5px]"
+          role="group"
+          aria-label="Chart view"
+        >
+          {(["live", "calendar", "aligned"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              data-testid={`market-chart-view-${option}`}
+              className={cn(
+                "cursor-pointer rounded px-2 py-0.5 transition-colors",
+                (option === "live" ? showLive : view === option)
+                  ? "bg-accent font-medium text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setView(option)}
+            >
+              {option === "live" ? "Live" : option === "calendar" ? "Calendar" : "Event aligned"}
+            </button>
+          ))}
+          <span className="text-muted-foreground/70">
+            {scenes.scenes?.length === 1
+              ? "1 published scene"
+              : `${scenes.scenes?.length ?? 0} published scenes`}
+          </span>
+        </div>
+      ) : null}
+      {!showLive ? (
+        <ResearchScenePanel
+          environmentId={environmentId}
+          scenes={scenes.scenes ?? []}
+          loading={scenes.isLoading}
+          error={scenes.error}
+          mode={view === "aligned" ? "aligned" : "calendar"}
+          onModeChange={(next) => setView(next)}
+          prefill={prefill}
+        />
+      ) : data !== null && data.candles.length >= 2 ? (
         <MissionPriceChart
           candles={data.candles}
           entryPrice={null}
@@ -173,7 +238,7 @@ export function MarketChartPanel({
             : `Not enough ${interval} bars recorded for ${asset} yet.`}
         </div>
       )}
-      <ThesisChartBadgeLine thesis={thesis} prefill={prefill} />
+      <ThesisChartBadgeLine thesis={thesis} prefill={showLive ? prefill : null} />
       <div className="flex items-center gap-2 px-1">
         <div
           className="flex overflow-hidden rounded-md border border-border/60 font-mono text-[10.5px] leading-none"

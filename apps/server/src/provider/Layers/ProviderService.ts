@@ -24,6 +24,7 @@ import {
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
@@ -332,6 +333,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         provider: session.provider,
         providerInstanceId,
         runtimeMode: session.runtimeMode,
+        // The runtime binding is complete by construction: a session that
+        // predates workspace modes carries the default, never an absence.
+        workspaceMode: session.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
         status: toRuntimeStatus(session),
         ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
         runtimePayload: toRuntimePayloadFromSession(session, extra),
@@ -464,6 +468,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
+          workspaceMode: input.binding.workspaceMode,
         })
         .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
       if (resumed.provider !== adapter.provider) {
@@ -1040,6 +1045,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const overrides: {
           resumeCursor?: ProviderSession["resumeCursor"];
           runtimeMode?: ProviderSession["runtimeMode"];
+          workspaceMode?: ProviderSession["workspaceMode"];
           providerInstanceId?: ProviderSession["providerInstanceId"];
         } = {};
         overrides.providerInstanceId = dieOnMissingBindingInstanceId(
@@ -1065,6 +1071,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         if (binding.runtimeMode !== undefined) {
           overrides.runtimeMode = binding.runtimeMode;
+        }
+        if (binding.workspaceMode !== undefined) {
+          overrides.workspaceMode = binding.workspaceMode;
         }
         sessions.push(Object.assign({}, session, overrides));
       }

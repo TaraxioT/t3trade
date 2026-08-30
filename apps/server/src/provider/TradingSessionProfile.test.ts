@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as NodeFSP from "node:fs/promises";
 
@@ -59,6 +59,8 @@ it("gives the analyst the reads and alert watches, and none of the acting tools"
       "trading_hypothesis",
       // The external calendar: research tables, no execution path.
       "trading_events",
+      // Research presentation only: one scene table, no execution path.
+      "trading_chart",
     ].sort(),
   );
   // …and the acting tools are exactly what it lacks.
@@ -117,6 +119,7 @@ it("gives an observe mission every research tool and no way to act", () => {
       "trading_validate",
       "trading_hypothesis",
       "trading_events",
+      "trading_chart",
     ].sort(),
   );
   // The three execution tools are exactly what it lacks, and this is the
@@ -375,4 +378,35 @@ it("sends the contract once per session instance, and only once it has arrived",
   expect(applyTradingTurnContract(tradingThread, wakeup).text).toContain("blocked_by_data");
 
   clearAllSessionProfiles();
+});
+
+describe("workspace research orchestration doctrine (task 3)", () => {
+  const contract = WORKSPACE_CHAT_PREFIX;
+
+  it("teaches the loop: restate, split facts from measurement, read dates back, narrate, labelled defaults", () => {
+    expect(contract).toContain("RESTATE THE CLAIM FIRST");
+    expect(contract).toContain("correlation a study can measure");
+    expect(contract).toContain("SPLIT WHAT YOU LOOKED UP FROM WHAT YOU MEASURED");
+    expect(contract).toContain("READ THE DATES BACK BEFORE RECORDING THEM");
+    expect(contract).toContain("NARRATE THE RESULT, NOT THE TOOL CALL");
+    expect(contract).toContain("USE A LABELLED DEFAULT INSTEAD OF ASKING");
+  });
+
+  it("keeps the intent boundaries byte-honest: no plan, no validation, no execution without an explicit ask", () => {
+    expect(contract).toContain(
+      "DO NOT PUBLISH A PLAN OR ARM AN EXECUTION WAKE FOR AN IDEA THE USER HAS NOT ASKED TO TRADE",
+    );
+    expect(contract).toContain("arm it only if the user agrees");
+  });
+
+  it("never teaches profit language", () => {
+    for (const forbidden of ["you would have made", "predicts the next", "guaranteed profit"]) {
+      expect(contract).not.toContain(forbidden);
+    }
+  });
+
+  it("publishes to the graph and says what is visible", () => {
+    expect(contract).toContain("SHOW IT ON THE GRAPH");
+    expect(contract).toContain("Historical research. No order placed. Not a forecast.");
+  });
 });

@@ -88,6 +88,7 @@ import {
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
+import { TradingResearchSceneService } from "./trading/TradingResearchSceneService.ts";
 import { isChartReadEntitled } from "./trading/chartReadEntitlement.ts";
 import { TradingMissionService } from "./trading/TradingMissionService.ts";
 import { TradingManualEntryService } from "./trading/TradingManualEntryService.ts";
@@ -102,6 +103,7 @@ import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
 import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { marketRef } from "@t3tools/trading-contracts/primitives";
 import { describeThesis } from "@t3tools/trading-contracts/thesis";
+import { STUDY_CHART_MAX_WINDOW_BARS } from "@t3tools/trading-contracts/researchScenes";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts";
@@ -1165,6 +1167,7 @@ const makeWsRpcLayer = (
                 title: bootstrap.createThread.title,
                 modelSelection: bootstrap.createThread.modelSelection,
                 runtimeMode: bootstrap.createThread.runtimeMode,
+                workspaceMode: bootstrap.createThread.workspaceMode,
                 interactionMode: bootstrap.createThread.interactionMode,
                 branch: bootstrap.createThread.branch,
                 worktreePath: bootstrap.createThread.worktreePath,
@@ -1658,6 +1661,8 @@ const makeWsRpcLayer = (
                 missions,
                 updatedAt: missions[0]?.updatedAt ?? EPOCH_ISO,
                 archive: {
+                  status: archive.status,
+                  externalWriter: archive.externalWriter,
                   running: archive.running,
                   lastHeartbeat: archive.lastHeartbeat,
                   lastHeartbeatAt:
@@ -1734,6 +1739,8 @@ const makeWsRpcLayer = (
                 updatedAt: assembled.updatedAt,
                 signerArmed,
                 archive: {
+                  status: archive.status,
+                  externalWriter: archive.externalWriter,
                   running: archive.running,
                   lastHeartbeat: archive.lastHeartbeat,
                   lastHeartbeatAt:
@@ -2152,6 +2159,20 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getTradingResearchScenes]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingResearchScenes,
+            Effect.gen(function* () {
+              // Research mode through and through: scenes are research
+              // output, the read needs no signer and no mission, and the only
+              // scope worth checking is the thread's own — a scene list never
+              // crosses conversations, so neither does this read.
+              const scenes = yield* TradingResearchSceneService;
+              const rows = yield* scenes.list(input.threadId).pipe(Effect.orDie);
+              return { scenes: [...rows] };
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.getTradingMarketChart]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTradingMarketChart,
@@ -2180,7 +2201,11 @@ const makeWsRpcLayer = (
               // runs for every entitled read — missionless ones included.
               yield* followSetRegistry.noteChartOpened(marketRef(input.market));
               // The client may ask for a wider window; the server owns the cap.
-              const maxBars = Math.min(input.maxBars ?? 120, 360);
+              // The cap must clear a study-derived window: a scene recipe may
+              // declare up to EVENT_STUDY_MAX_HORIZON_BARS plus context bars,
+              // and a clamp below that silently truncates the window's OLDEST
+              // bars — which are the entry the study measured from.
+              const maxBars = Math.min(input.maxBars ?? 120, STUDY_CHART_MAX_WINDOW_BARS);
               const chart = yield* tradingMarketChart.read({
                 market: input.market,
                 interval: input.interval,

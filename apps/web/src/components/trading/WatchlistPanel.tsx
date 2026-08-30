@@ -29,7 +29,7 @@ import {
 } from "./UniverseAssetSearch";
 import { formatPrice } from "./tradingPresentation";
 import { describeControlFailure } from "./useMissionControls";
-import { useMarketThreadLauncher } from "./useTradingThreadLaunch";
+import { useChatLauncher, useMarketThreadLauncher } from "./useTradingThreadLaunch";
 
 export function WatchlistPanel({
   environmentId,
@@ -50,6 +50,7 @@ export function WatchlistPanel({
   const listed = useMemo(() => new Set(entries.map((entry) => entry.market.asset)), [entries]);
 
   const launcher = useMarketThreadLauncher(environmentId);
+  const chat = useChatLauncher(environmentId);
   const add = useAtomCommand(orchestrationEnvironment.addTradingWatchlistEntry);
   const remove = useAtomCommand(orchestrationEnvironment.removeTradingWatchlistEntry);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -94,11 +95,33 @@ export function WatchlistPanel({
       {error !== null ? (
         <p className="px-1 text-sm text-destructive">{error}</p>
       ) : entries.length === 0 ? (
-        <p className="px-1 py-3 text-sm text-muted-foreground">
-          {isLoading
-            ? "Loading watchlist…"
-            : "Nothing here yet. Add a market to start watching and recording it."}
-        </p>
+        // One plain sentence and one optional prefill, never a workflow the
+        // user has to infer: watching a market is a thing you can also just
+        // say to the agent, and the direct add row above stays for the times
+        // a button is genuinely faster.
+        <div className="flex flex-col gap-2 px-1 py-3">
+          <p className="text-sm text-muted-foreground">
+            {isLoading
+              ? "Loading watchlist…"
+              : "Nothing watched yet. Adding a market here starts recording it, or just ask the agent to watch one and alert you."}
+          </p>
+          {isLoading ? null : (
+            <div>
+              <button
+                type="button"
+                className="rounded border border-border/60 px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                disabled={chat.busy}
+                onClick={() => void chat.open()}
+                data-testid="watchlist-ask-agent"
+              >
+                {chat.busy ? "Opening chat…" : "Ask the agent"}
+              </button>
+              {chat.error === null ? null : (
+                <span className="ml-2 text-xs text-destructive">{chat.error}</span>
+              )}
+            </div>
+          )}
+        </div>
       ) : (
         <ul className="min-h-0 divide-y divide-border/50 overflow-y-auto">
           {entries.map((entry) => {

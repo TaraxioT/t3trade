@@ -16,7 +16,7 @@ import type {
   RelayAgentActivityPublishProofPayload,
   RelayAgentActivityState,
 } from "@t3tools/contracts/relay";
-import { CommandId, ProviderInstanceId } from "@t3tools/contracts";
+import { CommandId, ProviderInstanceId, DEFAULT_WORKSPACE_MODE } from "@t3tools/contracts";
 import { RelayAuthInvalidError } from "@t3tools/contracts/relay";
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import { RELAY_ACTIVITY_PUBLISH_TYP, verifyRelayJwt } from "@t3tools/shared/relayJwt";
@@ -300,6 +300,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       title: "Run remote agent",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       interactionMode: "default",
       branch: null,
       worktreePath: null,
@@ -441,6 +442,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           title: "Run remote agent",
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           interactionMode: "default",
           branch: null,
           worktreePath: null,
@@ -462,6 +464,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
             status: "running",
             providerName: "Codex",
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: "turn-1" as TurnId,
             lastError: null,
             updatedAt: now,
@@ -601,6 +604,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           title: "Run remote agent",
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           interactionMode: "default",
           branch: null,
           worktreePath: null,
@@ -622,6 +626,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
             status: "running",
             providerName: "Codex",
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: "turn-1" as TurnId,
             lastError: null,
             updatedAt: now,

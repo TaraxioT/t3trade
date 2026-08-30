@@ -1,4 +1,4 @@
-import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import { ProviderInteractionMode, RuntimeMode, WorkspaceMode } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -14,10 +14,12 @@ import {
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  workspaceMode: WorkspaceMode;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
+  onWorkspaceModeChange: (mode: WorkspaceMode) => void;
 }) {
   return (
     <Menu>
@@ -56,6 +58,17 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
+        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Workspace</div>
+        <MenuRadioGroup
+          value={props.workspaceMode}
+          onValueChange={(value) => {
+            if (!value || value === props.workspaceMode) return;
+            props.onWorkspaceModeChange(value as WorkspaceMode);
+          }}
+        >
+          <MenuRadioItem value="market_research">Market research</MenuRadioItem>
+          <MenuRadioItem value="coding">Coding task</MenuRadioItem>
+        </MenuRadioGroup>
         <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
         <MenuRadioGroup
           value={props.runtimeMode}

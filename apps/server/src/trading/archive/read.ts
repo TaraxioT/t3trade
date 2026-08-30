@@ -70,6 +70,52 @@ export function latestCandle(
   return row === undefined ? null : toCandle(row);
 }
 
+/** How many bars `[fromT, toT]` holds for a series: the hydration outcome's before/after evidence. */
+export function countCandlesInRange(
+  db: ArchiveDatabase,
+  coin: string,
+  interval: string,
+  fromT: number,
+  toT: number,
+  venue: string = ARCHIVE_VENUE,
+): number {
+  const row = db.all<{ readonly n: number }>(
+    "SELECT COUNT(*) AS n FROM candles " +
+      "WHERE venue = ? AND coin = ? AND interval = ? AND t >= ? AND t <= ?",
+    venue,
+    coin,
+    interval,
+    fromT,
+    toT,
+  )[0];
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * The open times stored for a series inside `[fromT, toT]`, oldest first —
+ * what the pure coverage assessment needs to name exactly which expected
+ * grid bars are missing, rather than inferring it from a count.
+ */
+export function candleOpensInRange(
+  db: ArchiveDatabase,
+  coin: string,
+  interval: string,
+  fromT: number,
+  toT: number,
+  venue: string = ARCHIVE_VENUE,
+): ReadonlyArray<number> {
+  return db
+    .all<{ readonly t: number }>(
+      "SELECT t FROM candles WHERE venue = ? AND coin = ? AND interval = ? AND t >= ? AND t <= ? ORDER BY t ASC",
+      venue,
+      coin,
+      interval,
+      fromT,
+      toT,
+    )
+    .map((row) => row.t);
+}
+
 /** Bars whose open time falls in `[fromT, toT]`, oldest first. */
 export function candlesInRange(
   db: ArchiveDatabase,

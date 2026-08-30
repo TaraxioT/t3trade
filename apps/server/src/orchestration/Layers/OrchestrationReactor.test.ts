@@ -22,13 +22,15 @@ import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 
 /** A supervisor that has never spawned anything — the fake's whole state. */
 const IDLE_ARCHIVE_HEALTH = {
+  status: "stopped" as const,
+  externalWriter: null,
   running: false,
   pid: null,
   lastHeartbeatAt: null,
   lastHeartbeat: null,
   restarts: 0,
   stoppedReason: "test",
-} as const;
+};
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;

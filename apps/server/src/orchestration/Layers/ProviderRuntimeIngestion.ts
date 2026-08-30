@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  DEFAULT_WORKSPACE_MODE,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
@@ -1653,6 +1654,9 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              // Runtime events rebuild the session row; without carrying
+              // the mode they would reset a coding session to the fence.
+              workspaceMode: thread.session?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
@@ -1903,6 +1907,9 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              // Runtime events rebuild the session row; without carrying
+              // the mode they would reset a coding session to the fence.
+              workspaceMode: thread.session?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
               updatedAt: now,

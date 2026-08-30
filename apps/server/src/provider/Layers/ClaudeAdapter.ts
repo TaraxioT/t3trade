@@ -82,6 +82,8 @@ import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as SessionProfile from "../SessionProfile.ts";
 import * as TradingSessionProfile from "../TradingSessionProfile.ts";
+import { workspaceWriteBoundary } from "../WorkspaceBoundary.ts";
+import { prepareResearchScratch } from "../ResearchScratch.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
@@ -1263,6 +1265,20 @@ const CLAUDE_SETTING_SOURCES = [
   "project",
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
+
+/**
+ * The built-in tools a fenced (market_research) session keeps: Read (so
+ * pasted attachments still render), WebSearch and WebFetch (the research the
+ * conversation is for). Deliberately nothing else: no Bash, no Edit, no
+ * Write, no Grep or Glob wandering the repository, no Task subagents. Every
+ * tool that can change state is absent, and so is every tool that executes,
+ * because this runtime has no sandbox to bound an executor with — a provider
+ * that cannot bound code execution gets no code execution.
+ *
+ * Exported so the cross-provider boundary tests can assert the list contains
+ * no write or execute tool, which is the contract the fence rests on.
+ */
+export const CLAUDE_MARKET_TOOLS = ["Read", "WebSearch", "WebFetch"] as const;
 
 /**
  * The trading system prompt is provider-neutral and lives in
@@ -4335,16 +4351,56 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // branches — it is the only thing a trading thread has.
       const tradingProfileKind = SessionProfile.readSessionProfile(input.threadId)?.kind;
       const tradingProfile = tradingProfileKind !== undefined;
+      // The repository-mutation boundary for an ordinary thread: market work
+      // is fenced (read-only repo access plus web search, no shell, no
+      // editing, no subagents), and only an explicit `software` workspace
+      // mode restores the full coding surface. Enforced here by the same
+      // `tools` allowlist mechanism the trading lock uses, not by prose.
+      const workspaceBoundary = workspaceWriteBoundary({
+        threadId: input.threadId,
+        workspaceMode: input.workspaceMode,
+      });
+      const marketSession = !tradingProfile && workspaceBoundary.kind === "fenced";
+      // A market_research session runs nowhere in particular: its cwd is the
+      // bounded research scratch directory (outside the repository and
+      // outside live state), so its default context is the conversation, not
+      // the source tree. When the scratch directory cannot be prepared the
+      // session is refused — running at the repository cwd instead would be
+      // the writable coding session the fence exists to prevent.
+      const scratchCwd = marketSession
+        ? yield* prepareResearchScratch({ threadId: input.threadId }).pipe(
+            Effect.mapError(
+              (error) =>
+                new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "startSession",
+                  issue: error.detail,
+                }),
+            ),
+          )
+        : null;
       // The attachments dir grant lets the agent Read/copy pasted images at
       // the paths ProviderService injects into the turn text, without an
       // approval prompt. It is a leaf directory holding only attachment
       // files; siblings like secrets/ and state.sqlite stay ungranted. A
       // trading thread grants nothing: it has no cwd and no attachments.
+      // A market session keeps only the attachments grant: its Read tool is
+      // for the conversation's own images, and the repository needs no grant
+      // from a session that cannot write to it and has no business browsing
+      // it either.
       const additionalDirectories = tradingProfile
         ? []
-        : [...(input.cwd ? [input.cwd] : []), serverConfig.attachmentsDir];
+        : marketSession
+          ? [serverConfig.attachmentsDir]
+          : [...(input.cwd ? [input.cwd] : []), serverConfig.attachmentsDir];
       const queryOptions: ClaudeQueryOptions = {
-        ...(tradingProfile ? {} : input.cwd ? { cwd: input.cwd } : {}),
+        ...(tradingProfile
+          ? {}
+          : marketSession && scratchCwd !== null
+            ? { cwd: scratchCwd }
+            : input.cwd
+              ? { cwd: input.cwd }
+              : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
         ...(tradingProfile
@@ -4367,7 +4423,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 append: TradingSessionProfile.WORKSPACE_TRADING_PREAMBLE,
               },
             }),
-        settingSources: tradingProfile ? [] : [...CLAUDE_SETTING_SOURCES],
+        // Trading threads drop the filesystem setting sources entirely; a
+        // market session drops them too, because a repo's settings can
+        // declare hooks that execute commands, and a hook is a write path no
+        // tool allowlist covers. Only a `software` session trusts them.
+        settingSources: tradingProfile || marketSession ? [] : [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
         ...(effectiveEffort
@@ -4393,6 +4453,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // tools that remain (the MCP ones). `strictMcpConfig` makes the SDK
         // fail closed if the t3-trade server misconfigures rather than
         // silently dropping tools the lock depends on.
+        //
+        // Market lock: the same mechanism, one notch looser. A market
+        // conversation keeps the read-only built-ins and the provider's web
+        // search (research needs both) and loses every tool that can change
+        // anything: Bash, Edit, Write, NotebookEdit, and the Task/subagent
+        // tool. `allowedTools` auto-approves the t3-trade set, which is the
+        // only mutating surface left and mutates trading state, never files.
         ...(tradingProfile
           ? {
               tools: [] as string[],
@@ -4407,7 +4474,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                     : [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
               strictMcpConfig: true,
             }
-          : {}),
+          : marketSession
+            ? {
+                tools: [...CLAUDE_MARKET_TOOLS],
+                allowedTools: [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
+                strictMcpConfig: true,
+              }
+            : {}),
         ...(mcpSession
           ? {
               mcpServers: {
@@ -4442,7 +4515,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.session_id": newSessionId ?? "",
         "claude.query.include_partial_messages": true,
         "claude.query.additional_directories": additionalDirectories,
-        "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
+        "claude.query.setting_sources":
+          tradingProfile || marketSession ? [] : [...CLAUDE_SETTING_SOURCES],
+        "claude.query.workspace_boundary": workspaceBoundary.kind,
         "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
         "claude.query.extra_args_json": encodeJsonStringForDiagnostics(extraArgs) ?? "",
         "claude.query.path_to_executable": claudeBinaryPath,
@@ -4469,6 +4544,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerInstanceId: boundInstanceId,
         status: "ready",
         runtimeMode: input.runtimeMode,
+        ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(modelSelection?.model ? { model: modelSelection.model } : {}),
         ...(threadId ? { threadId } : {}),

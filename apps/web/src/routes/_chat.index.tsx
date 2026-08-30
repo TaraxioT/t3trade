@@ -24,13 +24,13 @@ function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
   const { environments } = useEnvironments();
 
-  // T3 Trade mount point (final-form Phase 4): the app opens onto the trading
-  // home unless the Settings → Trading toggle turned it off. Gated on
-  // hydration so a persisted opt-out is honoured — the pre-hydration snapshot
-  // is the schema default (on), and starting the draft landing first would
-  // spend a draft thread on a screen about to be replaced.
+  // T3 Trade mount point: chat is the landing surface, and an explicit
+  // Trade-home choice (Settings → Trading) sends the app to the operations
+  // console instead. Gated on hydration so a persisted choice is honoured —
+  // starting the draft landing before hydration could spend a draft thread on
+  // a screen about to be replaced by /trade.
   const settingsHydrated = useClientSettingsHydrated();
-  const openOnTradeHome = useClientSettings((settings) => settings.openOnTradeHome);
+  const landingSurface = useClientSettings((settings) => settings.landingSurface);
 
   if (authGateState.status === "hosted-static" && environments.length === 0) {
     return <HostedStaticOnboardingState />;
@@ -39,7 +39,7 @@ function ChatIndexRouteView() {
   if (!settingsHydrated) {
     return null;
   }
-  if (openOnTradeHome) {
+  if (landingSurface === "trade") {
     return <Navigate to="/trade" replace />;
   }
 

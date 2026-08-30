@@ -14,18 +14,13 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * How long a heartbeat may be quiet before "recording" stops being an honest
- * word for it. The archiver heartbeats every poll loop (seconds apart), so two
- * minutes of silence is a stall, not jitter.
- */
-export const ARCHIVE_HEARTBEAT_STALE_MILLIS = 2 * 60_000;
-
-/**
- * The archiver-health one-liner — the Phase 2.4 surface.
+ * The archiver-health one-liner, rendered from the server's own typed status.
  *
- * Null while the archiver is demonstrably fine (running, heartbeat fresh):
- * the healthy state is the absence of the line, following the staleness
- * banner's rule that a banner on a cycle teaches people to ignore banners.
+ * `owned-writer` is the only silent state, on the same doctrine as ever: a
+ * banner on a healthy cycle teaches people to ignore banners. Every other
+ * state says what it is in one plain line, because the reader's next action
+ * differs by state (wait, restart, or distrust derived numbers) and a status
+ * the reader has to infer is a status they will infer wrong.
  */
 export function describeArchiveHealth(
   archive: TradingArchiveHealth | undefined,
@@ -36,21 +31,47 @@ export function describeArchiveHealth(
     // a guess; saying nothing is the only honest line.
     return null;
   }
-  if (!archive.running) {
-    const reason = archive.stoppedReason === null ? "" : ` — ${archive.stoppedReason}`;
-    return `Market recording is stopped${reason}. Charts and derived metrics will refuse rather than serve stale data.`;
-  }
-  if (archive.lastHeartbeatAt !== null) {
-    const quietMillis = nowMillis - Date.parse(archive.lastHeartbeatAt);
-    if (quietMillis > ARCHIVE_HEARTBEAT_STALE_MILLIS) {
-      const minutes = Math.max(1, Math.round(quietMillis / 60_000));
-      return `Market recording has not heartbeat for ${minutes} min.`;
+  const reason = archive.stoppedReason === null ? "" : ` — ${archive.stoppedReason}`;
+  switch (archive.status) {
+    case undefined:
+      // An older server that does not report the typed status. Saying
+      // anything would be a guess; saying nothing is the only honest line.
+      return null;
+    case "owned-writer":
+      // The healthy state is the absence of the line: a banner on a healthy
+      // cycle teaches people to ignore banners.
+      return null;
+    case "healthy-external-writer": {
+      // Never "recording stopped": another T3 Trade process is recording
+      // this archive right now, and this server reads it safely (read-only
+      // snapshots of a WAL database the live writer keeps coherent).
+      const who = !archive.externalWriter ? "" : ` (pid ${archive.externalWriter.pid})`;
+      return (
+        `Recorded by another T3 Trade process${who}. Charts and studies read its archive.` +
+        " If this is unexpected in development, two servers share one state directory: return to the already-running environment, or restart this one with isolated state."
+      );
     }
+    case "restarting":
+      return `Market recording is restarting${archive.restarts > 0 ? ` (restart ${archive.restarts} since boot)` : ""}.`;
+    case "stopped":
+      // Fresh bars stop arriving; the recorded history stays readable with
+      // its own coverage and gap labels. The old line claimed reads would
+      // refuse, which was never what the reads did.
+      return `Market recording is stopped${reason}. New bars are not being collected; recorded history stays readable with its coverage shown.`;
+    case "stale": {
+      const minutes =
+        archive.lastHeartbeatAt === null
+          ? null
+          : Math.max(1, Math.round((nowMillis - Date.parse(archive.lastHeartbeatAt)) / 60_000));
+      return minutes === null
+        ? "Market recording claims to run but has not had a heartbeat. Treat derived numbers as stale."
+        : `Market recording has not had a heartbeat for ${minutes} min. Treat derived numbers as stale.`;
+    }
+    case "unavailable":
+      // The server could not verify who owns the writer lease; its reads
+      // are refusing, and the line says that rather than guessing a cause.
+      return "Recording ownership cannot be verified, so charts and studies are refusing rather than guessing. Restarting this environment after closing any other T3 Trade instance on this machine resolves it.";
   }
-  if (archive.restarts > 0) {
-    return `Market recording is running (restarted ${archive.restarts}× since boot).`;
-  }
-  return null;
 }
 
 /**

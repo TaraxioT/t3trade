@@ -9,6 +9,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -62,6 +63,7 @@ const BASE_THREAD: OrchestrationThread = {
     model: "gpt-5.4",
   },
   runtimeMode: "full-access",
+  workspaceMode: DEFAULT_WORKSPACE_MODE,
   interactionMode: "default",
   branch: "main",
   worktreePath: null,
@@ -93,6 +95,7 @@ const ACTIVE_THREAD: OrchestrationThread = {
     status: "running",
     providerName: "codex",
     runtimeMode: "full-access",
+    workspaceMode: DEFAULT_WORKSPACE_MODE,
     activeTurnId: TurnId.make("turn-1"),
     lastError: null,
     updatedAt: "2026-04-01T00:01:00.000Z",

@@ -29,6 +29,7 @@ import {
   TradingHypothesisResult,
 } from "@t3tools/trading-contracts/hypothesis";
 import { TradingEventsInput, TradingEventsResult } from "@t3tools/trading-contracts/eventSets";
+import { TradingChartInput, TradingChartResult } from "@t3tools/trading-contracts/researchScenes";
 import { TradingEnterInput } from "@t3tools/trading-contracts/entry";
 import { TradingExitInput } from "@t3tools/trading-contracts/exit";
 import { Playbook } from "@t3tools/trading-contracts/playbook";
@@ -64,6 +65,7 @@ import { TradingBacktestService } from "../../../trading/TradingBacktestService.
 import { TradingThesisValidationService } from "../../../trading/TradingThesisValidationService.ts";
 import { TradingHypothesisService } from "../../../trading/TradingHypothesisService.ts";
 import { TradingEventService } from "../../../trading/TradingEventService.ts";
+import { TradingResearchSceneService } from "../../../trading/TradingResearchSceneService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -133,6 +135,8 @@ const dependencies = [
   // `trading_validate`, and by `alert_when_setup` for future dates. SQL and
   // Crypto, the same claim.
   TradingEventService,
+  // `trading_chart` publishes scenes through the research scene service.
+  TradingResearchSceneService,
   SqlClient.SqlClient,
 ];
 
@@ -320,6 +324,26 @@ export const TradingEventsTool = Tool.make("trading_events", {
   // The archive keeps growing, so the same study read twice differs.
   .annotate(Tool.OpenWorld, true);
 
+export const TradingChartTool = Tool.make("trading_chart", {
+  description:
+    "Puts research on this chat's graph. publish_event_study {eventSetId, market, interval?, horizonBars?} measures the archive and publishes entry and exit, signed returns, coverage, gaps, baseline, and sources. publish_strategy_replay {thesis | hypothesisId} pins one cost-aware backtest's trades and verdict. annotate {market, at, text} pins an authored, labelled note. show, list, clear. Research only: no order, no validation, and every scene says so. Menu: trading_chart({})",
+  parameters: TradingChartInput,
+  success: TradingChartResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Chart")
+  // Publishing writes a scene row; show, list and clear read or remove. The
+  // annotation describes the tool, so it takes the writing half.
+  .annotate(Tool.Readonly, false)
+  // One research table and nothing else. No surface that reports real money
+  // reads it, and nothing here can reach an order or an exchange.
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  // The archive keeps growing, so a scene recomputed tomorrow can differ
+  // from today's; the published scene itself is the durable snapshot.
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
@@ -332,4 +356,5 @@ export const TradingToolkit = Toolkit.make(
   TradingValidateTool,
   TradingHypothesisTool,
   TradingEventsTool,
+  TradingChartTool,
 );

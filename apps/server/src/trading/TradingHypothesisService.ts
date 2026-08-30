@@ -106,6 +106,13 @@ export interface TradingHypothesisServiceShape {
     readonly threadId: string;
     readonly author: HypothesisAuthor;
     readonly now: number;
+    /**
+     * The active event-set ids, when the caller can read them. A new thesis is
+     * exactly where a retired or unknown set must refuse, so the handler
+     * resolves the calendar and passes it in rather than this service taking a
+     * second dependency.
+     */
+    readonly knownEventSets?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<HypothesisWriteResult, PersistenceSqlError>;
 
   /**
@@ -119,6 +126,8 @@ export interface TradingHypothesisServiceShape {
     readonly note: string;
     readonly author: HypothesisAuthor;
     readonly now: number;
+    /** Same rule as `create`: a revision is a new thesis and refuses dead sets. */
+    readonly knownEventSets?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<HypothesisWriteResult, PersistenceSqlError>;
 
   /** Newest first. A `threadId` scopes to one conversation's ideas. */
@@ -364,7 +373,10 @@ export const makeTradingHypothesisService = Effect.gen(function* () {
       const title = readText(input.title, "title", HYPOTHESIS_TITLE_MAX_CHARS);
       if ("reason" in title) return { outcome: "refused", reason: title.reason } as const;
 
-      const invalid = validateThesis(input.thesis);
+      const invalid = validateThesis(
+        input.thesis,
+        input.knownEventSets === undefined ? {} : { knownEventSets: input.knownEventSets },
+      );
       if (invalid !== null) return { outcome: "refused", reason: invalid } as const;
 
       const id = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -394,7 +406,10 @@ export const makeTradingHypothesisService = Effect.gen(function* () {
       const note = readText(input.note, "note", HYPOTHESIS_NOTE_MAX_CHARS);
       if ("reason" in note) return { outcome: "refused", reason: note.reason } as const;
 
-      const invalid = validateThesis(input.thesis);
+      const invalid = validateThesis(
+        input.thesis,
+        input.knownEventSets === undefined ? {} : { knownEventSets: input.knownEventSets },
+      );
       if (invalid !== null) return { outcome: "refused", reason: invalid } as const;
 
       const row = yield* rowFor(input.hypothesisId);

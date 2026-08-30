@@ -3,7 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TradingAccountPosition, TradingAlertEvent } from "@t3tools/contracts";
 
 import {
-  ARCHIVE_HEARTBEAT_STALE_MILLIS,
   alertNotificationText,
   describeArchiveHealth,
   describeProtection,
@@ -15,6 +14,8 @@ import {
 const NOW = Date.parse("2026-08-27T12:00:00.000Z");
 
 const runningArchive = {
+  status: "owned-writer" as const,
+  externalWriter: null,
   running: true,
   lastHeartbeat: "heartbeat",
   lastHeartbeatAt: new Date(NOW - 5_000).toISOString(),
@@ -23,7 +24,7 @@ const runningArchive = {
 };
 
 describe("describeArchiveHealth", () => {
-  it("is silent while running with a fresh heartbeat", () => {
+  it("is silent for an owned writer with a fresh heartbeat", () => {
     expect(describeArchiveHealth(runningArchive, NOW)).toBeNull();
   });
 
@@ -31,28 +32,66 @@ describe("describeArchiveHealth", () => {
     expect(describeArchiveHealth(undefined, NOW)).toBeNull();
   });
 
+  it("is silent when the server reports no status (an older server)", () => {
+    const { status: _status, ...withoutStatus } = runningArchive;
+    expect(describeArchiveHealth(withoutStatus, NOW)).toBeNull();
+  });
+
+  it("says a healthy external writer records the archive, never that recording stopped", () => {
+    const message = describeArchiveHealth(
+      {
+        ...runningArchive,
+        status: "healthy-external-writer",
+        running: false,
+        externalWriter: { pid: 4242, host: "mac-studio" },
+        stoppedReason: "pid 4242 on mac-studio is writing the archive",
+      },
+      NOW,
+    );
+    expect(message).toContain("Recorded by another T3 Trade process");
+    expect(message).toContain("4242");
+    expect(message).toContain("isolated state");
+    expect(message).not.toContain("stopped");
+  });
+
   it("names the stop reason when stopped", () => {
     const message = describeArchiveHealth(
-      { ...runningArchive, running: false, stoppedReason: "spawn failed" },
+      { ...runningArchive, status: "stopped", running: false, stoppedReason: "spawn failed" },
       NOW,
     );
     expect(message).toContain("stopped");
     expect(message).toContain("spawn failed");
   });
 
-  it("reports a quiet heartbeat past the stale bound", () => {
+  it("says ownership cannot be verified rather than guessing a cause", () => {
+    const message = describeArchiveHealth(
+      { ...runningArchive, status: "unavailable", running: false, stoppedReason: null },
+      NOW,
+    );
+    expect(message).toContain("cannot be verified");
+    expect(message).toContain("refusing");
+  });
+
+  it("reports a quiet heartbeat when the writer is stale", () => {
     const message = describeArchiveHealth(
       {
         ...runningArchive,
-        lastHeartbeatAt: new Date(NOW - ARCHIVE_HEARTBEAT_STALE_MILLIS - 60_000).toISOString(),
+        status: "stale",
+        lastHeartbeatAt: new Date(NOW - 5 * 60_000).toISOString(),
       },
       NOW,
     );
-    expect(message).toContain("not heartbeat");
+    expect(message).toContain("has not had a heartbeat");
+    expect(message).toContain("5 min");
   });
 
-  it("mentions a crash loop even while running", () => {
-    expect(describeArchiveHealth({ ...runningArchive, restarts: 3 }, NOW)).toContain("3×");
+  it("counts restarts while the supervisor is between runs", () => {
+    expect(
+      describeArchiveHealth(
+        { ...runningArchive, status: "restarting", running: false, restarts: 3 },
+        NOW,
+      ),
+    ).toContain("restart 3");
   });
 });
 

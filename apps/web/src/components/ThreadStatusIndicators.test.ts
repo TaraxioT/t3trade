@@ -1,6 +1,12 @@
 import { effectiveSettled } from "@t3tools/client-runtime/state/thread-settled";
 import type { OrchestrationThreadShell } from "@t3tools/contracts";
-import { ProjectId, ProviderInstanceId, ThreadId, type VcsStatusResult } from "@t3tools/contracts";
+import {
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type VcsStatusResult,
+  DEFAULT_WORKSPACE_MODE,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { AtomRegistry } from "effect/unstable/reactivity";
@@ -525,6 +531,7 @@ describe("resolveDisplayedThreadPr + nextThreadChangeRequestSnapshot", () => {
       title: "Feature thread",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       interactionMode: "default",
       branch: "main",
       worktreePath: null,

@@ -44,6 +44,8 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { readSessionProfile } from "../SessionProfile.ts";
+import { workspaceWriteBoundary } from "../WorkspaceBoundary.ts";
+import { prepareResearchScratch } from "../ResearchScratch.ts";
 import {
   applyTradingTurnContract,
   markTradingContractDelivered,
@@ -107,6 +109,30 @@ const TRADING_CODEX_DISABLED_FEATURES = [
 const tradingCodexFeatureArgs: ReadonlyArray<string> = TRADING_CODEX_DISABLED_FEATURES.flatMap(
   (feature) => ["-c", `features.${feature}=false`],
 );
+
+/**
+ * Config overrides for a fenced (market_research) session: most of the
+ * feature set a trading session drops, plus a workspace-write sandbox rooted
+ * at the session's scratch cwd.
+ *
+ * `shell_tool` is deliberately KEPT, unlike a trading session: it is the one
+ * bounded executor the data-collection allowance is for, and the sandbox is
+ * what makes it bounded — Codex's workspace-write policy confines every
+ * write (shell, apply_patch, anything the runtime spawns) to the scratch cwd
+ * and blocks command network access by default, so a scratch script can
+ * normalize conference dates and cannot `cd` into this repository to commit
+ * them. A provider without a sandbox this specific gets no executor at all
+ * rather than an unfenced one.
+ */
+export function marketCodexFeatureArgs(): ReadonlyArray<string> {
+  return [
+    ...TRADING_CODEX_DISABLED_FEATURES.filter((feature) => feature !== "shell_tool").flatMap(
+      (feature) => ["-c", `features.${feature}=false`],
+    ),
+    "-c",
+    'sandbox_mode="workspace-write"',
+  ];
+}
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -1730,6 +1756,33 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             .pipe(Effect.catchCause(() => Effect.void));
           markTradingContractDelivered(input.threadId);
         }
+        // The market-workspace fence for an ordinary thread: same treatment
+        // as a trading session's cwd, one notch looser on tools. The session
+        // runs in the bounded research scratch directory (outside the
+        // repository and outside live state, age- and size-pruned), most
+        // mutating features are off, and the sandbox confines every write
+        // that remains to that scratch cwd. Only an explicit `coding`
+        // capability keeps the repository cwd. And when the scratch
+        // directory cannot be prepared, the session is refused outright:
+        // falling back to any other cwd would be falling back to a writable
+        // coding session, which is the one thing the fence must never do.
+        const workspaceBoundary = workspaceWriteBoundary({
+          threadId: input.threadId,
+          workspaceMode: input.workspaceMode,
+        });
+        const marketSession = !tradingProfile && workspaceBoundary.kind === "fenced";
+        const marketCwd = marketSession
+          ? yield* prepareResearchScratch({ threadId: input.threadId }).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "startSession",
+                    issue: error.detail,
+                  }),
+              ),
+            )
+          : null;
 
         const serviceTier =
           input.modelSelection?.instanceId === boundInstanceId
@@ -1739,7 +1792,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
-          cwd: tradingProfile ? tradingCwd : (input.cwd ?? process.cwd()),
+          cwd: tradingProfile
+            ? tradingCwd
+            : marketSession && marketCwd !== null
+              ? marketCwd
+              : (input.cwd ?? process.cwd()),
           binaryPath: codexConfig.binaryPath,
           launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
           ...(options?.environment ? { environment: options.environment } : {}),
@@ -1748,6 +1805,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
+          ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
@@ -1774,6 +1832,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   "-c",
                   'mcp_servers.t3-trade.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
                   ...(tradingProfile ? tradingCodexFeatureArgs : []),
+                  ...(marketSession ? marketCodexFeatureArgs() : []),
                 ],
               }
             : {}),

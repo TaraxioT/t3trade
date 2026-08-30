@@ -1,4 +1,9 @@
-import { ProjectId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ProjectId,
+  ThreadId,
+  ProviderInstanceId,
+  DEFAULT_WORKSPACE_MODE,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -85,6 +90,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
           model: "claude-opus-4-6",
         },
         runtimeMode: "full-access",
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         interactionMode: "default",
         branch: null,
         worktreePath: null,
@@ -149,6 +155,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
           model: "gpt-5.4",
         },
         runtimeMode: "full-access",
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         interactionMode: "default",
         branch: null,
         worktreePath: null,
@@ -225,6 +232,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
           model: "gpt-5.4",
         },
         runtimeMode: "full-access",
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         interactionMode: "default",
         branch: null,
         worktreePath: null,

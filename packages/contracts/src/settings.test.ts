@@ -49,6 +49,31 @@ describe("ClaudeSettings auto-compaction", () => {
   });
 });
 
+describe("ClientSettings landing surface", () => {
+  it("defaults to chat: the app opens on the conversation, not the console", () => {
+    expect(decodeClientSettings({}).landingSurface).toBe("chat");
+  });
+
+  it("keeps an explicit trade-home choice", () => {
+    expect(decodeClientSettings({ landingSurface: "trade" }).landingSurface).toBe("trade");
+  });
+
+  it("drops the retired openOnTradeHome key instead of re-reading it", () => {
+    // The persistence layer stores the whole decoded object, so a stored
+    // true was indistinguishable from the old baked-in default true. The
+    // fresh key resets only the implicit default: an old blob (whatever it
+    // held) lands on chat until its user re-opts into Trade explicitly.
+    const decoded = decodeClientSettings({ openOnTradeHome: true });
+    expect(decoded.landingSurface).toBe("chat");
+    expect("openOnTradeHome" in decoded).toBe(false);
+  });
+
+  it("accepts the key on the patch boundary and rejects a surface it does not know", () => {
+    expect(decodeClientSettingsPatch({ landingSurface: "trade" }).landingSurface).toBe("trade");
+    expect(() => decodeClientSettingsPatch({ landingSurface: "nowhere" })).toThrow();
+  });
+});
+
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);

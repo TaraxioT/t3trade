@@ -11,6 +11,7 @@ import {
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
+  type WorkspaceMode,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
@@ -94,6 +95,7 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "market_research";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const MAX_FIRST_USER_TITLE_CONTEXT_CHARS = 2_000;
@@ -415,6 +417,7 @@ const make = Effect.gen(function* () {
           providerName: null,
           providerInstanceId: thread.modelSelection.instanceId,
           runtimeMode: thread.runtimeMode,
+          workspaceMode: thread.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
         }),
         status: session?.status === "stopped" ? "stopped" : "error",
         activeTurnId: null,
@@ -529,6 +532,11 @@ const make = Effect.gen(function* () {
     }
 
     const desiredRuntimeMode = thread.runtimeMode;
+    // The workspace fence rides the same session lifecycle as the runtime
+    // mode: the adapters read it at session start to decide whether the
+    // session may touch the repository at all, so a change has to restart
+    // the session exactly like a runtime-mode change does.
+    const desiredWorkspaceMode = thread.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
       providerService
@@ -604,6 +612,7 @@ const make = Effect.gen(function* () {
           providerName: activeSession?.provider ?? preferredProvider,
           providerInstanceId: activeSession?.providerInstanceId ?? desiredInstanceId,
           runtimeMode: desiredRuntimeMode,
+          workspaceMode: desiredWorkspaceMode,
           activeTurnId: null,
           lastError: null,
           updatedAt: createdAt,
@@ -667,6 +676,7 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
+        workspaceMode: desiredWorkspaceMode,
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -689,6 +699,7 @@ const make = Effect.gen(function* () {
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             runtimeMode: desiredRuntimeMode,
+            workspaceMode: desiredWorkspaceMode,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             lastError: session.lastError ?? null,
@@ -702,6 +713,11 @@ const make = Effect.gen(function* () {
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
     if (existingSessionThreadId) {
       const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
+      // A trading session's fence comes from its profile, not from this
+      // field, so a mode change on one is a no-op that must not restart it.
+      const sessionWorkspaceMode = thread.session?.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
+      const workspaceModeChanged =
+        !hasTradingProfile(threadId) && desiredWorkspaceMode !== sessionWorkspaceMode;
       // A trading session owns its own cwd: the adapters start it in the
       // dedicated `trading-cwd` so the harness cannot read the repository it
       // happens to be attached to. The thread still resolves the ordinary
@@ -731,6 +747,7 @@ const make = Effect.gen(function* () {
 
       if (
         !runtimeModeChanged &&
+        !workspaceModeChanged &&
         !cwdChanged &&
         !instanceChanged &&
         !shouldRestartForModelChange &&
@@ -752,6 +769,9 @@ const make = Effect.gen(function* () {
         currentRuntimeMode: thread.session?.runtimeMode,
         desiredRuntimeMode: thread.runtimeMode,
         runtimeModeChanged,
+        currentWorkspaceMode: sessionWorkspaceMode,
+        desiredWorkspaceMode: thread.workspaceMode,
+        workspaceModeChanged,
         previousCwd: activeSession?.cwd,
         desiredCwd: effectiveCwd,
         cwdChanged,
@@ -1441,6 +1461,7 @@ const make = Effect.gen(function* () {
           ? { providerInstanceId: thread.session.providerInstanceId }
           : {}),
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        workspaceMode: thread.session?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,

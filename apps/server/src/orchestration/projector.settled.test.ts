@@ -4,6 +4,7 @@ import {
   ProjectId,
   ThreadId,
   type OrchestrationEvent,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -44,6 +45,7 @@ it.effect("projects settled lifecycle events", () =>
           title: "Thread",
           modelSelection: { provider: "codex", model: "gpt-5.4" },
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           interactionMode: "default",
           branch: null,
           worktreePath: null,

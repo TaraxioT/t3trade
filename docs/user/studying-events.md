@@ -68,9 +68,36 @@ and the rule sits there reading nothing, day after day, until the recorded
 date passes. Then the window opens on live bars and the validation is watching
 the real thing, which is a far better test than any amount of history.
 
-On the chart, the occurrences draw as vertical bands behind the price, on every
-timeframe, with the next upcoming date visible in the space to the right of
-now. An anchored idea is something you can point at.
+## See it on the graph
+
+Ask for the study and it does not stay a paragraph. Say:
+
+> Study that on ETH, daily bars, over the thirty bars after each one, and put
+> it on the graph.
+
+The graph above the conversation offers Live, Calendar, and Event aligned
+views. In Calendar, every occurrence gets its own window: the event as a band, the bar
+the entry was measured on, the bar the exit was measured on, the signed
+return beside them, and the source the date came from, one link each. An
+occurrence the recorded history cannot reach says why instead of quietly
+disappearing, and one that ran out of bars before the horizon says that too.
+
+In Event aligned, every measured occurrence is rebased to its own entry, so
+the question changes from what happened next to whether the shapes resemble
+each other. The count, the baseline over the same horizon, the recording
+start and every gap sit beside the picture, with a dollar figure beside the
+traces by default — an illustration on a $1,000 notional you can change,
+gross of fees, never shown as profit.
+
+Every scene carries the same line: historical research, no order placed, not
+a forecast. Seeing the study needs nothing armed and nothing funded. You can
+ask for a cost-aware backtest or a separate forward validation when either
+answers your next question. Neither places an order; execution still requires
+its own explicit ask and the normal protections.
+
+On the live chart, the occurrences draw as vertical bands behind the price,
+on every timeframe, with the next upcoming date visible in the space to the
+right of now.
 
 ## What to keep in mind
 

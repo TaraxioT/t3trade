@@ -46,6 +46,8 @@ import {
 } from "@t3tools/trading-contracts/thesis";
 import { TradingEventService } from "./TradingEventService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
+import { archiveDatabasePath } from "./archive/config.ts";
+import { archiveOwnershipRefusal } from "./TradingRuntimeLease.ts";
 import { composeReport, TradingThesisValidationService } from "./TradingThesisValidationService.ts";
 
 /**
@@ -216,7 +218,9 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       for (const setId of thesisEventSets(validation.thesis)) {
         const set = yield* events.show(setId);
         if (set === null) continue;
-        const nextUpcoming = set.occurrences.find((row) => row.endAt > now) ?? null;
+        const nextUpcoming =
+          set.occurrences.filter((row) => row.endAt > now).sort((a, b) => a.endAt - b.endAt)[0] ??
+          null;
         for (const row of set.occurrences) {
           const overlapsWindow = row.startAt <= windowTo && row.endAt >= windowFrom;
           const isTheNextUpcoming = nextUpcoming !== null && row.startAt === nextUpcoming.startAt;
@@ -282,6 +286,18 @@ export const makeTradingMarketChart = Effect.gen(function* () {
   const read = (input: TradingMarketChartReadInput): Effect.Effect<TradingMarketChartView | null> =>
     Effect.gen(function* () {
       const { market, interval, maxBars, startTime, endTime } = input;
+      // The read gate: a writer lock nobody can parse is the one archive
+      // state where serving data would be serving a guess about who owns the
+      // file, so the chart refuses rather than renders. Every other state
+      // (owned, external, stopped, stale) stays readable with its own label.
+      const ownership = archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`);
+      if (ownership !== null) {
+        yield* Effect.logWarning("TradingMarketChart: refusing read", {
+          market,
+          reason: ownership,
+        });
+        return null;
+      }
       // The window is part of the identity of the read: a post-mortem chart of
       // a closed trade and the live chart of the same market/interval are
       // different series, and sharing a cache entry would serve one as the

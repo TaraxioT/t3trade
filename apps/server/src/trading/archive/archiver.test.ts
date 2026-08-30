@@ -9,7 +9,7 @@
  *
  * No network — `fakeInfo` answers every request from synthetic JSON.
  */
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off - temp files, real clock.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - temp files, real clock, and the fake clock the loop is handed.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -19,14 +19,29 @@ import { alignToMinute, emptyCounters, formatHeartbeat, runArchiver } from "./ar
 import {
   ARCHIVE_INTERVALS,
   CANDLE_WINDOW_BARS,
+  HYDRATION_MAX_WAIT_MS,
+  HYDRATION_WRITER_SLICE_MS,
   INTERVAL_MS,
   TESTNET_ARCHIVE_VENUE,
   type ArchiveInterval,
 } from "./config.ts";
+
+/** Fire a gate promise resolver that the test has proven armed. */
+const fire = (gate: (() => void) | null): void => {
+  if (gate === null) throw new Error("the gate was never armed");
+  gate();
+};
 import { openArchiveDatabase, type ArchiveDatabase } from "./db.ts";
 import type { InfoClient } from "./info.ts";
-import { upsertCandles, type CandleRow } from "./candles.ts";
+import { recordKnownGap, upsertCandles, type CandleRow } from "./candles.ts";
 import type { CandleFeed } from "./ws.ts";
+import {
+  gridOpens,
+  loadHydrationQueue,
+  makeHydrationFileWatcher,
+  storeHydrationQueue,
+  type HydrationRequest,
+} from "./hydration.ts";
 
 const MINUTE = 60_000;
 
@@ -48,10 +63,16 @@ const bar = (interval: string) => ({
   n: 1,
 });
 
-const withArchivePath = <A>(use: (path: string) => A): A => {
+/**
+ * A temp archive directory whose lifetime spans the whole (possibly async)
+ * body: the cleanup waits for the body's promise, so a test that writes and
+ * reads files mid-flight — the hydration queue especially — still has its
+ * directory when it needs it.
+ */
+const withArchivePath = async <A>(use: (path: string) => A | Promise<A>): Promise<A> => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "market-archive-loop-"));
   try {
-    return use(NodePath.join(dir, "archive.sqlite"));
+    return await use(NodePath.join(dir, "archive.sqlite"));
   } finally {
     NodeFS.rmSync(dir, { recursive: true, force: true });
   }
@@ -67,6 +88,7 @@ function fakeInfo(): InfoClient & { readonly calls: Array<string> } {
   return {
     calls,
     stats: { requests: 0, failures: 0, retries: 0, paceMs: 200 },
+    lastFailureWasRateLimit: () => false,
     post: (operation, body) => {
       calls.push(operation);
       if (operation === "candleSnapshot") {
@@ -124,9 +146,11 @@ function fakeInfo(): InfoClient & { readonly calls: Array<string> } {
 /**
  * Run the loop for exactly `ticks` iterations, with no real waiting.
  *
- * The countdown hangs off `sleep`, which the loop calls once at the end of
- * each tick, because `shouldContinue` is a flag the archiver also consults
- * during the backfill — counting its calls would end the run mid-startup.
+ * The countdown hangs off `sleep`, which the loop's between-tick wait races
+ * against the hydration watcher, because `shouldContinue` is a flag the
+ * archiver also consults during the backfill — counting its calls would end
+ * the run mid-startup. The hydration queue is always a temp path so no test
+ * watches or writes the machine's real state directory.
  */
 async function runTicks(
   db: ArchiveDatabase,
@@ -134,25 +158,41 @@ async function runTicks(
   ticks: number,
   makeFeed?: (onCandle: (row: CandleRow) => void) => CandleFeed,
   venue?: string,
+  hydrationPath?: string,
+  readCoins?: () => readonly string[],
 ): Promise<void> {
+  const ownedTemp =
+    hydrationPath === undefined
+      ? NodePath.join(
+          NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hydration-ticks-")),
+          "queue.json",
+        )
+      : null;
   let remaining = ticks;
-  await runArchiver({
-    db,
-    info,
-    shouldContinue: () => remaining > 0,
-    sleep: () => {
-      remaining -= 1;
-      return Promise.resolve();
-    },
-    readCoins: () => COINS,
-    ...(makeFeed === undefined ? {} : { makeFeed }),
-    ...(venue === undefined ? {} : { venue }),
-  });
+  try {
+    await runArchiver({
+      db,
+      info,
+      shouldContinue: () => remaining > 0,
+      sleep: () => {
+        remaining -= 1;
+        return Promise.resolve();
+      },
+      readCoins: readCoins ?? (() => COINS),
+      hydrationPath: hydrationPath ?? (ownedTemp as string),
+      ...(makeFeed === undefined ? {} : { makeFeed }),
+      ...(venue === undefined ? {} : { venue }),
+    });
+  } finally {
+    if (ownedTemp !== null) {
+      NodeFS.rmSync(NodePath.dirname(ownedTemp), { recursive: true, force: true });
+    }
+  }
 }
 
 describe("formatHeartbeat", () => {
-  it("marks only the intervals that have actually missed a bar", () => {
-    withArchivePath((path) => {
+  it("marks only the intervals that have actually missed a bar", async () => {
+    await withArchivePath(async (path) => {
       const db = openArchiveDatabase(path);
       const now = 10_000 * MINUTE;
       // A 1m bar one minute old is healthy; a 4h bar four hours old is too,
@@ -284,6 +324,7 @@ describe("runArchiver", () => {
       const dead: InfoClient = {
         stats: { requests: 0, failures: 0, retries: 0, paceMs: 200 },
         post: () => Promise.resolve(null),
+        lastFailureWasRateLimit: () => false,
       };
       await runTicks(db, dead, 2);
 
@@ -354,6 +395,7 @@ describe("runArchiver", () => {
       const dead: InfoClient = {
         stats: { requests: 0, failures: 0, retries: 0, paceMs: 200 },
         post: () => Promise.resolve(null),
+        lastFailureWasRateLimit: () => false,
       };
       await runTicks(db, dead, 1, (onCandle) => {
         deliver = onCandle;
@@ -366,6 +408,554 @@ describe("runArchiver", () => {
       const rows = db.all<{ total: number }>("SELECT COUNT(*) AS total FROM candles");
       assert.strictEqual(rows[0]?.total, 1);
       db.close();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// on-demand hydration: the sole writer drains the queue
+// ---------------------------------------------------------------------------
+
+/** One 1m-window request aligned to the real clock, inside the provider's reach. */
+const liveRequest = (overrides?: Partial<HydrationRequest>): HydrationRequest => {
+  const minuteNow = Math.floor(Date.now() / MINUTE) * MINUTE;
+  return {
+    id: "hr-1",
+    venue: "hyperliquid",
+    coin: "ETH",
+    interval: "1m",
+    fromT: minuteNow - 60 * MINUTE,
+    toT: minuteNow - 30 * MINUTE,
+    purpose: "study",
+    requestedAt: Date.now(),
+    deadlineAt: Date.now() + 25_000,
+    ...overrides,
+  };
+};
+
+/** The wire shape `parseCandles` accepts, for one bar. */
+const wireBar = (coin: string, interval: string, open: number, step: number) => ({
+  t: open,
+  T: open + step - 1,
+  s: coin,
+  i: interval,
+  o: "100.0",
+  h: "101.0",
+  l: "99.0",
+  c: "100.5",
+  v: "1.0",
+  n: 3,
+});
+
+/**
+ * An Info client that answers `candleSnapshot` with the grid bars of the
+ * requested window the caller chooses, and nothing for any other call — with
+ * `readCoins: () => []`, the only candleSnapshot a tick makes is a hydration
+ * fetch, so the bodies it records are exactly what the writer asked the
+ * provider for.
+ */
+const hydrationInfo = (
+  serve: (req: { coin: string; interval: string; startTime: number; endTime?: number }) => number[],
+): InfoClient & { readonly bodies: Array<Record<string, unknown>> } => {
+  const bodies: Array<Record<string, unknown>> = [];
+  return {
+    bodies,
+    stats: { requests: 0, failures: 0, retries: 0, paceMs: 200 },
+    lastFailureWasRateLimit: () => false,
+    post: (operation, body) => {
+      if (operation !== "candleSnapshot") return Promise.resolve(null);
+      const req = (
+        body as { req: { coin: string; interval: string; startTime: number; endTime?: number } }
+      ).req;
+      bodies.push({ ...req });
+      const step = INTERVAL_MS[req.interval as keyof typeof INTERVAL_MS];
+      return Promise.resolve(serve(req).map((open) => wireBar(req.coin, req.interval, open, step)));
+    },
+  };
+};
+
+/** Serve every grid bar in the requested window — the healthy provider. */
+const serveGrid = (req: { startTime: number; endTime?: number; interval: string }) =>
+  gridOpens(
+    req.startTime,
+    req.endTime ?? req.startTime,
+    INTERVAL_MS[req.interval as keyof typeof INTERVAL_MS],
+  ).slice();
+
+const queueAfter = (hydrationPath: string) => {
+  const loaded = loadHydrationQueue(hydrationPath);
+  assert.strictEqual(loaded.status, "ok");
+  if (loaded.status !== "ok") throw new Error(loaded.reason);
+  return loaded.queue;
+};
+
+describe("the sole writer drains hydration requests", () => {
+  it("fetches exactly the requested venue, coin, interval, and window — one call", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(serveGrid);
+      const request = liveRequest();
+      storeHydrationQueue(hydrationPath, { requests: [request], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      // One candleSnapshot, naming the request's own window and interval —
+      // not the recorder's repair window, and no other interval. The end
+      // bound is the last wanted bar's close, one width minus one millisecond.
+      assert.strictEqual(info.bodies.length, 1);
+      assert.deepEqual(info.bodies[0], {
+        coin: "ETH",
+        interval: "1m",
+        startTime: request.fromT,
+        endTime: request.toT + MINUTE - 1,
+      });
+      const stored = db
+        .all<{ t: number }>(
+          "SELECT t FROM candles WHERE venue = 'hyperliquid' AND coin = 'ETH' AND interval = '1m' ORDER BY t",
+        )
+        .map((row) => row.t);
+      assert.deepEqual(stored, gridOpens(request.fromT, request.toT, MINUTE));
+      const queue = queueAfter(hydrationPath);
+      assert.strictEqual(queue.requests.length, 0);
+      assert.strictEqual(queue.results[0]?.outcome, "hydrated");
+      assert.strictEqual(queue.results[0]?.barsFetched, stored.length);
+      db.close();
+    });
+  });
+
+  it("coalesces overlapping requests into one fetch, answering each by its own id", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(serveGrid);
+      const first = liveRequest({ id: "a" });
+      const second = liveRequest({
+        id: "b",
+        fromT: first.fromT + 15 * MINUTE,
+        toT: first.toT + 15 * MINUTE,
+      });
+      storeHydrationQueue(hydrationPath, { requests: [first, second], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      assert.strictEqual(info.bodies.length, 1);
+      assert.strictEqual(info.bodies[0]?.["startTime"], first.fromT);
+      assert.strictEqual(info.bodies[0]?.["endTime"], second.toT + MINUTE - 1);
+      const queue = queueAfter(hydrationPath);
+      assert.strictEqual(queue.requests.length, 0);
+      const byId = new Map(queue.results.map((result) => [result.id, result]));
+      assert.strictEqual(byId.get("a")?.outcome, "hydrated");
+      assert.strictEqual(byId.get("b")?.outcome, "hydrated");
+      db.close();
+    });
+  });
+
+  it("answers a request for another venue unsupported, fetching nothing", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(serveGrid);
+      storeHydrationQueue(hydrationPath, {
+        requests: [liveRequest({ id: "t1", venue: "hyperliquid-testnet" })],
+        results: [],
+      });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      assert.strictEqual(info.bodies.length, 0);
+      assert.strictEqual(
+        db.all<{ total: number }>("SELECT COUNT(*) AS total FROM candles")[0]?.total,
+        0,
+      );
+      const queue = queueAfter(hydrationPath);
+      assert.strictEqual(queue.results[0]?.outcome, "unsupported");
+      assert.include(queue.results[0]?.reason ?? "", "hyperliquid-testnet");
+      db.close();
+    });
+  });
+
+  it("answers an expired request timed_out exactly once", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(serveGrid);
+      storeHydrationQueue(hydrationPath, {
+        requests: [liveRequest({ id: "late", deadlineAt: Date.now() - 1_000 })],
+        results: [],
+      });
+
+      await runTicks(db, info, 2, undefined, undefined, hydrationPath);
+
+      const queue = queueAfter(hydrationPath);
+      const timedOut = queue.results.filter((result) => result.id === "late");
+      assert.strictEqual(timedOut.length, 1);
+      assert.strictEqual(timedOut[0]?.outcome, "timed_out");
+      assert.strictEqual(queue.requests.length, 0);
+      db.close();
+    });
+  });
+
+  it("names rate limiting honestly when the endpoint refuses to answer", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      let rateLimited = false;
+      const info: InfoClient & { readonly bodies: unknown[] } = {
+        bodies: [],
+        stats: { requests: 0, failures: 0, retries: 0, paceMs: 200 },
+        lastFailureWasRateLimit: () => rateLimited,
+        post: (operation) => {
+          if (operation !== "candleSnapshot") return Promise.resolve(null);
+          rateLimited = true;
+          return Promise.resolve(null);
+        },
+      };
+      storeHydrationQueue(hydrationPath, { requests: [liveRequest()], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      const queue = queueAfter(hydrationPath);
+      assert.strictEqual(queue.results[0]?.outcome, "rate_limited");
+      db.close();
+    });
+  });
+
+  it("reconciles a known gap the hydrated bars filled, keeping what is still missing", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(serveGrid);
+      const request = liveRequest();
+      // A gap wider than the request: only the intersection can be healed.
+      recordKnownGap(
+        db,
+        {
+          coin: "ETH",
+          interval: "1m",
+          fromT: request.fromT - 5 * MINUTE,
+          toT: request.toT + 10 * MINUTE,
+          recordedAt: Date.now(),
+        },
+        "hyperliquid",
+      );
+      storeHydrationQueue(hydrationPath, { requests: [request], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      const gaps = db.all<{ from_t: number; to_t: number }>(
+        "SELECT from_t, to_t FROM known_gaps ORDER BY from_t",
+      );
+      assert.deepEqual(gaps, [
+        { from_t: request.fromT - 5 * MINUTE, to_t: request.fromT - MINUTE },
+        { from_t: request.toT + MINUTE, to_t: request.toT + 10 * MINUTE },
+      ]);
+      db.close();
+    });
+  });
+
+  it("leaves a gap record alone when the fetch did not fill its intersection", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      // Serve only the first bar of the window: the gap's intersection is
+      // still mostly missing, so the record must stand.
+      const info = hydrationInfo((req) => serveGrid(req).slice(0, 1));
+      const request = liveRequest();
+      recordKnownGap(
+        db,
+        {
+          coin: "ETH",
+          interval: "1m",
+          fromT: request.fromT,
+          toT: request.toT,
+          recordedAt: Date.now(),
+        },
+        "hyperliquid",
+      );
+      storeHydrationQueue(hydrationPath, { requests: [request], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      const gaps = db.all<{ from_t: number; to_t: number }>("SELECT from_t, to_t FROM known_gaps");
+      assert.strictEqual(gaps.length, 1);
+      assert.strictEqual(gaps[0]?.from_t, request.fromT);
+      assert.strictEqual(queueAfter(hydrationPath).results[0]?.outcome, "partial");
+      db.close();
+    });
+  });
+
+  it("says partial when bars inside the source's reach were still not served", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      // The provider drops one bar in the middle of an otherwise full window.
+      const info = hydrationInfo((req) => serveGrid(req).filter((_, index) => index !== 3));
+      storeHydrationQueue(hydrationPath, { requests: [liveRequest()], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      const result = queueAfter(hydrationPath).results[0];
+      assert.strictEqual(result?.outcome, "partial");
+      assert.include(result?.reason ?? "", "1 recoverable bar(s)");
+      db.close();
+    });
+  });
+
+  it("says source_window_exhausted when a healthy endpoint holds nothing for the window", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(() => []);
+      storeHydrationQueue(hydrationPath, { requests: [liveRequest()], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      const result = queueAfter(hydrationPath).results[0];
+      assert.strictEqual(result?.outcome, "source_window_exhausted");
+      db.close();
+    });
+  });
+
+  it("says already_covered when the window was whole before the writer fetched", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(() => []);
+      const request = liveRequest();
+      const step = MINUTE;
+      upsertCandles(
+        db,
+        gridOpens(request.fromT, request.toT, step).map(
+          (open) =>
+            ({
+              coin: "ETH",
+              interval: "1m",
+              t: open,
+              tClose: open + step - 1,
+              o: 100,
+              h: 101,
+              l: 99,
+              c: 100.5,
+              v: 1,
+              n: 3,
+            }) as CandleRow,
+        ),
+        "hyperliquid",
+      );
+      storeHydrationQueue(hydrationPath, { requests: [request], results: [] });
+
+      await runTicks(db, info, 1, undefined, undefined, hydrationPath, () => []);
+
+      assert.strictEqual(queueAfter(hydrationPath).results[0]?.outcome, "already_covered");
+      db.close();
+    });
+  });
+});
+
+describe("the writer's wake", () => {
+  it("a request arriving between ticks wakes the writer long before the poll interval", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const info = hydrationInfo(serveGrid);
+      // Gate tick 1 at its context sample: drain(tick 1) has already run and
+      // found nothing, so a request written while the gate is held lands
+      // strictly between the two drains — only the wake can reach it early.
+      let arriveGate: (() => void) | null = null;
+      let releaseHold: (() => void) | null = null;
+      const gateArrived = new Promise<void>((resolve) => {
+        arriveGate = resolve;
+      });
+      const hold = new Promise<void>((resolve) => {
+        releaseHold = resolve;
+      });
+      const gatedInfo: InfoClient = {
+        ...info,
+        post: (operation, body) => {
+          if (operation === "metaAndAssetCtxs") {
+            fire(arriveGate);
+            arriveGate = null;
+            return hold.then(() => []);
+          }
+          return info.post(operation, body);
+        },
+      };
+      let stop = false;
+      const startedAt = Date.now();
+      const runPromise = runArchiver({
+        db,
+        info: gatedInfo,
+        shouldContinue: () => !stop,
+        sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+        readCoins: () => [],
+        hydrationPath,
+        // Ten seconds of poll cadence: without the wake, tick 2 cannot run
+        // inside the assertion budget at all.
+        tickIntervalMs: 10_000,
+      });
+      try {
+        // Wait for the gate (tick 1 reached its context sample), enqueue the
+        // request while the tick still sleeps on the gate, then let tick 1
+        // finish into its between-tick wait.
+        await gateArrived;
+        const request = liveRequest({ id: "wake-1" });
+        storeHydrationQueue(hydrationPath, { requests: [request], results: [] });
+        assert.isNotNull(releaseHold);
+        fire(releaseHold);
+        // The writer's own result write is the receipt. The test POLLS the
+        // queue rather than watching it: a second FSEvents watcher on the
+        // directory can starve the writer's watcher of the wake event, which
+        // is the very behavior under test.
+        for (;;) {
+          const queue = queueAfter(hydrationPath);
+          if (queue.results.some((result) => result.id === "wake-1")) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        }
+        stop = true;
+        await runPromise;
+        const elapsed = Date.now() - startedAt;
+        const queue = queueAfter(hydrationPath);
+        assert.strictEqual(
+          queue.results.find((result) => result.id === "wake-1")?.outcome,
+          "hydrated",
+        );
+        assert.strictEqual(info.bodies.length, 1);
+        assert.isTrue(
+          elapsed < 8_000,
+          `the wake saved the request from waiting the full cadence (${elapsed}ms)`,
+        );
+      } finally {
+        stop = true;
+        await runPromise.catch(() => undefined);
+      }
+      db.close();
+    });
+  });
+
+  it("pins the guarantee floor: the fallback slice is half the maximum wait", () => {
+    assert.isTrue(HYDRATION_WRITER_SLICE_MS <= HYDRATION_MAX_WAIT_MS / 2);
+  });
+});
+
+describe("cold-start priority: hydration is drained between startup units", () => {
+  it("a request arriving during cold-start backfill is answered before startup completes", async () => {
+    await withArchivePath(async (path) => {
+      const db = openArchiveDatabase(path);
+      const hydrationPath = `${path}.hydration.json`;
+      const request = liveRequest({ id: "startup-1" });
+      // The fake provider serves ONLY the exact window the drain asks for:
+      // the backfill units return no bars, so the coverage that answers this
+      // request can only come from the between-units hydration fetch.
+      const info = hydrationInfo((req) => (req.startTime === request.fromT ? serveGrid(req) : []));
+      // Gate the STARTUP units only: a backfill unit is a candleSnapshot
+      // that names an endTime (the whole servable window in one call),
+      // while the hydration drain's exact-window fetch is the one whose
+      // startTime is the request's own fromT. Holding the first two units
+      // lets the test enqueue mid-startup and then prove the result landed
+      // while the second unit — and five more after it — still hold the
+      // backfill open.
+      const exactWindow = (req: unknown): boolean =>
+        (req as { readonly startTime?: unknown } | undefined | null)?.startTime === request.fromT;
+      let backfillCalls = 0;
+      let arriveA: (() => void) | null = null;
+      let releaseA: (() => void) | null = null;
+      let arriveB: (() => void) | null = null;
+      let releaseB: (() => void) | null = null;
+      const aArrived = new Promise<void>((resolve) => {
+        arriveA = resolve;
+      });
+      const holdA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      const bArrived = new Promise<void>((resolve) => {
+        arriveB = resolve;
+      });
+      const holdB = new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+      let bReleased = false;
+      const gatedInfo: InfoClient = {
+        ...info,
+        post: (operation, body) => {
+          if (
+            operation === "candleSnapshot" &&
+            !exactWindow((body as { readonly req: unknown }).req) &&
+            "endTime" in (body as { req: object }).req
+          ) {
+            backfillCalls += 1;
+            if (backfillCalls === 1) {
+              fire(arriveA);
+              return holdA.then(() => info.post(operation, body));
+            }
+            if (backfillCalls === 2) {
+              fire(arriveB);
+              return holdB.then(() => info.post(operation, body));
+            }
+          }
+          return info.post(operation, body);
+        },
+      };
+
+      let stop = false;
+      const runPromise = runArchiver({
+        db,
+        info: gatedInfo,
+        shouldContinue: () => !stop,
+        sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+        readCoins: () => ["ETH"],
+        hydrationPath,
+        tickIntervalMs: 60_000,
+      });
+      try {
+        // Startup unit 1 (the 1m backfill) is holding: enqueue a request now,
+        // mid-cold-start, then let unit 1 finish into its between-unit drain.
+        await aArrived;
+        storeHydrationQueue(hydrationPath, { requests: [request], results: [] });
+        fire(releaseA);
+
+        // The writer's result write is the receipt. Poll, not watch: a
+        // second FSEvents watcher on the directory can starve the writer's
+        // own wake, which this suite exercises elsewhere.
+        for (;;) {
+          const queue = queueAfter(hydrationPath);
+          if (queue.results.some((result) => result.id === "startup-1")) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        }
+        const queue = queueAfter(hydrationPath);
+        assert.strictEqual(
+          queue.results.find((result) => result.id === "startup-1")?.outcome,
+          "hydrated",
+        );
+        // The result exists while startup is still incomplete: the second
+        // backfill unit has not been released, so the cold start cannot have
+        // finished — the drain ran between units, not after the backfill.
+        assert.strictEqual(bReleased, false);
+        assert.strictEqual(
+          backfillCalls >= 2,
+          true,
+          "the second startup unit was reached and held",
+        );
+
+        fire(releaseB);
+        bReleased = true;
+        stop = true;
+        await runPromise;
+        // Exactly one exact-window fetch (the hydration call, identified by
+        // the request's own fromT), made during startup: every other
+        // candleSnapshot was a backfill unit with the servable window's own
+        // startTime.
+        const exactFetches = info.bodies.filter(exactWindow).length;
+        assert.strictEqual(exactFetches, 1);
+      } finally {
+        stop = true;
+        if (!bReleased) {
+          fire(releaseB);
+        }
+        fire(releaseA);
+        await runPromise.catch(() => undefined);
+        db.close();
+      }
     });
   });
 });

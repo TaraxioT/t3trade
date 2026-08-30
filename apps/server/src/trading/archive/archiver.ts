@@ -25,24 +25,46 @@ import {
   latestStoredOpen,
   parseCandles,
   planCandleRepair,
+  reconcileKnownGaps,
   recordKnownGap,
   upsertCandles,
 } from "./candles.ts";
 import type { CandleRow } from "./candles.ts";
+import { candleOpensInRange, knownGaps } from "./read.ts";
 import type { CandleFeed } from "./ws.ts";
 import {
   readArchiveCoinsFromDisk,
+  ARCHIVE_DATA_PROVIDER_ID,
   ARCHIVE_INTERVALS,
   ARCHIVE_VENUE,
   CANDLE_WINDOW_BARS,
   FUNDING_INTERVAL_MS,
   FUNDING_ORIGIN_MS,
   FUNDING_PAGE_ROWS,
+  HYDRATION_WRITER_SLICE_MS,
+  hydrationRequestsPath,
   INTERVAL_MS,
   POLL_INTERVAL_MS,
   POLL_TAIL_BARS,
   type ArchiveInterval,
 } from "./config.ts";
+import {
+  assessWindowCoverage,
+  claimHydrationBatch,
+  classifyHydrationOutcome,
+  hydrationQueueHasLiveRequests,
+  HYDRATION_VENUES,
+  loadHydrationQueue,
+  makeHydrationFileWatcher,
+  planHydrationFetches,
+  providerReachFloor,
+  recordHydrationResult,
+  storeHydrationQueue,
+  withHydrationQueueLock,
+  type HydrationQueue,
+  type HydrationRequest,
+  type HydrationResult,
+} from "./hydration.ts";
 import type { ArchiveDatabase } from "./db.ts";
 import { latestFundingTime, parseFunding, upsertFunding } from "./funding.ts";
 import type { InfoClient } from "./info.ts";
@@ -88,6 +110,14 @@ const candleSnapshotBody = (
 /**
  * Fetch the whole servable window for every series and note what fell out of
  * it while nothing was recording. Runs once, before the first tick.
+ *
+ * `betweenUnits`, when given, runs after each coin+interval series — one
+ * bounded provider call — with the database free. The archiver passes the
+ * hydration drain there during cold start, so a live request is serviced
+ * between backfill units rather than after a startup that can outlast the
+ * request's deadline. The hook is awaited and sequential: no second writer,
+ * no concurrent archive access, and `shouldContinue` stays the only stop
+ * signal.
  */
 export async function backfillCandles(
   db: ArchiveDatabase,
@@ -97,6 +127,7 @@ export async function backfillCandles(
   shouldContinue: () => boolean,
   coins: ReadonlyArray<string>,
   venue: string = ARCHIVE_VENUE,
+  betweenUnits?: () => Promise<void>,
 ): Promise<void> {
   for (const coin of coins) {
     for (const interval of ARCHIVE_INTERVALS) {
@@ -137,6 +168,9 @@ export async function backfillCandles(
       const rows = parseCandles(raw, coin, interval);
       counters.candles += upsertCandles(db, rows, venue);
       logInfo(`backfill: ${coin} ${interval} ${rows.length} bars`);
+      if (betweenUnits !== undefined) {
+        await betweenUnits();
+      }
     }
   }
 }
@@ -170,7 +204,12 @@ export async function pollCandles(
   }
 }
 
-/** Page funding forward from each coin's stored high-water mark. */
+/**
+ * Page funding forward from each coin's stored high-water mark. A cold start
+ * can walk years of pages, so `betweenUnits` — the hydration drain during
+ * startup — runs after each page for the same deadline reason as the candle
+ * backfill's hook.
+ */
 export async function pullFunding(
   db: ArchiveDatabase,
   info: InfoClient,
@@ -178,6 +217,7 @@ export async function pullFunding(
   shouldContinue: () => boolean,
   coins: ReadonlyArray<string>,
   venue: string = ARCHIVE_VENUE,
+  betweenUnits?: () => Promise<void>,
 ): Promise<void> {
   for (const coin of coins) {
     const stored = latestFundingTime(db, coin, venue);
@@ -202,6 +242,9 @@ export async function pullFunding(
         break;
       }
       cursor = newest + 1;
+      if (betweenUnits !== undefined) {
+        await betweenUnits();
+      }
     }
 
     if (pages > 1) {
@@ -296,13 +339,247 @@ export function formatHeartbeat(
 }
 
 /**
- * Run until the process is stopped.
+ * Fetch exactly one requested window from the one provider's candle endpoint,
+ * through the same validated parser and archive upsert the recorder uses, and
+ * nothing else: one series, one bounded call, rows clipped to the window so
+ * the evidence they feed is truthful. The caller has already validated the
+ * window against the request caps; the fetch itself stays bounded by the
+ * provider's own page and never reaches for another interval or endpoint.
  *
- * `shouldContinue` is a stop flag, not a counter: it is consulted between
- * backfill steps and funding pages as well as between ticks, so a kill during
- * a cold start ends the process promptly rather than after every page of
- * three years of funding history.
+ * `failure` is set only when the endpoint did not answer at all; an empty
+ * successful response is an answer — it means the market's own history does
+ * not reach the window.
  */
+export async function fetchExactCandleWindow(
+  db: ArchiveDatabase,
+  info: InfoClient,
+  request: {
+    readonly coin: string;
+    readonly interval: string;
+    readonly fromT: number;
+    readonly toT: number;
+  },
+  now: number,
+  venue: string,
+): Promise<{ readonly rows: ReadonlyArray<CandleRow>; readonly failure: string | null }> {
+  const floor = providerReachFloor(request.interval, now);
+  const fetchFrom = floor === null ? request.fromT : Math.max(request.fromT, floor);
+  if (fetchFrom > request.toT) {
+    // Nothing inside the provider's reach: no call at all, and the caller's
+    // assessment names the exhaustion.
+    return { rows: [], failure: null };
+  }
+  // The fetch's endTime is the wanted last bar's CLOSE (open + width - 1):
+  // under either reading of the endpoint's bounds — bars by open time or by
+  // close time — that returns exactly the bars whose opens fall in the
+  // requested window, and the clip below drops anything else it may add.
+  const intervalMs = INTERVAL_MS[request.interval as keyof typeof INTERVAL_MS];
+  const raw = await info.post(
+    "candleSnapshot",
+    candleSnapshotBody(request.coin, request.interval, fetchFrom, request.toT + intervalMs - 1),
+  );
+  if (raw === null) {
+    return { rows: [], failure: "the candle endpoint did not answer" };
+  }
+  const rows = parseCandles(raw, request.coin, request.interval).filter(
+    (row) => row.t >= fetchFrom && row.t <= request.toT,
+  );
+  upsertCandles(db, rows, venue);
+  return { rows, failure: null };
+}
+
+/** One request's coverage assessment inputs, read off the writer's own database. */
+const assessRequestCoverage = (
+  db: ArchiveDatabase,
+  request: HydrationRequest,
+  venue: string,
+  now: number,
+) =>
+  assessWindowCoverage({
+    intervalMs: INTERVAL_MS[request.interval as keyof typeof INTERVAL_MS],
+    fromT: request.fromT,
+    toT: request.toT,
+    now,
+    archivedOpens: candleOpensInRange(
+      db,
+      request.coin,
+      request.interval,
+      request.fromT,
+      request.toT,
+      venue,
+    ),
+    providerFloor: providerReachFloor(request.interval, now),
+    gaps: knownGaps(db, request.coin, request.interval, venue),
+  });
+
+/**
+ * Drain on-demand hydration requests: the sole archive writer fetching the
+ * exact windows readers named, once each, and answering every request id.
+ *
+ * Two locked phases with the fetches in between (the network may not hold the
+ * lock): phase one claims its batch and answers what needs no fetch; phase
+ * two fetches each coalesced group once, reconciles gap records against what
+ * landed, and merges per-request results into whatever the queue holds by
+ * then — a producer that enqueued mid-fetch loses nothing.
+ */
+async function drainHydrationRequests(
+  db: ArchiveDatabase,
+  info: InfoClient,
+  counters: ArchiveCounters,
+  shouldContinue: () => boolean,
+  venue: string,
+  path: string,
+): Promise<void> {
+  const claimed = withHydrationQueueLock(path, () => {
+    const loaded = loadHydrationQueue(path);
+    if (loaded.status === "unusable") {
+      logWarn(`archiver: hydration queue unreadable (${loaded.reason}); leaving it untouched`);
+      return null;
+    }
+    const queue = loaded.queue;
+    const { batch, rest, expired } = claimHydrationBatch(queue, Date.now());
+    if (batch.length === 0 && expired.length === 0 && queue.results.length === 0) return [];
+    let next: HydrationQueue = { requests: rest, results: queue.results };
+    for (const request of expired) {
+      next = recordHydrationResult(next, {
+        id: request.id,
+        outcome: "timed_out",
+        finishedAt: Date.now(),
+        reason: "the deadline passed before the writer reached this request",
+      });
+    }
+    // Requests this writer cannot serve honestly are answered here, without a
+    // fetch: venue isolation is absolute, and a window older than the one
+    // provider's reach can never be recovered.
+    const fetchable: HydrationRequest[] = [];
+    for (const request of batch) {
+      if (
+        (HYDRATION_VENUES as readonly string[]).includes(request.venue) !== true ||
+        request.venue !== venue
+      ) {
+        next = recordHydrationResult(next, {
+          id: request.id,
+          outcome: "unsupported",
+          finishedAt: Date.now(),
+          reason: `this writer records ${venue}; it will not write ${request.venue} rows`,
+        });
+        continue;
+      }
+      const floor = providerReachFloor(request.interval, Date.now());
+      if (floor !== null && request.toT < floor) {
+        next = recordHydrationResult(next, {
+          id: request.id,
+          outcome: "source_window_exhausted",
+          finishedAt: Date.now(),
+          reason:
+            `older than ${ARCHIVE_DATA_PROVIDER_ID} still serves; a second price source is a decision ` +
+            "recorded in docs/internals, not a fetch away",
+        });
+        continue;
+      }
+      fetchable.push(request);
+    }
+    try {
+      storeHydrationQueue(path, next);
+    } catch (error) {
+      logWarn(`archiver: could not rewrite the hydration queue: ${describeError(error)}`);
+      return null;
+    }
+    return fetchable;
+  });
+  if (!claimed.ok || claimed.value === null) return;
+  const batch = claimed.value;
+  if (batch.length === 0) return;
+
+  const results: HydrationResult[] = [];
+  for (const group of planHydrationFetches(batch)) {
+    if (!shouldContinue()) break;
+    const intervalMs = INTERVAL_MS[group.interval as keyof typeof INTERVAL_MS];
+    // The before-assessment is what makes `already_covered` legal only for a
+    // window that pre-existed this attempt, and `hydrated` only for one this
+    // attempt finished — re-served rows can never masquerade as a recovery.
+    const before = new Map(
+      group.requests.map((request) => [
+        request.id,
+        assessRequestCoverage(db, request, venue, Date.now()),
+      ]),
+    );
+    const fetch = await fetchExactCandleWindow(db, info, group, Date.now(), venue);
+    counters.candles += fetch.rows.length;
+    if (fetch.failure === null) {
+      reconcileKnownGaps(
+        db,
+        {
+          coin: group.coin,
+          interval: group.interval,
+          intervalMs,
+          fromT: group.fromT,
+          toT: group.toT,
+        },
+        venue,
+      );
+    }
+    const firstServedT = fetch.rows[0]?.t ?? null;
+    const afterNow = Date.now();
+    for (const request of group.requests) {
+      const after = assessRequestCoverage(db, request, venue, afterNow);
+      const barsFetched = fetch.rows.filter(
+        (row) => row.t >= request.fromT && row.t <= request.toT,
+      ).length;
+      const { outcome, reason } = classifyHydrationOutcome({
+        after,
+        completeBefore: before.get(request.id)?.complete ?? false,
+        barsFetched,
+        effectiveFloorT:
+          firstServedT === null
+            ? providerReachFloor(request.interval, afterNow)
+            : Math.max(providerReachFloor(request.interval, afterNow) ?? -Infinity, firstServedT),
+        emptySuccessfulResponse: fetch.failure === null && fetch.rows.length === 0,
+        ...(fetch.failure === null
+          ? {}
+          : { error: fetch.failure, rateLimited: info.lastFailureWasRateLimit() }),
+      });
+      results.push({
+        id: request.id,
+        outcome,
+        finishedAt: Date.now(),
+        barsFetched,
+        ...(reason === null ? {} : { reason }),
+      });
+      logInfo(
+        `archiver: hydration ${outcome} for ${request.coin} ${request.interval} ` +
+          `[${request.fromT}-${request.toT}] (${barsFetched} bars)`,
+      );
+    }
+  }
+
+  const merged = withHydrationQueueLock(path, () => {
+    const loaded = loadHydrationQueue(path);
+    if (loaded.status === "unusable") {
+      logWarn(
+        `archiver: hydration queue unreadable after fetching (${loaded.reason}); results not recorded`,
+      );
+      return null;
+    }
+    let queue = loaded.queue;
+    for (const result of results) {
+      queue = recordHydrationResult(queue, result);
+    }
+    try {
+      storeHydrationQueue(path, queue);
+    } catch (error) {
+      logWarn(`archiver: could not rewrite the hydration queue: ${describeError(error)}`);
+      return null;
+    }
+    return queue;
+  });
+  if (merged.ok && merged.value === null) {
+    logWarn(
+      "archiver: hydration results from this drain could not be recorded; waiters will time out honestly",
+    );
+  }
+}
+
 export async function runArchiver(input: {
   readonly db: ArchiveDatabase;
   readonly info: InfoClient;
@@ -318,10 +595,16 @@ export async function runArchiver(input: {
   readonly makeFeed?: (onCandle: (row: CandleRow) => void) => CandleFeed;
   /** The venue stamped on every row this run writes. Defaults to mainnet. */
   readonly venue?: string;
+  /** The hydration queue path to watch and drain. Defaults to the real one. */
+  readonly hydrationPath?: string;
+  /** The poll cadence, overridable so tests can exercise the wake path fast. */
+  readonly tickIntervalMs?: number;
 }): Promise<void> {
   const { db, info, shouldContinue, sleep } = input;
   const readCoins = input.readCoins ?? readArchiveCoinsFromDisk;
   const venue = input.venue ?? ARCHIVE_VENUE;
+  const hydrationPath = input.hydrationPath ?? hydrationRequestsPath();
+  const tickIntervalMs = input.tickIntervalMs ?? POLL_INTERVAL_MS;
   const counters = emptyCounters();
   const startedAt = Date.now();
   const feed =
@@ -329,15 +612,55 @@ export async function runArchiver(input: {
       counters.candles += upsertCandles(db, [row], venue);
     }) ?? null;
 
+  // The queue file's own writes are this writer's alarm clock: a producer's
+  // atomic rename wakes the watcher at once, so a live request is drained in
+  // milliseconds rather than at the next 60-second poll. When no watcher can
+  // be installed the wait degrades to bounded slices, each at most
+  // HYDRATION_WRITER_SLICE_MS — half a request's maximum wait — with a queue
+  // peek between slices, so a live request is still observed comfortably
+  // before its deadline. Either way the 60-second poll cadence is untouched.
+  const watcher = makeHydrationFileWatcher(hydrationPath);
+  const waitUntil = async (tickEndAt: number): Promise<void> => {
+    for (;;) {
+      if (!shouldContinue()) return;
+      const remaining = tickEndAt - Date.now();
+      if (remaining <= 0) return;
+      const slice = Math.min(remaining, HYDRATION_WRITER_SLICE_MS);
+      // Raced against the injected sleep so tests with instant sleeps stay
+      // instant; in production the sleep is the same wall-clock bound the
+      // watcher would have enforced anyway.
+      const woken =
+        watcher === null
+          ? (await sleep(slice), false)
+          : await Promise.race([
+              sleep(slice).then(() => false as const),
+              watcher.waitOrTimeout(slice),
+            ]);
+      if (woken) return;
+      // The peek runs even with a healthy watcher: a reader waiting on its
+      // own answer also watches this directory, and FSEvents can starve one
+      // of two watchers of an event. The peek bounds that hole to one slice
+      // — the same bound the watcher-less fallback already promised.
+      if (hydrationQueueHasLiveRequests(hydrationPath, Date.now())) return;
+    }
+  };
+
   try {
-    // The backfill can take minutes on a cold start, so it checks the stop
-    // signal between series and between funding pages: a kill during startup
-    // should end the process promptly, not after three years of funding.
+    // The backfill can take minutes on a cold start — longer than a
+    // hydration request may wait — so the drain also runs between every
+    // bounded startup unit (one candle series, one funding page), and once
+    // before the backfill begins. A request that arrives during cold start is
+    // serviced within a unit or two, well inside its deadline, and the
+    // backfill simply resumes: sequential awaits, one writer, and the stop
+    // signal stays the only stop signal.
+    const drainNow = (): Promise<void> =>
+      drainHydrationRequests(db, info, counters, shouldContinue, venue, hydrationPath);
     let coins = readCoins();
     feed?.setCoins(coins);
     logInfo(`archiver: starting backfill for ${coins.join(" ")}`);
-    await backfillCandles(db, info, counters, Date.now(), shouldContinue, coins, venue);
-    await pullFunding(db, info, counters, shouldContinue, coins, venue);
+    await drainNow();
+    await backfillCandles(db, info, counters, Date.now(), shouldContinue, coins, venue, drainNow);
+    await pullFunding(db, info, counters, shouldContinue, coins, venue, drainNow);
     logInfo("archiver: backfill complete");
 
     let lastFundingAt = Date.now();
@@ -348,17 +671,35 @@ export async function runArchiver(input: {
       const ts = alignToMinute(tickStartedAt);
       try {
         // Re-read attention every tick. Following an asset has to start
-        // recording it now — a user who adds it to a watchlist and opens its
-        // chart is asking a question about the next few minutes.
+        // recording it now — a user who adds it to their watchlist and opens
+        // its chart is asking a question about the next few minutes.
         coins = readCoins();
         feed?.setCoins(coins);
         const fresh = coins.filter((coin) => !hydrated.has(coin));
         if (fresh.length > 0) {
           logInfo(`archiver: hydrating ${fresh.join(" ")}`);
-          await backfillCandles(db, info, counters, tickStartedAt, shouldContinue, fresh, venue);
-          await pullFunding(db, info, counters, shouldContinue, fresh, venue);
+          await backfillCandles(
+            db,
+            info,
+            counters,
+            tickStartedAt,
+            shouldContinue,
+            fresh,
+            venue,
+            drainNow,
+          );
+          await pullFunding(db, info, counters, shouldContinue, fresh, venue, drainNow);
           for (const coin of fresh) hydrated.add(coin);
         }
+        // On-demand hydration: a reader queued a window the archive has not
+        // covered but the one provider can still serve (a study over dates
+        // from before recording began, a backtest on a newly followed coin).
+        // Only this process writes the archive, so only this process may act;
+        // the batch is bounded per tick, every request keeps its stable id
+        // until a terminal result answers it, and a request older than the
+        // provider's reach is answered with the decision named, because a
+        // second data provider is a choice this product has not made.
+        await drainHydrationRequests(db, info, counters, shouldContinue, venue, hydrationPath);
         await pollCandles(db, info, counters, tickStartedAt, coins, feed, venue);
         await pollAssetContexts(db, info, counters, ts, venue);
         await pollBookSummaries(db, info, counters, ts, coins, venue);
@@ -375,10 +716,10 @@ export async function runArchiver(input: {
 
       logInfo(formatHeartbeat(db, counters, info, Date.now(), startedAt, venue));
 
-      const elapsed = Date.now() - tickStartedAt;
-      await sleep(Math.max(0, POLL_INTERVAL_MS - elapsed));
+      await waitUntil(tickStartedAt + tickIntervalMs);
     }
   } finally {
+    watcher?.close();
     feed?.close();
   }
 }

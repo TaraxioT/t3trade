@@ -8,6 +8,7 @@ import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
 import { renderForwardMenu, TRADING_VALIDATE_TOOL } from "@t3tools/trading-contracts/forward";
 import { TRADING_HYPOTHESIS_TOOL } from "@t3tools/trading-contracts/hypothesis";
 import { TRADING_EVENTS_TOOL } from "@t3tools/trading-contracts/eventSets";
+import { TRADING_CHART_TOOL } from "@t3tools/trading-contracts/researchScenes";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
@@ -39,6 +40,7 @@ it("exposes the read, the plan, the watch, the journal, the research, and the tw
       TRADING_VALIDATE_TOOL,
       TRADING_HYPOTHESIS_TOOL,
       TRADING_EVENTS_TOOL,
+      TRADING_CHART_TOOL,
     ].sort(),
   );
 });
@@ -222,7 +224,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 11 trading tools").toBe(11);
+  expect(tools.length, "expected exactly 12 trading tools").toBe(12);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   // Printed rather than only asserted: the budget is meant to be watched, and
@@ -232,16 +234,17 @@ it("keeps every description on a budget", () => {
     process.stdout.write(`  ${tool.name} ${(tool.description ?? "").length}\n`);
   }
   // Raised from 4,000 when `trading_validate` became the ninth tool, from
-  // 4,250 when `trading_hypothesis` became the tenth, and from 4,750 when
-  // `trading_events` became the eleventh. The cap is a budget, not a
-  // discovered constant: each move is one tool's worth, taken deliberately,
-  // rather than widening it until the measurement fitted.
+  // 4,250 when `trading_hypothesis` became the tenth, from 4,750 when
+  // `trading_events` became the eleventh, and from 5,250 when `trading_chart`
+  // became the twelfth. The cap is a budget, not a discovered constant: each
+  // move is one tool's worth, taken deliberately, rather than widening it
+  // until the measurement fitted.
   //
-  // The decision behind this one: an idea anchored on an external date is the
-  // one shape the research loop could not hold at all, and it cannot be
-  // recorded or studied without a name the model can call. One more
-  // description in every turn's system prompt is the price of that.
-  expect(total, "total description chars must stay under 5,250").toBeLessThan(5_250);
+  // The decision behind this one: research that stays a text result is
+  // research the user cannot inspect. The graph publisher is how a study
+  // becomes visible, and it cannot be called without a name the model can
+  // call. One more description in every turn's system prompt is the price.
+  expect(total, "total description chars must stay under 5,750").toBeLessThan(5_750);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;

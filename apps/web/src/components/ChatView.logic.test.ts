@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -233,6 +234,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
       model: "gpt-5.4",
     },
     runtimeMode: "full-access",
+    workspaceMode: DEFAULT_WORKSPACE_MODE,
     interactionMode: "default",
     session: null,
     messages: [],
@@ -267,6 +269,7 @@ const readySession = {
   providerName: "codex",
   providerInstanceId: ProviderInstanceId.make("codex"),
   runtimeMode: "full-access" as const,
+  workspaceMode: DEFAULT_WORKSPACE_MODE,
   activeTurnId: null,
   lastError: null,
   updatedAt: "2026-03-29T00:00:10.000Z",
@@ -284,6 +287,7 @@ describe("buildLoadingThreadFromShell", () => {
         model: "gpt-5.4",
       },
       runtimeMode: "full-access",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       interactionMode: "default",
       branch: "main",
       worktreePath: null,

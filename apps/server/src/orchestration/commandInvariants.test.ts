@@ -8,6 +8,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationReadModel,
   ProviderInstanceId,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -62,6 +63,7 @@ const readModel: OrchestrationReadModel = {
       },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "full-access",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       branch: null,
       worktreePath: null,
       createdAt: now,
@@ -87,6 +89,7 @@ const readModel: OrchestrationReadModel = {
       },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "full-access",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       branch: null,
       worktreePath: null,
       createdAt: now,
@@ -117,6 +120,7 @@ const messageSendCommand: OrchestrationCommand = {
   },
   interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
   runtimeMode: "approval-required",
+  workspaceMode: DEFAULT_WORKSPACE_MODE,
   createdAt: now,
 };
 
@@ -166,6 +170,7 @@ describe("commandInvariants", () => {
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           createdAt: now,
@@ -190,6 +195,7 @@ describe("commandInvariants", () => {
             },
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             branch: null,
             worktreePath: null,
             createdAt: now,

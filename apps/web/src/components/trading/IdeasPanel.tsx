@@ -119,10 +119,13 @@ export function IdeasPanel({
   };
 
   return (
-    <section aria-label="Ideas in testing" className="flex min-h-0 flex-col gap-2">
+    <section aria-label="Ideas in forward validation" className="flex min-h-0 flex-col gap-2">
       <header className="flex items-center gap-1.5 px-1">
         <FlaskConicalIcon className="size-3.5 text-muted-foreground" />
-        <h2 className="text-sm font-semibold text-foreground">Testing</h2>
+        {/* Forward paper validation, not generic testing: these are theses
+            being evaluated on future bars against a paper ledger. A backtest
+            or event study never appears here and is never "paper trading". */}
+        <h2 className="text-sm font-semibold text-foreground">Forward validation</h2>
         <button
           type="button"
           className="ml-auto text-[11px] text-muted-foreground hover:text-foreground"

@@ -26,7 +26,27 @@ import { Context, Effect } from "effect";
 import * as Layer from "effect/Layer";
 
 import { HyperliquidEndpoints, isTestnetEndpoints } from "@t3tools/hyperliquid/config";
-import { ARCHIVE_VENUE, archiveDatabasePath, archiveVenue } from "./archive/config.ts";
+import {
+  ARCHIVE_VENUE,
+  archiveDatabasePath,
+  archiveVenue,
+  HYDRATION_MAX_WAIT_MS,
+  INTERVAL_MS,
+} from "./archive/config.ts";
+import {
+  assessWindowCoverage,
+  enqueueHydrationRequest,
+  hydrationRequestsPath,
+  loadHydrationQueue,
+  providerReachFloor,
+  storeHydrationQueue,
+  waitForHydrationResult,
+  withHydrationQueueLock,
+  type HydrationOutcome,
+  type HydrationRequest,
+  type HydrationVenue,
+} from "./archive/hydration.ts";
+import * as NodeCrypto from "node:crypto";
 import type { AssetCtxRow } from "./archive/assetCtx.ts";
 import type { BookSummaryRow } from "./archive/bookSummary.ts";
 import { openArchiveDatabaseReadOnly, type ArchiveDatabase } from "./archive/db.ts";
@@ -38,6 +58,7 @@ import type { DerivedMetricParams } from "@t3tools/trading-contracts/watch";
 import {
   archivedCoins,
   assetCtxAtOrBefore,
+  candleOpensInRange,
   candlesInRange,
   earliestCandleTime,
   fundingInRange,
@@ -242,6 +263,37 @@ export interface TradingMarketArchiveShape {
     readonly fromT: number;
     readonly toT: number;
   }) => Effect.Effect<ArchiveCoverage>;
+  /**
+   * Ask the sole archive writer to fetch a recoverable missing window, wait
+   * (event-driven, deadline-bounded) for its answer, and re-read coverage.
+   *
+   * The flow behind the chat experience: a study or backtest that names a
+   * window the archive has not covered calls this FIRST. When the archive
+   * already covers the window, the answer is `already_covered` and nothing is
+   * queued. When the one approved source cannot serve the missing part, the
+   * answer says so (`unsupported`, with the provider-decision sentence).
+   * Otherwise the request is coalesced into the writer's queue, the waiter
+   * resolves on the writer's recorded outcome (hydrated / partial /
+   * source_window_exhausted / rate_limited / timed_out / failed), and the
+   * fresh coverage comes back with it. The caller then runs the ordinary
+   * deterministic calculation over whatever the archive honestly holds.
+   *
+   * This method never fetches anything itself, never writes the archive, and
+   * never creates a watch, validation, mission, or order: research does not
+   * need a signer and does not pin the market to the follow set.
+   */
+  readonly ensureCoverage: (input: {
+    readonly coin: string;
+    readonly interval: string;
+    readonly fromT: number;
+    readonly toT: number;
+    readonly purpose: "chart" | "study" | "backtest";
+    readonly now: number;
+  }) => Effect.Effect<{
+    readonly outcome: HydrationOutcome | "already_covered";
+    readonly coverage: ArchiveCoverage;
+    readonly reason: string | null;
+  }>;
 }
 
 export class TradingMarketArchive extends Context.Service<
@@ -274,6 +326,7 @@ const SCAN_MARK_STALE_MS = 2 * 5 * 60_000;
 export const makeTradingMarketArchive = (
   filePath: string,
   venue: string = ARCHIVE_VENUE,
+  hydrationPath: string = hydrationRequestsPath(),
 ): TradingMarketArchiveShape => {
   let handle: ArchiveDatabase | null = null;
 
@@ -607,6 +660,130 @@ export const makeTradingMarketArchive = (
         (result): ArchiveCoverage =>
           "gaps" in result ? result : { recordingSince: null, gaps: [] },
       ),
+
+    ensureCoverage: ({ coin, interval, fromT, toT, purpose, now }) =>
+      Effect.gen(function* () {
+        const width = INTERVAL_MS[interval as keyof typeof INTERVAL_MS];
+        if (width === undefined) {
+          return {
+            outcome: "unsupported" as const,
+            coverage: { recordingSince: null, gaps: [] } satisfies ArchiveCoverage,
+            reason: `${interval} is not recorded`,
+          };
+        }
+
+        // Coverage and the stored opens, through the same read-only handle
+        // every other read here uses: a missing archive is honest emptiness,
+        // never a failure the caller has to catch.
+        const coverageOf = Effect.map(
+          withHandle((db): ArchiveCoverage => {
+            const recordingSince = earliestCandleTime(db, coin, interval, venue);
+            const gaps = knownGaps(db, coin, interval, venue)
+              .filter((gap) => gap.toT >= fromT && gap.fromT <= toT)
+              .map((gap) => ({
+                fromT: Math.max(gap.fromT, fromT),
+                toT: Math.min(gap.toT, toT),
+              }));
+            return { recordingSince, gaps };
+          }, "archive file not found"),
+          (result): ArchiveCoverage =>
+            "gaps" in result ? result : { recordingSince: null, gaps: [] },
+        );
+        const opensOf = Effect.map(
+          withHandle(
+            (db) => candleOpensInRange(db, coin, interval, fromT, toT, venue),
+            "archive file not found",
+          ),
+          (result): ReadonlyArray<number> => (Array.isArray(result) ? result : []),
+        );
+
+        const before = yield* coverageOf;
+        const opens = yield* opensOf;
+        const assessment = assessWindowCoverage({
+          intervalMs: width,
+          fromT,
+          toT,
+          now,
+          archivedOpens: opens,
+          providerFloor: providerReachFloor(interval, now),
+          gaps: before.gaps,
+        });
+
+        // Already covered: the ordinary case, and it must cost no queue work.
+        // Complete means every required closed bar is stored AND no known-gap
+        // record overlaps the window — a recordingSince alone has never been
+        // enough, because a gap inside the window is a hole with a history.
+        if (assessment.complete) {
+          return { outcome: "already_covered" as const, coverage: before, reason: null };
+        }
+
+        // Queue the exact requested window for the sole writer, under the
+        // queue's cross-process lock, atomically. The request carries the
+        // service's OWN venue, never a caller's claim.
+        const request: HydrationRequest = {
+          id: NodeCrypto.randomUUID(),
+          venue: venue as HydrationVenue,
+          coin,
+          interval,
+          fromT,
+          toT,
+          purpose,
+          requestedAt: now,
+          deadlineAt: now + HYDRATION_MAX_WAIT_MS,
+        };
+        const decision = yield* Effect.sync(() => {
+          const path = hydrationPath;
+          const locked = withHydrationQueueLock(path, () => {
+            const loaded = loadHydrationQueue(path);
+            if (loaded.status === "unusable") {
+              return {
+                outcome: "unsupported" as const,
+                reason: `the hydration queue is unreadable (${loaded.reason}); pending requests were left untouched`,
+              };
+            }
+            const next = enqueueHydrationRequest(loaded.queue, request, now);
+            if (next.answer.outcome !== "queued") return next.answer;
+            try {
+              storeHydrationQueue(path, next.queue);
+            } catch (error) {
+              // The queue is an optimization, never a gate: a read that could
+              // not ask for recovery still answers with what the archive holds.
+              return {
+                outcome: "failed" as const,
+                reason: `the hydration queue could not be written: ${error instanceof Error ? error.message : String(error)}`,
+              };
+            }
+            return next.answer;
+          });
+          if (!locked.ok) {
+            return {
+              outcome: "failed" as const,
+              reason: `the hydration queue is busy (${locked.reason}); ask again`,
+            };
+          }
+          return locked.value;
+        });
+        if (decision.outcome !== "queued") {
+          return { outcome: decision.outcome, coverage: before, reason: decision.reason ?? null };
+        }
+
+        // Event-driven wait on the writer's recorded answer, by the stable id
+        // the queue assigned; the deadline in the request bounds the stay.
+        const result = yield* waitForHydrationResult(
+          hydrationPath,
+          decision.id,
+          request.deadlineAt,
+        );
+        const outcome: HydrationOutcome = result === null ? "timed_out" : result.outcome;
+        const after = yield* coverageOf;
+        return {
+          outcome,
+          coverage: after,
+          reason:
+            result?.reason ??
+            (outcome === "timed_out" ? "the writer did not answer before the deadline" : null),
+        };
+      }),
   });
 };
 

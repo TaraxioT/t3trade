@@ -207,3 +207,90 @@ export function recordKnownGap(
     gap.recordedAt,
   );
 }
+
+/**
+ * Reconcile known-gap records against bars that now exist inside a hydrated
+ * window: a gap whose intersection with the window holds every expected grid
+ * bar loses that intersection. The record is deleted and any still-missing
+ * head or tail is re-recorded with its original `recordedAt`, so a later read
+ * reports only what is genuinely absent — never a gap that bars have filled.
+ *
+ * Only the sole archive writer calls this, right after a hydration fetch, and
+ * only the intersection with the fetched window is walked, so the work is
+ * bounded by the request caps however old and wide the gap record is.
+ */
+export function reconcileKnownGaps(
+  db: ArchiveDatabase,
+  input: {
+    readonly coin: string;
+    readonly interval: string;
+    readonly intervalMs: number;
+    readonly fromT: number;
+    readonly toT: number;
+  },
+  venue: string = ARCHIVE_VENUE,
+): number {
+  const { coin, interval, intervalMs, fromT, toT } = input;
+  if (toT <= fromT || intervalMs <= 0) return 0;
+  const gaps = db.all<{
+    from_t: number;
+    to_t: number;
+    recorded_at: number;
+  }>(
+    "SELECT from_t, to_t, recorded_at FROM known_gaps " +
+      "WHERE venue = ? AND coin = ? AND interval = ? AND to_t >= ? AND from_t <= ?",
+    venue,
+    coin,
+    interval,
+    fromT,
+    toT,
+  );
+  let reconciled = 0;
+  for (const gap of gaps) {
+    const clippedFrom = Math.max(gap.from_t, fromT);
+    const clippedTo = Math.min(gap.to_t, toT);
+    const expectedFirst = Math.ceil(clippedFrom / intervalMs) * intervalMs;
+    const expectedLast = Math.floor(clippedTo / intervalMs) * intervalMs;
+    if (expectedLast < expectedFirst) continue;
+    const expected = (expectedLast - expectedFirst) / intervalMs + 1;
+    const held = db.all<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM candles " +
+        "WHERE venue = ? AND coin = ? AND interval = ? AND t >= ? AND t <= ?",
+      venue,
+      coin,
+      interval,
+      expectedFirst,
+      expectedLast,
+    )[0];
+    if (Number(held?.n ?? 0) < expected) continue;
+    db.transaction(() => {
+      db.run(
+        "DELETE FROM known_gaps WHERE venue = ? AND coin = ? AND interval = ? AND from_t = ? AND to_t = ?",
+        venue,
+        coin,
+        interval,
+        gap.from_t,
+        gap.to_t,
+      );
+      // The head and tail of the original record, minus the filled stretch.
+      const headTo = expectedFirst - intervalMs;
+      if (headTo >= gap.from_t) {
+        recordKnownGap(
+          db,
+          { coin, interval, fromT: gap.from_t, toT: headTo, recordedAt: gap.recorded_at },
+          venue,
+        );
+      }
+      const tailFrom = expectedLast + intervalMs;
+      if (tailFrom <= gap.to_t) {
+        recordKnownGap(
+          db,
+          { coin, interval, fromT: tailFrom, toT: gap.to_t, recordedAt: gap.recorded_at },
+          venue,
+        );
+      }
+    });
+    reconciled += 1;
+  }
+  return reconciled;
+}

@@ -12,6 +12,8 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   checkEventStudy,
   EVENT_STUDY_MAX_HORIZON_BARS,
+  eventStudyHydrationWindow,
+  eventStudyReadWindow,
   parseTradingEventsOccurrence,
   runEventStudy,
   validateEventOccurrence,
@@ -205,6 +207,126 @@ describe("uncovered occurrences", () => {
   });
 });
 
+describe("the entry-gap boundary (a full missing interval refuses)", () => {
+  // A series with ONE bar missing: bar 3 is absent, so the first bar at or
+  // after an event ending at 3*MINUTE is bar 4 — exactly one interval late.
+  const gappy = [
+    bar(0, 100, 100),
+    bar(1, 100, 100),
+    bar(2, 100, 100),
+    // bar 3 missing: the recording gap under test.
+    bar(4, 100, 104),
+    bar(5, 100, 105),
+    bar(6, 100, 106),
+  ];
+
+  it("a gap smaller than one interval still measures (mid-bar end)", () => {
+    // A complete series, the event ending inside bar 2: the first bar at or
+    // after the end is bar 3, half an interval late — measured, not refused.
+    const complete = Array.from({ length: 7 }, (_, i) => bar(i, 100, 100 + i));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE + 30_000)],
+      candles: complete,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+    });
+    expect(study.rows[0]?.covered).toBe(true);
+    expect(study.rows[0]?.entryTime).toBe(3 * MINUTE);
+    expect(study.rows[0]?.returnPct).toBe(3);
+  });
+
+  it("a gap of exactly one interval refuses rather than shifting the entry", () => {
+    // The event ends at bar 3's open. Bar 3 is the declared entry and is
+    // missing, so measuring from bar 4 would silently change the thesis.
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+    });
+    expect(study.rows[0]?.covered).toBe(false);
+    expect(study.rows[0]?.reason).toContain("recording gap covers the 1 bar(s)");
+    expect(study.meanReturnPct).toBeNull();
+  });
+
+  it("a gap larger than one interval refuses with the gap sentence", () => {
+    // Bars 3 and 4 are both missing: the first bar at or after the end of an
+    // event ending at 3*MINUTE is bar 5, two whole intervals late.
+    const gappy2 = [
+      bar(0, 100, 100),
+      bar(1, 100, 100),
+      bar(2, 100, 100),
+      // bars 3 and 4 missing.
+      bar(5, 100, 105),
+      bar(6, 100, 106),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles: gappy2,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+    });
+    expect(study.rows[0]?.covered).toBe(false);
+    expect(study.rows[0]?.reason).toContain("recording gap covers the 2 bar(s)");
+    expect(study.meanReturnPct).toBeNull();
+  });
+});
+
+describe("horizon semantics: the sentence and the engine agree at horizon 1 and 2", () => {
+  const candles = [bar(0, 100, 101), bar(1, 100, 104), bar(2, 100, 109)];
+
+  it("horizon 1 exits on the entry bar's own close (the entry is the first bar of the horizon)", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 1 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+    });
+    expect(study.rows[0]?.entryTime).toBe(1 * MINUTE);
+    expect(study.rows[0]?.exitPrice).toBe(104);
+    expect(study.rows[0]?.exitTime).toBe(2 * MINUTE - 1);
+    expect(study.rows[0]?.returnPct).toBe(4);
+  });
+
+  it("horizon 2 exits on the next bar's close (inclusive counting)", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 1 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+    });
+    expect(study.rows[0]?.exitPrice).toBe(109);
+    expect(study.rows[0]?.barsCovered).toBe(2);
+    expect(study.rows[0]?.returnPct).toBe(9);
+  });
+});
+
+describe("aggregates come from unrounded returns", () => {
+  it("the mean is not the mean of the display-rounded rows", () => {
+    // Two occurrences returning 0.991% and 0.997%: the rows round to 0.99 and
+    // 1.00 (mean 1.00 after rounding), but the unrounded mean is 0.994,
+    // which rounds to 0.99. The report must say 0.99.
+    const candles = [
+      bar(0, 100, 100),
+      bar(1, 100, 100),
+      bar(2, 100, 100.991),
+      bar(3, 100, 100),
+      bar(4, 100, 100),
+      bar(5, 100, 100),
+      bar(6, 100, 100.997),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE), occurrence(0, 6 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+    });
+    expect(study.rows.map((row) => row.returnPct)).toEqual([0.99, 1]);
+    expect(study.meanReturnPct).toBe(0.99);
+    expect(study.medianReturnPct).toBe(0.99);
+  });
+});
+
 describe("the caps and the occurrence validator", () => {
   it("bounds the horizon at both ends before a bar is loaded", () => {
     expect(checkEventStudy({ horizonBars: 0 })).toContain("whole number of bars from 1");
@@ -269,5 +391,100 @@ describe("the tool's ISO conventions", () => {
     if ("reason" in bad) expect(bad.reason).toContain("start");
     const badEnd = parse({ start: "2024-11-12", end: "soon after", source: "url" });
     if ("reason" in badEnd) expect(badEnd.reason).toContain("end");
+  });
+});
+
+describe("the study's hydration window", () => {
+  const DAY = 24 * 60 * 60_000;
+  // Devcon-shaped: two ended occurrences and one still in the future.
+  const now = 100 * DAY;
+  const endedEarly = occurrence(10 * DAY, 11 * DAY);
+  const endedLate = occurrence(20 * DAY, 21 * DAY);
+  const future = occurrence(150 * DAY, 151 * DAY);
+
+  it("spans the first required entry to the last required exit of the ended occurrences", () => {
+    const window = eventStudyHydrationWindow([endedLate, endedEarly, future], {
+      intervalMs: DAY,
+      horizonBars: 3,
+      now,
+    });
+    expect(window).toEqual({ fromT: 11 * DAY, toT: 21 * DAY + 2 * DAY });
+  });
+
+  it("aligns the entry up to the grid and truncates the exit at now", () => {
+    // Ends mid-bar on a daily grid: the entry is the next midnight.
+    const midBar = occurrence(10 * DAY, 11 * DAY + 6 * 60 * 60_000);
+    const window = eventStudyHydrationWindow([midBar], {
+      intervalMs: DAY,
+      horizonBars: 30,
+      now: 40 * DAY,
+    });
+    expect(window).toEqual({ fromT: 12 * DAY, toT: 40 * DAY });
+  });
+
+  it("needs nothing when no occurrence has ended", () => {
+    expect(
+      eventStudyHydrationWindow([future], { intervalMs: DAY, horizonBars: 3, now }),
+    ).toBeNull();
+  });
+
+  it("needs nothing when the first entry bar has not opened yet", () => {
+    // Ended a millisecond ago on a daily grid: the entry bar opens at the
+    // next midnight, which is in the future — nothing to fetch.
+    const justEnded = occurrence(50 * DAY, now - 1);
+    expect(
+      eventStudyHydrationWindow([justEnded], { intervalMs: DAY, horizonBars: 3, now }),
+    ).toBeNull();
+  });
+
+  it("horizon one ends at the entry bar itself", () => {
+    const window = eventStudyHydrationWindow([endedEarly], {
+      intervalMs: DAY,
+      horizonBars: 1,
+      now,
+    });
+    expect(window).toEqual({ fromT: 11 * DAY, toT: 11 * DAY });
+  });
+});
+
+describe("the study's read window", () => {
+  const DAY = 24 * 60 * 60_000;
+  const now = 100 * DAY;
+  const endedEarly = occurrence(10 * DAY, 11 * DAY);
+  const endedLate = occurrence(20 * DAY, 21 * DAY);
+  const future = occurrence(150 * DAY, 151 * DAY);
+
+  it("is the hydration window when an occurrence has ended — one rule for both callers", () => {
+    const window = eventStudyReadWindow([endedLate, endedEarly, future], {
+      intervalMs: DAY,
+      horizonBars: 3,
+      now,
+    });
+    expect(window).toEqual(
+      eventStudyHydrationWindow([endedLate, endedEarly, future], {
+        intervalMs: DAY,
+        horizonBars: 3,
+        now,
+      }),
+    );
+    expect(window).toEqual({ fromT: 11 * DAY, toT: 23 * DAY });
+  });
+
+  it("is a two-bar recent tail when nothing has ended, so future rows read honestly", () => {
+    expect(eventStudyReadWindow([future], { intervalMs: DAY, horizonBars: 3, now })).toEqual({
+      fromT: now - 2 * DAY,
+      toT: now,
+    });
+  });
+
+  it("is bounded by the occurrences and the horizon, never by the archive's size", () => {
+    // However much history the archive holds beside them, a study of two
+    // recent occurrences with a short horizon reads a handful of bars.
+    const window = eventStudyReadWindow([endedEarly, endedLate], {
+      intervalMs: DAY,
+      horizonBars: 5,
+      now,
+    });
+    expect(window).toEqual({ fromT: 11 * DAY, toT: 25 * DAY });
   });
 });

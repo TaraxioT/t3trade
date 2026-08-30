@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import type { Thread } from "../types";
 import { getLatestThreadForProject, sortThreads } from "./threadSort";
@@ -20,6 +21,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     title: "Thread",
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
     runtimeMode: DEFAULT_RUNTIME_MODE,
+    workspaceMode: DEFAULT_WORKSPACE_MODE,
     interactionMode: "default",
     session: null,
     messages: [],

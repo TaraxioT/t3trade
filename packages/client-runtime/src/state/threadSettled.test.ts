@@ -4,6 +4,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationThreadShell,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -136,6 +137,7 @@ function makeShell(input: {
     title: "Thread",
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
     runtimeMode: "full-access",
+    workspaceMode: DEFAULT_WORKSPACE_MODE,
     interactionMode: "default",
     branch: null,
     worktreePath: null,
@@ -163,6 +165,7 @@ function makeShell(input: {
             status: input.sessionStatus,
             providerName: "Codex",
             runtimeMode: "full-access",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: NOW,
@@ -396,6 +399,7 @@ describe("effectiveSettled", () => {
         status: "starting",
         providerName: "Codex",
         runtimeMode: "full-access",
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         activeTurnId: null,
         lastError: null,
         updatedAt: requestedAt,
@@ -472,6 +476,7 @@ describe("hasQueuedTurnStart", () => {
         status: "error" as const,
         providerName: "Codex",
         runtimeMode: "full-access" as const,
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         activeTurnId: null,
         lastError: "boom",
         updatedAt: NOW,

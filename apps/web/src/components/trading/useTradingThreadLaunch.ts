@@ -25,6 +25,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   DEFAULT_RUNTIME_MODE,
+  DEFAULT_WORKSPACE_MODE,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
@@ -207,6 +208,7 @@ export function useAskAnalyst(environmentId: EnvironmentId): AskAnalystHandle {
               title: `Analyst — ${asset}`,
               modelSelection: context.modelSelection,
               runtimeMode: DEFAULT_RUNTIME_MODE,
+              workspaceMode: DEFAULT_WORKSPACE_MODE,
               interactionMode: "default",
               branch: null,
               worktreePath: null,
@@ -295,6 +297,90 @@ export function marketThreadStarterPrompt(asset: string): string {
   return `What is ${asset} doing right now, and what would you watch here?`;
 }
 
+/**
+ * The editable starter an empty operations console offers: it teaches the
+ * shape of an ask (market, what to watch, what counts as news) without
+ * naming a market the user did not choose.
+ */
+export function chatTradingStarterPrompt(): string {
+  return "Watch a market for me and alert me when it moves: ";
+}
+
+export interface ChatLauncherHandle {
+  readonly open: (prompt?: string) => Promise<void>;
+  readonly busy: boolean;
+  readonly error: string | null;
+}
+
+/**
+ * "Ask the agent" from the operations console: open a fresh ordinary chat
+ * with a starter sentence in its composer, and navigate there.
+ *
+ * The trade home's empty states must not make a user infer commands from a
+ * dashboard; they get one plain sentence and one optional prefill, and the
+ * prefill lands somewhere it can be edited and sent — which is the composer,
+ * never an auto-sent turn. Same shape as the market launcher minus the
+ * market: the thread is an ordinary conversation and holds no authority.
+ */
+export function useChatLauncher(environmentId: EnvironmentId): ChatLauncherHandle {
+  const context = useLaunchContext(environmentId);
+  const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const open = useCallback(
+    async (prompt?: string) => {
+      if (busy) return;
+      if (typeof context === "string") {
+        setError(context);
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        const threadId = newThreadId();
+        const created = await createThread({
+          environmentId,
+          input: {
+            threadId,
+            projectId: context.projectId,
+            title: "Ask the agent",
+            modelSelection: context.modelSelection,
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+        if (created._tag === "Failure") {
+          setError("Could not create the thread.");
+          return;
+        }
+
+        prefillThreadComposer(
+          scopeThreadRef(environmentId, threadId),
+          prompt ?? chatTradingStarterPrompt(),
+        );
+
+        await waitForServerThread(scopeThreadRef(environmentId, threadId));
+
+        await router.navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, context, createThread, environmentId, router],
+  );
+
+  return { open, busy, error };
+}
+
 export interface MarketThreadLauncherHandle {
   readonly open: (asset: string) => Promise<void>;
   readonly busy: boolean;
@@ -344,6 +430,7 @@ export function useMarketThreadLauncher(environmentId: EnvironmentId): MarketThr
             title: `${asset} — trade`,
             modelSelection: context.modelSelection,
             runtimeMode: DEFAULT_RUNTIME_MODE,
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             interactionMode: "default",
             branch: null,
             worktreePath: null,

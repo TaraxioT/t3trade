@@ -72,6 +72,23 @@ import {
   TradingWatchlistMutationResult,
   TradingWatchlistView,
 } from "./trading.ts";
+import { ResearchSceneView } from "@t3tools/trading-contracts/researchScenes";
+// Re-exported so web surfaces can import the scene view type from this
+// package alone, beside the RPC that serves it. The payload types and the
+// fixed display sentences travel the same boundary: the graph renders the
+// study from these, and a second import path would drift.
+export type {
+  ResearchSceneView,
+  EventStudyScenePayload,
+  ResearchOccurrenceWindow,
+  StrategyReplayScenePayload,
+} from "@t3tools/trading-contracts/researchScenes";
+export {
+  PER_NOTIONAL_ILLUSTRATION_LABEL,
+  RESEARCH_DISCLAIMER,
+  STUDY_CHART_CONTEXT_BARS,
+  STUDY_CHART_MAX_WINDOW_BARS,
+} from "@t3tools/trading-contracts/researchScenes";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -84,6 +101,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getTradingUniverse: "orchestration.getTradingUniverse",
   getTradingAccountView: "orchestration.getTradingAccountView",
   getTradingMarketChart: "orchestration.getTradingMarketChart",
+  getTradingResearchScenes: "orchestration.getTradingResearchScenes",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
   armTradingWatch: "orchestration.armTradingWatch",
   cancelTradingWatch: "orchestration.cancelTradingWatch",
@@ -194,6 +212,23 @@ export const RuntimeMode = Schema.Literals([
 ]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+/**
+ * What a thread's turns are allowed to do to the repository it lives in.
+ *
+ * `"market_research"` is the default and the fence: an ordinary chat about markets,
+ * research, or the product itself runs with no path that can modify the
+ * repository, enforced by each provider adapter at its own tool surface
+ * rather than by prompt prose. `"coding"` is the explicit exception the
+ * user opts a thread into when the work really is code: it restores the full
+ * coding-agent surface at the repository cwd.
+ *
+ * Thread-level state on the same lifecycle as `runtimeMode`: set by its own
+ * command, read at turn start, and a change restarts the provider session
+ * because the tool surface is decided at session start.
+ */
+export const WorkspaceMode = Schema.Literals(["market_research", "coding"]);
+export type WorkspaceMode = typeof WorkspaceMode.Type;
+export const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "market_research";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
@@ -383,6 +418,9 @@ export const OrchestrationSession = Schema.Struct({
   providerName: Schema.NullOr(TrimmedNonEmptyString),
   providerInstanceId: Schema.optional(ProviderInstanceId),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  workspaceMode: WorkspaceMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
+  ),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
@@ -470,6 +508,9 @@ export const OrchestrationThread = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  workspaceMode: WorkspaceMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -546,6 +587,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  workspaceMode: WorkspaceMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -710,6 +754,25 @@ export type OrchestrationGetTradingMarketChartInput =
   typeof OrchestrationGetTradingMarketChartInput.Type;
 
 /**
+ * Input for `getTradingResearchScenes`: one thread's published research
+ * scenes, newest first. Research mode through and through: no signer, no
+ * mission, and no entitlement beyond belonging to the environment the caller
+ * is already connected to. Scenes are thread-scoped on purpose, so the read
+ * is too.
+ */
+export const OrchestrationGetTradingResearchScenesInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationGetTradingResearchScenesInput =
+  typeof OrchestrationGetTradingResearchScenesInput.Type;
+
+/** What the research graph renders: the thread's scenes plus the disclaimers. */
+export const TradingResearchScenesView = Schema.Struct({
+  scenes: Schema.Array(ResearchSceneView),
+});
+export type TradingResearchScenesView = typeof TradingResearchScenesView.Type;
+
+/**
  * Bounds a thread detail read to a window of recent turns. `turnLimit` counts
  * turns with a user pending message (subagent/fan-out turns between them ride
  * along), so the window always contains the last N user prompts. `beforeCursor`
@@ -796,6 +859,7 @@ const ThreadCreateCommand = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  workspaceMode: Schema.optional(WorkspaceMode),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -913,6 +977,14 @@ const ThreadRuntimeModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadWorkspaceModeSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.workspace-mode.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  workspaceMode: WorkspaceMode,
+  createdAt: IsoDateTime,
+});
+
 const ThreadInteractionModeSetCommand = Schema.Struct({
   type: Schema.Literal("thread.interaction-mode.set"),
   commandId: CommandId,
@@ -926,6 +998,9 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  workspaceMode: WorkspaceMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
+  ),
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
@@ -960,6 +1035,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  workspaceMode: Schema.optional(WorkspaceMode),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -981,6 +1057,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode,
+  workspaceMode: Schema.optional(WorkspaceMode),
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
@@ -1051,6 +1128,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
+  ThreadWorkspaceModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -1080,6 +1158,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
+  ThreadWorkspaceModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -1200,6 +1279,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.pin-reordered",
   "thread.meta-updated",
   "thread.runtime-mode-set",
+  "thread.workspace-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
@@ -1270,6 +1350,9 @@ export const ThreadCreatedPayload = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  workspaceMode: WorkspaceMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -1367,6 +1450,12 @@ export const ThreadRuntimeModeSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const ThreadWorkspaceModeSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  workspaceMode: WorkspaceMode,
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadInteractionModeSetPayload = Schema.Struct({
   threadId: ThreadId,
   interactionMode: ProviderInteractionMode.pipe(
@@ -1393,6 +1482,9 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  workspaceMode: WorkspaceMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -1576,6 +1668,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.runtime-mode-set"),
     payload: ThreadRuntimeModeSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.workspace-mode-set"),
+    payload: ThreadWorkspaceModeSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -1938,6 +2035,10 @@ export const OrchestrationRpcSchemas = {
   getTradingMarketChart: {
     input: OrchestrationGetTradingMarketChartInput,
     output: TradingMarketChartView,
+  },
+  getTradingResearchScenes: {
+    input: OrchestrationGetTradingResearchScenesInput,
+    output: TradingResearchScenesView,
   },
   reviseTradingPlan: {
     input: OrchestrationReviseTradingPlanInput,

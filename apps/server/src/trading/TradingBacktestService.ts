@@ -45,6 +45,7 @@ import {
   runBacktestSweep,
   type BacktestCosts,
   type BacktestReport,
+  type BacktestTrade,
   type BacktestSweep,
   type BacktestSweepReport,
 } from "@t3tools/trading-contracts/backtest";
@@ -55,9 +56,16 @@ import {
   type TradingThesis,
 } from "@t3tools/trading-contracts/thesis";
 
-import { ARCHIVE_INTERVALS, INTERVAL_MS, type ArchiveInterval } from "./archive/config.ts";
+import {
+  ARCHIVE_INTERVALS,
+  archiveDatabasePath,
+  INTERVAL_MS,
+  type ArchiveInterval,
+} from "./archive/config.ts";
+import { providerReachFloor } from "./archive/hydration.ts";
 import type { CandleRow } from "./archive/candles.ts";
 import { TradingEventService, type TradingEventServiceShape } from "./TradingEventService.ts";
+import { archiveOwnershipRefusal } from "./TradingRuntimeLease.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 
 /**
@@ -80,6 +88,8 @@ export interface BacktestRefusal {
     | "interval_not_archived"
     | "window_too_large"
     | "no_archived_bars"
+    /** The archive could not be read or hydrated, so no run could start. */
+    | "market_data_unavailable"
     /** The `vary` clause names a parameter, a value count or a budget it cannot have. */
     | "sweep_invalid";
   readonly detail: string;
@@ -99,6 +109,13 @@ export interface BacktestOk {
   readonly sweepRuns?: ReadonlyArray<{ readonly value: number; readonly report: BacktestReport }>;
   /** Values the grammar would not take, each with its reason. */
   readonly sweepRefusals?: ReadonlyArray<{ readonly value: number; readonly reason: string }>;
+  /**
+   * The trades behind the report. The backtest wire shapes its own card and
+   * never shipped them; the research scene publisher draws them as markers on
+   * the graph, so the run now hands its caller the same trades the engine
+   * already produced rather than anyone re-walking the window.
+   */
+  readonly trades: ReadonlyArray<BacktestTrade>;
   readonly elapsedMillis: number;
 }
 
@@ -176,15 +193,30 @@ export const makeTradingBacktestService = (
   TradingBacktestService.of({
     run: ({ thesis, lookbackDays, notionalUsd, now, sweep }) =>
       Effect.gen(function* () {
+        // The read gate before anything else: an archive whose ownership
+        // cannot be verified is the one state where reading would be
+        // guessing, and a refusal here costs nothing to make.
+        const ownership = archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`);
+        if (ownership !== null) {
+          return {
+            status: "refused",
+            reason: "market_data_unavailable",
+            detail: ownership,
+          } as const;
+        }
+
         // The event calendar first, before any archive read: an anchored
-        // thesis whose set is unknown or retired would read undefined on
-        // every bar, and that refusal costs nothing to make.
+        // thesis whose set is not on record at all would read undefined on
+        // every bar, and that refusal costs nothing to make. Known rather than
+        // active on purpose: retiring a set takes it out of NEW theses, but a
+        // run of a thesis that anchored it while it was live keeps evaluating
+        // its dates, exactly like an armed validation does.
         const anchoredSets = thesisEventSets(thesis);
         // A calendar read cannot fail a run halfway: the service's contract
         // is a synchronous answer, so a broken state store is a defect the
         // boundary surfaces, not a typed refusal the tool reads.
         const knownEventSets =
-          anchoredSets.length === 0 ? undefined : yield* events.activeSetIds().pipe(Effect.orDie);
+          anchoredSets.length === 0 ? undefined : yield* events.knownSetIds().pipe(Effect.orDie);
         const invalid = validateThesis(
           thesis,
           knownEventSets === undefined ? {} : { knownEventSets },
@@ -207,12 +239,33 @@ export const makeTradingBacktestService = (
           } as const;
         }
 
-        const coverageProbe = yield* archive.coverage({
+        // On-demand hydration before the window math: a declared lookback
+        // hydrates exactly that window, and a run without one hydrates from
+        // the one provider's recoverable reach — the honest floor for
+        // "everything you have," because anything older can never be served
+        // and the writer will say `source_window_exhausted` rather than
+        // pretend a Unix-epoch-to-now fetch was recoverable. already_covered
+        // costs nothing; unsupported says which part of history no approved
+        // source can serve.
+        const providerFloor = providerReachFloor(interval, now);
+        const desiredFromT =
+          lookbackDays === undefined
+            ? (providerFloor ?? now - 30 * DAY_MS)
+            : now - lookbackDays * DAY_MS;
+        const ensureWindow = yield* archive.ensureCoverage({
           coin: thesis.market,
           interval,
-          fromT: 0,
+          fromT: desiredFromT,
           toT: now,
+          purpose: "backtest",
+          now,
         });
+        const coverageProbe = ensureWindow.coverage;
+        const hydrationNote =
+          ensureWindow.outcome === "already_covered"
+            ? null
+            : `on-demand recovery from Hyperliquid: ${ensureWindow.outcome}` +
+              (ensureWindow.reason === null ? "" : ` (${ensureWindow.reason})`);
         // No `lookbackDays` means "everything you have", which is the archive's
         // own first bar — not an arbitrary default that quietly clips history
         // somebody spent weeks recording.
@@ -262,7 +315,8 @@ export const makeTradingBacktestService = (
               `the archive holds no ${interval} bars for ${thesis.market} in that window` +
               (coverageProbe.recordingSince === null
                 ? " (nothing is recorded for this market at all)"
-                : ` (recording reaches back ${Math.round((now - coverageProbe.recordingSince) / DAY_MS)} days)`),
+                : ` (recording reaches back ${Math.round((now - coverageProbe.recordingSince) / DAY_MS)} days)`) +
+              (hydrationNote === null ? "" : `; ${hydrationNote}`),
           } as const;
         }
 
@@ -322,7 +376,7 @@ export const makeTradingBacktestService = (
           ...(notionalUsd === undefined ? {} : { notionalUsd }),
         };
 
-        const { report } = runBacktest({ thesis, ...runInput });
+        const { report, trades } = runBacktest({ thesis, ...runInput });
 
         // One archive read above, every variation below. The candles and the
         // funding rows are handed to the sweep whole rather than re-fetched
@@ -332,6 +386,7 @@ export const makeTradingBacktestService = (
         return {
           status: "ok",
           report,
+          trades,
           ...(swept === null
             ? {}
             : {

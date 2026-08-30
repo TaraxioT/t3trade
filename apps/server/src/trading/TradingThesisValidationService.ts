@@ -384,6 +384,10 @@ const toForwardState = (row: ValidationRow, open: PaperFillRow | undefined): For
   pendingExitReason: (row.pending_exit_reason ?? null) as ForwardState["pendingExitReason"],
 });
 
+const rowJsonString = Schema.fromJsonString(Schema.Unknown);
+const jsonValueFromRow = Schema.decodeUnknownSync(rowJsonString);
+const rowJsonValue = Schema.encodeSync(rowJsonString);
+
 export const makeTradingThesisValidationService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
@@ -417,9 +421,11 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         endedAt: row.ended_at,
         endReason: row.end_reason as ThesisValidationEndReason | null,
         notionalUsd: row.notional_usd,
-        costs: JSON.parse(row.costs_json) as BacktestCosts,
+        costs: jsonValueFromRow(row.costs_json) as BacktestCosts,
         baseline:
-          row.baseline_json === null ? null : (JSON.parse(row.baseline_json) as BacktestStats),
+          row.baseline_json === null
+            ? null
+            : (jsonValueFromRow(row.baseline_json) as BacktestStats),
         barsWatched: row.bars_watched,
         state: toForwardState(row, open[0]),
         lastBarTime: row.last_bar_time,
@@ -546,7 +552,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
           ${id}, ${input.threadId ?? null}, ${DEFAULT_TRADING_VENUE}, ${input.thesis.market},
           ${input.thesis.interval}, ${encodeThesisJson(input.thesis)}, ${input.label ?? null},
           'armed', ${now}, ${now + input.durationMs}, NULL, NULL, ${notionalUsd},
-          ${JSON.stringify(costs)}, NULL, 0, NULL, NULL, NULL,
+          ${rowJsonValue(costs as unknown)}, NULL, 0, NULL, NULL, NULL,
           ${input.hypothesisId ?? null}, ${input.hypothesisVersion ?? null}, ${now}, ${now}
         )
       `.pipe(Effect.mapError(sqlFail("arm.insert")));

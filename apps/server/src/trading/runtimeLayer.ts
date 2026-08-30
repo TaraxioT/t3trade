@@ -67,6 +67,7 @@ import { TradingBacktestServiceLive } from "./TradingBacktestService.ts";
 import { TradingHypothesisServiceLive } from "./TradingHypothesisService.ts";
 import { TradingThesisValidationServiceLive } from "./TradingThesisValidationService.ts";
 import { TradingEventServiceLive } from "./TradingEventService.ts";
+import { TradingResearchSceneServiceLive } from "./TradingResearchSceneService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -236,6 +237,10 @@ export const TradingLayerLive = Layer.mergeAll(
   TradingHypothesisServiceLive,
   // The event calendar the engines read. Same dependency set, same claim.
   TradingEventServiceLive,
+  // The research scene record the trading_chart tool publishes into. Same
+  // dependency set once more: SQL and Crypto, and nothing that could reach
+  // an order.
+  TradingResearchSceneServiceLive,
   TradingMissionServiceLive,
   // The single-writer lease for this database. Merged here so every consumer
   // of the trading layer — the sweep below, the reactors above — sees the

@@ -27,6 +27,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_name,
           provider_instance_id,
           runtime_mode,
+          workspace_mode,
           active_turn_id,
           last_error,
           updated_at
@@ -37,6 +38,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.providerName},
           ${row.providerInstanceId},
           ${row.runtimeMode},
+          ${row.workspaceMode},
           ${row.activeTurnId},
           ${row.lastError},
           ${row.updatedAt}
@@ -47,6 +49,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_name = excluded.provider_name,
           provider_instance_id = excluded.provider_instance_id,
           runtime_mode = excluded.runtime_mode,
+          workspace_mode = excluded.workspace_mode,
           active_turn_id = excluded.active_turn_id,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
@@ -64,6 +67,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_name AS "providerName",
           provider_instance_id AS "providerInstanceId",
           runtime_mode AS "runtimeMode",
+          workspace_mode AS "workspaceMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -83,6 +87,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_name AS "providerName",
           provider_instance_id AS "providerInstanceId",
           runtime_mode AS "runtimeMode",
+          workspace_mode AS "workspaceMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"

@@ -29,6 +29,8 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { workspaceWriteBoundary } from "../WorkspaceBoundary.ts";
+import { prepareResearchScratch } from "../ResearchScratch.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   applyTradingTurnContract,
@@ -44,6 +46,7 @@ import {
 } from "../Errors.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
+  buildFencedOpenCodePermissionRules,
   buildOpenCodePermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
@@ -1234,7 +1237,39 @@ export function makeOpenCodeAdapter(
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
-        const directory = input.cwd ?? serverConfig.cwd;
+        // The repository-mutation boundary: a fenced session (a trading
+        // profile, or an ordinary thread not switched to `software` mode)
+        // runs in a server-owned scratch directory with a permission ruleset
+        // that denies every write outside it. OpenCode enforces the ruleset
+        // in its runtime, which is the seam this adapter has.
+        const workspaceBoundary = workspaceWriteBoundary({
+          threadId: input.threadId,
+          workspaceMode: input.workspaceMode,
+        });
+        const fencedSession = workspaceBoundary.kind === "fenced";
+        // The bounded research scratch directory, outside the repository and
+        // outside live state. OpenCode enforces the permission ruleset in its
+        // own runtime, which is this adapter's fence; when the scratch
+        // directory cannot be prepared there is nowhere safe to point the
+        // session, so it is refused rather than run at the repository cwd.
+        const scratchDir = fencedSession
+          ? yield* prepareResearchScratch({ threadId: input.threadId }).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "startSession",
+                    issue: error.detail,
+                  }),
+              ),
+            )
+          : null;
+        const directory =
+          fencedSession && scratchDir !== null ? scratchDir : (input.cwd ?? serverConfig.cwd);
+        const permission =
+          fencedSession && scratchDir !== null
+            ? buildFencedOpenCodePermissionRules(scratchDir)
+            : buildOpenCodePermissionRules(input.runtimeMode);
         const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {
@@ -1311,7 +1346,7 @@ export function makeOpenCodeAdapter(
                   yield* runOpenCodeSdk("session.update", () =>
                     client.session.update({
                       sessionID: reusable.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
+                      permission: permission,
                     }),
                   );
                   return { openCodeSession: reusable, created: false };
@@ -1338,7 +1373,7 @@ export function makeOpenCodeAdapter(
                   yield* runOpenCodeSdk("session.update", () =>
                     client.session.update({
                       sessionID: forked.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
+                      permission: permission,
                     }),
                   );
                   return { openCodeSession: forked, created: true };
@@ -1352,7 +1387,7 @@ export function makeOpenCodeAdapter(
                 const createdSession = yield* runOpenCodeSdk("session.create", () =>
                   client.session.create({
                     ...(input.title ? { title: input.title } : {}),
-                    permission: buildOpenCodePermissionRules(input.runtimeMode),
+                    permission: permission,
                   }),
                 );
                 if (!createdSession.data) {
@@ -1404,6 +1439,7 @@ export function makeOpenCodeAdapter(
           providerInstanceId: boundInstanceId,
           status: "ready",
           runtimeMode: input.runtimeMode,
+          ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
           cwd: directory,
           ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
           threadId: input.threadId,

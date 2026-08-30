@@ -14,6 +14,7 @@ import { BACKTEST_FALLBACK_SLIPPAGE_BPS_PER_SIDE } from "@t3tools/trading-contra
 import type { TradingThesis } from "@t3tools/trading-contracts/thesis";
 
 import type { CandleRow } from "./archive/candles.ts";
+import { providerReachFloor } from "./archive/hydration.ts";
 import {
   coarserIntervals,
   halfSpreadBps,
@@ -59,6 +60,12 @@ const stubArchive = (overrides: Partial<TradingMarketArchiveShape>): TradingMark
     candlesInWindow: () => Effect.succeed(archivedBars(100)),
     fundingInWindow: () => Effect.succeed([]),
     bookHistory: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
+    ensureCoverage: () =>
+      Effect.succeed({
+        outcome: "already_covered",
+        coverage: { recordingSince: NOW - 90 * 24 * 60 * MINUTE, gaps: [] },
+        reason: null,
+      }),
     ...overrides,
   }) as TradingMarketArchiveShape;
 
@@ -85,6 +92,7 @@ const stubEvents = (
 ): TradingEventServiceShape =>
   ({
     activeSetIds: () => Effect.succeed([...activeIds]),
+    knownSetIds: () => Effect.succeed([...activeIds]),
     occurrencesFor: () => Effect.succeed([...occurrences]),
     upcomingFor: () => Effect.succeed([]),
   }) as unknown as TradingEventServiceShape;
@@ -190,6 +198,55 @@ describe("TradingBacktestService", () => {
       expect(outcome.report.costs.slippageSource).toBe("assumed");
       expect(outcome.report.costs.slippageBpsPerSide).toBe(BACKTEST_FALLBACK_SLIPPAGE_BPS_PER_SIDE);
     }),
+  );
+});
+
+describe("on-demand hydration window", () => {
+  const coverage = { recordingSince: NOW - 90 * 24 * 60 * MINUTE, gaps: [] };
+  /** An archive that records what hydration was asked to recover. */
+  const recordingArchive = () => {
+    const asked: Array<{ fromT: number; toT: number; purpose: string; interval: string }> = [];
+    return {
+      asked,
+      archive: stubArchive({
+        ensureCoverage: (input) => {
+          asked.push({
+            fromT: input.fromT,
+            toT: input.toT,
+            purpose: input.purpose,
+            interval: input.interval,
+          });
+          return Effect.succeed({ outcome: "already_covered", coverage, reason: null });
+        },
+      }),
+    };
+  };
+
+  it.effect("a declared lookback hydrates exactly that window", () =>
+    Effect.gen(function* () {
+      const { archive, asked } = recordingArchive();
+      const outcome = yield* run(archive, { lookbackDays: 30 });
+      expect(outcome.status).toBe("ok");
+      expect(asked).toEqual([
+        { fromT: NOW - 30 * 24 * 60 * MINUTE, toT: NOW, purpose: "backtest", interval: "5m" },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "without a lookback, hydrates from the provider's recoverable reach — never the epoch",
+    () =>
+      Effect.gen(function* () {
+        const { archive, asked } = recordingArchive();
+        const outcome = yield* run(archive);
+        expect(outcome.status).toBe("ok");
+        expect(asked).toHaveLength(1);
+        // One servable window back on the declared interval, not Unix epoch to
+        // now: an impossible request the queue would rightly refuse.
+        expect(asked[0]?.toT).toBe(NOW);
+        expect(asked[0]?.fromT).toBe(providerReachFloor("5m", NOW));
+        expect(asked[0]?.fromT).toBeGreaterThan(0);
+      }),
   );
 });
 

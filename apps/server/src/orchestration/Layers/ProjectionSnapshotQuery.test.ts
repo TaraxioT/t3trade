@@ -6,6 +6,7 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -304,6 +305,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           linkedPullRequest: {
@@ -385,6 +387,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             status: "running",
             providerName: "codex",
             runtimeMode: "approval-required",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: asTurnId("turn-1"),
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
@@ -430,6 +433,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           linkedPullRequest: {
@@ -466,6 +470,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             status: "running",
             providerName: "codex",
             runtimeMode: "approval-required",
+            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: asTurnId("turn-1"),
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",

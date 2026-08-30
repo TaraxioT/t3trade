@@ -1,6 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { EventId, ThreadId, TurnId, type OrchestrationEvent } from "@t3tools/contracts";
+import {
+  EventId,
+  ThreadId,
+  TurnId,
+  type OrchestrationEvent,
+  DEFAULT_WORKSPACE_MODE,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -656,6 +662,7 @@ const turnEndEvent = (threadId: string): OrchestrationEvent => ({
       status: "ready",
       providerName: "claude",
       runtimeMode: "approval-required",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       activeTurnId: null,
       lastError: null,
       updatedAt: "2026-07-30T00:00:01.000Z",
@@ -682,6 +689,7 @@ const sessionStartingEvent = (threadId: string): OrchestrationEvent => ({
       status: "starting",
       providerName: "claude",
       runtimeMode: "approval-required",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       activeTurnId: null,
       lastError: null,
       updatedAt: "2026-07-30T00:00:00.500Z",
@@ -715,6 +723,7 @@ const sessionRestartEvents = (threadId: string): ReadonlyArray<OrchestrationEven
         status,
         providerName: "claude",
         runtimeMode: "approval-required" as const,
+        workspaceMode: DEFAULT_WORKSPACE_MODE,
         activeTurnId: null,
         lastError: null,
         updatedAt: `2026-07-30T00:00:00.${600 + index}Z`,
@@ -741,6 +750,7 @@ const turnRunningEvent = (threadId: string): OrchestrationEvent => ({
       status: "running",
       providerName: "claude",
       runtimeMode: "approval-required",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       activeTurnId: TurnId.make("turn_1"),
       lastError: null,
       updatedAt: "2026-07-30T00:00:00.800Z",

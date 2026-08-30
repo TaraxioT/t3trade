@@ -1,4 +1,5 @@
 import {
+  DEFAULT_WORKSPACE_MODE,
   EventId,
   TradingMissionId,
   type OrchestrationCommand,
@@ -377,6 +378,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
+          workspaceMode: command.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
@@ -908,6 +910,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.workspace-mode.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.workspace-mode-set",
+        payload: {
+          threadId: command.threadId,
+          workspaceMode: command.workspaceMode,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.interaction-mode.set": {
       yield* requireThread({
         readModel,
@@ -998,6 +1023,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
           runtimeMode: targetThread.runtimeMode,
+          workspaceMode: targetThread.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
           interactionMode: targetThread.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           createdAt: command.createdAt,

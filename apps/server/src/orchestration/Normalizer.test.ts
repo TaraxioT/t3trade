@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 
 import { canonicalizeClientCommandTimestamps } from "./Normalizer.ts";
@@ -42,6 +43,7 @@ describe("canonicalizeClientCommandTimestamps", () => {
         attachments: [],
       },
       runtimeMode: "full-access",
+      workspaceMode: DEFAULT_WORKSPACE_MODE,
       interactionMode: "default",
       bootstrap: {
         createThread: {
@@ -52,6 +54,7 @@ describe("canonicalizeClientCommandTimestamps", () => {
             model: "gpt-5.4",
           },
           runtimeMode: "full-access",
+          workspaceMode: DEFAULT_WORKSPACE_MODE,
           interactionMode: "default",
           branch: null,
           worktreePath: null,

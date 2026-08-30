@@ -195,6 +195,43 @@ export const WS_PING_INTERVAL_MS = 45_000;
  */
 export const CANDLE_WINDOW_BARS = 5_000;
 
+/**
+ * The one data provider the archive is allowed to hydrate from. Hyperliquid
+ * is both the execution venue and the historical source; a second provider
+ * would put two provenances in one candle series, and that is a typed,
+ * deliberate decision this fork has not made — never an improvised crawl and
+ * never a silent mix. Every hydration path refuses windows outside this
+ * provider's own reach and says so in words.
+ */
+export const ARCHIVE_DATA_PROVIDER_ID = "hyperliquid";
+
+/** Pending on-demand hydration requests the queue may hold. */
+export const HYDRATION_MAX_PENDING = 4;
+/** Bars one hydration request may ask the writer to fetch. */
+export const HYDRATION_MAX_BARS = CANDLE_WINDOW_BARS;
+/** Requests the sole writer will drain on one tick. */
+export const HYDRATION_MAX_PER_TICK = 2;
+/** How long one hydration request may wait from asking to answer. */
+export const HYDRATION_MAX_WAIT_MS = 30_000;
+/**
+ * The longest the sole writer may sit between looks at the hydration queue
+ * when no file watch can be installed. Pinned at half of
+ * {@link HYDRATION_MAX_WAIT_MS}: a request that arrives the instant a slice
+ * begins is still observed a full half-deadline before it expires, so the
+ * 60-second poll cadence can never swallow a live request whole. With a
+ * working watch the wake is immediate and this is only the guarantee floor.
+ */
+export const HYDRATION_WRITER_SLICE_MS = HYDRATION_MAX_WAIT_MS / 2;
+/**
+ * A hydration queue lock older than this is a crashed holder and may be
+ * broken. The critical section is a read-parse-write of a small JSON file —
+ * milliseconds — so ten seconds is generous without making a crashed reader
+ * wait meaningfully.
+ */
+export const HYDRATION_QUEUE_LOCK_STALE_MS = 10_000;
+/** How long a producer waits for the queue lock before giving up honestly. */
+export const HYDRATION_QUEUE_LOCK_WAIT_MS = 2_000;
+
 /** Rows one `fundingHistory` call returns before it must be paged. */
 export const FUNDING_PAGE_ROWS = 500;
 
@@ -242,6 +279,18 @@ export const REQUEST_ATTEMPTS = 6;
 export function archiveDatabasePath(): string {
   const home = process.env["T3CODE_HOME"] ?? NodePath.join(NodeOS.homedir(), T3_HOME_DIR_NAME);
   return NodePath.join(home, "userdata", "market-archive.sqlite");
+}
+
+/**
+ * Where the on-demand hydration queue lives: beside the archive database it
+ * serves, in the writer's own state tree. Readers write requests here; the
+ * sole lease holder drains them. A malformed or unreadable file is refused
+ * as unusable — never rewritten as an empty queue, which would erase pending
+ * work — because the queue is an optimization for recoverable windows, not a
+ * promise the archive is measured by.
+ */
+export function hydrationRequestsPath(): string {
+  return `${archiveDatabasePath()}.hydration.json`;
 }
 
 /** `readArchiveCoins` against the real file. What the archiver actually calls. */

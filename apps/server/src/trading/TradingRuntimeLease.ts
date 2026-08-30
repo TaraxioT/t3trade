@@ -142,7 +142,15 @@ const HOST = NodeOS.hostname();
 
 const readRecord = (lockPath: string): LeaseRecord | null => {
   try {
-    const parsed = JSON.parse(NodeFS.readFileSync(lockPath, "utf8")) as Partial<LeaseRecord>;
+    return readRecordOf(NodeFS.readFileSync(lockPath, "utf8"));
+  } catch {
+    return null;
+  }
+};
+
+const readRecordOf = (raw: string): LeaseRecord | null => {
+  try {
+    const parsed = JSON.parse(raw) as Partial<LeaseRecord>;
     if (
       typeof parsed.pid !== "number" ||
       typeof parsed.host !== "string" ||
@@ -183,6 +191,93 @@ const sameRecord = (a: LeaseRecord, b: LeaseRecord): boolean =>
  * (which fails rather than clobber a lock since re-created at the original
  * path) and the caller must re-judge. Exported for the takeover-race test.
  */
+/**
+ * A passive read of the lease, for surfaces that report health without
+ * touching the lock. Three answers, because they mean different things:
+ *
+ * - `absent`: no lock file. The write side is open (or about to be taken).
+ * - `held`: a lock file naming a holder. `local` says whether that holder is
+ *   a process on THIS host we could probe with signal 0 (a foreign host is
+ *   not probeable, and the answer says so rather than guessing).
+ * - `unreadable`: a lock file exists whose contents are not a record. Nobody
+ *   can vouch for who owns the write side, which is exactly the fact the
+ *   health model must surface instead of papering over.
+ *
+ * Never breaks, never writes: reading health must not be able to disturb the
+ * single-writer lease it is describing.
+ */
+export type LeaseRead =
+  | { readonly status: "absent" }
+  | {
+      readonly status: "held";
+      readonly pid: number;
+      readonly host: string;
+      readonly heartbeatAt: number;
+      /** True when the holder is on this host (alive or not is the reader's call). */
+      readonly local: boolean;
+      /** Signal-0 probe of the holder pid. Null when the holder is foreign. */
+      readonly pidAlive: boolean | null;
+    }
+  | { readonly status: "unreadable" };
+
+export const readLease = (lockPath: string): LeaseRead => {
+  let raw: string;
+  try {
+    raw = NodeFS.readFileSync(lockPath, "utf8");
+  } catch {
+    return { status: "absent" };
+  }
+  const record = readRecordOf(raw);
+  if (record === null) {
+    return { status: "unreadable" };
+  }
+  const local = record.host === HOST;
+  return {
+    status: "held",
+    pid: record.pid,
+    host: record.host,
+    heartbeatAt: record.heartbeat,
+    local,
+    pidAlive: local ? pidIsAlive(record.pid) : null,
+  };
+};
+
+/** The passive holder read, for surfaces that only want the holder. */
+export const readLeaseHolder = (
+  lockPath: string,
+): { readonly pid: number; readonly host: string; readonly heartbeatAt: number } | null => {
+  const read = readLease(lockPath);
+  return read.status === "held"
+    ? { pid: read.pid, host: read.host, heartbeatAt: read.heartbeatAt }
+    : null;
+};
+
+/**
+ * The read gate: `null` when reads may proceed, a refusal sentence when the
+ * write side's ownership cannot be verified and the archive must not be
+ * guessed at. Only unverification refuses — a healthy external writer, a
+ * stopped recorder, and a stale heartbeat all remain readable states with
+ * their own labels; "we cannot tell who owns this" is the one state where
+ * serving data would be serving a guess.
+ *
+ * The read policy behind that: a server that does not own the lease reads
+ * the archive through the read-only WAL seam, which is safe exactly while
+ * the recorded writer keeps the database coherent — a live writer maintains
+ * the shared-memory sidecar read-only readers attach to, and a writer that
+ * died leaving an orphaned WAL makes the read-only open itself fail, which
+ * the archive layer already degrades to an honest "no archive". So a healthy
+ * external holder means charts and studies read real, fresh-enough data
+ * (per-series freshness and coverage stay the per-read gate they always
+ * were), and an unparseable lock — the one state where ownership is a
+ * mystery — refuses up here instead.
+ */
+export const archiveOwnershipRefusal = (lockPath: string): string | null => {
+  const read = readLease(lockPath);
+  return read.status === "unreadable"
+    ? "archive ownership cannot be verified (the writer lock is unreadable), so charts and studies are refusing rather than guessing"
+    : null;
+};
+
 export const breakStaleLock = (
   lockPath: string,
   judgedStale: LeaseRecord | null,

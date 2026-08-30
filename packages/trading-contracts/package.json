@@ -167,6 +167,10 @@
     "./eventSets": {
       "types": "./src/eventSets.ts",
       "import": "./src/eventSets.ts"
+    },
+    "./researchScenes": {
+      "types": "./src/researchScenes.ts",
+      "import": "./src/researchScenes.ts"
     }
   },
   "scripts": {
