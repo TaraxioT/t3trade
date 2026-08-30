@@ -1,188 +1,131 @@
-# T3 Code
+# T3 Trade
 
-T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs (Codex, Claude Code, Cursor, Grok, OpenCode) and serves web, desktop, and mobile clients.
+T3 Trade is an agentic trading environment built from T3 Code. It keeps the coding-agent workspace and adds supervised, budgeted trading on Hyperliquid testnet. Treat the trading system—not the upstream product—as the center of this repository.
 
-You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
+## Priorities
 
-## What makes T3 Code special?
+1. Correctness: preserve declared behavior, validate boundaries, handle failures, and test non-trivial changes.
+2. Clarity: prefer explicit, local code that another engineer can debug quickly.
+3. Restraint: make the smallest complete change; avoid speculative abstractions and dependencies.
 
-We have over 200,000 users who love T3 Code. It's important we maintain the things they love as we continue to iterate on the product. Here's a brief list of the things we can never compromise on.
+Trading safety outranks convenience. Never weaken an execution guard, loss budget, protection requirement, authority check, idempotency boundary, or reconciliation rule to make an agent or UI flow pass.
 
-### 1. Open at the core
+## Product boundaries
 
-T3 Code is truly open. We share our roadmap, we share how we think about things, and of course we share all our code. A large number of our users run forks. We work in the open, and should strive to stay that way.
+- Hyperliquid testnet is the only execution target. Do not introduce a mainnet path implicitly.
+- The exchange is authoritative for positions, orders, and fills. Local state records T3 Trade's decisions and actions.
+- Every confirmed exposure increase must have exchange-native protection. Failure paths must not leave a position silently unprotected.
+- Signing is local and deterministic. Never log, expose, copy unnecessarily, or commit signer material.
+- Research mode is a real product mode: market data, charts, alerts, backtests, validations, missions, and wakes must work without a signer. Only signing-dependent actions should refuse.
+- User controls such as pause, cancel, reduce, close, and revoke must work without the agent provider running.
+- The active product surfaces are web and desktop. Mobile is inherited upstream code, not a current fork development target. Do not add fork features or spend verification time there unless explicitly requested; avoid breaking shared contracts where practical.
 
-### 2. Performance without compromise
+## Architecture
 
-Lots of apps have gotten bogged down with bad tech decisions and "slop". We have not, and we're proud of the performance of T3 Code. We regularly audit for performance regressions, often caused by sending too much data over websockets, css animations causing gpu spikes, lists being hard to render, and more. Make sure all changes are considerate of performance impact.
+Clients send typed WebSocket requests. The server converts requests into commands, a pure decider emits persisted events, and projectors build the read model. Queue-backed reactors perform side effects and emit typed receipts. Provider adapters translate Codex, Claude, Cursor, Grok, and OpenCode protocols at the boundary.
 
-### 3. Remote ready
+Trading follows the same rule: typed contracts and deterministic services own policy; the UI presents state and sends intent. Keep exchange calls and provider-specific complexity at adapters. Never move safety decisions into prompt prose or client state.
 
-The architecture of T3 Code's websocket layer (npx t3) enables a lot of awesome remote features. These have become core to the product. Whether users are connecting directly over their local network, using Tailscale, or leaning in fully with T3 Connect (our tunnel solution, also in this repo), we need to make sure new features are properly supported.
+Key locations:
 
-### 4. Multi-surface
+- `apps/server/src/trading` — trading services, execution, reconciliation, missions, watches, and archive runtime.
+- `packages/trading-contracts` — shared trading types and pure policy/accounting logic.
+- `apps/server` — orchestration, providers, persistence, and WebSocket server. Read `.repos/effect-smol/LLMS.md` before editing Effect-heavy code.
+- `apps/web` — active React/Vite client. `apps/desktop` wraps it and adds Electron behavior.
+- `packages/contracts` — wire contracts. A schema change must be handled by every active producer and consumer.
+- `packages/client-runtime` — client logic shared across surfaces.
+- `infra/relay` — hosted T3 Connect control plane.
+- `.repos` — vendored, read-only references. Never edit or import from them.
 
-T3 Code has 3 key app surfaces: **web**, **desktop**, and **mobile**.
+Put durable architecture in `docs/internals`, operational procedures in `docs/operations`, and shipped behavior in `docs/user`. Do not commit plans, scratch notes, or PR-only evidence.
 
-**Web** is kind of two surfaces, as we have the public facing "app.t3.codes" as well as locally hosting the web app through the `npx t3` command. Both need to be supported by all new features where reasonable.
+## Fork identity
 
-**Desktop** is the main surface most users install first. It's a full Electron app that bundles the server runner as well. The desktop app can also be used as the host server, allowing remote connections from app.t3.codes or the mobile app.
+T3 Trade may be installed beside upstream T3 Code. Shared names cause silent database and single-instance-lock collisions.
 
-**Mobile** is a React Native app for both iOS and Android, available on the App Store and Google Play. The mobile app allows for connecting to any T3 Code server to control work remotely.
+- Fork-owned paths and identifiers live in `packages/shared/src/forkPaths.ts`; import them instead of repeating literals.
+- Preserve `~/.t3trade`, Electron `t3trade` / `t3trade-dev`, URL schemes, bundle identifiers, service names, desktop entries, askpass names, and WSL markers through upstream merges.
+- `T3CODE_HOME` remains the application-state override used by inherited server and desktop paths.
+- `T3TRADE_HOME` is the separate trading signer-base override. It resolves the interim key beneath `secrets`; it is not the general application-state override.
+- An upstream sync that restores `t3code` names or paths is a regression unless explicitly approved.
 
-## A note from Theo
+## Relay and production infrastructure
 
-I like ambitious ideas, simple systems, and software that feels obvious. Do not preserve complexity just because it already exists. Do not introduce machinery because it looks architecturally impressive. Understand the real constraint, then fight for the smallest model that makes the correct behavior unsurprising.
+The relay is T3 Connect's hosted control plane for account/environment linking, managed endpoint discovery, short-lived credentials, and relay diagnostics. Normal API and WebSocket traffic goes directly between the client and environment after connection; the relay is not the steady-state data path.
 
-Channel both "measure twice, cut once" and "yagni". Fight scope creep. Try to honor the dev's intent in both a minimal and realistic fashion.
+Repository code is not the complete source of truth for production infrastructure. Before diagnosing or changing relay behavior, inspect all three layers:
 
-The rest of this document is meant to help you navigate the codebase and make changes effectively. Think of these instructions less as "hard rules", more as "good defaults". The developer's preferences should be able to override anything here.
+1. `infra/relay` for the Alchemy stack, Worker, contracts, migrations, and deployment code.
+2. `ssh georges-instance` for the Postgres origin and `cloudflared` host state.
+3. The Cloudflare API MCP and Wrangler for deployed Workers, custom domains, DNS, Access, tunnels, Hyperdrive, queues, and logs.
 
-Of note: Most T3 Code contributions will come from T3 Code itself, often controlled remotely. This means you should be careful about accessing data, killing dev servers, and other things that may damage the T3 Code instance that the contributor is using.
+Current production shape, which must be re-verified rather than assumed:
 
-## A small glossary
+- `relay.athelstan.xyz` is the relay Worker custom domain. The physical Worker name is generated by Alchemy and may change.
+- `relaydb.athelstan.xyz` is protected by Cloudflare Access and reaches a Cloudflare Tunnel.
+- `georges-instance` runs `cloudflared` and the `t3relay-postgres` container from `/opt/t3relay-db`; Postgres is bound to `127.0.0.1:5432`, not the public network.
+- Hyperdrive reaches the runtime database through the protected tunnel. Runtime credentials must not gain schema-owner/DDL authority.
 
-We need to be on the same page with terminology. When communicating, use this language:
+Start with read-only inspection. Use the Cloudflare API MCP to discover exact resources and current configuration; use Wrangler for supported Worker commands and logs. Never print `.env` files, tunnel tokens, service tokens, database passwords, signer keys, or Worker secrets. Do not deploy, migrate, rotate credentials, edit DNS/Access, restart services, or mutate production unless the user explicitly requests it.
 
-- **you** means the agent reading this file and changing T3 Code.
-- **we, us, and maintainers** mean Theo, Julius and the people building T3 Code. These are who you are talking to now.
-- **user** means the person using T3 Code to direct coding agents.
-- **agent** means the coding agent a user runs inside T3 Code. Depending on context, that may also include you.
-- **provider** means the agent runtime or harness T3 Code talks to, such as Codex, Claude, Cursor, or OpenCode.
-- **client** means the web, desktop, or mobile UI.
-- **environment** means one running T3 server and the machine, filesystem, provider credentials, and state it owns.
-- **project** means an environment-local workspace record rooted at a directory.
-- **thread** means the durable conversation and work history for a project.
-- **turn** means one user-to-agent cycle, including follow-up work such as checkpointing.
-- **T3 home** means the base data directory. Runtime state normally lives below its userdata directory.
+Relay contract changes must stay aligned across `infra/relay`, `packages/contracts`, `packages/client-runtime`, and the server/client call sites. Read `docs/internals/environment-auth.md` before changing authentication or credential behavior and `docs/operations/relay-observability.md` before changing diagnostics.
 
-## The three ways to hurt yourself
+APNs and mobile-notification code remains for upstream compatibility, not as an active fork feature target. Do not expand or verify it unless explicitly requested; keep required deployment configuration parseable.
 
-1. **Killing by pattern.** Never `pkill -f`, `pgrep | kill`, or `kill` a PID you found by matching a name, path, or worktree string. Your own agent process has this checkout's path in its argv, and this machine runs several other dev servers at once. Kill only a PID you captured at spawn, or the owner of your port: on macOS `lsof -nP -iTCP:<port> -sTCP:LISTEN` and confirm with `lsof -a -d cwd -p <pid>`, on Linux `ss -H -ltnp` and `/proc/<pid>/cwd`. Killing the dev-runner parent is not enough — Vite and the server survive it and keep holding their ports, so kill the port owners too.
-2. **Two writers on one database.** `~/.t3trade/userdata` belongs to the installed app, which holds `state.sqlite` open the whole time it runs. `vp run dev` does not go there: in development the state directory is `~/.t3trade/dev`, seeded with a copy of the real data, so the dev server and the installed app coexist and neither needs quitting. You may still aim a dev server at `userdata` with `--home-dir` when you want the live environment itself, but then quit the app first, confirm nothing else holds the file, and take a `VACUUM INTO` snapshot before booting. Never delete or reset either directory.
-3. **Baking in origins.** Never set `VITE_HTTP_URL` or `VITE_WS_URL` for dev. Dev is single-origin and Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known`. Setting them bakes localhost into the bundle and silently breaks every remote browser.
+## Development safety
 
-## Hit every surface
+Never kill by process-name or path pattern. Do not use `pkill -f`, `pgrep | kill`, or a PID found from a fuzzy match. Stop only a PID captured when you started it, or identify a port owner and confirm its working directory first. Vite and server children can outlive their runner.
 
-The most common defect in this repo is a change that works on the path you tested and is missing everywhere else. Before calling frontend work done, walk this list and say which entries applied:
+Never allow two writers on one SQLite database.
 
-- **Entry points.** A behavior reachable from the chat view is usually also reachable from Settings, the command palette, and a keybinding. Fixing one is not fixing the feature.
-- **Clients.** Web, desktop (wraps web, adds Electron shell/IPC), and mobile (React Native, separate navigation). Shared logic lives in `packages/client-runtime`
-- **Providers.** Codex, Claude, Cursor, Grok, and OpenCode each have an adapter. Provider-shaped features need a decision per adapter, even if the decision is "not supported here".
-- **Contracts.** Anything crossing the wire is typed in `packages/contracts`. Change the schema and the server, web, mobile, and desktop all follow.
-- **Reverse states.** If you added a way in, add the way out and the way to see it. Snooze needs unsnooze. Close needs reopen. A one-way door is a bug.
-- **Connection modes.** Local, remote/relay, and tunnel behave differently. Multi-device and multi-environment cases are real.
-- **Docs.** `docs/` splits by audience. Behavior changes that a user would notice belong in `docs/user/` (shipped-product voice, no repo tooling or source paths); architecture and contributor changes in `docs/internals/`; runbooks in `docs/operations/`; new vocabulary in `docs/internals/glossary.md`.
+- Installed app state: `~/.t3trade/userdata`.
+- Main-checkout development state: `~/.t3trade/dev`.
+- Worktree development state: `<worktree>/.t3/userdata`.
+- An explicit `--home-dir` uses that directory's `userdata`; do not point it at live state casually.
+- Before testing against or copying live state, create a consistent SQLite snapshot with `VACUUM INTO`. Never copy an active database file alone, never symlink test state, and never delete or reset shared state.
 
-## Living next to upstream
+Use `vp i` to install and `vp run dev` to start server and web. Read actual ports, base directory, and pairing URL from the dev-runner output; ports can shift. Never set `VITE_HTTP_URL` or `VITE_WS_URL` for development because Vite provides the single-origin proxies.
 
-A user may have upstream T3 Code installed already. Everything the fork writes
-to a shared location must therefore carry the fork's own name, or the two
-applications collide on a first run in ways that are silent and fatal.
+For tailnet sharing, use `vp run dev --share` and hand the user the complete pairing URL including its one-time token. Do not assemble Tailscale routing manually or consume a pairing URL meant for someone else.
 
-The forked names live in one place, `packages/shared/src/forkPaths.ts`, and the
-call sites import from it rather than repeating a literal:
+## Verification
 
-- `~/.t3trade` — the data directory, so the two apps never share `state.sqlite`.
-- `t3trade` / `t3trade-dev` — Electron `userData`. Electron scopes the
-  single-instance lock to this directory, so sharing it hands the second launch
-  to the other app.
-- `t3trade://` / `t3trade-dev://` — the renderer URL scheme.
-- `com.t3trades.app` — the bundle identifier.
+Use the `test-t3-app` skill for every user-visible web change. It defines the required isolated state, pairing, controlled-browser, server-retention, and teardown workflow. Reuse one dev server, state directory, and authenticated browser for the full iteration. Do not launch competing stacks from subagents.
 
-The same rule applies outside `forkPaths.ts` wherever a name reaches a shared
-namespace: `t3trade.service` and `com.t3tools.t3trade.service` for the boot
-service, `t3trade.desktop` and the `t3trade` WM class on Linux,
-`t3trade-url-handler.desktop`, `t3trade-ssh-askpass`, and the WSL marker files.
+### Model roles and test orchestration
 
-Deliberately **not** forked: `T3CODE_HOME` keeps its name, because it is opt-in
-and renaming it would touch every call site to buy nothing. The backend port
-needs no fork either — desktop scans upward from 3773, the dev runner from
-13773/5733, and the session cookie is already port-scoped.
+The normal local workflow deliberately separates implementation from verification:
 
-An upstream sync will try to pull these back to `t3code`. They are fork patches;
-keep them.
+- **GLM 5.3 is the implementation workhorse.** It inspects, writes, repairs, and orchestrates the end-to-end task unless the user explicitly selects another implementation model.
+- **GPT is the reviewer, prompt architect, and correctness auditor.** It inspects claims against the repository, identifies architectural or product deviations, challenges unsafe assumptions, writes precise execution and verification prompts for the other roles, and may apply small, indisputable local patches. In the prompt-led workflow, GPT should not silently take over a large implementation assigned to GLM or spend itself on routine test execution. It owns pushback when committing, testing, or scope would be premature or unsafe.
+- **Luna Medium is the default test runner because it is inexpensive.** Run focused tests, targeted typechecks or lint, and other executable verification through Luna at medium reasoning. Do not spend a larger model on routine test execution unless the user explicitly overrides this rule.
+- **Luna lives inside T3 Trade through the Codex harness.** A builder that cannot find `gpt-5.6-luna` in its own subagent registry has not proved Luna unavailable. When the builder can launch and operate T3 Trade, it should create or continue the Luna task inside the app and supervise it there.
+- Use an explicit **Coding task** for Luna when it needs to read the checkout or run verification commands. Market-research mode is intentionally fenced from repository mutation and is the wrong context for code verification.
+- Use a separate **Market research** conversation when verifying the trading-agent experience itself. The supervising implementation model may drive the controlled browser, collect evidence, diagnose failures, and apply repairs; Luna remains the model executing the requested tests and the in-product trading conversation.
+- Point Luna's Coding task at the exact checkout containing the changes under test. An uncommitted main checkout is not present in a fresh worktree. The checkout path is source code; the isolated `test-t3-app` home under `/tmp` is disposable runtime state. Never confuse or merge the two.
+- Prefer one supervising builder, one retained isolated app stack, and Luna tasks inside that app. Do not recursively launch competing dev stacks or ask a T3 Trade instance to restart the same instance that is hosting its verifier.
+- Before and after Luna verification, compare Git state. A read-only verifier must not change the source checkout. Give any Coding-mode mutation proof a disposable fixture under `/tmp`, never a protected dirty repository.
+- If Luna cannot be reached through the running T3 Trade Codex harness, report the exact blocker and stop executable verification. Do not silently substitute GLM, GPT, or a larger model.
 
-## Dev servers
+Prove the changed behavior with the smallest relevant checks:
 
-- `vp i` installs. Worktrees get this from the t3.json setup script; if module resolution looks broken, it probably did not run.
-- `vp run dev` starts server and web. In a **worktree**, the base directory is that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME`. In the **main checkout** the base is `~/.t3trade`, and because dev mode sets no explicit home the state directory below it is `dev`, not `userdata`. An explicit `--home-dir` beats both and flips the state directory to `userdata`, so pass it only when you mean the live environment. Read `baseDir` off the `[dev-runner]` line and remember the `/dev` suffix; see rule 2.
-- Ports derive from the checkout path and are stable across restarts, but read the real ones from the `[dev-runner]` line since occupied ports shift.
-- Sharing over the tailnet is three steps: run `vp run dev --share` in the background, wait for the `pairingUrl:` line in its output, paste that full URL (token included) in your reply. Do not wire up `tailscale serve` by hand for this, and do not open the URL yourself.
-- The web app requires pairing. Hand over the pairing URL, not the bare origin. A URL without its token is useless to whoever you gave it to. If the token got consumed, mint a fresh one with `node apps/server/src/bin.ts pair` — note it carries standard scopes, while the startup URL carries admin scopes (needed for Settings → Connections management).
-- Stop what you started, by the PID you tracked. See rule 1.
+- Run focused tests with `vp test run <files>` plus targeted typecheck or lint for the changed package.
+- Backend behavior changes require focused tests.
+- Trading accounting and policy changes require direct invariant/property coverage where applicable.
+- Wait on receipts and worker drains in async tests; do not use sleeps or polling to make them pass.
+- Do not run `vp check`, repository-wide tests, or repository-wide typecheck unless explicitly requested. CI owns the full suite.
+- UI work is complete only after an integrated `test-t3-app` browser pass covering loading, empty, success, and error/refusal states that apply.
 
-## Test data
+Before finishing, consider every affected boundary: server, web, desktop wrapper, providers, wire contracts, local versus remote/relay connections, multi-environment behavior, and reverse actions. Mobile applies only when explicitly requested or when a shared-contract change would otherwise leave it uncompilable.
 
-An empty database is a bad test, and a fresh `~/.t3trade/dev` is empty. It is seeded from the real data and should stay that way; reseed it, or seed a throwaway `.t3`, with a copy rather than by pointing at live state:
+## Working rules
 
-- Copy from `~/.t3trade/userdata` (the real data, the most realistic test set) or `~/.t3trade/dev`. Worktree state lives at `<worktree>/.t3/userdata`.
-- Snapshot the database with `VACUUM INTO`, which is safe even while a server has the source open and yields one consistent file:
-
-  ```bash
-  mkdir -p .t3/userdata
-  rm -f .t3/userdata/state.sqlite*  # VACUUM INTO refuses to overwrite
-  bun -e "new (require('bun:sqlite').Database)(process.env.HOME + '/.t3/userdata/state.sqlite', { readonly: true }).run(\"VACUUM INTO '.t3/userdata/state.sqlite'\")"
-  ```
-
-  A plain `cp` is only safe when no server has the source open, and must bring the `-wal` and `-shm` siblings along. A live file copy is a corrupt copy.
-
-- Bring `secrets` and `settings.json` only if the flow under test needs them.
-- Copy in, never symlink. Data flows one way: into your sandbox, never back out.
-- Snapshot before running against the real directory too, not just when copying out of it. It costs seconds and it is the only undo there is.
-
-## Verifying
-
-- Smallest proof that the change works. `vp test run <files>` for the tests you touched, targeted lint and typecheck for the scope you changed.
-- **Do not run repo-wide checks.** No `vp check`, no `vp run -r test`, no `vp run -r typecheck` unless I ask. CI owns the full suite.
-- Backend behavior changes ship with focused tests for that behavior.
-- The server is event-sourced and its async flows emit typed receipts. Wait on receipts and worker drains, never on sleeps or polling. A test that needs a timeout to pass is wrong.
-- User-visible frontend changes get an integrated pass in a real client: `test-t3-app` for web, `test-t3-mobile` for mobile. Name the skill explicitly when you delegate; a worker will not find it from its description.
-- The dev server, its ports, its `.t3` state and the browser are one each per worktree. One agent owns them for the whole loop, not for a turn, and only that agent drives the browser. Subagents do not launch their own dev servers.
-- Any other agent that needs the running app reads the owner's artifact for ports, base directory and pairing URL rather than starting a second stack.
-- Split implementation by file ownership, one writer per file per batch. Genuinely parallel verification needs one worktree per agent, created before dispatch with its own absolute path, since ports derive from that path. A single sequential pass does not need a worktree at all — the main checkout against the real install is the more faithful test.
-
-## Pull requests
-
-- Never make a PR unless the developer explicitly asks you to do so.
-- Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
-- Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
-- UI changes need before/after images. Motion or timing needs a short video.
-- Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
-- One concern per PR. If the description says "also", split it.
-- When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
-
-## Plans and work artifacts
-
-- Do not commit implementation plans, research notes, or agent scratch files. Keep temporary working material outside the worktree. `.plans/` is gitignored only as a safety net for legacy tooling.
-- Track active maintainer work in the GitHub issue or project item that owns it. External proposals follow `CONTRIBUTING.md` and belong in Ideas discussions.
-- Put durable architecture, constraints, and decisions in `docs/internals/`. Update those docs when the product changes so agents find current facts instead of abandoned intentions.
-- A merged PR is the implementation record. Close or update its tracking item when the work lands; do not preserve a second checklist in the repository.
-
-## How it works
-
-Clients send typed WebSocket requests. The server turns them into _commands_, a pure _decider_ turns commands into persisted _events_, and a _projector_ derives the read model the UI renders. Provider CLIs run as subprocesses; per-provider _adapters_ translate their native protocols into orchestration events. Side effects run in queue-backed _reactors_ that emit _receipts_ when milestones land. Each turn ends with a _checkpoint_, a hidden git ref, so the app can diff and restore.
-
-Full glossary with file links: `docs/internals/glossary.md`
-
-## Where code lives
-
-- `apps/server` - WebSocket, orchestration, providers, checkpointing. Effect-heavy: read `.repos/effect-smol/LLMS.md` before writing Effect code.
-- `apps/web` - React/Vite UI. `apps/desktop` wraps it, `apps/mobile` is React Native, `apps/marketing` is the site.
-- `packages/contracts` - Effect/Schema contracts plus small derived helpers. No heavy runtime logic.
-- `packages/shared` - shared runtime utils, subpath exports, no barrel.
-- `packages/client-runtime` - client code shared by web and mobile.
-- `.repos/` - vendored read-only references. Prefer their patterns over invented ones. Never edit or import from them. Sync with `vpr sync:repos` when bumping the matching dependency.
-
-## Taste
-
-- Complexity belongs at the adapter boundary. Orchestration stays pure, UI stays dumb.
-- Inferred types over annotations. `any` is the enemy.
-- Comments describe how a thing is used, and move when the code moves. To be used mostly to describe functions, not to annotate every line of behavior.
-- Our users drive agents all day and notice a dropped frame, a lying spinner, and a stale label. No continuously repainting animations; they peg the GPU on high-refresh displays.
-- If a rule here fights the task in front of you, say so loudly and get a human sign-off before breaking it.
-
-## Additional tips
-
-- Browser verification through the `test-t3-app` loop is standing authorization in this fork. Anything beyond that loop, including computer use outside the controlled browser, still needs a request.
-- Security is important, but should not be over-indexed on, especially for dev mode/maintainer-only features.
+- Preserve unrelated user changes in a dirty worktree.
+- Preserving a dirty tree is a temporary safety strategy, not a completion goal. After verification is green, commit the intended implementation. A tightly coupled cross-package feature may use one atomic commit; unrelated configuration, prompts, editor files, and media must be classified and committed separately or left untouched rather than swept into the feature commit.
+- Keep controllers and route handlers thin; keep business rules in focused services.
+- Use strict TypeScript, explicit boundary types, `unknown` with narrowing, and no `any`.
+- Keep comments for intent and constraints, not narration.
+- Avoid continuous repainting animation and unnecessary WebSocket payload growth.
+- Make state transitions, validation, permissions, storage writes, side effects, external calls, loading, empty, and error states explicit.
+- Update tests and durable documentation with behavior changes.
+- Never create a pull request unless explicitly asked.
