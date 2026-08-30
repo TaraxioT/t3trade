@@ -11,10 +11,12 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   checkEventStudy,
+  EVENT_STUDY_DEFAULT_ENTRY_BASIS,
   EVENT_STUDY_MAX_HORIZON_BARS,
   eventStudyHydrationWindow,
   eventStudyReadWindow,
   parseTradingEventsOccurrence,
+  renderTradingEventsMenu,
   runEventStudy,
   validateEventOccurrence,
   type TradingEventOccurrence,
@@ -301,6 +303,200 @@ describe("horizon semantics: the sentence and the engine agree at horizon 1 and 
   });
 });
 
+describe("the close basis: entry is the first closed bar's close, exit a full horizon later", () => {
+  // Ten bars opening 100 and closing 100 + i; closeTime is the bar's last
+  // millisecond (open + interval - 1), the convention the archive stamps.
+  const candles = Array.from({ length: 10 }, (_, i) => bar(i, 100, 100 + i));
+
+  it("defaults tool calls to the close basis and keeps the open basis for pure callers", () => {
+    expect(EVENT_STUDY_DEFAULT_ENTRY_BASIS).toBe("first_closed_bar_after_event");
+    // runEventStudy itself still defaults to the open basis: existing callers
+    // measure what they measured before. Proven by the open-basis tests above
+    // passing without naming a basis.
+  });
+
+  it("horizon 1 enters on the containing bar's close and exits on the next bar's close", () => {
+    // The event ends at bar 3's open. Bar 3 is the first bar whose close
+    // (4m - 1ms) is strictly after the event: entry close 103, exit close 104
+    // one interval later. (104 - 103) / 103 = 0.97%.
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.covered).toBe(true);
+    expect(study.rows[0]?.entryTime).toBe(4 * MINUTE - 1);
+    expect(study.rows[0]?.entryPrice).toBe(103);
+    expect(study.rows[0]?.exitPrice).toBe(104);
+    expect(study.rows[0]?.exitTime).toBe(5 * MINUTE - 1);
+    expect(study.rows[0]?.returnPct).toBe(0.97);
+    expect(study.rows[0]?.barsCovered).toBe(1);
+    expect(study.rows[0]?.truncated).toBe(false);
+  });
+
+  it("horizon 2 exits two full intervals after the entry close", () => {
+    // Entry close 103 (bar 3), exit close 105 (bar 5): two close-to-close
+    // intervals. (105 - 103) / 103 = 1.94%.
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.exitPrice).toBe(105);
+    expect(study.rows[0]?.returnPct).toBe(1.94);
+    expect(study.rows[0]?.barsCovered).toBe(2);
+  });
+
+  it("an intrabar activation enters on the close of the bar that contains it", () => {
+    // The activation lands halfway through bar 3. Bar 3's close follows the
+    // activation, so the entry is bar 3's own close, not the next bar's.
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.entryPrice).toBe(103);
+    expect(study.rows[0]?.entryTime).toBe(4 * MINUTE - 1);
+    expect(study.rows[0]?.returnPct).toBe(0.97);
+  });
+
+  it("an activation exactly at a boundary enters on the next bar's close, never an equal one", () => {
+    // Ending exactly at bar 3's close (4m - 1ms) is NOT after it: strictly
+    // greater means bar 4, entry close 104, horizon 1 exit close 105.
+    // (105 - 104) / 104 = 0.96%. The same holds ending at bar 4's open.
+    for (const endAt of [4 * MINUTE - 1, 4 * MINUTE]) {
+      const study = runEventStudy({
+        occurrences: [occurrence(0, endAt)],
+        candles,
+        intervalMs: MINUTE,
+        horizonBars: 1,
+        entryBasis: "first_closed_bar_after_event",
+      });
+      expect(study.rows[0]?.entryPrice).toBe(104);
+      expect(study.rows[0]?.exitPrice).toBe(105);
+      expect(study.rows[0]?.returnPct).toBe(0.96);
+    }
+  });
+
+  it("refuses a first bar that has not closed yet rather than reading a forming close", () => {
+    // The activation lands inside the last bar; with `now` inside that bar
+    // the entry candidate's close is still in the future, so there is no
+    // closed price to enter on.
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 9 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+      now: 9 * MINUTE + 45_000,
+    });
+    expect(study.rows[0]?.covered).toBe(false);
+    expect(study.rows[0]?.reason).toContain("has not closed yet");
+    expect(study.meanReturnPct).toBeNull();
+  });
+
+  it("refuses a horizon with not one close-to-close interval to measure", () => {
+    // One archived bar after an activation: the entry close exists, but no
+    // bar follows it, so a 0% "return" over zero intervals would be the most
+    // misleading covered row possible.
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 0)],
+      candles: [bar(0, 100, 101)],
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.covered).toBe(false);
+    expect(study.rows[0]?.reason).toContain("no bar after this event's entry bar");
+    expect(study.meanReturnPct).toBeNull();
+  });
+
+  it("truncates at the last served close and says how many intervals it got", () => {
+    // Entry close 108 (bar 8), horizon 5 wants bar 13; the window ends at
+    // bar 9's close 109. (109 - 108) / 108 = 0.93% over 1 interval.
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 8 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.covered).toBe(true);
+    expect(study.rows[0]?.truncated).toBe(true);
+    expect(study.rows[0]?.barsCovered).toBe(1);
+    expect(study.rows[0]?.exitPrice).toBe(109);
+    expect(study.rows[0]?.returnPct).toBe(0.93);
+  });
+
+  it("refuses a recording gap that covers the close the entry would have measured from", () => {
+    // Bar 3 is absent; an activation at bar 3's open finds bar 4 as the
+    // first close after it, exactly one interval late: refuse, the same
+    // inclusive boundary the open basis uses.
+    const gappy = [
+      bar(0, 100, 100),
+      bar(1, 100, 100),
+      bar(2, 100, 100),
+      // bar 3 missing: the recording gap under test.
+      bar(4, 100, 104),
+      bar(5, 100, 105),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.covered).toBe(false);
+    expect(study.rows[0]?.reason).toContain("recording gap covers the 1 bar(s)");
+    expect(study.rows[0]?.reason).toContain("close");
+  });
+
+  it("keeps the shared honesty rows: future ends and pre-archive ends", () => {
+    const future = runEventStudy({
+      occurrences: [occurrence(99 * MINUTE, 100 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(future.rows[0]?.reason).toContain("still in the future");
+    const early = runEventStudy({
+      occurrences: [occurrence(0, -10 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(early.rows[0]?.reason).toContain("before the archived window");
+  });
+
+  it("samples the baseline as the same close-to-close lag at every bar, matching the rows", () => {
+    // Closes 100, 102, 104: the lag-1 close-to-close returns are 2% and
+    // (104 - 102) / 102 = 1.96%, so the baseline mean is 1.98% and an
+    // occurrence entering on bar 0 or bar 1 measures exactly the baseline
+    // sample at that bar: parity, not a different question.
+    const stepped = [bar(0, 100, 100), bar(1, 100, 102), bar(2, 100, 104)];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 0), occurrence(0, 1 * MINUTE)],
+      candles: stepped,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows.map((row) => row.returnPct)).toEqual([2, 1.96]);
+    expect(study.baseline?.samples).toBe(2);
+    expect(study.baseline?.meanReturnPct).toBe(1.98);
+    expect(study.baseline?.medianReturnPct).toBe(1.98);
+  });
+});
+
 describe("aggregates come from unrounded returns", () => {
   it("the mean is not the mean of the display-rounded rows", () => {
     // Two occurrences returning 0.991% and 0.997%: the rows round to 0.99 and
@@ -386,6 +582,20 @@ describe("the tool's ISO conventions", () => {
     expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-12T18:00:00Z"));
   });
 
+  it("an instantaneous event records start and end as the exact same instant", () => {
+    // A protocol activation is a moment, not a day: recording it with equal
+    // timed strings must preserve both instants exactly, never widen the
+    // span to a whole day the way a missing end would.
+    const parsed = parse({
+      start: "2022-09-15T06:42:42Z",
+      end: "2022-09-15T06:42:42Z",
+      source: "https://ethereum.org/ethereum-forks/",
+    });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.startAt).toBe(Date.parse("2022-09-15T06:42:42Z"));
+    expect(parsed.occurrence.endAt).toBe(parsed.occurrence.startAt);
+  });
+
   it("refuses a string that is not a date, naming the field", () => {
     const bad = parse({ start: "Devcon, probably", source: "url" });
     if ("reason" in bad) expect(bad.reason).toContain("start");
@@ -445,6 +655,33 @@ describe("the study's hydration window", () => {
     });
     expect(window).toEqual({ fromT: 11 * DAY, toT: 11 * DAY });
   });
+
+  it("on the close basis the window starts one bar earlier and ends one bar later", () => {
+    // The close basis enters on the close of the bar whose open slot the
+    // event falls inside (floor, not ceil), and its exit is a full horizon of
+    // close-to-close intervals after that bar's open.
+    const window = eventStudyHydrationWindow([endedEarly], {
+      intervalMs: DAY,
+      horizonBars: 3,
+      now,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(window).toEqual({ fromT: 11 * DAY, toT: 14 * DAY });
+    const midBar = eventStudyHydrationWindow([occurrence(10 * DAY, 11 * DAY + 6 * 60 * 60_000)], {
+      intervalMs: DAY,
+      horizonBars: 30,
+      now: 40 * DAY,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(midBar).toEqual({ fromT: 11 * DAY, toT: 40 * DAY });
+    const horizonOne = eventStudyHydrationWindow([endedEarly], {
+      intervalMs: DAY,
+      horizonBars: 1,
+      now,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(horizonOne).toEqual({ fromT: 11 * DAY, toT: 12 * DAY });
+  });
 });
 
 describe("the study's read window", () => {
@@ -486,5 +723,27 @@ describe("the study's read window", () => {
       now,
     });
     expect(window).toEqual({ fromT: 11 * DAY, toT: 25 * DAY });
+  });
+
+  it("carries the entry basis through, one rule for both callers", () => {
+    const input = {
+      intervalMs: DAY,
+      horizonBars: 3,
+      now,
+      entryBasis: "first_closed_bar_after_event" as const,
+    };
+    expect(eventStudyReadWindow([endedLate, endedEarly, future], input)).toEqual(
+      eventStudyHydrationWindow([endedLate, endedEarly, future], input),
+    );
+  });
+});
+
+describe("the menus teach the conventions the parser enforces", () => {
+  it("the events menu states the instant rule and the single-source rule", () => {
+    const menu = renderTradingEventsMenu();
+    expect(menu).toContain("start and end as the same instant");
+    expect(menu).toContain("never several URLs joined into one");
+    expect(menu).toContain("entryBasis");
+    expect(menu).toContain("first_closed_bar_after_event");
   });
 });

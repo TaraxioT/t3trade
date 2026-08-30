@@ -47,8 +47,11 @@ import * as Schema from "effect/Schema";
 
 import { BacktestInterval, TradingThesis } from "./thesis.ts";
 import {
+  EventStudyEntryBasis,
   EventStudyReport,
+  EVENT_STUDY_DEFAULT_ENTRY_BASIS,
   EVENT_STUDY_DEFAULT_HORIZON_BARS,
+  EVENT_STUDY_ENTRY_BASIS_PHRASES,
   EVENT_STUDY_MAX_HORIZON_BARS,
 } from "./eventSets.ts";
 import { TradingMarket, UnixMillis } from "./primitives.ts";
@@ -100,7 +103,10 @@ export const STUDY_CHART_MAX_WINDOW_BARS =
 
 /** Calculation versions, one per kind, bumped when the math changes. */
 export const RESEARCH_CALCULATION_VERSIONS = {
-  eventStudy: "event-study-1",
+  // Bumped to -2 when the study gained an explicit entry basis: scenes
+  // computed before the field exist decode as the open basis and keep the
+  // numbers they were computed with.
+  eventStudy: "event-study-2",
   strategyReplay: "backtest-replay-1",
   annotation: "annotation-1",
 } as const;
@@ -150,6 +156,16 @@ export const EventStudyScenePayload = Schema.Struct({
    * labelled as a gross, feeless illustration.
    */
   illustrativeNotionalUsd: Schema.optional(Schema.Number),
+  /**
+   * How the study priced its entry. Part of the recipe like the notional: the
+   * report's numbers were computed on this basis and read differently without
+   * it. Decodes as `first_bar_open_after_event` when absent, because scenes
+   * persisted before the field existed were computed on that basis and must
+   * never be reinterpreted.
+   */
+  entryBasis: EventStudyEntryBasis.pipe(
+    Schema.withDecodingDefault(Effect.succeed("first_bar_open_after_event")),
+  ),
   /** The archive window the recipe asked about, before coverage answered. */
   requestedFromT: Schema.optional(Schema.Number),
   requestedToT: Schema.optional(Schema.Number),
@@ -266,6 +282,8 @@ export const DeterministicSceneLayer = Schema.Union([
     startAt: UnixMillis,
     endAt: UnixMillis,
     label: Schema.String,
+    /** Which report row this span belongs to, so the graph can bind layers. */
+    occurrenceIndex: Schema.Number,
   }),
   Schema.Struct({
     kind: Schema.Literal("study_entry"),
@@ -387,6 +405,7 @@ export function composeEventStudyScene(payload: EventStudyScenePayload): Trading
       startAt: row.startAt,
       endAt: row.endAt,
       label: row.label ?? `occurrence ${index + 1}`,
+      occurrenceIndex: index,
     });
     sources.add(row.source);
     if (row.covered && row.entryTime !== undefined && row.entryPrice !== undefined) {
@@ -506,6 +525,11 @@ export const TradingChartInput = Schema.Struct({
    * its gross, feeless illustration against.
    */
   illustrativeNotionalUsd: Schema.optional(Schema.Number),
+  /**
+   * How the study prices its entry. Defaults to
+   * {@link EVENT_STUDY_DEFAULT_ENTRY_BASIS}; the menu spells both values out.
+   */
+  entryBasis: Schema.optional(EventStudyEntryBasis),
   at: Schema.optional(Schema.String),
   text: Schema.optional(Schema.String),
   /** clear with no sceneId clears the thread's scenes. */
@@ -528,8 +552,9 @@ export type TradingChartResult = typeof TradingChartResult.Type;
  */
 export function renderTradingChartMenu(): string {
   return [
-    "publish_event_study {eventSetId, market, interval?, horizonBars?, title?} measures the set on the archive (horizon default " +
-      `${EVENT_STUDY_DEFAULT_HORIZON_BARS}) and puts the study on this thread's graph: calendar windows, aligned traces, coverage and sources`,
+    "publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, illustrativeNotionalUsd?, title?} measures the set on the archive " +
+      `(horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS}, entry basis ${EVENT_STUDY_DEFAULT_ENTRY_BASIS}: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[EVENT_STUDY_DEFAULT_ENTRY_BASIS]}) ` +
+      "and puts the study on this thread's graph: calendar windows, aligned traces, coverage and sources; publishing itself returns the scene on the graph, no follow-up show call",
     "publish_strategy_replay {thesis | hypothesisId, title?} runs one cost-aware backtest and pins its trades and verdict to the graph",
     "annotate {market, at, text} pins one authored note to a moment; it renders labelled as authored, never as a computed layer",
     `show {sceneId}; list; clear {sceneId?} (no sceneId clears this thread's scenes, at most ${RESEARCH_SCENES_MAX_PER_THREAD} scenes a thread)`,

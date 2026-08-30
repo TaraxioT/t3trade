@@ -477,6 +477,13 @@ export interface ChartGeometry {
   readonly pastMarkers: ReadonlyArray<ChartPastMarker>;
   /** Event occurrences as placed bands, clipped to the plot. */
   readonly timeBands: ReadonlyArray<ChartTimeBand>;
+  /**
+   * The research study overlay, placed. Null when the caller passed none;
+   * pieces the window could not place (an activation before the first
+   * candle) are null rather than pinned, for the same reason an old fill is
+   * dropped: a marker at a time it did not happen is worse than none.
+   */
+  readonly studyOverlay: ChartStudyOverlay | null;
   /** Armed conditions the chart did not draw, so the panel can say how many. */
   readonly droppedConditions: number;
 }
@@ -532,6 +539,55 @@ export interface ChartTimeBand {
 
 /** A band narrower than this reads as nothing at all, so it never goes below. */
 export const MIN_EVENT_BAND_WIDTH = 3;
+
+/**
+ * One historical study's overlay on a research window: the activation the
+ * study anchored on, the measured entry and exit, and the signed return
+ * between them.
+ *
+ * Research-only vocabulary, deliberately separate from the fill markers: a
+ * fill is a record of an execution that happened, these are measurements of
+ * a counterfactual on archived bars. Nothing here may read as a trade, and
+ * the renderer draws them in their own register (rules, outlines, dashed
+ * connectors) so it cannot.
+ */
+export interface ChartStudyOverlayInput {
+  /** The activation instant, ruled vertically and named with its own label. */
+  readonly activation: { readonly at: number; readonly label: string } | null;
+  /** The measured entry; `label` is the caller's short caption ("study entry"). */
+  readonly entry: { readonly at: number; readonly price: number; readonly label: string } | null;
+  /** The measured exit; `label` names the horizon ("study exit after 30 bars"). */
+  readonly exit: { readonly at: number; readonly price: number; readonly label: string } | null;
+  /** The signed return the connector between entry and exit carries. */
+  readonly returnPct: number | null;
+}
+
+/** A study overlay the geometry has placed; null pieces were absent or out of window. */
+export interface ChartStudyOverlay {
+  readonly activation: { readonly at: number; readonly label: string; readonly x: number } | null;
+  readonly entry: {
+    readonly at: number;
+    readonly price: number;
+    readonly label: string;
+    readonly x: number;
+    readonly y: number;
+  } | null;
+  readonly exit: {
+    readonly at: number;
+    readonly price: number;
+    readonly label: string;
+    readonly x: number;
+    readonly y: number;
+  } | null;
+  /** The connector between placed entry and exit points, when both placed. */
+  readonly returnSpan: {
+    readonly x1: number;
+    readonly y1: number;
+    readonly x2: number;
+    readonly y2: number;
+    readonly returnPct: number;
+  } | null;
+}
 
 /** @see ChartTimeMarker.tone */
 export type ChartTimeMarkerTone = "auto" | "planned";
@@ -667,6 +723,12 @@ export interface ComputeChartGeometryInput {
    * bands may sit past `now`, in the future gutter.
    */
   readonly eventBands?: ReadonlyArray<ChartTimeBandInput>;
+  /**
+   * One historical study's overlay on this window (research charts only):
+   * activation rule, measured entry and exit, signed return connector.
+   * Placed like the fills, with its own vocabulary; never drawn as a fill.
+   */
+  readonly studyOverlay?: ChartStudyOverlayInput | null;
   /**
    * Price bands to wash across the plot. Generic: the geometry places them and
    * has no opinion on what any of them means. @see ChartZoneInput
@@ -1721,6 +1783,42 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     timeBands.push({ ...band, x1, x2, width: x2 - x1 });
   }
 
+  // --- the research study overlay: measurements, never fills. -----------
+  // Placed like the fills (dropped before the window's first candle, clamped
+  // inside the frame) but drawn as its own vocabulary by the renderer. The
+  // entry and exit prices come from bars inside the window, so their y is
+  // clamped only for the same off-frame courtesy the mark gets.
+  const studyInput = input.studyOverlay ?? null;
+  let studyOverlay: ChartStudyOverlay | null = null;
+  if (studyInput !== null) {
+    const activation =
+      studyInput.activation !== null &&
+      studyInput.activation.at >= timeStart &&
+      studyInput.activation.at <= timeEnd
+        ? {
+            ...studyInput.activation,
+            x: clamp(xForTime(studyInput.activation.at), 0, PLOT_WIDTH),
+          }
+        : null;
+    const placeStudyPoint = (
+      point: { readonly at: number; readonly price: number; readonly label: string } | null,
+    ) =>
+      point !== null && point.at >= timeStart
+        ? {
+            ...point,
+            x: clamp(xForTime(point.at), 0, PLOT_WIDTH),
+            y: clamp(yForPrice(point.price), 0, CHART_VIEWBOX_HEIGHT),
+          }
+        : null;
+    const entry = placeStudyPoint(studyInput.entry);
+    const exit = placeStudyPoint(studyInput.exit);
+    const returnSpan =
+      entry !== null && exit !== null && studyInput.returnPct !== null
+        ? { x1: entry.x, y1: entry.y, x2: exit.x, y2: exit.y, returnPct: studyInput.returnPct }
+        : null;
+    studyOverlay = { activation, entry, exit, returnSpan };
+  }
+
   // --- price bands, and the one gutter pass they share with the levels. ----
   const gutter = buildZonesAndTags({
     zones: input.zones ?? [],
@@ -1758,6 +1856,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     timeMarkers,
     pastMarkers,
     timeBands,
+    studyOverlay,
     droppedConditions,
   };
 }

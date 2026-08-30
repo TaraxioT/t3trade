@@ -29,6 +29,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
   AnnotationScenePayload,
+  composeEventStudyScene,
   EventStudyScenePayload,
   RESEARCH_DISCLAIMER,
   RESEARCH_SCENES_MAX_PER_THREAD,
@@ -37,6 +38,7 @@ import {
   ResearchSceneView,
   SCENE_MAX_JSON_CHARS,
   StrategyReplayScenePayload,
+  validateTradingChartScene,
 } from "@t3tools/trading-contracts/researchScenes";
 import { UnixMillis } from "@t3tools/trading-contracts/primitives";
 
@@ -83,6 +85,46 @@ export class TradingResearchSceneService extends Context.Service<
   TradingResearchSceneService,
   TradingResearchSceneServiceShape
 >()("t3/trading/TradingResearchSceneService") {}
+
+/**
+ * Compose and attach each view's deterministic layers, and say whether the
+ * recipe's references still resolve.
+ *
+ * The graph renders the scene the SERVER composes from the recorded payload:
+ * the model never writes layers, and the graph never re-derives numbers. That
+ * only holds if every read path decorates the same way — the publish and show
+ * tool results AND the graph's polling read — so the one implementation lives
+ * here and takes the event-set lookup as a function, keeping this module's
+ * SqlClient-plus-Crypto doctrine while every caller hands it the same service.
+ *
+ * A composed scene the caps refuse is served without its `scene` (the numbers
+ * stay honest) rather than dropping the whole view.
+ */
+export const composeSceneViews = (input: {
+  readonly views: ReadonlyArray<ResearchSceneView>;
+  readonly showEventSet: (
+    eventSetId: string,
+  ) => Effect.Effect<{ readonly retiredAt: number | null } | null>;
+}): Effect.Effect<ReadonlyArray<ResearchSceneView>> =>
+  Effect.forEach(input.views, (view) => {
+    const eventStudy = view.eventStudy;
+    if (eventStudy === undefined) return Effect.succeed(view);
+    return Effect.gen(function* () {
+      const set = yield* input.showEventSet(eventStudy.eventSetId);
+      const composed = { ...composeEventStudyScene(eventStudy), sceneId: view.sceneId };
+      const invalid = validateTradingChartScene(composed);
+      return {
+        ...view,
+        referenceStatus:
+          set === null
+            ? ("retired" as const)
+            : set.retiredAt === null
+              ? ("ok" as const)
+              : ("retired" as const),
+        ...(invalid === null ? { scene: composed } : {}),
+      };
+    });
+  });
 
 interface SceneRow {
   readonly scene_id: string;

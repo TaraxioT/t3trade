@@ -11,10 +11,13 @@
  * @module researchScenePresentation
  */
 import type {
+  DeterministicSceneLayer,
   EventStudyScenePayload,
   ResearchSceneView,
   TradingChartCandleLike,
 } from "./researchSceneViewTypes.ts";
+import type { EventStudyEntryBasis } from "@t3tools/trading-contracts/eventSets";
+import { EVENT_STUDY_ENTRY_BASIS_PHRASES } from "@t3tools/trading-contracts/eventSets";
 import { STUDY_CHART_CONTEXT_BARS, STUDY_CHART_MAX_WINDOW_BARS } from "@t3tools/contracts";
 
 /**
@@ -78,26 +81,46 @@ export interface AlignedPoint {
 }
 
 /**
- * Rebase one occurrence's candles to its measured entry: x is bars since the
- * entry bar, y is the close's percentage change from the entry open. Bars
- * before the entry are excluded; the horizon caps the run. Pure over the
- * windowed read the calendar view already fetched, so both views show the
- * same bars.
+ * Rebase one occurrence's candles to its measured entry, on the basis the
+ * study measured: x is bars since the entry bar, y is the close's percentage
+ * change from the entry price (the entry bar's close on the close basis, its
+ * open on the open basis). Bars before the entry are excluded; the run is
+ * capped at the horizon, which on the close basis includes the entry bar
+ * itself plus a full horizon of following bars, so the trace's last point is
+ * the row's own measured return. Pure over the windowed read the calendar
+ * view already fetched, so both views show the same bars.
  */
 export function alignedTracePoints(input: {
   readonly candles: ReadonlyArray<TradingChartCandleLike>;
   readonly entryTime: number;
   readonly intervalMs: number;
   readonly horizonBars: number;
+  readonly entryBasis?: EventStudyEntryBasis;
 }): ReadonlyArray<AlignedPoint> {
-  const entry = input.candles.find((candle) => candle.openTime >= input.entryTime);
-  if (entry === undefined || !(entry.open > 0)) return [];
+  const basis = input.entryBasis ?? "first_bar_open_after_event";
+  let entry: TradingChartCandleLike | undefined;
+  if (basis === "first_closed_bar_after_event") {
+    // The entry moment is the entry bar's CLOSE, so the bar sought is the
+    // last one that opened before it: true whichever close-time convention
+    // the feed stamps (close at open+interval or open+interval-1), because
+    // both put the entry bar's open a full interval before its close and the
+    // next bar's open at or after the entry moment itself.
+    for (const candle of input.candles) {
+      if (candle.openTime >= input.entryTime) break;
+      entry = candle;
+    }
+  } else {
+    entry = input.candles.find((candle) => candle.openTime >= input.entryTime);
+  }
+  if (entry === undefined || !(entry.open > 0 && entry.close > 0)) return [];
+  const anchor = basis === "first_closed_bar_after_event" ? entry.close : entry.open;
+  const bars = input.horizonBars + (basis === "first_closed_bar_after_event" ? 1 : 0);
   return input.candles
     .filter((candle) => candle.openTime >= entry.openTime)
-    .slice(0, input.horizonBars)
+    .slice(0, bars)
     .map((candle, index) => ({
       barsSinceEntry: index,
-      changePct: ((candle.close - entry.open) / entry.open) * 100,
+      changePct: ((candle.close - anchor) / anchor) * 100,
     }));
 }
 
@@ -141,13 +164,32 @@ export function describeHorizon(horizonBars: number, horizonMs: number): string 
 }
 
 /**
- * The study's fixed measurement rule, in the reader's words. Counting is
- * inclusive and says so: the entry bar is the first bar of the horizon, so
+ * The study's fixed measurement rule, in the reader's words, on the basis the
+ * study measured. The open-basis sentence is exported as
+ * {@link STUDY_RULE_SENTENCE} because it is the rule scenes computed before
+ * the basis field existed were measured on.
+ */
+export function studyRuleSentence(basis: EventStudyEntryBasis): string {
+  return basis === "first_closed_bar_after_event"
+    ? "entry is the close of the first bar that closed after the event; exit is the close a full horizon of bars later, close to close"
+    : STUDY_RULE_SENTENCE;
+}
+
+/**
+ * The open basis's rule, kept as the constant it has always been: counting is
+ * inclusive and says so, the entry bar is the first bar of the horizon, so
  * horizon 1 exits on the entry bar's own close and horizon 2 on the next
- * bar's close — exactly what the engine measures.
+ * bar's close, exactly what the engine measures on that basis.
  */
 export const STUDY_RULE_SENTENCE =
   "entry is the first archived bar whose open lands at or after the event ends; exit is the close of the horizon-th bar, counting the entry as the first";
+
+/** The basis a payload's numbers were measured on, old scenes as the open basis. */
+export function payloadEntryBasis(payload: EventStudyScenePayload): EventStudyEntryBasis {
+  return payload.entryBasis ?? "first_bar_open_after_event";
+}
+
+const fmtDate = (t: number): string => new Date(t).toISOString().slice(0, 16);
 
 /**
  * The honesty block under the graph: every line a reader needs before
@@ -156,10 +198,12 @@ export const STUDY_RULE_SENTENCE =
  */
 export function studyExplanationLines(payload: EventStudyScenePayload): ReadonlyArray<string> {
   const { report } = payload;
+  const basis = payloadEntryBasis(payload);
   const lines = [
     `${report.nCovered} of ${report.n} occurrences fall inside archived data`,
     `horizon ${describeHorizon(report.horizonBars, report.horizonMs)} on ${payload.interval} bars`,
-    STUDY_RULE_SENTENCE,
+    `entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[basis]}`,
+    studyRuleSentence(basis),
     `mean ${fmtPct(report.meanReturnPct)}, median ${fmtPct(report.medianReturnPct)}, ` +
       `hit rate ${report.hitRatePercent === null ? "-" : `${report.hitRatePercent}%`}, ` +
       `best ${fmtPct(report.bestReturnPct)}, worst ${fmtPct(report.worstReturnPct)}`,
@@ -169,6 +213,12 @@ export function studyExplanationLines(payload: EventStudyScenePayload): Readonly
       ? "no baseline: the served window is shorter than the horizon"
       : `baseline: mean ${fmtPct(report.baseline.meanReturnPct)}, median ${fmtPct(report.baseline.medianReturnPct)} ` +
           `over ${report.baseline.samples} every-bar samples of the same horizon (overlapping windows; a center-of-mass comparison, not a significance test)`,
+  );
+  lines.push(
+    payload.requestedFromT === undefined || payload.requestedToT === undefined
+      ? `served ${fmtDate(payload.archiveBounds.fromT)} to ${fmtDate(payload.archiveBounds.toT)}`
+      : `requested ${fmtDate(payload.requestedFromT)} to ${fmtDate(payload.requestedToT)}, ` +
+          `served ${fmtDate(payload.archiveBounds.fromT)} to ${fmtDate(payload.archiveBounds.toT)}`,
   );
   lines.push(
     payload.archiveBounds.recordingSince === null
@@ -181,7 +231,7 @@ export function studyExplanationLines(payload: EventStudyScenePayload): Readonly
 
 /** The marker vocabulary, said once where the picture lives. */
 export const MARKER_LEGEND_SENTENCE =
-  "bands mark historical counterfactual windows measured on archived bars; dashed markers are paper validation; solid markers are exchange fills; nothing in this view is a fill";
+  "bands, activation rules and study entry and exit markers are historical counterfactual measurements on archived bars; dashed ring markers are paper validation; solid dot markers are exchange fills; nothing in this view is a fill";
 
 /**
  * The compact provenance trail under the graph: researched facts -> event set
@@ -200,6 +250,71 @@ export const DERIVED_VS_AUTHORED_SENTENCE =
 
 const fmtPct = (value: number | null | undefined): string =>
   value === null || value === undefined ? "-" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+
+/** USD with a sign only when negative, the register the panel has always used. */
+export const fmtUsd = (value: number): string =>
+  `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+
+/**
+ * The signed money figure an event study's percentage maps onto: display
+ * arithmetic on a measured return, nothing more.
+ */
+export function grossChangeUsd(notionalUsd: number, returnPct: number): number {
+  return (notionalUsd * returnPct) / 100;
+}
+
+/**
+ * The label that must ride any money figure derived from a study: the amount
+ * is a historical gross change on the named notional, before costs, and the
+ * words say so rather than dressing up as profit, PnL, or a balance.
+ */
+export function historicalGrossChangeLabel(notionalUsd: number): string {
+  return `historical gross change on ${fmtUsd(notionalUsd)}, before costs`;
+}
+
+/**
+ * The calendar chart's study overlay for one occurrence, derived from the
+ * server-composed deterministic layers rather than rebuilt from the row: the
+ * activation rule the graph anchors on (carrying the occurrence's real
+ * label), the measured entry and exit with their prices, and the signed
+ * return between them. Null fields mean the scene holds no such layer, and
+ * the chart draws nothing for them rather than inventing a position.
+ */
+export interface OccurrenceStudyOverlay {
+  readonly activation: { readonly at: number; readonly label: string } | null;
+  readonly entry: { readonly at: number; readonly price: number; readonly label: string } | null;
+  readonly exit: { readonly at: number; readonly price: number; readonly label: string } | null;
+  readonly returnPct: number | null;
+}
+
+/**
+ * The horizon rides the exit marker's label because it is the one number a
+ * reader needs to tell a horizon-30 exit from a truncated one.
+ */
+export function occurrenceStudyOverlay(
+  layers: ReadonlyArray<DeterministicSceneLayer>,
+  occurrenceIndex: number,
+  horizonBars: number,
+): OccurrenceStudyOverlay {
+  let activation: OccurrenceStudyOverlay["activation"] = null;
+  let entry: OccurrenceStudyOverlay["entry"] = null;
+  let exit: OccurrenceStudyOverlay["exit"] = null;
+  let returnPct: number | null = null;
+  for (const layer of layers) {
+    if (layer.kind === "event_span" && layer.occurrenceIndex === occurrenceIndex) {
+      // An instantaneous activation (start equal to end) is the rule; a
+      // genuine multi-day span keeps its band and still rules at its end.
+      activation = { at: layer.endAt, label: layer.label };
+    } else if (layer.kind === "study_entry" && layer.occurrenceIndex === occurrenceIndex) {
+      entry = { at: layer.at, price: layer.price, label: "study entry" };
+    } else if (layer.kind === "study_exit" && layer.occurrenceIndex === occurrenceIndex) {
+      exit = { at: layer.at, price: layer.price, label: `study exit after ${horizonBars} bars` };
+    } else if (layer.kind === "return_span" && layer.occurrenceIndex === occurrenceIndex) {
+      returnPct = layer.returnPct;
+    }
+  }
+  return { activation, entry, exit, returnPct };
+}
 
 /**
  * The window the calendar view fetches for one occurrence: the event span

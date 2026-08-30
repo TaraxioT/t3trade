@@ -18,6 +18,7 @@ import {
   clusterConditions,
   dedupeConditions,
   MIN_EVENT_BAND_WIDTH,
+  type ChartStudyOverlayInput,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
@@ -2016,5 +2017,121 @@ describe("computeChartGeometry: event bands", () => {
     expect(band).toBeDefined();
     expect(band?.x1).toBeGreaterThanOrEqual(geometry?.nowX ?? 0);
     expect(band?.width).toBeGreaterThanOrEqual(MIN_EVENT_BAND_WIDTH);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the research study overlay
+// ---------------------------------------------------------------------------
+
+// What is pinned here is placement only: the rule and the two markers land at
+// their own time and price, the connector joins the placed pair, and anything
+// the window cannot hold honestly is dropped rather than pinned. The overlay
+// is its own vocabulary: none of it is a fill.
+
+describe("computeChartGeometry: the study overlay", () => {
+  const base = 1_700_000_000_000;
+  const candles = fiveWalkingCandles();
+  // No clock: the plot spans the five bars, first open to last open.
+  const first = base;
+  const last = base + 4 * 60_000;
+
+  const geometryWith = (studyOverlay: ChartStudyOverlayInput | null) =>
+    computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+      studyOverlay,
+    });
+
+  it("places the activation rule and both markers at their own time and price", () => {
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Merge / Paris" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: { at: base + 3 * 60_000, price: 103, label: "study exit after 30 bars" },
+      returnPct: 3,
+    });
+    const overlay = geometry?.studyOverlay;
+    expect(overlay).not.toBeNull();
+    expect(overlay?.activation?.label).toBe("Merge / Paris");
+    expect(overlay?.activation?.x).toBeCloseTo(PLOT_WIDTH * (30_000 / 240_000), 5);
+    expect(overlay?.entry?.x).toBeCloseTo(PLOT_WIDTH * (60_000 / 240_000), 5);
+    expect(overlay?.entry?.y).toBeCloseTo(geometry!.yForPrice(100), 8);
+    expect(overlay?.exit?.x).toBeCloseTo(PLOT_WIDTH * (180_000 / 240_000), 5);
+    expect(overlay?.exit?.y).toBeCloseTo(geometry!.yForPrice(103), 8);
+    // The connector joins exactly the placed markers, in order.
+    expect(overlay?.returnSpan).toEqual({
+      x1: overlay!.entry!.x,
+      y1: overlay!.entry!.y,
+      x2: overlay!.exit!.x,
+      y2: overlay!.exit!.y,
+      returnPct: 3,
+    });
+  });
+
+  it("orders the rule before the entry before the exit on the time axis", () => {
+    const geometry = geometryWith({
+      activation: { at: first, label: "Pectra" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: { at: last, price: 104, label: "study exit after 30 bars" },
+      returnPct: 4,
+    });
+    const overlay = geometry?.studyOverlay;
+    expect(overlay!.activation!.x).toBeLessThan(overlay!.entry!.x);
+    expect(overlay!.entry!.x).toBeLessThan(overlay!.exit!.x);
+  });
+
+  it("drops an activation the window cannot see, like an old fill, never pins it", () => {
+    const geometry = geometryWith({
+      activation: { at: first - 1, label: "before the window" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: { at: last, price: 104, label: "study exit after 30 bars" },
+      returnPct: 4,
+    });
+    expect(geometry?.studyOverlay?.activation).toBeNull();
+    // The measured markers still draw: the rule is context, they are the
+    // study.
+    expect(geometry?.studyOverlay?.entry).not.toBeNull();
+  });
+
+  it("clamps a marker past the right edge to the plot's edge, keeping its true price", () => {
+    // The close basis's exit is the exit bar's close, which lands after the
+    // last open the axis ends on: pinned at the edge, price untouched.
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Dencun" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: { at: last + 60_000, price: 104, label: "study exit after 30 bars" },
+      returnPct: 4,
+    });
+    const exit = geometry?.studyOverlay?.exit;
+    expect(exit?.x).toBe(PLOT_WIDTH);
+    expect(exit?.price).toBe(104);
+    expect(exit?.y).toBeCloseTo(geometry!.yForPrice(104), 8);
+  });
+
+  it("draws no connector when one end of the study is missing", () => {
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Shapella" },
+      entry: null,
+      exit: { at: last, price: 104, label: "study exit after 30 bars" },
+      returnPct: null,
+    });
+    expect(geometry?.studyOverlay?.returnSpan).toBeNull();
+  });
+
+  it("is null when the caller passed none, and pieces drop before the window", () => {
+    expect(geometryWith(null)?.studyOverlay).toBeNull();
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Pectra" },
+      entry: { at: first - 1, price: 100, label: "study entry" },
+      exit: null,
+      returnPct: null,
+    });
+    expect(geometry?.studyOverlay?.entry).toBeNull();
+    expect(geometry?.studyOverlay?.returnSpan).toBeNull();
   });
 });

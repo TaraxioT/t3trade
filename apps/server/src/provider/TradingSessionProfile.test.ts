@@ -399,6 +399,26 @@ describe("workspace research orchestration doctrine (task 3)", () => {
     expect(contract).toContain("arm it only if the user agrees");
   });
 
+  it("makes filing, backtesting and validation conditional on user intent, with exclusions winning", () => {
+    expect(contract).toContain(
+      "FILE IT WHEN THE USER WANTS THE IDEA KEPT, NEVER WHEN THEY EXCLUDED IT",
+    );
+    expect(contract).toContain("BACKTEST IT WHEN THE USER ASKS WHETHER THE IDEA EVER MADE MONEY");
+    expect(contract).toContain("OFFER FORWARD VALIDATION WHEN THE USER HAS NOT EXCLUDED IT");
+    expect(contract).toContain(
+      "an explicit exclusion (no hypothesis, no backtest, no validation) holds",
+    );
+  });
+
+  it("teaches the instant rule and the single-source rule for dated occurrences", () => {
+    expect(contract).toContain("start and end as the SAME ISO instant");
+    expect(contract).toContain("exactly one source URL per occurrence");
+    expect(contract).toContain("several URLs joined into it render as one broken link");
+    expect(contract).toContain(
+      "recording the one you relied on in the occurrence's single source field",
+    );
+  });
+
   it("never teaches profit language", () => {
     for (const forbidden of ["you would have made", "predicts the next", "guaranteed profit"]) {
       expect(contract).not.toContain(forbidden);
@@ -408,5 +428,16 @@ describe("workspace research orchestration doctrine (task 3)", () => {
   it("publishes to the graph and says what is visible", () => {
     expect(contract).toContain("SHOW IT ON THE GRAPH");
     expect(contract).toContain("Historical research. No order placed. Not a forecast.");
+  });
+
+  it("keeps an event-study-only request off trading_look and off a redundant show call", () => {
+    expect(contract).toContain("An event-study-only request is web research");
+    expect(contract).toContain(
+      "do not call trading_look for historical bars or live context unless the user asked for current market conditions",
+    );
+    expect(contract).toContain("passing entryBasis and illustrativeNotionalUsd");
+    expect(contract).toContain(
+      "publish_event_study returns the scene on the graph; do not call show afterwards",
+    );
   });
 });

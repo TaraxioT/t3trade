@@ -55,6 +55,7 @@ import {
   medianBarInterval,
   type ChartCondition,
   type ChartLevel,
+  type ChartStudyOverlayInput,
   type ChartTimeBandInput,
   type ChartLevelKind,
   type ChartPoint,
@@ -176,6 +177,17 @@ interface MissionPriceChartProps {
    * render at whatever interval the chart is on.
    */
   readonly eventBands?: ReadonlyArray<ChartTimeBandInput>;
+  /**
+   * One historical study's overlay on this window: the activation the study
+   * anchored on, the measured entry and exit with their prices, and the
+   * signed return between them.
+   *
+   * Research-only vocabulary, deliberately not the fill markers: a fill is a
+   * record of an execution that happened, these are measurements of a
+   * counterfactual on archived bars, and nothing here may read as a trade.
+   * Static shapes, no animation, accessible text on every marker.
+   */
+  readonly studyOverlay?: ChartStudyOverlayInput | null;
   /**
    * What a click on one of the validation's paper markers asks about.
    *
@@ -619,6 +631,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     zones,
     thesis,
     eventBands,
+    studyOverlay,
     onAskAboutMarker,
     draggableKinds,
     onLevelDragEnd,
@@ -778,6 +791,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(timeMarkers === undefined ? {} : { timeMarkers }),
     ...(pastMarkers === undefined ? {} : { pastMarkers }),
     ...(eventBands === undefined ? {} : { eventBands }),
+    ...(studyOverlay === undefined ? {} : { studyOverlay }),
   });
 
   // Too few candles → the parent renders a skeleton / "chart unavailable".
@@ -1209,6 +1223,108 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             />
           </g>
         ))}
+
+        {/* The research study overlay: a named activation rule, the measured
+            entry and exit, and the signed return between them. Measurements
+            on archived bars, never fills: rules and outlines and a dashed
+            connector, a register the execution markers do not use, so a
+            reader cannot mistake a historical study for a trade. */}
+        {geometry.studyOverlay === null ? null : (
+          <g data-testid="research-study-overlay">
+            {geometry.studyOverlay.activation !== null ? (
+              <g data-testid="research-study-activation">
+                <line
+                  x1={geometry.studyOverlay.activation.x}
+                  y1={0}
+                  x2={geometry.studyOverlay.activation.x}
+                  y2={CHART_VIEWBOX_HEIGHT}
+                  stroke="color-mix(in oklab, var(--color-foreground) 55%, transparent)"
+                  strokeWidth={1}
+                  strokeDasharray="5 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={Math.min(geometry.studyOverlay.activation.x + 3, PLOT_WIDTH - 90)}
+                  y={9}
+                  fontSize={8}
+                  className="fill-muted-foreground"
+                >
+                  {geometry.studyOverlay.activation.label}
+                </text>
+              </g>
+            ) : null}
+            {geometry.studyOverlay.returnSpan !== null ? (
+              <line
+                data-testid="research-study-return"
+                x1={geometry.studyOverlay.returnSpan.x1}
+                y1={geometry.studyOverlay.returnSpan.y1}
+                x2={geometry.studyOverlay.returnSpan.x2}
+                y2={geometry.studyOverlay.returnSpan.y2}
+                stroke={
+                  geometry.studyOverlay.returnSpan.returnPct >= 0
+                    ? "var(--color-profit)"
+                    : "var(--color-loss)"
+                }
+                strokeWidth={2}
+                strokeDasharray="6 4"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
+            {geometry.studyOverlay.entry !== null ? (
+              <g data-testid="research-study-entry-dot">
+                <circle
+                  cx={geometry.studyOverlay.entry.x}
+                  cy={geometry.studyOverlay.entry.y}
+                  r={4}
+                  fill="transparent"
+                  stroke="var(--color-info)"
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={geometry.studyOverlay.entry.x + 7}
+                  y={geometry.studyOverlay.entry.y + 3}
+                  fontSize={8}
+                  className="fill-muted-foreground"
+                >
+                  {geometry.studyOverlay.entry.label}{" "}
+                  {formatPrice(geometry.studyOverlay.entry.price)}
+                </text>
+              </g>
+            ) : null}
+            {geometry.studyOverlay.exit !== null ? (
+              <g data-testid="research-study-exit-dot">
+                {/* A square, because the entry is a circle: the two markers
+                    must stay tellable apart at a glance, and the exit carries
+                    the horizon in its label. */}
+                <rect
+                  x={geometry.studyOverlay.exit.x - 4}
+                  y={geometry.studyOverlay.exit.y - 4}
+                  width={8}
+                  height={8}
+                  fill="transparent"
+                  stroke={
+                    geometry.studyOverlay.returnSpan !== null &&
+                    geometry.studyOverlay.returnSpan.returnPct < 0
+                      ? "var(--color-loss)"
+                      : "var(--color-profit)"
+                  }
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={geometry.studyOverlay.exit.x - 7}
+                  y={geometry.studyOverlay.exit.y + 3}
+                  fontSize={8}
+                  textAnchor="end"
+                  className="fill-muted-foreground"
+                >
+                  {geometry.studyOverlay.exit.label} {formatPrice(geometry.studyOverlay.exit.price)}
+                </text>
+              </g>
+            ) : null}
+          </g>
+        )}
 
         {/* Price bands: the y-axis twin of the coverage shading above. A
             projection's honest interval, a paper trade's bracket — anything
@@ -1744,6 +1860,65 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           </span>
         );
       })}
+
+      {/* The study overlay's accessible half: the SVG shapes above carry the
+          picture, these carry the words. Focusable like the fill markers so
+          a keyboard reader gets the same facts a hover does, and one
+          screen-reader sentence says what the whole overlay is: historical
+          measurements, not a fill, not an order. */}
+      {geometry.studyOverlay === null ? null : (
+        <>
+          {geometry.studyOverlay.entry !== null ? (
+            <span
+              data-testid="research-study-entry"
+              className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full outline-none"
+              style={{
+                left: `${(geometry.studyOverlay.entry.x / CHART_VIEWBOX_WIDTH) * 100}%`,
+                top: `${(geometry.studyOverlay.entry.y / CHART_VIEWBOX_HEIGHT) * 100}%`,
+              }}
+              tabIndex={0}
+              aria-label={`study entry (historical, not a fill): ${formatPrice(
+                geometry.studyOverlay.entry.price,
+              )} at ${new Date(geometry.studyOverlay.entry.at).toISOString()}`}
+            />
+          ) : null}
+          {geometry.studyOverlay.exit !== null ? (
+            <span
+              data-testid="research-study-exit"
+              className="absolute size-3 -translate-x-1/2 -translate-y-1/2 outline-none"
+              style={{
+                left: `${(geometry.studyOverlay.exit.x / CHART_VIEWBOX_WIDTH) * 100}%`,
+                top: `${(geometry.studyOverlay.exit.y / CHART_VIEWBOX_HEIGHT) * 100}%`,
+              }}
+              tabIndex={0}
+              aria-label={`study exit (historical, not a fill): ${formatPrice(
+                geometry.studyOverlay.exit.price,
+              )} at ${new Date(geometry.studyOverlay.exit.at).toISOString()}, ${
+                geometry.studyOverlay.returnSpan === null
+                  ? "return not measured"
+                  : `signed return ${geometry.studyOverlay.returnSpan.returnPct.toFixed(2)}%`
+              }`}
+            />
+          ) : null}
+          <span className="sr-only" data-testid="research-study-overlay-note">
+            {geometry.studyOverlay.activation === null
+              ? ""
+              : `Historical study: ${geometry.studyOverlay.activation.label} activated at ${new Date(
+                  geometry.studyOverlay.activation.at,
+                ).toISOString()}. `}
+            {geometry.studyOverlay.entry === null || geometry.studyOverlay.exit === null
+              ? ""
+              : `Entry ${formatPrice(geometry.studyOverlay.entry.price)}, exit ${formatPrice(
+                  geometry.studyOverlay.exit.price,
+                )}${
+                  geometry.studyOverlay.returnSpan === null
+                    ? ""
+                    : `, signed return ${geometry.studyOverlay.returnSpan.returnPct.toFixed(2)}%`
+                }. `}
+            These are measurements on archived bars; no order was placed.
+          </span>
+        </>
+      )}
 
       {/* The past markers' hover targets: one invisible strip per tick, wide
           enough to hit, through which a hover (or focus) claims the moment for

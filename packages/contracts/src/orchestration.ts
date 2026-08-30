@@ -82,6 +82,7 @@ export type {
   EventStudyScenePayload,
   ResearchOccurrenceWindow,
   StrategyReplayScenePayload,
+  DeterministicSceneLayer,
 } from "@t3tools/trading-contracts/researchScenes";
 export {
   PER_NOTIONAL_ILLUSTRATION_LABEL,

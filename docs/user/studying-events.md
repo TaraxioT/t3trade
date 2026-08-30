@@ -22,10 +22,18 @@ because a made-up date is a number every later number silently rests on.
 
 The recorded thing is called an event set: a name ("Devcon") and its dated
 occurrences. A multi-day event is one occurrence anchored on its last day,
-because "after Devcon" means after the whole thing. Recording the same name
-again replaces the dates, which is how a wrong date is corrected. A set can be
-retired when you are done with it: new ideas refuse to use it, but ideas that
-already use it keep working.
+because "after Devcon" means after the whole thing. An instantaneous event,
+like a network upgrade switching on, is recorded as the exact moment it
+happened: the same instant for its start and its end, so the study anchors on
+the second it activated rather than on a whole day it did not span. Recording
+the same name again replaces the dates, which is how a wrong date is corrected.
+A set can be retired when you are done with it: new ideas refuse to use it, but
+ideas that already use it keep working.
+
+Each occurrence carries exactly one source link: the one place the date is
+authoritatively stated. When the research turned up several pages, the extra
+ones are read back to you in the answer instead, because a source field holding
+two web addresses joined together renders as one broken link.
 
 Dates that have not happened yet are first class. Recording next year's Devcon
 before it happens is the point, not a mistake.
@@ -35,9 +43,17 @@ before it happens is the point, not a mistake.
 > Study that on ETH, daily bars, over the thirty bars after each one.
 
 The study answers the question directly: for every occurrence, the return from
-the first bar after the event ended to thirty bars later, next to the same
-measurement taken at every bar of the window, so you can see whether the event
-did anything the market was not doing anyway.
+its entry bar to a horizon later, next to the same measurement taken at every
+bar of the window, so you can see whether the event did anything the market was
+not doing anyway.
+
+The entry rule is stated with the numbers and is part of the recipe. By default
+the entry is the close of the first bar that closed after the event, and the
+exit is the close a full horizon of bars later: an ordinary close-to-close
+measurement, which is what a moment like an activation asks for. A study can
+instead enter on the open of the first bar at or after the event ended, the
+older convention; whichever basis a study used is recorded with it, and an
+older study keeps explaining itself in its own terms.
 
 Two honesties are built in. No fees, no stops, no position: this is a
 description of what happened, and anything about what you could have made is a
@@ -76,18 +92,23 @@ Ask for the study and it does not stay a paragraph. Say:
 > it on the graph.
 
 The graph above the conversation offers Live, Calendar, and Event aligned
-views. In Calendar, every occurrence gets its own window: the event as a band, the bar
-the entry was measured on, the bar the exit was measured on, the signed
-return beside them, and the source the date came from, one link each. An
-occurrence the recorded history cannot reach says why instead of quietly
-disappearing, and one that ran out of bars before the horizon says that too.
+views. In Calendar, every occurrence gets its own window: the activation as a
+named vertical rule at the instant it happened, the entry and the exit as
+markers pinned to the exact prices they were measured at, the signed return
+drawn between them, and the source the date came from, one link each. These
+markers are historical measurements, not trades: nothing filled, nothing
+ordered, and the label beside them says so. An occurrence the recorded history
+cannot reach says why instead of quietly disappearing, and one that ran out of
+bars before the horizon says that too.
 
 In Event aligned, every measured occurrence is rebased to its own entry, so
 the question changes from what happened next to whether the shapes resemble
-each other. The count, the baseline over the same horizon, the recording
-start and every gap sit beside the picture, with a dollar figure beside the
-traces by default — an illustration on a $1,000 notional you can change,
-gross of fees, never shown as profit.
+each other. The count, the baseline over the same horizon, the requested and
+served windows, the recording start and every gap sit beside the picture, with
+a dollar figure beside the traces by default: an illustration on a $1,000
+notional you can change, and any money figure is labelled as the historical
+gross change on that notional, before costs. It is never shown as profit,
+never as a balance.
 
 Every scene carries the same line: historical research, no order placed, not
 a forecast. Seeing the study needs nothing armed and nothing funded. You can

@@ -88,7 +88,11 @@ import {
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
-import { TradingResearchSceneService } from "./trading/TradingResearchSceneService.ts";
+import {
+  TradingResearchSceneService,
+  composeSceneViews,
+} from "./trading/TradingResearchSceneService.ts";
+import { TradingEventService } from "./trading/TradingEventService.ts";
 import { isChartReadEntitled } from "./trading/chartReadEntitlement.ts";
 import { TradingMissionService } from "./trading/TradingMissionService.ts";
 import { TradingManualEntryService } from "./trading/TradingManualEntryService.ts";
@@ -2168,8 +2172,17 @@ const makeWsRpcLayer = (
               // scope worth checking is the thread's own — a scene list never
               // crosses conversations, so neither does this read.
               const scenes = yield* TradingResearchSceneService;
+              const eventService = yield* TradingEventService;
               const rows = yield* scenes.list(input.threadId).pipe(Effect.orDie);
-              return { scenes: [...rows] };
+              // The same composition the publish and show tool results carry:
+              // the graph polls this path after a reload, and a scene served
+              // here without its deterministic layers would silently downgrade
+              // the calendar view to anonymous bands (or nothing at all).
+              const decorated = yield* composeSceneViews({
+                views: [...rows],
+                showEventSet: (eventSetId) => eventService.show(eventSetId).pipe(Effect.orDie),
+              });
+              return { scenes: [...decorated] };
             }),
             { "rpc.aggregate": "orchestration" },
           ),

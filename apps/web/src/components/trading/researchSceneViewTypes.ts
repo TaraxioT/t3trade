@@ -1,7 +1,11 @@
 /** Local structural types for the pure presentation module (no schema import weight). */
-import type { EventStudyScenePayload, ResearchSceneView } from "@t3tools/contracts";
+import type {
+  DeterministicSceneLayer,
+  EventStudyScenePayload,
+  ResearchSceneView,
+} from "@t3tools/contracts";
 
-export type { EventStudyScenePayload, ResearchSceneView };
+export type { DeterministicSceneLayer, EventStudyScenePayload, ResearchSceneView };
 
 /** The candle shape the windowed chart read returns. */
 export interface TradingChartCandleLike {

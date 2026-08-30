@@ -128,6 +128,7 @@ import { TradingAlertService } from "./trading/TradingAlertService.ts";
 import { TradingThesisValidationService } from "./trading/TradingThesisValidationService.ts";
 import { TradingHypothesisService } from "./trading/TradingHypothesisService.ts";
 import { TradingResearchSceneService } from "./trading/TradingResearchSceneService.ts";
+import { TradingEventService } from "./trading/TradingEventService.ts";
 import { TradingAnalystService } from "./trading/TradingAnalystService.ts";
 import { TradingThreadMarketServiceLive } from "./trading/TradingThreadMarketService.ts";
 import { TradingWatchlistService } from "./trading/TradingWatchlistService.ts";
@@ -971,6 +972,11 @@ const buildAppUnderTest = (options?: {
             // list every scene read sees is empty and nothing persists.
             Layer.mock(TradingResearchSceneService)({
               list: () => Effect.succeed([]),
+            }),
+            // Scene reads compose their layers through the event service. The
+            // mocked list above is empty, so show is never actually called.
+            Layer.mock(TradingEventService)({
+              show: () => Effect.succeed(null),
             }),
           ),
         ),

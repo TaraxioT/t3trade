@@ -148,7 +148,9 @@ import {
 } from "@t3tools/trading-contracts/backtest";
 import {
   checkEventStudy,
+  EVENT_STUDY_DEFAULT_ENTRY_BASIS,
   EVENT_STUDY_DEFAULT_HORIZON_BARS,
+  EVENT_STUDY_ENTRY_BASIS_PHRASES,
   eventStudyHydrationWindow,
   eventStudyReadWindow,
   parseTradingEventsOccurrence,
@@ -159,11 +161,9 @@ import {
   type TradingEventOccurrence,
 } from "@t3tools/trading-contracts/eventSets";
 import {
-  composeEventStudyScene,
   RESEARCH_CALCULATION_VERSIONS,
   RESEARCH_DISCLAIMER,
   RESEARCH_SCENE_MAX_TRADES,
-  validateTradingChartScene,
   renderTradingChartMenu,
   type ResearchOccurrenceWindow,
   type ResearchSceneView,
@@ -194,7 +194,10 @@ import {
   type HypothesisRecord,
 } from "../../../trading/TradingHypothesisService.ts";
 import { TradingEventService } from "../../../trading/TradingEventService.ts";
-import { TradingResearchSceneService } from "../../../trading/TradingResearchSceneService.ts";
+import {
+  TradingResearchSceneService,
+  composeSceneViews,
+} from "../../../trading/TradingResearchSceneService.ts";
 import {
   ARCHIVE_INTERVALS,
   archiveDatabasePath,
@@ -3820,6 +3823,7 @@ export const handlers = {
           const horizonBars = input.horizonBars ?? EVENT_STUDY_DEFAULT_HORIZON_BARS;
           const badHorizon = checkEventStudy({ horizonBars });
           if (badHorizon !== null) return yield* refuse(badHorizon);
+          const entryBasis = input.entryBasis ?? EVENT_STUDY_DEFAULT_ENTRY_BASIS;
 
           // The TradingBacktestService read pattern, in miniature: probe what
           // the archive holds, refuse a window too large to walk before the
@@ -3851,11 +3855,13 @@ export const handlers = {
             intervalMs: width,
             horizonBars,
             now,
+            entryBasis,
           });
           const hydrationWindow = eventStudyHydrationWindow(set.occurrences, {
             intervalMs: width,
             horizonBars,
             now,
+            entryBasis,
           });
           const ensureWindow =
             hydrationWindow === null
@@ -3908,8 +3914,16 @@ export const handlers = {
             candles: rows.map(toCandle),
             intervalMs: width,
             horizonBars,
+            entryBasis,
+            now,
           });
-          return eventsResult({ study, outcome: study.verdict });
+          // The basis is part of the answer: a close-to-close number and an
+          // open-entry number answer different questions, and the model
+          // narrates the one that was actually measured.
+          return eventsResult({
+            study,
+            outcome: `${study.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.`,
+          });
         }
       }
     }),
@@ -3949,28 +3963,17 @@ export const handlers = {
        * services can say better — and only for the kinds whose reference this
        * reader actually resolves. A strategy replay or annotation keeps the
        * honest "unknown" rather than an unverified "ok".
+       *
+       * The composed layers share one implementation with the graph's polling
+       * read (composeSceneViews): the scene the tool returns and the scene the
+       * graph renders after a reload must be the same picture, never two
+       * decorations that drift by transport.
        */
       const withReferenceStatus = (scene: ResearchSceneView): Effect.Effect<ResearchSceneView> =>
-        Effect.gen(function* () {
-          const eventStudy = scene.eventStudy;
-          if (eventStudy === undefined) return scene;
-          const set = yield* eventService.show(eventStudy.eventSetId).pipe(Effect.orDie);
-          // The composed layers are derived here, server-side, from the
-          // recorded summary: the model never writes layers, and the graph
-          // never re-derives numbers.
-          const composed = { ...composeEventStudyScene(eventStudy), sceneId: scene.sceneId };
-          const invalidScene = validateTradingChartScene(composed);
-          return {
-            ...scene,
-            referenceStatus:
-              set === null
-                ? "retired"
-                : set.retiredAt === null
-                  ? ("ok" as const)
-                  : ("retired" as const),
-            ...(invalidScene === null ? { scene: composed } : {}),
-          };
-        });
+        composeSceneViews({
+          views: [scene],
+          showEventSet: (eventSetId) => eventService.show(eventSetId).pipe(Effect.orDie),
+        }).pipe(Effect.map((views) => views[0] as ResearchSceneView));
 
       switch (input.action) {
         case "publish_event_study": {
@@ -3993,6 +3996,7 @@ export const handlers = {
           const horizonBars = input.horizonBars ?? EVENT_STUDY_DEFAULT_HORIZON_BARS;
           const badHorizon = checkEventStudy({ horizonBars });
           if (badHorizon !== null) return yield* refuse(badHorizon);
+          const entryBasis = input.entryBasis ?? EVENT_STUDY_DEFAULT_ENTRY_BASIS;
           const interval = (input.interval ?? "1d") as ArchiveInterval;
           const width = INTERVAL_MS[interval];
           if (width === undefined) {
@@ -4021,11 +4025,13 @@ export const handlers = {
             intervalMs: width,
             horizonBars,
             now,
+            entryBasis,
           });
           const hydrationWindow = eventStudyHydrationWindow(set.occurrences, {
             intervalMs: width,
             horizonBars,
             now,
+            entryBasis,
           });
           const ensureWindow =
             hydrationWindow === null
@@ -4073,6 +4079,8 @@ export const handlers = {
             candles,
             intervalMs: width,
             horizonBars,
+            entryBasis,
+            now,
           });
           const servedFromT = candles[0]?.openTime ?? now;
           const servedToT = candles[candles.length - 1]?.openTime ?? now;
@@ -4116,6 +4124,7 @@ export const handlers = {
                 kind: "eventStudy",
                 document: {
                   priceSource: "hyperliquid",
+                  entryBasis,
                   ...(input.illustrativeNotionalUsd === undefined
                     ? {}
                     : { illustrativeNotionalUsd: input.illustrativeNotionalUsd }),
@@ -4144,7 +4153,8 @@ export const handlers = {
           return chartResult({
             scene,
             outcome:
-              `${report.verdict} Shown on graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
+              `${report.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}. ` +
+              `Shown on graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
               `calendar and event-aligned views above this chat. ${RESEARCH_DISCLAIMER}`,
           });
         }

@@ -307,7 +307,7 @@ export const TradingHypothesisTool = Tool.make("trading_hypothesis", {
 
 export const TradingEventsTool = Tool.make("trading_events", {
   description:
-    "The external calendar a thesis can anchor on. record {name, occurrences:[{start, end?, label?, source}]} stores dates you researched in this chat, each with its source URL; never invent one, and this tool fetches nothing. add, list, show, retire. study {eventSetId, market, interval?, horizonBars?} reports per-occurrence forward returns against an every-bar baseline and says how many the archive can actually see. Menu: trading_events({})",
+    "The external calendar a thesis anchors on. record {name, occurrences:[{start, end?, label?, source}]} stores dates you researched in this chat, each with one source URL, never several joined or invented; fetches nothing. An instantaneous event uses the same instant for start and end. add, list, show, retire. study {eventSetId, market, interval?, horizonBars?, entryBasis?} reports per-occurrence forward returns vs an every-bar baseline, and how many the archive can see. Menu: trading_events({})",
   parameters: TradingEventsInput,
   success: TradingEventsResult,
   failure: TradingToolRejectedError,
@@ -326,7 +326,7 @@ export const TradingEventsTool = Tool.make("trading_events", {
 
 export const TradingChartTool = Tool.make("trading_chart", {
   description:
-    "Puts research on this chat's graph. publish_event_study {eventSetId, market, interval?, horizonBars?} measures the archive and publishes entry and exit, signed returns, coverage, gaps, baseline, and sources. publish_strategy_replay {thesis | hypothesisId} pins one cost-aware backtest's trades and verdict. annotate {market, at, text} pins an authored, labelled note. show, list, clear. Research only: no order, no validation, and every scene says so. Menu: trading_chart({})",
+    "Research on this chat's graph. publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, illustrativeNotionalUsd?} measures the archive and publishes entries, exits, returns, coverage, sources; publish shows the scene, no show call. publish_strategy_replay {thesis | hypothesisId} pins a backtest's trades and verdict. annotate {market, at, text} pins an authored note. show {sceneId}, list, clear. Research only: no orders, no validation; scenes say so. Menu: trading_chart({})",
   parameters: TradingChartInput,
   success: TradingChartResult,
   failure: TradingToolRejectedError,

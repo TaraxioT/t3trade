@@ -49,7 +49,9 @@ const report: EventStudyReport = {
   verdict: "2 of 2 occurrences fall inside archived data.",
 };
 
-const payload: EventStudyScenePayload = {
+// The persisted document as an OLD scene stored it: no entryBasis field,
+// because the field did not exist when the scene was computed.
+const payloadBeforeBasis = {
   priceSource: "hyperliquid",
   eventSetId: "set-1",
   eventSetName: "Devcon",
@@ -61,6 +63,9 @@ const payload: EventStudyScenePayload = {
   archiveBounds: { recordingSince: NOW - 400 * DAY, fromT: NOW - 400 * DAY, toT: NOW },
 };
 
+const payload: EventStudyScenePayload =
+  Schema.decodeUnknownSync(EventStudyScenePayload)(payloadBeforeBasis);
+
 describe("the recipe and its illustration", () => {
   it("accepts an illustrative notional and the requested window, and defaults the price source", () => {
     const decode = Schema.decodeUnknownSync(EventStudyScenePayload);
@@ -69,6 +74,17 @@ describe("the recipe and its illustration", () => {
         .illustrativeNotionalUsd,
     ).toBe(1000);
     expect(decode(payload).priceSource).toBe("hyperliquid");
+  });
+
+  it("persists the entry basis, and decodes a scene recorded before the field as the open basis", () => {
+    const decode = Schema.decodeUnknownSync(EventStudyScenePayload);
+    // A scene written before entryBasis existed: its numbers were computed on
+    // the open basis and must decode as that, never reinterpreted.
+    expect(decode(payloadBeforeBasis).entryBasis).toBe("first_bar_open_after_event");
+    expect(payload.entryBasis).toBe("first_bar_open_after_event");
+    expect(
+      decode({ ...payloadBeforeBasis, entryBasis: "first_closed_bar_after_event" }).entryBasis,
+    ).toBe("first_closed_bar_after_event");
   });
 });
 
@@ -87,6 +103,16 @@ describe("composeEventStudyScene", () => {
     ]);
     expect(scene.deterministic.some((layer) => layer.kind === "line")).toBe(true);
     expect(scene.sources).toEqual(["https://example.com/0", "https://example.com/1"]);
+    // Every layer carries the row it belongs to, so the graph can bind an
+    // occurrence's span, entry, exit and return without guessing by order.
+    const spans = scene.deterministic.filter((layer) => layer.kind === "event_span");
+    expect(
+      spans.map((layer) => (layer.kind === "event_span" ? layer.occurrenceIndex : -1)),
+    ).toEqual([0, 1]);
+    const firstEntry = scene.deterministic.find(
+      (layer) => layer.kind === "study_entry" && layer.occurrenceIndex === 0,
+    );
+    expect(firstEntry).toBeDefined();
   });
 
   it("contributes no entry, exit, or return for an unmeasured occurrence", () => {
@@ -186,7 +212,9 @@ describe("the model never writes computed values or rendering instructions", () 
         sceneId: "s",
         kind: "event_study",
         viewport: { kind: "window", fromT: 0, toT: 1 },
-        deterministic: [{ kind: "event_span", startAt: 0, endAt: 1, label: "e" }],
+        deterministic: [
+          { kind: "event_span", startAt: 0, endAt: 1, label: "e", occurrenceIndex: 0 },
+        ],
         authored: [],
         sources: [],
         disclaimer: RESEARCH_DISCLAIMER,
@@ -219,7 +247,8 @@ describe("the model never writes computed values or rendering instructions", () 
 
 describe("calculation versions and menu", () => {
   it("pins one version per engine and names every action in the menu", () => {
-    expect(RESEARCH_CALCULATION_VERSIONS.eventStudy).toBe("event-study-1");
+    // Bumped when the study gained an explicit entry basis.
+    expect(RESEARCH_CALCULATION_VERSIONS.eventStudy).toBe("event-study-2");
     const menu = renderTradingChartMenu();
     for (const action of [
       "publish_event_study",
@@ -231,5 +260,16 @@ describe("calculation versions and menu", () => {
     ]) {
       expect(menu).toContain(action);
     }
+  });
+
+  it("shows the publish call shape the model must use, including the basis and the notional", () => {
+    const menu = renderTradingChartMenu();
+    for (const field of ["entryBasis", "illustrativeNotionalUsd", "first_closed_bar_after_event"]) {
+      expect(menu).toContain(field);
+    }
+    // Publishing returns the scene on the graph: the model must not call
+    // show afterwards, and the menu says so next to the shape it shows.
+    expect(menu).toContain("no follow-up show call");
+    expect(menu).toContain("show {sceneId}");
   });
 });

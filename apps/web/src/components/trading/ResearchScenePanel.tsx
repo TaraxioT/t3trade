@@ -33,21 +33,25 @@ import {
   alignedTracePoints,
   askAboutOccurrenceSentence,
   DERIVED_VS_AUTHORED_SENTENCE,
+  fmtUsd,
+  grossChangeUsd,
+  historicalGrossChangeLabel,
   MARKER_LEGEND_SENTENCE,
+  occurrenceStudyOverlay,
+  payloadEntryBasis,
   provenanceTrailLine,
   studyExplanationLines,
   studyWindowMaxBars,
   turnIntoStrategySentence,
   validateForwardSentence,
 } from "./researchScenePresentation.ts";
+import type { DeterministicSceneLayer } from "@t3tools/contracts";
+import type { EventStudyEntryBasis } from "@t3tools/trading-contracts/eventSets";
 
 const NOTIONAL_DEFAULT = 1_000;
 
 /** Bars of context on each side of a measured occurrence window (shared with the chart cap). */
 const CONTEXT_BARS = STUDY_CHART_CONTEXT_BARS;
-
-const fmtUsd = (value: number): string =>
-  `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 const fmtPct = (value: number | null | undefined): string =>
   value === null || value === undefined ? "-" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
@@ -66,8 +70,11 @@ function windowFor(
 
 /**
  * One occurrence, in calendar time: its own bounded window read through the
- * ordinary chart RPC, the entry and exit drawn as the bars they were measured
- * on, and the signed return beside them.
+ * ordinary chart RPC, and the study the SERVER composed for it: a named
+ * activation rule at the exact instant, the measured entry and exit anchored
+ * to their own prices, and the signed return drawn between them. The layers
+ * come from the scene's deterministic half, never rebuilt here, so the chart
+ * cannot downgrade a study into three anonymous bands.
  */
 function OccurrenceChart(props: {
   readonly environmentId: EnvironmentId;
@@ -77,6 +84,8 @@ function OccurrenceChart(props: {
   readonly occurrence: ResearchOccurrenceWindow;
   readonly horizonBars: number;
   readonly intervalMs: number;
+  readonly layers: ReadonlyArray<DeterministicSceneLayer>;
+  readonly occurrenceIndex: number;
 }) {
   const { data, error, stale } = useTradingMarketChart(
     props.environmentId,
@@ -95,35 +104,24 @@ function OccurrenceChart(props: {
     },
   );
   const bands = useMemo(() => {
-    const bands = [
+    // Only a genuine multi-day span still draws a band: an instantaneous
+    // activation is the named rule on the study overlay, and drawing both a
+    // band and a rule for one instant would say the same thing twice.
+    if (props.occurrence.endAt - props.occurrence.startAt < props.intervalMs) return [];
+    return [
       {
         key: `event:${props.occurrence.startAt}`,
-        label: "event",
+        label: `span`,
         startAt: props.occurrence.startAt,
         endAt: props.occurrence.endAt,
         upcoming: false,
       },
     ];
-    if (props.occurrence.entryTime !== undefined) {
-      bands.push({
-        key: `entry:${props.occurrence.entryTime}`,
-        label: "entry",
-        startAt: props.occurrence.entryTime,
-        endAt: props.occurrence.entryTime,
-        upcoming: false,
-      });
-    }
-    if (props.occurrence.exitTime !== undefined) {
-      bands.push({
-        key: `exit:${props.occurrence.exitTime}`,
-        label: "exit",
-        startAt: props.occurrence.exitTime,
-        endAt: props.occurrence.exitTime,
-        upcoming: false,
-      });
-    }
-    return bands;
-  }, [props.occurrence]);
+  }, [props.occurrence, props.intervalMs]);
+  const studyOverlay = useMemo(
+    () => occurrenceStudyOverlay(props.layers, props.occurrenceIndex, props.horizonBars),
+    [props.layers, props.occurrenceIndex, props.horizonBars],
+  );
 
   // Last good view on a transient read failure, labelled stale: the window
   // did not stop existing because a request failed, and a reader
@@ -171,6 +169,7 @@ function OccurrenceChart(props: {
         <MissionPriceChart
           candles={effective.candles}
           eventBands={bands}
+          studyOverlay={studyOverlay}
           // A research window carries no position: every execution marker is
           // explicitly null so the chart cannot inherit a stale one.
           entryPrice={null}
@@ -189,10 +188,15 @@ function OccurrenceChart(props: {
   );
 }
 
-/** A return and its per-notional illustration, one row. */
+/**
+ * A return and its per-notional illustration, one row: the measured
+ * percentage beside the SIGNED gross change on the notional, labelled as
+ * exactly that. Never an ending balance, never a profit: the words ride the
+ * number so the figure cannot dress up as either.
+ */
 function ReturnRow(props: { readonly returnPct: number | undefined; readonly notional: number }) {
   if (props.returnPct === undefined) return null;
-  const gross = (props.notional * props.returnPct) / 100;
+  const gross = grossChangeUsd(props.notional, props.returnPct);
   return (
     <span
       className={
@@ -201,7 +205,7 @@ function ReturnRow(props: { readonly returnPct: number | undefined; readonly not
           : "text-red-600 dark:text-red-400"
       }
     >
-      {fmtPct(props.returnPct)} ({fmtUsd(gross)} on {fmtUsd(props.notional)})
+      {fmtPct(props.returnPct)} ({fmtUsd(gross)} {historicalGrossChangeLabel(props.notional)})
     </span>
   );
 }
@@ -210,6 +214,8 @@ function EventStudyBody(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
   readonly sceneId: string;
+  /** The server-composed deterministic layers of this scene, when it has them. */
+  readonly layers: ReadonlyArray<DeterministicSceneLayer>;
   readonly prefill: ((sentence: string) => void) | null;
 }) {
   const [notional, setNotional] = useState(
@@ -368,6 +374,8 @@ function EventStudyBody(props: {
                     occurrence={{ ...row, covered: row.covered }}
                     horizonBars={report.horizonBars}
                     intervalMs={intervalMs}
+                    layers={props.layers}
+                    occurrenceIndex={index}
                   />
                 </div>
               ) : null}
@@ -396,14 +404,21 @@ function AlignedTrace(props: {
   readonly intervalMs: number;
   readonly occurrence: CoveredOccurrenceWindow;
   readonly horizonBars: number;
+  readonly entryBasis: EventStudyEntryBasis;
 }) {
+  // The close basis anchors on the entry bar's CLOSE, so its read starts one
+  // bar earlier to include that bar and carries one more bar of horizon.
+  const closeBasis = props.entryBasis === "first_closed_bar_after_event";
   const { data } = useTradingMarketChart(props.environmentId, props.market, props.interval, {
     enabled: true,
     window: {
-      startTime: props.occurrence.entryTime,
+      startTime: props.occurrence.entryTime - (closeBasis ? props.intervalMs : 0),
       endTime: (props.occurrence.exitTime ?? props.occurrence.entryTime) + 1,
     },
-    maxBars: Math.min(props.horizonBars + 2 * CONTEXT_BARS, STUDY_CHART_MAX_WINDOW_BARS),
+    maxBars: Math.min(
+      props.horizonBars + (closeBasis ? 1 : 0) + 2 * CONTEXT_BARS,
+      STUDY_CHART_MAX_WINDOW_BARS,
+    ),
     poll: false,
   });
   if (data === null) {
@@ -414,6 +429,7 @@ function AlignedTrace(props: {
     entryTime: props.occurrence.entryTime,
     intervalMs: props.intervalMs,
     horizonBars: props.horizonBars,
+    entryBasis: props.entryBasis,
   });
   if (trace.length < 2) return null;
   return <TraceSvg trace={trace} horizonBars={props.horizonBars} emphasis={false} />;
@@ -480,6 +496,7 @@ function EventAlignedBody(props: {
   readonly payload: EventStudyScenePayload;
 }) {
   const { payload } = props;
+  const entryBasis = payloadEntryBasis(payload);
   const covered = payload.occurrenceWindows.filter(
     (window): window is CoveredOccurrenceWindow => window.covered && window.entryTime !== undefined,
   );
@@ -523,6 +540,7 @@ function EventAlignedBody(props: {
                 intervalMs={payload.report.horizonMs / payload.report.horizonBars}
                 occurrence={window}
                 horizonBars={payload.horizonBars}
+                entryBasis={entryBasis}
               />
             </div>
           </li>
@@ -566,6 +584,7 @@ function AggregateTrace(props: {
   readonly covered: ReadonlyArray<ResearchOccurrenceWindow>;
 }) {
   const intervalMs = props.payload.report.horizonMs / props.payload.report.horizonBars;
+  const entryBasis = payloadEntryBasis(props.payload);
   const [traces, setTraces] = useState<
     (ReadonlyArray<{ barsSinceEntry: number; changePct: number }> | null)[]
   >(() => props.covered.map(() => null));
@@ -584,6 +603,7 @@ function AggregateTrace(props: {
           interval={props.payload.interval as ChartInterval}
           intervalMs={intervalMs}
           horizonBars={props.payload.horizonBars}
+          entryBasis={entryBasis}
           occurrence={window}
           onTrace={(points) =>
             setTraces((previous) => {
@@ -612,17 +632,24 @@ function AggregateTraceFetch(props: {
   readonly interval: ChartInterval;
   readonly intervalMs: number;
   readonly horizonBars: number;
+  readonly entryBasis: EventStudyEntryBasis;
   readonly occurrence: ResearchOccurrenceWindow;
   readonly onTrace: (points: ReadonlyArray<{ barsSinceEntry: number; changePct: number }>) => void;
 }) {
+  // Same window rule as AlignedTrace: the close basis needs the entry bar,
+  // whose open sits one full interval before the entry close it anchors on.
+  const closeBasis = props.entryBasis === "first_closed_bar_after_event";
+  const entryTime = props.occurrence.entryTime ?? props.occurrence.startAt;
   const { data } = useTradingMarketChart(props.environmentId, props.market, props.interval, {
     enabled: true,
     window: {
-      startTime: props.occurrence.entryTime ?? props.occurrence.startAt,
-      endTime:
-        (props.occurrence.exitTime ?? props.occurrence.entryTime ?? props.occurrence.startAt) + 1,
+      startTime: entryTime - (closeBasis ? props.intervalMs : 0),
+      endTime: (props.occurrence.exitTime ?? entryTime) + 1,
     },
-    maxBars: Math.min(props.horizonBars + 2 * CONTEXT_BARS, STUDY_CHART_MAX_WINDOW_BARS),
+    maxBars: Math.min(
+      props.horizonBars + (closeBasis ? 1 : 0) + 2 * CONTEXT_BARS,
+      STUDY_CHART_MAX_WINDOW_BARS,
+    ),
     poll: false,
   });
   useEffect(() => {
@@ -633,6 +660,7 @@ function AggregateTraceFetch(props: {
         entryTime: props.occurrence.entryTime,
         intervalMs: props.intervalMs,
         horizonBars: props.horizonBars,
+        entryBasis: props.entryBasis,
       }),
     );
   }, [data, props]);
@@ -853,10 +881,15 @@ export function ResearchScenePanel(props: {
       <div className="mt-2">
         {scene.eventStudy !== undefined ? (
           props.mode === "calendar" ? (
+            // Keyed by scene id so a newly published scene (with its own
+            // persisted notional and basis) reinitializes the body's local
+            // state instead of carrying the previous scene's numbers forward.
             <EventStudyBody
+              key={scene.sceneId}
               environmentId={props.environmentId}
               payload={scene.eventStudy}
               sceneId={scene.sceneId}
+              layers={scene.scene?.deterministic ?? []}
               prefill={props.prefill}
             />
           ) : (

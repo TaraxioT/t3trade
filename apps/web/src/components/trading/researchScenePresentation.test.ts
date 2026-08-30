@@ -7,13 +7,19 @@ import {
   alignedTracePoints,
   askAboutOccurrenceSentence,
   describeHorizon,
+  fmtUsd,
+  grossChangeUsd,
+  historicalGrossChangeLabel,
   nextGraphViewMode,
   DERIVED_VS_AUTHORED_SENTENCE,
   MARKER_LEGEND_SENTENCE,
+  occurrenceStudyOverlay,
+  payloadEntryBasis,
   provenanceTrailLine,
   occurrenceWindow,
   resolveInitialGraphMode,
   studyExplanationLines,
+  studyRuleSentence,
   studyWindowMaxBars,
   STUDY_RULE_SENTENCE,
   turnIntoStrategySentence,
@@ -58,6 +64,49 @@ describe("alignedTracePoints", () => {
     expect(
       alignedTracePoints({ candles: [], entryTime: NOW, intervalMs: DAY, horizonBars: 5 }),
     ).toEqual([]);
+  });
+
+  it("on the close basis anchors on the entry bar's close and runs one bar further", () => {
+    // The entry moment is the close of the bar opening at NOW + DAY, so that
+    // bar is the anchor (its own close = 0% at barsSinceEntry 0), and a
+    // horizon of 2 spans the entry bar plus two following closes, ending on
+    // the bar whose close is the study's measured exit.
+    const trace = alignedTracePoints({
+      candles,
+      entryTime: NOW + 2 * DAY - 1,
+      intervalMs: DAY,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(trace).toEqual([
+      { barsSinceEntry: 0, changePct: 0 },
+      { barsSinceEntry: 1, changePct: ((110 - 105) / 105) * 100 },
+      { barsSinceEntry: 2, changePct: ((104 - 105) / 105) * 100 },
+    ]);
+  });
+
+  it("the close basis finds the entry bar whichever close-time convention the feed stamps", () => {
+    // closeTime = open + interval: the entry moment is exactly the next open.
+    expect(
+      alignedTracePoints({
+        candles,
+        entryTime: NOW + 2 * DAY,
+        intervalMs: DAY,
+        horizonBars: 1,
+        entryBasis: "first_closed_bar_after_event",
+      })[0],
+    ).toEqual({ barsSinceEntry: 0, changePct: 0 });
+    // closeTime = open + interval - 1: the entry moment is the last
+    // millisecond inside the bar.
+    expect(
+      alignedTracePoints({
+        candles,
+        entryTime: NOW + 2 * DAY - 1,
+        intervalMs: DAY,
+        horizonBars: 1,
+        entryBasis: "first_closed_bar_after_event",
+      })[0],
+    ).toEqual({ barsSinceEntry: 0, changePct: 0 });
   });
 });
 
@@ -189,6 +238,112 @@ describe("studyExplanationLines", () => {
       report: { ...payload.report, baseline: null },
     } as never);
     expect(lines.some((line) => line.includes("no baseline"))).toBe(true);
+  });
+
+  it("names the entry basis the scene was measured on, old scenes as the open basis", () => {
+    // A payload with no entryBasis is an old scene: it must explain the open
+    // basis its numbers were computed on, never a newer convention.
+    const openLines = studyExplanationLines(payload as never);
+    expect(openLines.some((line) => line.includes("entry basis: open of the first bar"))).toBe(
+      true,
+    );
+    expect(openLines.some((line) => line.includes(STUDY_RULE_SENTENCE))).toBe(true);
+    const closeLines = studyExplanationLines({
+      ...payload,
+      entryBasis: "first_closed_bar_after_event",
+    } as never);
+    expect(
+      closeLines.some((line) => line.includes("entry basis: close of the first closed bar")),
+    ).toBe(true);
+    expect(closeLines.some((line) => line.includes("close to close"))).toBe(true);
+  });
+
+  it("states the requested window and the served window beside each other", () => {
+    const lines = studyExplanationLines({
+      ...payload,
+      requestedFromT: NOW - 30 * DAY,
+      requestedToT: NOW,
+      archiveBounds: { recordingSince: NOW - 400 * DAY, fromT: NOW - 20 * DAY, toT: NOW },
+    } as never);
+    const bounds = lines.find((line) => line.startsWith("requested "));
+    expect(bounds).toBeDefined();
+    expect(bounds).toContain("served ");
+    expect(studyExplanationLines(payload as never).some((line) => line.startsWith("served "))).toBe(
+      true,
+    );
+  });
+});
+
+describe("the money a study's percentage maps onto", () => {
+  it("is a signed gross change on the notional, labelled as historical and before costs", () => {
+    expect(grossChangeUsd(5_000, -10)).toBe(-500);
+    expect(historicalGrossChangeLabel(5_000)).toBe(
+      "historical gross change on $5,000, before costs",
+    );
+    expect(historicalGrossChangeLabel(1_000)).toBe(
+      "historical gross change on $1,000, before costs",
+    );
+  });
+
+  it("formats USD with a sign only when negative, never parentheses or a balance", () => {
+    expect(fmtUsd(-500)).toBe("-$500");
+    expect(fmtUsd(500)).toBe("$500");
+    expect(fmtUsd(1234.5)).toBe("$1,234.5");
+  });
+});
+
+describe("studyRuleSentence and payloadEntryBasis", () => {
+  it("says the rule in the basis's own words, both bases", () => {
+    expect(studyRuleSentence("first_bar_open_after_event")).toBe(STUDY_RULE_SENTENCE);
+    const close = studyRuleSentence("first_closed_bar_after_event");
+    expect(close).toContain("close of the first bar that closed after the event");
+    expect(close).toContain("close to close");
+  });
+
+  it("reads a payload without a basis as the open basis", () => {
+    expect(payloadEntryBasis({} as never)).toBe("first_bar_open_after_event");
+    expect(payloadEntryBasis({ entryBasis: "first_closed_bar_after_event" } as never)).toBe(
+      "first_closed_bar_after_event",
+    );
+  });
+});
+
+describe("occurrenceStudyOverlay (the calendar chart's semantic layers)", () => {
+  const layers = [
+    { kind: "event_span", startAt: 1, endAt: 1, label: "Merge / Paris", occurrenceIndex: 0 },
+    { kind: "event_span", startAt: 2, endAt: 9, label: "Devcon", occurrenceIndex: 1 },
+    { kind: "study_entry", at: 101, price: 1470.12, occurrenceIndex: 0 },
+    { kind: "study_exit", at: 801, price: 1552.3, occurrenceIndex: 0 },
+    { kind: "return_span", fromT: 101, toT: 801, returnPct: 5.59, occurrenceIndex: 0 },
+  ] as const;
+
+  it("binds the occurrence's own layers by index: named activation, entry, exit, return", () => {
+    const overlay = occurrenceStudyOverlay(layers, 0, 30);
+    expect(overlay.activation).toEqual({ at: 1, label: "Merge / Paris" });
+    expect(overlay.entry).toEqual({ at: 101, price: 1470.12, label: "study entry" });
+    expect(overlay.exit).toEqual({ at: 801, price: 1552.3, label: "study exit after 30 bars" });
+    expect(overlay.returnPct).toBe(5.59);
+  });
+
+  it("carries the horizon in the exit label, whatever the horizon was", () => {
+    expect(occurrenceStudyOverlay(layers, 0, 7).exit?.label).toBe("study exit after 7 bars");
+  });
+
+  it("leaves absent pieces null for an unmeasured occurrence: no invented marker", () => {
+    const overlay = occurrenceStudyOverlay(layers, 1, 30);
+    expect(overlay.activation).toEqual({ at: 9, label: "Devcon" });
+    expect(overlay.entry).toBeNull();
+    expect(overlay.exit).toBeNull();
+    expect(overlay.returnPct).toBeNull();
+  });
+
+  it("returns all-null for an occurrence the scene holds nothing for", () => {
+    expect(occurrenceStudyOverlay(layers, 5, 30)).toEqual({
+      activation: null,
+      entry: null,
+      exit: null,
+      returnPct: null,
+    });
   });
 });
 
