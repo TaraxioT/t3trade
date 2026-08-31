@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off - a temp workspace for the document-backed mission shape, and the persisted-cwd JSON column by design in tests.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { EventId, ThreadId, TurnId, type OrchestrationEvent } from "@t3tools/contracts";

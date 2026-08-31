@@ -15,7 +15,7 @@
  * one file-backed store for the restart case. Composer stubs from
  * TradingWakeupComposer.test.ts.
  */
-// @effect-diagnostics nodeBuiltinImport:off - temp workspaces and a fixture script by design in tests.
+// @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off - temp workspaces, a fixture script, and the persisted-cwd JSON column by design in tests.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as NodeFS from "node:fs";
