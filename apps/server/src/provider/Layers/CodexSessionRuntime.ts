@@ -160,13 +160,6 @@ export interface CodexSessionRuntimeOptions {
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
-  /**
-   * Replaces Codex's own base prompt for this thread. Trading sessions pass
-   * the trading system prompt here: the coding-agent persona is ~18k chars of
-   * workspace collaboration guidance that a trading thread pays for on every
-   * API call and can never use.
-   */
-  readonly baseInstructions?: string;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -491,6 +484,12 @@ function readResumeCursorThreadId(
   return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.threadId : undefined;
 }
 
+// The ONLY source of sandbox and approval policy is the user's runtime mode,
+// stated explicitly here at thread/start (and through the same params on the
+// thread/resume spread) and again as a per-turn sandboxPolicy at turn/start.
+// Nothing may set a config-level `-c sandbox_mode` alongside these: an
+// explicit thread/turn parameter would silently override it and leave the
+// config value lying about the session's real policy.
 function runtimeModeToThreadConfig(input: RuntimeMode): {
   readonly approvalPolicy: EffectCodexSchema.V2ThreadStartParams__AskForApproval;
   readonly sandbox: EffectCodexSchema.V2ThreadStartParams__SandboxMode;
@@ -532,7 +531,6 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
-  readonly baseInstructions: string | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -542,7 +540,6 @@ function buildThreadStartParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
-    ...(input.baseInstructions ? { baseInstructions: input.baseInstructions } : {}),
   };
 }
 
@@ -699,7 +696,6 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
-  readonly baseInstructions: string | undefined;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -707,7 +703,6 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
-    baseInstructions: input.baseInstructions,
   });
 
   if (resumeThreadId === undefined) {
@@ -2051,7 +2046,6 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
-        baseInstructions: options.baseInstructions,
       });
 
       const providerThreadId = opened.thread.id;

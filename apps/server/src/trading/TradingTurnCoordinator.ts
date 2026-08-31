@@ -916,9 +916,8 @@ const make = Effect.gen(function* () {
         attachments: [],
       },
       runtimeMode: DEFAULT_RUNTIME_MODE,
-      // Trading wakes are fenced by their session profile regardless of
-      // the thread's mode; stating the default keeps the fence reason
-      // honest in the persisted event.
+      // The workspace mode is an inert persisted alias; the default keeps
+      // old readers decoding without it.
       workspaceMode: DEFAULT_WORKSPACE_MODE,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       createdAt: yield* nowIso,

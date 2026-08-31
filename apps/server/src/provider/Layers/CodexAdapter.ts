@@ -31,7 +31,6 @@ import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -43,16 +42,10 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { readSessionProfile } from "../SessionProfile.ts";
-import { workspaceWriteBoundary } from "../WorkspaceBoundary.ts";
-import { prepareResearchScratch } from "../ResearchScratch.ts";
+import { prepareProjectlessWorkspace } from "../ResearchScratch.ts";
 import {
   applyTradingTurnContract,
-  markTradingContractDelivered,
   resetTradingContractDelivery,
-  TRADING_ANALYST_SYSTEM_PROMPT,
-  TRADING_OBSERVE_SYSTEM_PROMPT,
-  TRADING_SYSTEM_PROMPT,
 } from "../TradingSessionProfile.ts";
 
 import {
@@ -85,54 +78,6 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
-
-/**
- * Codex features a trading session has no use for, every one of which puts a
- * tool definition (or several) into each API call's context. Disabled per
- * session process via `-c features.<name>=false` — the app server treats an
- * unknown feature name as a config warning (surfaced as a `config.warning`
- * runtime event), not a failure, so this list degrades safely across Codex
- * versions.
- */
-const TRADING_CODEX_DISABLED_FEATURES = [
-  "shell_tool",
-  "browser_use",
-  "browser_use_external",
-  "computer_use",
-  "image_generation",
-  "apps",
-  "in_app_browser",
-  "multi_agent",
-  "plugins",
-] as const;
-
-const tradingCodexFeatureArgs: ReadonlyArray<string> = TRADING_CODEX_DISABLED_FEATURES.flatMap(
-  (feature) => ["-c", `features.${feature}=false`],
-);
-
-/**
- * Config overrides for a fenced (market_research) session: most of the
- * feature set a trading session drops, plus a workspace-write sandbox rooted
- * at the session's scratch cwd.
- *
- * `shell_tool` is deliberately KEPT, unlike a trading session: it is the one
- * bounded executor the data-collection allowance is for, and the sandbox is
- * what makes it bounded — Codex's workspace-write policy confines every
- * write (shell, apply_patch, anything the runtime spawns) to the scratch cwd
- * and blocks command network access by default, so a scratch script can
- * normalize conference dates and cannot `cd` into this repository to commit
- * them. A provider without a sandbox this specific gets no executor at all
- * rather than an unfenced one.
- */
-export function marketCodexFeatureArgs(): ReadonlyArray<string> {
-  return [
-    ...TRADING_CODEX_DISABLED_FEATURES.filter((feature) => feature !== "shell_tool").flatMap(
-      (feature) => ["-c", `features.${feature}=false`],
-    ),
-    "-c",
-    'sandbox_mode="workspace-write"',
-  ];
-}
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -1702,7 +1647,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
   const fileSystem = yield* FileSystem.FileSystem;
-  const pathService = yield* Path.Path;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
@@ -1738,51 +1682,32 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         // trading contract in full again.
         resetTradingContractDelivery(input.threadId);
 
-        // The Codex mirror of the Claude adapter's trading profile (see
-        // ClaudeAdapter's queryOptions): the coding persona, the coding
-        // toolset, and a real workspace are dead weight a trading session pays
-        // for on every API call. `baseInstructions` replaces the persona with
-        // the trading system prompt — which carries the decision contract, so
-        // turns only ever need the header (hence markTradingContractDelivered
-        // below) — the feature flags drop the coding tools, and the cwd is an
-        // empty directory owned by this server so no AGENTS.md or leftover
-        // workspace ever leaks into the session.
-        const tradingProfileKind = readSessionProfile(input.threadId)?.kind;
-        const tradingProfile = tradingProfileKind !== undefined;
-        const tradingCwd = pathService.join(serverConfig.stateDir, "trading-cwd");
-        if (tradingProfile) {
-          yield* fileSystem
-            .makeDirectory(tradingCwd, { recursive: true })
-            .pipe(Effect.catchCause(() => Effect.void));
-          markTradingContractDelivered(input.threadId);
-        }
-        // The market-workspace fence for an ordinary thread: same treatment
-        // as a trading session's cwd, one notch looser on tools. The session
-        // runs in the bounded research scratch directory (outside the
-        // repository and outside live state, age- and size-pruned), most
-        // mutating features are off, and the sandbox confines every write
-        // that remains to that scratch cwd. Only an explicit `coding`
-        // capability keeps the repository cwd. And when the scratch
-        // directory cannot be prepared, the session is refused outright:
-        // falling back to any other cwd would be falling back to a writable
-        // coding session, which is the one thing the fence must never do.
-        const workspaceBoundary = workspaceWriteBoundary({
-          threadId: input.threadId,
-          workspaceMode: input.workspaceMode,
-        });
-        const marketSession = !tradingProfile && workspaceBoundary.kind === "fenced";
-        const marketCwd = marketSession
-          ? yield* prepareResearchScratch({ threadId: input.threadId }).pipe(
-              Effect.mapError(
-                (error) =>
-                  new ProviderAdapterValidationError({
-                    provider: PROVIDER,
-                    operation: "startSession",
-                    issue: error.detail,
-                  }),
-              ),
-            )
-          : null;
+        // Every thread — ordinary chat, mission, analyst, observe — is a
+        // native Codex session: its own project/worktree cwd, native base
+        // instructions (`baseInstructions` omitted so Codex keeps its own
+        // persona and AGENTS.md behavior), the full feature set, and
+        // sandbox/approval policy derived only from the runtime mode and
+        // stated explicitly at thread/start and turn/start by the session
+        // runtime. Trading tools arrive on top through the t3-trade MCP
+        // server. A thread with no project cwd runs in its per-thread
+        // projectless workspace under application state — never the server's
+        // own checkout, which is what a bare `process.cwd()` fallback would
+        // hand it.
+        const sessionCwd =
+          input.cwd ??
+          (yield* prepareProjectlessWorkspace({
+            stateDir: serverConfig.stateDir,
+            threadId: input.threadId,
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "startSession",
+                  issue: error.detail,
+                }),
+            ),
+          ));
 
         const serviceTier =
           input.modelSelection?.instanceId === boundInstanceId
@@ -1792,11 +1717,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
-          cwd: tradingProfile
-            ? tradingCwd
-            : marketSession && marketCwd !== null
-              ? marketCwd
-              : (input.cwd ?? process.cwd()),
+          cwd: sessionCwd,
           binaryPath: codexConfig.binaryPath,
           launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
           ...(options?.environment ? { environment: options.environment } : {}),
@@ -1805,21 +1726,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
-          ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
-          ...(tradingProfile
-            ? {
-                baseInstructions:
-                  tradingProfileKind === "trading_analyst"
-                    ? TRADING_ANALYST_SYSTEM_PROMPT
-                    : tradingProfileKind === "trading_observe"
-                      ? TRADING_OBSERVE_SYSTEM_PROMPT
-                      : TRADING_SYSTEM_PROMPT,
-              }
-            : {}),
           ...(mcpSession
             ? {
                 environment: {
@@ -1831,8 +1741,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   `mcp_servers.t3-trade.url=${mcpSession.endpoint}`,
                   "-c",
                   'mcp_servers.t3-trade.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
-                  ...(tradingProfile ? tradingCodexFeatureArgs : []),
-                  ...(marketSession ? marketCodexFeatureArgs() : []),
                 ],
               }
             : {}),

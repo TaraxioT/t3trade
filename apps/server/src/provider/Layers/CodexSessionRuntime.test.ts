@@ -775,6 +775,80 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  // The effective sandbox/approval behavior a mission session gets is the
+  // PAIR of explicit thread/start and turn/start parameters for one runtime
+  // mode — the config-level `sandbox_mode` that market sessions used to set
+  // is gone, so nothing can silently override or contradict these. Asserting
+  // thread params and turn params together is what pins that the mode the
+  // user picked is the mode the session actually runs with, at both seams.
+  it.effect("derives effective thread and turn sandbox/approval from the runtime mode alone", () =>
+    Effect.gen(function* () {
+      const expectations = {
+        "approval-required": {
+          sandbox: "read-only",
+          approvalPolicy: "untrusted",
+          sandboxPolicy: { type: "readOnly" },
+        },
+        "auto-accept-edits": {
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "workspaceWrite" },
+        },
+        auto: {
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "workspaceWrite" },
+        },
+        "full-access": {
+          sandbox: "danger-full-access",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+      } as const;
+
+      for (const runtimeMode of Object.keys(expectations) as Array<keyof typeof expectations>) {
+        const expected = expectations[runtimeMode];
+        const calls: Array<{ method: string; payload: unknown }> = [];
+        const client = {
+          request: <M extends "thread/start" | "thread/resume">(
+            method: M,
+            payload: CodexRpc.ClientRequestParamsByMethod[M],
+          ) => {
+            calls.push({ method, payload });
+            return Effect.succeed(
+              makeThreadOpenResponse("thread-x") as CodexRpc.ClientRequestResponsesByMethod[M],
+            );
+          },
+        };
+
+        yield* openCodexThread({
+          client,
+          threadId: ThreadId.make("thread-mission"),
+          runtimeMode,
+          cwd: "/tmp/t3-mission-cwd",
+          requestedModel: undefined,
+          serviceTier: undefined,
+          resumeThreadId: undefined,
+        });
+        const turnParams = yield* buildTurnStartParams({
+          threadId: "thread-mission",
+          runtimeMode,
+          prompt: "wakeup",
+        });
+
+        const threadStart = calls.find((call) => call.method === "thread/start")?.payload as {
+          sandbox: string;
+          approvalPolicy: string;
+        };
+        NodeAssert.ok(threadStart);
+        NodeAssert.equal(threadStart.sandbox, expected.sandbox);
+        NodeAssert.equal(threadStart.approvalPolicy, expected.approvalPolicy);
+        NodeAssert.deepStrictEqual(turnParams.sandboxPolicy, expected.sandboxPolicy);
+        NodeAssert.equal(turnParams.approvalPolicy, expected.approvalPolicy);
+      }
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
@@ -805,7 +879,6 @@ describe("openCodexThread", () => {
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
         resumeThreadId: "stale-thread",
-        baseInstructions: undefined,
       });
 
       NodeAssert.equal(opened.thread.id, "fresh-thread");
@@ -845,7 +918,6 @@ describe("openCodexThread", () => {
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
         resumeThreadId: "stale-thread",
-        baseInstructions: undefined,
       }).pipe(Effect.flip);
 
       NodeAssert.ok(isCodexAppServerRequestError(error));

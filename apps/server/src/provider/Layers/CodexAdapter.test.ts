@@ -47,7 +47,7 @@ import {
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
-import { TRADING_SYSTEM_PROMPT, WORKSPACE_TRADING_PREAMBLE } from "../TradingSessionProfile.ts";
+import { WORKSPACE_TRADING_PREAMBLE } from "../TradingSessionProfile.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
@@ -289,7 +289,9 @@ validationLayer("CodexAdapterLive validation", (it) => {
 
       NodeAssert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
         binaryPath: "codex",
-        cwd: process.cwd(),
+        // A thread with no project cwd runs in its per-thread projectless
+        // workspace under application state, never the server's own checkout.
+        cwd: NodePath.join(process.cwd(), "userdata", "projectless-workspaces", "thread-1"),
         launchArgs: "",
         model: "gpt-5.3-codex",
         providerInstanceId: ProviderInstanceId.make("codex"),
@@ -434,7 +436,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
-  it.effect("gives a trading thread the trading profile at session start", () =>
+  it.effect("keeps a trading thread on the native codex surface at session start", () =>
     Effect.gen(function* () {
       const threadId = asThreadId("sess-trading-profile");
       setSessionProfile({ threadId, kind: "trading" });
@@ -444,28 +446,61 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
           provider: ProviderDriverKind.make("codex"),
           threadId,
           runtimeMode: "full-access",
+          cwd: "/tmp/t3-codex-mission-cwd",
         });
 
         const runtime = sessionRuntimeFactory.lastRuntime;
         NodeAssert.ok(runtime);
-        // The persona seam: the coding-agent base prompt is replaced by the
-        // trading system prompt, which carries the decision contract.
-        NodeAssert.equal(runtime.options.baseInstructions, TRADING_SYSTEM_PROMPT);
-        // The workspace seam: an empty server-owned directory, not the cwd of
-        // whatever thread asked for the session.
-        NodeAssert.ok(runtime.options.cwd.endsWith("trading-cwd"));
+        // The persona seam: `baseInstructions` is omitted so Codex keeps its
+        // own base prompt and AGENTS.md behavior — a mission thread is a
+        // native coding session, not a trading-only persona.
+        NodeAssert.ok(!("baseInstructions" in runtime.options));
+        // The workspace seam: the thread's own cwd, not a server-owned
+        // trading directory.
+        NodeAssert.equal(runtime.options.cwd, "/tmp/t3-codex-mission-cwd");
+        // No feature flags and no config-level sandbox_mode: native shell,
+        // browser, apps, plugins and multi-agent stay available, and the
+        // sandbox/approval policy comes from the runtime mode alone, stated
+        // explicitly at thread/start and turn/start by the session runtime.
+        const args = runtime.options.appServerArgs ?? [];
+        NodeAssert.ok(
+          args.every((arg, index) => !(arg === "-c" && args[index + 1]?.startsWith("features."))),
+        );
+        NodeAssert.ok(!args.some((arg) => arg.includes("sandbox_mode")));
 
-        // The contract already rode in `baseInstructions`, so the first turn
-        // carries only the header — never the 9.5k contract a second time.
+        // The decision contract rides the first turn in full, because nothing
+        // replaced the base instructions with a prompt that already carried it.
         runtime.sendTurnImpl.mockClear();
         yield* Effect.ignore(adapter.sendTurn({ threadId, input: "wakeup", attachments: [] }));
         const sent = runtime.sendTurnImpl.mock.calls[0]?.[0]?.input ?? "";
-        NodeAssert.ok(sent.includes("Trading mission turn"));
-        NodeAssert.ok(!sent.includes("THE LOOP IS: PREDICT"));
+        NodeAssert.ok(sent.includes("THE LOOP IS: PREDICT"));
         NodeAssert.ok(sent.endsWith("wakeup"));
       } finally {
         clearSessionProfile(threadId);
       }
+    }),
+  );
+
+  it.effect("gives a persisted market_research thread the full native surface", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-old-market-row"),
+        runtimeMode: "full-access",
+        workspaceMode: "market_research",
+        cwd: "/tmp/t3-codex-old-row-cwd",
+      });
+
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      // The workspace mode is an inert compatibility alias: old persisted
+      // `market_research` rows keep the native cwd, native base instructions,
+      // and no feature downgrades.
+      NodeAssert.equal(runtime.options.cwd, "/tmp/t3-codex-old-row-cwd");
+      NodeAssert.ok(!("baseInstructions" in runtime.options));
+      const args = runtime.options.appServerArgs ?? [];
+      NodeAssert.ok(!args.some((arg) => arg.includes("sandbox_mode")));
     }),
   );
 

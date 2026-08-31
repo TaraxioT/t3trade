@@ -2144,16 +2144,17 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("keeps a trading session alive when the thread workspace changes", async () => {
+  it("resumes a trading session in the thread's persisted workspace cwd", async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
         model: "claude-sonnet-4-6",
       },
     });
-    // A trading session runs in its own cwd, so the thread's workspace path and
-    // the session's cwd never match. Restarting on that difference re-sent the
-    // contract and killed the run's lease on every wake.
+    // A mission session is a native session at the thread's workspace, so
+    // when that workspace moves, the session follows: it restarts into the
+    // thread's new cwd carrying its resume cursor, rather than staying in a
+    // server-owned trading directory the thread no longer names.
     setSessionProfile({ threadId: ThreadId.make("thread-1"), kind: "trading" });
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -2206,7 +2207,11 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
-    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      cwd: "/tmp/provider-project-worktree",
+      resumeCursor: { opaque: expect.stringMatching(/^resume-\d+$/) },
+    });
   });
 
   it("restarts claude sessions when claude effort changes", async () => {

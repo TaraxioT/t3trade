@@ -392,26 +392,6 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
   ];
 }
 
-/**
- * The permission ruleset for a fenced session: read, search, and web stay
- * open because a market conversation is a research conversation, and every
- * mutation is denied except edits inside the server-owned scratch directory
- * the session runs in. Deny is the default line, so an OpenCode permission
- * this list did not anticipate fails closed rather than open.
- */
-export function buildFencedOpenCodePermissionRules(scratchDir: string): PermissionRuleset {
-  return [
-    { permission: "*", pattern: "*", action: "deny" },
-    { permission: "codesearch", pattern: "*", action: "allow" },
-    { permission: "webfetch", pattern: "*", action: "allow" },
-    { permission: "websearch", pattern: "*", action: "allow" },
-    { permission: "question", pattern: "*", action: "allow" },
-    // The bounded data-collection surface: notes and collected data may be
-    // written, but only inside the scratch directory, never the repository.
-    { permission: "edit", pattern: `${scratchDir}/**`, action: "allow" },
-  ];
-}
-
 export function toOpenCodePermissionReply(
   decision: ProviderApprovalDecision,
 ): "once" | "always" | "reject" {

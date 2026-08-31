@@ -80,10 +80,8 @@ import * as Stream from "effect/Stream";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import * as SessionProfile from "../SessionProfile.ts";
 import * as TradingSessionProfile from "../TradingSessionProfile.ts";
-import { workspaceWriteBoundary } from "../WorkspaceBoundary.ts";
-import { prepareResearchScratch } from "../ResearchScratch.ts";
+import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
@@ -1265,28 +1263,6 @@ const CLAUDE_SETTING_SOURCES = [
   "project",
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
-
-/**
- * The built-in tools a fenced (market_research) session keeps: Read (so
- * pasted attachments still render), WebSearch and WebFetch (the research the
- * conversation is for). Deliberately nothing else: no Bash, no Edit, no
- * Write, no Grep or Glob wandering the repository, no Task subagents. Every
- * tool that can change state is absent, and so is every tool that executes,
- * because this runtime has no sandbox to bound an executor with — a provider
- * that cannot bound code execution gets no code execution.
- *
- * Exported so the cross-provider boundary tests can assert the list contains
- * no write or execute tool, which is the contract the fence rests on.
- */
-export const CLAUDE_MARKET_TOOLS = ["Read", "WebSearch", "WebFetch"] as const;
-
-/**
- * The trading system prompt is provider-neutral and lives in
- * `TradingSessionProfile`, alongside the tool allowlist it names. It is
- * re-exported here because this adapter's own tests (and its `tools: []` lock)
- * are what prove a trading thread starts with nothing else.
- */
-export const TRADING_SYSTEM_PROMPT = TradingSessionProfile.TRADING_SYSTEM_PROMPT;
 
 function buildPromptText(
   input: ProviderSendTurnInput,
@@ -3883,6 +3859,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
       }
 
+      // A new session instance, fresh or resumed: its first turn carries the
+      // trading contract in full again.
+      TradingSessionProfile.resetTradingContractDelivery(input.threadId);
+
       const startedAt = yield* nowIso;
       const resumeState = readClaudeResumeState(input.resumeCursor);
       const threadId = input.threadId;
@@ -4338,96 +4318,35 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-      // A trading thread is locked to the t3-trade MCP tools. The lock is two
-      // SDK options acting together: `tools: []` REMOVES every built-in tool
-      // (Bash, Read, Edit, the Task/subagent tool, …), and `allowedTools`
-      // auto-approves the only thing left — the `mcp__t3-trade__*` set —
-      // without prompting. `allowedTools` alone would not restrict what the
-      // agent can call; only `tools` does that. A trading thread additionally
-      // drops the preset system prompt (replaced by `TRADING_SYSTEM_PROMPT`),
-      // the filesystem setting sources, and the cwd/additionalDirectories
-      // spreads, so no CLAUDE.md, no project settings, and no working
-      // directory reach the agent. The `mcpServers` block is kept for both
-      // branches — it is the only thing a trading thread has.
-      const tradingProfileKind = SessionProfile.readSessionProfile(input.threadId)?.kind;
-      const tradingProfile = tradingProfileKind !== undefined;
-      // The repository-mutation boundary for an ordinary thread: market work
-      // is fenced (read-only repo access plus web search, no shell, no
-      // editing, no subagents), and only an explicit `software` workspace
-      // mode restores the full coding surface. Enforced here by the same
-      // `tools` allowlist mechanism the trading lock uses, not by prose.
-      const workspaceBoundary = workspaceWriteBoundary({
-        threadId: input.threadId,
-        workspaceMode: input.workspaceMode,
-      });
-      const marketSession = !tradingProfile && workspaceBoundary.kind === "fenced";
-      // A market_research session runs nowhere in particular: its cwd is the
-      // bounded research scratch directory (outside the repository and
-      // outside live state), so its default context is the conversation, not
-      // the source tree. When the scratch directory cannot be prepared the
-      // session is refused — running at the repository cwd instead would be
-      // the writable coding session the fence exists to prevent.
-      const scratchCwd = marketSession
-        ? yield* prepareResearchScratch({ threadId: input.threadId }).pipe(
-            Effect.mapError(
-              (error) =>
-                new ProviderAdapterValidationError({
-                  provider: PROVIDER,
-                  operation: "startSession",
-                  issue: error.detail,
-                }),
-            ),
-          )
-        : null;
+      // Every thread — ordinary chat, mission, analyst, observe — is a native
+      // Claude Code session: the coding preset system prompt with a short T3
+      // trading grounding appended, the thread's own cwd, the filesystem
+      // setting sources, and the full built-in toolset, all governed by the
+      // user's runtime permission mode. Trading tools arrive on top through
+      // the t3-trade MCP server below; the profile kinds never remove native
+      // capability.
       // The attachments dir grant lets the agent Read/copy pasted images at
       // the paths ProviderService injects into the turn text, without an
       // approval prompt. It is a leaf directory holding only attachment
-      // files; siblings like secrets/ and state.sqlite stay ungranted. A
-      // trading thread grants nothing: it has no cwd and no attachments.
-      // A market session keeps only the attachments grant: its Read tool is
-      // for the conversation's own images, and the repository needs no grant
-      // from a session that cannot write to it and has no business browsing
-      // it either.
-      const additionalDirectories = tradingProfile
-        ? []
-        : marketSession
-          ? [serverConfig.attachmentsDir]
-          : [...(input.cwd ? [input.cwd] : []), serverConfig.attachmentsDir];
+      // files; siblings like secrets/ and state.sqlite stay ungranted.
+      const additionalDirectories = [
+        ...(input.cwd ? [input.cwd] : []),
+        serverConfig.attachmentsDir,
+      ];
       const queryOptions: ClaudeQueryOptions = {
-        ...(tradingProfile
-          ? {}
-          : marketSession && scratchCwd !== null
-            ? { cwd: scratchCwd }
-            : input.cwd
-              ? { cwd: input.cwd }
-              : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
-        ...(tradingProfile
-          ? {
-              systemPrompt:
-                tradingProfileKind === "trading_analyst"
-                  ? TradingSessionProfile.TRADING_ANALYST_SYSTEM_PROMPT
-                  : tradingProfileKind === "trading_observe"
-                    ? TradingSessionProfile.TRADING_OBSERVE_SYSTEM_PROMPT
-                    : TRADING_SYSTEM_PROMPT,
-            }
-          : {
-              // Chat is the front door for trading: an ordinary thread here
-              // still has the t3-trade tools mounted and can still take
-              // authority on its first plan or execution call, so it carries
-              // the workspace grounding block appended to the coding preset.
-              systemPrompt: {
-                type: "preset",
-                preset: "claude_code",
-                append: TradingSessionProfile.WORKSPACE_TRADING_PREAMBLE,
-              },
-            }),
-        // Trading threads drop the filesystem setting sources entirely; a
-        // market session drops them too, because a repo's settings can
-        // declare hooks that execute commands, and a hook is a write path no
-        // tool allowlist covers. Only a `software` session trusts them.
-        settingSources: tradingProfile || marketSession ? [] : [...CLAUDE_SETTING_SOURCES],
+        // The native Claude Code preset, untouched: the T3 trading grounding
+        // and the mission decision contract both ride the first turn of each
+        // session instance (applyTradingTurnContract), the same seam every
+        // other provider uses, so nothing about the native persona is
+        // replaced.
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+        },
+        settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
         ...(effectiveEffort
@@ -4449,38 +4368,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         env: claudeEnvironment,
         ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
-        // Trading lock: remove every built-in tool, then auto-approve the only
-        // tools that remain (the MCP ones). `strictMcpConfig` makes the SDK
-        // fail closed if the t3-trade server misconfigures rather than
-        // silently dropping tools the lock depends on.
-        //
-        // Market lock: the same mechanism, one notch looser. A market
-        // conversation keeps the read-only built-ins and the provider's web
-        // search (research needs both) and loses every tool that can change
-        // anything: Bash, Edit, Write, NotebookEdit, and the Task/subagent
-        // tool. `allowedTools` auto-approves the t3-trade set, which is the
-        // only mutating surface left and mutates trading state, never files.
-        ...(tradingProfile
-          ? {
-              tools: [] as string[],
-              // Explicit trading tool names, not `mcp__t3-trade__*`: the
-              // preview toolkit is mounted on the same MCP server, so the
-              // wildcard also handed a trading session a browser.
-              allowedTools:
-                tradingProfileKind === "trading_analyst"
-                  ? [...TradingSessionProfile.TRADING_ANALYST_ALLOWED_TOOL_NAMES]
-                  : tradingProfileKind === "trading_observe"
-                    ? [...TradingSessionProfile.TRADING_OBSERVE_ALLOWED_TOOL_NAMES]
-                    : [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
-              strictMcpConfig: true,
-            }
-          : marketSession
-            ? {
-                tools: [...CLAUDE_MARKET_TOOLS],
-                allowedTools: [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
-                strictMcpConfig: true,
-              }
-            : {}),
+        // No `tools`/`allowedTools` overrides: native built-ins stay
+        // available under the runtime permission mode. `strictMcpConfig`
+        // keeps the t3-trade server fail-closed — a misconfigured server is
+        // an error, not a silently dropped toolkit.
+        ...(mcpSession ? { strictMcpConfig: true } : {}),
         ...(mcpSession
           ? {
               mcpServers: {
@@ -4515,9 +4407,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.session_id": newSessionId ?? "",
         "claude.query.include_partial_messages": true,
         "claude.query.additional_directories": additionalDirectories,
-        "claude.query.setting_sources":
-          tradingProfile || marketSession ? [] : [...CLAUDE_SETTING_SOURCES],
-        "claude.query.workspace_boundary": workspaceBoundary.kind,
+        "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
         "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
         "claude.query.extra_args_json": encodeJsonStringForDiagnostics(extraArgs) ?? "",
         "claude.query.path_to_executable": claudeBinaryPath,
@@ -4755,16 +4645,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    const message = yield* buildUserMessageEffect(input, {
-      fileSystem,
-      attachmentsDir: serverConfig.attachmentsDir,
-      boundInstanceId,
-    });
+    // The trading decision contract rides the first turn of each session
+    // instance, exactly as it does for the other providers; the grounding
+    // preamble also rides the appended system prompt, so a Claude mission
+    // thread keeps its native coding persona plus the trading contract
+    // without any system-prompt replacement.
+    const contract =
+      input.input === undefined ? undefined : applyTradingTurnContract(input.threadId, input.input);
+    const message = yield* buildUserMessageEffect(
+      contract === undefined ? input : { ...input, input: contract.text },
+      {
+        fileSystem,
+        attachmentsDir: serverConfig.attachmentsDir,
+        boundInstanceId,
+      },
+    );
 
     yield* Queue.offer(context.promptQueue, {
       type: "message",
       message,
-    }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
+    }).pipe(
+      Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)),
+      Effect.tap(() => Effect.sync(() => contract?.markDelivered())),
+    );
 
     return {
       threadId: context.session.threadId,

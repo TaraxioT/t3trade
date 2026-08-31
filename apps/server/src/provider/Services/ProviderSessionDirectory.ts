@@ -30,9 +30,8 @@ export interface ProviderRuntimeBinding {
   readonly runtimePayload?: unknown | null;
   readonly runtimeMode?: RuntimeMode;
   /**
-   * The workspace fence the session runs under. Absent only on writes that
-   * do not change it; bindings read back always carry it so session
-   * recovery cannot silently drop (or widen) the fence.
+   * Inert persisted compatibility alias for a removed workspace fence.
+   * Round-tripped with the binding; never gates capability.
    */
   readonly workspaceMode?: WorkspaceMode;
 }

@@ -538,6 +538,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         provider: ProviderDriverKind.make("opencode"),
         threadId,
         runtimeMode: "full-access",
+        cwd: process.cwd(),
         resumeCursor: { schemaVersion: 1, sessionId: "ses_samedir" },
       });
 

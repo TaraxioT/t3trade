@@ -16,6 +16,9 @@ import { Effect } from "effect";
 import * as Exit from "effect/Exit";
 
 import {
+  prepareProjectlessWorkspace,
+  PROJECTLESS_WORKSPACES_DIR_NAME,
+  projectlessWorkspaceDir,
   prepareResearchScratch,
   ResearchScratchError,
   RESEARCH_SCRATCH_MAX_BYTES,
@@ -137,4 +140,28 @@ describe("prepareResearchScratch", () => {
       }
     }),
   );
+});
+
+describe("the projectless workspace", () => {
+  it.effect("places one thread's workspace under application state, not the checkout", () =>
+    Effect.gen(function* () {
+      const stateDir = NodePath.join(NodeOS.tmpdir(), `t3trade-projectless-test-${Date.now()}`);
+      const threadId = "thread-projectless-1";
+      const dir = yield* prepareProjectlessWorkspace({ stateDir, threadId });
+      assert.equal(dir, projectlessWorkspaceDir({ stateDir, threadId }));
+      assert.equal(
+        NodePath.relative(stateDir, dir),
+        NodePath.join(PROJECTLESS_WORKSPACES_DIR_NAME, threadId),
+      );
+      assert.ok(NodeFS.statSync(dir).isDirectory());
+      NodeFS.rmSync(stateDir, { recursive: true, force: true });
+    }),
+  );
+
+  it("gives each thread its own directory", () => {
+    const stateDir = "/state";
+    expect(projectlessWorkspaceDir({ stateDir, threadId: "a" })).not.toBe(
+      projectlessWorkspaceDir({ stateDir, threadId: "b" }),
+    );
+  });
 });

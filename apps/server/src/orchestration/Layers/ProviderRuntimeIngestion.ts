@@ -1654,8 +1654,8 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              // Runtime events rebuild the session row; without carrying
-              // the mode they would reset a coding session to the fence.
+              // Runtime events rebuild the session row; keep carrying the
+              // persisted (inert) workspace mode so it survives rebuilds.
               workspaceMode: thread.session?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
               activeTurnId: nextActiveTurnId,
               lastError,
@@ -1907,8 +1907,8 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              // Runtime events rebuild the session row; without carrying
-              // the mode they would reset a coding session to the fence.
+              // Runtime events rebuild the session row; keep carrying the
+              // persisted (inert) workspace mode so it survives rebuilds.
               workspaceMode: thread.session?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,

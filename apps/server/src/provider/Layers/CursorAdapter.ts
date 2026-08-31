@@ -42,13 +42,8 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import {
-  fencedAcpPermissionDecision,
-  selectFencedRejectOption,
-  workspaceWriteBoundary,
-} from "../WorkspaceBoundary.ts";
-import { prepareResearchScratch } from "../ResearchScratch.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { prepareProjectlessWorkspace } from "../ResearchScratch.ts";
 import {
   applyTradingTurnContract,
   resetTradingContractDelivery,
@@ -497,32 +492,16 @@ export function makeCursorAdapter(
               issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
             });
           }
-          if (!input.cwd?.trim()) {
-            return yield* new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "startSession",
-              issue: "cwd is required and must be non-empty.",
-            });
-          }
-
-          // The repository-mutation boundary. A fenced session (a trading
-          // profile, or an ordinary thread not switched to `software` mode)
-          // never runs at the repository cwd: the ACP runtime offers no tool
-          // allowlist, so a server-owned working directory plus rejected
-          // write permissions are the fence this adapter can actually
-          // enforce rather than ask for.
-          const workspaceBoundary = workspaceWriteBoundary({
-            threadId: input.threadId,
-            workspaceMode: input.workspaceMode,
-          });
-          const fencedSession = workspaceBoundary.kind === "fenced";
-          // The bounded research scratch directory, outside the repository
-          // and outside live state. When it cannot be prepared the session is
-          // refused with a capability error: the ACP runtime has no tool
-          // allowlist, so a cwd the fence does not reach would be a writable
-          // coding session wearing a market badge.
-          const scratchCwd = fencedSession
-            ? yield* prepareResearchScratch({ threadId: input.threadId }).pipe(
+          // A thread with no project cwd runs in its per-thread projectless
+          // workspace under application state — never the server's own
+          // checkout, which is what a missing-cwd failure or a process.cwd()
+          // fallback would leave it with.
+          const cwd = input.cwd?.trim()
+            ? path.resolve(input.cwd.trim())
+            : yield* prepareProjectlessWorkspace({
+                stateDir: serverConfig.stateDir,
+                threadId: input.threadId,
+              }).pipe(
                 Effect.mapError(
                   (error) =>
                     new ProviderAdapterValidationError({
@@ -531,10 +510,7 @@ export function makeCursorAdapter(
                       issue: error.detail,
                     }),
                 ),
-              )
-            : null;
-          const cwd =
-            fencedSession && scratchCwd !== null ? scratchCwd : path.resolve(input.cwd.trim());
+              );
           const cursorModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
@@ -715,51 +691,7 @@ export function makeCursorAdapter(
                     params,
                     "acp.jsonrpc",
                   );
-                  if (fencedSession) {
-                    // The fence is runtime, not prose. A write-class tool
-                    // call outside the scratch directory is denied no matter
-                    // what the runtime mode says — and when the agent offered
-                    // no reject option, denial is still the answer, because a
-                    // fence that softens when nobody offers a no is not a
-                    // fence. An edit whose every location sits inside the
-                    // scratch directory is the bounded data-collection
-                    // surface, allowed once, never remembered.
-                    const decision = fencedAcpPermissionDecision({
-                      kind: params.toolCall.kind,
-                      locations: params.toolCall.locations ?? undefined,
-                      scratchDir: scratchCwd ?? "",
-                    });
-                    if (decision === "reject") {
-                      const rejectedOptionId = selectFencedRejectOption(params.options);
-                      return rejectedOptionId !== undefined
-                        ? {
-                            outcome: {
-                              outcome: "selected" as const,
-                              optionId: rejectedOptionId,
-                            },
-                          }
-                        : { outcome: { outcome: "cancelled" as const } };
-                    }
-                    if (decision === "allow") {
-                      const allowOnceOptionId = params.options.find(
-                        (option) =>
-                          option.kind === "allow_once" &&
-                          typeof option.optionId === "string" &&
-                          option.optionId.trim().length > 0,
-                      )?.optionId;
-                      if (typeof allowOnceOptionId === "string") {
-                        return {
-                          outcome: {
-                            outcome: "selected" as const,
-                            optionId: allowOnceOptionId,
-                          },
-                        };
-                      }
-                    }
-                    // "ask" (and an allow with no allow_once offered) falls
-                    // through to the user prompt below: a request the fence
-                    // did not anticipate belongs to the user.
-                  } else if (input.runtimeMode === "full-access") {
+                  if (input.runtimeMode === "full-access") {
                     const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
                     if (autoApprovedOptionId !== undefined) {
                       return {

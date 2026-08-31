@@ -14,16 +14,40 @@ import {
   resetTradingContractDelivery,
   TRADING_ALLOWED_TOOL_NAMES,
   TRADING_ANALYST_ALLOWED_TOOL_NAMES,
-  TRADING_ANALYST_SYSTEM_PROMPT,
   TRADING_ANALYST_TOOL_NAMES,
   TRADING_OBSERVE_ALLOWED_TOOL_NAMES,
-  TRADING_OBSERVE_SYSTEM_PROMPT,
   TRADING_OBSERVE_TOOL_NAMES,
-  TRADING_SYSTEM_PROMPT,
   TRADING_TOOL_NAMES,
   WORKSPACE_CHAT_PREFIX,
   WORKSPACE_TRADING_PREAMBLE,
 } from "./TradingSessionProfile.ts";
+
+// The prompts are delivered as first-turn contracts now, so the prompt-content
+// assertions read them off that seam: one fresh session instance per kind.
+const missionContractText = (): string => {
+  const threadId = ThreadId.make("thread-mission-contract");
+  setSessionProfile({ threadId, kind: "trading" });
+  resetTradingContractDelivery(threadId);
+  const text = applyTradingTurnContract(threadId, "wakeup").text;
+  clearAllSessionProfiles();
+  return text;
+};
+const analystContractText = (): string => {
+  const threadId = ThreadId.make("thread-analyst-contract");
+  setSessionProfile({ threadId, kind: "trading_analyst" });
+  resetTradingContractDelivery(threadId);
+  const text = applyTradingTurnContract(threadId, "question").text;
+  clearAllSessionProfiles();
+  return text;
+};
+const observeContractText = (): string => {
+  const threadId = ThreadId.make("thread-observe-contract");
+  setSessionProfile({ threadId, kind: "trading_observe" });
+  resetTradingContractDelivery(threadId);
+  const text = applyTradingTurnContract(threadId, "wakeup").text;
+  clearAllSessionProfiles();
+  return text;
+};
 
 const registeredToolNames = Object.values(TradingToolkit.tools).map((tool) => tool.name);
 
@@ -74,7 +98,7 @@ it("gives the analyst the reads and alert watches, and none of the acting tools"
   expect(TRADING_ANALYST_ALLOWED_TOOL_NAMES).not.toContain("mcp__t3-trade__*");
 
   // The analyst prompt mentions only tools the analyst actually has.
-  const mentioned = new Set(TRADING_ANALYST_SYSTEM_PROMPT.match(/trading_[a-z_]+/g) ?? []);
+  const mentioned = new Set(analystContractText().match(/trading_[a-z_]+/g) ?? []);
   expect(mentioned.size).toBeGreaterThan(0);
   for (const name of mentioned) {
     expect(TRADING_ANALYST_TOOL_NAMES).toContain(name);
@@ -135,30 +159,30 @@ it("gives an observe mission every research tool and no way to act", () => {
 
   // The prompt names only tools it has, in both directions: it may not promise
   // one it lacks, and the three it names as absent are named as absent.
-  const mentioned = new Set(TRADING_OBSERVE_SYSTEM_PROMPT.match(/trading_[a-z_]+/g) ?? []);
+  const mentioned = new Set(observeContractText().match(/trading_[a-z_]+/g) ?? []);
   for (const name of mentioned) {
     if (["trading_plan", "trading_enter", "trading_exit"].includes(name)) continue;
     expect(TRADING_OBSERVE_TOOL_NAMES).toContain(name);
   }
-  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain("are not in this session");
+  expect(observeContractText()).toContain("are not in this session");
   // The reverse state, named where the observer will look for it. Found live:
   // an observer asked to stand down reached for `shelve` — a verdict on the
   // idea — because nothing had told it that `observe` is also the way out.
-  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain("WHEN THE USER ASKS YOU TO STOP WATCHING");
-  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain("ends this watch");
-  expect(TRADING_OBSERVE_SYSTEM_PROMPT).toContain(WORKSPACE_TRADING_PREAMBLE);
+  expect(observeContractText()).toContain("WHEN THE USER ASKS YOU TO STOP WATCHING");
+  expect(observeContractText()).toContain("ends this watch");
+  expect(observeContractText()).toContain(WORKSPACE_TRADING_PREAMBLE);
 });
 
 it("tells every woken agent what to do with a validation event", () => {
   // The doctrine reaches BOTH contracts: a trade mission with a validation on
   // its market gets these wakes too, and the rule there is the same one.
-  for (const prompt of [TRADING_SYSTEM_PROMPT, TRADING_OBSERVE_SYSTEM_PROMPT]) {
+  for (const prompt of [missionContractText(), observeContractText()]) {
     expect(prompt).toContain("WHEN A VALIDATION WAKES YOU, NARRATE IT AND DO NOTHING ELSE");
     expect(prompt).toContain("validationEvents");
     expect(prompt).toContain("Do not publish a plan");
   }
   // …and not the analyst's, which holds no mission and is never woken.
-  expect(TRADING_ANALYST_SYSTEM_PROMPT).not.toContain("WHEN A VALIDATION WAKES YOU");
+  expect(analystContractText()).not.toContain("WHEN A VALIDATION WAKES YOU");
 });
 
 it("prefixes the observe contract onto an observe thread's turn", () => {
@@ -201,15 +225,15 @@ it("grounds every thread in the workspace, in under 900 characters", () => {
 
   // And every prompt in the workspace carries it: the mission's, the
   // analyst's, and both turn contracts.
-  expect(TRADING_SYSTEM_PROMPT).toContain(WORKSPACE_TRADING_PREAMBLE);
-  expect(TRADING_ANALYST_SYSTEM_PROMPT).toContain(WORKSPACE_TRADING_PREAMBLE);
+  expect(missionContractText()).toContain(WORKSPACE_TRADING_PREAMBLE);
+  expect(analystContractText()).toContain(WORKSPACE_TRADING_PREAMBLE);
 });
 
 it("mentions only registered tool names in the system prompt", () => {
   // Every `trading_*` token the prompt uses must be a tool that exists. The
   // prompt this replaced directed the harness to `trading_stand_down` and a
   // "trading inbox", neither of which was ever registered.
-  const mentioned = new Set(TRADING_SYSTEM_PROMPT.match(/trading_[a-z_]+/g) ?? []);
+  const mentioned = new Set(missionContractText().match(/trading_[a-z_]+/g) ?? []);
   expect(mentioned.size).toBeGreaterThan(0);
   for (const name of mentioned) {
     expect(registeredToolNames).toContain(name);
@@ -217,8 +241,8 @@ it("mentions only registered tool names in the system prompt", () => {
 });
 
 it("enumerates the playbook call order and the terminal decision outcomes", () => {
-  expect(TRADING_SYSTEM_PROMPT).toContain('"classify"');
-  expect(TRADING_SYSTEM_PROMPT).toContain('"standing_rules"');
+  expect(missionContractText()).toContain('"classify"');
+  expect(missionContractText()).toContain('"standing_rules"');
   for (const outcome of [
     "entered",
     "managed_position",
@@ -228,7 +252,7 @@ it("enumerates the playbook call order and the terminal decision outcomes", () =
     "execution_refused",
     "researched",
   ]) {
-    expect(TRADING_SYSTEM_PROMPT).toContain(outcome);
+    expect(missionContractText()).toContain(outcome);
   }
 });
 
@@ -260,35 +284,35 @@ it("makes the research loop a peer of the execution loop, not a footnote", () =>
   // The contract used to describe one thing to do with a market: predict, arm,
   // wait, react. A user who brought an IDEA got that loop pointed at them, and
   // the three research tools were never named in it at all.
-  expect(TRADING_SYSTEM_PROMPT).toContain("WHEN THE USER BRINGS AN IDEA AND NOT AN ORDER");
+  expect(missionContractText()).toContain("WHEN THE USER BRINGS AN IDEA AND NOT AN ORDER");
   for (const tool of [TRADING_HYPOTHESIS_TOOL, TRADING_BACKTEST_TOOL, TRADING_VALIDATE_TOOL]) {
-    expect(TRADING_SYSTEM_PROMPT).toContain(tool);
+    expect(missionContractText()).toContain(tool);
   }
   // The four moves the research path is made of.
-  expect(TRADING_SYSTEM_PROMPT).toContain("IN THE USER'S OWN WORDS");
-  expect(TRADING_SYSTEM_PROMPT).toContain("NEAREST TESTABLE FORM");
-  expect(TRADING_SYSTEM_PROMPT).toContain("OFFER FORWARD VALIDATION");
-  expect(TRADING_SYSTEM_PROMPT).toContain("REVISE, DO NOT REFILE");
+  expect(missionContractText()).toContain("IN THE USER'S OWN WORDS");
+  expect(missionContractText()).toContain("NEAREST TESTABLE FORM");
+  expect(missionContractText()).toContain("OFFER FORWARD VALIDATION");
+  expect(missionContractText()).toContain("REVISE, DO NOT REFILE");
   // And the one thing it forbids.
-  expect(TRADING_SYSTEM_PROMPT).toContain(
+  expect(missionContractText()).toContain(
     "DO NOT PUBLISH A PLAN OR ARM AN EXECUTION WAKE FOR AN IDEA THE USER HAS NOT ASKED TO TRADE",
   );
   // The direct-order rule survives it untouched: research is the path for an
   // idea, never a reason to talk somebody out of a trade they asked for.
-  expect(TRADING_SYSTEM_PROMPT).toContain("WHEN THE USER TELLS YOU TO MAKE A TRADE, MAKE IT");
-  expect(TRADING_SYSTEM_PROMPT).toContain("say so in ONE line and then execute");
+  expect(missionContractText()).toContain("WHEN THE USER TELLS YOU TO MAKE A TRADE, MAKE IT");
+  expect(missionContractText()).toContain("say so in ONE line and then execute");
 });
 
 it("names every tool the analyst allowlist actually grants", () => {
   // The contract said "your three tools" while the allowlist granted six, so
   // the prompt was telling the model it could not do things it could.
-  expect(TRADING_ANALYST_SYSTEM_PROMPT).not.toContain("Your three tools");
+  expect(analystContractText()).not.toContain("Your three tools");
   for (const tool of TRADING_ANALYST_TOOL_NAMES) {
-    expect(TRADING_ANALYST_SYSTEM_PROMPT).toContain(tool);
+    expect(analystContractText()).toContain(tool);
   }
   // Every trading tool the analyst prompt names is one the analyst can call:
   // naming an execution tool would be worse than naming too few.
-  const mentioned = new Set(TRADING_ANALYST_SYSTEM_PROMPT.match(/trading_[a-z_]+/g) ?? []);
+  const mentioned = new Set(analystContractText().match(/trading_[a-z_]+/g) ?? []);
   for (const name of mentioned) {
     expect(TRADING_ANALYST_TOOL_NAMES).toContain(name);
   }
@@ -296,16 +320,17 @@ it("names every tool the analyst allowlist actually grants", () => {
 
 it("has every provider adapter apply the profile", async () => {
   // The variance this guards against is not a behaviour one adapter got wrong;
-  // it is an adapter that never opted in at all. Claude applies the profile as
-  // a system prompt plus an explicit allowlist; the four CLI-backed adapters
-  // apply it as a turn contract, because their runtimes expose no replaceable
-  // system prompt at the seam a turn is built.
+  // it is an adapter that never opted in at all. Every adapter now applies the
+  // profile the same way — as a turn contract riding the first turn of each
+  // session instance — so no native system prompt or base instructions are
+  // replaced anywhere.
   const read = async (file: string) =>
     await NodeFSP.readFile(new URL(`./Layers/${file}`, import.meta.url), "utf8");
 
   const claude = await read("ClaudeAdapter.ts");
-  expect(claude).toContain("TRADING_SYSTEM_PROMPT");
-  expect(claude).toContain("TRADING_ALLOWED_TOOL_NAMES");
+  expect(claude).toContain("applyTradingTurnContract(input.threadId");
+  expect(claude).toContain("resetTradingContractDelivery(input.threadId)");
+  expect(claude).toContain("markDelivered()");
 
   for (const adapter of [
     "CodexAdapter.ts",

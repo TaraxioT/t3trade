@@ -174,3 +174,47 @@ export const prepareResearchScratch: (input: {
     }).pipe(Effect.catchDefect(() => Effect.void));
     return dir;
   });
+
+/**
+ * Root directory name for projectless workspaces, under T3 Trade application
+ * state (`stateDir`), never the source checkout and never the installed
+ * `userdata` directory that holds archive databases and signer material.
+ */
+export const PROJECTLESS_WORKSPACES_DIR_NAME = "projectless-workspaces";
+
+/**
+ * A thread with no project cwd still needs somewhere to be: a clearly-named
+ * per-thread workspace under application state, so a native coding session
+ * attached to nothing never lands in the T3 Trade source checkout by
+ * accident.
+ */
+export function projectlessWorkspaceDir(input: {
+  readonly stateDir: string;
+  readonly threadId: string;
+}): string {
+  return NodePath.join(input.stateDir, PROJECTLESS_WORKSPACES_DIR_NAME, input.threadId);
+}
+
+/**
+ * Create this thread's projectless workspace. Fails rather than falling back
+ * when the directory cannot be created: the only fallback a provider offers
+ * is its own process cwd, which is the T3 Trade checkout, and a session must
+ * never run there just because it has no project.
+ */
+export const prepareProjectlessWorkspace: (input: {
+  readonly stateDir: string;
+  readonly threadId: string;
+}) => Effect.Effect<string, ResearchScratchError> = (input) =>
+  Effect.gen(function* () {
+    const dir = projectlessWorkspaceDir(input);
+    yield* Effect.try({
+      try: () => NodeFS.mkdirSync(dir, { recursive: true }),
+      catch: (cause) =>
+        new ResearchScratchError({
+          detail:
+            `the projectless workspace could not be created at ${dir}: ${String(cause)}. ` +
+            "A thread without a project refuses to start rather than run in the server's own checkout.",
+        }),
+    });
+    return dir;
+  });

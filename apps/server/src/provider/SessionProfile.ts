@@ -55,9 +55,9 @@ export function isTradingObserveThread(threadId: ThreadId): boolean {
 }
 
 /**
- * Either trading kind: the seams that are the same for a mission and an
- * analyst — the trading-only MCP endpoint, the dropped cwd, the tool lock's
- * existence (its contents differ per kind).
+ * Either trading kind. Mission metadata only: it decides which turn contract
+ * a thread carries and which server-side mission checks apply, never the
+ * session's native capabilities, cwd, or tools.
  */
 export function hasTradingProfile(threadId: ThreadId): boolean {
   return profilesByThread.get(threadId) !== undefined;

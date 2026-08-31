@@ -37,16 +37,9 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import * as SessionProfile from "../SessionProfile.ts";
-import {
-  TRADING_ALLOWED_TOOL_NAMES,
-  WORKSPACE_TRADING_PREAMBLE,
-} from "../TradingSessionProfile.ts";
+import { WORKSPACE_CHAT_PREFIX, WORKSPACE_TRADING_PREAMBLE } from "../TradingSessionProfile.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import {
-  makeClaudeAdapter,
-  TRADING_SYSTEM_PROMPT,
-  type ClaudeAdapterLiveOptions,
-} from "./ClaudeAdapter.ts";
+import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
@@ -404,7 +397,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("locks a trading thread to the t3-trade tools", () => {
+  it.effect("keeps a trading thread on the native claude coding surface", () => {
     const harness = makeHarness();
     SessionProfile.setSessionProfile({ threadId: TRADING_THREAD_ID, kind: "trading" });
     return Effect.gen(function* () {
@@ -413,27 +406,51 @@ describe("ClaudeAdapterLive", () => {
         threadId: TRADING_THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
+        cwd: "/tmp/t3-claude-mission-cwd",
       });
 
-      const createInput = harness.getLastCreateQueryInput();
-      const options = createInput?.options;
-      // `tools: []` removes every built-in tool; `allowedTools` auto-approves
-      // the only things left — the twenty trading tools by name. The old
-      // `mcp__t3-trade__*` wildcard also allowed the preview toolkit, which is
-      // mounted on the same MCP server.
-      assert.deepEqual(options?.tools, []);
-      assert.deepEqual(options?.allowedTools, [...TRADING_ALLOWED_TOOL_NAMES]);
-      assert.ok(!options?.allowedTools?.includes("mcp__t3-trade__*"));
-      // No filesystem setting sources, no preset system prompt, no cwd, no
-      // additional directories, and strict MCP config so a misconfigured
-      // server fails closed.
-      assert.deepEqual(options?.settingSources, []);
-      assert.strictEqual(options?.systemPrompt, TRADING_SYSTEM_PROMPT);
-      assert.equal(options?.cwd, undefined);
-      assert.equal(options?.additionalDirectories, undefined);
-      assert.equal(options?.strictMcpConfig, true);
+      const options = harness.getLastCreateQueryInput()?.options;
+      // A mission thread is still a native Claude Code session: the coding
+      // preset appended to (never replaced), the thread's own cwd, the
+      // filesystem setting sources, and no `tools`/`allowedTools` overrides
+      // removing the built-in toolset. Trading tools arrive through the
+      // t3-trade MCP server, not by locking everything else out.
+      assert.deepEqual(options?.systemPrompt, { type: "preset", preset: "claude_code" });
+      assert.equal(options?.cwd, "/tmp/t3-claude-mission-cwd");
+      assert.deepEqual(options?.settingSources, ["user", "project", "local"]);
+      assert.equal(options?.tools, undefined);
+      assert.equal(options?.allowedTools, undefined);
+      assert.ok((options?.additionalDirectories ?? []).includes("/tmp/t3-claude-mission-cwd"));
     }).pipe(
       Effect.ensuring(Effect.sync(() => SessionProfile.clearSessionProfile(TRADING_THREAD_ID))),
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("gives a persisted market_research thread the full native surface", () => {
+    // Threads persisted before the workspace fence was removed still carry
+    // `workspaceMode: "market_research"`. The field is an inert compatibility
+    // alias now: it must never downgrade tools, cwd, prompts, or setting
+    // sources again.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        workspaceMode: "market_research",
+        cwd: "/tmp/t3-claude-old-row-cwd",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.systemPrompt, { type: "preset", preset: "claude_code" });
+      assert.equal(options?.cwd, "/tmp/t3-claude-old-row-cwd");
+      assert.deepEqual(options?.settingSources, ["user", "project", "local"]);
+      assert.equal(options?.tools, undefined);
+      assert.equal(options?.allowedTools, undefined);
+    }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
@@ -454,11 +471,7 @@ describe("ClaudeAdapterLive", () => {
       // take a market on its first plan or entry, so the grounding block rides
       // the preset rather than replacing it.
       const options = harness.getLastCreateQueryInput()?.options;
-      assert.deepEqual(options?.systemPrompt, {
-        type: "preset",
-        preset: "claude_code",
-        append: WORKSPACE_TRADING_PREAMBLE,
-      });
+      assert.deepEqual(options?.systemPrompt, { type: "preset", preset: "claude_code" });
       assert.notDeepEqual(options?.tools, []);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -814,7 +827,10 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, "high");
       const promptText = yield* Effect.promise(() => readFirstPromptText(createInput));
-      assert.equal(promptText, "Ultrathink:\nInvestigate the edge cases");
+      assert.equal(
+        promptText,
+        `Ultrathink:\n${WORKSPACE_CHAT_PREFIX}\n\nInvestigate the edge cases`,
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -847,7 +863,7 @@ describe("ClaudeAdapterLive", () => {
       const promptText = yield* Effect.promise(() =>
         readFirstPromptText(harness.getLastCreateQueryInput()),
       );
-      assert.equal(promptText, "/compact");
+      assert.equal(promptText, `Ultrathink:\n${WORKSPACE_CHAT_PREFIX}\n\n/compact`);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -902,7 +918,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(promptMessage?.message.content, [
         {
           type: "text",
-          text: "What's in this image?",
+          text: `${WORKSPACE_CHAT_PREFIX}\n\nWhat's in this image?`,
         },
         {
           type: "image",

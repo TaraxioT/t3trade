@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import { ThreadId } from "@t3tools/contracts";
 import {
   TRADING_STRATEGY_TOOL,
   TRADING_PLAN_TOOL,
@@ -17,9 +18,11 @@ import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
 import {
-  TRADING_SYSTEM_PROMPT,
+  applyTradingTurnContract,
+  resetTradingContractDelivery,
   TRADING_TOOL_NAMES,
 } from "../../../provider/TradingSessionProfile.ts";
+import { setSessionProfile } from "../../../provider/SessionProfile.ts";
 import { TradingToolkit } from "./tools.ts";
 
 it("exposes the read, the plan, the watch, the journal, the research, and the two writes", () => {
@@ -142,7 +145,14 @@ it("points the one read at the fields that carry the answers", () => {
 // a tool that no longer exists.
 it("points at the calibration the one read now carries", () => {
   expect(TRADING_TOOL_NAMES).not.toContain("trading_get_target_calibration");
-  expect(TRADING_SYSTEM_PROMPT).toContain("mission.targetCalibration");
+  // The decision contract rides the first turn of a mission session now, so
+  // that is where its doctrine has to be findable.
+  const missionThread = ThreadId.make("thread-tools-doctrine");
+  setSessionProfile({ threadId: missionThread, kind: "trading" });
+  resetTradingContractDelivery(missionThread);
+  expect(applyTradingTurnContract(missionThread, "wakeup").text).toContain(
+    "mission.targetCalibration",
+  );
 });
 
 // Re-levelling used to be cancel-then-register, with the side being re-levelled

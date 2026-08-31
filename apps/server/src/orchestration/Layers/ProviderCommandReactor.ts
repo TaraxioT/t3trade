@@ -30,7 +30,6 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
-import { hasTradingProfile } from "../../provider/SessionProfile.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -532,10 +531,8 @@ const make = Effect.gen(function* () {
     }
 
     const desiredRuntimeMode = thread.runtimeMode;
-    // The workspace fence rides the same session lifecycle as the runtime
-    // mode: the adapters read it at session start to decide whether the
-    // session may touch the repository at all, so a change has to restart
-    // the session exactly like a runtime-mode change does.
+    // `workspaceMode` is an inert compatibility alias persisted with the
+    // session record; it no longer decides anything at session start.
     const desiredWorkspaceMode = thread.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
@@ -713,23 +710,13 @@ const make = Effect.gen(function* () {
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
     if (existingSessionThreadId) {
       const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
-      // A trading session's fence comes from its profile, not from this
-      // field, so a mode change on one is a no-op that must not restart it.
-      const sessionWorkspaceMode = thread.session?.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
-      const workspaceModeChanged =
-        !hasTradingProfile(threadId) && desiredWorkspaceMode !== sessionWorkspaceMode;
-      // A trading session owns its own cwd: the adapters start it in the
-      // dedicated `trading-cwd` so the harness cannot read the repository it
-      // happens to be attached to. The thread still resolves the ordinary
-      // workspace path, so the two never match, and comparing them restarted
-      // the provider session on EVERY wake — which re-sent the contract and,
-      // worse, emitted the session-lifecycle events the run's lease watcher
-      // read as "the turn ended", killing each lease about a second after it
-      // was granted. The thread's workspace is simply not this session's cwd.
-      // Mission and analyst sessions alike own their own cwd (or none at all),
-      // so the workspace comparison is meaningless for both — see the comment
-      // above.
-      const cwdChanged = !hasTradingProfile(threadId) && effectiveCwd !== activeSession?.cwd;
+      // `workspaceMode` is an inert compatibility alias for a removed
+      // capability fence: a change to it no longer restarts the provider
+      // session, because it no longer decides anything about the session.
+      // A session resumes in the same cwd as its thread — mission threads
+      // included: they run natively at the thread's workspace, so the cwd
+      // comparison below is meaningful for every thread again.
+      const cwdChanged = effectiveCwd !== activeSession?.cwd;
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
       const modelChanged =
@@ -747,7 +734,6 @@ const make = Effect.gen(function* () {
 
       if (
         !runtimeModeChanged &&
-        !workspaceModeChanged &&
         !cwdChanged &&
         !instanceChanged &&
         !shouldRestartForModelChange &&
@@ -769,9 +755,6 @@ const make = Effect.gen(function* () {
         currentRuntimeMode: thread.session?.runtimeMode,
         desiredRuntimeMode: thread.runtimeMode,
         runtimeModeChanged,
-        currentWorkspaceMode: sessionWorkspaceMode,
-        desiredWorkspaceMode: thread.workspaceMode,
-        workspaceModeChanged,
         previousCwd: activeSession?.cwd,
         desiredCwd: effectiveCwd,
         cwdChanged,

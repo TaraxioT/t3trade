@@ -29,8 +29,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { workspaceWriteBoundary } from "../WorkspaceBoundary.ts";
-import { prepareResearchScratch } from "../ResearchScratch.ts";
+import { prepareProjectlessWorkspace } from "../ResearchScratch.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   applyTradingTurnContract,
@@ -46,7 +45,6 @@ import {
 } from "../Errors.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
-  buildFencedOpenCodePermissionRules,
   buildOpenCodePermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
@@ -1237,39 +1235,28 @@ export function makeOpenCodeAdapter(
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
-        // The repository-mutation boundary: a fenced session (a trading
-        // profile, or an ordinary thread not switched to `software` mode)
-        // runs in a server-owned scratch directory with a permission ruleset
-        // that denies every write outside it. OpenCode enforces the ruleset
-        // in its runtime, which is the seam this adapter has.
-        const workspaceBoundary = workspaceWriteBoundary({
-          threadId: input.threadId,
-          workspaceMode: input.workspaceMode,
-        });
-        const fencedSession = workspaceBoundary.kind === "fenced";
-        // The bounded research scratch directory, outside the repository and
-        // outside live state. OpenCode enforces the permission ruleset in its
-        // own runtime, which is this adapter's fence; when the scratch
-        // directory cannot be prepared there is nowhere safe to point the
-        // session, so it is refused rather than run at the repository cwd.
-        const scratchDir = fencedSession
-          ? yield* prepareResearchScratch({ threadId: input.threadId }).pipe(
-              Effect.mapError(
-                (error) =>
-                  new ProviderAdapterValidationError({
-                    provider: PROVIDER,
-                    operation: "startSession",
-                    issue: error.detail,
-                  }),
-              ),
-            )
-          : null;
+        // Every thread — ordinary chat, mission, analyst, observe — is a
+        // native OpenCode session at its own cwd under the permission
+        // ruleset the user's runtime mode asks for. A thread with no project
+        // cwd runs in its per-thread projectless workspace under application
+        // state, never the server's own checkout, which is what a bare
+        // `serverConfig.cwd` fallback would hand it.
         const directory =
-          fencedSession && scratchDir !== null ? scratchDir : (input.cwd ?? serverConfig.cwd);
-        const permission =
-          fencedSession && scratchDir !== null
-            ? buildFencedOpenCodePermissionRules(scratchDir)
-            : buildOpenCodePermissionRules(input.runtimeMode);
+          input.cwd ??
+          (yield* prepareProjectlessWorkspace({
+            stateDir: serverConfig.stateDir,
+            threadId: input.threadId,
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "startSession",
+                  issue: error.detail,
+                }),
+            ),
+          ));
+        const permission = buildOpenCodePermissionRules(input.runtimeMode);
         const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {

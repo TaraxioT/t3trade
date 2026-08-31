@@ -60,11 +60,9 @@ export const reconcileStaleSessions = Effect.gen(function* () {
               ? {}
               : { providerInstanceId: session.providerInstanceId }),
             runtimeMode: session.runtimeMode,
-            // The stopped row keeps the workspace mode it ran with: writing it
-            // back preserves what the session was fenced to, and the next
-            // start re-derives the mode from the thread anyway. A row that
-            // predates the column decodes without one and gets the fenced
-            // default rather than an invented capability.
+            // The stopped row keeps the workspace mode it ran with. The
+            // field is an inert compatibility alias now, so this is
+            // round-tripping persisted state, nothing more.
             workspaceMode: session.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: session.lastError,

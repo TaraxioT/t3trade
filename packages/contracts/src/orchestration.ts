@@ -214,18 +214,15 @@ export const RuntimeMode = Schema.Literals([
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 /**
- * What a thread's turns are allowed to do to the repository it lives in.
+ * Inert compatibility alias for a removed capability fence.
  *
- * `"market_research"` is the default and the fence: an ordinary chat about markets,
- * research, or the product itself runs with no path that can modify the
- * repository, enforced by each provider adapter at its own tool surface
- * rather than by prompt prose. `"coding"` is the explicit exception the
- * user opts a thread into when the work really is code: it restores the full
- * coding-agent surface at the repository cwd.
- *
- * Thread-level state on the same lifecycle as `runtimeMode`: set by its own
- * command, read at turn start, and a change restarts the provider session
- * because the tool surface is decided at session start.
+ * Older builds persisted `market_research` as the default workspace mode and
+ * used it to fence ordinary threads out of the coding-agent surface. That
+ * downgrade is gone: every thread is a native provider session whose sandbox
+ * and approval policy come from `runtimeMode` alone. The field survives only
+ * so old persisted rows and the web UI keep parsing; it must never gate
+ * tools, cwd, prompts, or setting sources again. Removal from the wire
+ * contract is a later slice.
  */
 export const WorkspaceMode = Schema.Literals(["market_research", "coding"]);
 export type WorkspaceMode = typeof WorkspaceMode.Type;
