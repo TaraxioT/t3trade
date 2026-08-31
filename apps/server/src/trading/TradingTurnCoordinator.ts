@@ -29,7 +29,6 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
-  DEFAULT_WORKSPACE_MODE,
   MessageId,
   ThreadId,
   type OrchestrationEvent,
@@ -946,9 +945,6 @@ const make = Effect.gen(function* () {
         attachments: [],
       },
       runtimeMode: DEFAULT_RUNTIME_MODE,
-      // The workspace mode is an inert persisted alias; the default keeps
-      // old readers decoding without it.
-      workspaceMode: DEFAULT_WORKSPACE_MODE,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       createdAt: yield* nowIso,
     });

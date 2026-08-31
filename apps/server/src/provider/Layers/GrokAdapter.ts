@@ -770,7 +770,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             providerInstanceId: boundInstanceId,
             status: "ready",
             runtimeMode: input.runtimeMode,
-            ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
             cwd,
             ...(boundModelId ? { model: resolveGrokAcpBaseModelId(boundModelId) } : {}),
             threadId: input.threadId,

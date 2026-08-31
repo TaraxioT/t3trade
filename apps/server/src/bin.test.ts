@@ -11,7 +11,6 @@ import {
   EnvironmentOrchestrationHttpApi,
   ProviderInstanceId,
   ThreadId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import { assert, it } from "@effect/vitest";
@@ -570,7 +569,6 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           createdAt: DateTime.formatIso(yield* DateTime.now),

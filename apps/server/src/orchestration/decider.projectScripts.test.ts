@@ -6,7 +6,6 @@ import {
   ProjectId,
   ThreadId,
   ProviderInstanceId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { expect, it } from "@effect/vitest";
@@ -293,7 +292,6 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           createdAt: now,
@@ -318,7 +316,6 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           ]),
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           createdAt: now,
         },
         readModel,
@@ -392,7 +389,6 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           createdAt: now,
@@ -471,7 +467,6 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           createdAt: now,

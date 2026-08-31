@@ -17,6 +17,7 @@
  */
 import {
   MarketRef,
+  TradingPlanActivationState,
   MarketWatch,
   TradingMarket,
   TradingVenue,
@@ -41,6 +42,7 @@ import {
   WatchCondition,
 } from "@t3tools/trading-contracts";
 import { ForwardReport } from "@t3tools/trading-contracts/forward";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -459,6 +461,30 @@ export type TradingMissionTimelineEntry = typeof TradingMissionTimelineEntry.Typ
 // -- read model --------------------------------------------------------------
 
 /**
+ * Where the mission's workspace TRADE.md stands, for the compact plan-state
+ * display beside the trading conversation.
+ *
+ * Null on the mission means the thread has no persisted workspace root (a
+ * projectless thread): there is nowhere for a document to live, which the UI
+ * reports as its own state rather than as "no file".
+ */
+export const TradingMissionPlanDocumentView = Schema.Struct({
+  /** The workspace-relative document name — always "TRADE.md" today. */
+  relativePath: TrimmedNonEmptyString,
+  /** none / draft / active / drifted, classified against the pinned revision. */
+  activation: TradingPlanActivationState,
+  /** SHA-256 of the file on disk, hex, when a file exists. */
+  contentHash: Schema.NullOr(Schema.String),
+  /** SHA-256 of the activated revision, hex, when one exists. */
+  activatedHash: Schema.NullOr(Schema.String),
+  /** When the activated revision was pinned, ISO, when one exists. */
+  activatedAt: Schema.NullOr(IsoDateTime),
+  /** The mission the revision is linked to, when it is. */
+  missionId: Schema.NullOr(Schema.String),
+});
+export type TradingMissionPlanDocumentView = typeof TradingMissionPlanDocumentView.Type;
+
+/**
  * A mission as the workspace UI reads it: the mandate, the published strategy,
  * and the watches, in one row so a client never has to join them itself.
  */
@@ -506,6 +532,21 @@ export const OrchestrationTradingMission = Schema.Struct({
 
   control: TradingMissionControl,
   harness: TradingHarnessBinding,
+
+  /**
+   * How the mission's mandate came to exist: a user-authored TRADE.md-backed
+   * strategy, or the generated runtime record a DIRECT ORDER takes so the
+   * order has lifecycle ownership. Mirrors the server-side `direct_order`
+   * records; the UI labels direct orders with it.
+   */
+  mandateOrigin: Schema.Literals(["strategy", "direct_order"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("strategy" as const)),
+  ),
+
+  /** The workspace TRADE.md facts, or null when the thread has no workspace. */
+  planDocument: Schema.NullOr(TradingMissionPlanDocumentView).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
 
   // PROMPT-04 execution surfaces. Optional so a mission without execution
   // history still decodes — the UI renders the cards only when present.
@@ -1683,3 +1724,36 @@ export const OrchestrationReviseTradingPlanResult = Schema.Union([
   }),
 ]);
 export type OrchestrationReviseTradingPlanResult = typeof OrchestrationReviseTradingPlanResult.Type;
+
+/**
+ * Acknowledging a drifted (or never-activated) TRADE.md revision from the UI.
+ *
+ * The same act the `trading_plan_document` tool performs, on the same
+ * optimistic-concurrency token: `expectedContentHash` is the content hash the
+ * card last read, and a file that changed since refuses with `stale_hash`
+ * without writing anything.
+ */
+export const OrchestrationActivatePlanDocumentInput = Schema.Struct({
+  threadId: ThreadId,
+  /** The content hash the caller last read. Required: activations never guess. */
+  expectedContentHash: TrimmedNonEmptyString,
+  missionId: Schema.optional(TradingMissionId),
+  changeNote: Schema.optional(TrimmedNonEmptyString),
+});
+export type OrchestrationActivatePlanDocumentInput =
+  typeof OrchestrationActivatePlanDocumentInput.Type;
+
+export const OrchestrationActivatePlanDocumentResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("activated"),
+    planDocument: TradingMissionPlanDocumentView,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("rejected"),
+    /** `no_workspace`, `stale_hash`, `document_refused`, ... verbatim. */
+    reason: TrimmedNonEmptyString,
+    detail: Schema.String,
+  }),
+]);
+export type OrchestrationActivatePlanDocumentResult =
+  typeof OrchestrationActivatePlanDocumentResult.Type;

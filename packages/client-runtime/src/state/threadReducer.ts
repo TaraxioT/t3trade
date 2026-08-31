@@ -83,7 +83,6 @@ export function applyThreadDetailEvent(
           title: event.payload.title,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
-          workspaceMode: event.payload.workspaceMode,
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
@@ -244,15 +243,9 @@ export function applyThreadDetailEvent(
         },
       };
 
-    case "thread.workspace-mode-set":
-      return {
-        kind: "updated",
-        thread: {
-          ...thread,
-          workspaceMode: event.payload.workspaceMode,
-          updatedAt: event.payload.updatedAt,
-        },
-      };
+    // "thread.workspace-mode-set" is a deprecated no-op: no emitter remains
+    // and the field is gone from the thread shape. Old persisted events only
+    // need to decode, not to mutate state.
 
     case "thread.interaction-mode-set":
       return {
@@ -274,7 +267,6 @@ export function applyThreadDetailEvent(
             ? { modelSelection: event.payload.modelSelection }
             : {}),
           runtimeMode: event.payload.runtimeMode,
-          workspaceMode: event.payload.workspaceMode,
           interactionMode: event.payload.interactionMode,
           updatedAt: event.occurredAt,
         },

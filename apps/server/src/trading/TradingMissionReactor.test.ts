@@ -14,7 +14,6 @@ import {
   ProviderInstanceId,
   ThreadId,
   TradingMissionId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -260,7 +259,6 @@ const started = Effect.gen(function* () {
       title: "Mission thread",
       modelSelection,
       runtimeMode: "full-access",
-      workspaceMode: DEFAULT_WORKSPACE_MODE,
       interactionMode: "default",
       branch: null,
       worktreePath: null,
@@ -500,7 +498,6 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
           title: "Unbound thread",
           modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
           runtimeMode: "full-access",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           interactionMode: "default",
           branch: null,
           worktreePath: null,

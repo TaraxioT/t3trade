@@ -490,7 +490,6 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         provider: ProviderDriverKind.make("codex"),
         threadId: asThreadId("sess-old-market-row"),
         runtimeMode: "full-access",
-        workspaceMode: "market_research",
         cwd: "/tmp/t3-codex-old-row-cwd",
       });
 

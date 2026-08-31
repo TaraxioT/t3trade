@@ -243,7 +243,15 @@ export function ThreadMarketCard({
           missionMark={shown?.marketPrice ?? null}
         />
         {mission === null ? null : (
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            {/* The same label the server's `direct_order` records carry: this
+                mission exists because the user ordered by chat, not from a
+                document-backed strategy. */}
+            {mission.mandateOrigin === "direct_order" ? (
+              <span className="rounded-full border border-border px-2 py-px text-[11px] text-muted-foreground">
+                Direct order
+              </span>
+            ) : null}
             <MarketSwitcher markets={mission.markets} selected={asset} onSelect={selectMarket} />
           </div>
         )}

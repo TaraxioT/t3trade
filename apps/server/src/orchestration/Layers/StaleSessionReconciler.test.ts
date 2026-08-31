@@ -5,7 +5,6 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -73,7 +72,6 @@ const seedRunningThread = Effect.gen(function* () {
     },
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     runtimeMode: "full-access",
-    workspaceMode: DEFAULT_WORKSPACE_MODE,
     branch: null,
     worktreePath: null,
     createdAt: CREATED_AT,
@@ -88,7 +86,6 @@ const seedRunningThread = Effect.gen(function* () {
       providerName: "claudeAgent",
       providerInstanceId: ProviderInstanceId.make("claudeAgent"),
       runtimeMode: "full-access",
-      workspaceMode: DEFAULT_WORKSPACE_MODE,
       activeTurnId: TURN_ID,
       lastError: null,
       updatedAt: CREATED_AT,

@@ -1,9 +1,4 @@
-import {
-  AuthSessionId,
-  ThreadId,
-  type AuthEnvironmentScope,
-  DEFAULT_WORKSPACE_MODE,
-} from "@t3tools/contracts";
+import { AuthSessionId, ThreadId, type AuthEnvironmentScope } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -227,7 +222,6 @@ describe("persistence error correlation", () => {
         providerInstanceId: null,
         adapterKey: "codex",
         runtimeMode: "full-access",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         status: "running",
         lastSeenAt,
         resumeCursor: null,
@@ -248,7 +242,6 @@ describe("persistence error correlation", () => {
           providerInstanceId: null,
           adapterKey: "codex",
           runtimeMode: "full-access",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           status: "running",
           lastSeenAt,
           resumeCursor: null,

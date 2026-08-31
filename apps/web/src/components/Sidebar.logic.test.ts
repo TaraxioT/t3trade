@@ -44,7 +44,6 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 
 import {
@@ -701,7 +700,6 @@ describe("resolveSidebarThreadStatus", () => {
     providerName: "Codex",
     providerInstanceId: ProviderInstanceId.make("codex"),
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    workspaceMode: DEFAULT_WORKSPACE_MODE,
     activeTurnId: "turn-1" as never,
     lastError: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
@@ -1043,7 +1041,6 @@ describe("resolveWorkingStartedAt", () => {
     providerName: "Codex",
     providerInstanceId: ProviderInstanceId.make("codex"),
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    workspaceMode: DEFAULT_WORKSPACE_MODE,
     activeTurnId: "turn-1" as never,
     lastError: null,
     updatedAt: "2026-03-09T10:02:00.000Z",
@@ -1118,7 +1115,6 @@ describe("resolveThreadStatusPill", () => {
       providerName: "Codex",
       providerInstanceId: ProviderInstanceId.make("codex"),
       runtimeMode: DEFAULT_RUNTIME_MODE,
-      workspaceMode: DEFAULT_WORKSPACE_MODE,
       activeTurnId: "turn-1" as never,
       lastError: null,
       updatedAt: "2026-03-09T10:00:00.000Z",
@@ -1363,7 +1359,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
       ...overrides?.modelSelection,
     },
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    workspaceMode: DEFAULT_WORKSPACE_MODE,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     messages: [],

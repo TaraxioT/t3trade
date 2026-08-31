@@ -18,11 +18,6 @@ import type {
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
-// One source of truth: the contract's default, re-exported rather than
-// restated, so the fence can never disagree with the server's decoding
-// default.
-export { DEFAULT_WORKSPACE_MODE } from "@t3tools/contracts";
-
 export const DEFAULT_INTERACTION_MODE: ProviderInteractionMode = "default";
 export const DEFAULT_THREAD_TERMINAL_HEIGHT = 280;
 export const DEFAULT_THREAD_TERMINAL_ID = "term-1";

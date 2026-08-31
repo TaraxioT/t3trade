@@ -150,6 +150,35 @@ layer("TradingMissionProjection held markets", (it) => {
   // The read model a multi-market mission hands the client: the set the
   // switcher draws tabs from, one position card per market that has one, and
   // one plan per market rather than whichever market was published to last.
+  it.effect("labels a direct-order mandate by its durable marker", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const projection = yield* TradingMissionProjection;
+      const sql = yield* SqlClient.SqlClient;
+      // The generated mandate a DIRECT ORDER carries (TradingAuthorityBinding):
+      // its marker is what wakes re-read and what the projection labels by.
+      yield* sql`
+        UPDATE projection_trading_missions
+        SET instruction = ${"Generated direct-order runtime record: the user ordered ETH by chat."}
+        WHERE mission_id = ${MISSION_ID}
+      `;
+      const mission = yield* projection.getByThreadId(THREAD_ID);
+      assert.isTrue(Option.isSome(mission));
+      if (Option.isSome(mission)) {
+        assert.equal(mission.value.mandateOrigin, "direct_order");
+        // The ws layer attaches the plan-document facts; the projection hands
+        // the UI a null placeholder until then, never a guess.
+        assert.isNull(mission.value.planDocument);
+      }
+
+      yield* sql`UPDATE projection_trading_missions SET instruction = ${"trade ETH"} WHERE mission_id = ${MISSION_ID}`;
+      const again = yield* projection.getByThreadId(THREAD_ID);
+      if (Option.isSome(again)) {
+        assert.equal(again.value.mandateOrigin, "strategy");
+      }
+    }),
+  );
+
   it.effect("serves the held set, a position per market, and a plan per market", () =>
     Effect.gen(function* () {
       yield* seedMission;

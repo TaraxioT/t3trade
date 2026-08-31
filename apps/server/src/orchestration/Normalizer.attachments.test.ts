@@ -9,7 +9,6 @@ import {
   CommandId,
   MessageId,
   ThreadId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -48,7 +47,6 @@ function turnStartCommand(input: {
       })),
     },
     runtimeMode: "full-access",
-    workspaceMode: DEFAULT_WORKSPACE_MODE,
     interactionMode: "default",
     createdAt: "2026-08-01T00:00:00.000Z",
   };

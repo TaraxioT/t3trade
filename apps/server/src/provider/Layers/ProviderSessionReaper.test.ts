@@ -5,7 +5,6 @@ import {
   TurnId,
   ProviderDriverKind,
   ProviderInstanceId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -65,7 +64,6 @@ function makeReadModel(
       readonly status: "starting" | "running" | "ready" | "interrupted" | "stopped" | "error";
       readonly providerName: "codex" | "claudeAgent";
       readonly runtimeMode: "approval-required" | "full-access" | "auto-accept-edits";
-      readonly workspaceMode: "market_research" | "coding";
       readonly activeTurnId: TurnId | null;
       readonly lastError: string | null;
       readonly updatedAt: string;
@@ -98,7 +96,6 @@ function makeReadModel(
       modelSelection: defaultModelSelection,
       interactionMode: "default" as const,
       runtimeMode: "full-access" as const,
-      workspaceMode: DEFAULT_WORKSPACE_MODE,
       branch: null,
       worktreePath: null,
       createdAt: now,
@@ -248,7 +245,6 @@ describe("ProviderSessionReaper", () => {
             status: "ready",
             providerName: "claudeAgent",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -267,7 +263,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
@@ -298,7 +293,6 @@ describe("ProviderSessionReaper", () => {
             status: "running",
             providerName: "claudeAgent",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: turnId,
             lastError: null,
             updatedAt: now,
@@ -317,7 +311,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
@@ -347,7 +340,6 @@ describe("ProviderSessionReaper", () => {
             status: "ready",
             providerName: "claudeAgent",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -367,7 +359,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
@@ -397,7 +388,6 @@ describe("ProviderSessionReaper", () => {
             status: "ready",
             providerName: "claudeAgent",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -416,7 +406,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: now,
         resumeCursor: {
@@ -446,7 +435,6 @@ describe("ProviderSessionReaper", () => {
             status: "stopped",
             providerName: "claudeAgent",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -465,7 +453,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "stopped",
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
@@ -496,7 +483,6 @@ describe("ProviderSessionReaper", () => {
             status: "ready",
             providerName: "claudeAgent",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -509,7 +495,6 @@ describe("ProviderSessionReaper", () => {
             status: "ready",
             providerName: "codex",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -537,7 +522,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
@@ -553,7 +537,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "codex",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: "2026-04-14T00:01:00.000Z",
         resumeCursor: {
@@ -586,7 +569,6 @@ describe("ProviderSessionReaper", () => {
             status: "ready",
             providerName: "claudeAgent",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -599,7 +581,6 @@ describe("ProviderSessionReaper", () => {
             status: "ready",
             providerName: "codex",
             runtimeMode: "full-access",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: null,
             updatedAt: now,
@@ -622,7 +603,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
@@ -638,7 +618,6 @@ describe("ProviderSessionReaper", () => {
         providerInstanceId: null,
         adapterKey: "codex",
         runtimeMode: "full-access",
-        workspaceMode: "coding",
         status: "running",
         lastSeenAt: "2026-04-14T00:01:00.000Z",
         resumeCursor: {

@@ -53,6 +53,8 @@ import {
   TradingMarketChartView,
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
+  OrchestrationActivatePlanDocumentInput,
+  OrchestrationActivatePlanDocumentResult,
   TradingArmWatchInput,
   TradingEnsureAnalystThreadInput,
   TradingEnsureAnalystThreadResult,
@@ -104,6 +106,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getTradingMarketChart: "orchestration.getTradingMarketChart",
   getTradingResearchScenes: "orchestration.getTradingResearchScenes",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
+  activateTradingPlanDocument: "orchestration.activateTradingPlanDocument",
   armTradingWatch: "orchestration.armTradingWatch",
   cancelTradingWatch: "orchestration.cancelTradingWatch",
   listTradingWatches: "orchestration.listTradingWatches",
@@ -213,20 +216,6 @@ export const RuntimeMode = Schema.Literals([
 ]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
-/**
- * Inert compatibility alias for a removed capability fence.
- *
- * Older builds persisted `market_research` as the default workspace mode and
- * used it to fence ordinary threads out of the coding-agent surface. That
- * downgrade is gone: every thread is a native provider session whose sandbox
- * and approval policy come from `runtimeMode` alone. The field survives only
- * so old persisted rows and the web UI keep parsing; it must never gate
- * tools, cwd, prompts, or setting sources again. Removal from the wire
- * contract is a later slice.
- */
-export const WorkspaceMode = Schema.Literals(["market_research", "coding"]);
-export type WorkspaceMode = typeof WorkspaceMode.Type;
-export const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "market_research";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
@@ -416,9 +405,6 @@ export const OrchestrationSession = Schema.Struct({
   providerName: Schema.NullOr(TrimmedNonEmptyString),
   providerInstanceId: Schema.optional(ProviderInstanceId),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
-  workspaceMode: WorkspaceMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
-  ),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
@@ -506,9 +492,6 @@ export const OrchestrationThread = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
-  workspaceMode: WorkspaceMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
-  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -585,9 +568,6 @@ export const OrchestrationThreadShell = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
-  workspaceMode: WorkspaceMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
-  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -857,7 +837,6 @@ const ThreadCreateCommand = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
-  workspaceMode: Schema.optional(WorkspaceMode),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -975,14 +954,6 @@ const ThreadRuntimeModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadWorkspaceModeSetCommand = Schema.Struct({
-  type: Schema.Literal("thread.workspace-mode.set"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  workspaceMode: WorkspaceMode,
-  createdAt: IsoDateTime,
-});
-
 const ThreadInteractionModeSetCommand = Schema.Struct({
   type: Schema.Literal("thread.interaction-mode.set"),
   commandId: CommandId,
@@ -996,9 +967,6 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
-  workspaceMode: WorkspaceMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
-  ),
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
@@ -1033,7 +1001,6 @@ export const ThreadTurnStartCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
-  workspaceMode: Schema.optional(WorkspaceMode),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -1055,7 +1022,6 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode,
-  workspaceMode: Schema.optional(WorkspaceMode),
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
@@ -1126,7 +1092,6 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
-  ThreadWorkspaceModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -1156,7 +1121,6 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
-  ThreadWorkspaceModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -1348,9 +1312,6 @@ export const ThreadCreatedPayload = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
-  workspaceMode: WorkspaceMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
-  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -1448,12 +1409,6 @@ export const ThreadRuntimeModeSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
-export const ThreadWorkspaceModeSetPayload = Schema.Struct({
-  threadId: ThreadId,
-  workspaceMode: WorkspaceMode,
-  updatedAt: IsoDateTime,
-});
-
 export const ThreadInteractionModeSetPayload = Schema.Struct({
   threadId: ThreadId,
   interactionMode: ProviderInteractionMode.pipe(
@@ -1480,9 +1435,6 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
-  workspaceMode: WorkspaceMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
-  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -1667,10 +1619,12 @@ export const OrchestrationEvent = Schema.Union([
     type: Schema.Literal("thread.runtime-mode-set"),
     payload: ThreadRuntimeModeSetPayload,
   }),
+  // Deprecated: no emitter remains. Kept only so event stores written by
+  // older builds still decode; the projector ignores it.
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("thread.workspace-mode-set"),
-    payload: ThreadWorkspaceModeSetPayload,
+    payload: Schema.Struct({ threadId: ThreadId, updatedAt: IsoDateTime }),
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -2041,6 +1995,10 @@ export const OrchestrationRpcSchemas = {
   reviseTradingPlan: {
     input: OrchestrationReviseTradingPlanInput,
     output: OrchestrationReviseTradingPlanResult,
+  },
+  activateTradingPlanDocument: {
+    input: OrchestrationActivatePlanDocumentInput,
+    output: OrchestrationActivatePlanDocumentResult,
   },
   armTradingWatch: {
     input: TradingArmWatchInput,

@@ -4,7 +4,6 @@ import {
   ProviderInstanceId,
   ThreadId,
   type OrchestrationReadModel,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -34,7 +33,6 @@ function makeReadModel(input: {
         title: "Thread",
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
         runtimeMode: "full-access",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         interactionMode: "default",
         branch: null,
         worktreePath: null,

@@ -1,6 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  DEFAULT_WORKSPACE_MODE,
   type OrchestrationCommand,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -38,7 +37,6 @@ const makeThread = (
     providerName: "codex" as const,
     providerInstanceId,
     runtimeMode: "full-access" as const,
-    workspaceMode: DEFAULT_WORKSPACE_MODE,
     activeTurnId,
     lastError: null,
     updatedAt,

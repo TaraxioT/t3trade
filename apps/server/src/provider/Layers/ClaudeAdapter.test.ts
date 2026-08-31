@@ -440,7 +440,6 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
-        workspaceMode: "market_research",
         cwd: "/tmp/t3-claude-old-row-cwd",
       });
 

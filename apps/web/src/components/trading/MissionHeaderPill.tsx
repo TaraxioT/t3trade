@@ -327,6 +327,13 @@ export function MissionHeaderPill({
             </div>
           )}
 
+          {/* A direct order's mandate is a generated runtime record, not a
+              user-authored TRADE.md strategy — the same label the server's
+              `direct_order` records carry, so the two surfaces agree. */}
+          {mission.mandateOrigin === "direct_order" ? (
+            <Row label="Mandate" value="Direct order (no TRADE.md)" />
+          ) : null}
+
           <Row label="Max loss" value={strip.maximumLossLabel} />
           <Row label="Harness" value={strip.harnessLabel} />
           <Row label="Connection" value={describeTradingAccount(mission.tradingAccountId)} />

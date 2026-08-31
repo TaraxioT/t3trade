@@ -2,7 +2,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_WORKSPACE_MODE,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -179,7 +178,6 @@ it.effect(
             threadId,
             status: "starting",
             providerName: "codex",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             providerInstanceId,
             runtimeMode: "full-access",
             activeTurnId: null,
@@ -232,7 +230,6 @@ it.effect(
             threadId: stoppedBindingThreadId,
             status: "starting",
             providerName: "codex",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             providerInstanceId,
             runtimeMode: "full-access",
             activeTurnId: null,

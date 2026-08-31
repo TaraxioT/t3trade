@@ -7,7 +7,6 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   ProviderInstanceId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -67,7 +66,6 @@ const seedReadModel = Effect.gen(function* () {
       },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "approval-required",
-      workspaceMode: DEFAULT_WORKSPACE_MODE,
       branch: null,
       worktreePath: null,
       createdAt: now,
@@ -96,7 +94,6 @@ const seedReadModel = Effect.gen(function* () {
       },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "approval-required",
-      workspaceMode: DEFAULT_WORKSPACE_MODE,
       branch: null,
       worktreePath: null,
       createdAt: now,

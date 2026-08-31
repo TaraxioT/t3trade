@@ -136,7 +136,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         providerInstanceId: null,
         adapterKey: "codex",
         runtimeMode: "full-access",
-        workspaceMode: "market_research",
         status: "running",
         lastSeenAt: "2026-04-14T12:05:00.000Z",
         resumeCursor: {
@@ -153,7 +152,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "approval-required",
-        workspaceMode: "market_research",
         status: "starting",
         lastSeenAt: "2026-04-14T12:00:00.000Z",
         resumeCursor: {
@@ -172,7 +170,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
           provider: ProviderDriverKind.make("claudeAgent"),
           adapterKey: "claudeAgent",
           runtimeMode: "approval-required",
-          workspaceMode: "market_research",
           status: "starting",
           lastSeenAt: "2026-04-14T12:00:00.000Z",
           resumeCursor: {
@@ -187,7 +184,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
           provider: ProviderDriverKind.make("codex"),
           adapterKey: "codex",
           runtimeMode: "full-access",
-          workspaceMode: "market_research",
           status: "running",
           lastSeenAt: "2026-04-14T12:05:00.000Z",
           resumeCursor: {
@@ -212,7 +208,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         providerInstanceId: null,
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
-        workspaceMode: "market_research",
         status: "running",
         lastSeenAt: "2026-01-01T00:00:00.000Z",
         resumeCursor: null,

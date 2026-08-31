@@ -1,4 +1,9 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import {
+  IsoDateTime,
+  type OrchestrationEvent,
+  type OrchestrationReadModel,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -22,7 +27,6 @@ import {
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
-  ThreadWorkspaceModeSetPayload,
   ThreadSettledPayload,
   ThreadPinnedPayload,
   ThreadPinReorderedPayload,
@@ -295,7 +299,6 @@ export function projectEvent(
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
-            workspaceMode: payload.workspaceMode,
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
@@ -491,7 +494,7 @@ export function projectEvent(
 
     case "thread.workspace-mode-set":
       return decodeForEvent(
-        ThreadWorkspaceModeSetPayload,
+        Schema.Struct({ threadId: ThreadId, updatedAt: IsoDateTime }),
         event.payload,
         event.type,
         "payload",
@@ -499,7 +502,6 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            workspaceMode: payload.workspaceMode,
             updatedAt: payload.updatedAt,
           }),
         })),

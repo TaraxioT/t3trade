@@ -1141,6 +1141,15 @@ export const WsOrchestrationReviseTradingPlanRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationActivateTradingPlanDocumentRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.activateTradingPlanDocument,
+  {
+    payload: OrchestrationRpcSchemas.activateTradingPlanDocument.input,
+    success: OrchestrationRpcSchemas.activateTradingPlanDocument.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -1328,6 +1337,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTradingThreadMarketRpc,
   WsOrchestrationSetTradingThreadMarketRpc,
   WsOrchestrationReviseTradingPlanRpc,
+  WsOrchestrationActivateTradingPlanDocumentRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
   WsOrchestrationSubscribeTradingAccountRpc,

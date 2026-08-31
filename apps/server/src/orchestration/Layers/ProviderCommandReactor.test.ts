@@ -9,7 +9,6 @@ import {
   ProviderSession,
   ProviderDriverKind,
   ProviderInstanceId,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import {
@@ -461,7 +460,6 @@ describe("ProviderCommandReactor", () => {
         modelSelection: modelSelection,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         branch: null,
         worktreePath: null,
         createdAt: now,
@@ -478,7 +476,6 @@ describe("ProviderCommandReactor", () => {
           modelSelection: modelSelection,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           branch: null,
           worktreePath: null,
           createdAt: now,
@@ -550,7 +547,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -596,7 +592,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       });
 
@@ -644,7 +639,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       });
 
@@ -675,7 +669,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: "2026-01-01T00:00:01.000Z",
       });
 
@@ -716,7 +709,6 @@ describe("ProviderCommandReactor", () => {
         titleSeed: seededTitle,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -766,7 +758,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -856,7 +847,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -881,7 +871,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: "2026-01-01T00:00:01.000Z",
       }),
     );
@@ -906,7 +895,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: "2026-01-01T00:00:02.000Z",
       }),
     );
@@ -994,7 +982,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1040,7 +1027,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1091,7 +1077,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1166,7 +1151,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1240,7 +1224,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1312,7 +1295,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1369,7 +1351,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1430,7 +1411,6 @@ describe("ProviderCommandReactor", () => {
         titleSeed: seededTitle,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1476,7 +1456,6 @@ describe("ProviderCommandReactor", () => {
         titleSeed: seededTitle,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1537,7 +1516,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1578,7 +1556,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1616,7 +1593,6 @@ describe("ProviderCommandReactor", () => {
         ]),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1665,7 +1641,6 @@ describe("ProviderCommandReactor", () => {
         ),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1716,7 +1691,6 @@ describe("ProviderCommandReactor", () => {
         ),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1767,7 +1741,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: "plan",
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1796,7 +1769,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1816,7 +1788,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1853,7 +1824,6 @@ describe("ProviderCommandReactor", () => {
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           createdAt: now,
         });
 
@@ -1875,7 +1845,6 @@ describe("ProviderCommandReactor", () => {
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           createdAt: now,
         });
 
@@ -1931,7 +1900,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1974,7 +1942,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -1995,7 +1962,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2026,7 +1992,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2050,7 +2015,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: "2026-01-01T00:00:00.000Z",
       }),
     );
@@ -2091,7 +2055,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2124,7 +2087,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2171,7 +2133,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2201,7 +2162,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2241,7 +2201,6 @@ describe("ProviderCommandReactor", () => {
         ),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2267,7 +2226,6 @@ describe("ProviderCommandReactor", () => {
         ),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2311,7 +2269,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "full-access",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2348,7 +2305,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "full-access",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2390,7 +2346,6 @@ describe("ProviderCommandReactor", () => {
           status: "ready",
           providerName: "claudeAgent",
           runtimeMode: "full-access",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -2447,7 +2402,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "full-access",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2503,7 +2457,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2528,7 +2481,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2575,7 +2527,6 @@ describe("ProviderCommandReactor", () => {
           providerName: "codex",
           providerInstanceId: ProviderInstanceId.make("codex"),
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -2601,7 +2552,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2642,7 +2592,6 @@ describe("ProviderCommandReactor", () => {
           status: "running",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: asTurnId("turn-1"),
           lastError: null,
           updatedAt: now,
@@ -2702,7 +2651,6 @@ describe("ProviderCommandReactor", () => {
             status: "running",
             providerName: "codex",
             runtimeMode: "approval-required",
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             activeTurnId: asTurnId("turn-1"),
             lastError: null,
             updatedAt: now,
@@ -2770,7 +2718,6 @@ describe("ProviderCommandReactor", () => {
           status: "starting",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -2817,7 +2764,6 @@ describe("ProviderCommandReactor", () => {
           status: "running",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: asTurnId("turn-1"),
           lastError: null,
           updatedAt: now,
@@ -2836,7 +2782,6 @@ describe("ProviderCommandReactor", () => {
               status: "ready",
               providerName: "codex",
               runtimeMode: "approval-required",
-              workspaceMode: DEFAULT_WORKSPACE_MODE,
               activeTurnId: null,
               lastError: null,
               updatedAt: completedAt,
@@ -2897,7 +2842,6 @@ describe("ProviderCommandReactor", () => {
           status: "ready",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -2919,7 +2863,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -2954,7 +2897,6 @@ describe("ProviderCommandReactor", () => {
           status: "ready",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -2986,7 +2928,6 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         createdAt: now,
       }),
     );
@@ -3027,7 +2968,6 @@ describe("ProviderCommandReactor", () => {
           status: "running",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -3069,7 +3009,6 @@ describe("ProviderCommandReactor", () => {
           status: "running",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -3124,7 +3063,6 @@ describe("ProviderCommandReactor", () => {
           status: "running",
           providerName: "codex",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -3220,7 +3158,6 @@ describe("ProviderCommandReactor", () => {
           status: "running",
           providerName: "claudeAgent",
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,
@@ -3322,7 +3259,6 @@ describe("ProviderCommandReactor", () => {
           providerName: "codex",
           providerInstanceId: ProviderInstanceId.make("codex_work"),
           runtimeMode: "approval-required",
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           activeTurnId: null,
           lastError: null,
           updatedAt: now,

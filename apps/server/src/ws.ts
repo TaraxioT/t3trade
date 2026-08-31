@@ -62,6 +62,7 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
+  type OrchestrationActivatePlanDocumentInput,
   type TerminalAttachStreamEvent,
   type TerminalError,
   type TerminalEvent,
@@ -70,6 +71,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -108,8 +110,13 @@ import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { marketRef } from "@t3tools/trading-contracts/primitives";
 import { describeThesis } from "@t3tools/trading-contracts/thesis";
 import { STUDY_CHART_MAX_WINDOW_BARS } from "@t3tools/trading-contracts/researchScenes";
+import { TRADE_MD_FILENAME } from "@t3tools/trading-contracts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
+import {
+  readThreadWorkspaceRoot,
+  TradingPlanDocumentService,
+} from "./trading/TradingPlanDocument.ts";
 import { TradingAccountProjection } from "./trading/TradingAccountProjection.ts";
 import { TradingAlertService, type AccountWatch } from "./trading/TradingAlertService.ts";
 import { TradingThesisValidationService } from "./trading/TradingThesisValidationService.ts";
@@ -126,6 +133,70 @@ import {
   type WatchlistMutationResult,
 } from "./trading/TradingWatchlistService.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
+
+/**
+ * Attach each mission's workspace TRADE.md facts to the snapshot the UI polls.
+ *
+ * The projection is SQL-only by design, and the plan document is a file on
+ * disk classified against a persisted revision, so the join happens here — at
+ * the read surface that needs it, like `withMarketPrices` beside it.
+ *
+ * A thread without a persisted workspace root (projectless) carries `null`,
+ * which the UI reports as its own state. A read that fails degrades to the
+ * absent shape rather than failing the whole snapshot: the document service
+ * stays authoritative for drift, and a snapshot that cannot see one file must
+ * not blind the operator to every mission.
+ */
+const withPlanDocuments = (
+  missions: ReadonlyArray<OrchestrationTradingMission>,
+  documents: TradingPlanDocumentService["Service"],
+  sql: SqlClient.SqlClient,
+): Effect.Effect<ReadonlyArray<OrchestrationTradingMission>> =>
+  Effect.forEach(
+    missions,
+    (mission) =>
+      Effect.gen(function* () {
+        const workspaceRoot = yield* readThreadWorkspaceRoot(sql, mission.threadId);
+        if (workspaceRoot === null) {
+          return { ...mission, planDocument: null };
+        }
+        const current = yield* documents
+          .readCurrent(workspaceRoot)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (current !== null && current.status === "present") {
+          return {
+            ...mission,
+            planDocument: {
+              relativePath: TRADE_MD_FILENAME,
+              activation: current.activation,
+              contentHash: current.contentHash,
+              activatedHash: current.activated === null ? null : current.activated.contentHash,
+              activatedAt: current.activated === null ? null : current.activated.activatedAt,
+              missionId: current.activated === null ? null : current.activated.missionId,
+            },
+          };
+        }
+        // Missing (or unreadable) file: the activation audit trail still
+        // reads, so a vanished document shows what it drifted from rather
+        // than nothing at all.
+        const active =
+          current === null
+            ? null
+            : yield* documents.readActive(workspaceRoot).pipe(Effect.orElseSucceed(() => null));
+        return {
+          ...mission,
+          planDocument: {
+            relativePath: TRADE_MD_FILENAME,
+            activation: "none" as const,
+            contentHash: null,
+            activatedHash: active === null ? null : active.contentHash,
+            activatedAt: active === null ? null : active.activatedAt,
+            missionId: active === null ? null : active.missionId,
+          },
+        };
+      }),
+    { concurrency: "unbounded" },
+  );
 
 /** The `updatedAt` an empty mission snapshot reports. */
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
@@ -563,6 +634,8 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
+      const planDocuments = yield* TradingPlanDocumentService;
+      const sql = yield* SqlClient.SqlClient;
       const tradingAccountProjection = yield* TradingAccountProjection;
       const tradingAlertService = yield* TradingAlertService;
       const tradingValidations = yield* TradingThesisValidationService;
@@ -1171,7 +1244,6 @@ const makeWsRpcLayer = (
                 title: bootstrap.createThread.title,
                 modelSelection: bootstrap.createThread.modelSelection,
                 runtimeMode: bootstrap.createThread.runtimeMode,
-                workspaceMode: bootstrap.createThread.workspaceMode,
                 interactionMode: bootstrap.createThread.interactionMode,
                 branch: bootstrap.createThread.branch,
                 worktreePath: bootstrap.createThread.worktreePath,
@@ -1650,9 +1722,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot,
             Effect.gen(function* () {
-              const missions = yield* withMarketPrices(
-                yield* tradingMissionProjection.list(),
-                tradingMarketPrice,
+              const missions = yield* withPlanDocuments(
+                yield* withMarketPrices(yield* tradingMissionProjection.list(), tradingMarketPrice),
+                planDocuments,
+                sql,
               );
               // The snapshot sequence is the engine's latest event sequence, so
               // the client can tell a stale snapshot (behind the subscribed
@@ -1793,6 +1866,66 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to arm the trading watch",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        // Acknowledging a drifted (or never-activated) TRADE.md revision from
+        // the plan-state card. The same act the `trading_plan_document` tool
+        // performs, on the same optimistic-concurrency token: a file that
+        // changed since the caller's read refuses with `stale_hash` and
+        // nothing is written.
+        [ORCHESTRATION_WS_METHODS.activateTradingPlanDocument]: (
+          input: OrchestrationActivatePlanDocumentInput,
+        ) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.activateTradingPlanDocument,
+            Effect.gen(function* () {
+              const workspaceRoot = yield* readThreadWorkspaceRoot(sql, input.threadId);
+              if (workspaceRoot === null) {
+                return {
+                  outcome: "rejected" as const,
+                  reason: "no_workspace",
+                  detail:
+                    "This thread has no persisted workspace root, so there is no TRADE.md to activate.",
+                };
+              }
+              return yield* Effect.map(
+                planDocuments.activate({
+                  workspaceRoot,
+                  expectedContentHash: input.expectedContentHash,
+                  threadId: input.threadId,
+                  provider: "web-ui",
+                  ...(input.missionId === undefined ? {} : { missionId: input.missionId }),
+                  ...(input.changeNote === undefined ? {} : { changeNote: input.changeNote }),
+                }),
+                (active) => ({
+                  outcome: "activated" as const,
+                  planDocument: {
+                    relativePath: TRADE_MD_FILENAME,
+                    activation: "active" as const,
+                    contentHash: active.contentHash,
+                    activatedHash: active.contentHash,
+                    activatedAt: active.activatedAt,
+                    missionId: active.missionId,
+                  },
+                }),
+              );
+            }).pipe(
+              Effect.catchTags({
+                TradingPlanDocumentError: (cause) =>
+                  Effect.succeed({
+                    outcome: "rejected" as const,
+                    reason: cause.reason,
+                    detail: cause.detail,
+                  }),
+              }),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to activate the trading plan document",
                     cause,
                   }),
               ),

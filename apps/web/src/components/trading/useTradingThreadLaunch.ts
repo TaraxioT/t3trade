@@ -25,7 +25,6 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   DEFAULT_RUNTIME_MODE,
-  DEFAULT_WORKSPACE_MODE,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
@@ -208,7 +207,6 @@ export function useAskAnalyst(environmentId: EnvironmentId): AskAnalystHandle {
               title: `Analyst — ${asset}`,
               modelSelection: context.modelSelection,
               runtimeMode: DEFAULT_RUNTIME_MODE,
-              workspaceMode: DEFAULT_WORKSPACE_MODE,
               interactionMode: "default",
               branch: null,
               worktreePath: null,
@@ -348,7 +346,6 @@ export function useChatLauncher(environmentId: EnvironmentId): ChatLauncherHandl
             title: "Ask the agent",
             modelSelection: context.modelSelection,
             runtimeMode: DEFAULT_RUNTIME_MODE,
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             interactionMode: "default",
             branch: null,
             worktreePath: null,
@@ -430,7 +427,6 @@ export function useMarketThreadLauncher(environmentId: EnvironmentId): MarketThr
             title: `${asset} — trade`,
             modelSelection: context.modelSelection,
             runtimeMode: DEFAULT_RUNTIME_MODE,
-            workspaceMode: DEFAULT_WORKSPACE_MODE,
             interactionMode: "default",
             branch: null,
             worktreePath: null,

@@ -177,6 +177,13 @@ const autoMandate = (market: string): string =>
  * one. A mandate is read back on every wake, so the label has to survive being
  * read a hundred times.
  */
+/**
+ * The durable label a direct-order mission's mandate carries. Wakes re-read
+ * it on every run, and the projection reads it back to label the mission as
+ * direct-order in the UI — one marker, one meaning.
+ */
+export const DIRECT_ORDER_MANDATE_MARKER = "Generated direct-order runtime record:";
+
 const directOrderMandate = (market: string): string =>
   `Generated direct-order runtime record: the user ordered ${market} by chat on ${BOUND_VENUE} ` +
   `testnet, and authority was taken automatically to execute it. This mission is NOT a ` +

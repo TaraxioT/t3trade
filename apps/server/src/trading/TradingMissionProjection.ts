@@ -27,6 +27,7 @@ import type { OrchestrationTradingMission, TradingMissionTimelineEntry } from "@
 import type { TradingOrderTimeInForce } from "@t3tools/trading-contracts/execution";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
+import { DIRECT_ORDER_MANDATE_MARKER } from "./TradingAuthorityBinding.ts";
 import {
   TradingPlanState,
   PersistedWatch,
@@ -514,6 +515,15 @@ const toMission = (
     watches: decodeWatchesJson(row.watches_json),
     control: decodeControlJson(row.control_json),
     harness: decodeHarnessJson(row.harness_json),
+    // The mandate's durable marker decides the label: a direct order's
+    // mandate is generated prose (see TradingAuthorityBinding), not a
+    // user-authored TRADE.md strategy.
+    mandateOrigin: row.instruction.startsWith(DIRECT_ORDER_MANDATE_MARKER)
+      ? ("direct_order" as const)
+      : ("strategy" as const),
+    // Filled by the ws layer, which resolves the thread's workspace root and
+    // reads the document there (the projection is SQL-only by design).
+    planDocument: null,
     // PROMPT-04 execution surfaces, joined from the migration-037 tables. The
     // cards render only when these are non-null/non-empty.
     inFlightExecution:

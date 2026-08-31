@@ -1425,7 +1425,6 @@ export function makeOpenCodeAdapter(
           providerInstanceId: boundInstanceId,
           status: "ready",
           runtimeMode: input.runtimeMode,
-          ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
           cwd: directory,
           ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
           threadId: input.threadId,

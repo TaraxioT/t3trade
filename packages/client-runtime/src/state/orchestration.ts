@@ -161,6 +161,14 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:commands:trading:revise-plan",
       tag: ORCHESTRATION_WS_METHODS.reviseTradingPlan,
     }),
+    // Acknowledge/activate a drifted or draft TRADE.md revision from the
+    // plan-state card. An RPC command for the same reason `reviseTradingPlan`
+    // is one: the operator needs the refusal (`stale_hash`) on screen before
+    // they believe the plan is active again.
+    activateTradingPlanDocument: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:activate-plan-document",
+      tag: ORCHESTRATION_WS_METHODS.activateTradingPlanDocument,
+    }),
     missionCreate: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:mission-create",
       execute: (input: TradingMissionCreateInput) => tradingMissionCreate(input),

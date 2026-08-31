@@ -12,7 +12,6 @@ import {
   PreviewAnnotationPayloadSchema,
   type PreviewAnnotationPayload,
   RuntimeMode,
-  WorkspaceMode,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
@@ -34,12 +33,7 @@ import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model"
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
-import {
-  DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
-  DEFAULT_WORKSPACE_MODE,
-  type ChatImageAttachment,
-} from "./types";
+import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
 import {
   type TerminalContextDraft,
   ensureInlineTerminalContextPlaceholders,
@@ -218,9 +212,6 @@ const PersistedDraftThreadState = Schema.Struct({
   logicalProjectKey: Schema.optionalKey(Schema.String),
   createdAt: Schema.String,
   runtimeMode: RuntimeMode,
-  workspaceMode: WorkspaceMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKSPACE_MODE)),
-  ),
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
@@ -325,7 +316,6 @@ export interface DraftSessionState {
   logicalProjectKey: string;
   createdAt: string;
   runtimeMode: RuntimeMode;
-  workspaceMode: WorkspaceMode;
   interactionMode: ProviderInteractionMode;
   branch: string | null;
   worktreePath: string | null;
@@ -395,7 +385,6 @@ interface ComposerDraftStoreState {
       envMode?: DraftThreadEnvMode;
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
-      workspaceMode?: WorkspaceMode;
       interactionMode?: ProviderInteractionMode;
     },
   ) => void;
@@ -411,7 +400,6 @@ interface ComposerDraftStoreState {
       envMode?: DraftThreadEnvMode;
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
-      workspaceMode?: WorkspaceMode;
       interactionMode?: ProviderInteractionMode;
     },
   ) => void;
@@ -426,7 +414,6 @@ interface ComposerDraftStoreState {
       envMode?: DraftThreadEnvMode;
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
-      workspaceMode?: WorkspaceMode;
       interactionMode?: ProviderInteractionMode;
     },
   ) => void;
@@ -1386,7 +1373,6 @@ function createDraftThreadState(
     envMode?: DraftThreadEnvMode;
     startFromOrigin?: boolean;
     runtimeMode?: RuntimeMode;
-    workspaceMode?: WorkspaceMode;
     interactionMode?: ProviderInteractionMode;
   },
 ): DraftThreadState {
@@ -1421,8 +1407,6 @@ function createDraftThreadState(
     logicalProjectKey,
     createdAt: options?.createdAt ?? existingThread?.createdAt ?? new Date().toISOString(),
     runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-    workspaceMode:
-      options?.workspaceMode ?? existingThread?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
     interactionMode:
       options?.interactionMode ?? existingThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
     branch: nextBranch,
@@ -1457,7 +1441,6 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.logicalProjectKey === right.logicalProjectKey &&
     left.createdAt === right.createdAt &&
     left.runtimeMode === right.runtimeMode &&
-    left.workspaceMode === right.workspaceMode &&
     left.interactionMode === right.interactionMode &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
@@ -1597,8 +1580,6 @@ function normalizePersistedDraftThreads(
         runtimeMode: isRuntimeMode(candidateDraftThread.runtimeMode)
           ? candidateDraftThread.runtimeMode
           : DEFAULT_RUNTIME_MODE,
-        workspaceMode:
-          candidateDraftThread.workspaceMode === "coding" ? "coding" : DEFAULT_WORKSPACE_MODE,
         interactionMode:
           candidateDraftThread.interactionMode === "plan" ||
           candidateDraftThread.interactionMode === "default"
@@ -1649,7 +1630,6 @@ function normalizePersistedDraftThreads(
           logicalProjectKey,
           createdAt: new Date().toISOString(),
           runtimeMode: DEFAULT_RUNTIME_MODE,
-          workspaceMode: DEFAULT_WORKSPACE_MODE,
           interactionMode: DEFAULT_INTERACTION_MODE,
           branch: null,
           worktreePath: null,
@@ -2253,7 +2233,6 @@ function toHydratedDraftThreadState(
       ),
     createdAt: persistedDraftThread.createdAt,
     runtimeMode: persistedDraftThread.runtimeMode,
-    workspaceMode: persistedDraftThread.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
     interactionMode: persistedDraftThread.interactionMode,
     branch: persistedDraftThread.branch,
     worktreePath: persistedDraftThread.worktreePath,
@@ -2488,7 +2467,6 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   ? existing.createdAt
                   : options.createdAt || existing.createdAt,
               runtimeMode: options.runtimeMode ?? existing.runtimeMode,
-              workspaceMode: options.workspaceMode ?? existing.workspaceMode,
               interactionMode: options.interactionMode ?? existing.interactionMode,
               branch: nextBranch,
               worktreePath: nextWorktreePath,
@@ -2503,7 +2481,6 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.logicalProjectKey === existing.logicalProjectKey &&
               nextDraftThread.createdAt === existing.createdAt &&
               nextDraftThread.runtimeMode === existing.runtimeMode &&
-              nextDraftThread.workspaceMode === existing.workspaceMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&

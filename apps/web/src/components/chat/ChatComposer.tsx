@@ -7,7 +7,6 @@ import type {
   ProviderInteractionMode,
   ResolvedKeybindingsConfig,
   RuntimeMode,
-  WorkspaceMode,
   ScopedThreadRef,
   ServerProvider,
   ThreadId,
@@ -608,7 +607,6 @@ export interface ChatComposerProps {
 
   // Mode
   runtimeMode: RuntimeMode;
-  workspaceMode: WorkspaceMode;
   interactionMode: ProviderInteractionMode;
 
   // Provider / model
@@ -669,7 +667,6 @@ export interface ChatComposerProps {
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
-  handleWorkspaceModeChange: (mode: WorkspaceMode) => void;
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
 
   focusComposer: () => void;
@@ -718,7 +715,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeTasksProgress,
     activeTaskSteps,
     runtimeMode,
-    workspaceMode,
     interactionMode,
     lockedProvider,
     missionControls,
@@ -751,7 +747,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
-    handleWorkspaceModeChange,
     handleInteractionModeChange,
     focusComposer,
     scheduleComposerFocus,
@@ -3534,12 +3529,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     <CompactComposerControlsMenu
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}
-                      workspaceMode={workspaceMode}
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       traitsMenuContent={providerTraitsMenuContent}
                       onToggleInteractionMode={toggleInteractionMode}
                       onRuntimeModeChange={handleRuntimeModeChange}
-                      onWorkspaceModeChange={handleWorkspaceModeChange}
                     />
                   ) : (
                     <>

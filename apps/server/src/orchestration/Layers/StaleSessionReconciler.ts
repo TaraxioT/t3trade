@@ -17,7 +17,7 @@
  *
  * @module StaleSessionReconciler
  */
-import { CommandId, DEFAULT_WORKSPACE_MODE } from "@t3tools/contracts";
+import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -63,7 +63,6 @@ export const reconcileStaleSessions = Effect.gen(function* () {
             // The stopped row keeps the workspace mode it ran with. The
             // field is an inert compatibility alias now, so this is
             // round-tripping persisted state, nothing more.
-            workspaceMode: session.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
             activeTurnId: null,
             lastError: session.lastError,
             updatedAt: now,

@@ -774,7 +774,6 @@ export function makeCursorAdapter(
             providerInstanceId: boundInstanceId,
             status: "ready",
             runtimeMode: input.runtimeMode,
-            ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
             cwd,
             model: cursorModelSelection?.model,
             threadId: input.threadId,

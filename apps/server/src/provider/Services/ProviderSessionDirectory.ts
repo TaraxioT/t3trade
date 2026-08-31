@@ -4,7 +4,6 @@ import type {
   ProviderSessionRuntimeStatus,
   RuntimeMode,
   ThreadId,
-  WorkspaceMode,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Context from "effect/Context";
@@ -33,7 +32,6 @@ export interface ProviderRuntimeBinding {
    * Inert persisted compatibility alias for a removed workspace fence.
    * Round-tripped with the binding; never gates capability.
    */
-  readonly workspaceMode?: WorkspaceMode;
 }
 
 export interface ProviderRuntimeBindingWithMetadata extends ProviderRuntimeBinding {

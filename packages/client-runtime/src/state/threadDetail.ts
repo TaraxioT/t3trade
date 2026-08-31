@@ -50,7 +50,6 @@ export function mergeEnvironmentThread(
     title: shell.title,
     modelSelection: shell.modelSelection,
     runtimeMode: shell.runtimeMode,
-    workspaceMode: shell.workspaceMode,
     interactionMode: shell.interactionMode,
     branch: shell.branch,
     worktreePath: shell.worktreePath,

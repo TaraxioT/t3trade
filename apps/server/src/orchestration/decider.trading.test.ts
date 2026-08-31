@@ -6,7 +6,6 @@ import {
   TradingMissionId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
-  DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
@@ -38,7 +37,6 @@ function makeReadModel(archivedAt: string | null = null): OrchestrationReadModel
         title: "Thread",
         modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
         runtimeMode: "full-access",
-        workspaceMode: DEFAULT_WORKSPACE_MODE,
         interactionMode: "default",
         branch: null,
         worktreePath: null,
