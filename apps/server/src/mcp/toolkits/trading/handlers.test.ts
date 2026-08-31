@@ -2535,10 +2535,10 @@ it.effect("tells the run's funnel that an entry was attempted and refused", () =
 
       // An entry is priced and pre-checked before anything is dispatched, so
       // the reactor — which records its own refusals — never sees this one.
-      // BTC is free here, so the mission EXTENDS onto it and the refusal comes
-      // from the market read the fixture cannot serve; before the held set it
-      // came from the mandate guard, which now only fires on a market some
-      // other authority holds.
+      // BTC is free here, so the mission EXTENDS onto it; on this keyless
+      // fixture the refusal is the entry path's own account gate (it was the
+      // market read's before that gate existed, and would be again on an
+      // account-bearing fixture).
       const entered = yield* callTool(BOUND_THREAD, "trading_enter", {
         market: "BTC",
         side: "buy",
@@ -2549,7 +2549,7 @@ it.effect("tells the run's funnel that an entry was attempted and refused", () =
 
       // Without this the turn records as `no_setup` — the same shape as a turn
       // that never wanted to trade at all.
-      assert.include(yield* readFirstRefusal(), "market_data_unavailable");
+      assert.include(yield* readFirstRefusal(), "needs_trading_account");
     }),
   ),
 );
@@ -4254,6 +4254,36 @@ it.effect("publishes a plan with no account, and says nothing reached the venue"
   );
 });
 
+it.effect("refuses an entry on a keyless install by name, before anything is sent", () =>
+  // The live layer's real entry service, because the refusal under test is
+  // its own account gate — the exchange-replacement layers stub prepare away.
+  withMcpServer(({ callTool, seedHarnessRun }) =>
+    Effect.gen(function* () {
+      yield* seedHarnessRun();
+      const entered = yield* callTool(BOUND_THREAD, "trading_enter", {
+        market: "ETH",
+        side: "buy",
+        stopPrice: 3_100,
+        sizeEth: 0.1,
+      });
+
+      // One honest refusal at the entry's own account gate — the same
+      // convention the watch and plan tools hold on a keyless install —
+      // not an account read that errors the call after binding.
+      assert.equal(entered.result.isError, false);
+      assert.equal(entered.result.body.status, "rejected");
+      assert.include(entered.result.body.detail, "needs_trading_account");
+      // And the refusal happened before any exchange work: nothing was
+      // priced against the account, signed, or dispatched.
+      assert.equal(
+        dispatchedCommands.filter((command) => command.type === "trading.execution.requested")
+          .length,
+        0,
+      );
+    }),
+  ),
+);
+
 // -- prompt W: the observe mission -------------------------------------------
 //
 // A mission whose whole job is to watch a hypothesis being validated. It is a
@@ -4714,6 +4744,62 @@ it.effect("drift refuses new exposure through the enter tool, and never activate
           sizeEth: 0.1,
         });
         assert.equal(entered.result.body.status, "filled");
+      }),
+    bindLayer(),
+  );
+});
+
+it.effect("exits still execute while the plan document is drifted", () => {
+  const workspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-ctl-drift-exit-"));
+  NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V1);
+  return withMcpServer(
+    ({ callTool, seedHarnessRun, seedTradingAccount, seedThreadWorkspace, seedPosition }) =>
+      Effect.gen(function* () {
+        yield* seedHarnessRun();
+        yield* seedTradingAccount();
+        yield* seedThreadWorkspace(BOUND_THREAD, workspace);
+        yield* seedPosition({ size: 0.5, entryPrice: 3_000 });
+
+        // Activate the revision the position runs on, then edit behind its
+        // back: drifted.
+        yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "activate",
+          expectedContentHash: sha256Of(CONTROL_PLANE_TRADE_MD_V1),
+          missionId: MISSION_ID,
+        });
+        NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V2);
+
+        // New exposure is fenced by the drift guard...
+        const refused = yield* callTool(BOUND_THREAD, "trading_enter", {
+          market: "ETH",
+          side: "buy",
+          stopPrice: 2_900,
+          sizeEth: 0.1,
+        });
+        assert.equal(refused.result.body.status, "rejected");
+        assert.include(refused.result.body.detail, "plan_document_drifted");
+
+        // ...while managing the OPEN risk still executes: take half off...
+        const reduced = yield* callTool(BOUND_THREAD, "trading_exit", {
+          action: "reduce",
+          fraction: 0.5,
+        });
+        assert.equal(reduced.result.body.status, "filled");
+        // ...and close the rest.
+        const closed = yield* callTool(BOUND_THREAD, "trading_exit", { action: "close" });
+        assert.equal(closed.result.body.status, "filled");
+
+        // The exits reached the reactor — the fence refused new exposure only.
+        assert.isAbove(
+          dispatchedCommands.filter((command) => command.type === "trading.execution.requested")
+            .length,
+          0,
+        );
+        // And nothing about the exits activated the drifted revision: the
+        // plan state the mission ran on is unchanged.
+        const still = yield* callTool(BOUND_THREAD, "trading_plan_document", { action: "show" });
+        assert.equal(still.result.body.facts.activation, "drifted");
+        assert.equal(still.result.body.facts.activatedHash, sha256Of(CONTROL_PLANE_TRADE_MD_V1));
       }),
     bindLayer(),
   );

@@ -242,7 +242,19 @@ export const makeTradingEntryService = Effect.gen(function* () {
         );
       }
 
-      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
+        // The keyless install: no `trading_accounts` row, so nothing can
+        // price, size, protect or sign an entry. One honest refusal at the
+        // same seam the watch tool refuses at — not an account read that
+        // errors the whole call after the mission was already bound.
+        Effect.catchTag("TradingMissionNotFoundError", () => Effect.succeed(null)),
+      );
+      if (masterAddress === null) {
+        return refused(
+          "needs_trading_account",
+          "nothing was placed: this environment has no trading account (no signer armed), so an entry cannot be priced, sized or signed. Arm a testnet account, then enter again.",
+        );
+      }
       const fallbackFeeBps = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
       // Both rates in one read: the sizer needs the maker rate too, because the
       // take-profit rests. A read that fails prices both at the authority's
