@@ -3,6 +3,8 @@
 ## Trading
 
 - [Trading execution and reconciliation](./architecture/trading-execution.md)
+- [The final form: product plan, TRADE.md lifecycle, and drift fences](./internals/trading-final-form.md)
+- [Trading with the agent](./user/trading.md)
 - [The fork's contract with upstream](./upstream/) — baseline, patch ledger, sync runbook
 
 ---

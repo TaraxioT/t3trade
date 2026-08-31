@@ -2,7 +2,9 @@
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
-T3 Code is a server runtime that owns agent sessions, workspaces, and version control, plus clients
+T3 Trade is a fork of T3 Code with supervised, budgeted trading on Hyperliquid testnet as its
+center: the trading system — not the upstream coding-agent product — is what this repository builds
+around. The inherited runtime owns agent sessions, workspaces, and version control, plus clients
 (web, desktop, mobile) that talk to it over one authenticated Effect RPC WebSocket. The server is the
 execution boundary: every provider process, terminal, git operation, and filesystem read happens
 there, never in the client.
@@ -111,6 +113,17 @@ Codex, Claude, Cursor, Grok, and OpenCode. A driver declares its kind and config
 scoped adapter; `ProviderInstanceRegistry` owns live instances and `ProviderAdapterRegistry` resolves
 an instance to its adapter, so `ProviderService` routes session and turn operations without knowing
 which agent is behind them. See [providers.md](./providers.md).
+
+## Trading
+
+The fork's headline subsystem rides the same orchestration loop: trading services, execution,
+reconciliation, missions, watches, and the archive runtime live in `apps/server/src/trading/`, with
+shared types and pure policy in `packages/trading-contracts`. Agents reach it through the typed
+`t3-trade` MCP toolkit, grounded per session at the turn seam — see
+[providers.md](./providers.md) §"Trading grounding on the turn seam". The product plan, the TRADE.md
+plan-document lifecycle, and the drift fences are documented in
+[trading-final-form.md](./trading-final-form.md); the user-facing behavior in
+[docs/user/trading.md](../user/trading.md).
 
 ## Checkpointing
 

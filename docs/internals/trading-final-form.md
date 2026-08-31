@@ -72,7 +72,8 @@ upstream-owned and sync-eligible. Everything trading lives in fork-owned modules
 (`apps/server/src/trading/`, `packages/trading-contracts`, `packages/hyperliquid`,
 `apps/web/src/components/trading/`, new route files). Each phase names its
 upstream touch points so sync-conflict surface stays measured. Fork migrations
-consume the next free ids: 074, 075 — and Phase 8 took 076.
+consume the next free ids in sequence; §5's ledger is the authoritative list
+(through 091 at the time of writing).
 
 ## 4 · Execution plan
 
@@ -351,13 +352,19 @@ widened to both kinds.
 
 ## 5 · Migration ledger
 
-| Id  | Lands in   | Contents                                                                           | Risk                                                                                                                                                                                                  |
-| --- | ---------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 074 | Phases 4+5 | `trading_watchlist`; `trading_watches` rebuild; `trading_alert_events`             | Recreate 035 indexes; backfill `deliver='wake'`, `venue='hyperliquid'`; wake behavior byte-identical                                                                                                  |
-| 075 | Phase 7    | Six execution tables rebuilt; `trading_missions.venue`; per-market authority index | Landed. `account_id` carries `DEFAULT 'unattributed'` (the orphan-backfill sentinel); the position/account-snapshot uniqueness moved onto partial indexes, so upserts name the index `WHERE` clause   |
-| 076 | Phase 8    | `trading_analyst_threads` — the per-market analyst-thread registry                 | Landed. Pure `CREATE TABLE IF NOT EXISTS`; also the boot source that re-binds analyst session profiles after a restart                                                                                |
-| 085 | Prompt W   | `trading_thesis_validations.last_comparison`; `trading_missions.purpose`           | Landed. Both additive. `last_comparison` is nullable and NOT backfilled, so an existing validation reports no verdict change on its first pass after the upgrade; `purpose` carries `DEFAULT 'trade'` |
-| —   | Phase 2    | Archive DB v1→v2 (venue columns) via its own version row                           | Never joins the app chain                                                                                                                                                                             |
+| Id  | Lands in       | Contents                                                                                                                                   | Risk                                                                                                                                                                                                  |
+| --- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 074 | Phases 4+5     | `trading_watchlist`; `trading_watches` rebuild; `trading_alert_events`                                                                     | Recreate 035 indexes; backfill `deliver='wake'`, `venue='hyperliquid'`; wake behavior byte-identical                                                                                                  |
+| 075 | Phase 7        | Six execution tables rebuilt; `trading_missions.venue`; per-market authority index                                                         | Landed. `account_id` carries `DEFAULT 'unattributed'` (the orphan-backfill sentinel); the position/account-snapshot uniqueness moved onto partial indexes, so upserts name the index `WHERE` clause   |
+| 076 | Phase 8        | `trading_analyst_threads` — the per-market analyst-thread registry                                                                         | Landed. Pure `CREATE TABLE IF NOT EXISTS`; also the boot source that re-binds analyst session profiles after a restart                                                                                |
+| 085 | Prompt W       | `trading_thesis_validations.last_comparison`; `trading_missions.purpose`                                                                   | Landed. Both additive. `last_comparison` is nullable and NOT backfilled, so an existing validation reports no verdict change on its first pass after the upgrade; `purpose` carries `DEFAULT 'trade'` |
+| 086 | Event sets     | `trading_event_sets`; `trading_event_occurrences` — authored dated occurrences, each with a mandatory `source`                             | Landed. Authored records in state.sqlite, never the archive; no FK reaches an execution table                                                                                                         |
+| 087 | Research graph | `trading_research_scenes` — one thread-scoped published-scene row per graph render                                                         | Landed. Payload is one JSON column; no candles, no FK to execution                                                                                                                                    |
+| 088 | Research graph | `workspace_mode TEXT NOT NULL DEFAULT 'market_research'` on `projection_threads`, `projection_thread_sessions`, `provider_session_runtime` | Landed. Additive columns defaulting to the pre-existing mode                                                                                                                                          |
+| 089 | TRADE.md       | `trading_plan_documents` — the pin table, `workspace_root` PRIMARY KEY: the server's activated snapshot per workspace                      | Landed. The workspace file stays the only document; the server never writes it                                                                                                                        |
+| 090 | TRADE.md       | `trading_plan_document_revisions` — the append-only activation/deactivation audit with change notes                                        | Landed. The pin table stays one-per-workspace; history lives here                                                                                                                                     |
+| 091 | TRADE.md       | `trading_plan_documents.thread_cwd` + index + guarded backfill — the cwd spelling each activation was reached through                      | Landed. Keeps the pin discoverable after the workspace directory is deleted; the backfill guards `json_valid` so one malformed legacy row cannot abort the run                                        |
+| —   | Phase 2        | Archive DB v1→v2 (venue columns) via its own version row                                                                                   | Never joins the app chain                                                                                                                                                                             |
 
 ## 6 · Deliberately not doing
 
@@ -367,6 +374,58 @@ widened to both kinds.
 - No mobile in this plan.
 - No reactor decomposition.
 - No retention machinery yet.
+
+## 7 · TRADE.md and the native-agent session
+
+Landed with `2e66ae910..775304a66` plus the follow-ups `77fb31489` and
+`0354ba341`. The trading persona is gone: a session is a native agent plus the
+trading MCP endpoint (`TradingSessionProfile.ts`), and chat is the front door
+for trading — every thread, not only mission threads, can reach the trading
+tools and take authority on its first plan or execution call. The user-facing
+half of this story is [docs/user/trading.md](../user/trading.md); this section
+is the machinery.
+
+**The plan document.** TRADE.md is a workspace file the agent writes with its
+native file tools. The server's half is the `trading_plan_document` tool
+(`tools.ts`): `show` reports the activation facts (none / draft / active /
+drifted, hashes, revision count), `activate` pins the exact revision the agent
+read at `expectedContentHash` — a file that changed since refuses `stale_hash`
+and writes nothing — and `deactivate` stands it down. A persistent strategy
+trades only under an activated revision; a direct order never needs or
+activates one.
+
+**Pin table and audit.** Migrations 089-091 (ledger above): one
+`trading_plan_documents` row per workspace root (`workspace_root` PRIMARY KEY)
+holding the activated snapshot, content hash, and provenance; an append-only
+`trading_plan_document_revisions` audit so "what did the plan say last week"
+survives the next activation; and a `thread_cwd` column (091) recording the
+cwd spelling each activation was reached through, so a deleted workspace
+directory cannot take its pin with it — the drift guard and the wake composer
+still find the row they are obliged to enforce. Activate and deactivate each
+run in one transaction (`TradingPlanDocument.ts`): a pin whose audit append
+fails leaves the previous pin standing, never a changed pin the log cannot
+explain.
+
+**Drift fencing.** `guardPlanDocumentDrift` (`TradingPlanDocument.ts`, in the
+style of `TradingExecutionGuard`) fences new exposure only: while an
+activation stands, an action that increases exposure on a drifted, missing, or
+unreadable file refuses with `plan_document_drifted`; every
+exposure-reducing and protective action type passes
+(`DRIFT_PERMITTED_ACTIONS` in `planDocument.ts` — cancel, reduce, close,
+modify_stop, move_stop), and pause, emergency close, and revoke never pass
+through an action type at all. No activation means no verdict: the guard is a
+fence around drifted plans, not a requirement that a plan document exist.
+The fence fails closed: a cwd or pin read that errors cannot prove there is
+no standing activation, so it refuses new exposure until the state is
+readable (`0354ba341`).
+
+**Wakes.** A document-backed wake resumes its thread, its cwd, and the
+activated revision — the pinned snapshot, never the live disk file, with the
+current disk hash reported beside it and drift as a separate note
+(`TradingWakeupComposer.ts`). The trim ladder keeps those facts at the floor:
+which revision governs and whether the disk drifted are the two things a
+trimmed wake must not lose. A drifted document pauses the mission's new
+exposure as a recoverable blocked reason; exits keep working.
 
 ## Forward validation
 

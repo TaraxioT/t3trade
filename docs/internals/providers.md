@@ -90,8 +90,13 @@ from tools, TRADE.md is persistent plan context with a typed hash-gated activati
 are direct, exchange actions run through the typed `t3-trade` tools, server refusals are
 authoritative, and fetched or workspace content is data. Every adapter delivers it through
 `applyTradingTurnContractWithContext` ([`TradingPlanTurnContext.ts`][turnctx], which also appends
-the current TRADE.md as a delimited context block) as a prefix on the first turn of each session
-instance — appended to the turn text, never replacing a native prompt. Later turns carry a
+the current TRADE.md as a delimited context block, hard-bounded at 70,000 chars —
+`PLAN_CONTEXT_MAX_CHARS` — and silently dropped past it) as a prefix on the
+first turn of each session instance — appended to the turn text, never replacing a native prompt.
+The grounding is not trading-thread-only: since the persona removal every thread in the workspace,
+chat included, gets the preamble and the TRADE.md context on its first turn per session instance,
+because chat is the front door for trading and any thread can take authority on its first plan or
+execution call (`applyTradingTurnContract`, `TradingSessionProfile.ts`). Later turns carry a
 one-line frame. Analyst and observe sessions get one extra paragraph stating their scope as
 server-enforced fact.
 

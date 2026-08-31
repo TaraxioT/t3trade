@@ -57,16 +57,18 @@ PROMPT-05 resizes reservations when protection modifies the planned loss.
   reserve tightens in PROMPT-05.
 - **`netFundingUsd = 0`.** Funding is not tracked per-fill in the POC schema.
   Until a funding source is wired, the realised mission result omits funding.
-- **`trading_orders.reduce_only` is hardcoded `false`** by the reconciler
-  (`HyperliquidReconciler.ts:173`). The exhaustion cancel identifies
+- **`trading_orders.reduce_only` is persisted from the exchange report**
+  (`HyperliquidReconciler.ts`). The reconciler writes the flag the venue
+  returned (`reduce_only = … ? 1 : 0`); the exhaustion cancel still identifies
   position-increasing orders by joining to the execution record's
-  `action_type`, NOT the order row's `reduce_only`. PROMPT-05 fixes the column.
+  `action_type`, not the order row's `reduce_only`.
 - **`protectedSize = 0`** until the protection path (§17.2 steps 6–8) confirms
   an exchange-native reduce-only stop is in place. The reconciler records zero
   until that path marks it.
-- **Preview item 8 (`execution_wallet_approved`)** is an armed-signer null check
-  until PROMPT-06's approved-wallet registry. The signer-to-wallet match is
-  enforced at sign time, not preview.
+- **Preview item 8 (`execution_wallet_approved`)** is an armed-signer null
+  check: the mission's account must name an execution wallet the interim
+  signer resolves, so an unarmed signer is visible in preview before a nonce
+  is spent. The signer-to-wallet match is enforced at sign time, not preview.
 
 ### Nonce-lane design
 
@@ -110,8 +112,9 @@ unique per execution. The local write deduplicates on `idempotency_key`
   reactor closed loop (requested → domain write → status-set → projection).
   Migration 035 defers the six execution tables; 036 adds the mission
   projection only.
-- Orchestration decider is exhaustive over 4 trading commands — adding
-  commands is compile-enforced (`default: never`).
+- Orchestration decider is exhaustive over the trading command family (16
+  `trading.*` commands at last count) — adding commands is compile-enforced
+  (`default: never`).
 - Web: `MissionThreadPanel` renders from a pull-based mission snapshot.
 
 ## Decisions (owner did not select; proceeding with best judgment)
@@ -222,12 +225,14 @@ entry and exit fees; a filled position reserves only unpaid fees.
 
 **17-item increase checklist (§16.3), in order:** mission active; entries
 allowed; strategy version current; authority version current; harness run
-owns lease; direction permitted; market is ETH; execution wallet approved;
+owns lease; direction permitted; market matches the mission's mandate;
+execution wallet approved;
 account and BBO fresh; size and price valid; exchange minimum met; leverage
 within user and exchange limits; gross notional within authority; planned
 loss within per-position ceiling; existing reservations + proposed risk
 within cumulative-loss budget; no conflicting execution pending; valid stop
-defined. **Reserve before signing; reconcile after every state change.**
+defined. The market row is a mandate match against `MarketRef`, not an ETH
+hardcode. **Reserve before signing; reconcile after every state change.**
 
 _Implementation note (plan-29 §3.3):_ the entry preview in
 `TradingPreviewService` runs 14 of these 17 rows. The three it dropped —
