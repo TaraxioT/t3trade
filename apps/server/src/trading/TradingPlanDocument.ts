@@ -384,20 +384,41 @@ export class TradingPlanDocumentService extends Context.Service<
 >()("t3/trading/TradingPlanDocument/TradingPlanDocumentService") {}
 
 /**
+ * What a thread's persisted runtime payload says about its workspace cwd.
+ *
+ * - `resolved` — the payload names a usable cwd.
+ * - `absent` — no runtime row (or a NULL payload): the thread recorded no
+ *   session, so no activation can have been reached through it.
+ * - `unusable` — a row exists but cannot name a cwd (malformed JSON, a
+ *   non-object, a wrong-typed or empty `cwd`). Migration 091's own test
+ *   establishes such rows exist; a thread in this state may still hold a
+ *   standing activation it can no longer name, so consumers that enforce a
+ *   fence must treat this as unreadable, never as absence.
+ */
+export type ThreadWorkspaceRootResolution =
+  | { readonly status: "resolved"; readonly cwd: string }
+  | { readonly status: "absent" }
+  | { readonly status: "unusable"; readonly cause: string };
+
+/**
  * The thread's workspace root, from the same persisted cwd GLM-1 made
  * authoritative (`provider_session_runtime.runtime_payload_json`). No new cwd
  * source: projectless threads resolve to their per-thread scratch workspace,
  * project threads to their checkout.
  *
- * Strict: a failed read FAILS. The lenient {@link readThreadWorkspaceRoot}
- * below preserves the historical absent-on-error behavior for enrichment
- * callers; the drift guard uses this strict form so an unreadable cwd cannot
- * pass as "no workspace" and skip the fence.
+ * Strict and integrity-aware: a failed SQL read FAILS, and a row that exists
+ * but cannot name a cwd resolves `unusable` rather than absent. The lenient
+ * {@link readThreadWorkspaceRoot} below flattens both for enrichment callers;
+ * the drift guard uses this strict form so neither an unreadable nor a
+ * corrupt cwd can pass as "no workspace" and skip the fence.
  */
 export const readThreadWorkspaceRootStrict = Effect.fn(
   "TradingPlanDocument.readThreadWorkspaceRootStrict",
 )(
-  (sql: SqlClient.SqlClient, threadId: string): Effect.Effect<string | null, SqlError> =>
+  (
+    sql: SqlClient.SqlClient,
+    threadId: string,
+  ): Effect.Effect<ThreadWorkspaceRootResolution, SqlError> =>
     Effect.gen(function* () {
       const rows = yield* sql<{ readonly payload: string | null }>`
         SELECT runtime_payload_json AS payload
@@ -405,21 +426,39 @@ export const readThreadWorkspaceRootStrict = Effect.fn(
         WHERE thread_id = ${threadId}
       `;
       const payload = rows[0]?.payload;
-      if (payload === null || payload === undefined) return null;
-      // A payload that is not JSON is an absent cwd, never a failed turn.
+      if (payload === null || payload === undefined) return { status: "absent" };
       const parsed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
         payload,
       ).pipe(Effect.orElseSucceed(() => null));
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-      const cwd = "cwd" in parsed && typeof parsed.cwd === "string" ? parsed.cwd.trim() : "";
-      return cwd.length > 0 ? cwd : null;
+      if (parsed === null) {
+        return { status: "unusable", cause: "the persisted runtime payload is not valid JSON" };
+      }
+      if (typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { status: "unusable", cause: "the persisted runtime payload is not a JSON object" };
+      }
+      const rawCwd = "cwd" in parsed ? (parsed as { readonly cwd?: unknown }).cwd : undefined;
+      if (typeof rawCwd !== "string") {
+        return { status: "unusable", cause: "the persisted cwd is not a string" };
+      }
+      const cwd = rawCwd.trim();
+      if (cwd.length === 0) {
+        return { status: "unusable", cause: "the persisted cwd is empty" };
+      }
+      return { status: "resolved", cwd };
     }),
 );
 
-/** The lenient historical form: a failed read is an absent cwd, never a failed turn. */
+/**
+ * The lenient historical form: a failed read, an absent row, and an unusable
+ * payload are all an absent cwd, never a failed turn — the contract
+ * enrichment callers (turn context, wakes, activation) have always had.
+ */
 export const readThreadWorkspaceRoot = Effect.fn("TradingPlanDocument.readThreadWorkspaceRoot")(
   (sql: SqlClient.SqlClient, threadId: string): Effect.Effect<string | null> =>
-    readThreadWorkspaceRootStrict(sql, threadId).pipe(Effect.catch(() => Effect.succeed(null))),
+    readThreadWorkspaceRootStrict(sql, threadId).pipe(
+      Effect.map((resolution) => (resolution.status === "resolved" ? resolution.cwd : null)),
+      Effect.catch(() => Effect.succeed(null)),
+    ),
 );
 
 export const makeTradingPlanDocumentService = Effect.gen(function* () {
@@ -792,13 +831,13 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
       // instead of passing as though the fence had no standing. Absence
       // (null) is a verdict; a failed read is not.
       type CwdRead =
-        | { readonly ok: true; readonly cwd: string | null }
+        | { readonly ok: true; readonly resolution: ThreadWorkspaceRootResolution }
         | {
             readonly ok: false;
             readonly cause: string;
           };
       const workspaceRoot = yield* readThreadWorkspaceRootStrict(sql, threadId).pipe(
-        Effect.map((cwd): CwdRead => ({ ok: true, cwd })),
+        Effect.map((resolution): CwdRead => ({ ok: true, resolution })),
         Effect.catch(
           (): Effect.Effect<CwdRead> =>
             Effect.succeed({ ok: false, cause: "the thread workspace row could not be read" }),
@@ -809,7 +848,10 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
         ),
       );
       if (!workspaceRoot.ok) return planStateUnreadableRefusal(workspaceRoot.cause);
-      if (workspaceRoot.cwd === null) return null;
+      if (workspaceRoot.resolution.status === "unusable") {
+        return planStateUnreadableRefusal(workspaceRoot.resolution.cause);
+      }
+      if (workspaceRoot.resolution.status === "absent") return null;
 
       const documents = yield* makeTradingPlanDocumentService;
       // The pin decides whether the guard has standing at all: a workspace
@@ -824,7 +866,7 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
             readonly ok: false;
             readonly cause: string;
           };
-      const activated = yield* documents.readActive(workspaceRoot.cwd).pipe(
+      const activated = yield* documents.readActive(workspaceRoot.resolution.cwd).pipe(
         Effect.map((pin): PinRead => ({ ok: true, pin })),
         Effect.catch(
           (error): Effect.Effect<PinRead> => Effect.succeed({ ok: false, cause: error.message }),
@@ -838,7 +880,7 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
       if (activated.pin === null) return null;
       const active = activated.pin;
 
-      const current = yield* documents.readCurrent(workspaceRoot.cwd).pipe(
+      const current = yield* documents.readCurrent(workspaceRoot.resolution.cwd).pipe(
         // A typed refusal (oversize, bad encoding, escape) or a defect is
         // carried as null here and fenced below: while a pin stands, a read
         // that refuses means the file is no longer the readable bytes that

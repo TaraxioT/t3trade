@@ -4273,6 +4273,8 @@ it.effect("refuses an entry on a keyless install by name, before anything is sen
       assert.equal(entered.result.isError, false);
       assert.equal(entered.result.body.status, "rejected");
       assert.include(entered.result.body.detail, "needs_trading_account");
+      // The refusal is a verdict about the install, not a transient fault.
+      assert.equal(entered.result.body.recovery?.retryable, false);
       // And the refusal happened before any exchange work: nothing was
       // priced against the account, signed, or dispatched.
       assert.equal(
