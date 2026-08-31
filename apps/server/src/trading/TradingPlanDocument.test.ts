@@ -509,6 +509,169 @@ layer("TradingPlanDocument — persisted cwd and projectless boundary", (it) => 
   );
 });
 
+layer("TradingPlanDocument — deleted workspace root", (it) => {
+  it.effect("a deleted root with a standing pin fences new exposure and keeps controls", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const dir = makeWorkspace("# pinned v1");
+      yield* seedThreadCwd("thread_gone", dir);
+      yield* activateCurrent(dir, "thread_gone");
+      // The whole workspace disappears (a removed worktree). The pin is a
+      // SQLite row and must outlive the directory it was read from.
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+
+      for (const actionType of ["open", "scale_in"]) {
+        const refused = yield* guardPlanDocumentDrift(actionType, "thread_gone");
+        assert.notEqual(refused, null, `${actionType} must refuse under a deleted root`);
+        assert.equal(refused?.reason, "plan_document_drifted");
+        assert.include(refused?.detail ?? "", "could not be read");
+      }
+      for (const actionType of ["cancel", "reduce", "close", "modify_stop", "move_stop"]) {
+        assert.equal(
+          yield* guardPlanDocumentDrift(actionType, "thread_gone"),
+          null,
+          `${actionType} must remain available under a deleted root`,
+        );
+      }
+    }),
+  );
+
+  it.effect("a deleted root with no activation passes: direct orders stay document-free", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const dir = makeWorkspace();
+      yield* seedThreadCwd("thread_gone_free", dir);
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+      assert.equal(yield* guardPlanDocumentDrift("open", "thread_gone_free"), null);
+      assert.equal(yield* guardPlanDocumentDrift("scale_in", "thread_gone_free"), null);
+    }),
+  );
+
+  it.effect("the pinned snapshot stays readable after the workspace is deleted", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const documents = yield* makeTradingPlanDocumentService;
+      const dir = makeWorkspace("# pinned v1");
+      yield* seedThreadCwd("thread_snap_gone", dir);
+      yield* activateCurrent(dir, "thread_snap_gone");
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+      const active = yield* documents.readActive(dir);
+      assert.notEqual(active, null);
+      assert.equal(active?.activatedContent, "# pinned v1");
+      assert.equal(active?.contentHash, hashTradeContent("# pinned v1"));
+    }),
+  );
+
+  it.effect("pause (deactivate) works after the workspace is deleted", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const documents = yield* makeTradingPlanDocumentService;
+      const dir = makeWorkspace("# pinned v1");
+      yield* seedThreadCwd("thread_pause_gone", dir);
+      yield* activateCurrent(dir, "thread_pause_gone");
+      const rowKey = (yield* documents.readActive(dir))?.workspaceRoot;
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+      yield* documents.deactivate({
+        workspaceRoot: dir,
+        threadId: "thread_pause_gone",
+        provider: "codex",
+        note: "workspace removed",
+      });
+      assert.equal(yield* documents.readActive(dir), null);
+      const audit = yield* sql<{ readonly kind: string }>`
+        SELECT kind FROM trading_plan_document_revisions
+        WHERE workspace_root = ${rowKey ?? ""} ORDER BY id DESC LIMIT 1
+      `;
+      assert.equal(audit[0]?.kind, "deactivated");
+    }),
+  );
+});
+
+layer("TradingPlanDocument — activation and deactivation are atomic", (it) => {
+  /** An isolated store per test: fault triggers must not leak into the suite. */
+  const isolatedStore = () =>
+    Layer.provideMerge(
+      NodeSqliteClient.layer({
+        filename: NodePath.join(
+          NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-plan-tx-")),
+          "store.sqlite",
+        ),
+      }),
+      NodeServices.layer,
+    );
+
+  it.effect("a failed audit append rolls the activation back", () =>
+    Effect.gen(function* () {
+      const store = isolatedStore();
+      const dir = makeWorkspace("# v1");
+      yield* Effect.gen(function* () {
+        yield* runMigrations({});
+        yield* seedThreadCwd("thread_tx_a", dir);
+        yield* activateCurrent(dir, "thread_tx_a");
+        const sql = yield* SqlClient.SqlClient;
+        // The audit sink dies after the moment the pin upsert would have
+        // committed on its own.
+        yield* sql`
+          CREATE TRIGGER fail_revision_insert BEFORE INSERT ON trading_plan_document_revisions
+          BEGIN SELECT RAISE(ABORT, 'audit sink unavailable'); END
+        `;
+        NodeFS.writeFileSync(NodePath.join(dir, "TRADE.md"), "# v2");
+
+        const result = yield* Effect.flip(activateCurrent(dir, "thread_tx_a"));
+        assert.instanceOf(result, TradingPlanDocumentError);
+
+        const documents = yield* makeTradingPlanDocumentService;
+        const still = yield* documents.readActive(dir);
+        assert.equal(still?.activatedContent, "# v1", "the previous pin must survive");
+        const realRoot = NodeFS.realpathSync(dir);
+        const auditRows = yield* sql<{ readonly n: number }>`
+          SELECT COUNT(*) AS n FROM trading_plan_document_revisions WHERE workspace_root = ${realRoot}
+        `;
+        assert.equal(auditRows[0]?.n, 1, "no second audit row may half-exist");
+      }).pipe(Effect.provide(store));
+    }),
+  );
+
+  it.effect("a failed pin delete rolls the deactivation back, audit included", () =>
+    Effect.gen(function* () {
+      const store = isolatedStore();
+      const dir = makeWorkspace("# v1");
+      yield* Effect.gen(function* () {
+        yield* runMigrations({});
+        yield* seedThreadCwd("thread_tx_d", dir);
+        yield* activateCurrent(dir, "thread_tx_d");
+        const sql = yield* SqlClient.SqlClient;
+        // The pin delete dies after the audit append would have committed on
+        // its own.
+        yield* sql`
+          CREATE TRIGGER fail_pin_delete BEFORE DELETE ON trading_plan_documents
+          BEGIN SELECT RAISE(ABORT, 'pin delete unavailable'); END
+        `;
+
+        const result = yield* Effect.flip(
+          (yield* makeTradingPlanDocumentService).deactivate({
+            workspaceRoot: dir,
+            threadId: "thread_tx_d",
+            provider: "codex",
+          }),
+        );
+        assert.instanceOf(result, TradingPlanDocumentError);
+
+        const documents = yield* makeTradingPlanDocumentService;
+        const still = yield* documents.readActive(dir);
+        assert.notEqual(still, null, "the pin must survive a failed deactivation");
+        assert.equal(still?.activatedContent, "# v1");
+        const realRoot = NodeFS.realpathSync(dir);
+        const auditRows = yield* sql<{ readonly n: number }>`
+          SELECT COUNT(*) AS n FROM trading_plan_document_revisions WHERE workspace_root = ${realRoot}
+        `;
+        assert.equal(auditRows[0]?.n, 1, "the deactivation audit row must roll back too");
+      }).pipe(Effect.provide(store));
+    }),
+  );
+});
+
 layer("TradingPlanDocument — restart recovery and migration", (it) => {
   it.effect("a reopened store recovers the active revision, hash and drift", () =>
     Effect.gen(function* () {
@@ -586,6 +749,60 @@ layer("TradingPlanDocument — restart recovery and migration", (it) => {
         const active = yield* activateCurrent(dir, "thread_migrated");
         assert.equal(active?.activatedContent, "# migrated");
       }).pipe(Effect.provide(migratedStore));
+    }),
+  );
+
+  it.effect("a schema-90 activation backfills its thread cwd and survives workspace deletion", () =>
+    Effect.gen(function* () {
+      const fileDb = NodePath.join(
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-plan-cwd-")),
+        "old.sqlite",
+      );
+      const at90 = Layer.provideMerge(
+        NodeSqliteClient.layer({ filename: fileDb }),
+        NodeServices.layer,
+      );
+      const dir = makeWorkspace("# legacy");
+      const realRoot = NodeFS.realpathSync(dir);
+      yield* Effect.gen(function* () {
+        yield* runMigrations({ toMigrationInclusive: 90 });
+        yield* seedThreadCwd("thread_legacy", dir);
+        // A row only the pre-091 service could have written: no thread_cwd.
+        yield* (yield* SqlClient.SqlClient)`
+          INSERT INTO trading_plan_documents (
+            workspace_root, document_path, content_hash, activated_content,
+            activated_at, activated_by_thread_id, activated_by_provider,
+            mission_id, plan_reference_json
+          ) VALUES (
+            ${realRoot}, ${NodePath.join(realRoot, "TRADE.md")}, ${hashTradeContent("# legacy")}, '# legacy',
+            '2026-08-31T00:00:00Z', 'thread_legacy', 'codex', NULL, NULL
+          )
+        `;
+      }).pipe(Effect.provide(at90));
+
+      const at91 = Layer.provideMerge(
+        NodeSqliteClient.layer({ filename: fileDb }),
+        NodeServices.layer,
+      );
+      yield* runMigrations({}).pipe(Effect.provide(at91));
+      // The workspace goes away after the migration: only the backfilled
+      // cwd can keep this legacy pin discoverable.
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const backfilled = yield* sql<{ readonly thread_cwd: string | null }>`
+          SELECT thread_cwd FROM trading_plan_documents
+          WHERE activated_by_thread_id = 'thread_legacy'
+        `;
+        assert.equal(backfilled[0]?.thread_cwd, NodePath.resolve(dir));
+        const documents = yield* makeTradingPlanDocumentService;
+        const active = yield* documents.readActive(dir);
+        assert.notEqual(active, null);
+        assert.equal(active?.activatedContent, "# legacy");
+        // Discoverable means enforceable: the guard still fences.
+        const refused = yield* guardPlanDocumentDrift("open", "thread_legacy");
+        assert.equal(refused?.reason, "plan_document_drifted");
+      }).pipe(Effect.provide(at91));
     }),
   );
 });

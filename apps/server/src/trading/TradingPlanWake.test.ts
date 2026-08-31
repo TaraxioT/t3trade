@@ -333,6 +333,35 @@ layer("TradingPlanWake — the activated revision governs the wake", (it) => {
     }),
   );
 
+  it.effect(
+    "a deleted workspace root keeps the pin: the wake carries the snapshot and the guard fences",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const dir = seedWorkspace(DOC);
+        yield* seedThreadCwd(THREAD, dir);
+        yield* activateCurrent(dir);
+        // The whole workspace disappears (a removed worktree). The pin is a
+        // SQLite row and must outlive the directory it was read from.
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+
+        const { wakeup } = yield* composeWake();
+        const doc = wakeup.planDocument;
+        assert.isDefined(doc, "the persisted activation survives the workspace");
+        if (doc === undefined) return;
+        assert.equal(doc.status, "unreadable");
+        assert.isNull(doc.diskHash);
+        assert.isTrue(doc.activatedExcerpt.includes("ema-continuation"), "snapshot still governs");
+        assert.isDefined(doc.driftNote);
+        assert.include(doc.driftNote, "could not be read");
+
+        const refused = yield* guardPlanDocumentDrift("open", THREAD);
+        assert.equal(refused?.reason, "plan_document_drifted");
+        assert.equal(yield* guardPlanDocumentDrift("close", THREAD), null);
+        assert.equal(yield* guardPlanDocumentDrift("reduce", THREAD), null);
+      }),
+  );
+
   it.effect("an oversize file while a pin stands fences new exposure", () =>
     // The pinned snapshot was a valid readable file at activation; a read
     // that now refuses means the file changed. Unreadable is drift-classified

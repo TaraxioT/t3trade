@@ -1044,10 +1044,10 @@ const make = Effect.gen(function* () {
         Effect.catch(() => Effect.succeed(null)),
         Effect.catchCause(() => Effect.succeed(null)),
       );
-      // No excerpt when the workspace itself is gone: an activated revision
-      // whose snapshot is pinned is still the authority, and the note says
-      // what is wrong. (`readCurrent` failing here covers an unresolvable
-      // root as well as a refusing file read.)
+      // A workspace whose root no longer resolves still carries the pinned
+      // excerpt — the activated snapshot is the authority and survives the
+      // directory. (`readCurrent` failing here covers an unresolvable root as
+      // well as a refusing file read.)
       const excerptSource = active.activatedContent;
       const truncated = excerptSource.length > WAKEUP_PLAN_EXCERPT_CHARS;
       const excerpt = truncated

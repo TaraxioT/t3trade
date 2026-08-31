@@ -14,7 +14,9 @@
  * One row per workspace root (`trading_plan_documents`, migration 089), so
  * two checkouts of the same repository keep independent documents and
  * independent activations, and a restart recovers the active revision, hash
- * and snapshot from SQLite alone.
+ * and snapshot from SQLite alone. The row also records the thread cwd it was
+ * activated through (migration 091) so a pin stays discoverable — and the
+ * drift fence enforceable — after the workspace directory itself is deleted.
  *
  * @module TradingPlanDocument
  */
@@ -185,6 +187,27 @@ const asDocumentError = (cause: unknown): TradingPlanDocumentError =>
  */
 const realRootOf = (workspaceRoot: string): string =>
   NodeFS.realpathSync(NodePath.resolve(workspaceRoot));
+
+/**
+ * The row identities a workspace root can be found by.
+ *
+ * While the directory exists, its real path is the key and the only one
+ * consulted. Once the directory is gone the real path is unknowable, and the
+ * lexical thread cwd — matched against the row key and the cwd spelling
+ * recorded at activation — is what keeps a standing pin discoverable: the
+ * fence's whole premise is that the pinned snapshot outlives the directory
+ * it was read from.
+ */
+const planRowKeys = (
+  workspaceRoot: string,
+): { readonly lexical: string; readonly real: string | null } => {
+  const lexical = NodePath.resolve(workspaceRoot);
+  try {
+    return { lexical, real: NodeFS.realpathSync(lexical) };
+  } catch {
+    return { lexical, real: null };
+  }
+};
 
 /**
  * Read the CURRENT document under one workspace root, with every containment
@@ -390,27 +413,50 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
 
   const readActive = (workspaceRoot: string) =>
     Effect.gen(function* () {
-      const realRoot = yield* Effect.try({
-        try: () => realRootOf(workspaceRoot),
-        catch: asDocumentError,
-      });
-      const rows = yield* sql<{
-        workspace_root: string;
-        document_path: string;
-        content_hash: string;
-        activated_content: string;
-        activated_at: string;
-        activated_by_thread_id: string;
-        activated_by_provider: string;
-        mission_id: string | null;
-        plan_reference_json: string | null;
-      }>`
-        SELECT workspace_root, document_path, content_hash, activated_content,
-               activated_at, activated_by_thread_id, activated_by_provider,
-               mission_id, plan_reference_json
-        FROM trading_plan_documents
-        WHERE workspace_root = ${realRoot}
-      `.pipe(Effect.mapError(asDocumentError));
+      const keys = yield* Effect.sync(() => planRowKeys(workspaceRoot));
+      // The real path while the directory exists; once it is gone, the
+      // lexical cwd spellings are the only keys that can still reach the
+      // pinned row — a miss here must mean no pin stands, never a pin made
+      // invisible by the filesystem's absence.
+      const statement =
+        keys.real === null
+          ? sql<{
+              workspace_root: string;
+              document_path: string;
+              content_hash: string;
+              activated_content: string;
+              activated_at: string;
+              activated_by_thread_id: string;
+              activated_by_provider: string;
+              mission_id: string | null;
+              plan_reference_json: string | null;
+            }>`
+            SELECT workspace_root, document_path, content_hash, activated_content,
+                   activated_at, activated_by_thread_id, activated_by_provider,
+                   mission_id, plan_reference_json
+            FROM trading_plan_documents
+            WHERE workspace_root = ${keys.lexical}
+               OR thread_cwd = ${keys.lexical}
+               OR thread_cwd = ${workspaceRoot}
+          `
+          : sql<{
+              workspace_root: string;
+              document_path: string;
+              content_hash: string;
+              activated_content: string;
+              activated_at: string;
+              activated_by_thread_id: string;
+              activated_by_provider: string;
+              mission_id: string | null;
+              plan_reference_json: string | null;
+            }>`
+            SELECT workspace_root, document_path, content_hash, activated_content,
+                   activated_at, activated_by_thread_id, activated_by_provider,
+                   mission_id, plan_reference_json
+            FROM trading_plan_documents
+            WHERE workspace_root = ${keys.real}
+          `;
+      const rows = yield* statement.pipe(Effect.mapError(asDocumentError));
       const row = rows[0];
       return row === undefined ? null : decodeActiveRow(row);
     });
@@ -457,43 +503,56 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
       });
       const activatedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
       const planReferenceJson = planReferenceToJson(input.planReference);
+      // The cwd spelling this activation was reached through: the row's
+      // deleted-root fallback key (migration 091).
+      const threadCwd = NodePath.resolve(input.workspaceRoot);
       // Exactly one revision per workspace: the upsert IS the activation
       // audit's latest entry, and the activated_content column is the exact
-      // snapshot background execution reads.
-      yield* sql`
-        INSERT INTO trading_plan_documents (
-          workspace_root, document_path, content_hash, activated_content,
-          activated_at, activated_by_thread_id, activated_by_provider,
-          mission_id, plan_reference_json
-        ) VALUES (
-          ${realRoot}, ${document.path}, ${document.contentHash}, ${document.content},
-          ${activatedAt}, ${input.threadId}, ${input.provider},
-          ${input.missionId ?? null}, ${planReferenceJson}
+      // snapshot background execution reads. One transaction: an activation
+      // whose audit append fails must leave the previous pin standing, not a
+      // changed pin the log cannot explain.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              INSERT INTO trading_plan_documents (
+                workspace_root, document_path, content_hash, activated_content,
+                activated_at, activated_by_thread_id, activated_by_provider,
+                mission_id, plan_reference_json, thread_cwd
+              ) VALUES (
+                ${realRoot}, ${document.path}, ${document.contentHash}, ${document.content},
+                ${activatedAt}, ${input.threadId}, ${input.provider},
+                ${input.missionId ?? null}, ${planReferenceJson}, ${threadCwd}
+              )
+              ON CONFLICT (workspace_root)
+              DO UPDATE SET
+                document_path = excluded.document_path,
+                content_hash = excluded.content_hash,
+                activated_content = excluded.activated_content,
+                activated_at = excluded.activated_at,
+                activated_by_thread_id = excluded.activated_by_thread_id,
+                activated_by_provider = excluded.activated_by_provider,
+                mission_id = excluded.mission_id,
+                plan_reference_json = excluded.plan_reference_json,
+                thread_cwd = excluded.thread_cwd
+            `;
+            // The append-only half of the audit: every activation logs, so
+            // the revision this replaces stays queryable after the upsert
+            // overwrites it.
+            yield* sql`
+              INSERT INTO trading_plan_document_revisions (
+                workspace_root, kind, content_hash, activated_content,
+                activated_at, activated_by_thread_id, activated_by_provider,
+                mission_id, change_note
+              ) VALUES (
+                ${realRoot}, 'activated', ${document.contentHash}, ${document.content},
+                ${activatedAt}, ${input.threadId}, ${input.provider},
+                ${input.missionId ?? null}, ${input.changeNote ?? null}
+              )
+            `;
+          }),
         )
-        ON CONFLICT (workspace_root)
-        DO UPDATE SET
-          document_path = excluded.document_path,
-          content_hash = excluded.content_hash,
-          activated_content = excluded.activated_content,
-          activated_at = excluded.activated_at,
-          activated_by_thread_id = excluded.activated_by_thread_id,
-          activated_by_provider = excluded.activated_by_provider,
-          mission_id = excluded.mission_id,
-          plan_reference_json = excluded.plan_reference_json
-      `.pipe(Effect.mapError(asDocumentError));
-      // The append-only half of the audit: every activation logs, so the
-      // revision this replaces stays queryable after the upsert overwrites it.
-      yield* sql`
-        INSERT INTO trading_plan_document_revisions (
-          workspace_root, kind, content_hash, activated_content,
-          activated_at, activated_by_thread_id, activated_by_provider,
-          mission_id, change_note
-        ) VALUES (
-          ${realRoot}, 'activated', ${document.contentHash}, ${document.content},
-          ${activatedAt}, ${input.threadId}, ${input.provider},
-          ${input.missionId ?? null}, ${input.changeNote ?? null}
-        )
-      `.pipe(Effect.mapError(asDocumentError));
+        .pipe(Effect.mapError(asDocumentError));
       const active = yield* readActive(realRoot);
       // The row was just written; a miss here is a defect, not a refusal.
       if (active === null) {
@@ -507,11 +566,9 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
 
   const deactivate: TradingPlanDocumentService["Service"]["deactivate"] = (input) =>
     Effect.gen(function* () {
-      const realRoot = yield* Effect.try({
-        try: () => realRootOf(input.workspaceRoot),
-        catch: asDocumentError,
-      });
-      const standing = yield* readActive(realRoot);
+      // Discovered through the same fallback as every other read: pausing a
+      // plan must not require the workspace directory to still exist.
+      const standing = yield* readActive(input.workspaceRoot);
       if (standing === null) {
         return yield* new TradingPlanDocumentError({
           reason: "not_found",
@@ -519,23 +576,30 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
         });
       }
       const deactivatedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
-      // The audit row first, the pin second: a deactivate that failed between
-      // the two leaves an activated revision standing, which is the safe half
-      // of that split (drift still guards; a stray log row is harmless).
-      yield* sql`
-        INSERT INTO trading_plan_document_revisions (
-          workspace_root, kind, content_hash, activated_content,
-          activated_at, activated_by_thread_id, activated_by_provider,
-          mission_id, change_note
-        ) VALUES (
-          ${realRoot}, 'deactivated', ${standing.contentHash}, ${standing.activatedContent},
-          ${deactivatedAt}, ${input.threadId}, ${input.provider},
-          ${standing.missionId}, ${input.note ?? null}
+      // Keyed by the row's own identity, not a re-derived root. One
+      // transaction: a deactivation either fully happens (the audit row
+      // appended and the pin removed) or fully does not — never an audit
+      // entry for a deactivation that left the pin standing.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              INSERT INTO trading_plan_document_revisions (
+                workspace_root, kind, content_hash, activated_content,
+                activated_at, activated_by_thread_id, activated_by_provider,
+                mission_id, change_note
+              ) VALUES (
+                ${standing.workspaceRoot}, 'deactivated', ${standing.contentHash}, ${standing.activatedContent},
+                ${deactivatedAt}, ${input.threadId}, ${input.provider},
+                ${standing.missionId}, ${input.note ?? null}
+              )
+            `;
+            yield* sql`
+              DELETE FROM trading_plan_documents WHERE workspace_root = ${standing.workspaceRoot}
+            `;
+          }),
         )
-      `.pipe(Effect.mapError(asDocumentError));
-      yield* sql`
-        DELETE FROM trading_plan_documents WHERE workspace_root = ${realRoot}
-      `.pipe(Effect.mapError(asDocumentError));
+        .pipe(Effect.mapError(asDocumentError));
     });
 
   const listRevisions: TradingPlanDocumentService["Service"]["listRevisions"] = (workspaceRoot) =>
@@ -699,9 +763,10 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
 
       const documents = yield* makeTradingPlanDocumentService;
       // The pin decides whether the guard has standing at all: a workspace
-      // with no activated revision has nothing to drift against, and a root
-      // that no longer resolves is the wake path's blocked reason, not a
-      // verdict this guard manufactures.
+      // with no activated revision has nothing to drift against. A root that
+      // no longer resolves still finds its pin through the recorded cwd
+      // spellings, so a deleted workspace fences below as unreadable rather
+      // than vanishing the activation the mission runs on.
       const activated = yield* documents.readActive(workspaceRoot).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.catchCause(() => Effect.succeed(null)),
