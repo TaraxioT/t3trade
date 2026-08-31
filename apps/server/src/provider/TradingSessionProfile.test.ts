@@ -328,7 +328,7 @@ it("has every provider adapter apply the profile", async () => {
     await NodeFSP.readFile(new URL(`./Layers/${file}`, import.meta.url), "utf8");
 
   const claude = await read("ClaudeAdapter.ts");
-  expect(claude).toContain("applyTradingTurnContract(input.threadId");
+  expect(claude).toContain("applyTradingTurnContractWithContext(input.threadId");
   expect(claude).toContain("resetTradingContractDelivery(input.threadId)");
   expect(claude).toContain("markDelivered()");
 
@@ -339,7 +339,7 @@ it("has every provider adapter apply the profile", async () => {
     "OpenCodeAdapter.ts",
   ]) {
     const source = await read(adapter);
-    expect(source, adapter).toContain("applyTradingTurnContract(input.threadId");
+    expect(source, adapter).toContain("applyTradingTurnContractWithContext(input.threadId");
     // Both halves of the once-per-session delivery, or the adapter either
     // repeats the contract forever or drops it after a failed turn.
     expect(source, adapter).toContain("resetTradingContractDelivery(input.threadId)");

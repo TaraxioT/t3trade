@@ -81,7 +81,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as TradingSessionProfile from "../TradingSessionProfile.ts";
-import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
+import { applyTradingTurnContractWithContext } from "../../trading/TradingPlanTurnContext.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
@@ -4651,7 +4651,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // thread keeps its native coding persona plus the trading contract
     // without any system-prompt replacement.
     const contract =
-      input.input === undefined ? undefined : applyTradingTurnContract(input.threadId, input.input);
+      input.input === undefined
+        ? undefined
+        : yield* applyTradingTurnContractWithContext(input.threadId, input.input);
     const message = yield* buildUserMessageEffect(
       contract === undefined ? input : { ...input, input: contract.text },
       {

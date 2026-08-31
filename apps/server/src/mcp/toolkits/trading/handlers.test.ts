@@ -73,6 +73,7 @@ import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingStopAdjustmentServiceLive } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyServiceLive } from "../../../trading/TradingStrategyService.ts";
 import { TradingTradeHistoryServiceLive } from "../../../trading/TradingTradeHistoryService.ts";
+import { TradingPlanDocumentServiceLive } from "../../../trading/TradingPlanDocument.ts";
 import { TradingWatchServiceLive } from "../../../trading/TradingWatchService.ts";
 import { TradingJournalServiceLive } from "../../../trading/TradingJournalService.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "../../../trading/TradingEventInbox.ts";
@@ -529,6 +530,9 @@ const tradingLayerOverExchange = (
     TradingStrategyServiceLive,
     TradingWatchServiceLive,
     TradingJournalServiceLive,
+    // The publish path's TRADE.md attribution refresh: SQL only, and a
+    // workspace with no activated document is a no-op.
+    TradingPlanDocumentServiceLive,
     TradingTradeHistoryServiceLive,
     TradingCalibrationServiceLive,
     // The analyst's `trading_watch` writes account-scoped notify alerts

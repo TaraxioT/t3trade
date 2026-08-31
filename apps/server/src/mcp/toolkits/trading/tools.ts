@@ -49,6 +49,7 @@ import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
 import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
+import { TradingPlanDocumentService } from "../../../trading/TradingPlanDocument.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
@@ -138,6 +139,10 @@ const dependencies = [
   // `trading_chart` publishes scenes through the research scene service.
   TradingResearchSceneService,
   SqlClient.SqlClient,
+  // The workspace TRADE.md lifecycle: `trading_enter`'s read-only drift guard
+  // and an accepted publish's attribution refresh. Reads a file and rows;
+  // nothing here can reach an order.
+  TradingPlanDocumentService,
 ];
 
 export const TradingLookTool = Tool.make("trading_look", {

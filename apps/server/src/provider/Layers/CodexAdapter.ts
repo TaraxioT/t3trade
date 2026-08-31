@@ -43,10 +43,9 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { prepareProjectlessWorkspace } from "../ResearchScratch.ts";
-import {
-  applyTradingTurnContract,
-  resetTradingContractDelivery,
-} from "../TradingSessionProfile.ts";
+import { resetTradingContractDelivery } from "../TradingSessionProfile.ts";
+
+import { applyTradingTurnContractWithContext } from "../../trading/TradingPlanTurnContext.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -1865,7 +1864,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     // rides the first turn of each session instance and a one-line header
     // thereafter, which is why delivery is only recorded once the turn is away.
     const contract =
-      input.input === undefined ? undefined : applyTradingTurnContract(input.threadId, input.input);
+      input.input === undefined
+        ? undefined
+        : yield* applyTradingTurnContractWithContext(input.threadId, input.input);
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")

@@ -64,6 +64,10 @@
       "types": "./src/lossAccounting.ts",
       "import": "./src/lossAccounting.ts"
     },
+    "./plan-document": {
+      "types": "./src/planDocument.ts",
+      "import": "./src/planDocument.ts"
+    },
     "./wakeup": {
       "types": "./src/wakeup.ts",
       "import": "./src/wakeup.ts"

@@ -51,6 +51,8 @@ import { TradingJournalServiceLive } from "./TradingJournalService.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
+import { TradingPlanDocumentServiceLive } from "./TradingPlanDocument.ts";
+import { TradingPlanTurnContextLive } from "./TradingPlanTurnContext.ts";
 import { TradingPlanProtectionServiceLive } from "./TradingPlanProtectionService.ts";
 import { TradingWorkingOrderServiceLive } from "./TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
@@ -242,6 +244,13 @@ export const TradingLayerLive = Layer.mergeAll(
   // an order.
   TradingResearchSceneServiceLive,
   TradingMissionServiceLive,
+  // The workspace plan-document lifecycle: read, activate, drift. SQL only —
+  // the document is a file read, the revisions are rows, and nothing here can
+  // reach an order.
+  TradingPlanDocumentServiceLive,
+  // Installs the turn-context reader the provider adapters' shared seam
+  // reads TRADE.md through. Effect-free at the adapter boundary on purpose.
+  TradingPlanTurnContextLive,
   // The single-writer lease for this database. Merged here so every consumer
   // of the trading layer — the sweep below, the reactors above — sees the
   // same acquisition, and so a refused boot leaves the layer built but the

@@ -31,10 +31,9 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { prepareProjectlessWorkspace } from "../ResearchScratch.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import {
-  applyTradingTurnContract,
-  resetTradingContractDelivery,
-} from "../TradingSessionProfile.ts";
+import { resetTradingContractDelivery } from "../TradingSessionProfile.ts";
+
+import { applyTradingTurnContractWithContext } from "../../trading/TradingPlanTurnContext.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -1519,7 +1518,7 @@ export function makeOpenCodeAdapter(
       // one-line header thereafter, which is why delivery is only recorded
       // once the prompt is away.
       const contract = input.input?.trim()
-        ? applyTradingTurnContract(input.threadId, input.input.trim())
+        ? yield* applyTradingTurnContractWithContext(input.threadId, input.input.trim())
         : undefined;
       const text = contract?.text ?? input.input?.trim();
       const fileParts = toOpenCodeFileParts({

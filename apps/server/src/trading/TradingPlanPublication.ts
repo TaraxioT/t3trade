@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { TradingMission } from "./Schemas.ts";
+import { TradingPlanDocumentService } from "./TradingPlanDocument.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { armPredictionWatchesQuietly } from "./TradingPredictionWatches.ts";
 import {
@@ -162,6 +163,22 @@ export const publishPlanWithAftermath = Effect.fn(
   // path instead of leaving the UI to poll.
   yield* announceStrategyPublished({ threadId, missionId: mission.id });
   yield* announceMissionStatus({ threadId, missionId: mission.id });
+
+  // Attribution linkage to the workspace's activated TRADE.md revision, where
+  // one exists: the publication's structured identity (version, market,
+  // intent) is recorded against that activation. The document is never the
+  // authority — the typed plan fields are — and a failed refresh never fails
+  // the publish.
+  const planDocuments = yield* TradingPlanDocumentService;
+  yield* planDocuments.notePlanPublication({
+    threadId,
+    missionId: mission.id,
+    planReference: {
+      version: published.version,
+      market: published.strategy.market,
+      intent: published.strategy.intent,
+    },
+  });
 
   // The published prediction gets its own two triggers — the horizon and the
   // invalidation level — and the previous prediction's pair is retired. This

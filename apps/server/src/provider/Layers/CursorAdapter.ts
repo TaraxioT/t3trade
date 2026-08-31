@@ -44,10 +44,9 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { prepareProjectlessWorkspace } from "../ResearchScratch.ts";
-import {
-  applyTradingTurnContract,
-  resetTradingContractDelivery,
-} from "../TradingSessionProfile.ts";
+import { resetTradingContractDelivery } from "../TradingSessionProfile.ts";
+
+import { applyTradingTurnContractWithContext } from "../../trading/TradingPlanTurnContext.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -993,7 +992,7 @@ export function makeCursorAdapter(
           // each session instance and a one-line header thereafter, which is
           // why delivery is only recorded once the prompt is away.
           const contract = input.input?.trim()
-            ? applyTradingTurnContract(input.threadId, input.input.trim())
+            ? yield* applyTradingTurnContractWithContext(input.threadId, input.input.trim())
             : undefined;
           if (contract !== undefined) {
             promptParts.push({ type: "text", text: contract.text });

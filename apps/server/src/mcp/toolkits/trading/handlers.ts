@@ -66,6 +66,7 @@ import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcom
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
+import { guardPlanDocumentDrift } from "../../../trading/TradingPlanDocument.ts";
 import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
@@ -2486,10 +2487,27 @@ export const handlers = {
    */
   trading_enter: (input) =>
     Effect.gen(function* () {
-      const { mission } = yield* resolveBindableCall({
+      const { threadId, mission } = yield* resolveBindableCall({
         missionId: input.missionId,
         market: input.market,
       });
+      // The plan-document drift fence: a workspace whose TRADE.md changed
+      // after its activated revision does not take on NEW exposure until the
+      // change is re-activated. Read-only, and the only entry-path guard
+      // added here — every exit, protection, pause and revoke path never
+      // passes through it.
+      const drift = yield* guardPlanDocumentDrift(input.actionType ?? "open", threadId);
+      if (drift !== null) {
+        yield* recordEntryRefusal(mission.id, drift.reason);
+        return {
+          status: "rejected" as const,
+          cloid: "",
+          orderResults: [],
+          budget: { remainingCumulativeLossUsd: 0, exhausted: false },
+          detail: `${drift.reason}: ${drift.detail}`,
+          recovery: classifyFailure({ reason: drift.reason }),
+        };
+      }
       const entries = yield* TradingEntryService;
       const prepared = yield* entries.prepare({
         missionId: mission.id,

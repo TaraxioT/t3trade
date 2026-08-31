@@ -137,6 +137,7 @@ import { TradingManualEntryService } from "./trading/TradingManualEntryService.t
 import { TradingControlService } from "./trading/TradingControlService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
+import { TradingPlanDocumentServiceLive } from "./trading/TradingPlanDocument.ts";
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
 import { TradingMissionServiceLive } from "./trading/TradingMissionService.ts";
 import { TradingJournalServiceLive } from "./trading/TradingJournalService.ts";
@@ -1026,7 +1027,13 @@ const buildAppUnderTest = (options?: {
         // reach the exchange are mocked flat: these tests seed no position, and
         // an accepted publish with nothing to reconcile is a real outcome.
         Layer.provide(TradingStrategyServiceLive),
-        Layer.provide(TradingMissionServiceLive),
+        Layer.provide(
+          // The publish path's TRADE.md attribution refresh rides with the
+          // mission service in one provide: this chain is at pipe's
+          // twenty-argument ceiling. SQL only, and a workspace with no
+          // activated document is a no-op.
+          Layer.mergeAll(TradingMissionServiceLive, TradingPlanDocumentServiceLive),
+        ),
         Layer.provide(TradingJournalServiceLive),
         // The fourth: an accepted publish arms its prediction's watches.
         Layer.provide(TradingWatchServiceLive),
