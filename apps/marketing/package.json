@@ -5,16 +5,21 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "node ./scripts/extract-app-tokens.mjs --check && node ./src/lib/beats.test.ts && astro build && node ./scripts/check-scroll-timelines.mjs",
+    "build": "node ./scripts/extract-app-tokens.mjs --check && node ./src/lib/beats.test.ts && astro build && node ./scripts/check-route-js-budget.mjs && node ./scripts/check-scroll-timelines.mjs",
     "preview": "astro preview",
     "typecheck": "astro check"
   },
   "dependencies": {
     "@t3tools/shared": "workspace:*",
-    "astro": "^7.0.3"
+    "astro": "^7.0.3",
+    "gsap": "^3.15.0",
+    "howler": "^2.2.4",
+    "pixi-viewport": "^6.0.3",
+    "pixi.js": "^8.20.1"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.7",
+    "@types/howler": "^2.2.13",
     "@vercel/config": "^0.3.0",
     "lucide-react": "0.564.0",
     "typescript": "catalog:"

@@ -1,0 +1,132 @@
+---
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import "../diorama/page.css";
+
+// Build-time listing of public/diorama. The runtime only requests files on
+// this list, so optional art (bots/props sheets, ferry, dome) produces
+// zero console 404s while still dropping in when it lands.
+function resolveDioramaDir(): string | null {
+  const candidates = [
+    path.resolve(process.cwd(), "public/diorama"),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../public/diorama"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
+}
+
+let availableFiles: string[] = [];
+const dioramaDir = resolveDioramaDir();
+if (dioramaDir) {
+  availableFiles = fs.readdirSync(dioramaDir).filter((name) => fs.statSync(path.join(dioramaDir, name)).isFile());
+}
+---
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A living miniature of T3 Trade: a glass-domed Bureau of enforcement, a bridge, and the Hyperliquid testnet bazaar beyond it."
+    />
+    <meta name="theme-color" content="#09090b" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="T3 Trade — The Bureau" />
+    <meta
+      property="og:description"
+      content="A living miniature of T3 Trade: a glass-domed Bureau of enforcement, a bridge, and the Hyperliquid testnet bazaar beyond it."
+    />
+    <meta property="og:site_name" content="T3 Trade" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32" />
+    <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16" />
+    <title>T3 Trade — The Bureau</title>
+  </head>
+  <body class="diorama-page">
+    <main class="diorama" aria-label="The T3 Trade Bureau living diorama">
+      <a class="wordmark" href="/">T3 Trade</a>
+
+      <div id="stage" class="stage" data-assets={JSON.stringify(availableFiles)}></div>
+
+      <img
+        id="fallback"
+        class="fallback"
+        data-src="/diorama/poster.webp"
+        alt="The T3 Trade Bureau diorama"
+        hidden
+      />
+
+      <p class="caption">
+        <span class="caption-title">The Bureau / Enforcement</span>
+        <span class="caption-body">A living miniature: deterministic enforcement under glass, and the testnet bazaar across the bridge.</span>
+      </p>
+
+      <div class="controls">
+        <button id="reset" class="control" type="button">Reset view</button>
+        <button id="sound" class="control" type="button" aria-pressed="false" disabled>
+          Sound off
+        </button>
+      </div>
+
+      <div id="loading" class="loading" role="region" aria-label="Loading the diorama">
+        <div
+          id="progress"
+          class="progress"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+          aria-label="Preparing the diorama"
+        >
+          <div class="progress-fill"></div>
+        </div>
+        <p id="status" class="status">Preparing the diorama</p>
+      </div>
+
+      <p id="announcer" class="sr-only" role="status" aria-live="polite"></p>
+
+      <noscript>
+        <!--
+          The poster URL lives in an inline background-image, not an img src:
+          the preload scanner would eagerly fetch noscript images even with
+          scripting enabled. The JS failure path (fallback img) is the only
+          other consumer, and it assigns from data-src lazily.
+        -->
+        <div class="noscript">
+          <div
+            class="poster"
+            style="background-image: url('/diorama/poster.webp')"
+            role="img"
+            aria-label="The T3 Trade Bureau diorama"
+          ></div>
+          <p>A living miniature of T3 Trade. Enable JavaScript to explore it.</p>
+        </div>
+      </noscript>
+    </main>
+
+    <script>
+      import { startDiorama } from "../diorama/main";
+
+      const stage = document.getElementById("stage");
+      if (stage) {
+        const handle = startDiorama(stage);
+        window.addEventListener("pagehide", handle.dispose);
+        window.addEventListener("beforeunload", handle.dispose);
+      }
+    </script>
+  </body>
+</html>
