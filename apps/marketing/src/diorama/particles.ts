@@ -28,8 +28,7 @@ export type EffectId =
   | "confettiBurst"
   | "cannonSmoke"
   | "receiptSparks"
-  | "poleDust"
-  | "beamFlash"; // R4 beam-cut mint ring/flash (boot-registered analytic window)
+  | "poleDust";
 
 export const EFFECT_IDS: readonly EffectId[] = [
   "steamPuff",
@@ -39,7 +38,6 @@ export const EFFECT_IDS: readonly EffectId[] = [
   "cannonSmoke",
   "receiptSparks",
   "poleDust",
-  "beamFlash",
 ];
 
 export const isEffectId = (value: string): value is EffectId =>
@@ -616,48 +614,6 @@ export function poleDust(origin: XYZ, opts: SpawnOptions = {}): EffectInstance {
 // Factory plumbing
 // ---------------------------------------------------------------------------
 
-/** Beam-cut mint ring/flash (R4): expanding bright ring at the destination. */
-export function beamFlash(origin: XYZ, opts: SpawnOptions = {}): EffectInstance {
-  const key = effectKey("beamFlash", opts);
-  const rng = createRng(seededId(SEEDS.particles, key));
-  const count = 16;
-  const durationMs = 600;
-  const scale = opts.scale ?? 1;
-  let ringIndex = 0;
-  const p = buildBurstParams(
-    rng,
-    count,
-    0,
-    () => {
-      // Even ring angles with a slight upward bias.
-      const a = (ringIndex++ / count) * Math.PI * 2;
-      return [Math.cos(a), 0.25, Math.sin(a)];
-    },
-    [0.9, 1.1],
-    [0.12, 0.16],
-  );
-  const base = baseInstance("beamFlash", "additive", key, opts.triggerMs ?? 0, durationMs, count);
-  return {
-    ...base,
-    write(tLocal, slice) {
-      const u = saturate(tLocal / (durationMs * 0.9));
-      for (let i = 0; i < count; i += 1) {
-        const r = (1 - Math.pow(1 - u, 2)) * p.speed[i] * 0.7 * scale;
-        putState(
-          slice,
-          i,
-          origin.x + p.dirX[i] * r,
-          origin.y + 0.3 * u + p.dirY[i] * r * 0.3,
-          origin.z + p.dirZ[i] * r,
-          envelope(u, 0.05, 0.35),
-          p.size[i] * scale * (1 - 0.4 * u),
-        );
-        putColor(slice, i, mix3(PALETTE_RGB.mintBright, PALETTE_RGB.mint, p.color[i]));
-      }
-    },
-  };
-}
-
 const effectKey = (effectId: EffectId, opts: SpawnOptions): string =>
   `${effectId}@${opts.triggerMs ?? 0}#${opts.instance ?? 0}`;
 
@@ -692,7 +648,6 @@ const FACTORIES: Readonly<Record<EffectId, EffectFactory>> = {
   cannonSmoke,
   receiptSparks,
   poleDust,
-  beamFlash,
 };
 
 /** Effect inventory as data (documentation/testing surface). */
@@ -700,7 +655,6 @@ export const EFFECT_SPEC: Readonly<
   Record<EffectId, { readonly pool: PoolId; readonly count: number; readonly durationMs: number }>
 > = {
   steamPuff: { pool: "normal", count: 26, durationMs: 2600 },
-  beamFlash: { pool: "additive", count: 16, durationMs: 600 },
   paperBurst: { pool: "normal", count: 10, durationMs: 1500 },
   stampDust: { pool: "additive", count: 18, durationMs: 700 },
   confettiBurst: { pool: "confetti", count: 90, durationMs: 2400 },

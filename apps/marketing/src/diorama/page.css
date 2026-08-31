@@ -217,10 +217,8 @@ img {
   pointer-events: none;
 }
 
-/* Bureau Bazaar silhouette: one broad low deck, a shallower raised band
-   along its back edge, and a small detached satellite pad at upper right.
-   A few positioned dark blocks suggesting the diorama mass. No images,
-   no spinner. */
+/* Three-floor plinth silhouette: a few positioned dark blocks suggesting the
+   diorama mass. No images, no spinner. */
 .silhouette {
   position: relative;
   width: min(220px, 46vw);
@@ -234,27 +232,33 @@ img {
   border-radius: var(--radius-sm);
 }
 
-.sil-deck {
+.sil-plinth {
   left: 0;
-  right: 10%;
-  bottom: 8%;
-  height: 26%;
-  border-radius: var(--radius);
-}
-
-.sil-terrace {
-  left: 0;
-  width: 52%;
-  bottom: 34%;
-  height: 13%;
-}
-
-.sil-satellite {
   right: 0;
-  top: 6%;
-  width: 26%;
-  height: 17%;
+  bottom: 0;
+  height: 14%;
   border-radius: var(--radius);
+}
+
+.sil-floor {
+  left: 8%;
+  right: 8%;
+  height: 22%;
+}
+
+.sil-loft {
+  top: 4%;
+}
+
+.sil-trading {
+  top: 30%;
+}
+
+.sil-vault {
+  top: 56%;
+  left: 0;
+  right: 0;
+  border-radius: var(--radius-sm);
 }
 
 .progress {

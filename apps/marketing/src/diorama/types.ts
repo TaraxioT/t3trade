@@ -72,20 +72,6 @@ export type EasingName =
   | "easeOutQuad"
   | "easeOutElastic";
 
-/**
- * Bot facial expression, v2 emotion system (08-design-direction-v2.md
- * Decision 3). Implemented as geometry toggle between prebuilt eye-pair
- * shapes; never a facial rig.
- */
-export type Expression = "happy" | "bored" | "angry" | "panic" | "surprised" | "neutral";
-
-/**
- * Comic glyph popped above a bot's head (Decision 3 glyph pops). Analytic
- * duration windows, not fireCue one-shots, so seeking directly into the
- * window shows the glyph.
- */
-export type GlyphId = "alarm" | "question" | "sleep" | "anger" | "heart" | "star";
-
 /** Runtime lifecycle, owned and arbitrated by main.ts. */
 export type LifecycleState =
   | "loading"
@@ -178,62 +164,12 @@ export interface FireCueCommand {
   readonly detail?: Readonly<Record<string, number | string>>;
 }
 
-/**
- * Authored expression override window on the independent expression channel.
- * Resolution order: pose state supplies the default expression, then an
- * active `express` command overrides it. Exactly one express command may be
- * active per actor at a time; overlaps are rejected at compile time.
- * `endMs` is absolute, like `startMs`.
- */
-export interface ExpressCommand {
-  readonly kind: "express";
-  readonly actorId: ActorId;
-  readonly expression: Expression;
-  readonly startMs: number;
-  readonly endMs: number;
-}
-
-/**
- * Comic glyph window above the actor's head. A duration-bearing analytic
- * command (NOT a fireCue): visibility, float, overshoot, and fade derive
- * purely from absolute time, so a direct seek into the window renders it
- * correctly. One glyph per actor at a time; overlaps rejected at compile
- * time.
- */
-export interface GlyphCommand {
-  readonly kind: "glyph";
-  readonly actorId: ActorId;
-  readonly glyph: GlyphId;
-  readonly startMs: number;
-  readonly durationMs: number;
-}
-
-/**
- * Teleport hop: bot contracts at `from`, cuts (invisible) to `to`, and
- * expands back to normal scale. Participates in the EXCLUSIVE motion channel
- * (mutually exclusive with hold and moveAlong); compile-time validation:
- * both waypoints exist, duration > 0, no motion-channel overlap for the
- * actor. Windows crossing the 90000 ms seam are an advisory warning, not an
- * error. The destination is the persistent post-command rest position.
- */
-export interface BeamCommand {
-  readonly kind: "beam";
-  readonly actorId: ActorId;
-  readonly from: WaypointId;
-  readonly to: WaypointId;
-  readonly startMs: number;
-  readonly durationMs: number;
-}
-
 export type ActorCommand =
   | HoldCommand
   | MoveAlongCommand
   | FaceCommand
   | PoseCommand
-  | FireCueCommand
-  | ExpressCommand
-  | GlyphCommand
-  | BeamCommand;
+  | FireCueCommand;
 
 export type PropCommand = AttachPropCommand | DetachPropCommand | FollowArcCommand | FireCueCommand;
 
@@ -289,10 +225,6 @@ export interface ActorSnapshot {
   readonly yaw: number;
   readonly carriedPropId: PropId | null;
   readonly socket: SocketId | null;
-  /** Active expression after pose-default/express-override resolution. */
-  readonly expression?: Expression;
-  /** Active head glyph, or null/omitted when no glyph window is active. */
-  readonly glyph?: GlyphId | null;
 }
 
 export interface PropSnapshot {

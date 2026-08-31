@@ -14,7 +14,7 @@
  */
 
 import * as THREE from "three";
-import { DIMENSIONS, PALETTE_V2, SEEDS, type ZoneId } from "../config";
+import { DIMENSIONS, SEEDS } from "../config";
 import { seededId } from "../math";
 import type { MaterialLibrary } from "../render/materials";
 import {
@@ -28,14 +28,12 @@ import {
   type SocketId,
   type WaypointId,
 } from "../types";
-import { buildBotRig, createBotGeometryCache, type AccessoryId, type BotRig } from "./rig";
+import { buildBotRig, createBotGeometryCache, type BotRig } from "./rig";
 import { STATIONS, stationWaypointId, type StationId } from "../story/waypoints";
 
 export interface FleetActor {
   readonly actorId: ActorId;
   readonly role: Role;
-  /** Home zone id (R2 layout); drives the hull body color. */
-  readonly zone: ZoneId;
   /** Deterministic cosmetic seed: seededId(SEEDS.bots, actorId). */
   readonly seed: number;
   readonly homeWaypointId: WaypointId;
@@ -46,100 +44,41 @@ interface RosterEntry {
   readonly id: string;
   readonly role: Role;
   readonly home: StationId;
-  readonly zone: ZoneId;
   readonly scale?: number;
-  readonly accessory?: AccessoryId;
 }
 
 /**
  * Principal cast (19) + ambient extras (6) from 04-story-script.md.
  * IDs are story-stable: beats.ts authors commands against these strings.
- * Zones are the R2 home zones (09-layout-spec.md); ambient extras spread
- * one per zone. Homes stay on the aliased v1 stations until the cutover.
  */
 const ROSTER: readonly RosterEntry[] = [
-  { id: "foreman", role: "foreman", home: "planDesk", zone: "plan", accessory: "clipboard" },
-  {
-    id: "researcher-1",
-    role: "researcher",
-    home: "greenhouse",
-    zone: "greenhouse",
-    accessory: "tablet",
-  },
-  {
-    id: "researcher-2",
-    role: "researcher",
-    home: "greenhouse",
-    zone: "greenhouse",
-    accessory: "tablet",
-  },
-  {
-    id: "researcher-3",
-    role: "researcher",
-    home: "greenhouse",
-    zone: "greenhouse",
-    accessory: "tablet",
-  },
-  {
-    id: "researcher-4",
-    role: "researcher",
-    home: "whiteboard",
-    zone: "greenhouse",
-    accessory: "tablet",
-  },
-  {
-    id: "researcher-5",
-    role: "researcher",
-    home: "whiteboard",
-    zone: "greenhouse",
-    accessory: "tablet",
-  },
-  {
-    id: "researcher-6",
-    role: "researcher",
-    home: "greenhouseTelescope",
-    zone: "greenhouse",
-    accessory: "tablet",
-  },
-  { id: "analyst", role: "analyst", home: "greenhouse", zone: "greenhouse", accessory: "tablet" },
-  { id: "runner-a", role: "runner", home: "gauntletIn", zone: "gauntlet" },
-  { id: "runner-b", role: "runner", home: "gauntletOut", zone: "gauntlet" },
-  { id: "runner-c", role: "runner", home: "watchTower", zone: "watch" },
-  { id: "runner-d", role: "runner", home: "queueFront", zone: "gauntlet" },
-  { id: "guard-1", role: "guard", home: "gauntletOut", zone: "risk", accessory: "tagClip" },
-  { id: "guard-2", role: "guard", home: "queueBack", zone: "risk", accessory: "tagClip" },
-  { id: "gunner", role: "gunner", home: "launchBay", zone: "launch", accessory: "wrench" },
-  {
-    id: "accountant-1",
-    role: "accountant",
-    home: "backOfficeDeskA",
-    zone: "backOffice",
-    accessory: "ledgerPlate",
-  },
-  {
-    id: "accountant-2",
-    role: "accountant",
-    home: "ferryDock",
-    zone: "backOffice",
-    accessory: "ledgerPlate",
-  },
-  {
-    id: "intern",
-    role: "intern",
-    home: "backOfficeDeskB",
-    zone: "backOffice",
-    scale: DIMENSIONS.bot.internScale,
-    accessory: "pencil",
-  },
-  { id: "janitor", role: "janitor", home: "rejectBin", zone: "gauntlet" },
-  { id: "coffee", role: "coffee", home: "oilBar", zone: "oilBar" },
-  // Ambient extras: spread one per zone across the bazaar.
-  { id: "ambient-1", role: "ambient", home: "controlPanel", zone: "watch" },
-  { id: "ambient-2", role: "ambient", home: "stampStation", zone: "gauntlet" },
-  { id: "ambient-3", role: "ambient", home: "greenhouse", zone: "greenhouse" },
-  { id: "ambient-4", role: "ambient", home: "backOfficeDeskA", zone: "backOffice" },
-  { id: "ambient-5", role: "ambient", home: "launchBay", zone: "launch" },
-  { id: "ambient-6", role: "ambient", home: "docksA", zone: "docks" },
+  { id: "foreman", role: "foreman", home: "briefing" },
+  { id: "researcher-1", role: "researcher", home: "deskRow" },
+  { id: "researcher-2", role: "researcher", home: "chartWall" },
+  { id: "researcher-3", role: "researcher", home: "telescope" },
+  { id: "researcher-4", role: "researcher", home: "deskRow" },
+  { id: "researcher-5", role: "researcher", home: "deskRow" },
+  { id: "researcher-6", role: "researcher", home: "chartWall" },
+  { id: "analyst", role: "analyst", home: "tickerBoard" },
+  { id: "runner-a", role: "runner", home: "conveyorIn" },
+  { id: "runner-b", role: "runner", home: "conveyorOut" },
+  { id: "runner-c", role: "runner", home: "poleTopLoft" },
+  { id: "runner-d", role: "runner", home: "queueTail" },
+  { id: "guard-1", role: "guard", home: "stampDesk" },
+  { id: "guard-2", role: "guard", home: "queueHead" },
+  { id: "gunner", role: "gunner", home: "cannon" },
+  { id: "accountant-1", role: "accountant", home: "receiptTray" },
+  { id: "accountant-2", role: "accountant", home: "vaultDoor" },
+  { id: "intern", role: "intern", home: "deskRowTrading", scale: DIMENSIONS.bot.internScale },
+  { id: "janitor", role: "janitor", home: "briefing" },
+  { id: "coffee", role: "coffee", home: "coffee" },
+  // Ambient extras: desk sitters, perpetual stair circuits, satellite upkeep.
+  { id: "ambient-1", role: "ambient", home: "stairTopLoft" },
+  { id: "ambient-2", role: "ambient", home: "stairBottomLoft" },
+  { id: "ambient-3", role: "ambient", home: "deskRow" },
+  { id: "ambient-4", role: "ambient", home: "deskRowTrading" },
+  { id: "ambient-5", role: "ambient", home: "pipeArrival" },
+  { id: "ambient-6", role: "ambient", home: "roofStair" },
 ];
 
 /** Optional THREE-level bindings used to actually reparent prop objects. */
@@ -173,11 +112,7 @@ export function createFleet(mats: MaterialLibrary, world?: WorldBindings): Built
     if (actorMap.has(actorId)) throw new Error(`fleet: duplicate actor id "${entry.id}"`);
     const home = STATIONS[entry.home];
     if (!home) throw new Error(`fleet: unknown home station "${entry.home}"`);
-    const rig = buildBotRig(mats, entry.role, entry.scale ?? 1, cache, {
-      // Zone-blended hull color from PALETTE_V2 (precomputed mixes).
-      bodyColor: PALETTE_V2.botBody[entry.zone],
-      accessory: entry.accessory,
-    });
+    const rig = buildBotRig(mats, entry.role, entry.scale ?? 1, cache);
     // Park each bot at its home station until the director takes over.
     rig.root.position.set(home.x, home.y, home.z);
     if (home.facing !== undefined) rig.root.rotation.y = home.facing;
@@ -185,7 +120,6 @@ export function createFleet(mats: MaterialLibrary, world?: WorldBindings): Built
     const actor: FleetActor = {
       actorId,
       role: entry.role,
-      zone: entry.zone,
       seed: seededId(SEEDS.bots, entry.id),
       homeWaypointId: stationWaypointId(entry.home),
       rig,

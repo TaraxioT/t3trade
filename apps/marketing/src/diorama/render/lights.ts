@@ -13,17 +13,14 @@
  */
 
 import * as THREE from "three";
-import { DIMENSIONS, PALETTE, PALETTE_V2, QUALITY } from "../config";
+import { DIMENSIONS, PALETTE, QUALITY } from "../config";
 import { saturate } from "../math";
 
 /** Art-tunable intensity table; deliberately not config-critical. */
 const LIGHT_TUNING = {
-  // Hemisphere: ambient bounce; v2 raised so the light bone decks read as a
-  // bright clean clinic inside the dark void page, not a candle-lit attic.
-  hemisphere: 0.85,
-  // How far the hemisphere SKY leans from v1 warmKey toward boneDeckLight
-  // (0 = fully clean white sky; ground bounce stays warmFill for depth).
-  hemisphereSkyBlend: 1.0,
+  // Hemisphere: ambient bounce; deliberately low so interiors read as lit
+  // from within (glow against a dark void) instead of flat external daylight.
+  hemisphere: 0.41,
   // Key: warm directional from upper-left front; direction and frozen 2048
   // shadow map are locked, intensity kept so exteriors keep modelled form.
   key: 1.5,
@@ -32,18 +29,17 @@ const LIGHT_TUNING = {
   // Rim: faint cool backlight for silhouette separation only.
   rim: 0.35,
   // Practical scale/multiplier applied to every caller-passed intensity
-  // (callers pass a base around 1; effective = passed * this). v2 brighter so
-  // machine glow reads on light decks.
-  practical: 1.8,
-  // Minimum effective practical intensity so no lamp reads as dead.
-  practicalFloor: 1.4,
-  // Point-light reach in scene units; v2 raised so light-deck bounce carries
-  // across a whole floor plate.
-  practicalDistance: 18,
+  // (callers pass a base around 1; effective = passed * this).
+  practical: 1.5,
+  // Minimum effective practical intensity so no lamp can read as dead.
+  practicalFloor: 1.2,
+  // Point-light reach in scene units; large enough that one lamp spills
+  // across a whole floor plate through the cutaway.
+  practicalDistance: 15,
   // Decay 2 is physical; kept slightly under so spill survives the distance.
   practicalDecay: 1.8,
-  // v2 lamp tone is whiter: only a hint of caramel remains (was 0.35 candle).
-  practicalWarmth: 0.12,
+  // Candle tone: how far lamp color leans from warmKey toward caramel.
+  practicalWarmth: 0.35,
   // Default soft interior fills added by createLights (one per open floor).
   interiorFill: 0.9,
   // Weak warm fills for deep recess corners (stair landings, vault back);
@@ -127,13 +123,9 @@ export function createLights(scene: THREE.Scene, _registry: unknown): LightsHand
   const group = new THREE.Group();
   scene.add(group);
 
-  // Hemisphere: v2 clean white-bone sky over a warm ground bounce, so light
-  // decks stay bright/neutral while undersides keep a little warmth.
+  // Warm hemisphere: warm-key sky over a warm-fill ground bounce.
   const hemisphere = new THREE.HemisphereLight(
-    new THREE.Color(PALETTE.warmKey).lerp(
-      new THREE.Color(PALETTE_V2.boneDeckLight),
-      LIGHT_TUNING.hemisphereSkyBlend,
-    ),
+    new THREE.Color(PALETTE.warmKey),
     new THREE.Color(PALETTE.warmFill),
     LIGHT_TUNING.hemisphere,
   );

@@ -1,27 +1,25 @@
 /**
- * Exchange satellite pad (M04b / R2 cutover): the subordinate pristine level
- * floating at (19, 6.5, -6) per 09-layout-spec.md (DIMENSIONS.composition).
+ * Exchange satellite pad (M04b): the subordinate pristine level floating at
+ * (16, 13, -6).
  *
- * Deliberately cleaner than the bazaar: a thin slate-and-cream pad, a wall of
- * small slots with three named mint slots, a robotic arm with named yaw /
- * pitch / claw pivots, a brass mint press, a confetti cone, and the pipe from
- * the launch bay collar (13.5, 4, 2) in a shallow arc. No clutter, no bots.
+ * Deliberately cleaner than the bureau: a thin slate-and-cream slab, a wall
+ * of small slots with three named mint slots, a robotic arm with named yaw /
+ * pitch / claw pivots, a brass mint press, a confetti cone, and the pipe
+ * bridge back to the bureau roof (main pipe plus a thin parallel return pipe
+ * ending above the vault receipt tray). No clutter, no bots placed here.
  */
 
 import * as THREE from "three";
-import { DIMENSIONS, PALETTE, PALETTE_V2 } from "../config";
+import { DIMENSIONS, PALETTE } from "../config";
 import { bevelSlab, capsule, cone, mergeParts, paint, pipeAlong, roundedBox } from "../geometry";
 import type { MaterialLibrary } from "../render/materials";
 import type { ResourceRegistry } from "../render/resources";
 import { STATIONS } from "../story/waypoints";
 import type { WorldPart } from "./plinth";
 
-export const EXCHANGE_VERSION = 2;
+export const EXCHANGE_VERSION = 1;
 
-const SAT = DIMENSIONS.composition.satellite;
-
-/** Launch-bay pipe collar the main pipe connects from (layout spec). */
-const PIPE_MOUTH = { x: 13.5, y: 4, z: 2 } as const;
+const S = DIMENSIONS.satellite;
 
 export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry): WorldPart {
   const group = new THREE.Group();
@@ -31,48 +29,54 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
   // Named empties the story addresses.
   const pipeArrival = new THREE.Object3D();
   pipeArrival.name = "pipeArrival";
-  pipeArrival.position.set(st.pipeArrivalV2.x, st.pipeArrivalV2.y + 0.6, st.pipeArrivalV2.z);
+  pipeArrival.position.set(st.pipeArrival.x, st.pipeArrival.y + 0.6, st.pipeArrival.z);
 
   const pop = new THREE.Object3D();
   pop.name = "pop";
-  pop.position.set(SAT.x + 1.8, SAT.y + 0.9, SAT.z + 1.4);
+  pop.position.set(st.pipeArrival.x + 2.2, st.pipeArrival.y + 0.9, st.pipeArrival.z + 1.4);
 
-  // Return pipe ends above the back-office ferry dock (receipt hand-off).
   const returnEnd = new THREE.Object3D();
   returnEnd.name = "returnEnd";
-  returnEnd.position.set(17.6, 4.4, 4.4);
+  returnEnd.position.set(st.receiptTray.x, 1.6, st.receiptTray.z);
 
-  // ----- Static bake: pad, slot wall body, arm pedestal, mint base, pipes ---
-  const slot = st.slotWallV2;
-  const mint = st.mintStationV2;
-  const padSize = SAT.radius * 2 - 0.6;
-  const padY = SAT.y - 0.4;
+  // ----- Static bake: pad, slot wall body, arm base, mint base, pipes ------
+  const padSize = S.padRadius * 2 - 0.6;
+  const slot = st.slotWall;
+  const mint = st.mintStation;
 
   const parts: THREE.BufferGeometry[] = [
     // Floating pad: thin slate slab with a cream trim band, chamfered edge.
-    paint(bevelSlab(padSize, padSize, 0.8, 0.2).translate(SAT.x, padY, SAT.z), PALETTE.slate),
     paint(
-      bevelSlab(padSize - 0.5, padSize - 0.5, 0.14, 0.05).translate(SAT.x, SAT.y + 0.02, SAT.z),
+      bevelSlab(padSize, padSize, S.padThickness, 0.22).translate(
+        S.x,
+        S.y - S.padThickness / 2,
+        S.z,
+      ),
+      PALETTE.slate,
+    ),
+    paint(
+      bevelSlab(padSize - 0.5, padSize - 0.5, 0.14, 0.05).translate(S.x, S.y + 0.02, S.z),
       PALETTE.cream,
     ),
     // Slot wall body with a grid of dark recesses (named slots are separate).
     paint(
-      bevelSlab(3.2, 2.4, 0.4, 0.08).translate(slot.x, SAT.y + 1.2, slot.z),
+      bevelSlab(3.2, 2.4, 0.4, 0.08).translate(slot.x, S.y + 1.2, slot.z),
       PALETTE.creamWallLight,
     ),
   ];
+  // Slot recess grid painted onto the wall face (face normal toward the pad).
   const wallYaw = slot.facing ?? 0;
-  const cos = Math.cos(wallYaw);
-  const sin = Math.sin(wallYaw);
   for (let r = 0; r < 3; r++) {
     for (let c = 0; c < 4; c++) {
       const lx = -1.05 + c * 0.7;
       const ly = 0.55 + r * 0.62;
       const g = bevelSlab(0.44, 0.4, 0.08, 0.02);
       g.rotateY(wallYaw);
+      const cos = Math.cos(wallYaw);
+      const sin = Math.sin(wallYaw);
       g.translate(
         slot.x + lx * cos + 0.24 * sin,
-        SAT.y + 1.2 + ly - 0.9,
+        S.y + 1.2 + ly - 0.9,
         slot.z - lx * sin + 0.24 * cos,
       );
       parts.push(paint(g, PALETTE.slateDark));
@@ -80,44 +84,45 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
   }
   parts.push(
     // Mint station base block.
-    paint(roundedBox(1.4, 1.0, 1.2, 0.08).translate(mint.x, SAT.y + 0.5, mint.z), PALETTE.cream),
-    paint(roundedBox(1.1, 0.16, 0.9, 0.05).translate(mint.x, SAT.y + 1.02, mint.z), PALETTE.slate),
+    paint(roundedBox(1.4, 1.0, 1.2, 0.08).translate(mint.x, S.y + 0.5, mint.z), PALETTE.cream),
+    paint(roundedBox(1.1, 0.16, 0.9, 0.05).translate(mint.x, S.y + 1.02, mint.z), PALETTE.slate),
     // Robotic arm pedestal (the yaw pivot above it carries the arm).
-    paint(
-      capsule(0.55, 0.5, 12).translate(SAT.x + 0.6, SAT.y + 0.35, SAT.z - 0.5),
-      PALETTE.slateDark,
-    ),
+    paint(capsule(0.55, 0.5, 12).translate(S.x + 0.6, S.y + 0.35, S.z - 0.5), PALETTE.slateDark),
     // Confetti cannon: small slate cone near the pad edge.
     paint(
-      cone(0.35, 0.9, 8).translate(pop.position.x, SAT.y + 0.45, pop.position.z),
+      cone(0.35, 0.9, 8).translate(pop.position.x, S.y + 0.45, pop.position.z),
       PALETTE.slateDark,
     ),
-    // Main pipe: launch-bay collar -> shallow arc -> pad arrival.
+    // Main bridge pipe: pipeMouth on the roof pylon -> rise -> pad edge.
     paint(
       pipeAlong(
         [
-          { x: PIPE_MOUTH.x, y: PIPE_MOUTH.y, z: PIPE_MOUTH.z },
-          { x: (PIPE_MOUTH.x + SAT.x) / 2 - 0.4, y: SAT.y + 0.8, z: (PIPE_MOUTH.z + SAT.z) / 2 },
-          { x: SAT.x - 2.4, y: SAT.y + 0.7, z: SAT.z + 0.5 },
-          { x: st.pipeArrivalV2.x, y: st.pipeArrivalV2.y + 0.5, z: st.pipeArrivalV2.z },
+          { x: st.bridgeAnchor.x, y: st.bridgeAnchor.y + 1.6, z: st.bridgeAnchor.z },
+          {
+            x: (st.bridgeAnchor.x + S.x) / 2,
+            y: S.y + DIMENSIONS.bridge.midRise - 1.0,
+            z: (st.bridgeAnchor.z + S.z) / 2,
+          },
+          { x: S.x - 2.6, y: S.y + 0.7, z: S.z + 0.4 },
+          { x: st.pipeArrival.x, y: st.pipeArrival.y + 0.5, z: st.pipeArrival.z },
         ],
         DIMENSIONS.bridge.pipeRadius,
         8,
       ),
       PALETTE.slateDark,
     ),
-    // Thin return pipe, parallel offset, ending above the ferry dock.
+    // Thin return pipe, parallel offset, ending above the vault tray.
     paint(
       pipeAlong(
         [
-          { x: SAT.x - 1.0, y: SAT.y + 0.8, z: SAT.z + 1.0 },
+          { x: S.x + 1.0, y: S.y + 0.8, z: S.z + 1.0 },
           {
-            x: (PIPE_MOUTH.x + SAT.x) / 2 + 1.2,
-            y: SAT.y + 0.6,
-            z: (PIPE_MOUTH.z + SAT.z) / 2 + 1.2,
+            x: (st.bridgeAnchor.x + S.x) / 2 + 1.2,
+            y: S.y + DIMENSIONS.bridge.midRise - 1.6,
+            z: (st.bridgeAnchor.z + S.z) / 2 + 1.2,
           },
-          { x: PIPE_MOUTH.x + 0.6, y: PIPE_MOUTH.y + 0.6, z: PIPE_MOUTH.z + 0.8 },
-          { x: returnEnd.position.x, y: returnEnd.position.y + 0.6, z: returnEnd.position.z + 1.2 },
+          { x: st.bridgeAnchor.x + 0.8, y: st.bridgeAnchor.y + 2.4, z: st.bridgeAnchor.z + 0.8 },
+          { x: 4.5, y: 6.5, z: st.receiptTray.z + 0.5 },
           { x: returnEnd.position.x, y: returnEnd.position.y, z: returnEnd.position.z },
         ],
         0.2,
@@ -125,7 +130,7 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
       ),
       PALETTE.slate,
     ),
-    // Return-pipe endpoint collar.
+    // Return-pipe endpoint collar above the receipt tray arc.
     paint(
       capsule(0.34, 0.2, 10).translate(
         returnEnd.position.x,
@@ -133,20 +138,6 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
         returnEnd.position.z,
       ),
       PALETTE.brass,
-    ),
-    // Pad-edge sign mount (THE EXCHANGE): slate board + cool placeholder bar;
-    // the atlas text plane attaches just in front from world/index.ts.
-    paint(
-      bevelSlab(2.6, 0.12, 0.65, 0.04)
-        .rotateY(Math.PI / 4)
-        .translate(SAT.x + 2.2, SAT.y + 1.9, SAT.z + 2.2),
-      PALETTE_V2.slateFrame,
-    ),
-    paint(
-      bevelSlab(2.3, 0.08, 0.1, 0.02)
-        .rotateY(Math.PI / 4)
-        .translate(SAT.x + 2.2, SAT.y + 1.5, SAT.z + 2.2),
-      PALETTE.coolFill,
     ),
   );
 
@@ -158,24 +149,6 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
   group.add(padMesh);
   const statics: THREE.Mesh[] = [padMesh];
 
-  // Soft mint under-glow ring beneath the pad: emissive (unlit) so the pad
-  // reads as FLOATING rather than grounded (composition-review fix).
-  const ring = (radius: number, pipe: number, y: number): THREE.Mesh => {
-    const pts: { x: number; y: number; z: number }[] = [];
-    for (let i = 0; i <= 28; i++) {
-      const a = (i / 28) * Math.PI * 2;
-      pts.push({ x: SAT.x + Math.cos(a) * radius, y: SAT.y + y, z: SAT.z + Math.sin(a) * radius });
-    }
-    return new THREE.Mesh(registry.track(pipeAlong(pts, pipe, 6)), mats.eyeMint);
-  };
-  // Enlarged outer ring + brighter inner ring: double additive-feel halo so
-  // the pad reads as floating, not as a table on stilts (review fix D).
-  const underGlow = ring(3.2, 0.28, -0.95);
-  underGlow.name = "underGlow";
-  const underGlowInner = ring(2.5, 0.16, -1.15);
-  underGlowInner.name = "underGlowInner";
-  group.add(underGlow, underGlowInner);
-
   // ----- Named slot marks (the story lights these on fills) -----------------
   const slots: THREE.Mesh[] = [];
   const slotSpecs: readonly { name: string; lx: number; ly: number }[] = [
@@ -183,6 +156,8 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
     { name: "slotB", lx: -0.35, ly: 1.17 },
     { name: "slotC", lx: 0.35, ly: 1.79 },
   ];
+  const cos = Math.cos(wallYaw);
+  const sin = Math.sin(wallYaw);
   for (const spec of slotSpecs) {
     const g = registry.track(
       mergeParts([paint(bevelSlab(0.44, 0.4, 0.06, 0.02), PALETTE.mintBright)]),
@@ -191,7 +166,7 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
     mesh.name = spec.name;
     mesh.position.set(
       slot.x + spec.lx * cos + 0.3 * sin,
-      SAT.y + 1.2 + spec.ly - 0.9,
+      S.y + 1.2 + spec.ly - 0.9,
       slot.z - spec.lx * sin + 0.3 * cos,
     );
     mesh.rotation.y = wallYaw;
@@ -203,7 +178,7 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
   // armBase: yaw pivot on the pedestal. armLift: pitch pivot. claw: gripper.
   const armBase = new THREE.Group();
   armBase.name = "armBase";
-  armBase.position.set(SAT.x + 0.6, SAT.y + 0.7, SAT.z - 0.5);
+  armBase.position.set(S.x + 0.6, S.y + 0.7, S.z - 0.5);
 
   const armLift = new THREE.Group();
   armLift.name = "armLift";
@@ -221,7 +196,8 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
     ]),
   );
   const liftMesh = new THREE.Mesh(liftGeo, mats.darkMetal);
-  liftMesh.name = "armLiftMesh";
+  liftMesh.castShadow = true;
+  liftMesh.receiveShadow = true;
   armLift.add(liftMesh);
 
   const claw = new THREE.Group();
@@ -235,7 +211,8 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
     ]),
   );
   const clawMesh = new THREE.Mesh(clawGeo, mats.darkMetal);
-  clawMesh.name = "clawMesh";
+  clawMesh.castShadow = true;
+  clawMesh.receiveShadow = true;
   claw.add(clawMesh);
 
   armLift.add(claw);
@@ -248,7 +225,7 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
   // ----- Mint press pivot ------------------------------------------------------
   const mintPress = new THREE.Group();
   mintPress.name = "mintPress";
-  mintPress.position.set(mint.x, SAT.y + 1.1, mint.z);
+  mintPress.position.set(mint.x, S.y + 1.1, mint.z);
   const pressGeo = registry.track(
     mergeParts([
       paint(capsule(0.28, 0.5, 12).translate(0, 0.3, 0), PALETTE.brass),
@@ -256,7 +233,8 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
     ]),
   );
   const pressMesh = new THREE.Mesh(pressGeo, mats.brass);
-  pressMesh.name = "mintPressMesh";
+  pressMesh.castShadow = true;
+  pressMesh.receiveShadow = true;
   mintPress.add(pressMesh);
   group.add(mintPress);
 
@@ -268,7 +246,6 @@ export function buildExchange(mats: MaterialLibrary, registry: ResourceRegistry)
     returnEnd,
     armBase,
     armClaw: claw,
-    armLift,
     mintPress,
     slotA: slots[0] as THREE.Mesh,
     slotB: slots[1] as THREE.Mesh,

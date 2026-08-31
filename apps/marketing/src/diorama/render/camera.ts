@@ -29,20 +29,22 @@ const PARALLAX_MAX = 0.6;
 /** Fixed camera distance; orthographic, so any value beyond the scene works. */
 const CAMERA_DISTANCE = 90;
 
-/**
- * Logical scene box (v2 stepped-campus composition), derived from
- * DIMENSIONS.composition: full deck footprint plus the satellite's reach in
- * X/Z, plinth bottom to fitTopY + fxHeadroom in Y. The satellite is included
- * horizontally but capped vertically by fitTopY (terrace tower dominates).
- */
+/** Extra safe margin around the logical scene box, in scene units. */
+const SCENE_MARGIN = 2;
+
+/** Logical scene box (bureau + satellite + margin), derived from DIMENSIONS. */
 const SCENE_BOX = (() => {
-  const c = DIMENSIONS.composition;
-  const minX = Math.min(c.deckMinX, c.satellite.x - c.satellite.radius);
-  const maxX = Math.max(c.deckMaxX, c.satellite.x + c.satellite.radius);
-  const minY = DIMENSIONS.plinth.bottomY;
-  const maxY = c.fitTopY + c.fxHeadroom;
-  const minZ = Math.min(c.deckMinZ, c.satellite.z - c.satellite.radius);
-  const maxZ = Math.max(c.deckMaxZ, c.satellite.z + c.satellite.radius);
+  const p = DIMENSIONS.plinth;
+  const b = DIMENSIONS.building;
+  const f = DIMENSIONS.floors;
+  const s = DIMENSIONS.satellite;
+  const m = SCENE_MARGIN;
+  const minX = Math.min(-p.width / 2, b.centerX - b.footprintWidth / 2) - m;
+  const maxX = Math.max(p.width / 2, s.x + s.padRadius) + m;
+  const minY = p.bottomY - m;
+  const maxY = Math.max(f.roofY + f.floorSlabThickness, s.y + s.padThickness / 2) + m;
+  const minZ = Math.min(-p.depth / 2, s.z - s.padRadius) - m;
+  const maxZ = Math.max(p.depth / 2, b.centerZ + b.footprintDepth / 2) + m;
   return { minX, maxX, minY, maxY, minZ, maxZ };
 })();
 
@@ -87,47 +89,37 @@ export function createCamera(_registry: unknown): CameraHandle {
   // Hot-path scratch (never allocated per frame).
   const target = new THREE.Vector3();
   const offset = new THREE.Vector3();
-  const boxCenter = new THREE.Vector3();
-  const fitCorner = new THREE.Vector3();
-  const fitProjected = new THREE.Vector3();
+  const desired = new THREE.Vector3();
 
   let viewportAspect = 1;
   let parallaxX = 0;
   let parallaxY = 0;
   let parallaxEnabled = true;
 
-  // Cached responsive fit: recomputed only when the CSS viewport changes.
-  let cachedFitWidth = -1;
-  let cachedFitHeight = -1;
-  let cachedFitHalfH = 0;
-
   const handle: CameraHandle = {
     camera,
 
     fitCameraToStage(width: number, height: number): number {
-      if (width === cachedFitWidth && height === cachedFitHeight && cachedFitHalfH > 0) {
-        return cachedFitHalfH; // unchanged viewport: keep the cached fit
-      }
       const aspect = width > 0 && height > 0 ? width / height : 1;
       viewportAspect = aspect;
 
       // Project the logical scene box onto the camera's screen axes.
-      boxCenter.set(
-        (SCENE_BOX.minX + SCENE_BOX.maxX) / 2,
-        (SCENE_BOX.minY + SCENE_BOX.maxY) / 2,
-        (SCENE_BOX.minZ + SCENE_BOX.maxZ) / 2,
-      );
+      const cx = (SCENE_BOX.minX + SCENE_BOX.maxX) / 2;
+      const cy = (SCENE_BOX.minY + SCENE_BOX.maxY) / 2;
+      const cz = (SCENE_BOX.minZ + SCENE_BOX.maxZ) / 2;
+      const corner = new THREE.Vector3();
+      const projected = new THREE.Vector3();
       let halfW = 0;
       let halfH = 0;
       for (let i = 0; i < 8; i += 1) {
-        fitCorner.set(
+        corner.set(
           i & 1 ? SCENE_BOX.maxX : SCENE_BOX.minX,
           i & 2 ? SCENE_BOX.maxY : SCENE_BOX.minY,
           i & 4 ? SCENE_BOX.maxZ : SCENE_BOX.minZ,
         );
-        fitProjected.subVectors(fitCorner, boxCenter);
-        halfW = Math.max(halfW, Math.abs(fitProjected.dot(right)));
-        halfH = Math.max(halfH, Math.abs(fitProjected.dot(up)));
+        projected.subVectors(corner, desired.set(cx, cy, cz));
+        halfW = Math.max(halfW, Math.abs(projected.dot(right)));
+        halfH = Math.max(halfH, Math.abs(projected.dot(up)));
       }
 
       // Fixed logical box: wide viewports expand horizontally, narrow expand
@@ -138,9 +130,6 @@ export function createCamera(_registry: unknown): CameraHandle {
       camera.top = fitHalfH;
       camera.bottom = -fitHalfH;
       camera.updateProjectionMatrix();
-      cachedFitWidth = width;
-      cachedFitHeight = height;
-      cachedFitHalfH = fitHalfH;
       return fitHalfH;
     },
 

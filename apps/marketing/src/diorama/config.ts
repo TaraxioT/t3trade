@@ -5,9 +5,6 @@
  * Only types.ts may be imported. No geometry scale may be hardcoded outside
  * DIMENSIONS; no color literal belongs outside PALETTE; no timing literal
  * belongs outside TIMING/CAMERA.
- *
- * v2 palette (08-design-direction-v2.md) coexists with the v1 keys below
- * until the R6 cleanup; v1 modules keep compiling against the old keys.
  */
 
 import { asBeatId, type BeatId, type Role } from "./types";
@@ -50,139 +47,10 @@ export const PALETTE = {
     coffee: "#7A5238",
     ambient: "#DCCDB4",
   } satisfies Record<Role, string>,
-
-  // ---- v2 additions (08-design-direction-v2.md); v1 keys stay until R6 ----
-
-  // Bone deck family: matte light interior surfaces (ISS/cafe references).
-  boneDeck: "#E8ECF2",
-  boneDeckLight: "#F4F7FA",
-  boneWall: "#EDF0F4",
-  /** Machine frames/bases; contrast accent, never dominant. */
-  slateFrame: "#2A313C",
-
-  /** Zone identity colors (design doc Decision 1 zone list). */
-  zones: {
-    docks: "#7C8CF8",
-    greenhouse: "#2FBF71",
-    plan: "#F5A623",
-    gauntlet: "#22C3E6",
-    mint: "#D4AF37",
-    launch: "#FF6B35",
-    backOffice: "#5B8DEF",
-    watch: "#E85D9E",
-    oilBar: "#3DDC97",
-    risk: "#E5484D",
-  } satisfies Record<ZoneId, string>,
-
-  /**
-   * Zone floor-plate tints: 55% blend of each zone color toward boneDeck
-   * (#E8ECF2), i.e. mix(zone, boneDeck, 0.55). Hardcoded so the palette stays
-   * a literal table; recompute if a zone color changes.
-   */
-  zoneFloorTint: {
-    docks: "#B7C1F5",
-    greenhouse: "#95D8B8",
-    plan: "#EECD95",
-    gauntlet: "#8FDAED",
-    mint: "#DFD19E",
-    launch: "#F2B29D",
-    backOffice: "#A9C1F1",
-    watch: "#E8ACCC",
-    oilBar: "#9BE5C9",
-    risk: "#E7A2A8",
-  } satisfies Record<ZoneId, string>,
-
-  /**
-   * Zone emissive colors for signs/screens: the zone colors themselves.
-   * Referenced by material owners rather than duplicated literals.
-   */
-  zoneEmissive: {
-    docks: "#7C8CF8",
-    greenhouse: "#2FBF71",
-    plan: "#F5A623",
-    gauntlet: "#22C3E6",
-    mint: "#D4AF37",
-    launch: "#FF6B35",
-    backOffice: "#5B8DEF",
-    watch: "#E85D9E",
-    oilBar: "#3DDC97",
-    risk: "#E5484D",
-  } satisfies Record<ZoneId, string>,
-
-  /**
-   * Bot v2 hulls: each bot's body takes its home zone color at ~70% toward
-   * boneDeck, i.e. mix(zone, boneDeck, 0.70). Hardcoded per the palette
-   * literal rule; recompute if a zone color changes.
-   */
-  botBody: {
-    docks: "#C8CFF4",
-    greenhouse: "#B1DFCB",
-    plan: "#ECD7B4",
-    gauntlet: "#ADE0EE",
-    mint: "#E2DABA",
-    launch: "#EFC5B9",
-    backOffice: "#BED0F1",
-    watch: "#E8C1D9",
-    oilBar: "#B5E7D7",
-    risk: "#E7BBC1",
-  } satisfies Record<ZoneId, string>,
-
-  /** Bot v2 hats: dark slate (design doc Decision 3.4). */
-  hatV2: "#2A313C",
-  /** Bot eye emissive stays the site accent (design doc Decision 3.1). */
-  eyeEmissive: "#7FF0BC",
 } as const;
 
 /** Role hat tint lookup (bodies are always cream). */
 export const roleHatColor = (role: Role): string => PALETTE.roleHats[role];
-
-/**
- * v2 palette view for material owners: the v2 additions of PALETTE, exposed
- * under their own name so v1 consumers keep importing PALETTE only.
- */
-export const PALETTE_V2 = {
-  boneDeck: PALETTE.boneDeck,
-  boneDeckLight: PALETTE.boneDeckLight,
-  boneWall: PALETTE.boneWall,
-  slateFrame: PALETTE.slateFrame,
-  zones: PALETTE.zones,
-  zoneFloorTint: PALETTE.zoneFloorTint,
-  zoneEmissive: PALETTE.zoneEmissive,
-  botBody: PALETTE.botBody,
-  hatV2: PALETTE.hatV2,
-  eyeEmissive: PALETTE.eyeEmissive,
-} as const;
-
-// ---------------------------------------------------------------------------
-// v2 ZONES (08-design-direction-v2.md, locked 2026-08-31)
-// ---------------------------------------------------------------------------
-
-/** Zone color id (pipeline order is ZONE_ORDER, not this type's order). */
-export type ZoneId =
-  | "docks"
-  | "greenhouse"
-  | "plan"
-  | "gauntlet"
-  | "mint"
-  | "launch"
-  | "backOffice"
-  | "watch"
-  | "oilBar"
-  | "risk";
-
-/** Pipeline order, left to right on the bazaar deck (design doc Decision 1). */
-export const ZONE_ORDER: readonly ZoneId[] = [
-  "docks",
-  "greenhouse",
-  "plan",
-  "gauntlet",
-  "mint",
-  "launch",
-  "backOffice",
-  "watch",
-  "oilBar",
-  "risk",
-] as const;
 
 // ---------------------------------------------------------------------------
 // DIMENSIONS
@@ -264,33 +132,6 @@ export const DIMENSIONS = {
     /** Intern is the smallest cast member. */
     internScale: 0.8,
   },
-
-  // ---- v2 (R2): Bureau Bazaar campus fit box (09-layout-spec.md) ----
-  // This, not the legacy tower keys above (kept only for still-referenced
-  // old modules until R6), is the camera-fit source for the new world.
-  composition: {
-    /** Deck extents (the stepped bazaar platform). */
-    deckMinX: -23,
-    deckMaxX: 23,
-    deckMinZ: -15,
-    deckMaxZ: 13,
-    /** Terrace structures top out here (watch tower). */
-    terraceTopY: 10,
-    satellite: {
-      /** Exchange pad center (included in fit bounds, but capped below). */
-      x: 19,
-      y: 6.5,
-      z: -6,
-      radius: 3.6,
-    },
-    /**
-     * Fit-purpose top of the composition: the satellite is deliberately NOT
-     * allowed to inflate the box upward; terrace tower dominates anyway.
-     */
-    fitTopY: 7.5,
-    /** Headroom above fitTopY for glyph pops and the USER-hand fx. */
-    fxHeadroom: 2,
-  },
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -338,7 +179,7 @@ export function beatAt(timeMs: number): BeatStart {
 // ---------------------------------------------------------------------------
 
 export interface CameraShot {
-  readonly id: "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7";
+  readonly id: "S1" | "S2" | "S3" | "S4" | "S5";
   readonly startMs: number;
   readonly target: readonly [number, number, number];
   /** Multiplier applied on top of the responsive fit; >1 zooms in. */
@@ -348,21 +189,16 @@ export interface CameraShot {
 }
 
 /**
- * Seven-shot editorial track over the Bureau Bazaar campus (restructuring
- * plan section 8, R5.1 dramatic retune after the live tour: the first pass's
- * 0.86-1.25 zooms read as one static wide on a 46-unit deck). Ortho zoom on
- * this composition: 1.0 ~ full campus, 1.6-1.8 ~ a 2-3 zone window.
- * S1 hero, S2 west push, S3 gauntlet closeup, S4 mint/launch, S5 terrace,
- * S6 wide for the USER-hand gag, S7 exact return to S1 framing for the seam.
+ * Five shots aligned to the canonical skeleton:
+ * S1 hero, S2 trading/gate closer, S3 vault + bridge, S4 wide with satellite,
+ * S5 easing back to the exact S1 framing for the loop seam.
  */
 export const CAMERA_SHOTS: readonly CameraShot[] = [
-  { id: "S1", startMs: 0, target: [0, 1.5, 2], zoom: 0.92, drift: [0.6, -0.3] },
-  { id: "S2", startMs: 15000, target: [-12, 1.2, 3], zoom: 1.6, drift: [0.9, 0.2] },
-  { id: "S3", startMs: 30000, target: [1, 1.6, 7], zoom: 1.85, drift: [-0.5, 0.4] },
-  { id: "S4", startMs: 47000, target: [8.5, 1.6, 0.5], zoom: 1.7, drift: [-0.6, 0.2] },
-  { id: "S5", startMs: 62000, target: [0, 4.2, -11], zoom: 1.7, drift: [0.3, 0.5] },
-  { id: "S6", startMs: 74000, target: [0, 1.5, 3], zoom: 0.86, drift: [0, -0.4] },
-  { id: "S7", startMs: 86000, target: [0, 1.5, 2], zoom: 0.92, drift: [0, 0] },
+  { id: "S1", startMs: 0, target: [2, 4, 0], zoom: 1.0, drift: [0.8, -0.4] },
+  { id: "S2", startMs: 20000, target: [0, 1.5, 2], zoom: 1.35, drift: [1.2, 0.3] },
+  { id: "S3", startMs: 54000, target: [7, -0.5, -2], zoom: 1.25, drift: [0.4, -0.6] },
+  { id: "S4", startMs: 64000, target: [6, 6, -2], zoom: 0.85, drift: [-0.5, 0.2] },
+  { id: "S5", startMs: 86000, target: [2, 4, 0], zoom: 1.0, drift: [0, 0] },
 ] as const;
 
 /** Isometric yaw/pitch are locked; only target/zoom/drift are authored. */

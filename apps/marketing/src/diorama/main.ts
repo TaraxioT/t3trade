@@ -16,9 +16,6 @@ import { createDirector } from "./story/director";
 import { candleFactor } from "./story/beats";
 import { createFleet } from "./bots/fleet";
 import { createWorld, worldPracticals } from "./world";
-import { createGlyphRenderer, type GlyphRenderer } from "./world/glyphs";
-import { loadPropLibrary, type PropLibrary } from "./world/propLibrary";
-import { createSignAtlas, type SignAtlas } from "./render/signAtlas";
 import { createRenderer, type RendererHandle } from "./render/renderer";
 import { createCamera, type CameraHandle } from "./render/camera";
 import { createLights, type LightsHandle } from "./render/lights";
@@ -31,22 +28,6 @@ const SEEK_THRESHOLD_MS = 2000;
 const MAX_FRAME_DELTA_MS = 250;
 /** Middle of the celebration beat; the reduced-motion static frame. */
 const STATIC_TIME_MS = 75000;
-
-/** Asset bundle handed to createWorld (R3); all-or-nothing at boot. */
-interface WorldAssets {
-  readonly props: PropLibrary;
-  readonly signs: SignAtlas;
-}
-/**
- * createWorld's optional third argument is landing with the world owner;
- * a 2-arg function is assignable to this wider signature, so the call is
- * type-safe now and exact once `assets?` exists.
- */
-const createWorldWithAssets: (
-  mats: MaterialLibrary,
-  registry: ReturnType<typeof createResourceRegistry>,
-  assets?: WorldAssets,
-) => ReturnType<typeof createWorld> = createWorld;
 
 export function startDiorama(stage: HTMLElement): () => void {
   const registry = createResourceRegistry();
@@ -71,7 +52,6 @@ export function startDiorama(stage: HTMLElement): () => void {
   let lights: LightsHandle | null = null;
   let mats: Readonly<MaterialLibrary> | null = null;
   let effects: EffectSystem | null = null;
-  let glyphs: GlyphRenderer | null = null;
   let director: ReturnType<typeof createDirector> | null = null;
   let candles: THREE.Object3D[] = [];
   let tape: THREE.Object3D | null = null;
@@ -207,7 +187,6 @@ export function startDiorama(stage: HTMLElement): () => void {
       director.evaluate(timeMs);
       dispatchCues(director.collectCrossings(prev, timeMs));
     }
-    glyphs?.update();
     effects?.update(timeMs);
     composeFrame();
   };
@@ -262,7 +241,6 @@ export function startDiorama(stage: HTMLElement): () => void {
     director.setSilent(true);
     director.evaluate(t);
     director.setSilent(false);
-    glyphs?.update();
     effects?.update(t);
     composeFrame();
   };
@@ -384,9 +362,6 @@ export function startDiorama(stage: HTMLElement): () => void {
     stage.removeEventListener("pointerleave", onPointerLeave);
     audio.dispose();
     ui.dispose();
-    director?.dispose(); // director-owned transient props (the PAUSE hand)
-    // R4: hide every glyph slot before GPU disposal (no clear() on the API).
-    if (glyphs) for (let i = 0; i < glyphs.slotCount; i += 1) glyphs.hide(i);
     effects?.clear();
     rendererHandle?.dispose();
     const gl = rendererHandle?.renderer;
@@ -455,25 +430,10 @@ export function startDiorama(stage: HTMLElement): () => void {
       cameraHandle = createCamera(registry);
       lights = createLights(scene, registry);
       for (const p of worldPracticals()) lights.addPractical(p.position, p.intensity);
-      // R3 ASSET phase: prop library + sign atlas in parallel. A total
-      // failure of either degrades to a fully procedural world (assets =
-      // undefined); a sign-atlas font fallback is NOT a failure.
-      progress(0.26, "Loading props and signs");
-      let assets: WorldAssets | undefined;
-      const [propsSettled, signsSettled] = await Promise.allSettled([
-        loadPropLibrary(library, registry),
-        createSignAtlas(registry),
-      ]);
-      if (failed || disposed) return; // failure during staging aborts boot
-      if (propsSettled.status === "fulfilled" && signsSettled.status === "fulfilled") {
-        assets = { props: propsSettled.value, signs: signsSettled.value };
-      } else {
-        console.info("[diorama] optional asset loading failed; using procedural props and signs");
-      }
-      progress(0.34, "Building the floors");
+      progress(0.32, "Building the floors");
       await nextFrame();
       if (failed || disposed) return; // failure during staging aborts boot
-      const world = createWorldWithAssets(library, registry, assets);
+      const world = createWorld(library, registry);
       scene.add(world.root as unknown as THREE.Object3D);
       // Collect the machine meshes the director cannot reach (M06 gap).
       const root = world.root as unknown as THREE.Object3D;
@@ -504,23 +464,11 @@ export function startDiorama(stage: HTMLElement): () => void {
       await nextFrame();
       if (failed || disposed) return; // failure during staging aborts boot
       effects = createEffects(registry);
-      const fx: EffectSystem = effects;
-      scene.add(fx.group);
-      // R4 glyph renderer: built with the effects so expression slots exist
-      // before the director takes over; the director drives windows/slots.
-      const glyphRenderer = createGlyphRenderer(library, registry);
-      glyphs = glyphRenderer;
-      scene.add(glyphRenderer.group);
+      scene.add(effects.group);
       progress(0.8, "Rehearsing the story");
       await nextFrame();
       if (failed || disposed) return; // failure during staging aborts boot
-      director = createDirector(world, fleet, {
-        glyphs: glyphRenderer,
-        effects: {
-          // Arrow-bound: the director only registers R4 beam-flash windows.
-          spawn: (effectId, origin, opts) => fx.spawn(effectId, origin, opts),
-        },
-      });
+      director = createDirector(world, fleet);
       progress(0.9, "Composing the first frame");
       await nextFrame();
       if (failed || disposed) return; // failure during staging aborts boot
@@ -592,7 +540,6 @@ export function startDiorama(stage: HTMLElement): () => void {
 
       // First composed frame, then ready.
       director.evaluate(0);
-      glyphs?.update();
       effects.update(0);
       cameraHandle.setParallaxEnabled(!ui.reducedMotion() && ui.pointerPreference() === "fine");
       composeFrame();
