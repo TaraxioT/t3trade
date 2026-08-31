@@ -429,8 +429,8 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       yield* Effect.ignore(adapter.sendTurn({ threadId, input: "wakeup", attachments: [] }));
 
       const sent = runtime.sendTurnImpl.mock.calls[0]?.[0]?.input ?? "";
-      NodeAssert.ok(sent.includes("trading_plan"));
-      NodeAssert.ok(sent.includes("blocked_by_data"));
+      NodeAssert.ok(sent.includes("[t3-trade trading session]"));
+      NodeAssert.ok(sent.includes("T3 Trade grounding"));
       NodeAssert.ok(sent.endsWith("wakeup"));
       clearSessionProfile(threadId);
     }),
@@ -468,12 +468,14 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         );
         NodeAssert.ok(!args.some((arg) => arg.includes("sandbox_mode")));
 
-        // The decision contract rides the first turn in full, because nothing
-        // replaced the base instructions with a prompt that already carried it.
+        // The grounding rides the first turn in full, because nothing
+        // replaced the base instructions with a prompt that already carried
+        // it — and it is a prefix, not a persona.
         runtime.sendTurnImpl.mockClear();
         yield* Effect.ignore(adapter.sendTurn({ threadId, input: "wakeup", attachments: [] }));
         const sent = runtime.sendTurnImpl.mock.calls[0]?.[0]?.input ?? "";
-        NodeAssert.ok(sent.includes("THE LOOP IS: PREDICT"));
+        NodeAssert.ok(sent.includes("T3 Trade grounding"));
+        NodeAssert.ok(!sent.includes("PREDICT"));
         NodeAssert.ok(sent.endsWith("wakeup"));
       } finally {
         clearSessionProfile(threadId);

@@ -258,11 +258,12 @@ command needs an aggregate ref). The live testnet smoke
 
 - [x] A `trading_analyst` session profile: `trading_look`, `trading_strategy`,
       and `trading_watch` restricted to `deliver:'notify'`; no enter/exit/plan.
-      `SessionProfile` carries the second kind; the analyst system prompt /
-      turn contract lives beside the mission's in `TradingSessionProfile.ts`,
-      and all five adapters pick it up at their existing seam (Claude and
-      Codex branch on the profile kind; Grok/Cursor/OpenCode already route
-      through `applyTradingTurnContract`, which now branches internally). The
+      `SessionProfile` carries the second kind as metadata only (endpoint and
+      turn-contract frame); the analyst scope is enforced per call from the
+      persisted `trading_analyst_threads` registry and the missing mission
+      binding. A one-paragraph first-turn prefix in `TradingSessionProfile.ts`
+      states the scope as server-enforced fact, and all five adapters deliver
+      it through `applyTradingTurnContract`. The
       `trading_watch` handler arms analyst conditions as account-scoped notify
       alerts through `TradingAlertService` (`armed_alert` / `alert_cancelled`
       / `alert_rejected` result arms, additive); `deliver:'wake'` is refused,
@@ -482,12 +483,15 @@ exclusivity exists to stop two agents reaching one netted position and a mission
 that cannot place an order is not a second agent on anything. Watching ETH must
 not lock ETH out of being traded.
 
-"Cannot trade" is enforced twice. The `trading_observe` session profile grants
-`look`, `strategy`, `watch`, `journal`, `backtest`, `validate` and `hypothesis`
-and no execution tool; and `refuseIfObserving` refuses `trading_plan`,
-`trading_enter` and `trading_exit` server-side with reason
-`mission_cannot_trade`, so a resumed session whose profile the in-memory
-registry lost still cannot act. Both are asserted by tests.
+"Cannot trade" is enforced server-side, from persisted state. The mission row's
+`purpose` column is the fence: `refuseIfObserving` refuses `trading_plan`,
+`trading_enter` and `trading_exit` with reason `mission_cannot_trade` whatever
+process the call lands in. (The in-process session profile that used to shape a
+per-kind tool allowlist retired with the trading persona: a session is a native
+agent plus the trading MCP endpoint, and scope is enforced per call.) The
+analyst boundary is the same shape — the persisted `trading_analyst_threads`
+registry routes watches to alerts and refuses plan-document writes — asserted
+by tests.
 
 Its wakes are `validation_event` plus whatever `time` condition it armed for
 itself. `ensureNotDeaf` returns early for it: the staleness floor protects a

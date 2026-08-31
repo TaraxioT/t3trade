@@ -51,7 +51,6 @@ import { TradingCalibrationServiceLive } from "../../../trading/TradingCalibrati
 import { TradingAccountProjection } from "../../../trading/TradingAccountProjection.ts";
 import { TradingAlertServiceLive } from "../../../trading/TradingAlertService.ts";
 import { TradingThreadMarketServiceLive } from "../../../trading/TradingThreadMarketService.ts";
-import { clearAllSessionProfiles, setSessionProfile } from "../../../provider/SessionProfile.ts";
 import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerRegistryMock.ts";
 import { TradingTurnCoordinator } from "../../../trading/TradingTurnCoordinator.ts";
 import { LOCAL_TRADING_USER_ID } from "../../../trading/TradingMissionReactor.ts";
@@ -751,6 +750,12 @@ const withMcpServer = <A, E>(
     ) => Effect.Effect<void, never, never>;
     /** Count of activated TRADE.md revisions pinned for a workspace root. */
     readonly countPlanDocumentRows: (workspaceRoot: string) => Effect.Effect<number, never, never>;
+    /**
+     * Register an analyst thread in the persisted registry, as
+     * `TradingAnalystService.ensureThread` would: the row the handlers'
+     * analyst scope checks read.
+     */
+    readonly seedAnalystThread: (threadId: string) => Effect.Effect<void, never, never>;
   }) => Effect.Effect<A, E, HttpServer.HttpServer>,
   tradingLayer: TradingLayerInput = TradingLayerLive,
 ) =>
@@ -1010,6 +1015,14 @@ const withMcpServer = <A, E>(
           )
           ON CONFLICT (thread_id) DO UPDATE SET runtime_payload_json = excluded.runtime_payload_json
         `.pipe(Effect.asVoid, Effect.orDie);
+      // The persisted analyst registry the handlers' scope checks read: the
+      // server-side fence, independent of the in-memory session-profile map.
+      const seedAnalystThread = (threadId: string) =>
+        sql`
+          INSERT INTO trading_analyst_threads (venue, asset, thread_id, created_at)
+          VALUES ('hyperliquid_testnet', 'ETH', ${threadId}, 1)
+          ON CONFLICT (venue, asset) DO UPDATE SET thread_id = excluded.thread_id
+        `.pipe(Effect.asVoid, Effect.orDie);
       const countPlanDocumentRows = (workspaceRoot: string) =>
         sql<{ readonly n: number }>`
           SELECT COUNT(*) AS n FROM trading_plan_documents WHERE workspace_root = ${workspaceRoot}
@@ -1101,6 +1114,7 @@ const withMcpServer = <A, E>(
         readFirstRefusal,
         readThreadMarket,
         seedThreadWorkspace,
+        seedAnalystThread,
         countPlanDocumentRows,
         seedLocalTradingAccount,
         seedLocalMissionOn,
@@ -1711,8 +1725,6 @@ it.effect("takes authority on a free market and enters in the same call", () =>
           (command) => command.type === "trading.execution.requested",
         );
         assert.equal(requested.length, 1);
-
-        clearAllSessionProfiles();
       }),
     bindLayer(),
   ),
@@ -1760,7 +1772,6 @@ it.effect("notes the market a chat took authority on", () =>
         });
 
         assert.equal(yield* readThreadMarket(FRESH_CHAT_THREAD), "SOL");
-        clearAllSessionProfiles();
       }),
     bindLayer(),
   ),
@@ -1813,8 +1824,6 @@ it.effect("refuses a market another authority holds, and places nothing", () =>
             .length,
           0,
         );
-
-        clearAllSessionProfiles();
       }),
     bindLayer(),
   ),
@@ -1842,8 +1851,6 @@ it.effect("publishing a plan on a fresh chat takes the market it names, in one c
 
         const bound = yield* missions.findMissionByThreadId(FRESH_CHAT_THREAD).pipe(Effect.orDie);
         assert.equal(bound._tag, "Some");
-
-        clearAllSessionProfiles();
       }),
     bindLayer(),
   ),
@@ -1870,8 +1877,6 @@ it.effect("keeps the version lock on a chat that already holds its mission", () 
         });
         assert.equal(stale.result.body.outcome, "rejected");
         assert.equal(stale.result.body.reason, "stale_mission_state");
-
-        clearAllSessionProfiles();
       }),
     bindLayer(),
   ),
@@ -4017,9 +4022,9 @@ const ANALYST_THREAD = ThreadId.make("thread-analyst-session");
 
 it.effect("the analyst can look, read a strategy, and arm a notify alert", () =>
   withMcpServer(
-    ({ callTool }) =>
+    ({ callTool, seedAnalystThread }) =>
       Effect.gen(function* () {
-        setSessionProfile({ threadId: ANALYST_THREAD, kind: "trading_analyst" });
+        yield* seedAnalystThread(ANALYST_THREAD);
 
         // The mission-less read answers rather than refusing: the catalog
         // call serves the menu whoever asks.
@@ -4057,8 +4062,6 @@ it.effect("the analyst can look, read a strategy, and arm a notify alert", () =>
         });
         assert.notEqual(cancelled.result.isError, true);
         assert.equal(cancelled.result.body.outcome, "alert_cancelled");
-
-        clearAllSessionProfiles();
       }),
     tradingLayerOverExchange(makeFakeExchange()),
   ),
@@ -4066,9 +4069,9 @@ it.effect("the analyst can look, read a strategy, and arm a notify alert", () =>
 
 it.effect("the analyst is refused a wake watch and every acting tool", () =>
   withMcpServer(
-    ({ callTool }) =>
+    ({ callTool, seedAnalystThread }) =>
       Effect.gen(function* () {
-        setSessionProfile({ threadId: ANALYST_THREAD, kind: "trading_analyst" });
+        yield* seedAnalystThread(ANALYST_THREAD);
 
         // deliver:'wake' (and 'both') is refused, never coerced to notify.
         for (const deliver of ["wake", "both"]) {
@@ -4106,8 +4109,6 @@ it.effect("the analyst is refused a wake watch and every acting tool", () =>
         const exit = yield* callTool(ANALYST_THREAD, "trading_exit", { action: "close" });
         assert.equal(exit.result.isError, true);
         assert.match(exit.result.content[0].text, /thread_not_bound_to_mission/);
-
-        clearAllSessionProfiles();
       }),
     tradingLayerOverExchange(makeFakeExchange()),
   ),
@@ -4404,8 +4405,6 @@ it.effect("an observe mission is created from a filed idea and cannot trade", ()
         });
         assert.notEqual(restarted.result.isError, true);
         assert.match(restarted.result.body.outcome, /Watching "ETH holds above 3000"/);
-
-        clearAllSessionProfiles();
       }),
     tradingLayerOverExchange(makeFakeExchange()),
   ),
@@ -4768,9 +4767,9 @@ it.effect("an analyst session may show plan-document facts but not manage them",
   const workspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-ctl-analyst-"));
   NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V1);
   return withMcpServer(
-    ({ callTool, seedThreadWorkspace }) =>
+    ({ callTool, seedAnalystThread, seedThreadWorkspace }) =>
       Effect.gen(function* () {
-        setSessionProfile({ threadId: ANALYST_THREAD, kind: "trading_analyst" });
+        yield* seedAnalystThread(ANALYST_THREAD);
         yield* seedThreadWorkspace(ANALYST_THREAD, workspace);
 
         const shown = yield* callTool(ANALYST_THREAD, "trading_plan_document", { action: "show" });
@@ -4783,8 +4782,6 @@ it.effect("an analyst session may show plan-document facts but not manage them",
         });
         assert.equal(refused.result.body.outcome, "rejected");
         assert.equal(refused.result.body.reason, "session_read_only");
-
-        clearAllSessionProfiles();
       }),
     tradingLayerOverExchange(makeFakeExchange()),
   );

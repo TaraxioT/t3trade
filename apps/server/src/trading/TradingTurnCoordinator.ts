@@ -922,14 +922,12 @@ const make = Effect.gen(function* () {
     }
 
     // Every wake goes through here, so this is the one place that sees a live
-    // mission on every path. The profile registry is in-memory and the reactor
-    // only binds it where a mission is created, so setting it again here is what
-    // keeps a post-restart wake locked to the `mcp__t3-trade__*` toolset. It is
-    // idempotent — re-setting an already-bound thread is a no-op.
-    // The profile follows the mission's purpose, so an observe mission resumed
-    // after a restart comes back with the observe toolset rather than the full
-    // one. The mission row is the source: the registry is in memory and knows
-    // nothing about a mission this process has not woken yet.
+    // mission on every path. The profile registry is in-memory metadata: it
+    // picks the trading-only MCP endpoint and the turn-contract frame, never
+    // the session's native capabilities. The mission row is the source — the
+    // registry knows nothing about a mission this process has not woken yet —
+    // so re-binding here keeps a post-restart wake on the right frame,
+    // idempotently, with the observe purpose keeping the observe frame.
     yield* Effect.sync(() =>
       setSessionProfile({
         threadId: ThreadId.make(input.threadId),

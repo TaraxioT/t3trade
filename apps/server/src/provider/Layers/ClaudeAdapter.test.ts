@@ -37,7 +37,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import * as SessionProfile from "../SessionProfile.ts";
-import { WORKSPACE_CHAT_PREFIX, WORKSPACE_TRADING_PREAMBLE } from "../TradingSessionProfile.ts";
+import { WORKSPACE_TRADING_PREAMBLE } from "../TradingSessionProfile.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -829,7 +829,7 @@ describe("ClaudeAdapterLive", () => {
       const promptText = yield* Effect.promise(() => readFirstPromptText(createInput));
       assert.equal(
         promptText,
-        `Ultrathink:\n${WORKSPACE_CHAT_PREFIX}\n\nInvestigate the edge cases`,
+        `Ultrathink:\n${WORKSPACE_TRADING_PREAMBLE}\n\nInvestigate the edge cases`,
       );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -863,7 +863,7 @@ describe("ClaudeAdapterLive", () => {
       const promptText = yield* Effect.promise(() =>
         readFirstPromptText(harness.getLastCreateQueryInput()),
       );
-      assert.equal(promptText, `Ultrathink:\n${WORKSPACE_CHAT_PREFIX}\n\n/compact`);
+      assert.equal(promptText, `Ultrathink:\n${WORKSPACE_TRADING_PREAMBLE}\n\n/compact`);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -918,7 +918,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(promptMessage?.message.content, [
         {
           type: "text",
-          text: `${WORKSPACE_CHAT_PREFIX}\n\nWhat's in this image?`,
+          text: `${WORKSPACE_TRADING_PREAMBLE}\n\nWhat's in this image?`,
         },
         {
           type: "image",

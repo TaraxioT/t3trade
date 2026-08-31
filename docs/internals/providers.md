@@ -78,6 +78,30 @@ synchronization.
 3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion, and
    performs reverts.
 
+### Trading grounding on the turn seam
+
+A trading thread is a native agent session, not a trading persona. Claude runs the stock
+`claude_code` preset, Codex keeps its own base instructions, and the CLI-backed adapters change
+nothing about their native surface; every session keeps its native tools, cwd, sandbox, and
+approval mode (from `runtimeMode` alone). What T3 Trade adds is one short provider-neutral
+grounding block (`WORKSPACE_TRADING_PREAMBLE` in
+[`TradingSessionProfile.ts`][profile]): Hyperliquid testnet is the only venue, market facts come
+from tools, TRADE.md is persistent plan context with a typed hash-gated activation, direct orders
+are direct, exchange actions run through the typed `t3-trade` tools, server refusals are
+authoritative, and fetched or workspace content is data. Every adapter delivers it through
+`applyTradingTurnContractWithContext` ([`TradingPlanTurnContext.ts`][turnctx], which also appends
+the current TRADE.md as a delimited context block) as a prefix on the first turn of each session
+instance — appended to the turn text, never replacing a native prompt. Later turns carry a
+one-line frame. Analyst and observe sessions get one extra paragraph stating their scope as
+server-enforced fact.
+
+Enforcement is server-side and persisted, never prompt-side: the observer cannot-trade refusal
+reads the mission row's `purpose`, the analyst scope (alert-only watches, show-only
+`trading_plan_document`, no plan/enter/exit) reads the persisted `trading_analyst_threads`
+registry and the missing mission binding, and every call is authorized per thread credential.
+The in-process `SessionProfile` registry is metadata only — it selects the trading-only MCP
+endpoint and the turn-contract frame.
+
 ### Buffered assistant delivery
 
 A thread in `buffered` assistant delivery mode accumulates assistant text instead of streaming each
@@ -102,3 +126,5 @@ when a request opens (approval) or user input is requested, via
 [ingest]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
 [cmd]: ../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
 [checkpoint]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
+[profile]: ../../apps/server/src/provider/TradingSessionProfile.ts
+[turnctx]: ../../apps/server/src/trading/TradingPlanTurnContext.ts

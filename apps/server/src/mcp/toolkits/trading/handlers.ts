@@ -93,7 +93,6 @@ import {
 } from "../../../trading/TradingLevelHistory.ts";
 import { recordExecutionRefusal } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { isTradingAnalystThread } from "../../../provider/SessionProfile.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import {
   bindThreadToMarket,
@@ -266,6 +265,26 @@ type PlanDocumentFacts = {
 
 /** A value-level refusal on `trading_plan_document`'s success union. */
 type PlanDocumentRejection = Extract<TradingPlanDocumentResult, { readonly outcome: "rejected" }>;
+
+/**
+ * Whether a thread is a registered analyst thread, from the persisted
+ * registry rather than the in-process session-profile map.
+ *
+ * The analyst scope (no plan publication, no plan-document writes, no
+ * execution) is a server-side fence and must survive a restart or a process
+ * that never woke the thread, so the check reads the same table
+ * `TradingAnalystService` maintains instead of trusting memory. A stale row on
+ * a deleted thread only makes the fence stricter, never looser.
+ */
+const isAnalystThread = (threadId: string): Effect.Effect<boolean, never, SqlClient.SqlClient> =>
+  Effect.flatMap(SqlClient.SqlClient, (sql) =>
+    sql<{ readonly ok: number }>`
+      SELECT 1 AS ok FROM trading_analyst_threads WHERE thread_id = ${threadId}
+    `.pipe(
+      Effect.map((rows) => rows.length > 0),
+      Effect.orDie,
+    ),
+  );
 
 const rejectCall = (input: {
   readonly reason:
@@ -549,11 +568,10 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
   if (input.missionId !== undefined) return yield* resolveBoundCall(input.missionId);
 
   const market = named;
-  if (
-    isTradingAnalystThread(ThreadId.make(scope.threadId)) ||
-    market === undefined ||
-    market === ""
-  ) {
+  if (market === undefined || market === "") {
+    return yield* resolveBoundCall(input.missionId);
+  }
+  if (yield* isAnalystThread(scope.threadId)) {
     return yield* resolveBoundCall(input.missionId);
   }
 
@@ -2550,9 +2568,9 @@ export const handlers = {
 
       // An analyst session may read the activation facts but not move them:
       // its boundary is the mission-less session, and managing the workspace's
-      // pinned revision is not a read. Observe missions never see the tool in
-      // their allowlist; this is the server-side fence if one arrives anyway.
-      if (input.action !== "show" && isTradingAnalystThread(ThreadId.make(threadId))) {
+      // pinned revision is not a read. Persisted registry check, so the fence
+      // holds whatever process the call lands in.
+      if (input.action !== "show" && (yield* isAnalystThread(threadId))) {
         return {
           outcome: "rejected" as const,
           reason: "session_read_only" as const,
@@ -2916,7 +2934,7 @@ export const handlers = {
           }),
         ),
       );
-      if (isTradingAnalystThread(scope.threadId)) {
+      if (yield* isAnalystThread(scope.threadId)) {
         return yield* analystWatch(input);
       }
 
