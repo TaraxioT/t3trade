@@ -72,9 +72,12 @@ it. A deleted or renamed TRADE.md fences the same way — the file is the
 document, and a missing one is an absence the fence treats as unreadable
 rather than as consent.
 
-Managing the risk already open is never blocked: reduce, close, cancel,
-tightening or repairing a stop, pause, and revoke all remain available. Drift
-pauses taking on risk; it does not trap you in a position.
+Drift never blocks managing the risk already open: reduce, close, cancel,
+tightening or repairing a stop, pause, and revoke all remain available while
+the state is `drifted`. Every other execution rule still applies — a close can
+still be refused by the venue's minimum size, your loss budget, or the
+account, exactly as it would with no plan at all. Drift pauses taking on risk;
+it does not trap you in a position.
 
 ### Pause and resume
 
@@ -98,4 +101,6 @@ Everything above about reading, planning, and publishing works in
 [research mode](research-mode.md), with no signer configured. An entry — direct
 or plan-backed — refuses deterministically with `needs_trading_account` before
 anything is priced or sent. Reducing, closing, and revoking are operator
-actions that do not depend on the provider running at all.
+actions you can run from the UI without the agent or its provider running —
+they still execute through your testnet account like every other exchange
+action.
