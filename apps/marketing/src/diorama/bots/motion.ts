@@ -11,7 +11,7 @@
  */
 
 import { angleDelta, easeOutCubic, lerp, saturate } from "../math";
-import type { BotState } from "../types";
+import type { BotState, Expression } from "../types";
 import type { FleetActor } from "./fleet";
 
 export interface PoseContext {
@@ -23,7 +23,30 @@ export interface PoseContext {
   readonly seed: number;
   /** Locomotion speed multiplier; 1 = normal walk. */
   readonly speed?: number;
+  /**
+   * Authored expression override (director-owned window). When present it
+   * wins over the pose-state default; absent means "use the default".
+   */
+  readonly expression?: Expression;
 }
+
+/**
+ * Deterministic default expression per pose state (codex R4 resolution
+ * order: pose default, then authored override). Visibility-only switching
+ * through rig.setExpression; repeated evaluation is idempotent.
+ */
+const DEFAULT_EXPRESSION: Readonly<Record<BotState, Expression>> = {
+  idle: "neutral",
+  move: "neutral",
+  carry: "bored",
+  work: "happy",
+  argue: "angry",
+  fight: "angry",
+  collide: "panic",
+  celebrate: "happy",
+  react: "surprised",
+  faint: "neutral",
+};
 
 const TAU_ = Math.PI * 2;
 
@@ -46,6 +69,8 @@ export function applyPose(actor: FleetActor, state: BotState, ctx: PoseContext):
   rig.armR.rotation.set(0, 0, 0);
   rig.eyes.position.x = 0;
   rig.root.scale.setScalar(rig.baseScale);
+  // Expression resolution: authored override wins over the pose default.
+  rig.setExpression(ctx.expression ?? DEFAULT_EXPRESSION[state]);
 
   switch (state) {
     case "idle": {

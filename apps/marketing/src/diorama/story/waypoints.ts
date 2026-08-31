@@ -27,7 +27,7 @@ import {
 // Floors
 // ---------------------------------------------------------------------------
 
-export type FloorName = "loft" | "trading" | "vault" | "roof" | "satellite";
+export type FloorName = "loft" | "trading" | "vault" | "roof" | "satellite" | "deck" | "terrace";
 
 export interface Station {
   readonly floor: FloorName;
@@ -111,7 +111,104 @@ export const STATIONS = Object.freeze({
   pipeArrival: st("satellite", S.x, S.y, S.z),
   slotWall: st("satellite", S.x + 1.6, S.y, S.z - 1.4, -Math.PI / 4),
   mintStation: st("satellite", S.x - 1.6, S.y, S.z + 1.6, Math.PI / 4),
+
+  // -------------------------------------------------------------------------
+  // R2 layout (09-layout-spec.md) — ADDITIVE ONLY. The v1 story keeps using
+  // the stations above until the atomic world cutover swaps producers and
+  // redefines paths. Deck stations sit at y = 0, terrace at y = 3.2; the
+  // satellite V2 coordinates sit alongside the originals until the cutover
+  // moves the pad. No bot homes are assigned to these yet (R5).
+  // -------------------------------------------------------------------------
+  // Harness docks: five pads along x -20.4..-15.6 at z -6.2, facing +z.
+  docksA: st("deck", -20.4, 0, -6.2, 0),
+  docksB: st("deck", -19.2, 0, -6.2, 0),
+  docksC: st("deck", -18, 0, -6.2, 0),
+  docksD: st("deck", -16.8, 0, -6.2, 0),
+  docksE: st("deck", -15.6, 0, -6.2, 0),
+  // Research greenhouse bay.
+  greenhouse: st("deck", -11.5, 0, -4, 0),
+  greenhouseTelescope: st("deck", -9, 0, -5, 0),
+  whiteboard: st("deck", -13.5, 0, -5, 0),
+  // Activation desk and its slot chute feeding the street conveyor.
+  planDesk: st("deck", -5.5, 0, -2, 0),
+  activationSlot: st("deck", -5.5, 0, 1.6, 0),
+  // The gauntlet conveyor run on the street.
+  gauntletIn: st("deck", -4, 0, 7, 0),
+  gauntletOut: st("deck", 5, 0, 7, 0),
+  gauntletReject: st("deck", 4.5, 0, 9.5, 0),
+  // Cloid mint press, launch bay, back office, oil bar pocket.
+  mintPress: st("deck", 7.5, 0, -2, 0),
+  launchBay: st("deck", 12.5, 0, 1, 0),
+  ferryDock: st("deck", 17.5, 0, 4, 0),
+  truthMonolith: st("deck", 17.5, 0, 8.5, 0),
+  backOfficeDeskA: st("deck", 16.5, 0, -2, 0),
+  backOfficeDeskB: st("deck", 19.5, 0, -2, 0),
+  oilBar: st("deck", 18.5, 0, 10, 0),
+  // Street run anchors and street-front stations.
+  streetRunWest: st("deck", -12, 0, 9, 0),
+  streetRunEast: st("deck", 12, 0, 9, 0),
+  stampStation: st("deck", 1, 0, 7, 0),
+  queueFront: st("deck", -3, 0, 8.5, 0),
+  queueBack: st("deck", -3, 0, 10.5, 0),
+  rejectBin: st("deck", 5.5, 0, 10.5, 0),
+  // Terrace (y = 3.2, z in [-15, -9]).
+  watchTower: st("terrace", 0, 3.2, -12, 0),
+  controlPanel: st("terrace", -5, 3.2, -10, 0),
+  overseerPerch: st("terrace", 14, 3.2, -11, 0),
+  vaultCube: st("terrace", 7, 3.2, -12, 0),
+  // Brass pole: single pole at the gauntlet front, deck base to terrace top.
+  poleBase: st("deck", 1, 0, 5, 0),
+  poleTop: st("terrace", 1, 3.2, 5, 0),
+  // Launch bay pipe mouth (elevated between terrace height and the arc).
+  pipeMouth: st("terrace", 13.5, 4, 2, 0),
+  // Exchange satellite V2 coordinates (used after the cutover).
+  pipeArrivalV2: st("satellite", 19, 6.5, -6),
+  slotWallV2: st("satellite", 20.2, 6.5, -7),
+  mintStationV2: st("satellite", 17.8, 6.5, -5),
 });
+
+// ---------------------------------------------------------------------------
+// STATION_ALIASES — v1 station id -> R2 replacement (09-layout-spec.md,
+// final section mapping). Consumed by the cutover; until then the v1 story
+// keeps its own ids and behavior unchanged. pipeArrival/slotWall/mintStation
+// stay as-is and are deliberately absent from the table.
+// ---------------------------------------------------------------------------
+
+export const STATION_ALIASES: Readonly<Partial<Record<StationId, StationId>>> = Object.freeze({
+  coffee: "oilBar",
+  chartWall: "greenhouse",
+  telescope: "greenhouseTelescope",
+  briefing: "planDesk",
+  deskRow: "greenhouse",
+  deskRowTrading: "backOfficeDeskA",
+  conveyorIn: "gauntletIn",
+  conveyorOut: "gauntletOut",
+  stampDesk: "stampStation",
+  queueHead: "queueFront",
+  queueTail: "queueBack",
+  vaultDoor: "vaultCube",
+  cannon: "launchBay",
+  receiptTray: "ferryDock",
+  chuteTop: "gauntletReject",
+  chuteExit: "rejectBin",
+  timeClock: "planDesk",
+  tickerBoard: "greenhouse",
+  stairTopLoft: "poleTop",
+  stairTopTrading: "poleTop",
+  stairBottomLoft: "poleBase",
+  stairBottomVault: "poleBase",
+  stairBottomRoof: "poleBase",
+  hatchLoft: "docksA",
+  hatchTrading: "docksA",
+  hatchVault: "docksA",
+  roofStair: "watchTower",
+  antenna: "watchTower",
+  coffeeCorner: "oilBar",
+  bridgeAnchor: "pipeMouth",
+  poleTopLoft: "poleTop",
+  poleTopTrading: "poleTop",
+  poleBaseVault: "poleBase",
+} as const);
 
 export type StationId = keyof typeof STATIONS;
 
@@ -145,137 +242,152 @@ interface PathDef {
   readonly segments: readonly CurveSegment[];
 }
 
+/**
+ * R2 path topology (09-layout-spec.md). Every PathId the v1 story references
+ * still exists, but its geometry now connects the aliased R2 stations: deck
+ * walking (y 0), one brass pole (poleTop -> poleBase vertical), terrace at
+ * y 3.2, satellite V2 at y 6.5. No stairs, no ramps. Distances are shorter
+ * than the old three-floor world, so beat durations authored against these
+ * paths read faster; the compiler validates endpoints at module init.
+ */
 const PATH_DEFS: Readonly<Record<string, PathDef>> = {
-  // Stacked stair flights (UP lane), each with a mid landing.
+  // Former stair flights -> pole drops / terrace-to-pole deck routes.
   stairsLoftTrading: {
-    from: "stairTopLoft",
-    to: "stairBottomLoft",
-    segments: [
-      line(at("stairTopLoft"), P(STAIR_X, (F.researchY + F.tradingY) / 2, STAIR_LANDING_Z)),
-      line(P(STAIR_X, (F.researchY + F.tradingY) / 2, STAIR_LANDING_Z), at("stairBottomLoft")),
-    ],
+    from: "poleTop",
+    to: "poleBase",
+    segments: [line(at("poleTop"), at("poleBase"))],
   },
   stairsTradingVault: {
-    from: "stairTopTrading",
-    to: "stairBottomVault",
-    segments: [
-      line(at("stairTopTrading"), P(STAIR_X, (F.tradingY + F.basementY) / 2, STAIR_LANDING_Z)),
-      line(P(STAIR_X, (F.tradingY + F.basementY) / 2, STAIR_LANDING_Z), at("stairBottomVault")),
-    ],
+    from: "poleTop",
+    to: "poleBase",
+    segments: [line(at("poleTop"), at("poleBase"))],
   },
   stairsRoofLoft: {
-    from: "roofStair",
-    to: "stairBottomRoof",
-    segments: [
-      line(at("roofStair"), P(STAIR_X, (F.roofY + F.researchY) / 2, STAIR_LANDING_Z)),
-      line(P(STAIR_X, (F.roofY + F.researchY) / 2, STAIR_LANDING_Z), at("stairBottomRoof")),
-    ],
+    from: "watchTower",
+    to: "poleBase",
+    segments: [line(at("watchTower"), at("poleTop")), line(at("poleTop"), at("poleBase"))],
   },
 
-  // Brass pole: vertical fast lane DOWN.
+  // Brass pole: vertical fast lane DOWN (terrace -> deck).
   poleDropLoft: {
-    from: "poleTopLoft",
-    to: "poleTopTrading",
-    segments: [line(at("poleTopLoft"), at("poleTopTrading"))],
+    from: "poleTop",
+    to: "poleBase",
+    segments: [line(at("poleTop"), at("poleBase"))],
   },
   poleDropTrading: {
-    from: "poleTopTrading",
-    to: "poleBaseVault",
-    segments: [line(at("poleTopTrading"), at("poleBaseVault"))],
+    from: "poleTop",
+    to: "poleBase",
+    segments: [line(at("poleTop"), at("poleBase"))],
   },
 
-  // Conveyor flow on the trading floor.
+  // Conveyor flow: the gauntlet run along the street at z = 7.
   conveyorFlow: {
-    from: "conveyorIn",
-    to: "conveyorOut",
-    segments: [line(at("conveyorIn"), at("conveyorOut"))],
+    from: "gauntletIn",
+    to: "gauntletOut",
+    segments: [line(at("gauntletIn"), at("gauntletOut"))],
   },
 
-  // Risk-gate queue: tail -> head -> stamp desk.
+  // Gate queue: back -> front -> primary stamper.
   gateQueue: {
-    from: "queueTail",
-    to: "stampDesk",
-    segments: [line(at("queueTail"), at("queueHead")), line(at("queueHead"), at("stampDesk"))],
+    from: "queueBack",
+    to: "stampStation",
+    segments: [line(at("queueBack"), at("queueFront")), line(at("queueFront"), at("stampStation"))],
   },
 
-  // Crate brigade: loft desk/coffee area -> pole top -> drop -> conveyor in.
+  // Crate brigade: greenhouse side -> street west anchor -> gauntlet entry.
   crateBrigade: {
-    from: "deskRow",
-    to: "conveyorIn",
+    from: "greenhouse",
+    to: "gauntletIn",
     segments: [
-      line(at("deskRow"), at("poleTopLoft")),
-      line(at("poleTopLoft"), at("poleTopTrading")),
-      line(at("poleTopTrading"), at("conveyorIn")),
+      line(at("greenhouse"), at("streetRunWest")),
+      line(at("streetRunWest"), at("gauntletIn")),
     ],
   },
 
-  // Order launch: cannon breech (vault) -> riser -> roof muzzle -> bridge arc
-  // -> satellite pad arrival. Bots never travel this path; the orb does.
+  // Order launch: launch bay -> pipe mouth -> shallow arc -> exchange V2.
+  // Bots never travel this path; the orb does.
   launchPath: {
-    from: "cannon",
-    to: "pipeArrival",
+    from: "launchBay",
+    to: "pipeArrivalV2",
     segments: [
-      line(at("cannon"), at("bridgeAnchor")),
-      cubic(
-        at("bridgeAnchor"),
-        P((X1 + S.x) / 2, S.y + DIMENSIONS.bridge.midRise, S.z - 0.5),
-        P(S.x - 2.5, S.y + 0.4, S.z),
-        at("pipeArrival"),
-      ),
+      line(at("launchBay"), at("pipeMouth")),
+      cubic(at("pipeMouth"), P(15.5, 5.8, 0), P(18, 6.8, -3.5), at("pipeArrivalV2")),
     ],
   },
 
-  // Receipt return: mint on the pad -> high return arc -> vault tray.
+  // Receipt return: mint on the pad -> falling arc -> reconciler ferry dock.
   receiptReturn: {
-    from: "mintStation",
-    to: "receiptTray",
-    segments: [
-      cubic(
-        at("mintStation"),
-        P(S.x - 4, S.y + 1.8, S.z + 1.5),
-        P(4, F.roofY + 1.2, -1.5),
-        at("receiptTray"),
-      ),
-    ],
+    from: "mintStationV2",
+    to: "ferryDock",
+    segments: [cubic(at("mintStationV2"), P(17.5, 7.5, -0.5), P(17.5, 2.5, 3.5), at("ferryDock"))],
   },
 
-  // Celebration conga: trading -> pole down -> vault -> stairs up -> trading.
+  // Celebration conga: a fun loop around the deck perimeter — street z = 9
+  // west -> east, then the back line z ~ -6 east -> west, respecting zones.
   congaLoop: {
-    from: "briefing",
-    to: "briefing",
+    from: "planDesk",
+    to: "planDesk",
     segments: [
-      line(at("briefing"), at("poleTopTrading")),
-      line(at("poleTopTrading"), at("poleBaseVault")),
-      line(at("poleBaseVault"), at("stampDesk")),
-      line(at("stampDesk"), at("stairBottomVault")),
-      line(at("stairBottomVault"), P(STAIR_X, (F.tradingY + F.basementY) / 2, STAIR_LANDING_Z)),
-      line(P(STAIR_X, (F.tradingY + F.basementY) / 2, STAIR_LANDING_Z), at("stairTopTrading")),
-      line(at("stairTopTrading"), at("briefing")),
+      line(at("planDesk"), at("streetRunWest")),
+      line(at("streetRunWest"), at("streetRunEast")),
+      line(at("streetRunEast"), at("mintPress")),
+      line(at("mintPress"), at("docksE")),
+      line(at("docksE"), at("whiteboard")),
+      line(at("whiteboard"), at("planDesk")),
     ],
   },
 
-  // Hatch approach (shift start / wind down) per floor.
+  // Hatch approach (shift start / wind down): short deck lines to docksA.
   hatchApproachLoft: {
-    from: "deskRow",
-    to: "hatchLoft",
-    segments: [line(at("deskRow"), at("hatchLoft"))],
+    from: "greenhouse",
+    to: "docksA",
+    segments: [line(at("greenhouse"), at("docksA"))],
   },
   hatchApproachTrading: {
-    from: "briefing",
-    to: "hatchTrading",
-    segments: [line(at("briefing"), at("hatchTrading"))],
+    from: "planDesk",
+    to: "docksA",
+    segments: [line(at("planDesk"), at("docksA"))],
   },
   hatchApproachVault: {
-    from: "stampDesk",
-    to: "hatchVault",
-    segments: [line(at("stampDesk"), at("hatchVault"))],
+    from: "stampStation",
+    to: "docksA",
+    segments: [line(at("stampStation"), at("docksA"))],
   },
 
-  // Reject chute: vault interior -> plinth-side exit above the bin.
+  // Reject diverter: gauntlet reject mouth -> bin, short slide.
   chuteDrop: {
-    from: "chuteTop",
-    to: "chuteExit",
-    segments: [line(at("chuteTop"), at("chuteExit"))],
+    from: "gauntletReject",
+    to: "rejectBin",
+    segments: [line(at("gauntletReject"), at("rejectBin"))],
+  },
+
+  // --- New R2 authoring paths (not yet referenced by the v1 story). ---
+
+  // Beam traversal placeholder: beams are authored, not walked, but a
+  // trivial two-point path keeps authoring uniform.
+  beamTest: {
+    from: "whiteboard",
+    to: "planDesk",
+    segments: [line(at("whiteboard"), at("planDesk"))],
+  },
+
+  // Street run along z = 9.
+  streetRun: {
+    from: "streetRunWest",
+    to: "streetRunEast",
+    segments: [line(at("streetRunWest"), at("streetRunEast"))],
+  },
+
+  // Terrace tour at y = 3.2.
+  terraceTour: {
+    from: "controlPanel",
+    to: "controlPanel",
+    segments: [
+      line(at("controlPanel"), at("watchTower")),
+      line(at("watchTower"), at("overseerPerch")),
+      line(at("overseerPerch"), at("vaultCube")),
+      line(at("vaultCube"), at("controlPanel")),
+    ],
   },
 };
 
@@ -294,7 +406,10 @@ export type PathId =
   | "hatchApproachLoft"
   | "hatchApproachTrading"
   | "hatchApproachVault"
-  | "chuteDrop";
+  | "chuteDrop"
+  | "beamTest"
+  | "streetRun"
+  | "terraceTour";
 
 export const PATH_IDS: readonly PathId[] = Object.freeze(Object.keys(PATH_DEFS) as PathId[]);
 

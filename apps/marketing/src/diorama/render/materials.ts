@@ -1,11 +1,11 @@
 /**
  * Shared material library, built from config.PALETTE and routed through the
- * disposal registry. Ten materials total; every builder shares these instead
- * of creating its own.
+ * disposal registry. Fourteen materials total (ten v1 + four v2); every
+ * builder shares these instead of creating its own.
  */
 
 import * as THREE from "three";
-import { PALETTE } from "../config";
+import { PALETTE, PALETTE_V2 } from "../config";
 import type { ResourceRegistry } from "./resources";
 
 export interface MaterialLibrary {
@@ -27,6 +27,22 @@ export interface MaterialLibrary {
   readonly dataRed: THREE.MeshBasicMaterial;
   /** Receipts and paper props, unlit paper cream. */
   readonly paper: THREE.MeshBasicMaterial;
+  /**
+   * v2: THE glossy zone floor-plate material (one for all zones). Tint per
+   * zone exclusively via vertex colors (config.PALETTE_V2.zoneFloorTint
+   * baked by the builder); never clone per-zone material instances.
+   */
+  readonly zonePlate: THREE.MeshStandardMaterial;
+  /**
+   * v2: emissive signage/screens. All color baked into vertex colors
+   * (config.PALETTE_V2.zoneEmissive); toneMapped false so ACES does not
+   * dull the neon read. No material.color clones.
+   */
+  readonly signGlow: THREE.MeshBasicMaterial;
+  /** v2: unlit emissive-look cyan data screens (gauntlet cyan). */
+  readonly screenCyan: THREE.MeshBasicMaterial;
+  /** v2: unlit emissive-look amber data screens (activation amber). */
+  readonly screenAmber: THREE.MeshBasicMaterial;
   /** Soft blob shadow disc for moving bots/props; needs plane UVs. */
   readonly blobShadow: THREE.ShaderMaterial;
 }
@@ -97,6 +113,32 @@ export function createMaterials(registry: ResourceRegistry): Readonly<MaterialLi
     dataRed: track(new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.dataRed) })),
 
     paper: track(new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.cream) })),
+
+    // v2 additions (08-design-direction-v2.md Decision 2). Zone tints live in
+    // vertex colors, so these stay single shared instances.
+    zonePlate: track(
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        metalness: 0.05,
+        roughness: 0.35,
+      }),
+    ),
+
+    signGlow: track(new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false })),
+
+    screenCyan: track(
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(PALETTE_V2.zoneEmissive.gauntlet),
+        toneMapped: false,
+      }),
+    ),
+
+    screenAmber: track(
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(PALETTE_V2.zoneEmissive.plan),
+        toneMapped: false,
+      }),
+    ),
 
     blobShadow: track(
       new THREE.ShaderMaterial({

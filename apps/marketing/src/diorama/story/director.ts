@@ -21,8 +21,12 @@
  */
 
 import * as THREE from "three";
-import { BEAT_STARTS, CAMERA_SHOTS, CAMERA_ISO, DURATION_MS, beatAt } from "../config";
+import { BEAT_STARTS, CAMERA_SHOTS, CAMERA_ISO, DURATION_MS, PALETTE, beatAt } from "../config";
+import { capsule, cone, mergeParts, paint, roundedBox } from "../geometry";
 import { applyFacing, applyPose } from "../bots/motion";
+import { EASINGS, saturate } from "../math";
+import type { GlyphRenderer } from "../world/glyphs";
+import type { SpawnOptions } from "../particles";
 import type { FleetActor } from "../bots/fleet";
 import type { BuiltFleetWithActors } from "../bots/fleet";
 import type { BuiltWorld } from "../types";
@@ -36,7 +40,10 @@ import type {
   LifecycleState,
   PropSnapshot,
   WorldSnapshot,
+  Expression,
+  XYZ,
 } from "../types";
+import { STATIONS, type StationId } from "./waypoints";
 import {
   asActorId,
   asAnchorId,
@@ -55,6 +62,7 @@ import {
   evaluateMachines,
   evaluateProp,
   moodValue,
+  MACHINE_WINDOWS,
   PROP_HOME_ANCHOR,
   type ActorEval,
   type CompiledStory,
@@ -92,6 +100,23 @@ export function collectCueCrossings(
   return hits;
 }
 
+/**
+ * PAUSE-freeze time remap (pure): while the giant hand holds the MANUAL
+ * CONTROL button the world clock clamps to the freeze instant for
+ * freezeDur, then resumes shifted. The remap is applied to the loop-local
+ * phase (the clamped instant is authored inside the 90000ms loop) and
+ * rebuilt on the same loop base so the returned clock stays monotonic for
+ * any absolute logical input. The camera and the hand itself run on raw
+ * time and are NOT remapped.
+ */
+export function worldTime(timeMs: number): number {
+  const phase = ((timeMs % DURATION_MS) + DURATION_MS) % DURATION_MS;
+  const start = MACHINE_WINDOWS.freezeStart;
+  const end = start + MACHINE_WINDOWS.freezeDur;
+  const clamped = phase < start ? phase : phase < end ? start : phase - MACHINE_WINDOWS.freezeDur;
+  return Math.floor(timeMs / DURATION_MS) * DURATION_MS + clamped;
+}
+
 /** Cached anchor lookups; machines not present are silently skipped. */
 interface MachineObjects {
   flip?: THREE.Object3D;
@@ -111,6 +136,14 @@ interface MachineObjects {
   blueprint?: THREE.Object3D;
 }
 
+/** Optional v2 subsystems; each is a clean no-op when absent. */
+export interface DirectorDeps {
+  /** Head-glyph renderer (R4); glyph windows are skipped when absent. */
+  readonly glyphs?: GlyphRenderer;
+  /** Particle system used for BOOT-registered beam-flash windows. */
+  readonly effects?: { spawn(effectId: "beamFlash", origin: XYZ, opts?: SpawnOptions): boolean };
+}
+
 export interface Director extends BuiltDirector {
   /** Suppress cue collection (seek scrubbing); evaluation still applies. */
   setSilent(silent: boolean): void;
@@ -118,9 +151,15 @@ export interface Director extends BuiltDirector {
   readonly machine: MachineState;
   /** Mood 0..1 at a logical timestamp (light rig input). */
   moodAt(timeMs: number): number;
+  /** Release the director-owned transient props (the PAUSE hand). */
+  dispose(): void;
 }
 
-export function createDirector(world: BuiltWorld, fleet: BuiltFleetWithActors): Director {
+export function createDirector(
+  world: BuiltWorld,
+  fleet: BuiltFleetWithActors,
+  deps: DirectorDeps = {},
+): Director {
   const compiled: CompiledStory = compileBeats();
   const machine = createMachineState();
 
@@ -150,6 +189,197 @@ export function createDirector(world: BuiltWorld, fleet: BuiltFleetWithActors): 
 
   const worldRoot = obj(world.root);
 
+  // ---- PAUSE gag: the giant USER HAND (director-owned transient) ----------
+  // Hand v4: cartoon pointing silhouette. The deck back wall (z=-9, top
+  // y~6.7) occludes the terrace below its lip, so the finger presses the
+  // EMERGENCY CAP the world mounts ON the wall lip itself (see below), not
+  // the podium buttons. Chunky clay-toy parts, absurdly long index finger.
+  // Scale 2.2, raw-time driven, no shadows, hidden outside 74000-78000,
+  // disposed with the director.
+  const HAND_ENTER: XYZ = { x: -4.85, y: 16.4, z: -12.2 }; // high above, up-slope start
+  const HAND_PRESS: XYZ = { x: -4.85, y: 13.13, z: -11.52 }; // fingertip meets the cap at y 6.85
+  // Whole-hand tilt: ~12 deg about X toward the camera for the whole arc, so
+  // the palm face angles at the viewer instead of reading edge-on.
+  const HAND_TILT_X = (-12 * Math.PI) / 180;
+  // Index finger: 2.4 long (capsule 0.24 r + 1.92 cylinder), tilted so the
+  // tip juts forward to local z +0.55 as well as down.
+  const FINGER_TILT = Math.asin(0.55 / 2.4); // ~13.3 deg from vertical
+  const fingerDirY = -Math.cos(FINGER_TILT);
+  const fingerDirZ = Math.sin(FINGER_TILT);
+  const FINGER_BASE = { x: -0.75, y: -0.7, z: 0 };
+  const handGeometry = mergeParts([
+    // Sleeve ring (mint) — the wide cuff the wrist disappears into.
+    paint(roundedBox(2.3, 0.8, 1.0, 0.15), PALETTE.mint).translate(0, 1.7, 0),
+    // Wrist taper: narrower cream column between sleeve and palm.
+    paint(roundedBox(1.4, 0.6, 0.75, 0.15), PALETTE.cream).translate(0, 1.15, 0),
+    // Palm slab: 2.0 wide x 2.0 tall x 0.8 deep.
+    paint(roundedBox(2.0, 2.0, 0.8, 0.3), PALETTE.cream).translate(0, -0.2, 0),
+    // Index finger: capsule r 0.24, total 2.4, tilted FINGER_TILT toward the
+    // camera. Center sits at base + 1.2 * dir.
+    paint(capsule(0.24, 1.92, 10).rotateX(-FINGER_TILT), PALETTE.cream).translate(
+      FINGER_BASE.x,
+      FINGER_BASE.y + 1.2 * fingerDirY,
+      FINGER_BASE.z + 1.2 * fingerDirZ,
+    ),
+    // Three curled knuckle bumps (0.5 x 0.55), 0.22-unit gaps between them,
+    // curled back +z 0.3 behind the finger plane.
+    paint(roundedBox(0.5, 0.55, 0.5, 0.18), PALETTE.cream).translate(-0.25, -0.75, 0.3),
+    paint(roundedBox(0.5, 0.55, 0.5, 0.18), PALETTE.cream).translate(0.47, -0.75, 0.3),
+    paint(roundedBox(0.5, 0.55, 0.5, 0.18), PALETTE.cream).translate(1.19, -0.75, 0.3),
+    // Thumb: capsule r 0.35 x 0.9, sticking out sideways AND forward (+z),
+    // well past the palm silhouette on the index side.
+    paint(
+      capsule(0.35, 0.9, 10)
+        .rotateZ(Math.PI / 2)
+        .rotateY(Math.PI / 6),
+      PALETTE.cream,
+    ).translate(-1.2, -0.5, 0.4),
+  ]);
+  const handMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
+  const handMesh = new THREE.Mesh(handGeometry, handMaterial);
+  handMesh.castShadow = false;
+  handMesh.receiveShadow = false;
+  const hand = new THREE.Group();
+  hand.add(handMesh);
+  hand.scale.setScalar(2.2);
+  hand.rotation.x = HAND_TILT_X;
+  hand.visible = false;
+  worldRoot.add(hand);
+
+  // ---- EMERGENCY CAP on the wall lip (always-visible transient) -----------
+  // The terrace's big red button, mounted where the iso camera can actually
+  // see it: on the deck back-wall lip directly above the MANUAL CONTROL
+  // podium. Emissive red (toneMapped false for the pop) in a brass socket;
+  // squashes 30% and fires a one-shot red pulse ring whenever the finger
+  // presses (freezeStart and each impatient tap). No particle system — the
+  // ring is an analytic scale/opacity pulse on a thin ring mesh.
+  const CAP_POS: XYZ = { x: -6.5, y: 6.85, z: -8.95 };
+  const capSocketGeo = paint(new THREE.CylinderGeometry(0.64, 0.72, 0.1, 20), PALETTE.brass);
+  const capSocket = new THREE.Mesh(
+    capSocketGeo,
+    new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
+  );
+  const capRedGeo = paint(new THREE.CylinderGeometry(0.5, 0.5, 0.18, 20), PALETTE.dataRed);
+  const capRed = new THREE.Mesh(
+    capRedGeo,
+    new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
+  );
+  capRed.position.y = 0.12;
+  const capRingGeo = new THREE.RingGeometry(0.55, 0.8, 24).rotateX(-Math.PI / 2);
+  const capRing = new THREE.Mesh(
+    capRingGeo,
+    new THREE.MeshBasicMaterial({
+      color: PALETTE.dataRed,
+      transparent: true,
+      opacity: 0,
+      toneMapped: false,
+      depthWrite: false,
+    }),
+  );
+  capRing.position.y = 0.2;
+  for (const m of [capSocket, capRed, capRing]) {
+    m.castShadow = false;
+    m.receiveShadow = false;
+  }
+  const cap = new THREE.Group();
+  cap.add(capSocket, capRed, capRing);
+  cap.position.set(CAP_POS.x, CAP_POS.y, CAP_POS.z);
+  worldRoot.add(cap);
+  /** Cap squash + pulse ring on every finger contact (raw loop time). */
+  const applyCap = (t: number): void => {
+    const pressPulse = (at: number, dur: number): number =>
+      t < at || t >= at + dur ? 0 : Math.sin(Math.PI * ((t - at) / dur));
+    const w = MACHINE_WINDOWS.pause;
+    const inWindow = t >= w[0] && t < w[1];
+    // Contacts: the freeze-press at freezeStart, then the two impatient taps.
+    const squash = inWindow
+      ? Math.max(
+          pressPulse(MACHINE_WINDOWS.freezeStart, 350),
+          pressPulse(74700, 200),
+          pressPulse(75050, 200),
+        )
+      : 0;
+    cap.scale.set(1 + 0.12 * squash, 1 - 0.3 * squash, 1 + 0.12 * squash);
+    const ring = squash > 0 ? Math.min(1, squash * 1.4) : 0;
+    capRing.visible = ring > 0.01;
+    if (capRing.visible) {
+      capRing.scale.setScalar(1 + 1.1 * ring);
+      (capRing.material as THREE.MeshBasicMaterial).opacity = 0.75 * (1 - ring);
+    }
+  };
+
+  // ---- Gauntlet scanner emitter (director-owned transient) -----------------
+  // Renders the scannerSweep channel: an emissive mint dot sliding along the
+  // pylon row (x per MACHINE_WINDOWS.scannerX, above the belt between the
+  // two pylon rows) with a downward beam cone onto the belt. Sized to read
+  // at wide zoom (r 0.3 dot, 1.7 cone). Visible only while scannerGlow > 0.
+  const SCANNER_Y = 2.0;
+  const SCANNER_Z = 7;
+  const scannerDotGeo = paint(new THREE.SphereGeometry(0.3, 12, 10), PALETTE.mintBright);
+  const scannerDot = new THREE.Mesh(
+    scannerDotGeo,
+    new THREE.MeshBasicMaterial({ vertexColors: true }),
+  );
+  const scannerConeGeo = paint(cone(0.6, 1.7, 10).rotateX(Math.PI), PALETTE.mint);
+  const scannerCone = new THREE.Mesh(
+    scannerConeGeo,
+    new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+    }),
+  );
+  scannerDot.castShadow = false;
+  scannerCone.castShadow = false;
+  const scanner = new THREE.Group();
+  scanner.add(scannerDot);
+  scanner.add(scannerCone);
+  scanner.visible = false;
+  worldRoot.add(scanner);
+  const applyScanner = (): void => {
+    const [x0, x1] = MACHINE_WINDOWS.scannerX;
+    scanner.visible = machine.scannerGlow > 0;
+    if (!scanner.visible) return;
+    const x = x0 + (x1 - x0) * machine.scannerSweep;
+    scannerDot.position.set(x, SCANNER_Y, SCANNER_Z);
+    scannerDot.scale.setScalar(0.7 + 0.3 * machine.scannerGlow);
+    scannerCone.position.set(x, SCANNER_Y - 1.05, SCANNER_Z);
+    const coneScale = 0.8 + 0.2 * machine.scannerGlow;
+    scannerCone.scale.set(coneScale, 1, coneScale);
+  };
+
+  /**
+   * Hand arc on RAW loop time (never remapped): descend 74000->74200, press
+   * at 74200, two impatient 200ms taps while frozen time holds, retreat
+   * 77400->78000, hidden outside the window.
+   */
+  const applyHand = (timeMs: number): void => {
+    const t = ((timeMs % DURATION_MS) + DURATION_MS) % DURATION_MS;
+    const w = MACHINE_WINDOWS.pause;
+    if (t < w[0] || t >= w[1]) {
+      hand.visible = false;
+      return;
+    }
+    hand.visible = true;
+    const descend = saturate((t - w[0]) / (MACHINE_WINDOWS.freezeStart - w[0]));
+    const retreat = saturate((t - 77400) / (w[1] - 77400));
+    // Cubic-arc feel: ease the descent in, the retreat out.
+    const travel = EASINGS.easeInOutCubic(descend) * (1 - EASINGS.easeInOutCubic(retreat));
+    const handPulse = (at: number, dur: number): number =>
+      t < at || t >= at + dur ? 0 : Math.sin(Math.PI * ((t - at) / dur));
+    const tap1 = handPulse(74700, 200);
+    const tap2 = handPulse(75050, 200);
+    const press = t >= MACHINE_WINDOWS.freezeStart ? 1 : 0;
+    hand.position.set(
+      HAND_ENTER.x + (HAND_PRESS.x - HAND_ENTER.x) * travel,
+      HAND_ENTER.y + (HAND_PRESS.y - HAND_ENTER.y) * travel - press * 0.25 * (tap1 + tap2),
+      HAND_ENTER.z + (HAND_PRESS.z - HAND_ENTER.z) * travel,
+    );
+    // Slight extra lean while pressing (the base -12 deg X tilt is constant).
+    hand.rotation.z = 0.06 * travel * (1 - retreat);
+  };
+
   // ---- Reused evaluation state (no allocation in evaluate) ----------------
   const actorEvals = new Map<string, ActorEval>();
   const actorHandles = new Map<string, FleetActor>();
@@ -172,7 +402,40 @@ export function createDirector(world: BuiltWorld, fleet: BuiltFleetWithActors): 
   /** Reused cue-collection buffer (collectCrossings allocates nothing). */
   const cueHits: FiredCue[] = [];
 
-  const poseCtx = { timeMs: 0, phase: 0, seed: 0, speed: 1 };
+  const poseCtx = {
+    timeMs: 0,
+    phase: 0,
+    seed: 0,
+    speed: 1,
+    expression: undefined as Expression | undefined,
+  };
+
+  /** Stable actorId -> glyph slot index (fleet.actorList order). */
+  const actorIndex = new Map<string, number>();
+  fleet.actorList.forEach((actor, index) => actorIndex.set(actor.actorId, index));
+  const glyphVec = new THREE.Vector3();
+
+  // BOOT registration: every authored beam gets its mint flash as an
+  // analytic particle window keyed by (effectId, triggerMs, instance), so it
+  // survives seeks (cues do not). Trigger at the cut instant, at the
+  // destination station.
+  if (deps.effects) {
+    let beamInstance = 0;
+    for (const track of compiled.actorTracks.values()) {
+      for (const c of track.commands) {
+        if (c.kind !== "beam") continue;
+        const to = STATIONS[c.to as StationId];
+        deps.effects.spawn(
+          "beamFlash",
+          { x: to.x, y: to.y + 0.6, z: to.z },
+          {
+            triggerMs: c.startMs + c.durationMs * 0.4,
+            instance: beamInstance++,
+          },
+        );
+      }
+    }
+  }
 
   // ---- Actor application ---------------------------------------------------
   const applyActors = (timeMs: number): void => {
@@ -188,7 +451,34 @@ export function createDirector(world: BuiltWorld, fleet: BuiltFleetWithActors): 
       poseCtx.phase = evaluation.phase;
       poseCtx.seed = actor.seed;
       poseCtx.speed = evaluation.state === "move" || evaluation.state === "carry" ? 1.4 : 1;
+      poseCtx.expression = evaluation.expression ?? undefined;
       applyPose(actor, evaluation.state, poseCtx);
+      // Beam hop: applyPose resets root scale every call, so multiply AFTER
+      // the pose, and gate visibility per the beam's invisible cut phase.
+      if (evaluation.beamScale !== null) rig.root.scale.multiplyScalar(evaluation.beamScale);
+      rig.root.visible = !evaluation.hidden;
+    }
+  };
+
+  /** Glyph windows: analytic, seek-safe. Actors with an active window get
+   *  their head world position + phase applied; every other slot is hidden
+   *  every frame, so a cold seek always leaves exactly the right slots. */
+  const applyGlyphs = (): void => {
+    const glyphs = deps.glyphs;
+    if (!glyphs) return;
+    for (const actorId of ACTOR_IDS) {
+      const index = actorIndex.get(actorId);
+      if (index === undefined || index >= glyphs.slotCount) continue;
+      const evaluation = actorEvals.get(actorId);
+      const actor = actorHandles.get(actorId);
+      if (!evaluation || !actor) continue;
+      if (evaluation.glyph !== null) {
+        actor.rig.headFx.getWorldPosition(glyphVec);
+        glyphs.setSlotPosition(index, glyphVec.x, glyphVec.y, glyphVec.z);
+        glyphs.applyWindow(index, evaluation.glyph, evaluation.glyphPhase);
+      } else {
+        glyphs.hide(index);
+      }
     }
   };
 
@@ -339,6 +629,8 @@ export function createDirector(world: BuiltWorld, fleet: BuiltFleetWithActors): 
       actorId: evaluation.actorId,
       role: actor.role,
       state: evaluation.state,
+      expression: evaluation.expression ?? undefined,
+      glyph: evaluation.glyph,
       // Hold/home states carry the station waypoint; mid-path it is null.
       waypointId: (evaluation.waypointId as WireWaypointId | null) ?? null,
       pathId: (evaluation.pathId as WirePathId | null) ?? null,
@@ -376,9 +668,17 @@ export function createDirector(world: BuiltWorld, fleet: BuiltFleetWithActors): 
     },
     evaluate(timeMs: number): void {
       lastTimeMs = timeMs;
-      applyActors(timeMs);
-      applyProps(timeMs);
-      applyMachines(timeMs);
+      // PAUSE freeze: actor/prop/machine/glyph evaluation runs on the
+      // remapped world clock; the camera and the hand keep raw logical time
+      // (main.ts's own camera evaluation is likewise never remapped).
+      const wt = worldTime(timeMs);
+      applyActors(wt);
+      applyGlyphs();
+      applyProps(wt);
+      applyMachines(wt);
+      applyHand(timeMs);
+      applyCap(((timeMs % DURATION_MS) + DURATION_MS) % DURATION_MS);
+      applyScanner();
       applyCamera(timeMs);
     },
     collectCrossings(fromMs: number, toMs: number): readonly FiredCue[] {
@@ -409,6 +709,25 @@ export function createDirector(world: BuiltWorld, fleet: BuiltFleetWithActors): 
         actors,
         props,
       };
+    },
+    dispose(): void {
+      // Transient director-owned props only; the world/fleet/effect
+      // lifetimes belong to their builders and the main registry.
+      worldRoot.remove(hand);
+      handGeometry.dispose();
+      handMaterial.dispose();
+      worldRoot.remove(scanner);
+      scannerDotGeo.dispose();
+      (scannerDot.material as THREE.Material).dispose();
+      scannerConeGeo.dispose();
+      (scannerCone.material as THREE.Material).dispose();
+      worldRoot.remove(cap);
+      capSocketGeo.dispose();
+      (capSocket.material as THREE.Material).dispose();
+      capRedGeo.dispose();
+      (capRed.material as THREE.Material).dispose();
+      capRingGeo.dispose();
+      (capRing.material as THREE.Material).dispose();
     },
   };
 }
