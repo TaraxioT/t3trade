@@ -50,6 +50,10 @@ import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtec
 import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingPlanDocumentService } from "../../../trading/TradingPlanDocument.ts";
+import {
+  TradingPlanDocumentInput,
+  TradingPlanDocumentResult,
+} from "@t3tools/trading-contracts/plan-document";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
@@ -349,9 +353,26 @@ export const TradingChartTool = Tool.make("trading_chart", {
   // from today's; the published scene itself is the durable snapshot.
   .annotate(Tool.OpenWorld, true);
 
+export const TradingPlanDocumentTool = Tool.make("trading_plan_document", {
+  description:
+    "The TRADE.md activation surface: you write and read TRADE.md with your NATIVE file tools, this is the server's half. `show` gives the activation facts (none/draft/active/drifted, hashes, revision count). `activate` pins the revision you read at `expectedContentHash`; a changed file refuses stale_hash, nothing written. `deactivate` stands it down. A persistent strategy trades only under an activated revision; a direct order never needs or activates one. Drift pauses new exposure; exits work.",
+  parameters: TradingPlanDocumentInput,
+  success: TradingPlanDocumentResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "PlanDocument")
+  // `show` is a read; `activate`/`deactivate` write bookkeeping rows only — no
+  // exchange call, no mission mutation. The annotation takes the writing half.
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
+  TradingPlanDocumentTool,
   TradingStrategyTool,
   TradingWatchTool,
   TradingJournalTool,

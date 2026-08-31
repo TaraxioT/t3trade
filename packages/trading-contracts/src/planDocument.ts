@@ -106,6 +106,101 @@ export function isPermittedUnderPlanDrift(actionType: string): boolean {
 }
 
 /**
+ * The plan-document tool's name. The agent maintains TRADE.md with its native
+ * file tools; this tool is only the server's half of the contract — read the
+ * activation facts, pin a revision, or stand one down.
+ */
+export const TRADING_PLAN_DOCUMENT_TOOL = "trading_plan_document";
+
+/**
+ * Why a plan-document tool call refused. One name per rule, so a provider can
+ * branch on the answer without parsing prose.
+ */
+export const TradingPlanDocumentRejection = Schema.Literals([
+  /** The thread has no persisted workspace root, so there is nowhere to look. */
+  "no_workspace",
+  /** The named rule of the document service refused; `detail` says which. */
+  "document_refused",
+  /** No activated revision exists to deactivate. */
+  "not_activated",
+  /** This session kind may read plan-document facts but not manage them. */
+  "session_read_only",
+]);
+export type TradingPlanDocumentRejection = typeof TradingPlanDocumentRejection.Type;
+
+/**
+ * One call, three actions. Kept a flat struct — not a union — because the
+ * toolkit's JSON-Schema contract is a top-level object a provider can fill in.
+ *
+ * `activate` without `expectedContentHash` is refused by the handler as a
+ * value-level rejection that says what to read next, never guessed: the hash
+ * is the optimistic-concurrency token, and an activation without it would pin
+ * whatever happens to be on disk.
+ */
+export const TradingPlanDocumentInput = Schema.Struct({
+  action: Schema.Literals(["show", "activate", "deactivate"]),
+  /**
+   * The content hash the caller read the document at, required by
+   * `activate`. A file that changed since refuses with `stale_hash` and
+   * nothing is written. Read the document, take its hash (the turn-context
+   * block or `show` carries it), then activate.
+   */
+  expectedContentHash: Schema.optional(Schema.String),
+  /** Optional mission linkage recorded against the activated revision. */
+  missionId: Schema.optional(Schema.String),
+  /**
+   * One line for the revision audit trail — what changed and why. The
+   * document's own Change Log is the human half; this is the row's half.
+   */
+  changeNote: Schema.optional(Schema.String),
+  /** Why the revision is being stood down, for `deactivate`'s audit row. */
+  note: Schema.optional(Schema.String),
+});
+export type TradingPlanDocumentInput = typeof TradingPlanDocumentInput.Type;
+
+/** The activation facts every result branch carries, content excepted. */
+export const TradingPlanDocumentFactsPublic = Schema.Struct({
+  /** The document's activation state at the moment of the call. */
+  activation: TradingPlanActivationState,
+  /** The current file's hash, when a file exists. */
+  contentHash: Schema.NullOr(Schema.String),
+  /** The activated revision's hash, when one exists. */
+  activatedHash: Schema.NullOr(Schema.String),
+  /** When the activated revision was pinned, ISO, when one exists. */
+  activatedAt: Schema.NullOr(Schema.String),
+  /** The mission the revision is linked to, when it is. */
+  missionId: Schema.NullOr(Schema.String),
+});
+export type TradingPlanDocumentFactsPublic = typeof TradingPlanDocumentFactsPublic.Type;
+
+/** What the plan-document tool answers. */
+export const TradingPlanDocumentResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("shown"),
+    facts: TradingPlanDocumentFactsPublic,
+    /** Revisions ever activated for this workspace, newest first count. */
+    revisionCount: Schema.Number,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("activated"),
+    facts: TradingPlanDocumentFactsPublic,
+    /** How many revisions this workspace has now activated, this one included. */
+    revisionCount: Schema.Number,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("deactivated"),
+    facts: TradingPlanDocumentFactsPublic,
+    revisionCount: Schema.Number,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("rejected"),
+    reason: TradingPlanDocumentRejection,
+    detail: Schema.String,
+  }),
+]);
+export type TradingPlanDocumentResult = typeof TradingPlanDocumentResult.Type;
+
+/**
  * Pure classification of a document against its activated revision.
  *
  * `filePresent: false` is `none` regardless of the activated hash: the file is

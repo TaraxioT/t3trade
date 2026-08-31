@@ -85,6 +85,9 @@ it("gives the analyst the reads and alert watches, and none of the acting tools"
       "trading_events",
       // Research presentation only: one scene table, no execution path.
       "trading_chart",
+      // The TRADE.md activation facts, show-only: the handlers refuse
+      // activate/deactivate from an analyst session.
+      "trading_plan_document",
     ].sort(),
   );
   // …and the acting tools are exactly what it lacks.
@@ -144,6 +147,8 @@ it("gives an observe mission every research tool and no way to act", () => {
       "trading_hypothesis",
       "trading_events",
       "trading_chart",
+      // The same show-only plan-document read the analyst has.
+      "trading_plan_document",
     ].sort(),
   );
   // The three execution tools are exactly what it lacks, and this is the
@@ -206,18 +211,25 @@ it("prefixes the observe contract onto an observe thread's turn", () => {
   clearAllSessionProfiles();
 });
 
-it("grounds every thread in the workspace, in under 900 characters", () => {
+it("grounds every thread in the workspace, in under 1200 characters", () => {
   // It rides every turn in the workspace, trading thread or not, so its size is
-  // paid on every call here. The five things it says are the five a thread
-  // cannot work out from the tools alone. The budget moved from 800 to 900 for
-  // exactly one of them: without the line saying an idea can be tested without
-  // being traded, the only thing this block described was execution, and every
-  // thread opened on the assumption that a trade was coming.
-  expect(WORKSPACE_TRADING_PREAMBLE.length).toBeLessThan(900);
+  // paid on every call here. The budget moved from 900 to 1200 for the GLM-3
+  // control plane: the two things a thread cannot work out from the tools
+  // alone are where a persistent strategy lives (TRADE.md plus its typed
+  // activation) and that a direct order is direct — neither costs a tool call
+  // to discover, and both cost far more when a thread gets them wrong.
+  expect(WORKSPACE_TRADING_PREAMBLE.length).toBeLessThan(1200);
   expect(WORKSPACE_TRADING_PREAMBLE).toContain("Hyperliquid testnet");
   expect(WORKSPACE_TRADING_PREAMBLE).toContain("An idea does not have to become a trade");
   expect(WORKSPACE_TRADING_PREAMBLE).toContain("Every entry needs a stop");
   expect(WORKSPACE_TRADING_PREAMBLE).toContain("binds automatically");
+  // The GLM-3 control-plane pair: where a persistent strategy lives, and that
+  // a direct order is direct. A thread that had to guess either one guessed
+  // wrong in opposite directions — a strategy request got an order, and an
+  // order got a strategy document it never asked for.
+  expect(WORKSPACE_TRADING_PREAMBLE).toContain("TRADE.md");
+  expect(WORKSPACE_TRADING_PREAMBLE).toContain("trading_plan_document");
+  expect(WORKSPACE_TRADING_PREAMBLE).toContain("no TRADE.md required, created, or activated");
   // And the presumption that an order is coming is gone from it.
   expect(WORKSPACE_TRADING_PREAMBLE).not.toContain("when you place the order");
   // Plain sentences, no em-dashes, in anything a user or a model reads.

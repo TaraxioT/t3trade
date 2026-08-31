@@ -741,6 +741,16 @@ const withMcpServer = <A, E>(
     readonly readFirstRefusal: () => Effect.Effect<string | null, never, never>;
     /** The market noted on a thread, for the panel beside the chat. */
     readonly readThreadMarket: (threadId: string) => Effect.Effect<string | null, never, never>;
+    /**
+     * Persist the thread's workspace cwd, as the GLM-1 native-session seam
+     * would: the row the plan-document tool resolves the workspace through.
+     */
+    readonly seedThreadWorkspace: (
+      threadId: string,
+      cwd: string,
+    ) => Effect.Effect<void, never, never>;
+    /** Count of activated TRADE.md revisions pinned for a workspace root. */
+    readonly countPlanDocumentRows: (workspaceRoot: string) => Effect.Effect<number, never, never>;
   }) => Effect.Effect<A, E, HttpServer.HttpServer>,
   tradingLayer: TradingLayerInput = TradingLayerLive,
 ) =>
@@ -987,6 +997,26 @@ const withMcpServer = <A, E>(
           Effect.map((rows) => rows[0]?.asset ?? null),
           Effect.orDie,
         );
+      const seedThreadWorkspace = (threadId: string, cwd: string) =>
+        sql`
+          INSERT INTO provider_session_runtime (
+            thread_id, provider_name, provider_instance_id, adapter_key,
+            runtime_mode, workspace_mode, status, last_seen_at,
+            resume_cursor_json, runtime_payload_json
+          ) VALUES (
+            ${threadId}, 'codex', 'instance_1', 'codex',
+            'full-access', 'market_research', 'stopped', '2026-08-31T00:00:00Z',
+            NULL, ${JSON.stringify({ cwd })}
+          )
+          ON CONFLICT (thread_id) DO UPDATE SET runtime_payload_json = excluded.runtime_payload_json
+        `.pipe(Effect.asVoid, Effect.orDie);
+      const countPlanDocumentRows = (workspaceRoot: string) =>
+        sql<{ readonly n: number }>`
+          SELECT COUNT(*) AS n FROM trading_plan_documents WHERE workspace_root = ${workspaceRoot}
+        `.pipe(
+          Effect.map((rows) => rows[0]?.n ?? 0),
+          Effect.orDie,
+        );
       const httpClient = yield* HttpClient.HttpClient;
 
       // Unpinned: this endpoint serves whatever the production schema is, and a
@@ -1070,6 +1100,8 @@ const withMcpServer = <A, E>(
         seedInboxEvent,
         readFirstRefusal,
         readThreadMarket,
+        seedThreadWorkspace,
+        countPlanDocumentRows,
         seedLocalTradingAccount,
         seedLocalMissionOn,
       });
@@ -4482,5 +4514,278 @@ it.live("serves the trading_events menu, records sourced dates, and studies them
         assert.isFalse(uncovered.covered);
       }),
     tradingLayerOverExchange(makeFakeExchange(), archivePath),
+  );
+});
+
+// -- GLM-3: chat and TRADE.md as the strategy control plane -------------------
+//
+// The tool-level half of the control plane. The agent's side (writing and
+// reading TRADE.md with native file tools) is simulated with plain fs, because
+// the contract under test is what the TOOLS and SERVER do around the document:
+// show/activate/revise through `trading_plan_document`, drift refusing new
+// exposure, watch arming and replacement, and the direct-order path creating
+// and activating no document ever.
+
+/** The workspace TRADE.md an agent drafts from a persistent strategy request. */
+const CONTROL_PLANE_TRADE_MD_V1 = `# TRADE.md
+
+## Mandate
+Trade BTC on the 20/50 EMA cross, closed 15-minute bars only.
+
+## Strategies
+- Entry: buy when ema(20) crosses above ema(50) on a closed 15m bar.
+- Stop: 1.5x ATR(14) below entry. Target: 2R.
+
+## Change Log
+- 2026-08-31: drafted from the user's request; watching armed on activation.
+`;
+
+const CONTROL_PLANE_TRADE_MD_V2 = CONTROL_PLANE_TRADE_MD_V1.replace(
+  "- 2026-08-31: drafted from the user's request; watching armed on activation.",
+  "- 2026-08-31: drafted from the user's request; watching armed on activation.\n" +
+    "- 2026-08-31: user revised to the 50/200 cross.",
+).replace("20/50 EMA cross", "50/200 EMA cross");
+
+const sha256Of = (content: string): string =>
+  NodeCrypto.createHash("sha256").update(content, "utf8").digest("hex");
+
+it.effect("control plane: draft, activate, arm, revise, and never order before the trigger", () => {
+  const workspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-ctl-plane-"));
+  NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V1);
+  return withMcpServer(
+    ({ callTool, seedThreadWorkspace }) =>
+      Effect.gen(function* () {
+        yield* seedThreadWorkspace(BOUND_THREAD, workspace);
+
+        // A material missing input refuses as data with one focused next
+        // step, rather than guessing an activation of whatever is on disk.
+        const hashless = yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "activate",
+        });
+        assert.equal(hashless.result.body.outcome, "rejected");
+        assert.equal(hashless.result.body.reason, "document_refused");
+        assert.include(hashless.result.body.detail, "expectedContentHash");
+        assert.include(hashless.result.body.detail, "exactly one question");
+
+        // Show before anything: a draft, no revisions.
+        const shown = yield* callTool(BOUND_THREAD, "trading_plan_document", { action: "show" });
+        assert.equal(shown.result.body.outcome, "shown");
+        assert.equal(shown.result.body.facts.activation, "draft");
+        assert.equal(shown.result.body.revisionCount, 0);
+        assert.equal(shown.result.body.facts.contentHash, sha256Of(CONTROL_PLANE_TRADE_MD_V1));
+
+        // One activation, hash-gated, with the change note the audit keeps.
+        const activated = yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "activate",
+          expectedContentHash: sha256Of(CONTROL_PLANE_TRADE_MD_V1),
+          missionId: MISSION_ID,
+          changeNote: "arm the 20/50 EMA cross watch",
+        });
+        assert.equal(activated.result.body.outcome, "activated");
+        assert.equal(activated.result.body.facts.activation, "active");
+        assert.equal(activated.result.body.revisionCount, 1);
+
+        // Monitoring is armed as durable watch rows through the watch tool.
+        const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            direction: "above",
+            price: 3_200,
+            confirm: "close",
+            interval: "15m",
+          },
+        });
+        assert.equal(armed.result.body.outcome, "armed");
+        const firstWatchId = armed.result.body.watch.id as string;
+
+        // The strategy is armed, not traded: nothing reached the exchange.
+        assert.equal(
+          dispatchedCommands.filter((command) => command.type === "trading.execution.requested")
+            .length,
+          0,
+        );
+
+        // Revision through chat: the agent edits the file natively, the tool
+        // re-pins against the new hash. The stale hash is refused first.
+        NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V2);
+        const drifted = yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "show",
+        });
+        assert.equal(drifted.result.body.facts.activation, "drifted");
+        const stale = yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "activate",
+          expectedContentHash: sha256Of(CONTROL_PLANE_TRADE_MD_V1),
+          changeNote: "stale attempt",
+        });
+        assert.equal(stale.result.body.outcome, "rejected");
+        assert.equal(stale.result.body.reason, "document_refused");
+        assert.include(stale.result.body.detail, "stale_hash");
+
+        const revised = yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "activate",
+          expectedContentHash: sha256Of(CONTROL_PLANE_TRADE_MD_V2),
+          missionId: MISSION_ID,
+          changeNote: "user revised to the 50/200 cross",
+        });
+        assert.equal(revised.result.body.outcome, "activated");
+        assert.equal(revised.result.body.revisionCount, 2);
+
+        // The watch that no longer represents the plan is replaced atomically.
+        const replaced = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          replacesWatchId: firstWatchId,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            direction: "above",
+            price: 3_350,
+            confirm: "close",
+            interval: "15m",
+          },
+        });
+        assert.equal(replaced.result.body.outcome, "armed");
+        const look = yield* callTool(BOUND_THREAD, "trading_look", { fetch: ["watches"] });
+        const registry = (look.result.body.mission?.watches ??
+          look.result.body.watches) as ReadonlyArray<{ readonly status: string }>;
+        assert.equal(
+          registry.filter((watch) => watch.status === "active").length,
+          1,
+          "the replaced watch must be retired, not duplicated",
+        );
+
+        // Still no order: the trigger has not fired.
+        assert.equal(
+          dispatchedCommands.filter((command) => command.type === "trading.execution.requested")
+            .length,
+          0,
+        );
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
+  );
+});
+
+it.effect("drift refuses new exposure through the enter tool, and never activates anything", () => {
+  const workspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-ctl-drift-"));
+  NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V1);
+  return withMcpServer(
+    ({ callTool, seedThreadWorkspace, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        yield* seedThreadWorkspace(BOUND_THREAD, workspace);
+        yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "activate",
+          expectedContentHash: sha256Of(CONTROL_PLANE_TRADE_MD_V1),
+          missionId: MISSION_ID,
+        });
+
+        // The document moves after activation: drifted.
+        NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V2);
+        const refused = yield* callTool(BOUND_THREAD, "trading_enter", {
+          market: "ETH",
+          side: "buy",
+          stopPrice: 2_900,
+          sizeEth: 0.1,
+        });
+        assert.equal(refused.result.body.status, "rejected");
+        assert.include(refused.result.body.detail, "plan_document_drifted");
+        assert.equal(
+          dispatchedCommands.filter((command) => command.type === "trading.execution.requested")
+            .length,
+          0,
+        );
+
+        // The refused direct command did NOT activate the drifted revision:
+        // the server is the only thing that pins one, and only when asked.
+        const still = yield* callTool(BOUND_THREAD, "trading_plan_document", { action: "show" });
+        assert.equal(still.result.body.facts.activation, "drifted");
+        assert.equal(still.result.body.facts.activatedHash, sha256Of(CONTROL_PLANE_TRADE_MD_V1));
+
+        // Re-activation unblocks the same entry.
+        yield* callTool(BOUND_THREAD, "trading_plan_document", {
+          action: "activate",
+          expectedContentHash: sha256Of(CONTROL_PLANE_TRADE_MD_V2),
+          missionId: MISSION_ID,
+        });
+        const entered = yield* callTool(BOUND_THREAD, "trading_enter", {
+          market: "ETH",
+          side: "buy",
+          stopPrice: 2_900,
+          sizeEth: 0.1,
+        });
+        assert.equal(entered.result.body.status, "filled");
+      }),
+    bindLayer(),
+  );
+});
+
+const FRESH_DIRECT_THREAD = ThreadId.make("thread-direct-order");
+
+it.effect("a direct order executes with no TRADE.md created, activated, or required", () => {
+  const draftWorkspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-ctl-direct-"));
+  NodeFS.writeFileSync(NodePath.join(draftWorkspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V1);
+  return withMcpServer(
+    ({ callTool, missions, seedThreadWorkspace, seedLocalTradingAccount, countPlanDocumentRows }) =>
+      Effect.gen(function* () {
+        yield* seedLocalTradingAccount();
+        // A TRADE.md exists in the chat's workspace and was never activated.
+        yield* seedThreadWorkspace(FRESH_DIRECT_THREAD, draftWorkspace);
+
+        const entered = yield* callTool(FRESH_DIRECT_THREAD, "trading_enter", {
+          market: "SOL",
+          side: "buy",
+          stopPrice: 2_900,
+          sizeEth: 0.1,
+        });
+        assert.equal(entered.result.body.status, "filled");
+
+        // No document row was created for the direct order...
+        assert.equal(yield* countPlanDocumentRows(NodeFS.realpathSync(draftWorkspace)), 0);
+        // ...and the workspace's document is still exactly what it was: a
+        // draft, unactivated, untouched by the order.
+        const shown = yield* callTool(FRESH_DIRECT_THREAD, "trading_plan_document", {
+          action: "show",
+        });
+        assert.equal(shown.result.body.outcome, "shown");
+        assert.equal(shown.result.body.facts.activation, "draft");
+        assert.equal(shown.result.body.facts.activatedHash, null);
+        assert.equal(shown.result.body.revisionCount, 0);
+
+        // The mission the order bound is labelled as what it is.
+        const bound = yield* missions.findMissionByThreadId(FRESH_DIRECT_THREAD).pipe(Effect.orDie);
+        assert.equal(bound._tag, "Some");
+        const instruction = (bound as { readonly value: { readonly instruction: string } }).value
+          .instruction;
+        assert.include(instruction, "Generated direct-order runtime record");
+        assert.include(instruction, "NOT a user-authored TRADE.md strategy");
+      }),
+    bindLayer(),
+  );
+});
+
+it.effect("an analyst session may show plan-document facts but not manage them", () => {
+  const workspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-ctl-analyst-"));
+  NodeFS.writeFileSync(NodePath.join(workspace, "TRADE.md"), CONTROL_PLANE_TRADE_MD_V1);
+  return withMcpServer(
+    ({ callTool, seedThreadWorkspace }) =>
+      Effect.gen(function* () {
+        setSessionProfile({ threadId: ANALYST_THREAD, kind: "trading_analyst" });
+        yield* seedThreadWorkspace(ANALYST_THREAD, workspace);
+
+        const shown = yield* callTool(ANALYST_THREAD, "trading_plan_document", { action: "show" });
+        assert.equal(shown.result.body.outcome, "shown");
+        assert.equal(shown.result.body.facts.activation, "draft");
+
+        const refused = yield* callTool(ANALYST_THREAD, "trading_plan_document", {
+          action: "activate",
+          expectedContentHash: sha256Of(CONTROL_PLANE_TRADE_MD_V1),
+        });
+        assert.equal(refused.result.body.outcome, "rejected");
+        assert.equal(refused.result.body.reason, "session_read_only");
+
+        clearAllSessionProfiles();
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
   );
 });

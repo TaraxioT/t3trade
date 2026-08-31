@@ -82,6 +82,25 @@ export interface ActivePlanDocument {
   readonly planReference: unknown;
 }
 
+/**
+ * One row of the append-only activation log (`migration 090`). Every
+ * activation and deactivation appends; nothing here is ever updated, so the
+ * revision a mission ran on last week stays queryable after the next one.
+ */
+export interface PlanDocumentRevision {
+  readonly id: number;
+  readonly workspaceRoot: string;
+  /** `"activated"` or `"deactivated"`. */
+  readonly kind: string;
+  readonly contentHash: string | null;
+  readonly activatedContent: string | null;
+  readonly activatedAt: string;
+  readonly activatedByThreadId: string;
+  readonly activatedByProvider: string;
+  readonly missionId: string | null;
+  readonly changeNote: string | null;
+}
+
 /** What a raw read found: nothing, or the current file's facts. */
 export type TradeDocumentRead =
   | { readonly status: "missing" }
@@ -305,7 +324,26 @@ export class TradingPlanDocumentService extends Context.Service<
       readonly provider: string;
       readonly missionId?: string | undefined;
       readonly planReference?: unknown;
+      readonly changeNote?: string | undefined;
     }) => Effect.Effect<ActivePlanDocument, TradingPlanDocumentError>;
+
+    /**
+     * Stand the workspace's activated revision down: the main row is deleted
+     * (activation returns to none/draft) and a `"deactivated"` revision row
+     * appends the audit trail. Refuses `not_activated` when nothing is pinned.
+     * Performs no exchange call and touches no mission state.
+     */
+    readonly deactivate: (input: {
+      readonly workspaceRoot: string;
+      readonly threadId: string;
+      readonly provider: string;
+      readonly note?: string | undefined;
+    }) => Effect.Effect<void, TradingPlanDocumentError>;
+
+    /** The append-only activation log for a workspace root, newest first. */
+    readonly listRevisions: (
+      workspaceRoot: string,
+    ) => Effect.Effect<ReadonlyArray<PlanDocumentRevision>, TradingPlanDocumentError>;
 
     /**
      * Best-effort attribution refresh: an accepted plan publication on a
@@ -443,6 +481,19 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
           mission_id = excluded.mission_id,
           plan_reference_json = excluded.plan_reference_json
       `.pipe(Effect.mapError(asDocumentError));
+      // The append-only half of the audit: every activation logs, so the
+      // revision this replaces stays queryable after the upsert overwrites it.
+      yield* sql`
+        INSERT INTO trading_plan_document_revisions (
+          workspace_root, kind, content_hash, activated_content,
+          activated_at, activated_by_thread_id, activated_by_provider,
+          mission_id, change_note
+        ) VALUES (
+          ${realRoot}, 'activated', ${document.contentHash}, ${document.content},
+          ${activatedAt}, ${input.threadId}, ${input.provider},
+          ${input.missionId ?? null}, ${input.changeNote ?? null}
+        )
+      `.pipe(Effect.mapError(asDocumentError));
       const active = yield* readActive(realRoot);
       // The row was just written; a miss here is a defect, not a refusal.
       if (active === null) {
@@ -452,6 +503,80 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
         });
       }
       return active;
+    });
+
+  const deactivate: TradingPlanDocumentService["Service"]["deactivate"] = (input) =>
+    Effect.gen(function* () {
+      const realRoot = yield* Effect.try({
+        try: () => realRootOf(input.workspaceRoot),
+        catch: asDocumentError,
+      });
+      const standing = yield* readActive(realRoot);
+      if (standing === null) {
+        return yield* new TradingPlanDocumentError({
+          reason: "not_found",
+          detail: `no activated ${TRADE_MD_FILENAME} revision exists for this workspace to deactivate`,
+        });
+      }
+      const deactivatedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+      // The audit row first, the pin second: a deactivate that failed between
+      // the two leaves an activated revision standing, which is the safe half
+      // of that split (drift still guards; a stray log row is harmless).
+      yield* sql`
+        INSERT INTO trading_plan_document_revisions (
+          workspace_root, kind, content_hash, activated_content,
+          activated_at, activated_by_thread_id, activated_by_provider,
+          mission_id, change_note
+        ) VALUES (
+          ${realRoot}, 'deactivated', ${standing.contentHash}, ${standing.activatedContent},
+          ${deactivatedAt}, ${input.threadId}, ${input.provider},
+          ${standing.missionId}, ${input.note ?? null}
+        )
+      `.pipe(Effect.mapError(asDocumentError));
+      yield* sql`
+        DELETE FROM trading_plan_documents WHERE workspace_root = ${realRoot}
+      `.pipe(Effect.mapError(asDocumentError));
+    });
+
+  const listRevisions: TradingPlanDocumentService["Service"]["listRevisions"] = (workspaceRoot) =>
+    Effect.gen(function* () {
+      const realRoot = yield* Effect.try({
+        try: () => realRootOf(workspaceRoot),
+        catch: asDocumentError,
+      });
+      const rows = yield* sql<{
+        id: number;
+        workspace_root: string;
+        kind: string;
+        content_hash: string | null;
+        activated_content: string | null;
+        activated_at: string;
+        activated_by_thread_id: string;
+        activated_by_provider: string;
+        mission_id: string | null;
+        change_note: string | null;
+      }>`
+        SELECT id, workspace_root, kind, content_hash, activated_content,
+               activated_at, activated_by_thread_id, activated_by_provider,
+               mission_id, change_note
+        FROM trading_plan_document_revisions
+        WHERE workspace_root = ${realRoot}
+        ORDER BY id DESC
+      `.pipe(Effect.mapError(asDocumentError));
+      return rows.map(
+        (row): PlanDocumentRevision => ({
+          id: row.id,
+          workspaceRoot: row.workspace_root,
+          kind: row.kind,
+          contentHash: row.content_hash,
+          activatedContent: row.activated_content,
+          activatedAt: row.activated_at,
+          activatedByThreadId: row.activated_by_thread_id,
+          activatedByProvider: row.activated_by_provider,
+          missionId: row.mission_id,
+          changeNote: row.change_note,
+        }),
+      );
     });
 
   const notePlanPublication: TradingPlanDocumentService["Service"]["notePlanPublication"] = (
@@ -485,7 +610,14 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
       ),
     );
 
-  return TradingPlanDocumentService.of({ readCurrent, readActive, activate, notePlanPublication });
+  return TradingPlanDocumentService.of({
+    readCurrent,
+    readActive,
+    activate,
+    deactivate,
+    listRevisions,
+    notePlanPublication,
+  });
 });
 
 export const TradingPlanDocumentServiceLive = Layer.effect(

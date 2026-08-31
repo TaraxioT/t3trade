@@ -14,6 +14,7 @@ import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
+import { TRADING_PLAN_DOCUMENT_TOOL } from "@t3tools/trading-contracts/plan-document";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
@@ -34,6 +35,7 @@ it("exposes the read, the plan, the watch, the journal, the research, and the tw
     [
       TRADING_LOOK_TOOL,
       TRADING_PLAN_TOOL,
+      TRADING_PLAN_DOCUMENT_TOOL,
       TRADING_STRATEGY_TOOL,
       TRADING_WATCH_TOOL,
       TRADING_JOURNAL_TOOL,
@@ -234,7 +236,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 12 trading tools").toBe(12);
+  expect(tools.length, "expected exactly 13 trading tools").toBe(13);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   // Printed rather than only asserted: the budget is meant to be watched, and
@@ -254,7 +256,10 @@ it("keeps every description on a budget", () => {
   // research the user cannot inspect. The graph publisher is how a study
   // becomes visible, and it cannot be called without a name the model can
   // call. One more description in every turn's system prompt is the price.
-  expect(total, "total description chars must stay under 5,750").toBeLessThan(5_750);
+  // Raised from 5,750 when `trading_plan_document` became the thirteenth tool:
+  // chat is the strategy control plane now, and the direct-vs-planned line the
+  // description draws is the one thing a provider cannot infer from the tools.
+  expect(total, "total description chars must stay under 6,250").toBeLessThan(6_250);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;

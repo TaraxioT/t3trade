@@ -170,6 +170,23 @@ const autoMandate = (market: string): string =>
   "Follow what the user asks in the chat; where they have not said, work your own read of the market and publish a plan for it.";
 
 /**
+ * The mandate a mission created by a DIRECT ORDER carries. Same origin story
+ * as the auto mandate, plus the label the control plane depends on: this is a
+ * generated runtime record that exists so the order has lifecycle ownership,
+ * not a user-authored TRADE.md strategy, and it neither creates nor activates
+ * one. A mandate is read back on every wake, so the label has to survive being
+ * read a hundred times.
+ */
+const directOrderMandate = (market: string): string =>
+  `Generated direct-order runtime record: the user ordered ${market} by chat on ${BOUND_VENUE} ` +
+  `testnet, and authority was taken automatically to execute it. This mission is NOT a ` +
+  "user-authored TRADE.md strategy; it created no TRADE.md and activated none. Follow what the " +
+  "user asks in the chat; where they have not said, manage the position on your own read.";
+
+/** Why a mission is being auto-created, which decides the mandate it carries. */
+export type MissionBindCause = "plan_publish" | "direct_order";
+
+/**
  * Take one more market for a thread that already holds a mission.
  *
  * The same act as taking the first, and deliberately the same shape: the D4
@@ -257,6 +274,8 @@ export const bindThreadToMarket = Effect.fn("TradingAuthorityBinding.bindThreadT
     readonly threadId: string;
     readonly providerInstanceId: string;
     readonly market: TradingMarket;
+    /** Decides the mandate label; defaults to the plan-publish mandate. */
+    readonly cause?: MissionBindCause;
   }): Effect.fn.Return<
     AuthorityBinding,
     never,
@@ -312,7 +331,10 @@ export const bindThreadToMarket = Effect.fn("TradingAuthorityBinding.bindThreadT
         missionId,
         userId: LOCAL_TRADING_USER_ID,
         tradingAccountId: LOCAL_TRADING_ACCOUNT_ID,
-        instruction: autoMandate(input.market),
+        instruction:
+          input.cause === "direct_order"
+            ? directOrderMandate(input.market)
+            : autoMandate(input.market),
         allocatedCapitalUsd: capital.allocatedCapitalUsd,
         capitalSource: capital.source,
         market: input.market,

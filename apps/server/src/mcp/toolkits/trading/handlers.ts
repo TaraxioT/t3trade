@@ -66,7 +66,18 @@ import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcom
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
-import { guardPlanDocumentDrift } from "../../../trading/TradingPlanDocument.ts";
+import {
+  guardPlanDocumentDrift,
+  readThreadWorkspaceRoot,
+  TradingPlanDocumentError,
+  TradingPlanDocumentService,
+} from "../../../trading/TradingPlanDocument.ts";
+import type {
+  TradingPlanDocumentFactsPublic,
+  TradingPlanDocumentInput,
+  TradingPlanDocumentResult,
+} from "@t3tools/trading-contracts/plan-document";
+import { type MissionBindCause } from "../../../trading/TradingAuthorityBinding.ts";
 import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
@@ -245,6 +256,16 @@ const hypothesisResult = (value: TradingHypothesisResult): TradingHypothesisResu
 /** The same collapse for `trading_events`; see the note above. */
 const eventsResult = (value: TradingEventsResult): TradingEventsResult => value;
 const chartResult = (value: TradingChartResult): TradingChartResult => value;
+
+/** The internal shape `trading_plan_document`'s fact read returns before tagging. */
+type PlanDocumentFacts = {
+  readonly outcome: "facts";
+  readonly facts: TradingPlanDocumentFactsPublic;
+  readonly revisionCount: number;
+};
+
+/** A value-level refusal on `trading_plan_document`'s success union. */
+type PlanDocumentRejection = Extract<TradingPlanDocumentResult, { readonly outcome: "rejected" }>;
 
 const rejectCall = (input: {
   readonly reason:
@@ -457,6 +478,12 @@ const resolveRunThesis = Effect.fn("TradingToolkit.resolveRunThesis")(function* 
 const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(function* (input: {
   readonly missionId: string | undefined;
   readonly market: string | undefined;
+  /**
+   * Why a call that has to bind is binding. A direct order's mission is a
+   * generated runtime record and its mandate says so; a plan publish keeps the
+   * ordinary auto mandate.
+   */
+  readonly cause?: MissionBindCause;
 }): Effect.fn.Return<
   BoundCall,
   TradingToolRejectedError,
@@ -469,6 +496,7 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
   | TradingThreadMarketService
   | SqlClient.SqlClient
   | Crypto.Crypto
+  | TradingPlanDocumentService
 > {
   const scope = yield* McpInvocationContext.requireCapability("trading", (denial) => denial).pipe(
     Effect.catch((denial) =>
@@ -529,10 +557,29 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
     return yield* resolveBoundCall(input.missionId);
   }
 
+  // A direct order's generated-record label only applies when the workspace
+  // is NOT running an activated TRADE.md revision: an entry on a thread whose
+  // document is pinned and current is that plan being executed, not a bare
+  // order, and labeling it "direct-order runtime record" would misfile it.
+  let cause = input.cause;
+  if (cause === "direct_order") {
+    const sql = yield* SqlClient.SqlClient;
+    const root = yield* readThreadWorkspaceRoot(sql, scope.threadId);
+    if (root !== null) {
+      const documents = yield* TradingPlanDocumentService;
+      const current = yield* documents
+        .readCurrent(root)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (current !== null && current.status === "present" && current.activation === "active") {
+        cause = undefined;
+      }
+    }
+  }
   const binding = yield* bindThreadToMarket({
     threadId: scope.threadId,
     providerInstanceId: scope.providerInstanceId,
     market,
+    ...(cause === undefined ? {} : { cause }),
   });
   if (binding.outcome === "conflict") {
     return yield* rejectCall({
@@ -2478,6 +2525,160 @@ export const handlers = {
     }),
 
   /**
+   * The TRADE.md activation surface: show the facts, pin a revision, stand one
+   * down. A thin wrapper by design — the authority is the GLM-2 service
+   * (hash-gated, atomic, no exchange call), and this handler only resolves
+   * which workspace the calling thread means and shapes the service's answer
+   * for the wire. Direct orders never arrive here, and this tool never
+   * executes anything.
+   */
+  trading_plan_document: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireCapability(
+        "trading",
+        (denial) => denial,
+      ).pipe(
+        Effect.catch((denial) =>
+          rejectCall({
+            reason: "capability_not_granted",
+            threadId: denial.threadId,
+            missionId: undefined,
+          }),
+        ),
+      );
+      const threadId = scope.threadId;
+
+      // An analyst session may read the activation facts but not move them:
+      // its boundary is the mission-less session, and managing the workspace's
+      // pinned revision is not a read. Observe missions never see the tool in
+      // their allowlist; this is the server-side fence if one arrives anyway.
+      if (input.action !== "show" && isTradingAnalystThread(ThreadId.make(threadId))) {
+        return {
+          outcome: "rejected" as const,
+          reason: "session_read_only" as const,
+          detail:
+            "an analyst session may show plan-document facts but not activate or deactivate them",
+        };
+      }
+
+      const sql = yield* SqlClient.SqlClient;
+      const workspaceRoot = yield* readThreadWorkspaceRoot(sql, threadId);
+      if (workspaceRoot === null) {
+        return {
+          outcome: "rejected" as const,
+          reason: "no_workspace" as const,
+          detail:
+            "this thread has no persisted workspace root, so there is no TRADE.md to " +
+            (input.action === "show" ? "show" : `${input.action}`),
+        };
+      }
+
+      const documents = yield* TradingPlanDocumentService;
+
+      // The service's typed refusals become value-level rejections here: the
+      // caller's next move depends on which rule refused (stale hash means
+      // re-read; not found means write the document first), so the answer has
+      // to survive as data the model can branch on — the same discipline
+      // `trading_enter` and `trading_watch` use.
+      const catchDoc = <A>(
+        effect: Effect.Effect<A, TradingPlanDocumentError>,
+      ): Effect.Effect<A | PlanDocumentRejection> =>
+        effect.pipe(
+          Effect.catchTag("TradingPlanDocumentError", (error) =>
+            Effect.succeed({
+              outcome: "rejected",
+              reason: "document_refused",
+              detail: error.message,
+            } satisfies PlanDocumentRejection),
+          ),
+        );
+
+      const readFacts = (): Effect.Effect<PlanDocumentFacts | PlanDocumentRejection> =>
+        catchDoc(
+          Effect.gen(function* () {
+            const current = yield* documents.readCurrent(workspaceRoot);
+            const revisions = yield* documents.listRevisions(workspaceRoot);
+            // A missing file still leaves the persisted snapshot (and its
+            // audit trail) readable, so a vanished document reports as `none`
+            // with its last activated hash rather than as amnesia.
+            const persisted =
+              current.status === "missing"
+                ? yield* documents.readActive(workspaceRoot)
+                : current.activated;
+            const facts: TradingPlanDocumentFactsPublic = {
+              activation: current.status === "missing" ? "none" : current.activation,
+              contentHash: current.status === "missing" ? null : current.contentHash,
+              activatedHash: persisted === null ? null : persisted.contentHash,
+              activatedAt: persisted === null ? null : persisted.activatedAt,
+              missionId: persisted === null ? null : persisted.missionId,
+            };
+            return {
+              outcome: "facts",
+              facts,
+              revisionCount: revisions.length,
+            } satisfies PlanDocumentFacts;
+          }),
+        );
+
+      const asOutcome =
+        (outcome: "shown" | "activated" | "deactivated") =>
+        (done: PlanDocumentFacts | PlanDocumentRejection): TradingPlanDocumentResult =>
+          done.outcome === "rejected"
+            ? done
+            : { outcome, facts: done.facts, revisionCount: done.revisionCount };
+
+      const isRejection = (value: unknown): value is PlanDocumentRejection =>
+        typeof value === "object" &&
+        value !== null &&
+        (value as { readonly outcome?: unknown }).outcome === "rejected";
+
+      if (input.action === "show") {
+        return yield* readFacts().pipe(Effect.map(asOutcome("shown")));
+      }
+
+      if (input.action === "activate") {
+        // The hash is the material input an activation cannot be guessed
+        // without: refuse it as data, pointing at the read the caller skipped,
+        // so the provider's next move is one focused step and not a retry of
+        // the same shape.
+        if ((input.expectedContentHash ?? "").trim() === "") {
+          return {
+            outcome: "rejected" as const,
+            reason: "document_refused" as const,
+            detail:
+              "activate needs the expectedContentHash of the revision you read. Read TRADE.md " +
+              "(its content arrives in your turn context, or call show), take its sha256, then " +
+              "activate. If a material choice in the strategy itself is still unknown, ask the " +
+              "user exactly one question first rather than activating a guess.",
+          };
+        }
+        const activated = yield* catchDoc(
+          documents.activate({
+            workspaceRoot,
+            expectedContentHash: input.expectedContentHash as string,
+            threadId,
+            provider: scope.providerInstanceId,
+            ...(input.missionId === undefined ? {} : { missionId: input.missionId }),
+            ...(input.changeNote === undefined ? {} : { changeNote: input.changeNote }),
+          }),
+        );
+        if (isRejection(activated)) return activated;
+        return yield* readFacts().pipe(Effect.map(asOutcome("activated")));
+      }
+
+      const deactivated = yield* catchDoc(
+        documents.deactivate({
+          workspaceRoot,
+          threadId,
+          provider: scope.providerInstanceId,
+          ...(input.note === undefined ? {} : { note: input.note }),
+        }),
+      );
+      if (isRejection(deactivated)) return deactivated;
+      return yield* readFacts().pipe(Effect.map(asOutcome("deactivated")));
+    }),
+
+  /**
    * Price, size, pre-check and submit one entry.
    *
    * Everything executing used to demand of the harness is derived here from
@@ -2487,9 +2688,12 @@ export const handlers = {
    */
   trading_enter: (input) =>
     Effect.gen(function* () {
+      // A direct order ("BUY 0.01 BTC now") binds as a generated direct-order
+      // runtime record: labeled as such, and never a TRADE.md strategy.
       const { threadId, mission } = yield* resolveBindableCall({
         missionId: input.missionId,
         market: input.market,
+        cause: "direct_order",
       });
       // The plan-document drift fence: a workspace whose TRADE.md changed
       // after its activated revision does not take on NEW exposure until the
