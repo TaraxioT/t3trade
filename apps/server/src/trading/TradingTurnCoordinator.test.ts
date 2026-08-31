@@ -7,6 +7,9 @@ import {
   type OrchestrationEvent,
   DEFAULT_WORKSPACE_MODE,
 } from "@t3tools/contracts";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -28,6 +31,7 @@ import {
   TradingTurnCoordinatorLive,
   type NoOpWakeRow,
 } from "./TradingTurnCoordinator.ts";
+import { makeTradingPlanDocumentService, readTradeDocument } from "./TradingPlanDocument.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
 import { TradingWatchService, TradingWatchServiceLive } from "./TradingWatchService.ts";
 import { readActiveRun } from "./TradingRunTelemetry.ts";
@@ -126,6 +130,8 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM trading_plan_history`;
+  yield* sql`DELETE FROM trading_plan_documents`;
+  yield* sql`DELETE FROM provider_session_runtime`;
   composeFails = false;
   dispatchedTexts.length = 0;
   composed.length = 0;
@@ -172,6 +178,50 @@ const seedMission = Effect.gen(function* () {
   });
   if (published.outcome !== "accepted") throw new Error("seed publish rejected");
 });
+
+/**
+ * Give the bound thread a workspace with an activated TRADE.md — the
+ * document-backed mission shape. Returns the workspace root.
+ */
+const seedActivatedDocument = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-wake-doc-"));
+  NodeFS.writeFileSync(NodePath.join(dir, "TRADE.md"), DOC_CONTENT);
+  yield* sql`
+    INSERT INTO provider_session_runtime (
+      thread_id, provider_name, provider_instance_id, adapter_key,
+      runtime_mode, workspace_mode, status, last_seen_at,
+      resume_cursor_json, runtime_payload_json
+    ) VALUES (
+      'thread_1', 'claude', 'instance_1', 'claude',
+      'full-access', 'default', 'stopped', '2026-08-31T00:00:00Z',
+      NULL, ${JSON.stringify({ cwd: dir })}
+    )
+  `;
+  const documents = yield* makeTradingPlanDocumentService;
+  const current = yield* readTradeDocument(dir);
+  if (current.status !== "present") throw new Error("fixture TRADE.md missing");
+  yield* documents.activate({
+    workspaceRoot: dir,
+    expectedContentHash: current.contentHash,
+    threadId: "thread_1",
+    provider: "claude",
+    missionId: "mission_1",
+  });
+  return dir;
+});
+
+const DOC_CONTENT = `# TRADE.md
+
+## Mandate
+
+Momentum continuation on ETH, testnet only.
+
+## Strategies
+
+- ema-continuation: when the 5m EMA cross confirms, run scripts/signal.sh and
+  decide with its output.
+`;
 
 layer("TradingTurnCoordinator", (it) => {
   it.effect("starts a run when no lease is held", () =>
@@ -299,6 +349,67 @@ layer("TradingTurnCoordinator", (it) => {
       assert.isUndefined(wake["firstTurnContract"]);
       assert.isString(wake["instruction"]);
       assert.isString(wake["defaultTimeframe"]);
+    }),
+  );
+
+  it.effect("a document-backed mission_created skips the plan-authoring bootstrap", () =>
+    // The workspace already holds an ACTIVATED TRADE.md revision: the mission
+    // arrives pre-planned, and its first wake is the full composer snapshot
+    // (which carries the activated document), not the bootstrap message whose
+    // job is authoring a plan.
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMissionWithoutStrategy;
+      yield* seedActivatedDocument;
+      composed.length = 0;
+      dispatchedTexts.length = 0;
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const outcome = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "mission_created",
+      });
+
+      assert.equal(outcome.status, "started");
+      for (let attempt = 0; attempt < 500 && composed.length === 0; attempt++) {
+        yield* Effect.yieldNow;
+      }
+      assert.equal(composed[0]?.cause, "mission_created");
+      // No bootstrap JSON was dispatched: nothing the engine received decodes
+      // as the plan-authoring bootstrap message.
+      const bootstraps = dispatchedTexts.filter((text) => {
+        try {
+          return (JSON.parse(text) as { bootstrap?: unknown }).bootstrap === true;
+        } catch {
+          return false;
+        }
+      });
+      assert.equal(bootstraps.length, 0);
+    }),
+  );
+
+  it.effect("blocks the run when the bound provider is unavailable", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const missions = yield* TradingMissionService;
+      yield* missions.createMission({
+        missionId: "mission_1",
+        userId: "local",
+        tradingAccountId: "acct_1",
+        instruction: "Trade ETH momentum",
+        allocatedCapitalUsd: 1_000,
+        harness: { ...harness, status: "unavailable" },
+      });
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const outcome = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "market_watch_triggered",
+      });
+
+      // Recoverable, not fatal: no run row was spent and the mission row is
+      // untouched — the controls remain usable and the next wake retries.
+      assert.deepEqual(outcome, { status: "blocked", reason: "provider_unavailable" });
     }),
   );
 

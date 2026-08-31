@@ -632,6 +632,39 @@ export interface PlanDocumentDriftRefusal {
 }
 
 /**
+ * The one explanation every drift-classified refusal and wake note uses.
+ *
+ * The enter guard refuses with this text, and the wake composer carries the
+ * same words in `driftNote`, so a woken turn can tell the operator why new
+ * exposure is being refused (and what still works) instead of discovering the
+ * refusal by trying. Shared rather than reworded: two texts that disagree is
+ * how an agent learns to distrust both.
+ *
+ * `diskHash` is null for the missing/unreadable shapes, where there is no
+ * current hash to name.
+ */
+export const planDocumentDriftDetail = (input: {
+  readonly status: "drifted" | "missing" | "unreadable";
+  readonly activatedHash: string;
+  readonly diskHash: string | null;
+  readonly path: string;
+}): string => {
+  const where =
+    input.status === "missing"
+      ? `${TRADE_MD_FILENAME} is missing at its recorded path ${input.path}`
+      : input.status === "unreadable"
+        ? `${TRADE_MD_FILENAME} at ${input.path} could not be read`
+        : `${TRADE_MD_FILENAME} changed after the revision this mission runs on`;
+  return (
+    `${where} (activated sha256 ${input.activatedHash}` +
+    (input.diskHash === null ? "" : `, file sha256 ${input.diskHash}`) +
+    "). The activated revision still governs, and any new exposure (`trading_enter`) is refused " +
+    "with `plan_document_drifted` until the current document is read and re-activated. " +
+    "Reducing, closing, protecting, pausing and revoking remain available."
+  );
+};
+
+/**
  * The NEW-exposure drift guard, in the style of `TradingExecutionGuard`.
  *
  * Read-only: it reads the thread workspace's current document and classifies
@@ -642,9 +675,16 @@ export interface PlanDocumentDriftRefusal {
  * action type here — pause, emergency close, revoke — do not pass through
  * this guard at all and are structurally outside it.
  *
- * No activation, no document, or an unreadable workspace means no verdict:
- * the guard is a fence around drifted plans, not a requirement that a plan
- * document exist.
+ * No activation means no verdict: the guard is a fence around drifted plans,
+ * not a requirement that a plan document exist. While an activation stands,
+ * every way the current file can fail to be the readable, pinned bytes is
+ * drift-classified and fences new exposure — MISSING at the recorded path
+ * (a rename included; the guard never follows the new file) or UNREADABLE
+ * (oversize, bad encoding, symlink escape, read failure). The activated
+ * snapshot was a valid readable file when pinned, so a refusing read means
+ * the file changed or became unreadable since — epistemically identical to
+ * drift, and new exposure on a document nobody can read is exactly what the
+ * fence exists for.
  */
 export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDocumentDrift")(
   (
@@ -658,23 +698,61 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
       if (workspaceRoot === null) return null;
 
       const documents = yield* makeTradingPlanDocumentService;
-      const current = yield* documents.readCurrent(workspaceRoot).pipe(
-        // An unreadable document is not drift: it is the activation and tool
-        // surface's problem to report, and this guard does not manufacture a
-        // second copy of it.
+      // The pin decides whether the guard has standing at all: a workspace
+      // with no activated revision has nothing to drift against, and a root
+      // that no longer resolves is the wake path's blocked reason, not a
+      // verdict this guard manufactures.
+      const activated = yield* documents.readActive(workspaceRoot).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.catchCause(() => Effect.succeed(null)),
       );
-      if (current === null || current.status === "missing") return null;
+      if (activated === null) return null;
+
+      const current = yield* documents.readCurrent(workspaceRoot).pipe(
+        // A typed refusal (oversize, bad encoding, escape) or a defect is
+        // carried as null here and fenced below: while a pin stands, a read
+        // that refuses means the file is no longer the readable bytes that
+        // were pinned.
+        Effect.catch(() => Effect.succeed(null)),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      // A deleted (or renamed-away) TRADE.md while an activation stands is
+      // drift-classified: the pinned snapshot still governs, and new exposure
+      // on a document nobody can read is exactly what the fence exists for.
+      // A rename is treated as missing at the recorded path — the guard never
+      // follows the new file.
+      if (current === null) {
+        return {
+          reason: "plan_document_drifted",
+          detail: planDocumentDriftDetail({
+            status: "unreadable",
+            activatedHash: activated.contentHash,
+            diskHash: null,
+            path: activated.documentPath,
+          }),
+        } satisfies PlanDocumentDriftRefusal;
+      }
+      if (current.status === "missing") {
+        return {
+          reason: "plan_document_drifted",
+          detail: planDocumentDriftDetail({
+            status: "missing",
+            activatedHash: activated.contentHash,
+            diskHash: null,
+            path: activated.documentPath,
+          }),
+        } satisfies PlanDocumentDriftRefusal;
+      }
       if (current.activation !== "drifted") return null;
 
       return {
         reason: "plan_document_drifted",
-        detail:
-          `the workspace's ${TRADE_MD_FILENAME} changed after the revision this mission runs on ` +
-          `(activated sha256 ${current.activated?.contentHash ?? "unknown"}, file sha256 ${current.contentHash}). ` +
-          "Read the document, then re-activate the current revision before taking new exposure. " +
-          "Reducing, closing, protecting, pausing and revoking remain available.",
+        detail: planDocumentDriftDetail({
+          status: "drifted",
+          activatedHash: activated.contentHash,
+          diskHash: current.contentHash,
+          path: current.path,
+        }),
       } satisfies PlanDocumentDriftRefusal;
     }),
 );

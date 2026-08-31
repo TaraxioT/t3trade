@@ -298,6 +298,51 @@ export const WakeupWorkingEntry = Schema.Struct({
 });
 export type WakeupWorkingEntry = typeof WakeupWorkingEntry.Type;
 
+/**
+ * The workspace's TRADE.md as a wake carries it — the ACTIVATED revision is
+ * the authority, and the current disk facts ride beside it, never in place of
+ * it.
+ *
+ * A persistent strategy survives restarts by pinning one activated document
+ * revision per workspace (see `planDocument.ts`). A wake that swapped in the
+ * live file would silently promote un-activated edits to governing status, so
+ * the snapshot below is always the persisted `activated_content`, and the
+ * disk's own hash/status is a SEPARATE field the agent reads to know whether
+ * drift has occurred. When drift has, `driftNote` carries the same refusal
+ * reason the enter guard answers with, so the woken turn can explain the
+ * refusal instead of discovering it by trying.
+ *
+ * `activatedExcerpt` is bounded: the full document is one native file read
+ * away at `path` for an agent with its own tools, and a wake rides a context
+ * budget. `excerptTruncated` says whether the bound cut it.
+ */
+export const WakeupPlanDocument = Schema.Struct({
+  /** SHA-256 of the activated revision — the revision this wake runs on. */
+  activatedHash: Schema.String,
+  /** When the activated revision was pinned, ISO. */
+  activatedAt: Schema.String,
+  /** The activated document's absolute path inside the workspace. */
+  path: Schema.String,
+  /** Bounded excerpt of the persisted activated snapshot, never the live file. */
+  activatedExcerpt: TradingText,
+  /** Whether `activatedExcerpt` was cut at the wake's excerpt bound. */
+  excerptTruncated: Schema.Boolean,
+  /** SHA-256 of the CURRENT disk file, or null when it could not be read. */
+  diskHash: Schema.NullOr(Schema.String),
+  /**
+   * How the current file stands against the activated revision. `missing`
+   * and `unreadable` are drift-classified: the snapshot still governs, and new
+   * exposure is refused (missing) or unverifiable (unreadable).
+   */
+  status: Schema.Literals(["active", "drifted", "missing", "unreadable"]),
+  /**
+   * Present whenever `status` is not `active`: the drift/absence explanation
+   * in the same words the enter guard refuses with, plus what still works.
+   */
+  driftNote: Schema.optional(TradingText),
+});
+export type WakeupPlanDocument = typeof WakeupPlanDocument.Type;
+
 export const TradingHarnessWakeup = Schema.Struct({
   /**
    * What this message is, for anything reading the serialized payload rather
@@ -633,6 +678,13 @@ export const TradingHarnessWakeup = Schema.Struct({
       summary: TradingText,
     }),
   ),
+  /**
+   * The workspace's activated TRADE.md revision and how the current file
+   * stands against it. Absent when the thread has no persisted workspace, or
+   * the workspace has no activated revision — a plan-less mission wakes the
+   * same way it always did, on the structured-strategy path.
+   */
+  planDocument: Schema.optional(WakeupPlanDocument),
   instruction: Schema.optional(TradingText),
   /**
    * The timeframe to work on unless the instruction names another. Published on

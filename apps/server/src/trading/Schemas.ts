@@ -121,6 +121,7 @@ export {
   TradingDomainEventSummary,
   TradingHarnessWakeup,
   WakeupArmedWatch,
+  WakeupPlanDocument,
 } from "@t3tools/trading-contracts/wakeup";
 
 export type {

@@ -73,6 +73,7 @@ import {
   TradingHarnessRunCause,
 } from "./Schemas.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
+import { makeTradingPlanDocumentService, readThreadWorkspaceRoot } from "./TradingPlanDocument.ts";
 import { settleRunDecision } from "./TradingRunTelemetry.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
@@ -837,6 +838,30 @@ const make = Effect.gen(function* () {
    * - The `mission_created` first run dispatches a plain bootstrap message
    *   carrying just the mission instruction and the first-turn contract.
    */
+  /**
+   * Whether the thread's workspace holds an activated TRADE.md revision.
+   *
+   * Read-only and never fatal: a thread with no persisted cwd, an unreadable
+   * workspace, or no pinned revision is simply not document-backed, and the
+   * bootstrap decision falls through to the structured-strategy check. The
+   * wake composer re-reads the document itself for the snapshot; this is only
+   * the branch condition for the first-turn shape.
+   */
+  const hasActivatedPlanDocument = (threadId: string): Effect.Effect<boolean> =>
+    Effect.gen(function* () {
+      const workspaceRoot = yield* readThreadWorkspaceRoot(sql, threadId);
+      if (workspaceRoot === null) return false;
+      const documents = yield* makeTradingPlanDocumentService;
+      const active = yield* documents.readActive(workspaceRoot).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      return active !== null;
+    }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchCause(() => Effect.succeed(false)),
+    );
+
   const wakeProvider = Effect.fn("TradingTurnCoordinator.wakeProvider")(function* (input: {
     readonly missionId: string;
     readonly harnessRunId: string;
@@ -853,7 +878,13 @@ const make = Effect.gen(function* () {
     const messageId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
 
     let text: string;
-    if (input.cause === "mission_created" && activeStrategy._tag === "None") {
+    // A mission whose workspace already holds an ACTIVATED TRADE.md revision
+    // arrives pre-planned: its first wake is a full snapshot carrying the
+    // activated document, not the author-a-plan bootstrap. Only a mission with
+    // neither a published structured strategy nor a pinned document starts by
+    // authoring one.
+    const documentBacked = yield* hasActivatedPlanDocument(input.threadId);
+    if (input.cause === "mission_created" && activeStrategy._tag === "None" && !documentBacked) {
       // The first turn. Its job is to author the plan, so it carries the
       // mandate rather than a snapshot of a market it is about to read itself.
       // The decision contract arrives with the session, not with this wake.
@@ -873,6 +904,7 @@ const make = Effect.gen(function* () {
       const occurredAt = yield* Clock.currentTimeMillis;
       const composed = yield* composer.compose({
         mission,
+        threadId: input.threadId,
         harnessRunId: input.harnessRunId,
         cause: input.cause,
         occurredAt,

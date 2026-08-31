@@ -73,7 +73,7 @@ import {
 } from "./TradingLevelHistory.ts";
 import { readMarketSample, writeMarketSample } from "./TradingMarketSample.ts";
 
-import type { TradingPlanState } from "./Schemas.ts";
+import type { TradingPlanState, WakeupPlanDocument } from "./Schemas.ts";
 import type { PersistedWatch } from "./Schemas.ts";
 import type { TradingMission } from "./Schemas.ts";
 import type { WakeupArmedWatch, WakeupArmedWatchLine } from "./Schemas.ts";
@@ -90,6 +90,11 @@ import {
   type WakeupWorkingEntry,
 } from "./Schemas.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import {
+  makeTradingPlanDocumentService,
+  planDocumentDriftDetail,
+  readThreadWorkspaceRoot,
+} from "./TradingPlanDocument.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
@@ -113,6 +118,18 @@ const WAKEUP_RECENT_CANDLES = 5;
  * only what the wakeup embeds.
  */
 const WAKEUP_HOLD_HORIZONS: ReadonlyArray<number> = [3, 20] as const;
+
+/**
+ * How much of the activated TRADE.md snapshot a wake embeds.
+ *
+ * The snapshot governs the wake, but a wake rides the same context budget as
+ * everything else (see `MAX_WAKEUP_CHARS`), and the full document is one
+ * native file read away at the recorded path for an agent with its own tools.
+ * The bound keeps the excerpt a strategy-shaped summary; `excerptTruncated`
+ * on the struct says when the bound cut it, so "this is not the whole
+ * document" is never silent.
+ */
+export const WAKEUP_PLAN_EXCERPT_CHARS = 1_200;
 
 /**
  * Hard ceiling on the rendered wakeup text. The wakeup is the resumed turn's
@@ -471,10 +488,33 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string => {
     ...(wakeup.validationEvents === undefined || wakeup.validationEvents.length === 0
       ? {}
       : { validationEvents: [...wakeup.validationEvents] }),
+    // Kept at the floor, facts only: which revision governs and whether the
+    // disk drifted are the two things a trimmed wake must not lose — the
+    // excerpt is what the budget buys back last.
+    ...(wakeup.planDocument === undefined
+      ? {}
+      : { planDocument: renderPlanDocument(wakeup.planDocument) }),
     fetch: FETCH_POINTER,
     note: "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
   });
 };
+
+/**
+ * The workspace's activated TRADE.md as the wake renders it: the authority
+ * facts (path, activated hash, pinned-at, status) and the CURRENT disk hash
+ * reported beside them — never the disk content in place of the snapshot.
+ *
+ * Rendered above the armed set and the fetch pointer, but after the plan's
+ * numbers: the document is the strategy's persistent context, and the excerpt
+ * is the largest single field a document-backed wake carries.
+ */
+const renderPlanDocument = (doc: WakeupPlanDocument): Record<string, unknown> => ({
+  path: doc.path,
+  sha256: doc.activatedHash,
+  status: doc.status,
+  ...(doc.diskHash === null ? {} : { diskSha256: doc.diskHash }),
+  ...(doc.driftNote === undefined ? {} : { note: doc.driftNote }),
+});
 
 /** What a lean wake keeps of the one list that can grow, per ladder rung. */
 const LEAN_WAKE_CAPS = { armedWatches: 4 } as const;
@@ -564,6 +604,19 @@ const renderLeanWakeup = (
               : { targetProfitUsd: wakeup.activeStrategy.target.profitUsd }),
           },
         }),
+    // The activated TRADE.md revision, with the current disk facts beside it.
+    // The excerpt rides the lean render because it IS the strategy the
+    // document-backed mission runs on; the drift note rides with it whenever
+    // the disk and the pin disagree, in the same words the enter guard
+    // refuses with.
+    ...(wakeup.planDocument === undefined
+      ? {}
+      : {
+          planDocument: {
+            ...renderPlanDocument(wakeup.planDocument),
+            activatedExcerpt: wakeup.planDocument.activatedExcerpt,
+          },
+        }),
     armedWatches: renderArmedWatches(wakeup.armedWatches, caps.armedWatches),
     fetch: FETCH_POINTER,
   });
@@ -620,6 +673,8 @@ export interface ComposeWakeupError {
 
 export interface ComposeWakeupInput {
   readonly mission: TradingMission;
+  /** The bound provider thread — resolves the workspace the plan document lives in. */
+  readonly threadId: string;
   readonly harnessRunId: string;
   readonly cause: TradingHarnessRunCause;
   readonly occurredAt: number;
@@ -954,6 +1009,116 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError((error) => fail("watch_lookup_failed", error)));
       return watch === null ? Option.none() : Option.some(watch);
     });
+
+  /**
+   * The thread workspace's activated TRADE.md, as a wake carries it.
+   *
+   * The persisted snapshot is the authority and is embedded as a bounded
+   * excerpt; the CURRENT file is hashed and classified SEPARATELY so the
+   * woken turn sees drift as an explicit fact rather than as silently
+   * updated content. When the two disagree — or the file is gone, or cannot
+   * be read — the note is the same text the enter guard refuses with, so the
+   * agent can explain the refusal it is about to hit instead of flailing.
+   *
+   * Enrichment-shaped, never fatal: no persisted workspace or no activated
+   * revision means no field (the mission wakes the plan-less way it always
+   * could), and a document problem the wake still composes, carrying the
+   * blocked reason as `driftNote` — recoverable, and the mission stays
+   * operative so every account control remains usable.
+   */
+  const readWakeupPlanDocument = (
+    threadId: string,
+  ): Effect.Effect<WakeupPlanDocument | undefined> =>
+    Effect.gen(function* () {
+      const workspaceRoot = yield* readThreadWorkspaceRoot(sql, threadId);
+      if (workspaceRoot === null) return undefined;
+
+      const documents = yield* makeTradingPlanDocumentService;
+      const active = yield* documents.readActive(workspaceRoot).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      if (active === null) return undefined;
+
+      const current = yield* documents.readCurrent(workspaceRoot).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      // No excerpt when the workspace itself is gone: an activated revision
+      // whose snapshot is pinned is still the authority, and the note says
+      // what is wrong. (`readCurrent` failing here covers an unresolvable
+      // root as well as a refusing file read.)
+      const excerptSource = active.activatedContent;
+      const truncated = excerptSource.length > WAKEUP_PLAN_EXCERPT_CHARS;
+      const excerpt = truncated
+        ? `${excerptSource.slice(0, WAKEUP_PLAN_EXCERPT_CHARS)}…`
+        : excerptSource;
+
+      if (current === null) {
+        return {
+          activatedHash: active.contentHash,
+          activatedAt: active.activatedAt,
+          path: active.documentPath,
+          activatedExcerpt: excerpt,
+          excerptTruncated: truncated,
+          diskHash: null,
+          status: "unreadable",
+          driftNote: planDocumentDriftDetail({
+            status: "unreadable",
+            activatedHash: active.contentHash,
+            diskHash: null,
+            path: active.documentPath,
+          }),
+        } satisfies WakeupPlanDocument;
+      }
+      if (current.status === "missing") {
+        return {
+          activatedHash: active.contentHash,
+          activatedAt: active.activatedAt,
+          path: active.documentPath,
+          activatedExcerpt: excerpt,
+          excerptTruncated: truncated,
+          diskHash: null,
+          status: "missing",
+          driftNote: planDocumentDriftDetail({
+            status: "missing",
+            activatedHash: active.contentHash,
+            diskHash: null,
+            path: active.documentPath,
+          }),
+        } satisfies WakeupPlanDocument;
+      }
+      const drifted = current.activation === "drifted";
+      return {
+        activatedHash: active.contentHash,
+        activatedAt: active.activatedAt,
+        path: active.documentPath,
+        activatedExcerpt: excerpt,
+        excerptTruncated: truncated,
+        diskHash: current.contentHash,
+        status: drifted ? "drifted" : "active",
+        ...(drifted
+          ? {
+              driftNote: planDocumentDriftDetail({
+                status: "drifted",
+                activatedHash: active.contentHash,
+                diskHash: current.contentHash,
+                path: current.path,
+              }),
+            }
+          : {}),
+      } satisfies WakeupPlanDocument;
+    }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      // The document never holds the wake hostage: an unexpected failure
+      // costs the field, not the mission's hearing.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingWakeupComposer: plan document could not be read for wake", {
+          threadId,
+          cause: String(cause),
+        }).pipe(Effect.as(undefined)),
+      ),
+    );
 
   const observe: TradingWakeupComposerShape["observe"] = (input) =>
     Effect.gen(function* () {
@@ -1358,6 +1523,11 @@ const make = Effect.gen(function* () {
       // partly — and until this, nothing on a wake said so.
       const workingEntry = yield* readWorkingEntry(mission.id, market);
 
+      // The activated TRADE.md revision this mission's strategy runs on, with
+      // the current disk facts beside it. Never the disk content as the
+      // snapshot; never fatal to compose.
+      const planDocument = yield* readWakeupPlanDocument(input.threadId);
+
       const armed = yield* strategies
         .listWatches(mission.id)
         .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
@@ -1414,6 +1584,7 @@ const make = Effect.gen(function* () {
         ...(activeStrategy === undefined
           ? {}
           : { strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt) }),
+        ...(planDocument === undefined ? {} : { planDocument }),
         armedWatches,
         ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
         pendingEvents: [...pendingEvents],

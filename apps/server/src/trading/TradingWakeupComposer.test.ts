@@ -307,6 +307,7 @@ const composeFull = (input?: {
   Effect.gen(function* () {
     const composer = yield* TradingWakeupComposer;
     return yield* composer.compose({
+      threadId: mission.harness.threadId,
       mission: {
         ...(input?.instruction === undefined
           ? mission
@@ -339,6 +340,7 @@ layer("TradingWakeupComposer", (it) => {
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "market_watch_triggered",
         occurredAt: NOW,
@@ -392,6 +394,7 @@ layer("TradingWakeupComposer", (it) => {
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "user_message",
         occurredAt: NOW,
@@ -458,6 +461,7 @@ layer("TradingWakeupComposer", (it) => {
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "market_watch_triggered",
         occurredAt: NOW,
@@ -528,6 +532,7 @@ layer("TradingWakeupComposer", (it) => {
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "market_watch_triggered",
         occurredAt: NOW,
@@ -575,6 +580,7 @@ layer("TradingWakeupComposer", (it) => {
       ];
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "validation_event",
         occurredAt: NOW,
@@ -617,6 +623,7 @@ layer("TradingWakeupComposer", (it) => {
       const observing = { ...mission, purpose: "observe" as const };
       const composed = yield* composer.compose({
         mission: observing,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "validation_event",
         occurredAt: NOW,
@@ -642,6 +649,7 @@ layer("TradingWakeupComposer", (it) => {
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "scheduled_reassessment",
         occurredAt: NOW,
@@ -676,6 +684,7 @@ layer("TradingWakeupComposer", (it) => {
       const longMessage = "m".repeat(1_500);
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "user_message",
         occurredAt: NOW,
@@ -705,6 +714,7 @@ layer("TradingWakeupComposer", (it) => {
       const composer = yield* TradingWakeupComposer;
       const composed = yield* composer.compose({
         mission,
+        threadId: mission.harness.threadId,
         harnessRunId: "run_1",
         cause: "user_message",
         occurredAt: NOW,
@@ -1419,6 +1429,7 @@ layer("TradingWakeupComposer", (it) => {
         const composer = yield* TradingWakeupComposer;
         const composed = yield* composer.compose({
           mission,
+          threadId: mission.harness.threadId,
           harnessRunId: "run_1",
           cause: "scheduled_reassessment",
           occurredAt: NOW,
