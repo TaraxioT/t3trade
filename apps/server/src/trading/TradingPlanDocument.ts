@@ -32,6 +32,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { type SqlError } from "effect/unstable/sql/SqlError";
 
 import {
   classifyPlanDocument,
@@ -387,15 +388,22 @@ export class TradingPlanDocumentService extends Context.Service<
  * authoritative (`provider_session_runtime.runtime_payload_json`). No new cwd
  * source: projectless threads resolve to their per-thread scratch workspace,
  * project threads to their checkout.
+ *
+ * Strict: a failed read FAILS. The lenient {@link readThreadWorkspaceRoot}
+ * below preserves the historical absent-on-error behavior for enrichment
+ * callers; the drift guard uses this strict form so an unreadable cwd cannot
+ * pass as "no workspace" and skip the fence.
  */
-export const readThreadWorkspaceRoot = Effect.fn("TradingPlanDocument.readThreadWorkspaceRoot")(
-  (sql: SqlClient.SqlClient, threadId: string): Effect.Effect<string | null> =>
+export const readThreadWorkspaceRootStrict = Effect.fn(
+  "TradingPlanDocument.readThreadWorkspaceRootStrict",
+)(
+  (sql: SqlClient.SqlClient, threadId: string): Effect.Effect<string | null, SqlError> =>
     Effect.gen(function* () {
       const rows = yield* sql<{ readonly payload: string | null }>`
         SELECT runtime_payload_json AS payload
         FROM provider_session_runtime
         WHERE thread_id = ${threadId}
-      `.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<{ payload: string | null }>));
+      `;
       const payload = rows[0]?.payload;
       if (payload === null || payload === undefined) return null;
       // A payload that is not JSON is an absent cwd, never a failed turn.
@@ -406,6 +414,12 @@ export const readThreadWorkspaceRoot = Effect.fn("TradingPlanDocument.readThread
       const cwd = "cwd" in parsed && typeof parsed.cwd === "string" ? parsed.cwd.trim() : "";
       return cwd.length > 0 ? cwd : null;
     }),
+);
+
+/** The lenient historical form: a failed read is an absent cwd, never a failed turn. */
+export const readThreadWorkspaceRoot = Effect.fn("TradingPlanDocument.readThreadWorkspaceRoot")(
+  (sql: SqlClient.SqlClient, threadId: string): Effect.Effect<string | null> =>
+    readThreadWorkspaceRootStrict(sql, threadId).pipe(Effect.catch(() => Effect.succeed(null))),
 );
 
 export const makeTradingPlanDocumentService = Effect.gen(function* () {
@@ -438,6 +452,7 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
             WHERE workspace_root = ${keys.lexical}
                OR thread_cwd = ${keys.lexical}
                OR thread_cwd = ${workspaceRoot}
+            ORDER BY activated_at DESC, rowid DESC
           `
           : sql<{
               workspace_root: string;
@@ -696,6 +711,20 @@ export interface PlanDocumentDriftRefusal {
 }
 
 /**
+ * The fail-closed refusal: the fence could not READ the state it enforces,
+ * so it cannot prove there is no standing activation. Absence is a verdict;
+ * a failed read is not — new exposure refuses until the state is readable,
+ * while every exposure-reducing and protective path stays open (those never
+ * pass through the guard at all).
+ */
+const planStateUnreadableRefusal = (cause: string): PlanDocumentDriftRefusal => ({
+  reason: "plan_document_drifted",
+  detail:
+    `the workspace's plan-document state could not be read (${cause}), so new exposure is refused ` +
+    "until it can be read. Reducing, closing, protecting, pausing and revoking remain available.",
+});
+
+/**
  * The one explanation every drift-classified refusal and wake note uses.
  *
  * The enter guard refuses with this text, and the wake composer carries the
@@ -758,22 +787,58 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
     Effect.gen(function* () {
       if (isPermittedUnderPlanDrift(actionType)) return null;
       const sql = yield* SqlClient.SqlClient;
-      const workspaceRoot = yield* readThreadWorkspaceRoot(sql, threadId);
-      if (workspaceRoot === null) return null;
+      // Fail closed on unreadable state: a cwd or pin read that errors cannot
+      // prove there is no standing activation, so it refuses new exposure
+      // instead of passing as though the fence had no standing. Absence
+      // (null) is a verdict; a failed read is not.
+      type CwdRead =
+        | { readonly ok: true; readonly cwd: string | null }
+        | {
+            readonly ok: false;
+            readonly cause: string;
+          };
+      const workspaceRoot = yield* readThreadWorkspaceRootStrict(sql, threadId).pipe(
+        Effect.map((cwd): CwdRead => ({ ok: true, cwd })),
+        Effect.catch(
+          (): Effect.Effect<CwdRead> =>
+            Effect.succeed({ ok: false, cause: "the thread workspace row could not be read" }),
+        ),
+        Effect.catchCause(
+          (): Effect.Effect<CwdRead> =>
+            Effect.succeed({ ok: false, cause: "the thread workspace read died" }),
+        ),
+      );
+      if (!workspaceRoot.ok) return planStateUnreadableRefusal(workspaceRoot.cause);
+      if (workspaceRoot.cwd === null) return null;
 
       const documents = yield* makeTradingPlanDocumentService;
       // The pin decides whether the guard has standing at all: a workspace
       // with no activated revision has nothing to drift against. A root that
       // no longer resolves still finds its pin through the recorded cwd
       // spellings, so a deleted workspace fences below as unreadable rather
-      // than vanishing the activation the mission runs on.
-      const activated = yield* documents.readActive(workspaceRoot).pipe(
-        Effect.catch(() => Effect.succeed(null)),
-        Effect.catchCause(() => Effect.succeed(null)),
+      // than vanishing the activation the mission runs on. A pin read that
+      // errors fences the same way — fail closed.
+      type PinRead =
+        | { readonly ok: true; readonly pin: ActivePlanDocument | null }
+        | {
+            readonly ok: false;
+            readonly cause: string;
+          };
+      const activated = yield* documents.readActive(workspaceRoot.cwd).pipe(
+        Effect.map((pin): PinRead => ({ ok: true, pin })),
+        Effect.catch(
+          (error): Effect.Effect<PinRead> => Effect.succeed({ ok: false, cause: error.message }),
+        ),
+        Effect.catchCause(
+          (): Effect.Effect<PinRead> =>
+            Effect.succeed({ ok: false, cause: "the plan-document read died" }),
+        ),
       );
-      if (activated === null) return null;
+      if (!activated.ok) return planStateUnreadableRefusal(activated.cause);
+      if (activated.pin === null) return null;
+      const active = activated.pin;
 
-      const current = yield* documents.readCurrent(workspaceRoot).pipe(
+      const current = yield* documents.readCurrent(workspaceRoot.cwd).pipe(
         // A typed refusal (oversize, bad encoding, escape) or a defect is
         // carried as null here and fenced below: while a pin stands, a read
         // that refuses means the file is no longer the readable bytes that
@@ -791,9 +856,9 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
           reason: "plan_document_drifted",
           detail: planDocumentDriftDetail({
             status: "unreadable",
-            activatedHash: activated.contentHash,
+            activatedHash: active.contentHash,
             diskHash: null,
-            path: activated.documentPath,
+            path: active.documentPath,
           }),
         } satisfies PlanDocumentDriftRefusal;
       }
@@ -802,9 +867,9 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
           reason: "plan_document_drifted",
           detail: planDocumentDriftDetail({
             status: "missing",
-            activatedHash: activated.contentHash,
+            activatedHash: active.contentHash,
             diskHash: null,
-            path: activated.documentPath,
+            path: active.documentPath,
           }),
         } satisfies PlanDocumentDriftRefusal;
       }
@@ -814,7 +879,7 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
         reason: "plan_document_drifted",
         detail: planDocumentDriftDetail({
           status: "drifted",
-          activatedHash: activated.contentHash,
+          activatedHash: active.contentHash,
           diskHash: current.contentHash,
           path: current.path,
         }),

@@ -66,6 +66,18 @@ const makeWorkspace = (content?: string): string => {
   return dir;
 };
 
+/** An isolated store per test: fault triggers must not leak into the suite. */
+const isolatedStore = () =>
+  Layer.provideMerge(
+    NodeSqliteClient.layer({
+      filename: NodePath.join(
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-plan-tx-")),
+        "store.sqlite",
+      ),
+    }),
+    NodeServices.layer,
+  );
+
 /** The persisted-cwd row the GLM-1 seam reads, with every NOT NULL column. */
 const seedThreadCwd = (threadId: string, cwd: string) =>
   Effect.gen(function* () {
@@ -588,19 +600,86 @@ layer("TradingPlanDocument — deleted workspace root", (it) => {
   );
 });
 
-layer("TradingPlanDocument — activation and deactivation are atomic", (it) => {
-  /** An isolated store per test: fault triggers must not leak into the suite. */
-  const isolatedStore = () =>
-    Layer.provideMerge(
-      NodeSqliteClient.layer({
-        filename: NodePath.join(
-          NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-plan-tx-")),
-          "store.sqlite",
-        ),
-      }),
-      NodeServices.layer,
-    );
+layer("TradingPlanDocument — the guard fails closed on unreadable state", (it) => {
+  it.effect("a cwd read that errors refuses new exposure instead of passing", () =>
+    Effect.gen(function* () {
+      const store = isolatedStore();
+      yield* Effect.gen(function* () {
+        yield* runMigrations({});
+        // The cwd table itself becomes unreadable: the strict read cannot
+        // prove there is no workspace, so the fence must hold.
+        yield* (yield* SqlClient.SqlClient)`DROP TABLE provider_session_runtime`;
 
+        const refused = yield* guardPlanDocumentDrift("open", "thread_cwd_gone");
+        assert.notEqual(refused, null);
+        assert.equal(refused?.reason, "plan_document_drifted");
+        assert.include(refused?.detail ?? "", "could not be read");
+        // Exposure-reducing actions never reach a read at all.
+        assert.equal(yield* guardPlanDocumentDrift("close", "thread_cwd_gone"), null);
+      }).pipe(Effect.provide(store));
+    }),
+  );
+
+  it.effect("a pin read that errors refuses new exposure instead of passing", () =>
+    Effect.gen(function* () {
+      const store = isolatedStore();
+      const dir = makeWorkspace("# v1");
+      yield* Effect.gen(function* () {
+        yield* runMigrations({});
+        yield* seedThreadCwd("thread_pin_gone", dir);
+        // The pin table becomes unreadable after the cwd resolved fine.
+        yield* (yield* SqlClient.SqlClient)`DROP TABLE trading_plan_documents`;
+
+        const refused = yield* guardPlanDocumentDrift("scale_in", "thread_pin_gone");
+        assert.notEqual(refused, null);
+        assert.equal(refused?.reason, "plan_document_drifted");
+        assert.include(refused?.detail ?? "", "could not be read");
+        assert.equal(yield* guardPlanDocumentDrift("reduce", "thread_pin_gone"), null);
+      }).pipe(Effect.provide(store));
+    }),
+  );
+});
+
+layer("TradingPlanDocument — the deleted-root fallback is deterministic", (it) => {
+  it.effect("multiple candidate rows resolve to the most recent activation", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const documents = yield* makeTradingPlanDocumentService;
+      // A cwd spelling that reached two different workspaces over time (a
+      // retargeted symlink, then deletion): both pins are discoverable
+      // through it, and the lookup must pick deterministically — the most
+      // recent activation through that spelling is the governing one.
+      const gone = NodePath.join(NodeOS.tmpdir(), "t3trade-ambiguous-gone");
+      yield* seedThreadCwd("thread_ambiguous", gone);
+      for (const [root, at, content] of [
+        ["/gone/workspace-a", "2026-08-30T00:00:00Z", "# older activation"],
+        ["/gone/workspace-b", "2026-08-31T12:00:00Z", "# newer activation"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO trading_plan_documents (
+            workspace_root, document_path, content_hash, activated_content,
+            activated_at, activated_by_thread_id, activated_by_provider,
+            mission_id, plan_reference_json, thread_cwd
+          ) VALUES (
+            ${root}, ${NodePath.join(root, "TRADE.md")}, ${hashTradeContent(content)}, ${content},
+            ${at}, 'thread_ambiguous', 'codex', NULL, NULL, ${NodePath.resolve(gone)}
+          )
+        `;
+      }
+      const first = yield* documents.readActive(gone);
+      const second = yield* documents.readActive(gone);
+      assert.equal(first?.activatedContent, "# newer activation");
+      assert.equal(second?.activatedContent, "# newer activation", "stable across calls");
+      // And the fence holds under the ambiguity.
+      const refused = yield* guardPlanDocumentDrift("open", "thread_ambiguous");
+      assert.equal(refused?.reason, "plan_document_drifted");
+      assert.include(refused?.detail ?? "", hashTradeContent("# newer activation"));
+    }),
+  );
+});
+
+layer("TradingPlanDocument — activation and deactivation are atomic", (it) => {
   it.effect("a failed audit append rolls the activation back", () =>
     Effect.gen(function* () {
       const store = isolatedStore();
@@ -802,6 +881,59 @@ layer("TradingPlanDocument — restart recovery and migration", (it) => {
         // Discoverable means enforceable: the guard still fences.
         const refused = yield* guardPlanDocumentDrift("open", "thread_legacy");
         assert.equal(refused?.reason, "plan_document_drifted");
+      }).pipe(Effect.provide(at91));
+    }),
+  );
+
+  it.effect("migration 091 tolerates malformed legacy runtime payloads", () =>
+    Effect.gen(function* () {
+      const fileDb = NodePath.join(
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3trade-plan-badjson-")),
+        "old.sqlite",
+      );
+      const at90 = Layer.provideMerge(
+        NodeSqliteClient.layer({ filename: fileDb }),
+        NodeServices.layer,
+      );
+      yield* Effect.gen(function* () {
+        yield* runMigrations({ toMigrationInclusive: 90 });
+        const sql = yield* SqlClient.SqlClient;
+        // Runtime rows are known to hold non-JSON strings (and valid JSON
+        // that is not an object). json_extract would RAISE on the first
+        // shape and abort the whole versioned run.
+        for (const [threadId, payload] of [
+          ["thread_badjson", "not json"],
+          ["thread_arrjson", "[1,2]"],
+        ] as const) {
+          yield* seedThreadCwdRaw(threadId, payload);
+          yield* sql`
+            INSERT INTO trading_plan_documents (
+              workspace_root, document_path, content_hash, activated_content,
+              activated_at, activated_by_thread_id, activated_by_provider,
+              mission_id, plan_reference_json
+            ) VALUES (
+              ${`/gone/${threadId}`}, ${`/gone/${threadId}/TRADE.md`}, 'deadbeef', '# gone',
+              '2026-08-31T00:00:00Z', ${threadId}, 'codex', NULL, NULL
+            )
+          `;
+        }
+      }).pipe(Effect.provide(at90));
+
+      // The migration must complete, leaving those legacy rows' cwd NULL.
+      const at91 = Layer.provideMerge(
+        NodeSqliteClient.layer({ filename: fileDb }),
+        NodeServices.layer,
+      );
+      yield* runMigrations({}).pipe(Effect.provide(at91));
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ readonly thread_cwd: string | null }>`
+          SELECT thread_cwd FROM trading_plan_documents ORDER BY workspace_root
+        `;
+        assert.deepEqual(
+          rows.map((row) => row.thread_cwd),
+          [null, null],
+        );
       }).pipe(Effect.provide(at91));
     }),
   );

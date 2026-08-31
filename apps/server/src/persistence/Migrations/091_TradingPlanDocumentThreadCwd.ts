@@ -24,13 +24,19 @@ export default Effect.gen(function* () {
   `;
 
   // Best-effort backfill for rows activated before this column: the
-  // activating thread's persisted cwd, when one still exists. A NULL here
-  // only costs the deleted-root fallback for that legacy row, never any
-  // behavior the directory's existence already provided.
+  // activating thread's persisted cwd, when one still exists. The payload
+  // guard is load-bearing: json_extract RAISES on a malformed payload, and
+  // runtime rows are known to hold non-JSON strings — one such row would
+  // abort this migration (and with it the whole versioned run) instead of
+  // leaving that legacy row's cwd NULL.
   yield* sql`
     UPDATE trading_plan_documents
     SET thread_cwd = (
-      SELECT json_extract(runtime_payload_json, '$.cwd')
+      SELECT CASE
+        WHEN json_valid(runtime_payload_json)
+         AND json_type(runtime_payload_json) = 'object'
+        THEN json_extract(runtime_payload_json, '$.cwd')
+      END
       FROM provider_session_runtime
       WHERE thread_id = trading_plan_documents.activated_by_thread_id
     )
