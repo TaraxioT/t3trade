@@ -1,12 +1,15 @@
 /**
- * MCP & Adapters district: tool hub interchange, tool consoles, schema
- * library drawers, adapter bay with its provider dock, health console, and
- * the environment switchboard. Owner: MCP district worker.
+ * MCP tool row of the west RESEARCH & AGENTS section: the tool hub
+ * interchange, schema library drawers, adapter bay with its provider dock,
+ * health console, portfolio panels, and the environment switchboard. Owner:
+ * west lane.
  *
  * Story: agents OBTAIN capabilities here. The hub hands out typed tools,
  * schemas document them, adapters translate provider protocols, and the
  * switchboard picks the environment. Providers are adapters, never
- * authorities: identical dock sockets at the bay, no thrones.
+ * authorities: identical dock sockets at the bay, no thrones. The former
+ * The market-data and research-API tool consoles were consolidated into the
+ * research row's marketData and researchTools stations (stations/research.ts).
  */
 import { Container, Graphics, Sprite } from "pixi.js";
 import { gsap } from "gsap";
@@ -49,8 +52,9 @@ const notifyHealth = (): void => healthListeners.forEach((fn) => fn());
 
 const rand = seededRandom(23);
 
-/** District warm counter-accent: coral inlays subordinate to the violet hub. */
-const WARM = DISTRICTS.mcp.accent2;
+/** West-section counter-accent (research district accent2, violet): the
+ * warm inlay tone subordinate to the hub's violet identity. */
+const WARM: number = DISTRICTS.research.accent2;
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -146,14 +150,15 @@ function buildHub(ctx: DioramaContext): McpHubApi {
   const { root, hit } = stationShell(ctx, "mcpHub", -160);
 
   contactShadow(root, 0, 8, 310, 158, 0.25);
-  // Ellipse interchange platform: violet rim keeps the district identity,
-  // decisive coral inlays warm the interior instead of stacked light washes.
+  // Ellipse interchange platform: violet rim keeps the row's identity, and
+  // cyan interior rings tie the hub to the research district accent so the
+  // MCP row reads as part of the west section.
   const platform = new Graphics();
   platform.ellipse(0, 0, 140, 70).fill({ color: PALETTE.structure });
   platform.ellipse(0, 0, 44, 22).fill({ color: WARM, alpha: 0.08 });
   platform.ellipse(0, 0, 140, 70).stroke({ width: 2.5, color: PALETTE.violet, alpha: 0.85 });
-  platform.ellipse(0, 0, 112, 56).stroke({ width: 2, color: WARM, alpha: 0.4 });
-  platform.ellipse(0, 0, 60, 30).stroke({ width: 1.5, color: WARM, alpha: 0.5 });
+  platform.ellipse(0, 0, 112, 56).stroke({ width: 2, color: PALETTE.cyan, alpha: 0.35 });
+  platform.ellipse(0, 0, 60, 30).stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.45 });
   root.addChild(platform);
 
   // Central core pillar with one soft violet light; no stacked pillar wash.
@@ -315,221 +320,12 @@ function buildHub(ctx: DioramaContext): McpHubApi {
   return api;
 }
 
-/* ------------------------------------------- 2. market data tool consoles */
-
-function miniConsole(x: number, y: number, screen: (g: Graphics) => void): Container {
-  const c = new Container();
-  c.position.set(x, y);
-  c.addChild(
-    isoBox({
-      x: 0,
-      y: 4,
-      w: 30,
-      d: 16,
-      h: 9,
-      color: PALETTE.structure,
-      rim: PALETTE.violet,
-      rimAlpha: 0.5,
-    }),
-  );
-  const panel = screenPanel({ x: -15, y: -14, w: 30, h: 20, accent: PALETTE.cyan, alpha: 0.9 });
-  const content = new Graphics();
-  content.position.set(15, 10); // panel-local center
-  screen(content);
-  panel.addChild(content);
-  c.addChild(panel);
-  return c;
-}
-
-function buildMarketDataTools(ctx: DioramaContext): void {
-  const { root, hit } = stationShell(ctx, "marketDataTools", -70);
-  contactShadow(root, 0, 4, 168, 88);
-  root.addChild(propCrate(-64, 28));
-  root.addChild(propCrate(-54, 34, 9));
-  root.addChild(isoTile(0, 0, 150, 76, PALETTE.structure, 1, PALETTE.structureLight));
-
-  const cells: Array<{ x: number; y: number }> = [
-    { x: -44, y: -18 },
-    { x: 0, y: -28 },
-    { x: 44, y: -18 },
-    { x: -44, y: 16 },
-    { x: 0, y: 8 },
-    { x: 44, y: 16 },
-  ];
-  const screens: Array<(g: Graphics) => void> = [
-    // chart
-    (g) => {
-      g.moveTo(-12, 4).lineTo(-5, -2).lineTo(1, 2).lineTo(8, -7).lineTo(12, -4);
-      g.stroke({ width: 1.2, color: PALETTE.cyan, alpha: 0.9 });
-    },
-    // ladder
-    (g) => {
-      for (let i = 0; i < 4; i++) {
-        g.rect(-11 + i * 0.5, -8 + i * 5, 18 - i * 1.5, 2.4).fill({
-          color: i < 2 ? PALETTE.healthy : PALETTE.blocked,
-          alpha: 0.8,
-        });
-      }
-    },
-    // funding arc
-    (g) => {
-      g.arc(0, 6, 8, Math.PI, Math.PI * 1.7);
-      g.stroke({ width: 1.5, color: PALETTE.orange, alpha: 0.85 });
-      g.circle(3, -1, 1.6).fill({ color: PALETTE.orange });
-    },
-    // liquidity pool ellipse
-    (g) => {
-      g.ellipse(0, 0, 11, 5).stroke({ width: 1.2, color: PALETTE.aqua, alpha: 0.85 });
-      g.ellipse(0, 0, 6, 2.7).fill({ color: PALETTE.aqua, alpha: 0.35 });
-    },
-    // volatility bars
-    (g) => {
-      for (let i = 0; i < 5; i++) {
-        const h = 3 + Math.round(rand() * 7);
-        g.rect(-11 + i * 5, 7 - h, 3, h).fill({ color: PALETTE.violet, alpha: 0.85 });
-      }
-    },
-    // price ticker strip
-    (g) => {
-      g.rect(-13, -3, 26, 5).fill({ color: PALETTE.blue, alpha: 0.3 });
-      g.rect(-13, -3, 15, 5).fill({ color: PALETTE.blue, alpha: 0.75 });
-    },
-  ];
-  const consoles: Container[] = [];
-  cells.forEach((pos, i) => {
-    const c = miniConsole(pos.x, pos.y, screens[i]);
-    root.addChild(c);
-    consoles.push(c);
-  });
-
-  // One screen animates slowly: the chart line breathes.
-  const chart = consoles[0];
-  const tl = gsap.timeline({ repeat: -1 });
-  tl.to(chart, { alpha: 0.55, duration: 2.6, ease: "sine.inOut" });
-  tl.to(chart, { alpha: 1, duration: 2.6, ease: "sine.inOut" });
-  ctx.onCleanup(() => tl.kill());
-  registerStation({ id: "marketDataTools", root, hit });
-}
-
-/* ------------------------------------------------- 3. research tool tools */
-
-function buildResearchToolsMcp(ctx: DioramaContext): void {
-  const { def, root, hit } = stationShell(ctx, "researchToolsMcp", -70);
-  contactShadow(root, 0, 4, 168, 88);
-  root.addChild(propCrate(70, -32));
-  root.addChild(isoTile(0, 0, 150, 76, PALETTE.structure, 1, PALETTE.structureLight));
-
-  // News pulse console.
-  const news = miniConsole(-44, -6, (g) => {
-    g.circle(-6, -2, 2).fill({ color: PALETTE.cyan });
-    g.circle(0, 1, 2).fill({ color: PALETTE.cyan, alpha: 0.7 });
-    g.circle(6, -3, 2).fill({ color: PALETTE.cyan, alpha: 0.45 });
-    g.circle(0, 1, 7).stroke({ width: 1, color: PALETTE.cyan, alpha: 0.35 });
-  });
-  // Token hex console.
-  const hex = miniConsole(0, -10, (g) => {
-    g.poly(
-      Array.from({ length: 6 }, (_, i) => {
-        const a = (Math.PI / 3) * i - Math.PI / 6;
-        return [Math.cos(a) * 8, Math.sin(a) * 8 + 1];
-      }).flat(),
-    );
-    g.stroke({ width: 1.4, color: PALETTE.magenta, alpha: 0.85 });
-    g.circle(0, 1, 2.4).fill({ color: PALETTE.magenta, alpha: 0.8 });
-  });
-  // Protocol layers stack console.
-  const stack = miniConsole(44, -6, (g) => {
-    for (let i = 0; i < 4; i++) {
-      g.rect(-11, 5 - i * 4.5, 22 - i * 2, 2.6).fill({
-        color: PALETTE.blue,
-        alpha: 0.5 + i * 0.15,
-      });
-    }
-  });
-  root.addChild(news, hex, stack);
-
-  // Research-only tool ports: UNISWAP pools and 1INCH quotes feed the
-  // research consoles. They are data sources: their only connection is the
-  // short local hop to the consoles above, never a path toward the adapter
-  // bay or the execution tunnel.
-  const toolPorts: Array<{ lx: number; accent: number }> = [
-    { lx: -62, accent: PALETTE.magenta },
-    { lx: 62, accent: WARM },
-  ];
-  const PORT_META: Array<{ name: string; caption: string }> = [
-    { name: "UNISWAP", caption: "LIQUIDITY" },
-    { name: "1INCH", caption: "QUOTES" },
-  ];
-  toolPorts.forEach((port, i) => {
-    const stand = new Container();
-    stand.position.set(port.lx, 32);
-    stand.addChild(
-      isoCylinder({ x: 0, y: 0, r: 7, h: 12, color: PALETTE.structureLight, rim: port.accent }),
-    );
-    const socket = new Graphics();
-    socket.circle(0, -14, 5).fill({ color: port.accent, alpha: 0.3 });
-    socket.circle(0, -14, 5).stroke({ width: 1.5, color: port.accent, alpha: 0.95 });
-    socket.circle(0, -14, 2).fill({ color: port.accent });
-    stand.addChild(socket);
-    stand.addChild(glow(0, -14, 18, port.accent, 0.35));
-    root.addChild(stand);
-
-    const meta = PORT_META[i];
-    ctx.layers.labels.addChild(
-      makeSign(meta.name, {
-        x: def.anchor.x + port.lx,
-        y: def.anchor.y + 54,
-        size: "xs",
-        accent: port.accent,
-        halo: false,
-      }),
-    );
-    ctx.layers.labels.addChild(
-      makeSign(meta.caption, {
-        x: def.anchor.x + port.lx,
-        y: def.anchor.y + 72,
-        size: "xs",
-        accent: port.accent,
-        boardColor: PALETTE.space,
-        halo: false,
-      }),
-    );
-
-    if (ctx.reducedMotion) return;
-    // Local hop: a data dot leaps from the port to the nearest research
-    // console and fades. Staggered, non-synchronized, stays on the platform.
-    const dot = new Sprite(dotTexture());
-    dot.anchor.set(0.5);
-    dot.width = 8;
-    dot.height = 8;
-    dot.tint = port.accent;
-    dot.alpha = 0;
-    root.addChild(dot);
-    const targetX = port.lx > 0 ? 44 : -44;
-    const hop = gsap.timeline({ repeat: -1, delay: 3 + i * 5.5 });
-    hop.call(() => {
-      dot.position.set(port.lx, 16);
-      dot.alpha = 0.9;
-    });
-    hop.to(dot.position, { x: targetX, y: -4, duration: 0.9, ease: "power1.inOut" });
-    hop.to(dot, { alpha: 0, duration: 0.25 });
-    hop.to({}, { duration: 7 + i * 3.5 });
-    ctx.onCleanup(() => hop.kill());
-  });
-
-  const tl = gsap.timeline({ repeat: -1 });
-  tl.to(news.scale, { x: 1.06, y: 1.06, duration: 1.8, ease: "sine.inOut" });
-  tl.to(news.scale, { x: 1, y: 1, duration: 1.8, ease: "sine.inOut" });
-  tl.to(hex.scale, { x: 1.06, y: 1.06, duration: 1.8, ease: "sine.inOut" }, "<0.6");
-  tl.to(hex.scale, { x: 1, y: 1, duration: 1.8, ease: "sine.inOut" }, "<1.8");
-  ctx.onCleanup(() => tl.kill());
-  registerStation({ id: "researchToolsMcp", root, hit });
-}
-
-/* ---------------------------------------------------- 4. portfolio tools */
+/* ---------------------------------------------------- 2. portfolio tools */
 
 function buildPortfolioTools(ctx: DioramaContext): void {
-  const { root, hit } = stationShell(ctx, "portfolioTools", -70);
+  // Sign lifted clear of the mcpHub lg sign band (~y 820..860) so the two
+  // boards never stack in the same lane at zoom.
+  const { root, hit } = stationShell(ctx, "portfolioTools", -115);
   contactShadow(root, 0, 4, 168, 88);
   root.addChild(isoTile(0, 0, 150, 76, PALETTE.structure, 1, PALETTE.structureLight));
 
@@ -569,7 +365,7 @@ function buildPortfolioTools(ctx: DioramaContext): void {
   registerStation({ id: "portfolioTools", root, hit });
 }
 
-/* --------------------------------------------------------- 5. tool schemas */
+/* --------------------------------------------------------- 3. tool schemas */
 
 function buildToolSchemas(ctx: DioramaContext): void {
   const { root, hit } = stationShell(ctx, "toolSchemas", -80);
@@ -674,7 +470,7 @@ function buildToolSchemas(ctx: DioramaContext): void {
   registerStation({ id: "toolSchemas", root, hit });
 }
 
-/* ---------------------------------------------------------- 6. adapter bay */
+/* ---------------------------------------------------------- 4. adapter bay */
 
 function buildAdapterBay(ctx: DioramaContext): void {
   const { root, hit } = stationShell(ctx, "adapterBay", -70);
@@ -765,7 +561,7 @@ function buildAdapterBay(ctx: DioramaContext): void {
   registerStation({ id: "adapterBay", root, hit });
 }
 
-/* ----------------------------------------------------------- 7. mcp health */
+/* ----------------------------------------------------------- 5. mcp health */
 
 function buildMcpHealth(ctx: DioramaContext): void {
   const { root, hit } = stationShell(ctx, "mcpHealth", -52);
@@ -860,7 +656,7 @@ function buildMcpHealth(ctx: DioramaContext): void {
   registerStation({ id: "mcpHealth", root, hit });
 }
 
-/* ------------------------------------------------------ 8. env switchboard */
+/* ------------------------------------------------------ 6. env switchboard */
 
 type EnvKey = "research" | "testnet" | "connected" | "signer";
 
@@ -1006,8 +802,6 @@ export function buildMcpDistrict(ctx: DioramaContext): void {
   portHealth.fill("green");
 
   buildHub(ctx);
-  buildMarketDataTools(ctx);
-  buildResearchToolsMcp(ctx);
   buildPortfolioTools(ctx);
   buildToolSchemas(ctx);
   buildAdapterBay(ctx);

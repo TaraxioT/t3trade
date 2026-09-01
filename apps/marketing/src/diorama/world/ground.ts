@@ -1,258 +1,181 @@
 /**
- * Campus ground: the floating island slab, per-district floor inlays, tile
- * grids, entrance walkways, small bridges, and deterministic scatter detail.
+ * Room ground (dio-3 R1): stepped diamond plinth with layered south
+ * cross-section bands and a soft drop shadow into the void, per-section
+ * floor inlay washes clipped to the room, the 2:1 tile lattice, deterministic
+ * interior scatter (vents/hatches), and the in-room garden planters.
  * Everything is static and drawn once into the unsorted ground layer.
- * Owner: ground worker.
+ * Owner: room-world lane.
  */
 import { Container, Graphics } from "pixi.js";
 import type { DioramaContext } from "../core/context.js";
-import { edgeStrip, isoBox } from "../core/iso.js";
 import { leftFace, PALETTE, rightFace, shade } from "../config/palette.js";
-import { DISTRICTS } from "../config/stations.js";
-import { WALKWAY_RESEARCH, WALKWAY_SOUTH } from "../config/geometry.js";
+import { insideRoom, ROOM_DIAMOND, SECTION_POLYS, type SectionId } from "../config/geometry.js";
 import { seededRandom } from "../config/world.js";
 
-/** Campus slab extent (the floating island cross-section). */
-const SLAB = { x1: 180, y1: 140, x2: 2620, y2: 1430 } as const;
-const SLAB_R = 70;
-/** Visible slab thickness below the top surface. */
-const SLAB_T = 34;
+/** Room metrics derived from the frozen ROOM_DIAMOND corners. */
+const CENTER = { x: 1408, y: 768 } as const;
+const HALF_W = 1260;
+const HALF_H = 630;
+/** Plinth tread widths in axial units (half-diagonal growth per step). */
+const STEP_AXIAL = [52, 26] as const;
 
-function polyPath(g: Graphics, pts: Array<{ x: number; y: number }>): void {
-  g.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+/** Section accent washes (research cyan / floor blue / risk gold). */
+const SECTION_WASH: Record<SectionId, number> = {
+  research: 0x34e5e5,
+  floor: 0x5a7cff,
+  risk: 0xffd35a,
+};
+
+/** Flat diamond polygon (number pairs) around the room center. */
+function diamondPts(hh: number, dy = 0): number[] {
+  const hw = hh * 2;
+  return [
+    CENTER.x - hw,
+    CENTER.y + dy,
+    CENTER.x,
+    CENTER.y + hh + dy,
+    CENTER.x + hw,
+    CENTER.y + dy,
+    CENTER.x,
+    CENTER.y - hh + dy,
+  ];
 }
 
-/** The floating island: pale-rimmed slab with a layered thickness cross-section
- * and a soft drop shadow into space so the campus reads as mass, not a decal. */
-function buildSlab(root: Container): void {
-  const g = new Graphics();
-  const w = SLAB.x2 - SLAB.x1;
-  const h = SLAB.y2 - SLAB.y1;
+function polyPath(g: Graphics, pts: ReadonlyArray<{ x: number; y: number }>): void {
+  g.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+  g.closePath();
+}
 
-  // Drop shadow: large soft dark ellipse below the whole slab, offset south.
+/**
+ * The stepped plinth: floor diamond plus two outward treads. Each step draws
+ * downward-offset copies first so the south/front edges show layered dark
+ * cross-section bands (the old slab's thickness vocabulary, now on diamond
+ * edges with square corners). The north overhang is covered later by the
+ * back walls (world/walls.ts) and the next-smaller layer.
+ */
+function buildPlinth(root: Container): void {
+  // Soft drop shadow into the void so the room reads as mass, not a decal.
   const shadow = new Graphics();
-  shadow.ellipse((SLAB.x1 + SLAB.x2) / 2, (SLAB.y1 + SLAB.y2) / 2 + 30, w * 0.55, h * 0.24);
-  shadow.fill({ color: 0x000000, alpha: 0.5 });
+  shadow.ellipse(CENTER.x, CENTER.y + 140, 1420, 520);
+  shadow.fill({ color: 0x000000, alpha: 0.42 });
   root.addChild(shadow);
 
-  // Cross-section: dark under-crust, mid band, lighter upper band, top face.
-  g.roundRect(SLAB.x1, SLAB.y1 + SLAB_T * 0.4, w, h + SLAB_T, SLAB_R);
-  g.fill({ color: shade(PALETTE.structure, -0.45) });
-  g.roundRect(SLAB.x1, SLAB.y1 + SLAB_T * 0.25, w, h + SLAB_T, SLAB_R);
-  g.fill({ color: rightFace(PALETTE.structure) });
-  g.roundRect(SLAB.x1, SLAB.y1, w, h + SLAB_T * 0.5, SLAB_R);
-  g.fill({ color: leftFace(PALETTE.structure) });
-  g.roundRect(SLAB.x1, SLAB.y1, w, h, SLAB_R);
-  g.fill({ color: PALETTE.structureLight });
+  const g = new Graphics();
+  for (const [i, axial] of STEP_AXIAL.entries()) {
+    const hh = HALF_H + axial;
+    // Cross-section bands below the tread, south edges only in practice.
+    g.poly(diamondPts(hh, 16 - i * 5));
+    g.fill({ color: shade(PALETTE.structure, -0.45) });
+    g.poly(diamondPts(hh, 8 - i * 3));
+    g.fill({ color: rightFace(PALETTE.structure) });
+    // Tread top; inner step reads slightly lighter than the outer ring.
+    g.poly(diamondPts(hh));
+    g.fill({ color: i === 0 ? leftFace(PALETTE.structure) : shade(PALETTE.structure, 0.18) });
+    g.poly(diamondPts(hh));
+    g.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: i === 0 ? 0.16 : 0.22 });
+  }
 
-  // Pale rim edge so the island outline reads clearly against the void.
-  g.roundRect(SLAB.x1, SLAB.y1, w, h, SLAB_R);
+  // Floor diamond: the room's top face.
+  g.poly(diamondPts(HALF_H));
+  g.fill({ color: PALETTE.structureLight });
+  g.poly(diamondPts(HALF_H));
   g.stroke({ width: 2.5, color: PALETTE.surfacePale, alpha: 0.5 });
-  // A faint underline shadow on the cross-section for depth.
-  g.roundRect(SLAB.x1 + 6, SLAB.y1 + SLAB_T, w - 12, h, SLAB_R);
-  g.stroke({ width: 1, color: PALETTE.space, alpha: 0.4 });
 
   root.addChild(g);
 }
 
-/** Per-district floor inlays with a subtle 2:1 diamond tile grid. Each
- * district gets a distinct accent wash so zones read as different materials
- * at fit zoom instead of one monochrome field. */
-const DISTRICT_WASH: Record<string, number> = {
-  research: 0x34e5e5, // cyan
-  floor: 0x5a7cff, // blue
-  mcp: 0x9a70ff, // violet
-  risk: 0xffd35a, // warm gold
-  ops: 0x56f2c2, // aqua green
-};
+/**
+ * Per-section floor inlays using the frozen polygons. The polygons lie
+ * inside the room diamond by construction (their outer vertices sit exactly
+ * on the diamond edges), so no additional clip is required. The fill sits
+ * darker than the plinth top so section floors separate by value; borders
+ * stay very faint so sections blend into one room, not UI cards.
+ */
+function buildSectionInlays(root: Container): void {
+  const fills = new Graphics();
+  for (const id of Object.keys(SECTION_POLYS) as SectionId[]) {
+    const pts = SECTION_POLYS[id];
+    polyPath(fills, pts);
+    fills.fill({ color: PALETTE.structure, alpha: 0.45 });
+    polyPath(fills, pts);
+    fills.fill({ color: SECTION_WASH[id], alpha: 0.1 });
+    polyPath(fills, pts);
+    // No accent stroke on the section polys: interior boundaries would read
+    // as compositing seams at zoom. The wash fill alone differentiates zones;
+    // the one intentional interior line is the gold authority seam (seam.ts).
+    fills.stroke({ width: 1, color: SECTION_WASH[id], alpha: 0.04 });
+  }
+  root.addChild(fills);
+}
+
+/** Floor-diamond edges as segment pairs for lattice clipping. */
+const DIAMOND_EDGES: ReadonlyArray<readonly [{ x: number; y: number }, { x: number; y: number }]> = [
+  [ROOM_DIAMOND.N, ROOM_DIAMOND.E],
+  [ROOM_DIAMOND.E, ROOM_DIAMOND.S],
+  [ROOM_DIAMOND.S, ROOM_DIAMOND.W],
+  [ROOM_DIAMOND.W, ROOM_DIAMOND.N],
+];
+
+/** Intersect the line y = m*x + c with the floor diamond; null if no chord. */
+function clipToDiamond(
+  m: number,
+  c: number,
+): [number, number, number, number] | null {
+  const hits: Array<{ x: number; y: number }> = [];
+  for (const [p, q] of DIAMOND_EDGES) {
+    const denom = q.y - p.y - m * (q.x - p.x);
+    if (Math.abs(denom) < 1e-9) continue;
+    const t = (c + m * p.x - p.y) / denom;
+    if (t < -1e-6 || t > 1 + 1e-6) continue;
+    hits.push({ x: p.x + t * (q.x - p.x), y: p.y + t * (q.y - p.y) });
+  }
+  if (hits.length < 2) return null;
+  const first = hits[0];
+  const last = hits[hits.length - 1];
+  return [first.x, first.y, last.x, last.y];
+}
 
 /**
- * Circulation pad over the former supervisor deck (x 1310-1650, y
- * 1100-1300). The deck is gone; the slab there keeps the district floor
- * material (structure tint + tile lattice, no accent wash, no border) so it
- * reads as open circulation between floor, operations, and risk rather than
- * a hole or a leftover platform. Drawn before district fills so overlapping
- * district inlays keep their own identity on top.
+ * The 2:1 diamond tile lattice across the whole room floor: diagonal lines
+ * at slopes +0.5 and -0.5, clipped analytically to the floor diamond (the
+ * lattice must never spill onto the plinth treads).
  */
-const CIRCULATION = { x1: 1310, y1: 1100, x2: 1650, y2: 1300 } as const;
-
-function buildCirculationPad(root: Container): void {
-  const fills = new Graphics();
+function buildLattice(root: Container): void {
   const grid = new Graphics();
-  const pad = 10;
-  const b = {
-    x: CIRCULATION.x1 + pad,
-    y: CIRCULATION.y1 + pad,
-    w: CIRCULATION.x2 - CIRCULATION.x1 - pad * 2,
-    h: CIRCULATION.y2 - CIRCULATION.y1 - pad * 2,
-  };
-
-  fills.roundRect(b.x, b.y, b.w, b.h, 26);
-  fills.fill({ color: PALETTE.structure, alpha: 0.45 });
-
-  const step = 96;
-  const cx = b.x + b.w / 2;
-  const cy = b.y + b.h / 2;
-  for (let o = -Math.max(b.w, b.h); o < Math.max(b.w, b.h); o += step) {
-    grid.moveTo(cx + o, cy - b.h);
-    grid.lineTo(cx + o + b.h * 2, cy + b.h);
-    grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
-    grid.moveTo(cx + o, cy - b.h);
-    grid.lineTo(cx + o - b.h * 2, cy + b.h);
-    grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
-  }
-
-  root.addChild(fills);
-  root.addChild(grid);
-}
-
-function buildDistrictInlays(root: Container): void {
-  const fills = new Graphics();
-  const grid = new Graphics();
-
-  for (const def of Object.values(DISTRICTS)) {
-    if (def.id === "external") continue; // Hyperliquid owns its own platform.
-    const { x1, y1, x2, y2 } = def.bounds;
-    const pad = 10;
-    const b = { x: x1 + pad, y: y1 + pad, w: x2 - x1 - pad * 2, h: y2 - y1 - pad * 2 };
-
-    // Structural tint plus the district-specific accent wash. The fill sits
-    // darker than the slab top so district floors and pale structure tops
-    // separate by value, not by stacked translucency. The border stays very
-    // faint: districts must blend into one campus, not read as UI cards.
-    fills.roundRect(b.x, b.y, b.w, b.h, 26);
-    fills.fill({ color: PALETTE.structure, alpha: 0.45 });
-    fills.roundRect(b.x, b.y, b.w, b.h, 26);
-    fills.fill({ color: DISTRICT_WASH[def.id] ?? def.accent, alpha: 0.1 });
-    fills.roundRect(b.x, b.y, b.w, b.h, 26);
-    fills.stroke({ width: 1, color: def.accent, alpha: 0.1 });
-
-    // 2:1 diamond lattice: diagonal lines at slopes +0.5 and -0.5.
-    const step = 96;
-    const cx = b.x + b.w / 2;
-    const cy = b.y + b.h / 2;
-    for (let o = -Math.max(b.w, b.h); o < Math.max(b.w, b.h); o += step) {
-      grid.moveTo(cx + o, cy - b.h);
-      grid.lineTo(cx + o + b.h * 2, cy + b.h);
-      grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
-      grid.moveTo(cx + o, cy - b.h);
-      grid.lineTo(cx + o - b.h * 2, cy + b.h);
+  const corners = [ROOM_DIAMOND.N, ROOM_DIAMOND.E, ROOM_DIAMOND.S, ROOM_DIAMOND.W];
+  for (const m of [0.5, -0.5]) {
+    const cs = corners.map((p) => p.y - m * p.x);
+    const lo = Math.min(...cs);
+    const hi = Math.max(...cs);
+    // Step 48 in intercept = 96 x-intercept spacing, the old lattice density.
+    for (let c = lo; c <= hi; c += 48) {
+      const seg = clipToDiamond(m, c);
+      if (!seg) continue;
+      grid.moveTo(seg[0], seg[1]);
+      grid.lineTo(seg[2], seg[3]);
       grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
     }
   }
-
-  root.addChild(fills);
   root.addChild(grid);
 }
 
-/** Pale-edged walkway along a config polyline with low emissive side strips
- * and additive center guide dots every ~40 units (drawn once, static). */
-function buildWalkway(root: Container, pts: Array<{ x: number; y: number }>): void {
-  const body = new Graphics();
-  polyPath(body, pts);
-  body.stroke({ width: 20, color: PALETTE.surfacePale, alpha: 0.12, cap: "round", join: "round" });
-  polyPath(body, pts);
-  body.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.3, cap: "round" });
-  root.addChild(body);
-
-  const guides = new Graphics();
-  guides.blendMode = "add";
-
-  // Emissive edge strips offset to each side of the path.
-  for (let i = 0; i < pts.length - 1; i++) {
-    const a = pts[i];
-    const b = pts[i + 1];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = (-dy / len) * 9;
-    const ny = (dx / len) * 9;
-    for (const s of [1, -1]) {
-      root.addChild(
-        edgeStrip(a.x + nx * s, a.y + ny * s, b.x + nx * s, b.y + ny * s, PALETTE.aqua, 0.22, 1),
-      );
-    }
-    // Center dashed guide lights along the segment.
-    const count = Math.max(1, Math.floor(len / 40));
-    for (let k = 0; k <= count; k++) {
-      const t = k / count;
-      guides.circle(a.x + dx * t, a.y + dy * t, 1.6);
-      guides.fill({ color: PALETTE.aqua, alpha: 0.5 });
-    }
-  }
-  root.addChild(guides);
-}
-
-/** A small raised bridge slab with deck planks, rail posts, and an ambient
- * occlusion shadow on the floor beneath it. */
-function buildBridge(root: Container, cx: number, cy: number, horizontal: boolean): void {
-  const w = horizontal ? 96 : 40;
-  const d = horizontal ? 34 : 84;
-
-  // AO shadow on the deck approach before the slab draws over it.
-  const ao = new Graphics();
-  ao.ellipse(cx, cy + 4, horizontal ? w * 0.55 : d * 0.5, horizontal ? d * 0.5 : w * 0.55);
-  ao.fill({ color: 0x000000, alpha: 0.22 });
-  root.addChild(ao);
-
-  root.addChild(
-    isoBox({
-      x: cx,
-      y: cy,
-      w,
-      d,
-      h: 10,
-      color: PALETTE.structureLight,
-      rim: PALETTE.surfacePale,
-      rimAlpha: 0.4,
-    }),
-  );
-
-  // Deck planks: transverse darker seams across the walk surface.
-  const planks = new Graphics();
-  const span = horizontal ? w : d;
-  const ox = horizontal ? 0 : d / 2.6;
-  const oy = horizontal ? d / 2.6 : 0;
-  for (let i = 0; i <= 6; i++) {
-    const t = -span / 2 + (span / 6) * i;
-    planks.moveTo(cx + (horizontal ? t : -ox), cy + (horizontal ? -oy : t));
-    planks.lineTo(cx + (horizontal ? t : ox), cy + (horizontal ? oy : t));
-    planks.stroke({ width: 1, color: PALETTE.structure, alpha: 0.55 });
-  }
-  root.addChild(planks);
-
-  // Rail posts: thin vertical pins, height well under the 18-unit cap.
-  const posts = new Graphics();
-  for (let i = 0; i <= 4; i++) {
-    const t = -span / 2 + (span / 4) * i;
-    for (const s of [1, -1]) {
-      const px = horizontal ? cx + t : cx + (s * d) / 2.6;
-      const py = horizontal ? cy + (s * d) / 2.6 : cy + t;
-      posts.moveTo(px, py - 10);
-      posts.lineTo(px, py - 24);
-      posts.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.5 });
-    }
-  }
-  root.addChild(posts);
-}
-
-/** The former sandbox causeway (an angled deck at the west slab edge below
- * the research-only gate) was removed: the sandbox sits well inside the
- * slab, so the deck had nothing to tie back to and read as a dark slab
- * floating past the campus edge. */
-
-/** Deterministic scatter: vents and hatches (<= 40 props). Cable conduits were
- * removed: they doubled up the rail network's line language on the floor. */
+/** Deterministic scatter: vents and hatches seeded strictly inside the room
+ * (>= 90 units clear of every wall base and plinth edge). */
 function buildScatter(root: Container): void {
   const rnd = seededRandom(23);
   const g = new Graphics();
-  const vents = 12;
-  const hatches = 10;
+  const sampleInside = (): { x: number; y: number } => {
+    for (let i = 0; i < 60; i++) {
+      const x = CENTER.x - HALF_W + 60 + rnd() * (HALF_W * 2 - 120);
+      const y = CENTER.y - HALF_H + 60 + rnd() * (HALF_H * 2 - 120);
+      if (insideRoom(x, y, 90)) return { x, y };
+    }
+    return { x: CENTER.x, y: CENTER.y };
+  };
 
-  for (let i = 0; i < vents; i++) {
-    const x = SLAB.x1 + 60 + rnd() * (SLAB.x2 - SLAB.x1 - 120);
-    const y = SLAB.y1 + 60 + rnd() * (SLAB.y2 - SLAB.y1 - 120);
+  for (let i = 0; i < 12; i++) {
+    const { x, y } = sampleInside();
     const s = 7 + rnd() * 5;
     g.roundRect(x - s, y - s * 0.6, s * 2, s * 1.2, 2);
     g.fill({ color: PALETTE.structure, alpha: 0.8 });
@@ -261,9 +184,8 @@ function buildScatter(root: Container): void {
     g.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.25 });
   }
 
-  for (let i = 0; i < hatches; i++) {
-    const x = SLAB.x1 + 80 + rnd() * (SLAB.x2 - SLAB.x1 - 160);
-    const y = SLAB.y1 + 80 + rnd() * (SLAB.y2 - SLAB.y1 - 160);
+  for (let i = 0; i < 10; i++) {
+    const { x, y } = sampleInside();
     const s = 9 + rnd() * 5;
     g.roundRect(x - s, y - s, s * 2, s * 2, 3);
     g.stroke({ width: 1.2, color: PALETTE.inkDim, alpha: 0.22 });
@@ -273,17 +195,19 @@ function buildScatter(root: Container): void {
   }
 
   root.addChild(g);
+}
 
-  // Mid-campus garden cluster: the slab band between sandbox, event bus, and
-  // the decision table reads as a void otherwise. Soil mounds with curved
-  // glow reeds ground the space without blocking paths. Deliberately
-  // plant-like (curved leaning stems, mound shading, no pylons) so it never
-  // reads as an unmounted gray platform with antenna pins.
+/**
+ * Mid-room garden planters, re-homed to the south band of the central floor
+ * section (reference rooms keep plants by the open front). Soil mounds with
+ * curved glow reeds ground the space without blocking paths.
+ */
+function buildGarden(root: Container): void {
   const garden = new Container();
   for (const [gx, gy, hue] of [
-    [640, 815, PALETTE.healthy],
-    [700, 845, PALETTE.aqua],
-    [590, 870, PALETTE.cyan],
+    [1250, 1225, PALETTE.healthy],
+    [1310, 1252, PALETTE.aqua],
+    [1195, 1272, PALETTE.cyan],
   ] as Array<[number, number, number]>) {
     const planter = new Graphics();
     planter.ellipse(gx, gy + 6, 22, 10);
@@ -306,116 +230,12 @@ function buildScatter(root: Container): void {
   root.addChild(garden);
 }
 
-/**
- * Service infrastructure filling the two fit-zoom dead zones: a maintenance
- * pad with a pipe run in the bottom-left corner (between the state store,
- * recovery workshop, and reconciliation dock) and a cooling garden strip in
- * the bottom-right tray beneath Risk & Execution. Unlabeled and low
- * contrast: texture, not content. The south exit corridor (x 2280-2420)
- * stays clear.
- */
-function buildServiceInfrastructure(root: Container): void {
-  // --- Bottom-left: maintenance pad + pipe run -------------------------------
-  const pad = isoBox({
-    x: 330,
-    y: 1180,
-    w: 130,
-    d: 80,
-    h: 6,
-    color: PALETTE.structure,
-    rim: PALETTE.surfacePale,
-    rimAlpha: 0.25,
-  });
-  root.addChild(pad);
-
-  // Crates and a vent on the pad: small, dark, quiet.
-  const props = new Graphics();
-  props.rect(300, 1150, 22, 16);
-  props.fill({ color: PALETTE.structureLight, alpha: 0.8 });
-  props.rect(326, 1146, 16, 20);
-  props.fill({ color: leftFace(PALETTE.structureLight), alpha: 0.9 });
-  props.rect(344, 1152, 12, 8);
-  props.fill({ color: PALETTE.structure, alpha: 0.9 });
-  props.moveTo(348, 1152);
-  props.lineTo(348, 1144);
-  props.stroke({ width: 1.2, color: PALETTE.structureLight });
-  props.circle(348, 1142, 2);
-  props.fill({ color: PALETTE.inkDim, alpha: 0.35 });
-  root.addChild(props);
-
-  // Pipe run: west slab edge into the pad, then a drop toward the south.
-  const pipes = new Graphics();
-  for (const [px1, py1, px2, py2] of [
-    [210, 1122, 300, 1160],
-    [392, 1180, 430, 1240],
-  ] as Array<[number, number, number, number]>) {
-    pipes.moveTo(px1, py1);
-    pipes.lineTo(px2, py2);
-    pipes.stroke({ width: 4, color: PALETTE.structureLight, alpha: 0.55, cap: "round" });
-    pipes.moveTo(px1, py1);
-    pipes.lineTo(px2, py2);
-    pipes.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.28, cap: "round" });
-    const len = Math.hypot(px2 - px1, py2 - py1);
-    const joints = Math.max(1, Math.floor(len / 70));
-    for (let k = 1; k <= joints; k++) {
-      const t = k / (joints + 1);
-      pipes.circle(px1 + (px2 - px1) * t, py1 + (py2 - py1) * t, 2.6);
-      pipes.fill({ color: PALETTE.structureLight, alpha: 0.75 });
-    }
-  }
-  root.addChild(pipes);
-
-  // --- Bottom-right: cooling garden / utility strip --------------------------
-  const strip = new Graphics();
-  const finXs: number[] = [];
-  for (let fx = 1760; fx <= 2240; fx += 80) finXs.push(fx);
-  for (let fx = 2460; fx <= 2570; fx += 80) finXs.push(fx);
-  for (const fx of finXs) {
-    // Cooling fin: dark body with a pale heat-exchange top.
-    strip.rect(fx - 7, 1394, 14, 12);
-    strip.fill({ color: PALETTE.structureLight, alpha: 0.55 });
-    strip.rect(fx - 7, 1392, 14, 3);
-    strip.fill({ color: PALETTE.surfacePale, alpha: 0.22 });
-    strip.moveTo(fx - 4, 1400);
-    strip.lineTo(fx + 4, 1400);
-    strip.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.2 });
-  }
-  // Low utility conduit beneath the fins ties the strip together.
-  strip.moveTo(1745, 1414);
-  strip.lineTo(2255, 1414);
-  strip.stroke({ width: 2.5, color: PALETTE.structureLight, alpha: 0.4, cap: "round" });
-  strip.moveTo(2450, 1414);
-  strip.lineTo(2585, 1414);
-  strip.stroke({ width: 2.5, color: PALETTE.structureLight, alpha: 0.4, cap: "round" });
-  // Two planter mounds break the fin rhythm.
-  for (const [gx, gy] of [
-    [1900, 1420],
-    [2140, 1420],
-  ] as Array<[number, number]>) {
-    strip.ellipse(gx, gy, 26, 9);
-    strip.fill({ color: PALETTE.structure, alpha: 0.8 });
-    for (let r = -1; r <= 1; r++) {
-      strip.moveTo(gx + r * 10, gy - 1);
-      strip.lineTo(gx + r * 12, gy - 10);
-      strip.stroke({ width: 1.2, color: PALETTE.aqua, alpha: 0.35 });
-    }
-  }
-  root.addChild(strip);
-}
-
 export function buildGround(ctx: DioramaContext): void {
   const root = new Container();
-  buildSlab(root);
-  // Circulation pad first: district inlays draw over it where they overlap.
-  buildCirculationPad(root);
-  buildDistrictInlays(root);
-  buildWalkway(root, [...WALKWAY_SOUTH]);
-  buildWalkway(root, [...WALKWAY_RESEARCH]);
-  // Bridge: research district to the central floor. The former ops-to-floor
-  // bridge at (1495,1030) is gone with the supervisor deck it served; the
-  // freed zone is intentional circulation space with no dead-end ramp.
-  buildBridge(root, 1075, 545, true);
+  buildPlinth(root);
+  buildSectionInlays(root);
+  buildLattice(root);
   buildScatter(root);
-  buildServiceInfrastructure(root);
+  buildGarden(root);
   ctx.layers.ground.addChild(root);
 }

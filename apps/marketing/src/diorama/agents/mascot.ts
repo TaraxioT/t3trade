@@ -1,7 +1,7 @@
 /**
- * Floor mascot: a dignified unicorn-bot herald for the venue pad on the
+ * Floor mascot: a dignified unicorn-bot herald for its pad on the
  * central floor. The character keeps the cast anatomy (structural blue body,
- * CRT face, cyan shoulder light) but reads as the campus's emblem, not
+ * CRT face, cyan shoulder light) but reads as the room's emblem, not
  * entertainment: a slender silver-blue horn with one soft mint glow at the
  * tip, a short swept crest in deep structural blue, and a single tailored
  * deep-teal mantle with a thin restrained pink hem trim (the only pink on
@@ -29,7 +29,6 @@ import type { DioramaContext } from "../core/context.js";
 import { PALETTE, shade } from "../config/palette.js";
 import { glow } from "../core/iso.js";
 import { DEPTH } from "../config/world.js";
-import { THEME_COLORS } from "./agent.js";
 import { agentFx } from "./fx.js";
 
 export interface MascotApi {
@@ -54,6 +53,22 @@ const MARK_OFFSET = 132 * MASCOT_SCALE;
 /** Pale silver-blue from the world's pale-surface family (horn material). */
 const SILVER_BLUE = 0xcfe7f2;
 
+/**
+ * Self-contained herald palette, frozen as literals (retained duo
+ * character; declared exception to the cycle's de-branding)
+ * colors were retired. Values are exactly the former derived ones:
+ * mint 0x97fce4 shaded -0.42 / -0.55 / -0.60 for the mantle, and the former
+ * brand pink 0xff007a shaded -0.28 for the single hem trim.
+ */
+const MINT = 0x97fce4;
+const PINK = 0xff007a;
+/** Deep teal mantle tones: formal wear, not a cape. */
+const MANTLE_SHOULDER = 0x589284;
+const MANTLE_HEM = 0x3c655b;
+const MANTLE_STROKE = 0x447167;
+/** The single restrained pink accent on the whole figure. */
+const HEM_TRIM = 0xb80058;
+
 /** Point on a quadratic bezier at t; used for the horn's ridge hints. */
 function quadPoint(
   p0: { x: number; y: number },
@@ -71,12 +86,6 @@ function quadPoint(
 type MascotExpression = "happy" | "excited";
 
 export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): MascotApi {
-  const pink = THEME_COLORS.uniswap;
-  const mint = THEME_COLORS.hyperliquid;
-  // Deep teal mantle tones derived from the venue mint: formal wear, not cape.
-  const mantleShoulder = shade(mint, -0.42);
-  const mantleHem = shade(mint, -0.6);
-
   const root = new Container();
   root.label = "mascot";
   root.position.set(at.x, at.y);
@@ -128,8 +137,8 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     start: { x: 0.5, y: 0 },
     end: { x: 0.5, y: 1 },
     colorStops: [
-      { offset: 0, color: mantleShoulder },
-      { offset: 1, color: mantleHem },
+      { offset: 0, color: MANTLE_SHOULDER },
+      { offset: 1, color: MANTLE_HEM },
     ],
     textureSpace: "local",
   });
@@ -145,11 +154,11 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   drawMantlePath();
   mantle.fill(mantleGradient);
   drawMantlePath();
-  mantle.stroke({ width: 1, color: shade(mint, -0.55), alpha: 0.6 });
+  mantle.stroke({ width: 1, color: MANTLE_STROKE, alpha: 0.6 });
   // Hem trim: the single restrained pink accent on the whole figure.
   mantle.moveTo(-16, 30);
   mantle.quadraticCurveTo(0, 34.5, 16, 30);
-  mantle.stroke({ width: 1.1, color: shade(pink, -0.28), alpha: 0.8 });
+  mantle.stroke({ width: 1.1, color: HEM_TRIM, alpha: 0.8 });
   capePivot.addChild(mantle);
   body.addChild(capePivot);
 
@@ -164,15 +173,15 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   torso.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.9 });
   body.addChild(torso);
 
-  // Duo chest emblem, restrained: the unicorn loop joined to the venue loop
-  // as two thin mint outlines with a pinch seam. No fills, no glow.
+  // Duo chest emblem, restrained: the herald's joined loops as two thin mint
+  // outlines with a pinch seam. No fills, no glow.
   for (const side of [-1, 1] as const) {
     torso.circle(2.9 * side, -34, 3.6);
-    torso.stroke({ width: 1, color: mint, alpha: 0.8 });
+    torso.stroke({ width: 1, color: MINT, alpha: 0.8 });
   }
   torso.moveTo(0, -35.6);
   torso.lineTo(0, -32.4);
-  torso.stroke({ width: 1, color: mint, alpha: 0.55 });
+  torso.stroke({ width: 1, color: MINT, alpha: 0.55 });
   // Mantle clasp on the collar: the mantle itself drapes behind the torso,
   // so its closure point is drawn in front, at the neck, in silver-blue.
   torso.circle(0, -51.5, 1.8);
@@ -215,7 +224,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   headG.roundRect(-17, -40, 34, 32, 6);
   headG.fill({ color: PALETTE.space });
   headG.roundRect(-17, -40, 34, 32, 6);
-  headG.stroke({ width: 1.2, color: mint, alpha: 0.75 });
+  headG.stroke({ width: 1.2, color: MINT, alpha: 0.75 });
   head.addChild(headG);
 
   // Herald horn: slender, gently curved, sweeping slightly back. Pale
@@ -247,7 +256,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     horn.stroke({ width: 0.9, color: hornEdge, alpha: 0.5 });
   }
   head.addChild(horn);
-  head.addChild(glow(hornTip.x, hornTip.y, 9, mint, 0.3));
+  head.addChild(glow(hornTip.x, hornTip.y, 9, MINT, 0.3));
 
   // Crest: a short swept crest along the head's top-back in deep structural
   // blue with a single mint streak. Reads as sculpted headgear, not hair.
@@ -266,7 +275,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   crest.stroke({ width: 1, color: shade(PALETTE.structureLight, 0.3), alpha: 0.7 });
   crest.moveTo(-5, -47.5);
   crest.quadraticCurveTo(-9, -55, -17.5, -57);
-  crest.stroke({ width: 1.2, color: mint, alpha: 0.75 });
+  crest.stroke({ width: 1.2, color: MINT, alpha: 0.75 });
   crest.moveTo(-4.2, -47);
   crest.quadraticCurveTo(-7.5, -53.5, -14.5, -55);
   crest.stroke({ width: 1, color: shade(PALETTE.structureLight, 0.25), alpha: 0.6 });

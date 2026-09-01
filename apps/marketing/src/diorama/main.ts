@@ -11,7 +11,7 @@ import { Application, Container } from "pixi.js";
 import { Viewport } from "pixi-viewport";
 import { createCamera, type Camera } from "./core/camera.js";
 import type { CleanupFn, DioramaContext } from "./core/context.js";
-import { clearRegistry, allStations } from "./core/registry.js";
+import { clearRegistry, allStations, stationApi } from "./core/registry.js";
 import { clearSigns } from "./core/signs.js";
 import type { StationId } from "./config/stations.js";
 import type { FocusTarget } from "./systems/rails.js";
@@ -205,6 +205,8 @@ async function build(host: HTMLElement): Promise<void> {
       gsap: () => gsap,
       viewport: () => viewport,
       stations: () => allStations(),
+      // Read-only api accessor for the QA harnesses (dispatch checks).
+      stationApi: (id: string) => stationApi(id as Parameters<typeof stationApi>[0]),
       app: () => app,
       activity(): object {
         return (
@@ -256,14 +258,16 @@ async function build(host: HTMLElement): Promise<void> {
     onCleanup(() => resizeObserver.disconnect());
 
     // World builders. Each is independent; a failing builder leaves the rest
-    // of the campus standing. Modules load in parallel (dev serves each
+    // of the room standing. Modules load in parallel (dev serves each
     // separately; serial awaits tripled cold-boot time), then build in order.
+    // world/hyperliquid.ts now builds the docked exchange port, invoked from
+    // stations/central.ts; the old perimeter module is retired with the campus.
     const [
       { buildBackdrop },
       { buildGround },
-      { buildPerimeter },
+      { buildWalls },
+      { buildSeam },
       { buildMarketLandscape },
-      { buildHyperliquid },
       { buildResearchDistrict },
       { buildCentralDistrict },
       { buildMcpDistrict },
@@ -272,9 +276,9 @@ async function build(host: HTMLElement): Promise<void> {
     ] = await Promise.all([
       import("./world/backdrop.js"),
       import("./world/ground.js"),
-      import("./world/perimeter.js"),
+      import("./world/walls.js"),
+      import("./world/seam.js"),
       import("./world/marketLandscape.js"),
-      import("./world/hyperliquid.js"),
       import("./stations/research.js"),
       import("./stations/central.js"),
       import("./stations/mcp.js"),
@@ -283,9 +287,9 @@ async function build(host: HTMLElement): Promise<void> {
     ]);
     guard("backdrop", () => buildBackdrop(ctx));
     guard("ground", () => buildGround(ctx));
-    guard("perimeter", () => buildPerimeter(ctx));
+    guard("walls", () => buildWalls(ctx));
+    guard("seam", () => buildSeam(ctx));
     guard("marketLandscape", () => buildMarketLandscape(ctx));
-    guard("hyperliquid", () => buildHyperliquid(ctx));
     guard("researchDistrict", () => buildResearchDistrict(ctx));
     guard("centralDistrict", () => buildCentralDistrict(ctx));
     guard("mcpDistrict", () => buildMcpDistrict(ctx));
@@ -296,7 +300,7 @@ async function build(host: HTMLElement): Promise<void> {
     guard("mascot", () => {
       void import("./agents/mascot.js")
         .then(({ buildMascot, mascot }) => {
-          mascot.api = buildMascot(ctx, { x: 1430, y: 800 });
+          mascot.api = buildMascot(ctx, { x: 1435, y: 965 });
           onCleanup(() => {
             mascot.api = null;
           });

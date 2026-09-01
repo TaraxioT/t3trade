@@ -17,10 +17,9 @@ import gsap from "gsap";
 import type { Application } from "pixi.js";
 import type { Viewport } from "pixi-viewport";
 import type { Point } from "../config/world.js";
-import { WORLD_HEIGHT, WORLD_WIDTH } from "../config/world.js";
 
 export interface Camera {
-  /** Fit the whole campus with ~8% breathing room. */
+  /** Fit the whole room-view box (room + plinth + walls) with ~6% breathing room. */
   fitWorld(animated?: boolean): void;
   /** Focus a station anchor: GSAP ease, 650 to 850 ms. */
   focusOn(target: Point, zoom?: number): void;
@@ -43,9 +42,21 @@ export interface CameraParams {
   host: HTMLElement;
 }
 
-/** Breathing room around the fitted campus; the slab should nearly fill the
- * viewport at fit zoom while keeping a sliver of space void. */
-const FIT_MARGIN = 0.96;
+/**
+ * The room-view box: the room diamond plus plinth treads and wall height.
+ * The +52 axial tread makes the outer diamond 2728 x 1364 (bbox x 44..2772,
+ * y 86..1450; the decision doc's x range 96..2720 under-counted the tread),
+ * wall tops reach y 18 at the N corner, and the drop shadow stays inside.
+ * fit frames exactly this box, so nothing clips.
+ */
+const ROOM_VIEW = { x1: 40, y1: 6, x2: 2776, y2: 1456 } as const;
+const ROOM_VIEW_W = ROOM_VIEW.x2 - ROOM_VIEW.x1;
+const ROOM_VIEW_H = ROOM_VIEW.y2 - ROOM_VIEW.y1;
+const ROOM_VIEW_CX = (ROOM_VIEW.x1 + ROOM_VIEW.x2) / 2;
+const ROOM_VIEW_CY = (ROOM_VIEW.y1 + ROOM_VIEW.y2) / 2;
+/** Breathing room around the fitted room-view box; the room nearly fills the
+ * viewport at fit zoom while keeping a sliver of void. */
+const FIT_MARGIN = 0.94;
 /** Hard ceiling relative to the current fit scale. */
 const MAX_ZOOM_FACTOR = 2.25;
 /** Focus/fit transition length, inside the 650 to 850 ms contract. GSAP
@@ -59,7 +70,7 @@ const ZOOM_EMIT_MS = 100;
 /** Portrait/narrow initial framing: aspect below this focuses the floor. */
 const PORTRAIT_ASPECT = 0.9;
 /** Portrait initial view: Central Trading Floor at fit * 1.35. */
-const PORTRAIT_FOCUS = { cx: 1430, cy: 800, zoom: 1.35 } as const;
+const PORTRAIT_FOCUS = { cx: 1435, cy: 850, zoom: 1.35 } as const;
 
 /** Zoom >= this: LOD tier 1 (all station labels visible). */
 export const ZOOM_TIER_1 = 1.15;
@@ -92,7 +103,7 @@ export function createCamera({ viewport }: CameraParams): Camera {
   const gestureSubs = new Set<() => void>();
   const zoomSubs = new Set<ZoomListener>();
   let interacted = false;
-  let proxy = { cx: WORLD_WIDTH / 2, cy: WORLD_HEIGHT / 2, scale: 1 };
+  let proxy = { cx: ROOM_VIEW_CX, cy: ROOM_VIEW_CY, scale: 1 };
   let tween: gsap.core.Tween | null = null;
   let lastEmit = 0;
 
@@ -100,7 +111,7 @@ export function createCamera({ viewport }: CameraParams): Camera {
     const w = viewport.screenWidth;
     const h = viewport.screenHeight;
     if (w <= 0 || h <= 0) return 1;
-    return Math.min(w / WORLD_WIDTH, h / WORLD_HEIGHT) * FIT_MARGIN;
+    return Math.min(w / ROOM_VIEW_W, h / ROOM_VIEW_H) * FIT_MARGIN;
   };
 
   const currentZoom = (): number => {
@@ -150,26 +161,26 @@ export function createCamera({ viewport }: CameraParams): Camera {
   const fitWorld = (animated = true): void => {
     const s = fitScale();
     if (animated) {
-      transitionTo(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, s, TWEEN_MS);
+      transitionTo(ROOM_VIEW_CX, ROOM_VIEW_CY, s, TWEEN_MS);
     } else {
       cancelTween();
-      proxy = { cx: WORLD_WIDTH / 2, cy: WORLD_HEIGHT / 2, scale: s };
+      proxy = { cx: ROOM_VIEW_CX, cy: ROOM_VIEW_CY, scale: s };
       applyProxy();
     }
   };
 
   /**
    * The one framing policy shared by initial view, resize refit, and reset:
-   * landscape frames the whole world with the Central Trading Floor lifted
-   * slightly above the viewport center; portrait/narrow (aspect < 0.9) focuses
-   * the Central Trading Floor at fit * 1.35 centered near (1430, 800).
+   * landscape centers the room-view box (room diamond + plinth + walls) at
+   * fit scale; portrait/narrow (aspect < 0.9) opens on the Central Trading
+   * Floor at fit * 1.35 centered near (1435, 850).
    */
   const applyDefaultFraming = (animated: boolean): void => {
     const aspect = viewport.screenHeight > 0 ? viewport.screenWidth / viewport.screenHeight : 1;
     const target =
       aspect > 0 && aspect < PORTRAIT_ASPECT
         ? { cx: PORTRAIT_FOCUS.cx, cy: PORTRAIT_FOCUS.cy, scale: fitScale() * PORTRAIT_FOCUS.zoom }
-        : { cx: WORLD_WIDTH / 2, cy: 740 + 120, scale: fitScale() };
+        : { cx: ROOM_VIEW_CX, cy: ROOM_VIEW_CY, scale: fitScale() };
     if (animated) {
       transitionTo(target.cx, target.cy, target.scale, TWEEN_MS);
     } else {
@@ -203,13 +214,11 @@ export function createCamera({ viewport }: CameraParams): Camera {
   };
   applyClamp();
 
-  // Initial view. Landscape: entire campus with the Central Trading Floor
-  // (anchor 1430,740) slightly above the viewport center; centering 120
-  // world units below the anchor lifts the floor above the middle line while
-  // Hyperliquid in the east stays inside the fitted frame. Portrait/narrow:
-  // a whole-world fit is an illegible strip, so open on the Central Trading
-  // Floor at fit * 1.35 centered near (1430, 800); zoom min stays at fit so
-  // the user can still zoom out to the full world.
+  // Initial view. Landscape: the whole room-view box centered at fit scale;
+  // the floor diamond fills the frame and the open S corner faces the
+  // camera. Portrait/narrow: a whole-room fit is an illegible strip, so open
+  // on the Central Trading Floor at fit * 1.35 centered near (1435, 850);
+  // zoom min stays at fit so the user can still zoom out to the full room.
   fitWorld(false);
   applyDefaultFraming(false);
 

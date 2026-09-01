@@ -1,10 +1,19 @@
 /**
- * Risk & Execution district: approval desk, permission control, budget
- * meter, risk fortress arches, protection layer, signer vault, and the
- * execution gateway. Owner: risk district worker.
+ * East section, guarded-execution cluster: approval desk at the authority
+ * seam, permission control, loss-budget meter, risk scanning arches,
+ * protection ring, signer vault, and the execution gateway dispatching
+ * toward the docked exchange booth. Owner: east lane (risk.ts).
  *
- * Layout reads west to east matching the pipeline:
+ * Layout reads along the N-E wall matching the pipeline:
  * Decision -> Approval -> Permission -> Risk -> Sign -> Execute -> Exchange.
+ * The emergency control kiosk beside Approval also lives here: it owns its
+ * own lever and pause-badge visuals only; the room-wide pause side effects
+ * live on the trading floor's api (story s-emergency-demo).
+ *
+ * Shared language (R6): every station uses the standard booth/desk family
+ * (structural-blue isoTile platforms, low isoWall backs h <= 34, gold as the
+ * district accent) and the common sign system. The risk station keeps its
+ * scanning arches because they are functional storytelling, not decoration.
  * All statics are drawn once; motion uses pooled sprites and GSAP timelines
  * that are killed on world cleanup. The scene reads correctly unanimated.
  */
@@ -12,7 +21,6 @@ import { Container, Graphics, Sprite, Text, TextStyle } from "pixi.js";
 import { gsap } from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { STATIONS, type StationId } from "../config/stations.js";
-import { GATE_WEST } from "../config/geometry.js";
 import { DEPTH } from "../config/world.js";
 import { PALETTE } from "../config/palette.js";
 import {
@@ -29,9 +37,25 @@ import {
 } from "../core/iso.js";
 import { makeSign } from "../core/signs.js";
 import { registerStation } from "../core/registry.js";
+import { pulseSeam } from "../world/seam.js";
 
 export interface ApprovalApi {
   setSeal(state: "waiting" | "approved" | "denied"): void;
+  /**
+   * Authority binds: replays the approved-seal flourish and pulses the
+   * center<->east authority seam (world/seam.ts). Story s-human-approval
+   * calls this instead of the retired perimeter pulse.
+   */
+  grantPulse(): void;
+}
+
+/**
+ * Local emergency-drill visuals on the panel: guarded cover opens, lever
+ * pulls, pause badge shows, then resets. The room-wide pause side effects
+ * live on TradingFloorApi.setCampusPaused("tradingFloor").
+ */
+export interface EmergencyPanelApi {
+  demoPause(): void;
 }
 
 export interface RiskFortressApi {
@@ -76,7 +100,7 @@ const d = (seconds: number): number => (reduced ? 0.04 : seconds);
 
 /**
  * Live bridge from the budget meter to the permission room's mini gauge, so
- * the two stations read as one control cluster on the safety spine. Cleared
+ * the two stations read as one control cluster on the guarded band. Cleared
  * on every district rebuild; only consume("loss") drives it.
  */
 let lossMirror: ((level: number) => void) | null = null;
@@ -119,11 +143,10 @@ function stationSign(
   id: StationId,
   lift: number,
   accent?: number,
-  atX?: number,
 ): Container & { signText: Text } {
   const def = STATIONS[id];
   const sign = makeSign(def.label, {
-    x: atX ?? def.anchor.x,
+    x: def.anchor.x,
     y: def.anchor.y - lift,
     size: def.signSize,
     accent: accent ?? PALETTE.cyan,
@@ -180,7 +203,7 @@ function hexPath(g: Graphics, r: number): void {
 /**
  * Soft dark ground ellipse added right after the hit surface so each
  * structure grounds onto the platform instead of floating. Coordinates are
- * root-local (risk roots are positioned at their anchor).
+ * root-local (roots are positioned at their anchor).
  */
 function contactShadow(
   root: Container,
@@ -210,38 +233,24 @@ function propCrate(x: number, y: number, s = 13): Graphics {
   });
 }
 
-/** Gold brazier light: tiny bowl + flame + warm glow, for fortress corners. */
-function brazier(root: Container, x: number, y: number): void {
-  const bowl = new Graphics();
-  bowl.rect(x - 4, y - 4, 8, 3);
-  bowl.fill({ color: PALETTE.structureLight });
-  bowl.rect(x - 1, y - 9, 2, 5);
-  bowl.fill({ color: PALETTE.orange, alpha: 0.95 });
-  bowl.poly([x - 2.5, y - 9, x + 2.5, y - 9, x, y - 13]);
-  bowl.fill({ color: PALETTE.yellow, alpha: 0.9 });
-  root.addChild(bowl);
-  root.addChild(glow(x, y - 9, 18, PALETTE.orange, 0.32));
-}
-
 // ---------------------------------------------------------------------------
-// 1. Approval desk (in the west gate opening)
+// 1. Approval desk (at the center/east authority seam)
 // ---------------------------------------------------------------------------
 
 function buildApproval(ctx: DioramaContext): ApprovalApi {
   const { root } = stationBase(ctx, "approval");
 
   contactShadow(root, 8, 10, 160, 110);
-  // Gate furnishings: small arch frame + floor strip inside the opening.
-  const gx = GATE_WEST.x - STATIONS.approval.anchor.x;
-  const gy = GATE_WEST.cy - STATIONS.approval.anchor.y;
-  root.addChild(isoTile(gx, gy, 46, 104, PALETTE.structureLight, 0.9, PALETTE.cyan));
-  root.addChild(edgeStrip(gx, gy - 52, gx, gy - 48, PALETTE.cyan, 0.7));
-  root.addChild(edgeStrip(gx, gy + 48, gx, gy + 52, PALETTE.cyan, 0.7));
-  const gateArch = arch(gx, gy - 40, 84, 54, PALETTE.structure, PALETTE.cyan);
-  root.addChild(gateArch);
+  // Seam-side pad: a gold-trimmed step whose west corner meets the authority
+  // seam inlay, tying the desk to the boundary it enforces. The seam itself
+  // (a floor inlay, no barrier) is drawn by world/seam.ts and pulses via
+  // grantPulse() below.
+  root.addChild(isoTile(-64, 8, 44, 34, PALETTE.structureLight, 0.85, PALETTE.yellow));
+  root.addChild(edgeStrip(-64, -11, -64, -6, PALETTE.yellow, 0.6));
+  root.addChild(edgeStrip(-64, 22, -64, 27, PALETTE.yellow, 0.6));
 
-  // Desk sitting in the opening, tray to the west. Blue counter-inlay on
-  // the desk top edge balances the gold trim.
+  // Desk beside the seam, tray to the west where proposals arrive from the
+  // floor section. Blue counter-inlay on the desk top edge balances the gold.
   root.addChild(
     isoBox({ x: 14, y: 8, w: 104, d: 58, h: 20, color: PALETTE.structure, rim: PALETTE.yellow }),
   );
@@ -253,7 +262,7 @@ function buildApproval(ctx: DioramaContext): ApprovalApi {
   tray.stroke({ width: 1.2, color: PALETTE.cyan, alpha: 0.85 });
   root.addChild(tray);
 
-  // Queue of dimmed waiting cards west of the tray.
+  // Queue of dimmed waiting cards west of the tray, arriving across the seam.
   const q1 = makeCard(18, 12, PALETTE.waiting);
   q1.position.set(-84, -6);
   q1.rotation = -0.12;
@@ -377,7 +386,7 @@ function buildApproval(ctx: DioramaContext): ApprovalApi {
           sealGlow.alpha = 0.55;
         })
           .fromTo(cross, { alpha: 0 }, { alpha: 1, duration: d(0.08), repeat: 3, yoyo: true })
-          // Card drops back through the gate, westward.
+          // Card drops back west across the seam, toward the floor section.
           .to(card, { x: -120, y: -2, rotation: -0.4, duration: d(0.55), ease: "power1.in" }, "<")
           .to(card, { alpha: 0, duration: d(0.2) }, "-=0.15")
           .to(cross, { alpha: 0, duration: d(0.3) }, "+=0.3")
@@ -386,6 +395,179 @@ function buildApproval(ctx: DioramaContext): ApprovalApi {
             startWaiting();
           });
       }
+    },
+    grantPulse() {
+      // The human's authority binds: seal flourish plus the seam sweep.
+      api.setSeal("approved");
+      pulseSeam();
+    },
+  };
+  return api;
+}
+
+// ---------------------------------------------------------------------------
+// 1b. Emergency control kiosk (beside Approval, at the seam)
+// ---------------------------------------------------------------------------
+
+/**
+ * Small red-trimmed stop kiosk beside the approval desk: a guarded lever
+ * under a hinged glass cover, a blinking status light paired with a pause
+ * glyph, and a pause badge held above while the local drill runs. A human
+ * control, not an agent station: one protected lever, no consoles. The
+ * room-wide pause side effects (floor ring, mast, dimming) are owned by the
+ * trading floor's api; the story flashes this kiosk through glowPulse on
+ * its registered root and may optionally call demoPause() for the lever.
+ */
+function buildEmergencyPanel(ctx: DioramaContext): EmergencyPanelApi {
+  const { root } = stationBase(ctx, "emergencyPanel");
+
+  contactShadow(root, 0, 6, 100, 62, 0.25);
+  // Pad + pedestal. Emergency red is semantic here, not decorative.
+  root.addChild(isoTile(0, 4, 78, 46, PALETTE.structure, 1, PALETTE.emergency));
+  root.addChild(isoBox({ x: 0, y: 6, w: 26, d: 16, h: 9, color: PALETTE.structure }));
+
+  // Panel box on the pedestal with a dark inset screen carrying the pause
+  // wordmark: the shape glyph paired with the status light's blink.
+  const box = new Graphics();
+  box.roundRect(-16, -52, 32, 50, 5);
+  box.fill({ color: PALETTE.structure });
+  box.roundRect(-16, -52, 32, 50, 5);
+  box.stroke({ width: 2, color: PALETTE.emergency, alpha: 0.95 });
+  box.roundRect(-12, -38, 24, 22, 3);
+  box.fill({ color: PALETTE.space, alpha: 0.8 });
+  box.rect(-4, -32, 3, 10);
+  box.rect(1, -32, 3, 10);
+  box.fill({ color: PALETTE.emergency, alpha: 0.9 });
+  root.addChild(box);
+
+  // Guarded lever: pivot on the panel face, red knob at the top of the arm.
+  const lever = new Container();
+  lever.position.set(0, -18);
+  const leverG = new Graphics();
+  leverG.rect(-1.2, -14, 2.4, 14);
+  leverG.fill({ color: PALETTE.structureLight });
+  leverG.circle(0, -14, 4);
+  leverG.fill({ color: PALETTE.emergency });
+  leverG.circle(0, -14, 1.6);
+  leverG.fill({ color: PALETTE.surfacePale, alpha: 0.85 });
+  lever.addChild(leverG);
+  root.addChild(lever);
+
+  // Hinged glass cover over the lever, closed at rest.
+  const cover = new Container();
+  cover.position.set(-13, -36);
+  const coverG = new Graphics();
+  coverG.rect(0, 0, 26, 24);
+  coverG.fill({ color: PALETTE.surfacePale, alpha: 0.16 });
+  coverG.rect(0, 0, 26, 24);
+  coverG.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.75 });
+  cover.addChild(coverG);
+  root.addChild(cover);
+
+  // Status light above the box: blinking dot + halo at rest.
+  const statusDot = new Graphics();
+  statusDot.circle(0, -57, 2.5);
+  statusDot.fill({ color: PALETTE.emergency });
+  root.addChild(statusDot);
+  const statusLight = glow(0, -57, 12, PALETTE.emergency, 0.8);
+  root.addChild(statusLight);
+  if (!ctx.reducedMotion) {
+    track(
+      gsap.to(statusLight, {
+        alpha: 0.35,
+        duration: 1.2,
+        yoyo: true,
+        repeat: -1,
+        ease: "sine.inOut",
+      }),
+    );
+  }
+
+  // Drill flare: a dedicated expanding glow so the drill never fights the
+  // idle blink tween over statusLight's alpha.
+  const drillGlow = glow(0, -57, 0, PALETTE.emergency, 0.9);
+  root.addChild(drillGlow);
+
+  // Pause badge: the local "paused" cue while the drill runs, hidden at rest.
+  const pauseBadge = new Container();
+  pauseBadge.position.set(0, -86);
+  pauseBadge.alpha = 0;
+  pauseBadge.visible = false;
+  const badge = new Graphics();
+  badge.circle(0, 0, 13);
+  badge.fill({ color: PALETTE.space, alpha: 0.85 });
+  badge.circle(0, 0, 13);
+  badge.stroke({ width: 2.2, color: PALETTE.emergency, alpha: 0.95 });
+  badge.rect(-4.5, -6.5, 3.2, 13);
+  badge.rect(1.3, -6.5, 3.2, 13);
+  badge.fill({ color: PALETTE.emergency });
+  pauseBadge.addChild(badge);
+  pauseBadge.addChild(glow(0, 0, 46, PALETTE.emergency, 0.3));
+  root.addChild(pauseBadge);
+
+  stationSign(ctx, "emergencyPanel", 96, PALETTE.emergency);
+
+  let drill: gsap.core.Timeline | null = null;
+  const api: EmergencyPanelApi = {
+    demoPause() {
+      drill?.kill();
+      gsap.killTweensOf([cover, cover.scale, lever, pauseBadge, drillGlow]);
+      drillGlow.width = 0;
+      drillGlow.height = 0;
+      drillGlow.alpha = 0.9;
+      // Reduced motion: snap to the composed paused state, then restore.
+      if (ctx.reducedMotion) {
+        cover.rotation = -0.5;
+        cover.alpha = 0.25;
+        lever.angle = 26;
+        pauseBadge.visible = true;
+        pauseBadge.alpha = 1;
+        pauseBadge.y = -86;
+        drill = track(
+          gsap
+            .timeline()
+            .to({}, { duration: 0.6 })
+            .call(() => {
+              cover.rotation = 0;
+              cover.alpha = 1;
+              lever.angle = 0;
+              pauseBadge.visible = false;
+              pauseBadge.alpha = 0;
+            }),
+        );
+        return;
+      }
+      drill = track(
+        gsap
+          .timeline()
+          .to(cover, { rotation: -0.5, alpha: 0.25, duration: 0.35, ease: "power2.in" })
+          .to(cover.scale, { x: 0.12, duration: 0.35, ease: "power2.in" }, "<")
+          .to(lever, { angle: 26, duration: 0.16, ease: "power3.out" })
+          .call(() => {
+            pauseBadge.visible = true;
+            pauseBadge.y = -78;
+          })
+          .fromTo(pauseBadge, { alpha: 0 }, { alpha: 1, duration: 0.4, ease: "power2.out" })
+          .to(pauseBadge, { y: -88, duration: 0.6, ease: "power2.out" }, "<")
+          .fromTo(
+            drillGlow,
+            { width: 10, height: 10 },
+            { width: 46, height: 46, alpha: 0, duration: 0.5 },
+            "<",
+          )
+          .to({}, { duration: 2.0 })
+          .to(lever, { angle: 0, duration: 0.3, ease: "power2.inOut" })
+          .to(pauseBadge, {
+            alpha: 0,
+            y: -78,
+            duration: 0.4,
+            onComplete: () => {
+              pauseBadge.visible = false;
+            },
+          })
+          .to(cover, { rotation: 0, alpha: 1, duration: 0.4, ease: "power2.out" }, "<")
+          .to(cover.scale, { x: 1, duration: 0.4, ease: "power2.out" }, "<"),
+      );
     },
   };
   return api;
@@ -400,7 +582,7 @@ function buildPermission(ctx: DioramaContext): PermissionSweepApi {
 
   contactShadow(root, 0, 10, 196, 136);
   root.addChild(isoTile(0, 6, 176, 122, PALETTE.structure, 1, PALETTE.structureLight));
-  // Low back walls, open front. h <= 36 per spec.
+  // Low back walls, open front. h <= 34 per spec.
   root.addChild(
     isoWall({ x1: -88, y1: 6, x2: 0, y2: -55, h: 34, color: PALETTE.structure, rim: PALETTE.cyan }),
   );
@@ -451,7 +633,18 @@ function buildPermission(ctx: DioramaContext): PermissionSweepApi {
     toks.push({ lit, halo });
   }
 
-  stationSign(ctx, "permission", 92);
+  // Standard lift: the east banner now floats in the void band above the
+  // wall cap, so the wall-face sign lane is free again.
+  const def = STATIONS.permission;
+  const sign = makeSign(def.label, {
+    x: def.anchor.x,
+    y: def.anchor.y - 78,
+    size: def.signSize,
+    accent: PALETTE.cyan,
+    halo: true,
+  });
+  sign.zIndex = def.anchor.y + DEPTH.overlay;
+  ctx.layers.labels.addChild(sign);
 
   // Resting capability state: a stable set of granted tokens stays lit (with
   // slow off-phase breathing when motion is allowed) so the lock answers
@@ -559,18 +752,16 @@ function buildPermission(ctx: DioramaContext): PermissionSweepApi {
     startResting(false);
   }
 
-  // Shared apron from the room's front step down toward the budget platform:
-  // Permissions and the Loss Budget are one adjacent control cluster on the
-  // safety spine, not two unrelated stations.
-  root.addChild(isoTile(0, 97, 108, 64, PALETTE.structureLight, 0.8, PALETTE.blue));
-  root.addChild(isoTile(0, 141, 128, 30, PALETTE.structureLight, 0.9, PALETTE.blue));
+  // Shared apron stepping east toward the Loss Budget: Permissions and the
+  // loss budget stay one adjacent control cluster on the guarded band.
+  root.addChild(isoTile(84, 64, 92, 56, PALETTE.structureLight, 0.8, PALETTE.blue));
 
-  // Miniature loss-budget gauge in the front yard, mirroring the real meter
-  // live: the permission room keeps the budget it enforces in view.
+  // Miniature loss-budget gauge on the apron, mirroring the real meter live:
+  // the permission room keeps the budget it enforces in view.
   root.addChild(
     isoBox({
-      x: -62,
-      y: 46,
+      x: 96,
+      y: 44,
       w: 20,
       d: 13,
       h: 9,
@@ -586,7 +777,7 @@ function buildPermission(ctx: DioramaContext): PermissionSweepApi {
   miniGlass.roundRect(-5, -23, 10, 23, 4);
   miniGlass.stroke({ width: 1.1, color: PALETTE.surfacePale, alpha: 0.55 });
   const mini = new Container();
-  mini.position.set(-62, 42);
+  mini.position.set(96, 40);
   mini.addChild(miniLiquid, miniGlass);
   root.addChild(mini);
   miniLiquid.scale.y = INITIAL_LOSS_LEVEL;
@@ -604,12 +795,12 @@ function buildPermission(ctx: DioramaContext): PermissionSweepApi {
 function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
   const { root } = stationBase(ctx, "budgetMeter");
 
-  contactShadow(root, 0, 18, 162, 108);
-  root.addChild(propCrate(-72, 44));
-  root.addChild(propCrate(-62, 50, 9));
-  root.addChild(isoTile(0, 14, 144, 96, PALETTE.structure, 1, PALETTE.structureLight));
+  contactShadow(root, 0, 16, 150, 100);
+  root.addChild(propCrate(-62, 40));
+  root.addChild(propCrate(-52, 46, 9));
+  root.addChild(isoTile(0, 14, 140, 92, PALETTE.structure, 1, PALETTE.structureLight));
   root.addChild(
-    isoBox({ x: 0, y: 8, w: 128, d: 56, h: 8, color: PALETTE.structureLight, rim: PALETTE.blue }),
+    isoBox({ x: 0, y: 8, w: 124, d: 54, h: 8, color: PALETTE.structureLight, rim: PALETTE.blue }),
   );
 
   // Honest reservoirs (TradingBudgetReader / loss accounting): the loss
@@ -640,9 +831,8 @@ function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
   const readouts: Record<TankKey, Text> = {} as Record<TankKey, Text>;
   // Captions carry name plus live value on two staggered rows (row 0 = outer
   // tanks, row 1 = center): the 40-unit tube pitch cannot fit three wide
-  // captions side by side, and the baseline stack produced the
-  // "LOSS BIOMESERVATIONSAPITAL" garble seen in four vision shots. Values
-  // refresh only on consume events; nothing redraws per frame.
+  // captions side by side. Values refresh only on consume events; nothing
+  // redraws per frame.
   const labelStyle = new TextStyle({
     fontFamily: "'JetBrains Mono', ui-monospace, monospace",
     fontSize: 7.5,
@@ -756,71 +946,53 @@ function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Risk fortress (visual anchor: open courtyard + scanning arches)
+// 4. Risk scanning station (standard platform + corridor of four arches)
 // ---------------------------------------------------------------------------
 
 function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   const { root } = stationBase(ctx, "riskFortress");
 
-  contactShadow(root, 0, 12, 320, 230, 0.25);
-  root.addChild(isoTile(0, 0, 280, 200, PALETTE.structure, 1, PALETTE.yellow));
-  // Courtyard inner tint.
-  root.addChild(isoTile(0, 10, 210, 140, PALETTE.structureLight, 0.55));
+  contactShadow(root, 0, 12, 260, 190, 0.25);
+  // Standard booth-family platform, gold-rimmed like the rest of the east
+  // zone. No towers, no crenellations, no moat: the scanning arches below
+  // carry the whole story.
+  root.addChild(isoTile(0, 6, 240, 165, PALETTE.structure, 1, PALETTE.yellow));
+  root.addChild(isoTile(0, 14, 190, 130, PALETTE.structureLight, 0.5));
 
-  // Corner towers.
-  const towers: { x: number; y: number }[] = [
-    { x: -140, y: 0 },
-    { x: 0, y: -100 },
-    { x: 140, y: 0 },
-    { x: 0, y: 100 },
-  ];
-  towers.forEach((t, i) => {
-    const th = 56 - (i % 2) * 6;
+  // Low back walls along the platform's north edges; the south face stays
+  // open to the room. Same isoWall family as Permissions.
+  root.addChild(
+    isoWall({ x1: -104, y1: 8, x2: 0, y2: -54, h: 30, color: PALETTE.structure, rim: PALETTE.yellow }),
+  );
+  root.addChild(
+    isoWall({ x1: 0, y1: -54, x2: 104, y2: 8, h: 30, color: PALETTE.structure, rim: PALETTE.yellow }),
+  );
+
+  // Two corner posts at the back-wall ends: plain boxes with emissive tips,
+  // the same post family as the Execution gateway's guards.
+  for (const px of [-104, 104]) {
     root.addChild(
-      isoCylinder({ x: t.x, y: t.y, r: 13, h: th, color: PALETTE.structure, rim: PALETTE.yellow }),
+      isoBox({
+        x: px,
+        y: 8,
+        w: 18,
+        d: 12,
+        h: 24,
+        color: PALETTE.structure,
+        rim: PALETTE.yellow,
+        rimAlpha: 0.55,
+      }),
     );
-    // Gold brazier light burning at each corner: warmth against the blue.
-    brazier(root, t.x, t.y - th - 7);
-  });
+    root.addChild(glow(px, -22, 12, PALETTE.yellow, 0.4));
+  }
 
-  // Low crenellated walls along the two back edges; front stays open.
-  const crenel = (x1: number, y1: number, x2: number, y2: number): void => {
-    root.addChild(
-      isoWall({ x1, y1, x2, y2, h: 20, color: PALETTE.structure, rim: PALETTE.yellow }),
-    );
-    const n = 4;
-    for (let i = 0; i < n; i++) {
-      const t = (i + 0.5) / n;
-      const mx = x1 + (x2 - x1) * t;
-      const my = y1 + (y2 - y1) * t - 20;
-      root.addChild(
-        isoBox({
-          x: mx,
-          y: my,
-          w: 18,
-          d: 10,
-          h: 8,
-          color: PALETTE.structure,
-          rim: PALETTE.yellow,
-          rimAlpha: 0.4,
-        }),
-      );
-    }
-  };
-  crenel(-140, 0, 0, -100);
-  crenel(0, -100, 140, 0);
-
-  // Walkway bypass around the outside (south). Blue counter-inlay keeps the
-  // gold fortress off the shared cyan.
-  root.addChild(isoTile(0, 116, 270, 26, PALETTE.structureLight, 0.5, PALETTE.blue));
-
-  // Corridor of 4 scanning arches, west to east through the courtyard.
+  // Corridor of 4 scanning arches, west to east across the platform: loss
+  // budget, position limit, leverage, exposure cap. A checked order walks
+  // the corridor and stops at the arch it fails.
   const corridorY = 26;
-  // Pale corridor floor so the pavilion reads at fit zoom.
-  root.addChild(isoTile(0, corridorY, 286, 40, PALETTE.structureLight, 0.85, PALETTE.yellow));
-  const archXs = [-92, -31, 30, 91];
+  root.addChild(isoTile(0, corridorY, 236, 40, PALETTE.structureLight, 0.85, PALETTE.yellow));
+  const archXs = [-82, -28, 26, 80];
   const glows: Container[] = [];
-  const glyphs: Container[] = [];
   const drawGlyph = (kind: number, color: number): Graphics => {
     const g = new Graphics();
     if (kind === 0) {
@@ -851,20 +1023,19 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
     return g;
   };
   archXs.forEach((ax, i) => {
-    const a = arch(ax, corridorY, 58, 50, PALETTE.structureLight, PALETTE.cyan);
+    const a = arch(ax, corridorY, 56, 46, PALETTE.structureLight, PALETTE.cyan);
     root.addChild(a);
     // Crisper gold rim across the arch beam so each arch reads as a gate.
     root.addChild(
-      edgeStrip(ax - 29, corridorY - 50, ax + 29, corridorY - 50, PALETTE.yellow, 0.9, 1.6),
+      edgeStrip(ax - 28, corridorY - 46, ax + 28, corridorY - 46, PALETTE.yellow, 0.9, 1.6),
     );
-    const g = glow(ax, corridorY - 4, 46, PALETTE.cyan, 0.18);
+    const g = glow(ax, corridorY - 4, 44, PALETTE.cyan, 0.18);
     root.addChild(g);
     glows.push(g);
     const glyph = new Container();
-    glyph.position.set(ax, corridorY - 58);
+    glyph.position.set(ax, corridorY - 54);
     glyph.addChild(drawGlyph(i, PALETTE.yellow));
     root.addChild(glyph);
-    glyphs.push(glyph);
     if (!ctx.reducedMotion) {
       track(
         gsap.to(g, {
@@ -888,7 +1059,7 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   tokDot.height = 10;
   tokDot.tint = 0xffffff;
   token.addChild(tokCore, tokDot);
-  token.position.set(archXs[0] - 40, corridorY - 8);
+  token.position.set(archXs[0] - 36, corridorY - 8);
   token.visible = false;
   root.addChild(token);
 
@@ -904,10 +1075,10 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   barrier.visible = false;
   root.addChild(barrier);
 
-  const exitBurst = glow(128, corridorY - 8, 0, PALETTE.healthy, 0.9);
+  const exitBurst = glow(112, corridorY - 8, 0, PALETTE.healthy, 0.9);
   root.addChild(exitBurst);
 
-  stationSign(ctx, "riskFortress", 190, PALETTE.yellow);
+  stationSign(ctx, "riskFortress", 100, PALETTE.yellow);
 
   let scanTl: gsap.core.Timeline | null = null;
   const resetScan = (): void => {
@@ -919,7 +1090,7 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
     exitBurst.height = 0;
     glows.forEach((g) => {
       g.tint = PALETTE.cyan;
-      g.alpha = ctx.reducedMotion ? 0.18 : 0.18;
+      g.alpha = 0.18;
     });
   };
 
@@ -935,7 +1106,7 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
       const stop = valid ? 4 : Math.max(0, Math.min(3, stopAtArch));
       token.visible = true;
       token.alpha = 1;
-      token.x = archXs[0] - 40;
+      token.x = archXs[0] - 36;
       const sc = track(gsap.timeline({ onComplete: resetScan }));
       scanTl = sc;
       for (let i = 0; i < stop; i++) {
@@ -945,7 +1116,7 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
         ]);
       }
       if (valid) {
-        sc.to(token, { x: 126, duration: d(0.28), ease: "none" })
+        sc.to(token, { x: 108, duration: d(0.28), ease: "none" })
           .call(() => {
             exitBurst.width = 60;
             exitBurst.height = 60;
@@ -1000,11 +1171,11 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
 function buildProtection(ctx: DioramaContext): ProtectionApi {
   const { root } = stationBase(ctx, "protection");
 
-  contactShadow(root, 0, 4, 168, 124);
+  contactShadow(root, 0, 4, 132, 96);
   // Ring platform.
-  root.addChild(isoTile(0, 0, 150, 110, PALETTE.structure, 1, PALETTE.structureLight));
+  root.addChild(isoTile(0, 0, 132, 96, PALETTE.structure, 1, PALETTE.structureLight));
   const ring = new Graphics();
-  ring.ellipse(0, 0, 56, 28);
+  ring.ellipse(0, 0, 50, 25);
   ring.stroke({ width: 1.8, color: PALETTE.cyan, alpha: 0.7 });
   root.addChild(ring);
 
@@ -1055,7 +1226,7 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
 
   const place = (): void => {
     for (const o of orbiters) {
-      o.dot.position.set(Math.cos(o.angle) * 56, Math.sin(o.angle) * 28 - 4);
+      o.dot.position.set(Math.cos(o.angle) * 50, Math.sin(o.angle) * 25 - 4);
     }
   };
   place();
@@ -1157,25 +1328,25 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
 function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
   const { root } = stationBase(ctx, "signerVault");
 
-  contactShadow(root, -8, 6, 200, 150);
-  // Isolation bridge from the vault west toward the fortress side.
-  root.addChild(isoTile(-108, 22, 58, 24, PALETTE.structureLight, 0.6, PALETTE.yellow));
-  root.addChild(isoTile(-156, 34, 54, 24, PALETTE.structureLight, 0.5, PALETTE.yellow));
+  contactShadow(root, -6, 6, 180, 140);
+  // Short bridge west toward the risk corridor's exit, so the checked order
+  // walks straight to the vault.
+  root.addChild(isoTile(-92, 16, 52, 22, PALETTE.structureLight, 0.6, PALETTE.yellow));
 
   // Raised floor.
   root.addChild(
-    isoBox({ x: 0, y: 0, w: 152, d: 118, h: 12, color: PALETTE.structure, rim: PALETTE.yellow }),
+    isoBox({ x: 0, y: 0, w: 138, d: 108, h: 12, color: PALETTE.structure, rim: PALETTE.yellow }),
   );
-  root.addChild(isoTile(0, -6, 138, 104, PALETTE.structureLight, 0.9, PALETTE.yellow));
+  root.addChild(isoTile(0, -6, 126, 96, PALETTE.structureLight, 0.9, PALETTE.yellow));
 
   // Thick cutaway walls: full back edges + short front stubs, open front face.
   root.addChild(
     isoWall({
-      x1: -76,
+      x1: -62,
       y1: -6,
       x2: 0,
-      y2: -65,
-      h: 50,
+      y2: -56,
+      h: 44,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
@@ -1183,56 +1354,56 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
   root.addChild(
     isoWall({
       x1: 0,
-      y1: -65,
-      x2: 76,
+      y1: -56,
+      x2: 62,
       y2: -6,
-      h: 50,
+      h: 44,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
   );
   root.addChild(
     isoWall({
-      x1: -76,
+      x1: -62,
       y1: -6,
-      x2: -58,
-      y2: 4,
-      h: 34,
+      x2: -46,
+      y2: 2,
+      h: 30,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
   );
   root.addChild(
     isoWall({
-      x1: 58,
-      y1: 4,
-      x2: 76,
+      x1: 46,
+      y1: 2,
+      x2: 62,
       y2: -6,
-      h: 34,
+      h: 30,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
   );
 
   // Sentinel mast above the north wall: a taller gold-tipped silhouette
-  // element marking the vault from across the campus.
+  // element marking the vault from across the room.
   const mast = new Graphics();
-  mast.rect(-77, -122, 2, 60);
+  mast.rect(-63, -112, 2, 54);
   mast.fill({ color: PALETTE.structureLight });
-  mast.rect(-80, -122, 8, 1.4);
+  mast.rect(-66, -112, 8, 1.4);
   mast.fill({ color: PALETTE.yellow, alpha: 0.7 });
-  mast.circle(-76, -125, 2.2);
+  mast.circle(-62, -115, 2.2);
   mast.fill({ color: PALETTE.yellow, alpha: 0.95 });
   root.addChild(mast);
-  root.addChild(glow(-76, -125, 12, PALETTE.yellow, 0.3));
+  root.addChild(glow(-62, -115, 12, PALETTE.yellow, 0.3));
 
   // Interior pedestal with the STATIC key glyph, set into a niche on the
   // west back wall. Never animated, and never at chamber center: a parked
   // actor at the anchor must not intersect the key or the diamond frame.
   root.addChild(
     isoCylinder({
-      x: -34,
-      y: -30,
+      x: -30,
+      y: -28,
       r: 8,
       h: 14,
       color: PALETTE.structureLight,
@@ -1240,13 +1411,13 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
     }),
   );
   const niche = new Graphics();
-  niche.roundRect(-49, -70, 30, 34, 4);
+  niche.roundRect(-44, -64, 28, 32, 4);
   niche.fill({ color: PALETTE.structure, alpha: 0.9 });
-  niche.roundRect(-49, -70, 30, 34, 4);
+  niche.roundRect(-44, -64, 28, 32, 4);
   niche.stroke({ width: 1.2, color: PALETTE.yellow, alpha: 0.5 });
   root.addChild(niche);
   const key = new Container();
-  key.position.set(-34, -52);
+  key.position.set(-30, -48);
   const keyG = new Graphics();
   keyG.circle(-5, 0, 4.5);
   keyG.stroke({ width: 2, color: PALETTE.yellow });
@@ -1262,7 +1433,7 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
   root.addChild(key);
   // District heartbeat: the niche light over the key breathes slowly.
   // The key glyph itself never animates.
-  const vaultPulse = glow(-34, -52, 44, PALETTE.yellow, 0.14);
+  const vaultPulse = glow(-30, -48, 44, PALETTE.yellow, 0.14);
   root.addChild(vaultPulse);
   if (!ctx.reducedMotion) {
     track(
@@ -1277,22 +1448,22 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
   }
 
   // Scanning light bar across the open doorway.
-  const scanBar = lightBeam(0, 34, 6, 10, 44, PALETTE.cyan, 0.16);
+  const scanBar = lightBeam(0, 30, 6, 10, 40, PALETTE.cyan, 0.16);
   root.addChild(scanBar);
   if (!ctx.reducedMotion) {
-    track(gsap.to(scanBar, { x: -46, duration: 3.4, yoyo: true, repeat: -1, ease: "sine.inOut" }));
+    track(gsap.to(scanBar, { x: -40, duration: 3.4, yoyo: true, repeat: -1, ease: "sine.inOut" }));
   }
 
   // Signing flash: vertical beam + expanding ring over the pedestal, pooled.
-  const flashBeam = lightBeam(-34, -30, 10, 22, 54, PALETTE.yellow, 0);
-  const flashRing = glow(-34, -30, 0, PALETTE.yellow, 0.9);
+  const flashBeam = lightBeam(-30, -28, 10, 22, 50, PALETTE.yellow, 0);
+  const flashRing = glow(-30, -28, 0, PALETTE.yellow, 0.9);
   root.addChild(flashBeam, flashRing);
 
   // Order capsule (pooled).
   const capsule = makeCapsule(PALETTE.waiting);
   root.addChild(capsule);
 
-  stationSign(ctx, "signerVault", 146, PALETTE.yellow);
+  stationSign(ctx, "signerVault", 142, PALETTE.yellow);
 
   let tl: gsap.core.Timeline | null = null;
   const reset = (): void => {
@@ -1312,7 +1483,7 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
     signPulse() {
       reset();
       capsule.visible = true;
-      capsule.position.set(-104, 16);
+      capsule.position.set(-92, 14);
       const vt = track(
         gsap
           .timeline({ onComplete: reset })
@@ -1333,7 +1504,7 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
             );
             capsule.body.tint = PALETTE.yellow;
           })
-          .to(capsule, { x: 104, y: 12, duration: d(0.45), ease: "power1.inOut", delay: d(0.25) })
+          .to(capsule, { x: 92, y: 12, duration: d(0.45), ease: "power1.inOut", delay: d(0.25) })
           .to(capsule, { alpha: 0, duration: d(0.2) }, "-=0.1"),
       );
       tl = vt;
@@ -1343,43 +1514,41 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Execution gateway (guarded terminal at the exchange tunnel)
+// 7. Execution gateway (guarded terminal dispatching to the exchange booth)
 // ---------------------------------------------------------------------------
 
 function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
   const { root } = stationBase(ctx, "executionGateway");
 
-  contactShadow(root, 6, 14, 210, 150);
-  root.addChild(propCrate(-66, 48));
-  root.addChild(isoTile(0, 10, 168, 126, PALETTE.structure, 1, PALETTE.structureLight));
+  contactShadow(root, 2, 12, 178, 138);
+  root.addChild(propCrate(-58, 44));
+  root.addChild(isoTile(0, 10, 138, 102, PALETTE.structure, 1, PALETTE.structureLight));
 
-  // Two guard posts.
-  for (const gx of [-58, 42]) {
+  // Two guard posts on the south rim.
+  for (const gx of [-46, 34]) {
     root.addChild(
-      isoBox({ x: gx, y: -26, w: 26, d: 20, h: 30, color: PALETTE.structure, rim: PALETTE.aqua }),
+      isoBox({ x: gx, y: 32, w: 22, d: 16, h: 26, color: PALETTE.structure, rim: PALETTE.aqua }),
     );
-    root.addChild(glow(gx, -26 - 34, 16, PALETTE.cyan, 0.5));
+    root.addChild(glow(gx, -2, 16, PALETTE.cyan, 0.5));
   }
 
-  // Conveyor strip toward the tunnel mouth (east), hugging the platform's
-  // north-east diagonal. It stays east of x=58 local so it never crosses the
-  // gateway operator's wander band (local x -35..55, y 10..40); the baseline
-  // had connector lines slicing through the bot's head and body.
-  const convY = 26;
-  root.addChild(edgeStrip(58, convY - 20, 124, convY - 44, PALETTE.aqua, 0.65));
-  root.addChild(edgeStrip(58, convY - 12, 124, convY - 36, PALETTE.aqua, 0.45));
+  // Dispatch conveyor toward the docked exchange booth, north-west: the
+  // signer hands over from the east, the capsule leaves toward the port.
+  const conv = { x1: 8, y1: -16, x2: -56, y2: -58 };
+  root.addChild(edgeStrip(conv.x1, conv.y1 - 8, conv.x2, conv.y2 - 8, PALETTE.aqua, 0.65));
+  root.addChild(edgeStrip(conv.x1, conv.y1 + 2, conv.x2, conv.y2 + 2, PALETTE.aqua, 0.45));
   const rollers = new Graphics();
   for (let i = 0; i < 4; i++) {
     const t = (i + 0.5) / 4;
-    const rx = 58 + t * 66;
-    const ry = convY - 16 - t * 26;
+    const rx = conv.x1 + (conv.x2 - conv.x1) * t;
+    const ry = conv.y1 + (conv.y2 - conv.y1) * t - 3;
     rollers.ellipse(rx, ry, 4, 2);
     rollers.fill({ color: PALETTE.structureLight });
   }
   root.addChild(rollers);
 
-  // Tunnel mouth arch (leads to Hyperliquid Testnet, east).
-  const mouth = arch(132, convY - 44, 62, 46, PALETTE.structure, PALETTE.aqua);
+  // Launch mouth arch facing the exchange port (north-west).
+  const mouth = arch(-62, -48, 52, 40, PALETTE.structure, PALETTE.aqua);
   root.addChild(mouth);
 
   // 5-lamp state strip.
@@ -1411,9 +1580,9 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
   const capsule = makeCapsule(PALETTE.orange);
   root.addChild(capsule);
   const bin = isoBox({
-    x: 46,
-    y: 58,
-    w: 30,
+    x: 36,
+    y: 48,
+    w: 28,
     d: 20,
     h: 14,
     color: PALETTE.structure,
@@ -1422,8 +1591,8 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
   });
   root.addChild(bin);
 
-  // Sign at the tunnel mouth, above the arch and clear of the lamp strip.
-  stationSign(ctx, "executionGateway", 82, PALETTE.cyan, 2596);
+  // Sign above the booth, clear of the lamp strip and the exchange port.
+  stationSign(ctx, "executionGateway", 84, PALETTE.cyan);
 
   let tl: gsap.core.Timeline | null = null;
   const setLamps = (active: GwState | null): void => {
@@ -1442,7 +1611,7 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
     capsule.alpha = 1;
     capsule.rotation = 0;
     capsule.body.tint = 0xffffff;
-    capsule.position.set(64, convY - 24);
+    capsule.position.set(conv.x1, conv.y1);
   };
 
   const api: ExecutionGatewayApi = {
@@ -1455,26 +1624,26 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
       const gt = track(gsap.timeline());
       tl = gt;
       if (state === "preparing") {
-        // Capsule assembles at the conveyor start (east side).
+        // Capsule assembles at the conveyor start (signer side, east).
         capsule.visible = true;
         capsule.scale.set(0);
         gt.to(capsule.scale, { x: 1, y: 1, duration: d(0.35), ease: "back.out(2)" }).to(capsule, {
-          x: 98,
-          y: convY - 36,
+          x: 0,
+          y: -28,
           duration: d(0.4),
           ease: "none",
         });
       } else if (state === "submitted") {
         capsule.visible = true;
         capsule.scale.set(1);
-        capsule.position.set(98, convY - 36);
-        gt.to(capsule, { x: 126, y: convY - 46, duration: d(0.5), ease: "power1.in" }).to(capsule, {
+        capsule.position.set(0, -28);
+        gt.to(capsule, { x: conv.x2, y: conv.y2, duration: d(0.5), ease: "power1.in" }).to(capsule, {
           alpha: 0,
           duration: d(0.15),
         });
       } else if (state === "acknowledged") {
-        // Capsule is gone; green confirmation at the tunnel mouth.
-        const burst = glow(132, convY - 48, 0, PALETTE.healthy, 0.9);
+        // Capsule is gone; green confirmation at the launch mouth.
+        const burst = glow(conv.x2, conv.y2 - 2, 0, PALETTE.healthy, 0.9);
         root.addChild(burst);
         gt.fromTo(
           burst,
@@ -1489,13 +1658,13 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
         );
       } else {
         // failed: capsule flashes red at the conveyor start, drops south
-        // clear of the operator band, then into the reject bin.
+        // clear of the booth, then into the reject bin.
         capsule.visible = true;
-        capsule.position.set(66, convY - 26);
+        capsule.position.set(conv.x1, conv.y1);
         capsule.body.tint = PALETTE.blocked;
         gt.to(capsule, { alpha: 0.3, duration: d(0.12), yoyo: true, repeat: 3 })
-          .to(capsule, { y: 44, duration: d(0.3), ease: "power1.in" })
-          .to(capsule, { x: 46, y: 56, duration: d(0.25), ease: "power1.in" })
+          .to(capsule, { y: 34, duration: d(0.3), ease: "power1.in" })
+          .to(capsule, { x: 36, y: 46, duration: d(0.25), ease: "power1.in" })
           .to(capsule, { alpha: 0, duration: d(0.25) });
       }
     },
@@ -1510,12 +1679,11 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
 /**
  * Floor guidance for the pipeline reading order:
  * Approval -> Permissions -> Loss Budget -> Risk -> Protection -> Signer ->
- * Execution. Static infrastructure-cyan chevrons mark only the west legs
- * whose primary rails are too short to stamp their own direction marks; the
- * two long diagonal legs toward the Signer Vault duplicated the primary
- * rails and read as chevrons wandering off to the perimeter (baseline
- * vision finding). One runner light walks the whole sequence. Semantic
- * colors are never used here; this is wayfinding, not state.
+ * Execution. Chevrons mark only the budget-to-risk leg, the one hop with no
+ * primary rail; every other leg now duplicates a re-anchored route and
+ * stamped chevrons would read as marks wandering beside their rails. One
+ * runner light walks the whole sequence. Semantic colors are never used
+ * here; this is wayfinding, not state.
  */
 function buildPipelineFlow(ctx: DioramaContext): void {
   const seq: { x: number; y: number }[] = [
@@ -1528,7 +1696,7 @@ function buildPipelineFlow(ctx: DioramaContext): void {
     STATIONS.executionGateway.anchor,
   ];
   /** Leg indices (seq[i] -> seq[i+1]) that keep floor chevrons. */
-  const legsWithFloorChevrons = new Set([0, 1, 2, 3]);
+  const legsWithFloorChevrons = new Set([2]);
 
   const chevrons = new Container();
   for (let g = 0; g < seq.length - 1; g++) {
@@ -1598,6 +1766,7 @@ export function buildRiskDistrict(ctx: DioramaContext): void {
 
   const apis = {
     approval: buildApproval(ctx),
+    emergencyPanel: buildEmergencyPanel(ctx),
     permission: buildPermission(ctx),
     budgetMeter: buildBudgetMeter(ctx),
     riskFortress: buildRiskFortress(ctx),

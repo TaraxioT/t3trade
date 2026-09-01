@@ -13,17 +13,9 @@
 import type { StationDef } from "../config/stations.js";
 import { PALETTE, css } from "../config/palette.js";
 
-/**
- * Card data: a configured station, or the synthetic Hyperliquid station whose
- * id is not part of StationId. StationDef is assignable to this shape.
- */
-export interface CardStation extends Omit<StationDef, "id"> {
-  id: string;
-}
-
 export interface InfoCard {
   show(
-    station: CardStation,
+    station: StationDef,
     statusOverride?: string,
     stationScreen?: { x: number; y: number },
   ): void;
@@ -54,7 +46,10 @@ export interface InfoCardOptions {
 
 const STYLE_ID = "diorama-infocard-style";
 
-/** Heuristic status color: semantic palette keyed off status wording. */
+/** Heuristic status color: semantic palette keyed off status wording.
+ * Honesty statuses ("Simulated feed", "Concept model", "Testnet connected")
+ * deliberately match no rule and land on the neutral waiting tone: a
+ * simulated exhibit must not read as healthy-green or failed-red. */
 function statusColor(status: string): string {
   const s = status.toLowerCase();
   if (/(refus|denied|exceed|blocked|emergency|fail|stale|drift)/.test(s))

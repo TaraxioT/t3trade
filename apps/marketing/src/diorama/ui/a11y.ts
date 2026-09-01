@@ -140,14 +140,16 @@ export function buildA11y(ctx: DioramaContext): A11yController {
   details.className = "diorama-a11y";
 
   const summary = document.createElement("summary");
-  summary.textContent = "Explore the trading campus";
+  summary.textContent = "Explore the trading room";
   details.appendChild(summary);
 
   const intro = document.createElement("p");
   intro.className = "diorama-a11y-intro";
   intro.textContent =
-    "The scene above is a visual diorama; this directory lists every station as text. " +
-    "Activating a station focuses the camera on it and shows its description.";
+    "The scene above is one cutaway trading room in three sections: " +
+    "Research & Agents, Central Trading Floor, and Guarded Execution & Reconciliation. " +
+    `This directory lists all ${STATION_ORDER.length} stations as text; activating a station ` +
+    "focuses the camera on it and shows its description.";
   details.appendChild(intro);
 
   const list = document.createElement("ul");

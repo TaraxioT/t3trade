@@ -1,17 +1,18 @@
 /**
  * Event director v2: seeded, deterministic scheduler with separate activity
- * budgets so the campus never looks dead at the default camera.
+ * budgets so the room never looks dead at the default camera.
  * Owner: director worker.
  *
  * Four lanes run concurrently on top of the same actor/station locks:
- * - spine: the 18-story lifecycle chain, looping end to end with short gaps.
+ * - spine: the 16-story lifecycle chain, looping end to end with short gaps.
  *   This is the readable "one trade from research to reconciliation" story.
  * - texture: weighted ambient singles (system stories, floor choreography,
- *   supervisor rounds) with up to TEXTURE_CONCURRENCY disjoint stories alive.
+ *   and the market-structure desk welcome) with up to TEXTURE_CONCURRENCY
+ *   disjoint stories alive.
  * - comedy: harmless slapstick, one gag at a time, per-gag cooldown plus a
  *   global comedy gap so the same joke never machine-guns.
- * - heartbeats: staggered, cheap district pulses plus slow regime/phase drift
- *   so no district goes quiet for long.
+ * - heartbeats: staggered, cheap section pulses plus slow regime/phase drift
+ *   so no section goes quiet for long.
  *
  * There is no initial calm: start() launches the spine and two texture
  * singles immediately as an arrival burst. All waits are tracked and cleared
@@ -34,8 +35,8 @@ const COMEDY_GAP_MS = 11_000;
 const COMEDY_COOLDOWN_MS = 45_000;
 /** Texture single cooldown so one story does not dominate. */
 const TEXTURE_COOLDOWN_MS = 18_000;
-/** Heartbeat cadence: one district per fire, round-robin. With seven
- * districts this gives every district a pulse inside the 3 s dead-district
+/** Heartbeat cadence: one section per fire, round-robin. With three
+ * sections this gives every section a pulse inside the 3 s dead-section
  * budget even when no story touches it. */
 const HEARTBEAT_MIN_MS = 350;
 const HEARTBEAT_JITTER_MS = 200;
@@ -144,9 +145,9 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
 
   const districtsAlive = (): Partial<Record<DistrictId, boolean>> => {
     const alive: Partial<Record<DistrictId, boolean>> = {};
-    // Heartbeats fire one district per 350-550 ms over seven districts, so a
-    // 5.5 s horizon credits a district only while its pulse is plausibly
-    // still on screen (max cycle ~3.9 s) plus margin.
+    // Heartbeats fire one section per 350-550 ms over three sections, so a
+    // 5.5 s horizon credits a section only while its pulse is plausibly
+    // still on screen (max cycle ~1.65 s) plus generous margin.
     const horizon = now() - 5_500;
     for (const story of running) {
       for (const district of story.districts) alive[district] = true;
@@ -160,7 +161,7 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
   /**
    * Run one story under full locking. Resolves true when the story started;
    * resolves gracefully (false) when locks were unavailable or the id is
-   * unknown, so a busy campus never stalls the show.
+   * unknown, so a busy room never stalls the show.
    */
   const runStoryLocked = async (id: string): Promise<boolean> => {
     const story = STORY_MAP.get(id);
@@ -278,7 +279,7 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
 
   /** Comedy lane: one gag at a time with a global gap and per-gag cooldowns. */
   const comedyLoop = async (gen: number): Promise<void> => {
-    // Let the campus establish itself for a few seconds before the first gag.
+    // Let the room establish itself for a few seconds before the first gag.
     await wait(4500 + rng() * 2500);
     while (!cancelled && gen === generation) {
       const at = now();
@@ -292,16 +293,14 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
     }
   };
 
-  // Heartbeat targets: one station per district that reads as a pulse. The
-  // former supervisor district is gone; its authority seam now pulses here
-  // through the emergency control and the mission board carries research.
+  // Heartbeat targets: one station per section that reads as a pulse. The
+  // authority seam between the floor and the guarded east section is NOT
+  // pulsed here: it sweeps once when approval binds (s-human-approval calls
+  // world/seam.ts pulseSeam), so the seam means authority, not ambience.
   const HEARTBEAT_TARGETS: Partial<Record<DistrictId, StationId[]>> = {
     research: ["missionBoard", "sandbox", "researchTools", "budgetPlanning"],
-    floor: ["tradingFloor", "eventClock"],
-    mcp: ["toolSchemas", "portfolioTools"],
-    risk: ["budgetMeter", "protection", "emergencyPanel"],
-    ops: ["stateStore", "observability", "activityGallery"],
-    external: ["executionGateway"],
+    floor: ["tradingFloor", "eventClock", "hyperliquidVenue"],
+    risk: ["budgetMeter", "protection", "stateStore", "observability"],
   };
   const heartbeatOrder = Object.keys(HEARTBEAT_TARGETS) as DistrictId[];
 
@@ -330,7 +329,7 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
       cancelled = false;
       generation += 1;
       // Arrival burst: the spine plus two texture singles immediately; no
-      // campus-wide calm after load.
+      // room-wide calm after load.
       void spineLoop(generation);
       void textureLoop(generation);
       void comedyLoop(generation);

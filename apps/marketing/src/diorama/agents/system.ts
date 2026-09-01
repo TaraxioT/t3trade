@@ -119,7 +119,7 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
 
   // --- spawn ---------------------------------------------------------------
   POPULATION.forEach((def, index) => {
-    const impl = createAgentImpl(def.id, def.role, def.variant, ctx.reducedMotion, def.theme);
+    const impl = createAgentImpl(def.id, def.role, def.variant, ctx.reducedMotion);
     const first = def.wander[0];
     impl.root.position.set(first.x, first.y);
     impl.setExpression(restingExpression(def));

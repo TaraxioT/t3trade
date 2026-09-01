@@ -3,21 +3,21 @@ import Layout from "../layouts/Layout.astro";
 ---
 
 <Layout
-  title="T3 Trade · Trading Campus Diorama"
-  description="An interactive isometric diorama of the T3 Trade trading campus: agents at work across research, risk, operations, and the Hyperliquid testnet bridge."
+  title="T3 Trade · Trading Room Diorama"
+  description="An interactive isometric diorama of the T3 Trade trading room: agents at work across research and agents, the central trading floor, and guarded execution, with the Hyperliquid testnet exchange docked at the floor."
   pageClass="page-diorama"
 >
   <section class="diorama-wrap">
     <p class="sr-only">
-      An interactive isometric illustration of the T3 Trade trading campus. Coding agents work
-      across districts for research, risk approval, operations, and MCP connections, with signed
-      orders crossing a rail bridge to the Hyperliquid testnet. Every district can be explored
+      An interactive isometric illustration of the T3 Trade trading room. Coding agents work
+      across research and agent tooling, the central trading floor, and guarded execution, with
+      signed orders docking into the Hyperliquid testnet exchange. Every station can be explored
       with pointer drag, wheel zoom, and keyboard station focus.
     </p>
     <div class="diorama-host" data-diorama-host>
       <div class="diorama-loading" data-diorama-loading>
         <span class="diorama-spinner" aria-hidden="true"></span>
-        <span class="diorama-loading-text">Loading the trading campus</span>
+        <span class="diorama-loading-text">Loading the trading room</span>
       </div>
       <div class="diorama-hud" data-diorama-hud></div>
       <div class="diorama-card" data-diorama-card></div>
@@ -25,7 +25,7 @@ import Layout from "../layouts/Layout.astro";
     <div class="diorama-a11y-mount" data-diorama-a11y></div>
     <noscript>
       <p class="diorama-noscript">
-        The trading campus diorama needs JavaScript and WebGL. The rest of the site works without
+        The trading room diorama needs JavaScript and WebGL. The rest of the site works without
         them.
       </p>
     </noscript>
@@ -185,7 +185,7 @@ import Layout from "../layouts/Layout.astro";
         console.warn("[diorama] module load failed", e);
         const loading = host.querySelector<HTMLElement>("[data-diorama-loading]");
         if (loading) {
-          loading.textContent = "The trading campus could not load in this browser.";
+          loading.textContent = "The trading room could not load in this browser.";
         }
       });
   };

@@ -36,9 +36,8 @@ export interface PacketHandle {
   cancel(): void;
 }
 
-/** A focus target is a station id or the synthetic Hyperliquid platform id
- * (a pickable that is deliberately not a StationId). */
-export type FocusTarget = StationId | "hyperliquid" | null;
+/** A focus target is a station id, or null when focus clears. */
+export type FocusTarget = StationId | null;
 
 export interface RailSystem {
   dispatch(
@@ -49,10 +48,9 @@ export interface RailSystem {
   /** Slow ambient pulses so rails never look dead between stories. */
   startAmbient(): void;
   /**
-   * Station focus: reveal only routes incident to the station (from, to, or
-   * an external Hyperliquid endpoint) and dim every unrelated trunk. Pass
-   * null to restore the idle split (lifecycle trunks faint, local branches
-   * hidden until dispatched).
+   * Station focus: reveal only routes incident to the station (from or to)
+   * and dim every unrelated trunk. Pass null to restore the idle split
+   * (lifecycle trunks faint, local branches hidden until dispatched).
    */
   setFocusStation(target: FocusTarget): void;
 }
@@ -61,12 +59,16 @@ export interface RailSystem {
 const PACKET_SPEED = 260;
 const POOL_SIZE = 40;
 const POP_POOL_SIZE = 6;
-/** Quiet routes ambient traffic may use; never busy story corridors. */
+/** Quiet routes ambient traffic may use; never busy story corridors.
+ * Re-picked for the room topology: the probe feed, the floor-to-hub tool
+ * pull, the pocket recon stream, the long north-apron propagator, and the
+ * recovery hop. */
 const AMBIENT_ROUTES: RouteId[] = [
   "landscapeToMarketData",
   "floorToMcp",
-  "receiptsToArchive",
   "localStateStream",
+  "missionToSignalTower",
+  "recoveryDispatch",
 ];
 const AMBIENT_MAX_ALIVE = 2;
 
@@ -284,9 +286,11 @@ function buildRouteVisual(ctx: DioramaContext, path: RoutePath): Container {
     route.addChild(nodes);
   }
 
-  // The exchange crossing gets a physical casing from the ground worker;
-  // a brighter pulsing inner line marks it as THE crossing to the exchange.
-  if (def.id === "exchangeTunnel") {
+  // The order leg into the exchange port keeps the old crossing emphasis:
+  // the whole short route is the threshold now, so a brighter pulsing
+  // orange inner line marks where packets pass between the room and the
+  // docked, externally-authoritative booth.
+  if (def.id === "exchangeOrder") {
     const pulse = new Graphics();
     strokePolyline(pulse, def.points, 3.2, PALETTE.orange, 0.35);
     pulse.blendMode = "add";
@@ -439,11 +443,7 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     if ((activeCount.get(id) ?? 0) > 0) return ACTIVE_ALPHA;
     if (focusStation !== null) {
       const def = ROUTES[id];
-      const incident =
-        def.from === focusStation ||
-        def.to === focusStation ||
-        def.externalFrom === focusStation ||
-        def.externalTo === focusStation;
+      const incident = def.from === focusStation || def.to === focusStation;
       return incident ? FOCUS_INCIDENT_ALPHA : FOCUS_UNRELATED_ALPHA;
     }
     return isTrunk(id) ? TRUNK_IDLE_ALPHA : 0;

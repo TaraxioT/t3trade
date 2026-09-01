@@ -13,13 +13,6 @@
  * deterministically from the single `variant` seed in [0,1) so the cast stays
  * one coherent species while individuals read apart at fit zoom.
  *
- * Venue themes (`theme`): a themed bot is a regular cast member wearing team
- * colors, never a new species. The theme adds ONE silhouette signature plus
- * small accents (antenna beacon, pack trim, chest emblem) in the venue's
- * brand color; proportions, the expression system, walk poses and per-variant
- * traits all stay untouched. Logos are never rasterized onto characters;
- * theming is silhouette + color language only.
- *
  * Anchor convention: root.position is the foot center at ground level; the
  * depth sort uses root.y directly (zIndex = root.y + DEPTH.base). Everything
  * above ground is drawn at negative y inside an inner "flip" container, so
@@ -31,18 +24,6 @@ import { gsap } from "gsap";
 import { PALETTE, ROLE_COLORS, shade, type AgentRole } from "../config/palette.js";
 import { glow } from "../core/iso.js";
 import { agentFx, type MarkKind } from "./fx.js";
-
-/** Venue brand identity for themed cast members (silhouette + accents only). */
-export type AgentTheme = "uniswap" | "hyperliquid";
-
-/**
- * Brand colors for venue theming, shared with mascot.ts so both files draw
- * from one source. These are venue identities, not palette state colors.
- */
-export const THEME_COLORS = {
-  uniswap: 0xff007a, // Uniswap pink
-  hyperliquid: 0x97fce4, // Hyperliquid mint
-} as const;
 
 export type Expression =
   | "neutral"
@@ -270,91 +251,14 @@ function variantTraits(variant: number): VariantTraits {
   };
 }
 
-/**
- * Uniswap unicorn kit: a small forward-tilted horn rising from the head's
- * top-back plus a short mane strip hugging the back rim. Pure silhouette
- * language in brand pink; drawn in head-local 2x units, above the casing
- * graphic but clear of the face screen (horn tops out at y -58.5, the screen
- * inset starts at y -40 and never reaches the back rim).
- */
-function drawUnicornKit(head: Container, pink: number): void {
-  const g = new Graphics();
-  const edge = shade(pink, 0.45);
-  // Horn cone: base seated 1 unit inside the casing top so no gap shows;
-  // tip leans ~2 units forward (+x is the facing direction before mirroring).
-  const baseY = -47;
-  const tip = { x: -9.8, y: -58.5 };
-  g.moveTo(-15.5, baseY);
-  g.lineTo(-8.5, baseY);
-  g.lineTo(tip.x, tip.y);
-  g.closePath();
-  g.fill({ color: shade(pink, 0.18) });
-  g.moveTo(-15.5, baseY);
-  g.lineTo(-8.5, baseY);
-  g.lineTo(tip.x, tip.y);
-  g.closePath();
-  g.stroke({ width: 1.2, color: edge });
-  // Ridge hints at 1/3 and 2/3 height so the cone reads as a horn, not a spike.
-  for (const t of [0.38, 0.68] as const) {
-    const lx = -15.5 + (tip.x + 15.5) * t;
-    const rx = -8.5 + (tip.x + 8.5) * t;
-    const yy = baseY + (tip.y - baseY) * t;
-    g.moveTo(lx, yy);
-    g.lineTo(rx, yy);
-    g.stroke({ width: 1, color: edge, alpha: 0.75 });
-  }
-  // Mane: short rounded strip crossing the back rim (pokes ~1.5 units past
-  // the casing edge so it reads as hair, not paint) with two lighter strands.
-  // Top sits at y -42: higher would clear the casing's rounded corner and
-  // float detached, since the top-left arc pulls the rim inward above that.
-  g.roundRect(-24.5, -42, 5.5, 20, 3);
-  g.fill({ color: shade(pink, 0.08) });
-  for (const dx of [-1.4, 0.6] as const) {
-    g.moveTo(-22.5 + dx, -42);
-    g.quadraticCurveTo(-23.5 + dx, -33, -22.5 + dx, -24);
-    g.stroke({ width: 1, color: edge, alpha: 0.8 });
-  }
-  head.addChild(g);
-}
-
-/**
- * Hyperliquid chest emblem: the venue blob as two small joined circles (the
- * overlapping fill reads as one body; the stroked loops plus a center seam
- * pinch the bridge). Replaces the structural chest dot for themed bots.
- */
-function drawBlobEmblem(g: Graphics, cx: number, cy: number, mint: number): void {
-  const r = 3.2;
-  const dx = 2.7;
-  const edge = shade(mint, -0.35);
-  for (const side of [-1, 1] as const) {
-    g.circle(cx + dx * side, cy, r);
-    g.fill({ color: mint });
-    g.circle(cx + dx * side, cy, r);
-    g.stroke({ width: 1, color: edge, alpha: 0.85 });
-  }
-  // Pinch seam at the waist where the two loops join.
-  g.moveTo(cx, cy - r * 0.5);
-  g.lineTo(cx, cy + r * 0.5);
-  g.stroke({ width: 1.2, color: edge, alpha: 0.9 });
-}
-
 /** Full agent with body controls; createAgent is the frozen public wrapper. */
 export function createAgentImpl(
   id: string,
   role: AgentRole,
   variant = 0.5,
   reducedMotion = false,
-  theme?: AgentTheme,
 ): AgentImpl & AgentMicroLife {
   const roleColor = ROLE_COLORS[role];
-  // Theme accent color: recolors the antenna beacon and adds one pack accent;
-  // null for unthemed bots so role color stays the only accent.
-  const themeColor =
-    theme === "uniswap"
-      ? THEME_COLORS.uniswap
-      : theme === "hyperliquid"
-        ? THEME_COLORS.hyperliquid
-        : null;
   const tr = variantTraits(variant);
   const flipScale = DISPLAY_SCALE * tr.scale;
   const it = tr.intensity;
@@ -418,18 +322,6 @@ export function createAgentImpl(
     pack.lineTo(packX + packW - 3, packY + 8);
     pack.stroke({ width: 1, color: shade(roleColor, 0.45), alpha: 0.7 });
   }
-  if (theme === "uniswap") {
-    // Team stripe across the pack; the role color keeps the body so the bot
-    // still reads as its role first, venue second.
-    pack.roundRect(packX + 1.5, packY + 3.5, packW - 3, 4, 2);
-    pack.fill({ color: shade(THEME_COLORS.uniswap, 0.05) });
-  }
-  if (theme === "hyperliquid") {
-    // Subtle teal tint along the pack's back edge (edge trim, not a repaint).
-    pack.moveTo(packX, packY + 2);
-    pack.lineTo(packX, packY + packH - 2);
-    pack.stroke({ width: 2, color: shade(THEME_COLORS.hyperliquid, -0.12), alpha: 0.65 });
-  }
   // antenna rising from the backpack; style varies per variant
   const tip = { x: 0, y: 0 };
   if (tr.antenna === "short") {
@@ -460,10 +352,9 @@ export function createAgentImpl(
     tip.y = packY - 13;
   }
   pack.circle(tip.x, tip.y, tr.antenna === "short" ? 2.5 : 3);
-  pack.fill({ color: themeColor ? shade(themeColor, 0.25) : shade(roleColor, 0.3) });
+  pack.fill({ color: shade(roleColor, 0.3) });
   // additive beacon on the antenna tip so the accent pops at fit zoom
-  // (theme color for venue bots, role color otherwise)
-  const antennaGlow = glow(tip.x, tip.y, 16, themeColor ?? roleColor, 0.5);
+  const antennaGlow = glow(tip.x, tip.y, 16, roleColor, 0.5);
   body.addChild(pack, antennaGlow);
 
   // --- torso: darker than the head casing for silhouette contrast ----------
@@ -475,13 +366,8 @@ export function createAgentImpl(
   torso.moveTo(-10, -42);
   torso.lineTo(10, -42); // panel line
   torso.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.9 });
-  if (theme === "hyperliquid") {
-    // venue chest emblem replaces the structural dot for themed bots
-    drawBlobEmblem(torso, 0, -34, THEME_COLORS.hyperliquid);
-  } else {
-    torso.circle(0, -34, 2.2); // chest status dot (structural, not role colored)
-    torso.fill({ color: PALETTE.blue });
-  }
+  torso.circle(0, -34, 2.2); // chest status dot (structural, not role colored)
+  torso.fill({ color: PALETTE.blue });
   body.addChild(torso);
 
   // --- arms (pivot at shoulder; droop/idle rotate them) ---------------------
@@ -525,7 +411,6 @@ export function createAgentImpl(
   headG.roundRect(-17, -40, 34, 32, 6);
   headG.stroke({ width: 1.4, color: roleColor, alpha: 0.9 }); // role screen trim
   head.addChild(headG);
-  if (theme === "uniswap") drawUnicornKit(head, THEME_COLORS.uniswap);
 
   // face layer: redrawn only by setExpression; blink scales it.
   const face = new Container();

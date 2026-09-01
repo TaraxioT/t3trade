@@ -9,10 +9,9 @@ import gsap from "gsap";
 import { Graphics, type Container } from "pixi.js";
 import type { DioramaContext } from "../core/context.js";
 import type { Camera } from "../core/camera.js";
-import type { InfoCard, CardStation } from "./infoCard.js";
+import type { InfoCard } from "./infoCard.js";
 import { allStations, type StationHandle } from "../core/registry.js";
-import { DISTRICTS, STATIONS, type StationId } from "../config/stations.js";
-import { HYPERLIQUID } from "../config/geometry.js";
+import { DISTRICTS, STATIONS, type StationDef, type StationId } from "../config/stations.js";
 import { safeDestroy } from "../core/iso.js";
 import { setBannersDim } from "./labels.js";
 import { CUES, playDioramaCue } from "../audio.js";
@@ -29,8 +28,7 @@ const HINT_DELAY_MS = 1200;
 /**
  * Self-dismiss lifetime for the first-visit hint. The pill is guidance, not
  * state: a visitor who never interacts must not have it parked over world
- * labels (it clipped EMERGENCY CONTROL at the risk district's west seam when
- * it lived at bottom-center).
+ * labels (the room's south band is full of station signs at fit zoom).
  */
 const HINT_AUTO_DISMISS_MS = 9000;
 
@@ -48,21 +46,21 @@ export interface InteractionDeps {
   /** Notified true on station focus and false on every clear path
    * (Escape, backdrop click, card close, HUD reset). Used for rail dimming. */
   onFocusChange?: (focused: boolean) => void;
-  /** Notified on every selection transition: the selected station id (or the
-   * synthetic "hyperliquid") when a selection is set, null on every clear
-   * path (Escape, backdrop click, card close, HUD reset). Deduped, so
-   * repeated clears fire once. main.ts drives rails.setFocusStation. */
+  /** Notified on every selection transition: the selected station id when a
+   * selection is set, null on every clear path (Escape, backdrop click, card
+   * close, HUD reset). Deduped, so repeated clears fire once. main.ts drives
+   * rails.setFocusStation. */
   onSelectionChange?: (stationId: string | null) => void;
   /** True while a story is running (Director.isRunning); gates retry clicks. */
   isStoryActive?: (storyId: string) => boolean;
 }
 
-/** Any pickable station: configured StationDef or the Hyperliquid synthetic. */
-type PickableStation = CardStation & { handle?: StationHandle };
+/** A station resolved by footprint picking: its def plus registered handle. */
+type PickedStation = StationDef & { handle: StationHandle };
 
 /** Module hooks set by createInteraction; consumed by a11y + clearSelection. */
 let activeCard: InfoCard | null = null;
-let activeFocus: ((def: CardStation) => void) | null = null;
+let activeFocus: ((def: StationDef) => void) | null = null;
 let activeClearHover: (() => void) | null = null;
 let activeFocusChange: ((focused: boolean) => void) | null = null;
 let activeSelectionChange: ((stationId: string | null) => void) | null = null;
@@ -85,31 +83,14 @@ export function clearSelection(): void {
   setSelection(null);
 }
 
-/** Focus a station programmatically (a11y directory, keyboard, stories). */
+/** Focus a station programmatically (a11y directory, keyboard, stories).
+ * Unknown ids no-op; every pickable station, the exchange port included, is
+ * a registered StationId. */
 export function focusStationById(id: string): void {
   if (!activeFocus) return;
-  const station = STATIONS[id as StationId];
-  const def: CardStation | undefined =
-    station ?? (id === HYPERLIQUID_DEF.id ? HYPERLIQUID_DEF : undefined);
+  const def = STATIONS[id as StationId];
   if (def) activeFocus(def);
 }
-
-/**
- * The external Hyperliquid platform has no StationId, so it is picked as a
- * synthetic station from its geometry constant.
- */
-const HYPERLIQUID_DEF: CardStation = {
-  id: "hyperliquid",
-  district: "external",
-  label: "HYPERLIQUID TESTNET",
-  signSize: "lg",
-  anchor: { x: HYPERLIQUID.cx, y: HYPERLIQUID.cy },
-  size: { w: HYPERLIQUID.w + 40, d: HYPERLIQUID.d + 40 },
-  blurb: "The external exchange, authoritative for positions, orders, and fills.",
-  status: "Simulated feed",
-  relation: "Execution → Hyperliquid → Reconciliation",
-  focusZoom: 1.5,
-};
 
 /** Hit padding around the drawn footprint, matching the visible outline. */
 const HIT_PAD = 8;
@@ -152,10 +133,10 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
 
   /**
    * Station lookup by world point: diamond footprint containment over the
-   * registry plus the synthetic Hyperliquid platform, highest zIndex wins so
-   * nested stations (holo core inside the floor) pick correctly.
+   * registered stations, highest zIndex wins so nested stations (holo core
+   * inside the floor) pick correctly.
    */
-  const pickStation = (worldX: number, worldY: number): PickableStation | null => {
+  const pickStation = (worldX: number, worldY: number): PickedStation | null => {
     let best: StationHandle | null = null;
     let bestZ = -Infinity;
     for (const station of allStations()) {
@@ -166,15 +147,11 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
         bestZ = station.root.zIndex;
       }
     }
-    if (best) return { ...STATIONS[best.id], handle: best };
-    if (inFootprint(worldX, worldY, HYPERLIQUID_DEF.anchor, HYPERLIQUID_DEF.size)) {
-      return { ...HYPERLIQUID_DEF };
-    }
-    return null;
+    return best ? { ...STATIONS[best.id], handle: best } : null;
   };
 
   /** Soft lift on the hovered station's registered root (alpha nudge only). */
-  const setLift = (station: PickableStation | null): void => {
+  const setLift = (station: PickedStation | null): void => {
     if (liftedRoot) {
       gsap.killTweensOf(liftedRoot);
       liftedRoot.alpha = 1;
@@ -196,7 +173,7 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     });
   };
 
-  const setHover = (picked: PickableStation | null): void => {
+  const setHover = (picked: PickedStation | null): void => {
     const id = picked?.id ?? null;
     if (id === hovered) return;
     hovered = id;
@@ -277,8 +254,16 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   };
 
   // ----- Affordance beacon: gentle pulses until the first selection. -----
+  // Rotation tours one landmark per section in room reading order; every
+  // entry is a registered station, so pointer clicks reach the same targets.
 
-  const BEACON_TARGETS: CardStation[] = [STATIONS.tradingFloor, STATIONS.mcpHub, HYPERLIQUID_DEF];
+  const BEACON_TARGETS: StationDef[] = [
+    STATIONS.liquidityResearch,
+    STATIONS.mcpHub,
+    STATIONS.tradingFloor,
+    STATIONS.hyperliquidVenue,
+    STATIONS.riskFortress,
+  ];
   let beaconIndex = 0;
   let selectedOnce = false;
   let staticBeacon: Graphics | null = null;
@@ -316,12 +301,12 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   }
 
   // ----- First-visit onboarding hint (DOM, one per session). -----
-  // Top-center: the bottom band is crowded with world labels at fit zoom
-  // (AUDIT, IDENTITY & ACCESS, RECONCILIATION, EMERGENCY CONTROL), while the
-  // top-center band is the empty north void above Market Landscape and stays
-  // clear of the top-right HUD cluster. The pill is pointer-events:none and
-  // also self-dismisses (HINT_AUTO_DISMISS_MS), so it can never linger over
-  // a label for a visitor who does not interact.
+  // Top-center: the room's south band is crowded with station signs at fit
+  // zoom (RECOVERY, RECONCILIATION, AUDIT, IDENTITY & ACCESS), while the
+  // top-center band is the open north mouth above the CENTRAL TRADING FLOOR
+  // banner and stays clear of the top-right HUD cluster. The pill is
+  // pointer-events:none and also self-dismisses (HINT_AUTO_DISMISS_MS), so it
+  // can never linger over a label for a visitor who does not interact.
 
   let hintEl: HTMLElement | null = null;
   let hintTimer: number | null = null;
@@ -437,7 +422,7 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
 
   const lastStoryRun = new Map<string, number>();
 
-  const maybeRunStory = (def: CardStation): void => {
+  const maybeRunStory = (def: StationDef): void => {
     if (!def.story || !deps.onRunStory) return;
     // Already running (e.g. focus auto-ran it): do not silently retry a lock.
     if (deps.isStoryActive?.(def.story) === true) return;
@@ -448,7 +433,7 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     deps.onRunStory(def.story);
   };
 
-  const focusStation = (def: CardStation): void => {
+  const focusStation = (def: StationDef): void => {
     selectedOnce = true;
     stopBeacon();
     dismissHint();

@@ -6,8 +6,8 @@
  * world y so effects sort with the actors (marks float high, cards and props
  * sit just above the agents at the same foot y). All glyphs are real Graphics
  * redrawn only at spawn time; tick paths allocate nothing. The module holder
- * (`agentFx.current`, set by createAgentFx) follows the world/perimeter.ts
- * holder pattern so agent.ts can emit marks without a context.
+ * (`agentFx.current`, set by createAgentFx) follows the module-holder
+ * pattern (see world/marketLandscape.ts) so agent.ts can emit marks without a context.
  */
 import { Graphics } from "pixi.js";
 import { gsap } from "gsap";

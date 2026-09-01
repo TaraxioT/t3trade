@@ -1,5 +1,5 @@
 /**
- * The 30 micro-stories: small scripted sequences of agent walks, rail
+ * The 31 micro-stories: small scripted sequences of agent walks, rail
  * packets, station api calls, and simulation mutations that continuously
  * explain T3 Trade. Owner: director worker.
  *
@@ -10,9 +10,12 @@
  * - Stations without a frozen animation api (marketData, portfolioVault,
  *   auditArchive, approval waiting shimmer) get a station-agnostic glow
  *   pulse on their registered root via GSAP alpha.
- * - Perimeter / Hyperliquid / MarketLandscape apis are reached through the
- *   ground worker's exported holder objects (`perimeter`, `hyperliquid`,
- *   `marketLandscape`), each `{ api: X | null }`, and are null-guarded.
+ * - Hyperliquid / MarketLandscape apis are reached through the exported
+ *   holder objects (`hyperliquid`, `marketLandscape`), each `{ api: X | null }`,
+ *   and are null-guarded. The authority seam sweep comes from world/seam.ts
+ *   (`pulseSeam()`), fired when approval binds.
+ * - Every literal walk point and cue anchor must sit inside the room diamond
+ *   (config/geometry.ts insideRoom); nothing routes outside the room.
  */
 import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
@@ -27,13 +30,14 @@ import type { RailSystem } from "./rails.js";
 import type { Simulation } from "./simulation.js";
 import { stationApi as registryApi } from "../core/registry.js";
 import { getStation } from "../core/registry.js";
-import type { PerimeterApi } from "../world/perimeter.js";
 import type { HyperliquidApi } from "../world/hyperliquid.js";
 import type { MarketLandscapeApi } from "../world/marketLandscape.js";
-import * as perimeterModule from "../world/perimeter.js";
-import * as hyperliquidModule from "../world/hyperliquid.js";
 import * as marketLandscapeModule from "../world/marketLandscape.js";
-import type { DecisionTableApi, MissionBoardApi } from "../stations/research.js";
+import type {
+  DecisionTableApi,
+  LiquidityResearchApi,
+  MissionBoardApi,
+} from "../stations/research.js";
 import type {
   ApprovalApi,
   BudgetMeterApi,
@@ -51,10 +55,9 @@ import type {
   ReplayChamberApi,
 } from "../stations/ops.js";
 import type {
-  EmergencyControlApi,
   HoloCoreApi,
   SignalTowerApi,
-  UniswapVenueApi,
+  TradingFloorApi,
 } from "../stations/central.js";
 import { popMarkAt, scatterCards, rollProp } from "../agents/fx.js";
 import { cueAt } from "../audio.js";
@@ -118,12 +121,8 @@ function holderApi<T>(mod: object, name: string): T | null {
   return holder.api;
 }
 
-function perimeter(): PerimeterApi | null {
-  return holderApi<PerimeterApi>(perimeterModule, "perimeter");
-}
-
-function hyperliquid(): HyperliquidApi | null {
-  return holderApi<HyperliquidApi>(hyperliquidModule, "hyperliquid");
+function hyperliquid(): HyperliquidApi | undefined {
+  return storyApi<HyperliquidApi>("hyperliquidVenue");
 }
 
 function marketLandscape(): MarketLandscapeApi | null {
@@ -264,8 +263,17 @@ type Reconciliation = ReconciliationApi;
 type Recovery = RecoveryApi;
 type ReplayChamber = ReplayChamberApi;
 type SignalTower = SignalTowerApi;
-type EmergencyControl = EmergencyControlApi;
-type UniswapVenue = UniswapVenueApi;
+type TradingFloor = TradingFloorApi;
+type MarketStructure = LiquidityResearchApi;
+
+/**
+ * The approval desk may expose a grant pulse alongside its frozen seal api;
+ * optional so the seam story works at every integration state of the risk
+ * lane (the seam sweep itself never depends on it).
+ */
+interface ApprovalGrantPulse {
+  grantPulse?: () => void;
+}
 
 // ---------------------------------------------------------------------------
 // Story builders
@@ -280,23 +288,29 @@ const s = (
   run: (deps: StoryDeps) => Promise<void>,
 ): Story => ({ id, title, durationHint, agents, stations, run });
 
+// Probe walk along the floor terrain band (matches the landscape worker's
+// probe drift lane and probe-1's authored wander).
 const probeWalk: { x: number; y: number }[] = [
-  { x: 430, y: 240 },
-  { x: 560, y: 250 },
-  { x: 680, y: 235 },
-  { x: 850, y: 245 },
+  { x: 715, y: 508 },
+  { x: 768, y: 481 },
+  { x: 845, y: 443 },
+  { x: 930, y: 401 },
 ];
 
+// Scanner patrol across the risk fortress apron (matches risk-scanner's
+// authored wander loop).
 const corridorWalk: { x: number; y: number }[] = [
-  { x: 2110, y: 1105 },
-  { x: 2140, y: 1088 },
-  { x: 2210, y: 1135 },
+  { x: 2130, y: 735 },
+  { x: 2200, y: 745 },
+  { x: 2270, y: 770 },
 ];
 
-const gardenWalk: { x: number; y: number }[] = [
-  { x: 300, y: 560 },
-  { x: 360, y: 575 },
-  { x: 330, y: 548 },
+// Sandbox stroll in the northwest research pocket (matches sandbox-1's
+// authored wander loop).
+const sandboxWalk: { x: number; y: number }[] = [
+  { x: 295, y: 730 },
+  { x: 345, y: 712 },
+  { x: 315, y: 698 },
 ];
 
 /**
@@ -424,8 +438,8 @@ export const STORIES: Story[] = [
       react(d, "research-1", "hop");
       express(d, "analysis-1", "satisfied");
       glowPulse(d.ctx, "strategyLab");
-      // Liquidity research informed the pick: the floor's Uniswap desk blips.
-      storyApi<UniswapVenue>("uniswapVenue")?.pulse("quote");
+      // Market-structure research informed the pick: the concept exhibit blips.
+      storyApi<MarketStructure>("liquidityResearch")?.pulse("quote");
       await d.beat(300);
       // The chosen strategy updates the mission; the signal tower hears it.
       await move(d, "strategy-1", [near("missionBoard", 60, 20)]);
@@ -436,9 +450,11 @@ export const STORIES: Story[] = [
       await send(d, "missionToSignalTower");
       storyApi<SignalTower>("signalTower")?.pulse("market");
       // The chosen candidate is tabled: the strategist carries it to the
-      // decision table, where the analyst witness acknowledges it.
+      // decision table, where the analyst witness acknowledges it. The table
+      // sits near the room's southwest taper, so the approach stays north of
+      // the anchor to remain inside the room.
       d.cast.get("strategy-1")?.carry(ROLE_COLORS.strategy);
-      await move(d, "strategy-1", [near("decisionTable", -40, 25)]);
+      await move(d, "strategy-1", [near("decisionTable", -25, -25)]);
       d.cast.get("strategy-1")?.carry(null);
       express(d, "strategy-2", "focused");
       react(d, "strategy-2", "lean");
@@ -448,7 +464,7 @@ export const STORIES: Story[] = [
 
   // 4. Proposals appear at the decision table.
   s("s-proposals-appear", "Proposals compared", 7, ["strategy-2"], ["decisionTable"], async (d) => {
-    await move(d, "strategy-2", [near("decisionTable", -40, 25)]);
+    await move(d, "strategy-2", [near("decisionTable", -25, -25)]);
     storyApi<DecisionTableApi>("decisionTable")?.showProposals(3, 1);
     express(d, "strategy-2", "focused");
     react(d, "strategy-2", "lean");
@@ -484,12 +500,13 @@ export const STORIES: Story[] = [
       storyApi<Approval>("approval")?.setSeal("waiting");
       express(d, "approval-clerk", "curious");
       react(d, "approval-clerk", "tilt");
-      // Perimeter has no "waiting shimmer" in its frozen api; glow the desk.
+      // Approval has no "waiting shimmer" in its frozen api; glow the desk.
       glowPulse(d.ctx, "approval", 0.45, 1.4);
     },
   ),
 
-  // 7. Human authority binds at the approval desk; the perimeter opens.
+  // 7. Human authority binds at the approval desk; the authority seam
+  // between the floor and the guarded east section pulses.
   s(
     "s-human-approval",
     "Human approval granted",
@@ -501,7 +518,8 @@ export const STORIES: Story[] = [
       cue("approve", near("approval"));
       await d.beat(300);
       storyApi<Approval>("approval")?.setSeal("approved");
-      perimeter()?.grantPulse("west");
+      // The seam sweep plus the desk's own grant pulse (optional api).
+      storyApi<ApprovalGrantPulse>("approval")?.grantPulse?.();
       await send(d, "approvalToPermission");
       // Plaque pulse for the user-activity wall (no frozen api).
       glowPulse(d.ctx, "activityGallery", 0.45, 1.0);
@@ -571,6 +589,7 @@ export const STORIES: Story[] = [
     ["signerVault", "executionGateway"],
     async (d) => {
       storyApi<SignerVault>("signerVault")?.signPulse();
+      cue("vault", near("signerVault"));
       express(d, "vault-keeper", "focused");
       react(d, "vault-keeper", "lean");
       await d.beat(400);
@@ -584,7 +603,7 @@ export const STORIES: Story[] = [
     "Order sent to exchange",
     9,
     ["gateway-op"],
-    ["executionGateway"],
+    ["executionGateway", "hyperliquidVenue"],
     async (d) => {
       const gateway = storyApi<ExecutionGateway>("executionGateway");
       gateway?.setState("preparing");
@@ -593,7 +612,7 @@ export const STORIES: Story[] = [
       gateway?.setState("submitted");
       setMissionPhase(d, "Executing");
       cue("execute", near("executionGateway"));
-      await send(d, "exchangeTunnel");
+      await send(d, "exchangeOrder");
       hyperliquid()?.exchangeEvent("order");
       storyApi<HoloCoreApi>("holoCore")?.orderLaunched();
     },
@@ -605,20 +624,24 @@ export const STORIES: Story[] = [
     "Exchange acknowledgment",
     7,
     [],
-    ["executionGateway", "signalTower"],
+    ["executionGateway", "signalTower", "hyperliquidVenue"],
     async (d) => {
-      await send(d, "exchangeTunnel", "event", { reverse: true });
+      await send(d, "exchangeOrder", "event", { reverse: true });
       storyApi<ExecutionGateway>("executionGateway")?.setState("acknowledged");
       hyperliquid()?.exchangeEvent("ack");
+      cue("ack", near("hyperliquidVenue"));
       storyApi<SignalTower>("signalTower")?.pulse("execution");
     },
   ),
 
   // 15. The fill returns and the portfolio vault updates.
-  s("s-fill-vault", "Fill updates portfolio", 8, [], ["portfolioVault"], async (d) => {
+  s("s-fill-vault", "Fill updates portfolio", 8, [], ["portfolioVault", "hyperliquidVenue"], async (d) => {
     hyperliquid()?.exchangeEvent("fill");
     storyApi<HoloCoreApi>("holoCore")?.fillLanded();
     mascotCelebrate();
+    // State truth flows back from the exchange before reconciliation
+    // compares (the canonical return dispatch follows immediately).
+    hyperliquid()?.exchangeEvent("state");
     await send(d, "exchangeStateReturn");
     // No frozen PortfolioVault api; station-agnostic pulse.
     glowPulse(d.ctx, "portfolioVault", 0.4, 1.2);
@@ -634,6 +657,7 @@ export const STORIES: Story[] = [
     async (d) => {
       await send(d, "executionToReceipts");
       storyApi<ReceiptPrinter>("receiptPrinter")?.print("order");
+      cue("print", near("receiptPrinter"));
       express(d, "receipt-clerk", "neutral");
       await d.beat(600);
       await send(d, "receiptsToArchive");
@@ -779,8 +803,8 @@ export const STORIES: Story[] = [
     },
   ),
 
-  // 23. Sandbox: everything stays inside the research district.
-  // NOTE: this story deliberately crosses NO perimeter gate; sandbox traffic
+  // 23. Sandbox: everything stays inside the research section.
+  // NOTE: this story deliberately crosses NO section seam; sandbox traffic
   // loops marketData -> strategy -> missionBoard inside research only.
   s(
     "s-sandbox-test",
@@ -790,7 +814,7 @@ export const STORIES: Story[] = [
     ["sandbox", "marketData", "strategyLab", "missionBoard"],
     async (d) => {
       express(d, "sandbox-1", "excited");
-      await move(d, "sandbox-1", gardenWalk);
+      await move(d, "sandbox-1", sandboxWalk);
       react(d, "sandbox-1", "hop");
       await send(d, "marketDataToStrategy");
       await send(d, "strategyToMissionBoard");
@@ -798,7 +822,7 @@ export const STORIES: Story[] = [
     },
   ),
 
-  // 24. Emergency pause demo from the perimeter control beside Approval.
+  // 24. Emergency pause demo from the emergency panel beside Approval.
   s(
     "s-emergency-demo",
     "Emergency pause demo",
@@ -816,7 +840,7 @@ export const STORIES: Story[] = [
       };
       try {
         glowPulse(d.ctx, "emergencyPanel", 0.4, 1.0);
-        storyApi<EmergencyControl>("emergencyPanel")?.setCampusPaused(true);
+        storyApi<TradingFloor>("tradingFloor")?.setCampusPaused(true);
         d.simulation.setPaused(true);
         storyApi<SignalTower>("signalTower")?.pulse("warning");
         cue("warn", near("emergencyPanel"));
@@ -828,7 +852,7 @@ export const STORIES: Story[] = [
           }
         }
         await d.wait(3000);
-        storyApi<EmergencyControl>("emergencyPanel")?.setCampusPaused(false);
+        storyApi<TradingFloor>("tradingFloor")?.setCampusPaused(false);
         d.simulation.setPaused(false);
         restore();
         express(d, "floor-monitor", "satisfied");
@@ -837,7 +861,7 @@ export const STORIES: Story[] = [
         popMark(d, "floor-monitor", "puff");
       } finally {
         // Interrupt-safe: the floor never stays dimmed.
-        storyApi<EmergencyControl>("emergencyPanel")?.setCampusPaused(false);
+        storyApi<TradingFloor>("tradingFloor")?.setCampusPaused(false);
         d.simulation.setPaused(false);
         restore();
       }
@@ -927,36 +951,44 @@ export const STORIES: Story[] = [
     },
   ),
 
-  // 26b. The Uniswap host welcomes a floor analyst at the pavilion: a quote
-  // card changes hands where liquidity research meets the strategy loop,
-  // and the mascot waves from its pad beside them.
+  // 26b. The market-structure desk welcome: a plain research-role host meets
+  // a floor analyst at the concept-model exhibit, a quote card changes hands
+  // where structure research meets the strategy loop, and the mascot waves
+  // from its pad on the floor.
   s(
     "s-venue-greet",
-    "Liquidity desk welcome",
+    "Market-structure desk welcome",
     11,
-    ["uniswap-bot", "floor-research"],
-    ["uniswapVenue", "tradingFloor"],
+    ["structure-host", "floor-research"],
+    ["liquidityResearch", "tradingFloor"],
     async (d) => {
-      const uni = d.cast.get("uniswap-bot");
+      const host = d.cast.get("structure-host");
       const analyst = d.cast.get("floor-research");
-      uni?.carry(0xff007a);
+      host?.carry(ROLE_COLORS.research);
       await Promise.all([
-        move(d, "uniswap-bot", [{ x: 1330, y: 740 }]),
-        move(d, "floor-research", [{ x: 1262, y: 718 }]),
+        move(d, "structure-host", [near("liquidityResearch", 45, -15)]),
+        move(d, "floor-research", [
+          { x: 1080, y: 700 },
+          { x: 960, y: 740 },
+          near("liquidityResearch", 130, 10),
+        ]),
       ]);
-      react(d, "uniswap-bot", "doubleTake");
+      react(d, "structure-host", "doubleTake");
       express(d, "floor-research", "curious");
       await d.beat(300);
-      uni?.carry(null); // quote card handed over
-      analyst?.carry(0xff007a);
-      storyApi<UniswapVenue>("uniswapVenue")?.pulse("quote");
-      react(d, "uniswap-bot", "hop");
+      host?.carry(null); // quote card handed over
+      analyst?.carry(ROLE_COLORS.research);
+      storyApi<MarketStructure>("liquidityResearch")?.pulse("quote");
+      react(d, "structure-host", "hop");
       mascotHolder.api?.wave();
-      cue("door", near("uniswapVenue"));
+      cue("door", near("liquidityResearch"));
       await d.beat(700);
       await Promise.all([
-        move(d, "uniswap-bot", [near("uniswapVenue", 10, 50)]),
-        move(d, "floor-research", [{ x: 1315, y: 620 }]),
+        move(d, "structure-host", [near("liquidityResearch", 10, 55)]),
+        move(d, "floor-research", [
+          { x: 1000, y: 785 },
+          { x: 1150, y: 745 },
+        ]),
       ]);
     },
   ),
@@ -1007,7 +1039,8 @@ export const STORIES: Story[] = [
     },
   ),
 
-  // 29. COMEDY. Dropped schema cards, a skid, and a helpful gather.
+  // 29. COMEDY. Dropped schema cards, a skid, and a helpful gather. Plays on
+  // the tool-row corridor between the schema drawers and the adapter bay.
   s(
     "s-drop-cards",
     "Schema cards dropped and gathered",
@@ -1018,40 +1051,44 @@ export const STORIES: Story[] = [
       const librarian = d.cast.get("schema-librarian");
       librarian?.carry(ROLE_COLORS.operations);
       await move(d, "schema-librarian", [
-        { x: 2440, y: 640 },
-        { x: 2458, y: 588 },
+        { x: 960, y: 975 },
+        { x: 1020, y: 958 },
       ]);
       // Cards slip.
       librarian?.carry(null);
-      cue("skid", { x: 2462, y: 582 });
+      cue("skid", { x: 1030, y: 955 });
       react(d, "schema-librarian", "squash");
       popMark(d, "schema-librarian", "?");
-      await scatterCards(2462, 580, ROLE_COLORS.operations, 5);
+      await scatterCards(1030, 953, ROLE_COLORS.operations, 5);
       // The adapter operator skids past, narrowly misses, then helps.
       react(d, "adapter-op", "squash");
       await move(d, "adapter-op", [
-        { x: 2480, y: 560 },
-        { x: 2452, y: 588 },
+        { x: 1080, y: 958 },
+        { x: 1035, y: 962 },
       ]);
       react(d, "adapter-op", "apologize");
       await d.beat(300);
-      await move(d, "schema-librarian", [{ x: 2468, y: 588 }]);
+      await move(d, "schema-librarian", [{ x: 1032, y: 968 }]);
       react(d, "schema-librarian", "headrub");
       await d.beat(400);
       // Gathered together.
-      cue("recover", { x: 2462, y: 586 });
+      cue("recover", { x: 1030, y: 958 });
       express(d, "adapter-op", "satisfied");
       express(d, "schema-librarian", "satisfied");
       d.cast.get("schema-librarian")?.laugh();
       await move(d, "schema-librarian", [
-        { x: 2440, y: 660 },
-        { x: 2395, y: 690 },
+        { x: 975, y: 1000 },
+        { x: 935, y: 1030 },
       ]);
-      await move(d, "adapter-op", [{ x: 2488, y: 532 }]);
+      await move(d, "adapter-op", [
+        { x: 1100, y: 985 },
+        { x: 1092, y: 1035 },
+      ]);
     },
   ),
 
-  // 30. COMEDY. A maintenance cart rolls away; three bots chase it.
+  // 30. COMEDY. A maintenance cart rolls away west along the MCP tool row;
+  // three bots chase it down before it reaches the hub.
   s(
     "s-runaway-cart",
     "Runaway cart chased down",
@@ -1059,16 +1096,16 @@ export const STORIES: Story[] = [
     ["hub-keeper", "schema-librarian", "adapter-op"],
     ["toolSchemas", "mcpHub", "adapterBay"],
     async (d) => {
-      cue("cart", { x: 2430, y: 690 });
+      cue("cart", { x: 1105, y: 1035 });
       const cartDone = rollProp(
-        2430,
-        690,
+        1105,
+        1035,
         ROLE_COLORS.execution,
         [
-          { x: 2330, y: 620 },
-          { x: 2230, y: 570 },
-          { x: 2140, y: 605 },
-          { x: 2205, y: 660 },
+          { x: 1005, y: 990 },
+          { x: 925, y: 935 },
+          { x: 855, y: 905 },
+          { x: 915, y: 880 },
         ],
         150,
       );
@@ -1076,29 +1113,29 @@ export const STORIES: Story[] = [
       // locks until every branch settles so no agent is released mid-gag.
       const chases = Promise.all([
         move(d, "schema-librarian", [
-          { x: 2380, y: 680 },
-          { x: 2300, y: 635 },
-          { x: 2235, y: 585 },
+          { x: 1060, y: 1000 },
+          { x: 990, y: 950 },
+          { x: 930, y: 905 },
         ]).then(() => {
           react(d, "schema-librarian", "wobble");
         }),
         move(d, "adapter-op", [
-          { x: 2470, y: 560 },
-          { x: 2380, y: 560 },
-          { x: 2260, y: 575 },
+          { x: 1100, y: 990 },
+          { x: 1020, y: 950 },
+          { x: 950, y: 915 },
         ]).then(() => {
           react(d, "adapter-op", "startle");
         }),
         move(d, "hub-keeper", [
-          { x: 2230, y: 570 },
-          { x: 2170, y: 590 },
-          { x: 2215, y: 655 },
+          { x: 870, y: 895 },
+          { x: 830, y: 905 },
+          { x: 880, y: 940 },
         ]),
       ]);
       await Promise.all([cartDone, chases]);
       react(d, "hub-keeper", "squash"); // the catch
       popMark(d, "hub-keeper", "stars");
-      cue("bump", { x: 2205, y: 660 });
+      cue("bump", { x: 915, y: 880 });
       await d.beat(300);
       react(d, "hub-keeper", "hop");
       d.cast.get("hub-keeper")?.laugh();
@@ -1107,7 +1144,8 @@ export const STORIES: Story[] = [
     },
   ),
 
-  // 31. COMEDY. The research-only spring gate closes early and bonks a backpack.
+  // 31. COMEDY. The research-only spring gate closes early and bonks a
+  // backpack. The gate is the wall door in the west wall's southeast reach.
   s(
     "s-spring-gate",
     "Spring gate bonk at research only",
@@ -1116,8 +1154,8 @@ export const STORIES: Story[] = [
     ["researchOnlyGate", "sandbox"],
     async (d) => {
       await move(d, "sandbox-1", [
-        { x: 270, y: 590 },
-        { x: 212, y: 612 },
+        { x: 455, y: 700 },
+        { x: 505, y: 672 },
       ]);
       // The gate springs shut a beat early.
       cue("door", near("researchOnlyGate"));
@@ -1130,22 +1168,23 @@ export const STORIES: Story[] = [
       await d.beat(450);
       // Retry politely; the gate behaves.
       await move(d, "sandbox-1", [
-        { x: 240, y: 640 },
-        { x: 185, y: 648 },
+        { x: 475, y: 715 },
+        { x: 530, y: 690 },
       ]);
       cue("door", near("researchOnlyGate"));
       react(d, "sandbox-1", "hop");
       express(d, "sandbox-1", "excited");
       await d.beat(300);
       await move(d, "sandbox-1", [
-        { x: 260, y: 610 },
-        { x: 320, y: 575 },
+        { x: 420, y: 730 },
+        { x: 370, y: 750 },
       ]);
       d.cast.get("sandbox-1")?.laugh();
     },
   ),
 
-  // 32. COMEDY. A loose cable trips the recovery bot; a colleague helps up.
+  // 32. COMEDY. A loose cable trips the recovery bot beside the workshop; a
+  // colleague rushes over from observability and helps it upright.
   s(
     "s-cable-trip",
     "Cable trip and a helping hand",
@@ -1154,21 +1193,21 @@ export const STORIES: Story[] = [
     ["recoveryWorkshop", "observability"],
     async (d) => {
       await move(d, "recovery-1", [
-        { x: 470, y: 1365 },
-        { x: 560, y: 1315 },
+        { x: 1640, y: 1170 },
+        { x: 1690, y: 1160 },
       ]);
       // Trip over the loose cable.
-      cue("bump", { x: 585, y: 1300 });
+      cue("bump", { x: 1705, y: 1155 });
       react(d, "recovery-1", "squash");
       popMark(d, "recovery-1", "stars");
-      popMarkAt(585, 1300, "puff");
+      popMarkAt(1705, 1155, "puff");
       await d.beat(500);
       react(d, "recovery-1", "wobble");
       // The observer rushes over and helps upright.
       await move(d, "observer-1", [
-        { x: 1050, y: 1120 },
-        { x: 800, y: 1240 },
-        { x: 640, y: 1300 },
+        { x: 2050, y: 990 },
+        { x: 1900, y: 1030 },
+        { x: 1760, y: 1090 },
       ]);
       react(d, "observer-1", "apologize");
       await d.beat(400);
@@ -1177,13 +1216,14 @@ export const STORIES: Story[] = [
       express(d, "observer-1", "satisfied");
       d.cast.get("observer-1")?.laugh();
       await move(d, "observer-1", [
-        { x: 900, y: 1200 },
-        { x: 1130, y: 1060 },
+        { x: 1880, y: 1040 },
+        { x: 2040, y: 995 },
       ]);
     },
   ),
 
-  // 34. COMEDY. A celebratory hop topples a stack of glowing capsules.
+  // 34. COMEDY. A celebratory hop topples a stack of glowing capsules beside
+  // the portfolio vault; the archivist helps gather them.
   s(
     "s-stack-topple",
     "Capsule stack toppled at the vault",
@@ -1199,13 +1239,13 @@ export const STORIES: Story[] = [
       cue("bump", near("portfolioVault"));
       popMark(d, "receipt-clerk", "!");
       express(d, "receipt-clerk", "alarmed");
-      await scatterCards(940, 1125, ROLE_COLORS.reconciliation, 4);
+      await scatterCards(1880, 905, ROLE_COLORS.reconciliation, 4);
       await d.beat(300);
       react(d, "receipt-clerk", "apologize");
       // The archivist helps gather.
       await move(d, "archivist", [
-        { x: 1020, y: 1290 },
-        { x: 975, y: 1185 },
+        { x: 1900, y: 1075 },
+        { x: 1890, y: 975 },
       ]);
       react(d, "archivist", "headrub");
       await d.beat(500);
@@ -1213,7 +1253,7 @@ export const STORIES: Story[] = [
       express(d, "archivist", "satisfied");
       express(d, "receipt-clerk", "satisfied");
       d.cast.get("receipt-clerk")?.laugh();
-      await move(d, "archivist", [{ x: 1030, y: 1290 }]);
+      await move(d, "archivist", [{ x: 1905, y: 1075 }]);
     },
   ),
 ];
