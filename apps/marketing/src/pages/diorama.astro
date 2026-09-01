@@ -22,6 +22,7 @@ import Layout from "../layouts/Layout.astro";
       <div class="diorama-hud" data-diorama-hud></div>
       <div class="diorama-card" data-diorama-card></div>
     </div>
+    <div class="diorama-a11y-mount" data-diorama-a11y></div>
     <noscript>
       <p class="diorama-noscript">
         The trading campus diorama needs JavaScript and WebGL. The rest of the site works without
@@ -33,22 +34,24 @@ import Layout from "../layouts/Layout.astro";
 
 <style>
   /* Nav is sticky at top with 12px inner padding, a 36px pill row, and a
-     1px border: the host fills the remaining viewport. Desktop first. */
+     1px border: the host fills the remaining viewport. Desktop first.
+     The world is the page: thin gutters, no content max-width. */
   .diorama-wrap {
     width: 100%;
-    max-width: 1240px;
     margin: 0 auto;
-    padding: 20px 32px 32px;
+    padding: 14px 18px 18px;
     flex: 1;
     display: flex;
     flex-direction: column;
+    min-height: 0;
   }
 
   .diorama-host {
     position: relative;
     width: 100%;
-    min-height: 560px;
-    height: calc(100dvh - 61px - 52px);
+    flex: 1;
+    min-height: 480px;
+    height: calc(100dvh - 61px - 46px);
     background: #07111f;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
@@ -130,13 +133,22 @@ import Layout from "../layouts/Layout.astro";
     color: var(--fg-dim);
   }
 
+  /* A11y directory mount: real focusable DOM below the canvas. */
+  .diorama-a11y-mount {
+    margin-top: 10px;
+  }
+
+  .diorama-a11y-mount:empty {
+    display: none;
+  }
+
   @media (max-width: 820px) {
     .diorama-wrap {
-      padding: 16px 20px 20px;
+      padding: 10px 10px 12px;
     }
 
     .diorama-host {
-      height: calc(100dvh - 61px - 36px);
+      height: calc(100dvh - 61px - 32px);
     }
   }
 </style>
@@ -184,13 +196,20 @@ import Layout from "../layouts/Layout.astro";
 
   const schedule = (): void => {
     if ("requestIdleCallback" in window) {
-      requestIdleCallback(boot, { timeout: 1500 });
+      requestIdleCallback(boot, { timeout: 700 });
     } else {
-      setTimeout(boot, 200);
+      setTimeout(boot, 150);
     }
   };
 
-  document.fonts.ready.then(schedule);
+  // Fonts first, but never let a slow font CDN hold the scene hostage: after
+  // 2.5 s the diorama boots anyway (Pixi text falls back and still renders).
+  Promise.race([
+    document.fonts.ready.then(() => undefined),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, 2500);
+    }),
+  ]).then(schedule);
 
   document.addEventListener("astro:before-swap", destroy);
   window.addEventListener("pagehide", destroy);

@@ -26,6 +26,7 @@ export const PALETTE = {
   violet: 0x9a70ff,
   orange: 0xff9f45,
   yellow: 0xffd35a,
+  coral: 0xff6a5f,
 
   // State colors (semantic; see header comment)
   healthy: 0x63f58b,

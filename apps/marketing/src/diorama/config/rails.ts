@@ -81,6 +81,41 @@ export interface RouteDef {
   twoWay?: boolean;
 }
 
+/**
+ * PRIMARY lifecycle corridor: research -> strategy -> mission -> decision ->
+ * approval -> permission -> risk -> protection -> signer -> execution ->
+ * exchange, plus the exchange -> reconciliation -> receipts -> archive
+ * return leg. Primary rails render at full contrast with direction chevrons;
+ * everything else (research/tool traffic, provider links) is subordinate.
+ */
+export const PRIMARY_ROUTES: ReadonlySet<RouteId> = new Set<RouteId>([
+  "marketDataToStrategy",
+  "strategyToMissionBoard",
+  "strategyToDecision",
+  "decisionToApproval",
+  "approvalToPermission",
+  "permissionToRisk",
+  "riskToProtection",
+  "protectionToSigner",
+  "signerToExecution",
+  "exchangeTunnel",
+  "exchangeStateReturn",
+  "executionToReceipts",
+  "receiptsToArchive",
+]);
+
+/**
+ * Return flow: state, receipts, and archive legs coming back from the
+ * exchange/execution side. Rendered warm-gold with a dashed tail so returns
+ * read as a distinct flow from outgoing orange order capsules.
+ */
+export const RETURN_ROUTES: ReadonlySet<RouteId> = new Set<RouteId>([
+  "exchangeStateReturn",
+  "executionToReceipts",
+  "receiptsToArchive",
+  "receiptsToStateStore",
+]);
+
 const p = (x: number, y: number) => ({ x, y });
 
 export const ROUTES: Record<RouteId, RouteDef> = {
@@ -121,14 +156,18 @@ export const ROUTES: Record<RouteId, RouteDef> = {
   },
   decisionToApproval: {
     id: "decisionToApproval",
-    points: [p(1085, 645), p(1260, 705), p(1500, 800), p(1695, 910)],
+    // Corridor south of the market holo (bottom edge y 740): the segment
+    // stays >= ~40u below it so packets never cross the hologram.
+    points: [p(1085, 645), p(1250, 708), p(1420, 782), p(1600, 865), p(1695, 910)],
     kind: "proposal",
     from: "decisionTable",
     to: "approval",
   },
   deniedReturn: {
     id: "deniedReturn",
-    points: [p(1690, 925), p(1440, 790), p(1180, 690), p(1045, 625)],
+    // Refusal return runs parallel to decisionToApproval, offset ~40-50u to
+    // the south so the outgoing and refused reads never merge.
+    points: [p(1690, 938), p(1585, 868), p(1430, 800), p(1275, 730), p(1045, 625)],
     kind: "refusal",
     from: "approval",
     to: "decisionTable",
@@ -198,7 +237,10 @@ export const ROUTES: Record<RouteId, RouteDef> = {
   },
   executionToReceipts: {
     id: "executionToReceipts",
-    points: [p(2465, 1210), p(2355, 1330), p(1900, 1400), p(1200, 1378), p(950, 1292), p(852, 1252)],
+    // Receipt leg runs above (north of) exchangeStateReturn with ~80-120u
+    // of separation, and elbows north of the audit archive footprint
+    // (955-1175 x, 1240-1370 y) instead of weaving through it.
+    points: [p(2465, 1210), p(2320, 1270), p(1900, 1320), p(1350, 1300), p(1150, 1240), p(980, 1225), p(852, 1252)],
     kind: "receipt",
     from: "executionGateway",
     to: "receiptPrinter",
@@ -289,7 +331,10 @@ export const ROUTES: Record<RouteId, RouteDef> = {
   },
   missionToSignalTower: {
     id: "missionToSignalTower",
-    points: [p(425, 348), p(760, 452), p(1080, 528)],
+    // Rerouted off the old long diagonal across the research floor: gentle
+    // elbows along the district edges (below the mission board, through the
+    // budget-planning/strategy gap, then east to the terminal point).
+    points: [p(425, 348), p(430, 420), p(650, 458), p(850, 495), p(1000, 545), p(1080, 528)],
     kind: "command",
     from: "missionBoard",
     to: "signalTower",

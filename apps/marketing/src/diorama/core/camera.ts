@@ -7,6 +7,11 @@
  * transition (fit, focus, reset) is one code path and user input can cancel
  * it by killing the tween. User gestures (drag, wheel, pinch) are authoritative
  * and permanently stop resize-driven re-fitting.
+ *
+ * Zoom broadcast: every applied move (gesture or tween) emits the current
+ * fit-relative zoom, throttled to ~100 ms, to instance subscribers (onZoom)
+ * and to a module-level broadcast (onWorldZoom) so sign LOD in ui/labels.ts
+ * can react without holding the camera instance. One live camera at a time.
  */
 import gsap from "gsap";
 import type { Application } from "pixi.js";
@@ -24,6 +29,10 @@ export interface Camera {
   /** Current zoom clamped between fit scale and 2.25x fit scale. */
   getZoom(): number;
   screenToWorld(p: Point): Point;
+  /** World point to screen (CSS) pixels; used for audio panning and QA. */
+  worldToScreen(p: { x: number; y: number }): { x: number; y: number };
+  /** Throttled (~100 ms) zoom notifications, fit-relative (1 = fit). */
+  onZoom(cb: (zoom: number) => void): () => void;
   onUserGesture(cb: () => void): () => void;
   resize(w: number, h: number): void;
 }
@@ -45,12 +54,47 @@ const TWEEN_MS = 750;
 const EASE = "power2.inOut";
 /** pixi-viewport "moved" types that count as user intent. */
 const USER_GESTURE_TYPES = new Set(["drag", "wheel", "pinch", "slide"]);
+/** Zoom notification throttle window in milliseconds. */
+const ZOOM_EMIT_MS = 100;
+/** Portrait/narrow initial framing: aspect below this focuses the floor. */
+const PORTRAIT_ASPECT = 0.9;
+/** Portrait initial view: Central Trading Floor at fit * 1.35. */
+const PORTRAIT_FOCUS = { cx: 1430, cy: 800, zoom: 1.35 } as const;
+
+/** Zoom >= this: LOD tier 1 (all station labels visible). */
+export const ZOOM_TIER_1 = 1.15;
+/** Zoom >= this: LOD tier 2 (deep zoom, fine detail tier). */
+export const ZOOM_TIER_2 = 1.8;
+
+/** LOD tier for a fit-relative zoom value. */
+export function lodLevelForZoom(zoom: number): 0 | 1 | 2 {
+  if (zoom >= ZOOM_TIER_2) return 2;
+  if (zoom >= ZOOM_TIER_1) return 1;
+  return 0;
+}
+
+type ZoomListener = (zoom: number) => void;
+
+/** Module-level zoom broadcast; replays the last emitted zoom on subscribe. */
+const worldZoomSubs = new Set<ZoomListener>();
+let lastZoom = 1;
+
+/** Subscribe to throttled zoom changes without holding the camera instance. */
+export function onWorldZoom(cb: ZoomListener): () => void {
+  worldZoomSubs.add(cb);
+  cb(lastZoom);
+  return () => {
+    worldZoomSubs.delete(cb);
+  };
+}
 
 export function createCamera({ viewport }: CameraParams): Camera {
   const gestureSubs = new Set<() => void>();
+  const zoomSubs = new Set<ZoomListener>();
   let interacted = false;
   let proxy = { cx: WORLD_WIDTH / 2, cy: WORLD_HEIGHT / 2, scale: 1 };
   let tween: gsap.core.Tween | null = null;
+  let lastEmit = 0;
 
   const fitScale = (): number => {
     const w = viewport.screenWidth;
@@ -59,9 +103,24 @@ export function createCamera({ viewport }: CameraParams): Camera {
     return Math.min(w / WORLD_WIDTH, h / WORLD_HEIGHT) * FIT_MARGIN;
   };
 
+  const currentZoom = (): number => {
+    const base = fitScale();
+    return base > 0 ? viewport.scale.x / base : 1;
+  };
+
+  const emitZoom = (): void => {
+    const now = performance.now();
+    if (now - lastEmit < ZOOM_EMIT_MS) return;
+    lastEmit = now;
+    lastZoom = currentZoom();
+    for (const cb of zoomSubs) cb(lastZoom);
+    for (const cb of worldZoomSubs) cb(lastZoom);
+  };
+
   const applyProxy = (): void => {
     viewport.scale.set(proxy.scale);
     viewport.moveCenter(proxy.cx, proxy.cy);
+    emitZoom();
   };
 
   const cancelTween = (): void => {
@@ -111,6 +170,7 @@ export function createCamera({ viewport }: CameraParams): Camera {
       }
       for (const cb of gestureSubs) cb();
     }
+    emitZoom();
   };
   viewport.on("moved", onMoved);
 
@@ -122,12 +182,20 @@ export function createCamera({ viewport }: CameraParams): Camera {
   };
   applyClamp();
 
-  // Initial view: entire campus visible with the Central Trading Floor
-  // (anchor 1430,740) slightly above the viewport center. Centering 120
+  // Initial view. Landscape: entire campus with the Central Trading Floor
+  // (anchor 1430,740) slightly above the viewport center; centering 120
   // world units below the anchor lifts the floor above the middle line while
-  // Hyperliquid in the east stays inside the fitted frame.
+  // Hyperliquid in the east stays inside the fitted frame. Portrait/narrow:
+  // a whole-world fit is an illegible strip, so open on the Central Trading
+  // Floor at fit * 1.35 centered near (1430, 800); zoom min stays at fit so
+  // the user can still zoom out to the full world.
   fitWorld(false);
-  proxy = { cx: WORLD_WIDTH / 2, cy: 740 + 120, scale: fitScale() };
+  const aspect = viewport.screenHeight > 0 ? viewport.screenWidth / viewport.screenHeight : 1;
+  if (aspect > 0 && aspect < PORTRAIT_ASPECT) {
+    proxy = { cx: PORTRAIT_FOCUS.cx, cy: PORTRAIT_FOCUS.cy, scale: fitScale() * PORTRAIT_FOCUS.zoom };
+  } else {
+    proxy = { cx: WORLD_WIDTH / 2, cy: 740 + 120, scale: fitScale() };
+  }
   applyProxy();
 
   return {
@@ -145,13 +213,25 @@ export function createCamera({ viewport }: CameraParams): Camera {
     },
 
     getZoom(): number {
-      const base = fitScale();
-      return base > 0 ? viewport.scale.x / base : 1;
+      return currentZoom();
     },
 
     screenToWorld(p: Point): Point {
       const w = viewport.toWorld(p.x, p.y);
       return { x: w.x, y: w.y };
+    },
+
+    worldToScreen(p: { x: number; y: number }): { x: number; y: number } {
+      const s = viewport.toScreen(p.x, p.y);
+      return { x: s.x, y: s.y };
+    },
+
+    onZoom(cb: (zoom: number) => void): () => void {
+      zoomSubs.add(cb);
+      cb(lastZoom);
+      return () => {
+        zoomSubs.delete(cb);
+      };
     },
 
     onUserGesture(cb: () => void): () => void {

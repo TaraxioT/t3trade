@@ -33,7 +33,7 @@ const BAND_GAP = 30; // vertical spacing between contour baselines
 /** Per-regime contour colors, index 0 = top (north) band. */
 const REGIME_COLORS: Record<Regime, number[]> = {
   calm: [PALETTE.aqua, PALETTE.cyan, PALETTE.blue, PALETTE.structureLight],
-  rising: [PALETTE.cyan, PALETTE.blue, PALETTE.aqua, PALETTE.structureLight],
+  rising: [PALETTE.aqua, PALETTE.cyan, PALETTE.orange, PALETTE.structureLight],
   falling: [PALETTE.magenta, PALETTE.violet, PALETTE.blue, PALETTE.structureLight],
   turbulent: [PALETTE.violet, PALETTE.magenta, PALETTE.violet, PALETTE.structureLight],
 };
@@ -99,7 +99,7 @@ export function buildMarketLandscape(ctx: DioramaContext): void {
 
   // Soft under-glow strip beneath the terrain band so the contours read as an
   // illuminated ridge line rather than flat paint.
-  const under = glow((X1 + X2) / 2, SOUTH_Y - 6, X2 - X1, PALETTE.cyan, 0.1);
+  const under = glow((X1 + X2) / 2, SOUTH_Y - 6, 560, PALETTE.cyan, 0.1);
   under.height = 46;
   root.addChild(under);
 

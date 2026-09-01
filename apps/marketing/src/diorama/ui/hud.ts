@@ -1,34 +1,23 @@
 /**
- * DOM HUD: sound toggle, reset view, usage hint, loading state.
- * Owner: UI worker.
+ * DOM HUD: sound toggle, reset view, loading state. Owner: UI worker.
  *
- * main.ts wires onToggleSound to audio.setEnabled(true) only, so real muting
- * goes through the audio module's setDioramaAudioEnabled exported toggle; the
- * onToggleSound action is still invoked for future plumbing.
+ * The HUD owns its pressed state for the sound toggle and reports every
+ * change through onToggleSound(next); it does not touch the audio module
+ * directly. Buttons keep a 34px visual box inside a 44x44 touch target.
  */
-import { setDioramaAudioEnabled } from "../audio.js";
-
 export interface Hud {
   setSoundEnabled(enabled: boolean): void;
   setLoading(visible: boolean): void;
+  /** Remove the cluster from the DOM; safe to call twice. */
+  destroy(): void;
+}
+
+export interface HudActions {
+  onResetView: () => void;
+  onToggleSound: (next: boolean) => void;
 }
 
 const STYLE_ID = "diorama-hud-style";
-
-const GLASS = `
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  width:34px;
-  height:34px;
-  border-radius:10px;
-  background:rgba(10,24,40,.88);
-  border:1px solid rgba(52,229,229,.25);
-  color:#a8c0cf;
-  cursor:pointer;
-  padding:0;
-  transition:color .15s ease,border-color .15s ease,background .15s ease;
-`;
 
 const CSS = `
 .diorama-hud-cluster{
@@ -41,16 +30,39 @@ const CSS = `
   gap:8px;
   pointer-events:none;
 }
-.diorama-hud-cluster:hover{pointer-events:none}
 .diorama-hud-btn{
-  ${GLASS}
-  font-family:'JetBrains Mono',ui-monospace,monospace;
-  font-size:9px;
-  letter-spacing:.06em;
+  position:relative;
+  width:44px;
+  height:44px;
+  padding:0;
+  border:none;
+  background:transparent;
+  cursor:pointer;
   pointer-events:auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  font-size:10px;
 }
-.diorama-hud-btn:hover{
+.diorama-hud-btn::before{
+  content:"";
+  position:absolute;
+  inset:5px;
+  border-radius:10px;
+  background:rgba(10,24,40,.88);
+  border:1px solid rgba(52,229,229,.25);
+  transition:border-color .15s ease,background .15s ease;
+}
+.diorama-hud-btn svg{
+  position:relative;
+  z-index:1;
+  color:#a8c0cf;
+  transition:color .15s ease;
+}
+.diorama-hud-btn:hover svg{
   color:#f5fbff;
+}
+.diorama-hud-btn:hover::before{
   border-color:rgba(52,229,229,.55);
   background:rgba(16,38,60,.92);
 }
@@ -58,27 +70,18 @@ const CSS = `
   outline:2px solid #34E5E5;
   outline-offset:2px;
 }
-.diorama-hud-btn[aria-pressed="true"]{
+.diorama-hud-btn[aria-pressed="true"] svg{
   color:#34E5E5;
+}
+.diorama-hud-btn[aria-pressed="true"]::before{
   border-color:rgba(52,229,229,.55);
 }
-.diorama-hud-hint{
-  font-family:'JetBrains Mono',ui-monospace,monospace;
-  font-size:10px;
-  letter-spacing:.05em;
-  color:#a8c0cf;
-  background:rgba(10,24,40,.75);
-  border:1px solid rgba(52,229,229,.18);
-  border-radius:8px;
-  padding:5px 9px;
-  max-width:230px;
-  text-align:right;
-  opacity:1;
-  transition:opacity .6s ease;
-  pointer-events:none;
+@media (prefers-reduced-motion: reduce){
+  .diorama-hud-btn svg,
+  .diorama-hud-btn::before{
+    transition:none;
+  }
 }
-.diorama-hud-hint-hidden{opacity:0}
-@media (max-width:640px){.diorama-hud-hint{display:none}}
 `;
 
 function injectStyles(): void {
@@ -109,14 +112,14 @@ function crosshairIcon(): string {
   </svg>`;
 }
 
-export function createHud(root: HTMLElement, actions: { onResetView(): void; onToggleSound(): void }): Hud {
+export function createHud(root: HTMLElement, actions: HudActions): Hud {
   injectStyles();
   root.style.pointerEvents = "none";
 
   const cluster = document.createElement("div");
   cluster.className = "diorama-hud-cluster";
 
-  // Sound toggle: starts muted.
+  // Sound toggle: starts muted; the HUD owns the pressed state.
   const soundBtn = document.createElement("button");
   soundBtn.type = "button";
   soundBtn.className = "diorama-hud-btn";
@@ -124,7 +127,7 @@ export function createHud(root: HTMLElement, actions: { onResetView(): void; onT
   soundBtn.setAttribute("aria-pressed", "false");
   soundBtn.innerHTML = speakerIcon(true);
 
-  // Reset view.
+  // Reset view. The callback also clears any station selection.
   const resetBtn = document.createElement("button");
   resetBtn.type = "button";
   resetBtn.className = "diorama-hud-btn";
@@ -132,12 +135,7 @@ export function createHud(root: HTMLElement, actions: { onResetView(): void; onT
   resetBtn.title = "Reset view";
   resetBtn.innerHTML = crosshairIcon();
 
-  // Interaction hint: fades after 8 s or the first pointer interaction.
-  const hint = document.createElement("p");
-  hint.className = "diorama-hud-hint";
-  hint.textContent = "Drag to pan · Scroll to zoom · Click a station";
-
-  cluster.append(soundBtn, resetBtn, hint);
+  cluster.append(soundBtn, resetBtn);
   root.appendChild(cluster);
 
   let soundOn = false;
@@ -148,30 +146,29 @@ export function createHud(root: HTMLElement, actions: { onResetView(): void; onT
     soundBtn.innerHTML = speakerIcon(!enabled);
   };
 
-  soundBtn.addEventListener("click", () => {
+  const onSoundClick = (): void => {
     const next = !soundOn;
-    // main.ts forwards setEnabled(true) only, so drive the real state here.
-    setDioramaAudioEnabled(next);
     setSoundEnabled(next);
-    actions.onToggleSound();
-  });
-  resetBtn.addEventListener("click", () => actions.onResetView());
-
-  const dismissHint = (): void => {
-    hint.classList.add("diorama-hud-hint-hidden");
-    host.removeEventListener("pointerdown", dismissHint);
-    host.removeEventListener("wheel", dismissHint);
+    actions.onToggleSound(next);
   };
+  const onResetClick = (): void => actions.onResetView();
+  soundBtn.addEventListener("click", onSoundClick);
+  resetBtn.addEventListener("click", onResetClick);
+
   const host = root.closest<HTMLElement>("[data-diorama-host]") ?? root.parentElement ?? root;
-  const hintTimer = window.setTimeout(dismissHint, 8000);
-  host.addEventListener("pointerdown", dismissHint);
-  host.addEventListener("wheel", dismissHint, { passive: true });
 
   const setLoading = (visible: boolean): void => {
     const loading = host.querySelector<HTMLElement>("[data-diorama-loading]");
     if (loading) loading.hidden = !visible;
   };
 
-  void hintTimer;
-  return { setSoundEnabled, setLoading };
+  return {
+    setSoundEnabled,
+    setLoading,
+    destroy(): void {
+      soundBtn.removeEventListener("click", onSoundClick);
+      resetBtn.removeEventListener("click", onResetClick);
+      cluster.remove();
+    },
+  };
 }

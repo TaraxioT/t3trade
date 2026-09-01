@@ -14,7 +14,7 @@ import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { PALETTE, ROLE_COLORS, rightFace, shade, topFace } from "../config/palette.js";
 import type { AgentRole } from "../config/palette.js";
-import { STATIONS } from "../config/stations.js";
+import { DISTRICTS, STATIONS } from "../config/stations.js";
 import type { StationDef, StationId } from "../config/stations.js";
 import { seededRandom } from "../config/world.js";
 import {
@@ -30,6 +30,17 @@ import {
 } from "../core/iso.js";
 import { makeSign } from "../core/signs.js";
 import { getStation, registerStation } from "../core/registry.js";
+
+export interface HoloCoreApi {
+  /** Mirror a market event on the holo: order launch, fill landing, or state refresh. */
+  marketEvent(kind: "order" | "fill" | "state"): void;
+  /** Cycle the strategy chip row. */
+  rotateStrategies(): void;
+  /** Launch an order marker along the holo's orders row. */
+  orderLaunched(): void;
+  /** Land a fill on the positions strip. */
+  fillLanded(): void;
+}
 
 export interface SignalTowerApi {
   /** Emit a differentiated pulse: market, alert, wake, warning, execution. */
@@ -48,6 +59,12 @@ export interface EmergencyApi {
 
 const FLOOR = { x: 1430, y: 740 };
 const RNG = seededRandom(0xc3e7411);
+
+/**
+ * Floor-wide desk flash set by buildTradingFloor and read by the holo core's
+ * market events, so a market tick is felt at every console in the ring.
+ */
+let deskPulseHook: ((color: number) => void) | null = null;
 
 /** Floor desks at the population wander points; roles tint the console trim. */
 const DESKS: { x: number; y: number; role: AgentRole }[] = [
@@ -109,6 +126,12 @@ export function buildCentralDistrict(ctx: DioramaContext): void {
 function buildTradingFloor(ctx: DioramaContext): void {
   const def = STATIONS.tradingFloor;
   const root = stationRoot(ctx, def, def.anchor.y - 8);
+  // District counter-accent: warm gold inlays subordinate to the cyan ring
+  // lights, which stay the floor's infrastructure language.
+  const GOLD = DISTRICTS.floor.accent2;
+  // Reset first so a failed rebuild never leaves holo events pulsing desks
+  // from a destroyed world.
+  deskPulseHook = null;
 
   // Raised plinth: two low steps under a circular top platform, with a soft
   // ground shadow and strongly shaded side faces so the step faces read.
@@ -125,6 +148,9 @@ function buildTradingFloor(ctx: DioramaContext): void {
   plinth.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.6 });
   plinth.ellipse(FLOOR.x, FLOOR.y, 348, 198);
   plinth.fill({ color: topFace(PALETTE.structure) });
+  // Pale lift on the top face so the platform reads as solid floor mass.
+  plinth.ellipse(FLOOR.x, FLOOR.y, 348, 198);
+  plinth.fill({ color: PALETTE.surfacePale, alpha: 0.06 });
   plinth.ellipse(FLOOR.x, FLOOR.y, 348, 198);
   plinth.stroke({ width: 2, color: PALETTE.surfacePale, alpha: 0.45 });
   // Inset cyan ring lights just inside the rim.
@@ -134,21 +160,26 @@ function buildTradingFloor(ctx: DioramaContext): void {
   plinth.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.2 });
   root.addChild(plinth);
 
-  // Warm-lit central medallion: concentric accent inlays + 8 radial spokes.
+  // Warm-lit central medallion: gold inlays on the inner rings, cyan kept for
+  // the infrastructure band, alternating pale/gold spokes.
   const medallion = new Graphics();
   medallion.ellipse(FLOOR.x, FLOOR.y, 250, 142);
   medallion.stroke({ width: 3, color: PALETTE.violet, alpha: 0.35 });
   medallion.ellipse(FLOOR.x, FLOOR.y, 240, 136);
-  medallion.stroke({ width: 1.5, color: PALETTE.blue, alpha: 0.3 });
+  medallion.stroke({ width: 2, color: GOLD, alpha: 0.5 });
   medallion.ellipse(FLOOR.x, FLOOR.y, 190, 108);
-  medallion.stroke({ width: 3, color: PALETTE.cyan, alpha: 0.4 });
+  medallion.stroke({ width: 3, color: PALETTE.cyan, alpha: 0.45 });
   medallion.ellipse(FLOOR.x, FLOOR.y, 120, 68);
-  medallion.stroke({ width: 2, color: PALETTE.aqua, alpha: 0.35 });
+  medallion.stroke({ width: 2, color: GOLD, alpha: 0.45 });
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
     medallion.moveTo(FLOOR.x + Math.cos(a) * 122, FLOOR.y + Math.sin(a) * 69);
     medallion.lineTo(FLOOR.x + Math.cos(a) * 246, FLOOR.y + Math.sin(a) * 140);
-    medallion.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.22 });
+    medallion.stroke({
+      width: 1.5,
+      color: i % 2 ? GOLD : PALETTE.surfacePale,
+      alpha: i % 2 ? 0.3 : 0.22,
+    });
   }
   root.addChild(medallion);
 
@@ -237,27 +268,46 @@ function buildTradingFloor(ctx: DioramaContext): void {
     });
   }
 
-  // Slowly pulsing concentric emissive floor lines (8 s), alpha only.
-  const pulseRings: Graphics[] = [];
-  for (const r of [300, 230, 160]) {
+  // Slowly pulsing concentric emissive floor lines (8 s), alpha only. Each
+  // ring carries a different material (color and weight) so the stack reads
+  // as layered system state rather than one decorative motif.
+  const pulseRings: { ring: Graphics; base: number }[] = [];
+  const RING_MATERIALS: { r: number; color: number; width: number }[] = [
+    { r: 300, color: PALETTE.cyan, width: 1.75 },
+    { r: 230, color: GOLD, width: 1.25 },
+    { r: 160, color: PALETTE.blue, width: 2 },
+  ];
+  for (const m of RING_MATERIALS) {
     const ring = new Graphics();
-    ring.ellipse(FLOOR.x, FLOOR.y, r, r * 0.57);
-    ring.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.3 });
+    ring.ellipse(FLOOR.x, FLOOR.y, m.r, m.r * 0.57);
+    ring.stroke({ width: m.width, color: m.color, alpha: 0.3 });
     ring.blendMode = "add";
     ring.alpha = 0.3;
-    pulseRings.push(ring);
+    pulseRings.push({ ring, base: 0.22 + pulseRings.length * 0.02 });
     root.addChild(ring);
     ring.zIndex = 1;
   }
 
-  for (const desk of DESKS) buildDesk(ctx, desk);
+  // Per-desk feedback flashes driven by holo market events.
+  const deskFlashes: Sprite[] = [];
+  for (const desk of DESKS) buildDesk(ctx, desk, deskFlashes);
+  const pulseDesks = (color: number): void => {
+    if (ctx.reducedMotion || deskFlashes.length === 0) return;
+    for (const flash of deskFlashes) {
+      flash.tint = color;
+      gsap.killTweensOf(flash);
+      gsap.fromTo(flash, { alpha: 0.5 }, { alpha: 0, duration: 0.7, ease: "power2.out" });
+    }
+  };
+  ctx.onCleanup(() => deskFlashes.forEach((f) => gsap.killTweensOf(f)));
+  deskPulseHook = pulseDesks;
 
   if (!ctx.reducedMotion) {
     ctx.onTick(() => {
       const time = performance.now() / 1000;
       const phase = (time * Math.PI * 2) / 8;
-      for (const [i, ring] of pulseRings.entries()) {
-        ring.alpha = 0.22 + 0.18 * (0.5 + 0.5 * Math.sin(phase - i * 0.9));
+      for (const [i, { ring, base }] of pulseRings.entries()) {
+        ring.alpha = base + 0.18 * (0.5 + 0.5 * Math.sin(phase - i * 0.9));
       }
       const chasePhase = (time * Math.PI * 2) / 4;
       for (const [i, light] of chase.entries()) {
@@ -271,8 +321,13 @@ function buildTradingFloor(ctx: DioramaContext): void {
 }
 
 /** One open workstation: wide console with role trim, a chair with a tall
- * backrest, a floating role holo pane, and a soft AO ellipse at its root. */
-function buildDesk(ctx: DioramaContext, desk: { x: number; y: number; role: AgentRole }): void {
+ * backrest, a floating role holo pane, and a soft AO ellipse at its root.
+ * Pushes a flash glow so market events are felt at the console. */
+function buildDesk(
+  ctx: DioramaContext,
+  desk: { x: number; y: number; role: AgentRole },
+  deskFlashes: Sprite[],
+): void {
   const accent = ROLE_COLORS[desk.role];
   const root = new Container();
   root.zIndex = desk.y;
@@ -315,26 +370,33 @@ function buildDesk(ctx: DioramaContext, desk: { x: number; y: number; role: Agen
   backrest.stroke({ width: 1, color: accent, alpha: 0.6 });
   root.addChild(backrest);
 
-  // Console screen with two tiny data lines in the role tint.
-  root.addChild(glow(desk.x, desk.y - 34, 52, accent, 0.16));
+  // Console screen with two data lines in the role tint: sized and weighted
+  // to stay readable at fit zoom.
+  const trimGlow = glow(desk.x, desk.y - 34, 52, accent, 0.16);
+  root.addChild(trimGlow);
   const screen = screenPanel({
-    x: desk.x - 18,
-    y: desk.y - 46,
-    w: 36,
-    h: 20,
+    x: desk.x - 21,
+    y: desk.y - 48,
+    w: 42,
+    h: 22,
     accent,
   });
   const content = new Graphics();
-  content.moveTo(desk.x - 13, desk.y - 37);
-  content.lineTo(desk.x - 3, desk.y - 42);
-  content.lineTo(desk.x + 5, desk.y - 36);
-  content.lineTo(desk.x + 13, desk.y - 40);
-  content.stroke({ width: 1.5, color: accent, alpha: 0.9 });
-  content.moveTo(desk.x - 13, desk.y - 32);
-  content.lineTo(desk.x + 13, desk.y - 32);
-  content.stroke({ width: 1, color: accent, alpha: 0.4 });
+  content.moveTo(desk.x - 16, desk.y - 38);
+  content.lineTo(desk.x - 4, desk.y - 44);
+  content.lineTo(desk.x + 5, desk.y - 37);
+  content.lineTo(desk.x + 16, desk.y - 42);
+  content.stroke({ width: 2, color: accent, alpha: 0.95 });
+  content.moveTo(desk.x - 16, desk.y - 32);
+  content.lineTo(desk.x + 16, desk.y - 32);
+  content.stroke({ width: 1.4, color: accent, alpha: 0.5 });
   screen.addChild(content);
   root.addChild(screen);
+  // Dedicated market-event flash above the console: stays dormant so the idle
+  // shimmer and trim breathing never fight it.
+  const flash = glow(desk.x, desk.y - 38, 46, accent, 0);
+  root.addChild(flash);
+  deskFlashes.push(flash);
 
   // Floating role holo pane above the console: two abstract glyphs.
   const pane = new Container();
@@ -361,7 +423,25 @@ function buildDesk(ctx: DioramaContext, desk: { x: number; y: number; role: Agen
       ease: "sine.inOut",
       delay: (desk.x % 7) * 0.4,
     });
-    ctx.onCleanup(() => gsap.killTweensOf(pane));
+    // Idle telemetry: each desk shimmers and its role trim breathes on its own
+    // clock so the six jobs read as separate live consoles, not one texture.
+    gsap.to(content, {
+      alpha: 0.55,
+      duration: 2.2 + (desk.x % 5) * 0.35,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+      delay: (desk.y % 7) * 0.35,
+    });
+    gsap.to(trimGlow, {
+      alpha: 0.32,
+      duration: 3 + (desk.x % 4) * 0.6,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+      delay: (desk.y % 5) * 0.5,
+    });
+    ctx.onCleanup(() => gsap.killTweensOf([pane, content, trimGlow]));
   }
 }
 
@@ -432,22 +512,31 @@ function buildHoloCore(ctx: DioramaContext): void {
   const lastGlow = glow(0, 0, 10, PALETTE.cyan, 0.7);
   stack.addChild(lastGlow);
 
-  // Strategy chips (violet) + health dots (green), one row.
-  const chips = new Graphics();
-  for (const [i, cx] of [-40, -6].entries()) {
-    chips.roundRect(cx, -1, 30, 9, 3);
-    chips.fill({ color: PALETTE.violet, alpha: 0.35 });
-    chips.roundRect(cx, -1, 30, 9, 3);
-    chips.stroke({ width: 1, color: PALETTE.violet, alpha: 0.85 });
-    chips.moveTo(cx + 4, 3.5);
-    chips.lineTo(cx + 18, 3.5);
-    chips.stroke({ width: 1, color: PALETTE.violet, alpha: 0.6 });
-    void i;
-  }
-  for (let i = 0; i < 4; i++) {
-    chips.circle(26 + i * 9, 3.5, 2.2);
-    chips.fill({ color: PALETTE.healthy, alpha: 0.9 });
-  }
+  // Strategy chips + health dots, one row. The chip tint cycles through
+  // variants when strategies rotate; the dots stay semantic green.
+  const CHIP_TINTS = [PALETTE.violet, PALETTE.blue, PALETTE.magenta];
+  let chipVariant = 0;
+  const chips = new Container();
+  const chipsG = new Graphics();
+  chips.addChild(chipsG);
+  const drawChips = (): void => {
+    const tint = CHIP_TINTS[chipVariant % CHIP_TINTS.length];
+    chipsG.clear();
+    for (const cx of [-40, -6]) {
+      chipsG.roundRect(cx, -1, 30, 9, 3);
+      chipsG.fill({ color: tint, alpha: 0.35 });
+      chipsG.roundRect(cx, -1, 30, 9, 3);
+      chipsG.stroke({ width: 1, color: tint, alpha: 0.85 });
+      chipsG.moveTo(cx + 4, 3.5);
+      chipsG.lineTo(cx + 18, 3.5);
+      chipsG.stroke({ width: 1, color: tint, alpha: 0.6 });
+    }
+    for (let i = 0; i < 4; i++) {
+      chipsG.circle(26 + i * 9, 3.5, 2.2);
+      chipsG.fill({ color: PALETTE.healthy, alpha: 0.9 });
+    }
+  };
+  drawChips();
   stack.addChild(chips);
 
   // Positions strip: 3 tokens each with a green shield pip.
@@ -470,6 +559,15 @@ function buildHoloCore(ctx: DioramaContext): void {
     positions.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.6 });
   }
   stack.addChild(positions);
+  // Fill feedback: one dormant flash per token plus a shield pulse overlay.
+  const tokenFlashes: Sprite[] = [];
+  for (let i = 0; i < 3; i++) {
+    const flash = glow(-34 + i * 26 + 9, 20, 16, PALETTE.healthy, 0);
+    tokenFlashes.push(flash);
+    stack.addChild(flash);
+  }
+  const shieldPulse = glow(0, 18, 40, PALETTE.healthy, 0);
+  stack.addChild(shieldPulse);
 
   // Orders row: 2 orange capsules, plus the P&L arc (gold) to the right.
   const orders = new Graphics();
@@ -485,6 +583,14 @@ function buildHoloCore(ctx: DioramaContext): void {
   orders.circle(28 + Math.cos(Math.PI * 1.9) * 13, 37 + Math.sin(Math.PI * 1.9) * 13, 2.4);
   orders.fill({ color: PALETTE.yellow });
   stack.addChild(orders);
+  // Order feedback: warm launch flash at the row's start and a marker that
+  // travels to the live order slot.
+  const GOLD = DISTRICTS.floor.accent2;
+  const orderFlash = glow(-58, 35.5, 22, GOLD, 0);
+  stack.addChild(orderFlash);
+  const marker = glow(-58, 35.5, 14, GOLD, 0);
+  marker.visible = false;
+  stack.addChild(marker);
 
   // Two orbiting mini-panes: translucent additive-edge screens circling the
   // holo at different radii (14 s and 22 s).
@@ -542,6 +648,123 @@ function buildHoloCore(ctx: DioramaContext): void {
     orbiters.forEach((o, i) => {
       const a = 1.2 + i * 2.4;
       o.c.position.set(x + Math.cos(a) * o.r, y - 78 + Math.sin(a) * o.ry);
+    });
+  }
+
+  // --- Story API: market events mirrored on the holo and felt at the desks ---
+  const launchOrder = (): void => {
+    if (ctx.reducedMotion) {
+      marker.visible = true;
+      marker.alpha = 0.9;
+      marker.position.set(-22, 35.5);
+      return;
+    }
+    gsap.killTweensOf(marker);
+    marker.visible = true;
+    gsap.fromTo(
+      marker,
+      { x: -58, y: 35.5, alpha: 0.95 },
+      {
+        x: -22,
+        duration: 0.55,
+        ease: "power2.out",
+        onComplete: () => {
+          gsap.to(marker, { alpha: 0, duration: 1.6, delay: 0.8 });
+        },
+      },
+    );
+    gsap.killTweensOf(orderFlash);
+    gsap.fromTo(orderFlash, { alpha: 0.8 }, { alpha: 0, duration: 0.5 });
+    deskPulseHook?.(GOLD);
+  };
+
+  let fillToken = 0;
+  const landFill = (): void => {
+    const flash = tokenFlashes[fillToken++ % tokenFlashes.length];
+    if (ctx.reducedMotion) {
+      flash.alpha = 0.8;
+      shieldPulse.alpha = 0.4;
+      return;
+    }
+    gsap.killTweensOf(flash);
+    gsap.fromTo(flash, { alpha: 0.9 }, { alpha: 0, duration: 0.9, ease: "power2.out" });
+    gsap.killTweensOf([shieldPulse, shieldPulse.scale]);
+    shieldPulse.scale.set(0.7);
+    gsap.to(shieldPulse.scale, { x: 1.5, y: 1.5, duration: 0.7, ease: "power2.out" });
+    gsap.fromTo(shieldPulse, { alpha: 0.7 }, { alpha: 0, duration: 0.7 });
+  };
+
+  const refreshState = (): void => {
+    candles.shift();
+    candles.push(nextCandle());
+    drawRibbon();
+    if (ctx.reducedMotion) return;
+    gsap.killTweensOf(ribbon);
+    gsap.fromTo(ribbon, { alpha: 0.4 }, { alpha: 1, duration: 0.5, ease: "power2.out" });
+  };
+
+  const rotateChips = (): void => {
+    if (ctx.reducedMotion) {
+      chipVariant++;
+      drawChips();
+      return;
+    }
+    gsap.killTweensOf(chips);
+    gsap.to(chips, {
+      alpha: 0,
+      y: 10,
+      duration: 0.28,
+      ease: "power2.in",
+      onComplete: () => {
+        chipVariant++;
+        drawChips();
+        gsap.to(chips, { alpha: 1, y: 0, duration: 0.35, ease: "back.out(2)" });
+      },
+    });
+  };
+
+  const api: HoloCoreApi = {
+    marketEvent(kind) {
+      if (kind === "order") launchOrder();
+      else if (kind === "fill") landFill();
+      else refreshState();
+    },
+    rotateStrategies() {
+      rotateChips();
+    },
+    orderLaunched() {
+      launchOrder();
+    },
+    fillLanded() {
+      landFill();
+    },
+  };
+  registerApi(ctx, def.id, api);
+
+  // Mild self-animation so the floor lives between stories: an order launches
+  // and the strategy row cycles on staggered, non-synchronized clocks.
+  if (!ctx.reducedMotion) {
+    type DelayedCall = ReturnType<typeof gsap.delayedCall>;
+    let orderTimer: DelayedCall | null = null;
+    let chipTimer: DelayedCall | null = null;
+    const scheduleOrder = (): void => {
+      orderTimer = gsap.delayedCall(12 + RNG() * 6, () => {
+        launchOrder();
+        scheduleOrder();
+      });
+    };
+    const scheduleChips = (): void => {
+      chipTimer = gsap.delayedCall(14 + RNG() * 5, () => {
+        rotateChips();
+        scheduleChips();
+      });
+    };
+    scheduleOrder();
+    scheduleChips();
+    ctx.onCleanup(() => {
+      orderTimer?.kill();
+      chipTimer?.kill();
+      gsap.killTweensOf([marker, orderFlash, ...tokenFlashes, shieldPulse, ribbon, chips]);
     });
   }
 
@@ -777,11 +1000,14 @@ function buildEventClock(ctx: DioramaContext): void {
   addRing(26, 4, PALETTE.blue, 24, -1);
   addRing(35, 2, PALETTE.aqua, 60, 1);
 
-  // Sweeping second glint: thin needle crossing all rings.
-  const glint = new Graphics();
-  glint.moveTo(0, 0);
-  glint.lineTo(0, -38);
-  glint.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.85 });
+  // Sweeping second glint: thin needle crossing all rings. Container, not
+  // Graphics: Pixi v8 marks Graphics allowChildren false and warns on addChild.
+  const glint = new Container();
+  const needle = new Graphics();
+  needle.moveTo(0, 0);
+  needle.lineTo(0, -38);
+  needle.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.85 });
+  glint.addChild(needle);
   glint.addChild(glow(0, -38, 10, PALETTE.surfacePale, 0.7));
   face.addChild(glint);
 
@@ -1040,7 +1266,8 @@ function buildSupervisorDeck(ctx: DioramaContext): void {
   mapG.circle(10, -3, 2);
   mapG.fill({ color: PALETTE.yellow, alpha: 0.9 });
   campusMap.addChild(mapG);
-  campusMap.addChild(glow(0, 0, 40, PALETTE.yellow, 0.12));
+  const mapGlow = glow(0, 0, 40, PALETTE.yellow, 0.12);
+  campusMap.addChild(mapGlow);
   root.addChild(campusMap);
   if (!ctx.reducedMotion) {
     gsap.to(campusMap, {
@@ -1075,12 +1302,25 @@ function buildSupervisorDeck(ctx: DioramaContext): void {
     setCampusPaused(next) {
       if (next === paused) return;
       paused = next;
-      gsap.killTweensOf([pauseGlyph, screens]);
+      // Reduced motion: snap to composed states, no gestures.
+      if (ctx.reducedMotion) {
+        pauseGlyph.visible = next;
+        pauseGlyph.alpha = next ? 1 : 0;
+        screens.alpha = next ? 0.55 : 1;
+        mapGlow.alpha = next ? 0.3 : 0.12;
+        return;
+      }
+      gsap.killTweensOf([pauseGlyph, screens, mapGlow, approvalCard, approvalCard.scale]);
       if (next) {
         pauseGlyph.visible = true;
         pauseGlyph.y = y - 108;
         gsap.to(pauseGlyph, { alpha: 1, y: y - 118, duration: 0.6, ease: "power2.out" });
         gsap.to(screens, { alpha: 0.3, duration: 0.4 });
+        // Localized gestures, not a floor wash: the campus map brightens and
+        // the approval card pops so the pause reads at fit zoom.
+        gsap.fromTo(mapGlow, { alpha: 0.4 }, { alpha: 0.12, duration: 0.9, ease: "power2.out" });
+        approvalCard.scale.set(1.18);
+        gsap.to(approvalCard.scale, { x: 1, y: 1, duration: 0.5, ease: "back.out(2)" });
       } else {
         gsap.to(pauseGlyph, {
           alpha: 0,
@@ -1091,6 +1331,7 @@ function buildSupervisorDeck(ctx: DioramaContext): void {
           },
         });
         gsap.to(screens, { alpha: 1, duration: 0.4 });
+        gsap.fromTo(mapGlow, { alpha: 0.3 }, { alpha: 0.12, duration: 0.6, ease: "power2.out" });
       }
     },
   };
@@ -1107,7 +1348,7 @@ function buildSupervisorDeck(ctx: DioramaContext): void {
   }
 
   ctx.onCleanup(() => {
-    gsap.killTweensOf([pauseGlyph, screens]);
+    gsap.killTweensOf([pauseGlyph, screens, mapGlow, approvalCard, approvalCard.scale]);
   });
 
   buildEmergencyPanel(ctx, eDef, { x: eDef.anchor.x, y: eDef.anchor.y }, supervisorApi);
@@ -1179,12 +1420,14 @@ function buildEmergencyPanel(
           demoRunning = false;
         },
       });
-      tl.to(cover, { scaleX: 0.12, rotation: -0.5, alpha: 0.25, duration: 0.35, ease: "power2.in" })
-        .to(button, { scale: 0.85, duration: 0.12, yoyo: true, repeat: 1 }, ">")
+      tl.to(cover, { rotation: -0.5, alpha: 0.25, duration: 0.35, ease: "power2.in" })
+        .to(cover.scale, { x: 0.12, duration: 0.35, ease: "power2.in" }, "<")
+        .to(button.scale, { x: 0.85, y: 0.85, duration: 0.12, yoyo: true, repeat: 1 }, ">")
         .call(() => supervisorApi.setCampusPaused(true))
         .to({}, { duration: 2.4 })
         .call(() => supervisorApi.setCampusPaused(false))
-        .to(cover, { scaleX: 1, rotation: 0, alpha: 1, duration: 0.4, ease: "power2.out" });
+        .to(cover, { rotation: 0, alpha: 1, duration: 0.4, ease: "power2.out" })
+        .to(cover.scale, { x: 1, duration: 0.4, ease: "power2.out" }, "<");
       ctx.onCleanup(() => {
         tl.kill();
         gsap.killTweensOf([cover, button]);

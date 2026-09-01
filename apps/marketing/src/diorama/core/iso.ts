@@ -14,6 +14,7 @@
  *   Animate by toggling child visibility/alpha or moving sprites.
  */
 import { Container, Graphics, Sprite, Texture, type DestroyOptions } from "pixi.js";
+import gsap from "gsap";
 import { leftFace, rightFace, topFace } from "../config/palette.js";
 
 /**
@@ -22,12 +23,25 @@ import { leftFace, rightFace, topFace } from "../config/palette.js";
  * picked up on the next instruction rebuild) and defer the actual destroy
  * past the frame's remaining rAF work: destroying while the object is still
  * in a render group's pending update list throws
- * "reading 'updateRenderable'".
+ * "reading 'updateRenderable'". After route teardown the deferred call must
+ * not touch an already-destroyed tree, so it checks for a live parent and
+ * swallows the (benign) late-destroy case.
+ *
+ * Tweens on the target (and its observable points, which destroy() nulls)
+ * are killed first: GSAP lazily initializes tweens at first render, and a
+ * lazily-initialized tween reading a destroyed object's null scale/position
+ * throws "Cannot read properties of null (reading 'y')".
  */
 export function safeDestroy(target: Container, options?: DestroyOptions): void {
+  gsap.killTweensOf([target, target.scale, target.position]);
   target.removeFromParent();
   window.setTimeout(() => {
-    target.destroy(options);
+    try {
+      if (target.destroyed) return;
+      target.destroy(options);
+    } catch {
+      // Post-teardown race: the app is gone; nothing left to corrupt.
+    }
   }, 0);
 }
 

@@ -49,7 +49,7 @@ function buildSlab(root: Container): void {
   g.roundRect(SLAB.x1, SLAB.y1, w, h + SLAB_T * 0.5, SLAB_R);
   g.fill({ color: leftFace(PALETTE.structure) });
   g.roundRect(SLAB.x1, SLAB.y1, w, h, SLAB_R);
-  g.fill({ color: shade(PALETTE.structureLight, -0.18) });
+  g.fill({ color: PALETTE.structureLight });
 
   // Pale rim edge so the island outline reads clearly against the void.
   g.roundRect(SLAB.x1, SLAB.y1, w, h, SLAB_R);
@@ -83,13 +83,15 @@ function buildDistrictInlays(root: Container): void {
     const pad = 10;
     const b = { x: x1 + pad, y: y1 + pad, w: x2 - x1 - pad * 2, h: y2 - y1 - pad * 2 };
 
-    // Structural tint plus the district-specific accent wash.
+    // Structural tint plus the district-specific accent wash. The fill sits
+    // darker than the slab top so district floors and pale structure tops
+    // separate by value, not by stacked translucency.
     fills.roundRect(b.x, b.y, b.w, b.h, 26);
-    fills.fill({ color: PALETTE.structureLight, alpha: 0.5 });
+    fills.fill({ color: PALETTE.structure, alpha: 0.45 });
     fills.roundRect(b.x, b.y, b.w, b.h, 26);
-    fills.fill({ color: DISTRICT_WASH[def.id] ?? def.accent, alpha: 0.12 });
+    fills.fill({ color: DISTRICT_WASH[def.id] ?? def.accent, alpha: 0.1 });
     fills.roundRect(b.x, b.y, b.w, b.h, 26);
-    fills.stroke({ width: 1.2, color: def.accent, alpha: 0.22 });
+    fills.stroke({ width: 1.2, color: def.accent, alpha: 0.18 });
 
     // 2:1 diamond lattice: diagonal lines at slopes +0.5 and -0.5.
     const step = 96;
@@ -98,10 +100,10 @@ function buildDistrictInlays(root: Container): void {
     for (let o = -Math.max(b.w, b.h); o < Math.max(b.w, b.h); o += step) {
       grid.moveTo(cx + o, cy - b.h);
       grid.lineTo(cx + o + b.h * 2, cy + b.h);
-      grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.08 });
+      grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
       grid.moveTo(cx + o, cy - b.h);
       grid.lineTo(cx + o - b.h * 2, cy + b.h);
-      grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.08 });
+      grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
     }
   }
 
@@ -114,7 +116,7 @@ function buildDistrictInlays(root: Container): void {
 function buildWalkway(root: Container, pts: Array<{ x: number; y: number }>): void {
   const body = new Graphics();
   polyPath(body, pts);
-  body.stroke({ width: 20, color: PALETTE.surfacePale, alpha: 0.16, cap: "round", join: "round" });
+  body.stroke({ width: 20, color: PALETTE.surfacePale, alpha: 0.12, cap: "round", join: "round" });
   polyPath(body, pts);
   body.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.3, cap: "round" });
   root.addChild(body);
@@ -287,6 +289,103 @@ function buildScatter(root: Container): void {
   root.addChild(garden);
 }
 
+/**
+ * Service infrastructure filling the two fit-zoom dead zones: a maintenance
+ * pad with a pipe run in the bottom-left corner (between the state store,
+ * recovery workshop, and reconciliation dock) and a cooling garden strip in
+ * the bottom-right tray beneath Risk & Execution. Unlabeled and low
+ * contrast: texture, not content. The south exit corridor (x 2280-2420)
+ * stays clear.
+ */
+function buildServiceInfrastructure(root: Container): void {
+  // --- Bottom-left: maintenance pad + pipe run -------------------------------
+  const pad = isoBox({
+    x: 330,
+    y: 1180,
+    w: 130,
+    d: 80,
+    h: 6,
+    color: PALETTE.structure,
+    rim: PALETTE.surfacePale,
+    rimAlpha: 0.25,
+  });
+  root.addChild(pad);
+
+  // Crates and a vent on the pad: small, dark, quiet.
+  const props = new Graphics();
+  props.rect(300, 1150, 22, 16);
+  props.fill({ color: PALETTE.structureLight, alpha: 0.8 });
+  props.rect(326, 1146, 16, 20);
+  props.fill({ color: leftFace(PALETTE.structureLight), alpha: 0.9 });
+  props.rect(344, 1152, 12, 8);
+  props.fill({ color: PALETTE.structure, alpha: 0.9 });
+  props.moveTo(348, 1152);
+  props.lineTo(348, 1144);
+  props.stroke({ width: 1.2, color: PALETTE.structureLight });
+  props.circle(348, 1142, 2);
+  props.fill({ color: PALETTE.inkDim, alpha: 0.35 });
+  root.addChild(props);
+
+  // Pipe run: west slab edge into the pad, then a drop toward the south.
+  const pipes = new Graphics();
+  for (const [px1, py1, px2, py2] of [
+    [210, 1122, 300, 1160],
+    [392, 1180, 430, 1240],
+  ] as Array<[number, number, number, number]>) {
+    pipes.moveTo(px1, py1);
+    pipes.lineTo(px2, py2);
+    pipes.stroke({ width: 4, color: PALETTE.structureLight, alpha: 0.55, cap: "round" });
+    pipes.moveTo(px1, py1);
+    pipes.lineTo(px2, py2);
+    pipes.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.28, cap: "round" });
+    const len = Math.hypot(px2 - px1, py2 - py1);
+    const joints = Math.max(1, Math.floor(len / 70));
+    for (let k = 1; k <= joints; k++) {
+      const t = k / (joints + 1);
+      pipes.circle(px1 + (px2 - px1) * t, py1 + (py2 - py1) * t, 2.6);
+      pipes.fill({ color: PALETTE.structureLight, alpha: 0.75 });
+    }
+  }
+  root.addChild(pipes);
+
+  // --- Bottom-right: cooling garden / utility strip --------------------------
+  const strip = new Graphics();
+  const finXs: number[] = [];
+  for (let fx = 1760; fx <= 2240; fx += 80) finXs.push(fx);
+  for (let fx = 2460; fx <= 2570; fx += 80) finXs.push(fx);
+  for (const fx of finXs) {
+    // Cooling fin: dark body with a pale heat-exchange top.
+    strip.rect(fx - 7, 1394, 14, 12);
+    strip.fill({ color: PALETTE.structureLight, alpha: 0.55 });
+    strip.rect(fx - 7, 1392, 14, 3);
+    strip.fill({ color: PALETTE.surfacePale, alpha: 0.22 });
+    strip.moveTo(fx - 4, 1400);
+    strip.lineTo(fx + 4, 1400);
+    strip.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.2 });
+  }
+  // Low utility conduit beneath the fins ties the strip together.
+  strip.moveTo(1745, 1414);
+  strip.lineTo(2255, 1414);
+  strip.stroke({ width: 2.5, color: PALETTE.structureLight, alpha: 0.4, cap: "round" });
+  strip.moveTo(2450, 1414);
+  strip.lineTo(2585, 1414);
+  strip.stroke({ width: 2.5, color: PALETTE.structureLight, alpha: 0.4, cap: "round" });
+  // Two planter mounds break the fin rhythm.
+  for (const [gx, gy] of [
+    [1900, 1420],
+    [2140, 1420],
+  ] as Array<[number, number]>) {
+    strip.ellipse(gx, gy, 26, 9);
+    strip.fill({ color: PALETTE.structure, alpha: 0.8 });
+    for (let r = -1; r <= 1; r++) {
+      strip.moveTo(gx + r * 10, gy - 1);
+      strip.lineTo(gx + r * 12, gy - 10);
+      strip.stroke({ width: 1.2, color: PALETTE.aqua, alpha: 0.35 });
+    }
+  }
+  root.addChild(strip);
+}
+
 export function buildGround(ctx: DioramaContext): void {
   const root = new Container();
   buildSlab(root);
@@ -298,5 +397,6 @@ export function buildGround(ctx: DioramaContext): void {
   buildBridge(root, 1075, 545, true);
   buildBridge(root, 1495, 1030, false);
   buildScatter(root);
+  buildServiceInfrastructure(root);
   ctx.layers.ground.addChild(root);
 }

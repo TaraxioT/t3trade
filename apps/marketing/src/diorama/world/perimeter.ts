@@ -52,13 +52,13 @@ function wallSegment(root: Container, a: { x: number; y: number }, b: { x: numbe
       rim: PALETTE.cyan,
     }),
   );
-  root.addChild(edgeStrip(a.x, a.y - wallH, b.x, b.y - wallH, PALETTE.cyan, 0.95, 2.5));
+  root.addChild(edgeStrip(a.x, a.y - wallH, b.x, b.y - wallH, PALETTE.cyan, 0.72, 2.5));
   const halo = glow(
     (a.x + b.x) / 2,
     (a.y + b.y) / 2 - wallH,
     Math.max(70, Math.hypot(b.x - a.x, b.y - a.y)),
     PALETTE.cyan,
-    0.2,
+    0.13,
   );
   halo.height = 14;
   root.addChild(halo);
@@ -111,7 +111,7 @@ function buildWalls(root: Container): Sprite[] {
         rimAlpha: 0.95,
       }),
     );
-    const beacon = glow(px, py - POST_H - 4, 16, PALETTE.cyan, 0.8);
+    const beacon = glow(px, py - POST_H - 4, 16, PALETTE.cyan, 0.6);
     beacons.push(beacon);
     root.addChild(beacon);
   }
@@ -234,7 +234,7 @@ function startShimmer(root: Container, ctx: DioramaContext): void {
     const t = ((ticker.elapsedMS % 8000) / 8000) * total;
     if (t < x2 - x1) {
       shimmer.position.set(x1 + t, y1 - wallH);
-      shimmer.alpha = 0.45 * Math.sin((t / (x2 - x1)) * Math.PI);
+      shimmer.alpha = 0.3 * Math.sin((t / (x2 - x1)) * Math.PI);
     } else {
       shimmer.alpha = 0;
     }
@@ -261,7 +261,7 @@ export function buildPerimeter(ctx: DioramaContext): void {
       const t = (ticker.elapsedMS % 3200) / 3200;
       beacons.forEach((b, i) => {
         const phase = t * Math.PI * 2 - (i * Math.PI) / 2;
-        b.alpha = 0.3 + 0.6 * Math.max(0, Math.sin(phase));
+        b.alpha = 0.25 + 0.4 * Math.max(0, Math.sin(phase));
       });
     });
     ctx.onCleanup(unBeacon);

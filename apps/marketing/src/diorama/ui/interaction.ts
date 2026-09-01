@@ -1,52 +1,73 @@
 /**
- * Pointer interaction: hover glow, click-to-focus, selection clearing.
- * Owner: UI worker.
+ * Pointer + keyboard interaction: footprint hover, click-to-focus, selection
+ * clearing, first-visit hint, affordance beacon. Owner: UI worker.
+ *
+ * Pointer selection and a11y keyboard selection share one code path
+ * (focusStation) so both get camera, card, cue, pulse, and story behavior.
  */
 import gsap from "gsap";
-import { Graphics } from "pixi.js";
+import { Graphics, type Container } from "pixi.js";
 import type { DioramaContext } from "../core/context.js";
 import type { Camera } from "../core/camera.js";
-import type { InfoCard } from "./infoCard.js";
+import type { InfoCard, CardStation } from "./infoCard.js";
 import { allStations, type StationHandle } from "../core/registry.js";
-import { DISTRICTS, STATIONS, type StationId, type StationDef } from "../config/stations.js";
+import { DISTRICTS, STATIONS, type StationId } from "../config/stations.js";
 import { HYPERLIQUID } from "../config/geometry.js";
 import { safeDestroy } from "../core/iso.js";
-import { PALETTE } from "../config/palette.js";
 import { setBannersDim } from "./labels.js";
 import { CUES, playDioramaCue } from "../audio.js";
 
 /** Pointer travel (px) under which a down/up pair still counts as a click. */
 const DRAG_TOLERANCE = 6;
 
-interface FocusDeps {
+/** Same-station story re-click debounce window. */
+const STORY_DEBOUNCE_MS = 2500;
+
+/** Delay before the first-visit hint appears after the scene is ready. */
+const HINT_DELAY_MS = 1200;
+
+/** Affordance beacon cadence until the first station selection. */
+const BEACON_INTERVAL_MS = 6000;
+
+/** sessionStorage key suppressing the hint for the rest of the session. */
+const HINT_STORAGE_KEY = "t3-diorama-hint";
+
+export interface InteractionDeps {
   camera: Camera;
   infoCard: InfoCard;
+  /** Runs a station demo story (Director.runStory); fire-and-forget. */
+  onRunStory?: (storyId: string) => void;
 }
 
-/** Set by createInteraction; consumed by a11y keyboard focus. */
-let focusDeps: FocusDeps | null = null;
+/** Any pickable station: configured StationDef or the Hyperliquid synthetic. */
+type PickableStation = CardStation & { handle?: StationHandle };
+
+/** Module hooks set by createInteraction; consumed by a11y + clearSelection. */
+let activeCard: InfoCard | null = null;
+let activeFocus: ((def: CardStation) => void) | null = null;
+let activeClearHover: (() => void) | null = null;
 
 /** Shared selection clearing, also usable before interaction is wired. */
 export function clearSelection(): void {
-  focusDeps?.infoCard.hide();
+  activeCard?.hide();
   setBannersDim(false);
+  activeClearHover?.();
 }
 
-/** Focus a station programmatically (a11y directory, future stories). */
+/** Focus a station programmatically (a11y directory, keyboard, stories). */
 export function focusStationById(id: string): void {
+  if (!activeFocus) return;
   const station = STATIONS[id as StationId];
-  if (!station || !focusDeps) return;
-  focusDeps.camera.focusOn(station.anchor, station.focusZoom ?? 1.35);
-  focusDeps.infoCard.show(station);
-  setBannersDim(true);
+  const def: CardStation | undefined = station ?? (id === HYPERLIQUID_DEF.id ? HYPERLIQUID_DEF : undefined);
+  if (def) activeFocus(def);
 }
 
 /**
  * The external Hyperliquid platform has no StationId, so it is picked as a
  * synthetic station from its geometry constant.
  */
-const HYPERLIQUID_DEF: StationDef = {
-  id: "tradingFloor", // placeholder id; only used for card data below
+const HYPERLIQUID_DEF: CardStation = {
+  id: "hyperliquid",
   district: "external",
   label: "HYPERLIQUID TESTNET",
   signSize: "lg",
@@ -58,67 +79,96 @@ const HYPERLIQUID_DEF: StationDef = {
   focusZoom: 1.5,
 };
 
-function makeRing(accent: number): Graphics {
-  const g = new Graphics();
-  g.circle(0, 0, 46);
-  g.stroke({ width: 2.5, color: accent, alpha: 0.9 });
-  return g;
+/** Hit padding around the drawn footprint, matching the visible outline. */
+const HIT_PAD = 8;
+
+/** True when (worldX, worldY) lies inside the station's diamond footprint. */
+function inFootprint(
+  worldX: number,
+  worldY: number,
+  anchor: { x: number; y: number },
+  size: { w: number; d: number },
+): boolean {
+  const dx = Math.abs(worldX - anchor.x) / (size.w / 2 + HIT_PAD);
+  const dy = Math.abs(worldY - anchor.y) / (size.d / 2 + HIT_PAD);
+  return dx + dy <= 1;
 }
 
-export function createInteraction(ctx: DioramaContext, deps: { camera: Camera; infoCard: InfoCard }): void {
-  focusDeps = deps;
-  const canvas = ctx.app.canvas;
-  const host = canvas.parentElement ?? canvas;
+/** (Re)draw a footprint diamond outline sized to the station def. */
+function drawDiamond(g: Graphics, size: { w: number; d: number }): void {
+  const hw = size.w / 2 + HIT_PAD;
+  const hd = size.d / 2 + HIT_PAD;
+  g.clear();
+  g.poly([0, -hd, hw, 0, 0, hd, -hw, 0]);
+  g.stroke({ width: 2.5, color: 0xffffff });
+}
 
-  // Pooled hover ring: one instance, repositioned per hover.
-  const hoverRing = makeRing(PALETTE.cyan);
+export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): void {
+  activeCard = deps.infoCard;
+  const canvas = ctx.app.canvas;
+  const host = (canvas.parentElement ?? canvas) as HTMLElement;
+
+  // Pooled hover diamond: one instance, redrawn and repositioned per hover.
+  const hoverRing = new Graphics();
   hoverRing.visible = false;
   hoverRing.alpha = 0;
   ctx.layers.overlay.addChild(hoverRing);
 
   let downPoint: { x: number; y: number } | null = null;
   let hovered: string | null = null;
+  let liftedRoot: Container | null = null;
 
   /**
-   * Station lookup by world point. Pixi's nested hit testing proved
-   * unreliable under the viewport's managed event surface, so selection uses
-   * a direct containment test over the registry in world space (rectangles
-   * around each anchor, topmost zIndex wins). The external Hyperliquid
-   * platform is picked from its geometry constant.
+   * Station lookup by world point: diamond footprint containment over the
+   * registry plus the synthetic Hyperliquid platform, highest zIndex wins so
+   * nested stations (holo core inside the floor) pick correctly.
    */
-  const pickStation = (worldX: number, worldY: number): { def: StationDef; handle?: StationHandle } | null => {
+  const pickStation = (worldX: number, worldY: number): PickableStation | null => {
     let best: StationHandle | null = null;
     let bestZ = -Infinity;
     for (const station of allStations()) {
       const def = STATIONS[station.id];
-      const hw = def.size.w / 2 + 12;
-      const hd = def.size.d / 2 + 12;
-      if (
-        worldX >= def.anchor.x - hw &&
-        worldX <= def.anchor.x + hw &&
-        worldY >= def.anchor.y - hd &&
-        worldY <= def.anchor.y + hd &&
-        station.root.zIndex > bestZ
-      ) {
+      if (!inFootprint(worldX, worldY, def.anchor, def.size)) continue;
+      if (station.root.zIndex > bestZ) {
         best = station;
         bestZ = station.root.zIndex;
       }
     }
-    if (best) return { def: STATIONS[best.id], handle: best };
-    const hx = HYPERLIQUID_DEF.anchor.x;
-    const hy = HYPERLIQUID_DEF.anchor.y;
-    const hw = HYPERLIQUID_DEF.size.w / 2;
-    const hd = HYPERLIQUID_DEF.size.d / 2;
-    if (worldX >= hx - hw && worldX <= hx + hw && worldY >= hy - hd && worldY <= hy + hd) {
-      return { def: HYPERLIQUID_DEF };
+    if (best) return { ...STATIONS[best.id], handle: best };
+    if (inFootprint(worldX, worldY, HYPERLIQUID_DEF.anchor, HYPERLIQUID_DEF.size)) {
+      return { ...HYPERLIQUID_DEF };
     }
     return null;
   };
 
-  const setHover = (picked: { def: StationDef } | null): void => {
-    const id = picked?.def.anchor ? `${picked.def.label}` : null;
+  /** Soft lift on the hovered station's registered root (alpha nudge only). */
+  const setLift = (station: PickableStation | null): void => {
+    if (liftedRoot) {
+      gsap.killTweensOf(liftedRoot);
+      liftedRoot.alpha = 1;
+      liftedRoot = null;
+    }
+    if (!station?.handle || ctx.reducedMotion) return;
+    const root = station.handle.root;
+    liftedRoot = root;
+    gsap.to(root, {
+      alpha: 0.9,
+      duration: 0.2,
+      yoyo: true,
+      repeat: 1,
+      ease: "sine.inOut",
+      onComplete: () => {
+        root.alpha = 1;
+        if (liftedRoot === root) liftedRoot = null;
+      },
+    });
+  };
+
+  const setHover = (picked: PickableStation | null): void => {
+    const id = picked?.id ?? null;
     if (id === hovered) return;
     hovered = id;
+    setLift(picked);
     if (!picked) {
       canvas.style.cursor = "";
       gsap.to(hoverRing, { alpha: 0, duration: 0.2, overwrite: true, onComplete: () => {
@@ -126,22 +176,47 @@ export function createInteraction(ctx: DioramaContext, deps: { camera: Camera; i
       } });
       return;
     }
-    const def = picked.def;
-    const accent = DISTRICTS[def.district].accent;
-    hoverRing.tint = accent;
+    const def = picked;
+    hoverRing.tint = DISTRICTS[def.district].accent;
+    drawDiamond(hoverRing, def.size);
     hoverRing.position.set(def.anchor.x, def.anchor.y);
     hoverRing.visible = true;
     gsap.to(hoverRing, { alpha: 0.85, duration: 0.25, overwrite: true });
     canvas.style.cursor = "pointer";
   };
 
+  const clearHover = (): void => {
+    hovered = null;
+    setLift(null);
+    canvas.style.cursor = "";
+    gsap.killTweensOf(hoverRing);
+    hoverRing.alpha = 0;
+    hoverRing.visible = false;
+  };
+  activeClearHover = clearHover;
+
+  /** Station screen position for card placement; undefined without support. */
+  const stationScreen = (anchor: { x: number; y: number }): { x: number; y: number } | undefined => {
+    const cam = deps.camera as Camera & {
+      worldToScreen?: (p: { x: number; y: number }) => { x: number; y: number };
+    };
+    if (typeof cam.worldToScreen !== "function") return undefined;
+    try {
+      return cam.worldToScreen(anchor);
+    } catch {
+      return undefined;
+    }
+  };
+
   /** One-shot pulse ring at a station anchor (selection feedback). */
-  const pulseAt = (x: number, y: number, accent: number): void => {
-    const ring = makeRing(accent);
+  const pulseAt = (x: number, y: number, size: { w: number; d: number }, accent: number): void => {
+    const ring = new Graphics();
+    drawDiamond(ring, size);
+    ring.tint = accent;
     ring.position.set(x, y);
     ctx.layers.overlay.addChild(ring);
     if (ctx.reducedMotion) {
-      window.setTimeout(() => safeDestroy(ring), 700);
+      gsap.to(ring, { alpha: 0, duration: 0.9, delay: 0.4, overwrite: true, onComplete: () => safeDestroy(ring) });
       return;
     }
     ring.scale.set(0.5);
@@ -155,14 +230,179 @@ export function createInteraction(ctx: DioramaContext, deps: { camera: Camera; i
     });
   };
 
-  const selectStation = (picked: { def: StationDef }): void => {
-    const def = picked.def;
-    deps.camera.focusOn(def.anchor, def.focusZoom ?? 1.35);
-    deps.infoCard.show(def);
-    setBannersDim(true);
-    pulseAt(def.anchor.x, def.anchor.y, DISTRICTS[def.district].accent);
-    playDioramaCue(CUES.select);
+  // ----- Affordance beacon: gentle pulses until the first selection. -----
+
+  const BEACON_TARGETS: CardStation[] = [STATIONS.tradingFloor, STATIONS.mcpHub, HYPERLIQUID_DEF];
+  let beaconIndex = 0;
+  let selectedOnce = false;
+  let staticBeacon: Graphics | null = null;
+  let beaconTimer: number | null = null;
+
+  const stopBeacon = (): void => {
+    if (beaconTimer !== null) {
+      window.clearInterval(beaconTimer);
+      beaconTimer = null;
+    }
+    if (staticBeacon) {
+      safeDestroy(staticBeacon);
+      staticBeacon = null;
+    }
   };
+
+  const runBeacon = (): void => {
+    const def = BEACON_TARGETS[beaconIndex % BEACON_TARGETS.length];
+    beaconIndex += 1;
+    pulseAt(def.anchor.x, def.anchor.y, def.size, DISTRICTS[def.district].accent);
+  };
+
+  if (ctx.reducedMotion) {
+    // Calm variant: one static outline on the trading floor, no cycling.
+    staticBeacon = new Graphics();
+    drawDiamond(staticBeacon, STATIONS.tradingFloor.size);
+    staticBeacon.tint = DISTRICTS.floor.accent;
+    staticBeacon.alpha = 0.5;
+    staticBeacon.position.set(STATIONS.tradingFloor.anchor.x, STATIONS.tradingFloor.anchor.y);
+    ctx.layers.overlay.addChild(staticBeacon);
+  } else {
+    beaconTimer = window.setInterval(() => {
+      if (!selectedOnce) runBeacon();
+    }, BEACON_INTERVAL_MS);
+  }
+
+  // ----- First-visit onboarding hint (DOM, one per session). -----
+
+  let hintEl: HTMLElement | null = null;
+  let hintTimer: number | null = null;
+  let hintDismissed = false;
+
+  const storageAvailable = (): boolean => {
+    try {
+      window.sessionStorage.getItem(HINT_STORAGE_KEY);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const hintSeen = (): boolean => {
+    try {
+      return window.sessionStorage.getItem(HINT_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  };
+  const markHintSeen = (): void => {
+    try {
+      window.sessionStorage.setItem(HINT_STORAGE_KEY, "1");
+    } catch {
+      // Private mode: the hint simply is not persisted.
+    }
+  };
+
+  if (!document.getElementById("diorama-hint-style")) {
+    const style = document.createElement("style");
+    style.id = "diorama-hint-style";
+    style.textContent = `
+.diorama-hint{
+  position:absolute;
+  left:50%;
+  bottom:96px;
+  transform:translateX(-50%);
+  z-index:5;
+  font-family:'JetBrains Mono',ui-monospace,monospace;
+  font-size:10px;
+  letter-spacing:.05em;
+  color:#a8c0cf;
+  background:rgba(10,24,40,.75);
+  border:1px solid rgba(52,229,229,.18);
+  border-radius:8px;
+  padding:5px 9px;
+  white-space:nowrap;
+  opacity:0;
+  transition:opacity .6s ease;
+  pointer-events:none;
+}
+.diorama-hint-visible{opacity:1}
+@media (prefers-reduced-motion: reduce){
+  .diorama-hint{transition:none}
+}`;
+    document.head.appendChild(style);
+  }
+
+  const removeHint = (): void => {
+    if (hintTimer !== null) {
+      window.clearTimeout(hintTimer);
+      hintTimer = null;
+    }
+    host.removeEventListener("pointerdown", dismissHint);
+    host.removeEventListener("wheel", dismissHint);
+    hintEl?.remove();
+    hintEl = null;
+  };
+
+  const dismissHint = (): void => {
+    if (hintDismissed) return;
+    hintDismissed = true;
+    markHintSeen();
+    if (hintEl && !ctx.reducedMotion) {
+      hintEl.classList.remove("diorama-hint-visible");
+      const el = hintEl;
+      window.setTimeout(() => el.remove(), 700);
+      hintEl = null;
+    } else {
+      hintEl?.remove();
+      hintEl = null;
+    }
+    host.removeEventListener("pointerdown", dismissHint);
+    host.removeEventListener("wheel", dismissHint);
+    if (hintTimer !== null) {
+      window.clearTimeout(hintTimer);
+      hintTimer = null;
+    }
+  };
+
+  if (!hintSeen() && storageAvailable()) {
+    hintTimer = window.setTimeout(() => {
+      const narrow = window.matchMedia("(max-width: 640px)").matches;
+      const el = document.createElement("p");
+      el.className = "diorama-hint";
+      el.dataset.dioramaHint = "1";
+      el.textContent = narrow
+        ? "Drag - pinch - tap stations"
+        : "Drag to pan - scroll to zoom - click any station";
+      host.appendChild(el);
+      hintEl = el;
+      if (ctx.reducedMotion) el.classList.add("diorama-hint-visible");
+      else requestAnimationFrame(() => el.classList.add("diorama-hint-visible"));
+    }, HINT_DELAY_MS);
+    host.addEventListener("pointerdown", dismissHint);
+    host.addEventListener("wheel", dismissHint, { passive: true });
+  }
+
+  // ----- Selection (single shared path for pointer and keyboard). -----
+
+  const lastStoryRun = new Map<string, number>();
+
+  const maybeRunStory = (def: CardStation): void => {
+    if (!def.story || !deps.onRunStory) return;
+    const now = performance.now();
+    const last = lastStoryRun.get(def.id) ?? -Infinity;
+    if (now - last < STORY_DEBOUNCE_MS) return;
+    lastStoryRun.set(def.id, now);
+    deps.onRunStory(def.story);
+  };
+
+  const focusStation = (def: CardStation): void => {
+    selectedOnce = true;
+    stopBeacon();
+    dismissHint();
+    deps.camera.focusOn(def.anchor, def.focusZoom ?? 1.35);
+    deps.infoCard.show(def, undefined, stationScreen(def.anchor));
+    setBannersDim(true);
+    pulseAt(def.anchor.x, def.anchor.y, def.size, DISTRICTS[def.district].accent);
+    playDioramaCue(CUES.select);
+    maybeRunStory(def);
+  };
+  activeFocus = focusStation;
 
   // Canvas-level pointer handling: down records the point, up picks a station
   // when the pointer did not travel (drag threshold) and clears otherwise.
@@ -177,7 +417,7 @@ export function createInteraction(ctx: DioramaContext, deps: { camera: Camera; i
     const rect = canvas.getBoundingClientRect();
     const world = deps.camera.screenToWorld({ x: e.clientX - rect.left, y: e.clientY - rect.top });
     const station = pickStation(world.x, world.y);
-    if (station) selectStation(station);
+    if (station) focusStation(station);
     else clearSelection();
   };
   const onMove = (e: PointerEvent): void => {
@@ -185,19 +425,33 @@ export function createInteraction(ctx: DioramaContext, deps: { camera: Camera; i
     const world = deps.camera.screenToWorld({ x: e.clientX - rect.left, y: e.clientY - rect.top });
     setHover(pickStation(world.x, world.y));
   };
+  const onLeave = (): void => setHover(null);
+
+  // Escape clears the selection; no other keys are touched here.
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === "Escape") clearSelection();
+  };
+
   canvas.addEventListener("pointerdown", onDown);
   canvas.addEventListener("pointerup", onUp);
   canvas.addEventListener("pointermove", onMove);
-  canvas.addEventListener("pointerleave", () => setHover(null));
+  canvas.addEventListener("pointerleave", onLeave);
+  window.addEventListener("keydown", onKeyDown);
 
   ctx.onCleanup(() => {
     canvas.removeEventListener("pointerdown", onDown);
     canvas.removeEventListener("pointerup", onUp);
     canvas.removeEventListener("pointermove", onMove);
-    canvas.removeEventListener("pointerleave", () => setHover(null));
+    canvas.removeEventListener("pointerleave", onLeave);
+    window.removeEventListener("keydown", onKeyDown);
+    stopBeacon();
+    removeHint();
     gsap.killTweensOf(hoverRing);
+    setLift(null);
     hoverRing.destroy();
-    setHover(null);
-    focusDeps = null;
+    clearHover();
+    activeCard = null;
+    activeFocus = null;
+    activeClearHover = null;
   });
 }

@@ -2,15 +2,37 @@
  * DOM information card shown when a station is focused. Owner: UI worker.
  *
  * Mounted into the page element [data-diorama-card] (already absolutely
- * positioned by the page). Dark glass, 180 ms translate+opacity transition,
- * pointer-events none so it never blocks canvas dragging.
+ * positioned by the page). Dark glass, 180 ms translate+opacity transition.
+ * The panel itself stays pointer-events:none so it never blocks canvas
+ * dragging; the action and close buttons re-enable pointer events.
+ *
+ * Placement: when the caller supplies the focused station's screen position
+ * (CSS pixels inside the diorama host), the card flips to the opposite side
+ * horizontally and vertically so it never covers the station.
  */
 import type { StationDef } from "../config/stations.js";
 import { PALETTE, css } from "../config/palette.js";
 
+/**
+ * Card data: a configured station, or the synthetic Hyperliquid station whose
+ * id is not part of StationId. StationDef is assignable to this shape.
+ */
+export interface CardStation extends Omit<StationDef, "id"> {
+  id: string;
+}
+
 export interface InfoCard {
-  show(station: StationDef, statusOverride?: string): void;
+  show(station: CardStation, statusOverride?: string, stationScreen?: { x: number; y: number }): void;
   hide(): void;
+  /** Remove DOM and listeners; safe to call twice. */
+  destroy(): void;
+}
+
+export interface InfoCardOptions {
+  /** Runs the station's demo story (Director.runStory). */
+  onAction?: (storyId: string) => void;
+  /** Close button: interaction passes clearSelection. */
+  onClose?: () => void;
 }
 
 const STYLE_ID = "diorama-infocard-style";
@@ -47,12 +69,40 @@ function injectStyles(): void {
   opacity:0;
   transform:translateY(10px);
 }
+.diorama-card-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:8px;
+}
 .diorama-card-title{
   margin:0 0 6px;
   font-size:15px;
   font-weight:600;
   letter-spacing:.01em;
   color:#f5fbff;
+}
+.diorama-card-close{
+  flex:none;
+  width:44px;
+  height:44px;
+  margin:-8px -10px -8px 0;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border:none;
+  border-radius:10px;
+  background:transparent;
+  color:#a8c0cf;
+  cursor:pointer;
+  pointer-events:auto;
+  font-size:10px;
+  line-height:1;
+}
+.diorama-card-close:hover{color:#f5fbff}
+.diorama-card-close:focus-visible{
+  outline:2px solid #34E5E5;
+  outline-offset:2px;
 }
 .diorama-card-blurb{
   margin:0 0 8px;
@@ -102,6 +152,32 @@ function injectStyles(): void {
   font-size:10px;
   line-height:1;
 }
+.diorama-card-action{
+  display:block;
+  width:100%;
+  min-height:44px;
+  margin-top:10px;
+  padding:6px 14px;
+  border-radius:10px;
+  border:1px solid rgba(52,229,229,.4);
+  background:rgba(52,229,229,.12);
+  color:#34E5E5;
+  font-family:'JetBrains Mono',ui-monospace,monospace;
+  font-size:11px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  cursor:pointer;
+  pointer-events:auto;
+  transition:background .15s ease,border-color .15s ease;
+}
+.diorama-card-action:hover{
+  background:rgba(52,229,229,.2);
+  border-color:rgba(52,229,229,.6);
+}
+.diorama-card-action:focus-visible{
+  outline:2px solid #34E5E5;
+  outline-offset:2px;
+}
 @media (max-width:640px){
   .diorama-card-panel{
     max-width:calc(100% - 32px);
@@ -110,25 +186,69 @@ function injectStyles(): void {
   document.head.appendChild(style);
 }
 
-export function createInfoCard(root: HTMLElement): InfoCard {
+export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): InfoCard {
   injectStyles();
 
-  // Position inside the host: bottom-left, bottom-center when narrow.
-  const setPosition = (narrow: boolean): void => {
+  // Default position inside the host: bottom-left, bottom-center when narrow.
+  const clearPosition = (): void => {
+    root.style.left = "";
+    root.style.right = "";
+    root.style.top = "";
+    root.style.bottom = "";
+    root.style.marginLeft = "";
+  };
+  const setDefaultPosition = (narrow: boolean): void => {
+    clearPosition();
     root.style.left = narrow ? "50%" : "20px";
     root.style.bottom = "20px";
     root.style.marginLeft = narrow ? "-170px" : "0";
   };
+  /**
+   * Flip the card to the opposite side of the host from the station's screen
+   * position so the focused station stays visible.
+   */
+  const setFlippedPosition = (stationScreen: { x: number; y: number }): void => {
+    clearPosition();
+    const stationLeft = stationScreen.x < (root.parentElement?.clientWidth ?? window.innerWidth) / 2;
+    const stationTop = stationScreen.y < (root.parentElement?.clientHeight ?? window.innerHeight) / 2;
+    if (stationLeft) {
+      root.style.left = "";
+      root.style.right = "20px";
+    } else {
+      root.style.left = "20px";
+      root.style.right = "";
+    }
+    if (stationTop) {
+      root.style.top = "";
+      root.style.bottom = "20px";
+    } else {
+      root.style.top = "20px";
+      root.style.bottom = "";
+    }
+  };
   const narrow = window.matchMedia("(max-width: 640px)");
-  setPosition(narrow.matches);
-  const onChange = (): void => setPosition(narrow.matches);
+  setDefaultPosition(narrow.matches);
+  const onChange = (): void => setDefaultPosition(narrow.matches);
   narrow.addEventListener("change", onChange);
 
   const card = document.createElement("div");
   card.className = `diorama-card-panel diorama-card-hidden`;
+  card.setAttribute("aria-live", "polite");
+
+  const head = document.createElement("div");
+  head.className = "diorama-card-head";
 
   const title = document.createElement("h3");
   title.className = "diorama-card-title";
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "diorama-card-close";
+  closeBtn.setAttribute("aria-label", "Close station details");
+  closeBtn.textContent = "x";
+  closeBtn.addEventListener("click", () => opts.onClose?.());
+
+  head.append(title, closeBtn);
 
   const blurb = document.createElement("p");
   blurb.className = "diorama-card-blurb";
@@ -144,11 +264,20 @@ export function createInfoCard(root: HTMLElement): InfoCard {
   const relation = document.createElement("div");
   relation.className = "diorama-card-relation";
 
-  card.append(title, blurb, status, relation);
+  const actionBtn = document.createElement("button");
+  actionBtn.type = "button";
+  actionBtn.className = "diorama-card-action";
+  actionBtn.hidden = true;
+  actionBtn.addEventListener("click", () => {
+    const storyId = actionBtn.dataset.storyId;
+    if (storyId) opts.onAction?.(storyId);
+  });
+
+  card.append(head, blurb, status, relation, actionBtn);
   root.appendChild(card);
 
   return {
-    show(station: StationDef, statusOverride?: string): void {
+    show(station, statusOverride?, stationScreen?): void {
       title.textContent = station.label;
       blurb.textContent = station.blurb;
       const statusLine = statusOverride ?? station.status;
@@ -171,12 +300,27 @@ export function createInfoCard(root: HTMLElement): InfoCard {
           relation.appendChild(chip);
         });
       }
+      if (station.action && station.story) {
+        actionBtn.textContent = station.action;
+        actionBtn.setAttribute("aria-label", station.action);
+        actionBtn.dataset.storyId = station.story;
+        actionBtn.hidden = false;
+      } else {
+        actionBtn.hidden = true;
+        delete actionBtn.dataset.storyId;
+      }
+      if (stationScreen) setFlippedPosition(stationScreen);
+      else setDefaultPosition(narrow.matches);
       // Force layout so consecutive shows still animate the transition.
       card.getBoundingClientRect();
       card.classList.remove("diorama-card-hidden");
     },
     hide(): void {
       card.classList.add("diorama-card-hidden");
+    },
+    destroy(): void {
+      narrow.removeEventListener("change", onChange);
+      card.remove();
     },
   };
 }

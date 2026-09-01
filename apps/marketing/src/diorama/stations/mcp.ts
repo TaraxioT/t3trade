@@ -12,7 +12,7 @@ import { Container, Graphics, Sprite } from "pixi.js";
 import { gsap } from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { registerStation } from "../core/registry.js";
-import { STATIONS, type StationDef } from "../config/stations.js";
+import { DISTRICTS, STATIONS, type StationDef } from "../config/stations.js";
 import { PALETTE, shade } from "../config/palette.js";
 import { DEPTH, seededRandom } from "../config/world.js";
 import { makeSign } from "../core/signs.js";
@@ -48,6 +48,9 @@ const healthListeners = new Set<HealthListener>();
 const notifyHealth = (): void => healthListeners.forEach((fn) => fn());
 
 const rand = seededRandom(23);
+
+/** District warm counter-accent: coral inlays subordinate to the violet hub. */
+const WARM = DISTRICTS.mcp.accent2;
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -127,19 +130,20 @@ function buildHub(ctx: DioramaContext): McpHubApi {
   const { root, hit } = stationShell(ctx, "mcpHub", -160);
 
   contactShadow(root, 0, 8, 310, 158, 0.25);
-  // Ellipse interchange platform with a violet rim.
+  // Ellipse interchange platform: violet rim keeps the district identity,
+  // decisive coral inlays warm the interior instead of stacked light washes.
   const platform = new Graphics();
   platform.ellipse(0, 0, 140, 70).fill({ color: PALETTE.structure });
+  platform.ellipse(0, 0, 44, 22).fill({ color: WARM, alpha: 0.08 });
   platform.ellipse(0, 0, 140, 70).stroke({ width: 2.5, color: PALETTE.violet, alpha: 0.85 });
-  platform.ellipse(0, 0, 104, 52).stroke({ width: 1, color: PALETTE.violet, alpha: 0.3 });
+  platform.ellipse(0, 0, 112, 56).stroke({ width: 2, color: WARM, alpha: 0.4 });
+  platform.ellipse(0, 0, 60, 30).stroke({ width: 1.5, color: WARM, alpha: 0.5 });
   root.addChild(platform);
 
-  // Central core pillar with soft violet light.
+  // Central core pillar with one soft violet light; no stacked pillar wash.
   root.addChild(isoCylinder({ x: 0, y: -2, r: 20, h: 62, color: PALETTE.structureLight, rim: PALETTE.violet }));
-  const coreGlow = glow(0, -74, 110, PALETTE.violet, 0.55);
+  const coreGlow = glow(0, -74, 110, PALETTE.violet, 0.45);
   root.addChild(coreGlow);
-  const corePillarLight = glow(0, -30, 46, PALETTE.violet, 0.28);
-  root.addChild(corePillarLight);
 
   // Eight tool ports on a slowly rotating outer ring. Port 0 starts east
   // (angle 0) and indices proceed counterclockwise on screen.
@@ -370,9 +374,9 @@ function buildMarketDataTools(ctx: DioramaContext): void {
 /* ------------------------------------------------- 3. research tool tools */
 
 function buildResearchToolsMcp(ctx: DioramaContext): void {
-  const { root, hit } = stationShell(ctx, "researchToolsMcp", -70);
+  const { def, root, hit } = stationShell(ctx, "researchToolsMcp", -70);
   contactShadow(root, 0, 4, 168, 88);
-  root.addChild(propCrate(66, 30));
+  root.addChild(propCrate(70, -32));
   root.addChild(isoTile(0, 0, 150, 76, PALETTE.structure, 1, PALETTE.structureLight));
 
   // News pulse console.
@@ -398,6 +402,73 @@ function buildResearchToolsMcp(ctx: DioramaContext): void {
     }
   });
   root.addChild(news, hex, stack);
+
+  // Research-only tool ports: UNISWAP pools and 1INCH quotes feed the
+  // research consoles. They are data sources: their only connection is the
+  // short local hop to the consoles above, never a path toward the adapter
+  // bay or the execution tunnel.
+  const toolPorts: Array<{ lx: number; accent: number }> = [
+    { lx: -62, accent: PALETTE.magenta },
+    { lx: 62, accent: WARM },
+  ];
+  const PORT_META: Array<{ name: string; caption: string }> = [
+    { name: "UNISWAP", caption: "LIQUIDITY" },
+    { name: "1INCH", caption: "QUOTES" },
+  ];
+  toolPorts.forEach((port, i) => {
+    const stand = new Container();
+    stand.position.set(port.lx, 32);
+    stand.addChild(isoCylinder({ x: 0, y: 0, r: 7, h: 12, color: PALETTE.structureLight, rim: port.accent }));
+    const socket = new Graphics();
+    socket.circle(0, -14, 5).fill({ color: port.accent, alpha: 0.3 });
+    socket.circle(0, -14, 5).stroke({ width: 1.5, color: port.accent, alpha: 0.95 });
+    socket.circle(0, -14, 2).fill({ color: port.accent });
+    stand.addChild(socket);
+    stand.addChild(glow(0, -14, 18, port.accent, 0.35));
+    root.addChild(stand);
+
+    const meta = PORT_META[i];
+    ctx.layers.labels.addChild(
+      makeSign(meta.name, {
+        x: def.anchor.x + port.lx,
+        y: def.anchor.y + 54,
+        size: "xs",
+        accent: port.accent,
+        halo: false,
+      }),
+    );
+    ctx.layers.labels.addChild(
+      makeSign(meta.caption, {
+        x: def.anchor.x + port.lx,
+        y: def.anchor.y + 72,
+        size: "xs",
+        accent: port.accent,
+        boardColor: PALETTE.space,
+        halo: false,
+      }),
+    );
+
+    if (ctx.reducedMotion) return;
+    // Local hop: a data dot leaps from the port to the nearest research
+    // console and fades. Staggered, non-synchronized, stays on the platform.
+    const dot = new Sprite(dotTexture());
+    dot.anchor.set(0.5);
+    dot.width = 8;
+    dot.height = 8;
+    dot.tint = port.accent;
+    dot.alpha = 0;
+    root.addChild(dot);
+    const targetX = port.lx > 0 ? 44 : -44;
+    const hop = gsap.timeline({ repeat: -1, delay: 3 + i * 5.5 });
+    hop.call(() => {
+      dot.position.set(port.lx, 16);
+      dot.alpha = 0.9;
+    });
+    hop.to(dot.position, { x: targetX, y: -4, duration: 0.9, ease: "power1.inOut" });
+    hop.to(dot, { alpha: 0, duration: 0.25 });
+    hop.to({}, { duration: 7 + i * 3.5 });
+    ctx.onCleanup(() => hop.kill());
+  });
 
   const tl = gsap.timeline({ repeat: -1 });
   tl.to(news.scale, { x: 1.06, y: 1.06, duration: 1.8, ease: "sine.inOut" });
@@ -607,15 +678,17 @@ const PROVIDERS: Array<{ name: string; accent: number }> = [
   { name: "CURSOR", accent: PALETTE.blue },
   { name: "GROK", accent: PALETTE.magenta },
   { name: "OPENCODE", accent: PALETTE.aqua },
-  { name: "OTHER", accent: PALETTE.violet },
+  { name: "CUSTOM", accent: PALETTE.violet },
 ];
 
 function buildProviders(ctx: DioramaContext): void {
-  const { def, root, hit } = stationShell(ctx, "providers", -120);
+  const { def, root, hit } = stationShell(ctx, "providers", -76);
   contactShadow(root, 0, 22, 470, 96, 0.25);
 
   PROVIDERS.forEach((p, i) => {
-    const bx = (i - 2.5) * 84;
+    // 96 unit pitch keeps the xs name boards (OPENCODE is the widest) clear
+    // of their neighbours at fit zoom.
+    const bx = (i - 2.5) * 96;
     const booth = new Container();
     booth.position.set(bx, 18);
 
@@ -657,12 +730,24 @@ function buildProviders(ctx: DioramaContext): void {
 
     root.addChild(booth);
 
+    // Activity LED above each pedestal: non-synchronized blinks so the row
+    // reads as six independently working adapters.
+    const led = glow(0, -28, 10, p.accent, 0);
+    booth.addChild(led);
+
     if (!ctx.reducedMotion) {
       // Gentle shared breathing across the row, staggered per booth.
       const tl = gsap.timeline({ repeat: -1, delay: i * 0.7 });
       tl.to(tint, { alpha: 0.3, duration: 3.2, ease: "sine.inOut" });
       tl.to(tint, { alpha: 0.14, duration: 3.2, ease: "sine.inOut" });
       ctx.onCleanup(() => tl.kill());
+      const blink = gsap.timeline({ repeat: -1, delay: 1.1 + i * 0.83 });
+      blink.to(led, { alpha: 0.7, duration: 0.18, ease: "power2.out" });
+      blink.to(led, { alpha: 0, duration: 0.4 });
+      blink.to({}, { duration: 2.6 + (i % 3) * 0.9 });
+      ctx.onCleanup(() => blink.kill());
+    } else {
+      led.alpha = i % 2 === 0 ? 0.55 : 0.15;
     }
   });
 

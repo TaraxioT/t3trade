@@ -112,7 +112,8 @@ function contactShadow(root: Container, x: number, y: number, w: number, d: numb
 // Mission Board: wide angled billboard on two posts.
 // ---------------------------------------------------------------------------
 
-const MISSION_PHASES = ["SCOUT", "ANALYZE", "TEST", "REVIEW"];
+/** Real mission statuses (packages/trading-contracts/src/mission.ts). */
+const MISSION_PHASES = ["WAITING", "ANALYSING", "EXECUTING", "HOLDING"];
 
 function buildMissionBoard(ctx: DioramaContext): void {
   const root = stationBase(ctx, "missionBoard", 78);
@@ -133,11 +134,14 @@ function buildMissionBoard(ctx: DioramaContext): void {
   // Slight iso underside to seat the billboard on the posts.
   root.addChild(isoBox({ x: 0, y: -18, w: 196, d: 22, h: 8, color: PALETTE.structure, rim: accent, rimAlpha: 0.5 }));
 
-  // Mission card: goal line, market glyph, gold progress bar.
+  // Mission card: pale backing, goal line, market glyph, gold progress bar.
+  // Backing stays bright so the machinery reads at fit zoom.
   const card = new Container();
   const cardG = new Graphics();
   cardG.roundRect(-86, -68, 130, 40, 4);
-  cardG.fill({ color: PALETTE.structureLight, alpha: 0.9 });
+  cardG.fill({ color: PALETTE.surfacePale, alpha: 0.16 });
+  cardG.roundRect(-86, -68, 130, 40, 4);
+  cardG.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.55 });
   cardG.rect(-80, -42, 92, 4);
   cardG.fill({ color: PALETTE.yellow, alpha: 0.9 });
   cardG.rect(-80, -42, 58, 4);
@@ -147,9 +151,23 @@ function buildMissionBoard(ctx: DioramaContext): void {
   cardG.lineTo(58, -68);
   cardG.lineTo(62, -64);
   cardG.lineTo(68, -72);
-  cardG.stroke({ width: 2, color: PALETTE.aqua });
+  cardG.stroke({ width: 2, color: PALETTE.orange });
   card.addChild(cardG);
   board.addChild(card);
+
+  // District heartbeat: warm ticker line under the goal bar advances and
+  // wraps on a ~9 s cycle (drawn once; only x is animated).
+  const ticker = new Graphics();
+  ticker.roundRect(-80, -46, 26, 2, 1);
+  ticker.fill({ color: PALETTE.orange, alpha: 0.95 });
+  board.addChild(ticker);
+  const tickerOff = ctx.onTick(() => {
+    if (ctx.reducedMotion) return;
+    const t = (performance.now() / 1000) % 9 / 9;
+    ticker.x = t * 66;
+    ticker.alpha = 0.55 + 0.4 * Math.sin(t * Math.PI);
+  });
+  ctx.onCleanup(tickerOff);
 
   // Phase chips row (animated). Big chip + smaller followers.
   const chips: Container[] = [];
@@ -217,7 +235,8 @@ function buildMissionBoard(ctx: DioramaContext): void {
 
   const api: MissionBoardApi = {
     setPhase(phase: string): void {
-      const idx = Math.max(0, MISSION_PHASES.indexOf(phase.toUpperCase()));
+      // Normalize case so stories may pass "Waiting" or "WAITING".
+      const idx = Math.max(0, MISSION_PHASES.indexOf(phase.trim().toUpperCase()));
       const chip = chips[idx];
       if (!chip) return;
       gsap.timeline()
@@ -348,6 +367,24 @@ function buildMarketData(ctx: DioramaContext): void {
     4000,
   );
   ctx.onCleanup(() => window.clearInterval(candleTimer));
+
+  // District heartbeat: a refresh sweep crosses the screen wall every ~13 s,
+  // as if all four feeds re-synced. One static line; only x animates.
+  const sweep = new Graphics();
+  sweep.rect(-1, -62, 2, 34);
+  sweep.fill({ color: PALETTE.aqua, alpha: 0.4 });
+  sweep.blendMode = "add";
+  sweep.alpha = 0;
+  root.addChild(sweep);
+  if (!ctx.reducedMotion) {
+    const sweepTl = gsap.timeline({ repeat: -1, repeatDelay: 11.8 });
+    sweepTl
+      .set(sweep, { x: -88 })
+      .to(sweep, { alpha: 0.85, duration: 0.15 })
+      .to(sweep, { x: 88, duration: 1.1, ease: "none" })
+      .to(sweep, { alpha: 0, duration: 0.15 });
+    ctx.onCleanup(() => sweepTl.kill());
+  }
   registerStation({ id: "marketData", root, hit: root.hit });
 }
 
@@ -466,11 +503,19 @@ function buildStrategyLab(ctx: DioramaContext): void {
   const root = stationBase(ctx, "strategyLab", 66);
 
   contactShadow(root, 0, 6, 108, 68);
-  // Central light-table: pale top, low body.
+  // Central light-table: pale top, low body, warm orange inlay strip.
   root.addChild(isoBox({ x: 0, y: 0, w: 88, d: 52, h: 16, color: PALETTE.structure, rim: PALETTE.violet, rimAlpha: 0.65 }));
   const tableTop = isoTile(0, -16, 84, 48, PALETTE.structureLight, 1);
   root.addChild(tableTop);
-  root.addChild(glow(0, -18, 110, PALETTE.violet, 0.26));
+  const warmInlay = new Graphics();
+  warmInlay.moveTo(-30, -16);
+  warmInlay.lineTo(0, -33);
+  warmInlay.lineTo(30, -16);
+  warmInlay.lineTo(0, 1);
+  warmInlay.lineTo(-30, -16);
+  warmInlay.stroke({ width: 1.5, color: PALETTE.orange, alpha: 0.75 });
+  root.addChild(warmInlay);
+  root.addChild(glow(0, -18, 110, PALETTE.violet, 0.2));
 
   // Rotating strategy dial on the table: a spinning needle over a ring.
   const dial = new Graphics();
@@ -571,10 +616,11 @@ function buildSandbox(ctx: DioramaContext): void {
 
   contactShadow(root, 0, 4, 190, 116);
 
-  // Garden floor: pale tile inside low walls (h = 32).
-  root.addChild(isoTile(0, 0, 170, 100, PALETTE.structureLight, 1, PALETTE.cyan));
+  // Garden floor: pale tile inside low walls (h = 32). Warm rim inlay keeps
+  // the sandbox off the shared cyan.
+  root.addChild(isoTile(0, 0, 170, 100, PALETTE.structureLight, 1, PALETTE.orange));
   const wallH = 32;
-  root.addChild(isoWall({ x1: -85, y1: 0, x2: 0, y2: -50, h: wallH, color: PALETTE.structure, rim: PALETTE.cyan }));
+  root.addChild(isoWall({ x1: -85, y1: 0, x2: 0, y2: -50, h: wallH, color: PALETTE.structure, rim: PALETTE.orange }));
   root.addChild(isoWall({ x1: 0, y1: -50, x2: 85, y2: 0, h: wallH, color: PALETTE.structure, rim: PALETTE.cyan }));
   root.addChild(isoWall({ x1: 85, y1: 0, x2: 0, y2: 50, h: wallH, color: PALETTE.structure, rim: PALETTE.cyan }));
 
@@ -635,6 +681,34 @@ function buildSandbox(ctx: DioramaContext): void {
     racer.position.set(38 + Math.cos(a) * 32, 4 + Math.sin(a) * 15.5);
   });
   ctx.onCleanup(off);
+
+  // District heartbeat: test-market bubbles grow and pop on staggered
+  // ~11 s cycles. Bubbles are drawn once; only scale and alpha animate.
+  const bubbles: Container[] = [];
+  for (let i = 0; i < 3; i++) {
+    const b = new Graphics();
+    b.circle(0, 0, 3);
+    b.stroke({ width: 1.2, color: PALETTE.aqua, alpha: 0.9 });
+    b.circle(-1, -1, 0.9);
+    b.fill({ color: PALETTE.aqua, alpha: 0.8 });
+    b.position.set(-40 + i * 16, 8 - i * 2);
+    b.alpha = 0;
+    root.addChild(b);
+    bubbles.push(b);
+  }
+  const bubbleTweens: Array<gsap.core.Timeline> = [];
+  bubbles.forEach((b, i) => {
+    const cycle = 11 + i * 1.7;
+    if (ctx.reducedMotion) return;
+    const tl = gsap.timeline({ repeat: -1, delay: i * 3.6 });
+    tl.fromTo(b, { alpha: 0, scale: 0.4 }, { alpha: 0.95, scale: 1.5, duration: cycle * 0.5, ease: "sine.in" })
+      .to(b, { alpha: 0, scale: 2.1, duration: 0.18, ease: "back.in(2)" })
+      .to(b, { scale: 0.4, duration: cycle * 0.4 });
+    bubbleTweens.push(tl);
+  });
+  ctx.onCleanup(() => {
+    for (const tl of bubbleTweens) tl.kill();
+  });
   registerStation({ id: "sandbox", root, hit: root.hit });
 }
 
@@ -721,7 +795,7 @@ function buildDecisionTable(ctx: DioramaContext): void {
   tableTop.ellipse(0, 16, 88, 44);
   tableTop.stroke({ width: 2, color: PALETTE.surfacePale, alpha: 0.8 });
   tableTop.ellipse(0, 16, 70, 34);
-  tableTop.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.35 });
+  tableTop.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.22 });
   root.addChild(tableTop);
   root.addChild(glow(0, 14, 150, PALETTE.blue, 0.12));
 
@@ -741,9 +815,9 @@ function buildDecisionTable(ctx: DioramaContext): void {
   for (let i = 0; i < MAX_PROPOSALS; i++) {
     const card = new Container();
     const body = new Graphics();
-    body.roundRect(-16, -22, 32, 44, 3);
+    body.roundRect(-19, -26, 38, 52, 3);
     body.fill({ color: PALETTE.structure, alpha: 0.95 });
-    body.roundRect(-16, -22, 32, 44, 3);
+    body.roundRect(-19, -26, 38, 52, 3);
     body.stroke({ width: 1.5, color: PALETTE.violet, alpha: 0.9 });
     card.addChild(body);
     // Indicator pips: evidence eye, confidence bars, return arrow, risk shield, authority badge.
@@ -834,25 +908,25 @@ function buildDecisionTable(ctx: DioramaContext): void {
           i * 0.08,
         );
         if (i === chosen) {
-          // Chosen card rises + glows gold.
+          // Chosen card rises + pops warm.
           timeline.to(card, { y: fanY - 16, duration: 0.4, ease: "power2.out" }, 0.6);
           timeline.to(card, { alpha: 1, duration: 0.3 }, 0.6);
           const body = card.getChildAt(0) as Graphics;
           timeline.call(() => {
             body.clear();
-            body.roundRect(-16, -22, 32, 44, 3);
+            body.roundRect(-19, -26, 38, 52, 3);
             body.fill({ color: PALETTE.structureLight, alpha: 0.98 });
-            body.roundRect(-16, -22, 32, 44, 3);
-            body.stroke({ width: 2.5, color: PALETTE.yellow, alpha: 1 });
+            body.roundRect(-19, -26, 38, 52, 3);
+            body.stroke({ width: 3, color: PALETTE.orange, alpha: 1 });
           }, undefined, 0.6);
         } else if (i === rejected) {
           // Rejected lead card flashes a red refusal trim, then retracts.
           const body = card.getChildAt(0) as Graphics;
           timeline.call(() => {
             body.clear();
-            body.roundRect(-16, -22, 32, 44, 3);
+            body.roundRect(-19, -26, 38, 52, 3);
             body.fill({ color: PALETTE.structure, alpha: 0.95 });
-            body.roundRect(-16, -22, 32, 44, 3);
+            body.roundRect(-19, -26, 38, 52, 3);
             body.stroke({ width: 2.5, color: PALETTE.blocked, alpha: 1 });
           }, undefined, 0.55);
           timeline.to(
@@ -861,7 +935,15 @@ function buildDecisionTable(ctx: DioramaContext): void {
             0.95,
           );
         } else {
-          // Others dim + slide back / retract.
+          // Others dim to a cool tone and slide back / retract.
+          const body = card.getChildAt(0) as Graphics;
+          timeline.call(() => {
+            body.clear();
+            body.roundRect(-19, -26, 38, 52, 3);
+            body.fill({ color: PALETTE.structure, alpha: 0.8 });
+            body.roundRect(-19, -26, 38, 52, 3);
+            body.stroke({ width: 1.2, color: PALETTE.blue, alpha: 0.55 });
+          }, undefined, 0.7);
           timeline.to(
             card,
             { x: fanX * 0.45, y: fanY * 0.6 + 8, alpha: 0.35, duration: 0.5, ease: "power2.in" },
@@ -882,9 +964,9 @@ function buildDecisionTable(ctx: DioramaContext): void {
             card.visible = false;
             const body = card.getChildAt(0) as Graphics;
             body.clear();
-            body.roundRect(-16, -22, 32, 44, 3);
+            body.roundRect(-19, -26, 38, 52, 3);
             body.fill({ color: PALETTE.structure, alpha: 0.95 });
-            body.roundRect(-16, -22, 32, 44, 3);
+            body.roundRect(-19, -26, 38, 52, 3);
             body.stroke({ width: 1.5, color: PALETTE.violet, alpha: 0.9 });
           },
           undefined,

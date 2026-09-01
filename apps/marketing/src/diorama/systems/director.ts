@@ -1,41 +1,64 @@
 /**
- * Event director: seeded, deterministic scheduler that runs micro-stories
- * with actor and station locks, staggering calm and busy periods.
+ * Event director v2: seeded, deterministic scheduler with separate activity
+ * budgets so the campus never looks dead at the default camera.
  * Owner: director worker.
  *
- * Scheduler shape:
- * - calm 4-7 s, then a "loop iteration" in one of two modes:
- *   - cycle mode: the 18 lifecycle stories run in order with 0.8-1.5 s gaps
- *     so a viewer can follow one trade end to end;
- *   - scatter mode: 5-7 weighted single stories (19-24 pool plus lifecycle
- *     singles), up to 2 concurrent when they share no agents or stations.
- * - cycle mode is forced whenever the previous iteration was scatter, so the
- *   full lifecycle chain plays at least every other iteration (~4 min loop).
- * - same seed = same show: all variation comes from seededRandom(20260901).
+ * Four lanes run concurrently on top of the same actor/station locks:
+ * - spine: the 18-story lifecycle chain, looping end to end with short gaps.
+ *   This is the readable "one trade from research to reconciliation" story.
+ * - texture: weighted ambient singles (system stories, floor choreography,
+ *   supervisor rounds) with up to TEXTURE_CONCURRENCY disjoint stories alive.
+ * - comedy: harmless slapstick, one gag at a time, per-gag cooldown plus a
+ *   global comedy gap so the same joke never machine-guns.
+ * - heartbeats: staggered, cheap district pulses plus slow regime/phase drift
+ *   so no district goes quiet for long.
  *
- * Locks: a story starts only when every listed agent is acquirable and no
- * listed station is busy. Stations are tracked in a local Set; agents through
- * AgentSystem.acquire/release. All locks release in a finally block.
- *
- * stop(): sets a cancelled flag checked between awaits (waits resolve early,
- * stories skip remaining steps), after which locks release as in-flight
- * stories unwind. GSAP timelines created by stories register their own
- * cleanup via ctx.onCleanup.
+ * There is no initial calm: start() launches the spine and two texture
+ * singles immediately as an arrival burst. All waits are tracked and cleared
+ * on stop(); locks always release in finally. Same seed = same show.
  */
 import type { DioramaContext } from "../core/context.js";
 import type { Agent } from "../agents/agent.js";
 import type { AgentSystem } from "../agents/system.js";
 import type { RailSystem } from "./rails.js";
 import type { Simulation } from "./simulation.js";
-import type { StationId } from "../config/stations.js";
+import type { DistrictId, StationId } from "../config/stations.js";
+import { DISTRICTS, STATIONS } from "../config/stations.js";
 import { seededRandom } from "../config/world.js";
-import { LIFECYCLE_CHAIN, SCATTER_POOL, STORIES, STORY_MAP } from "./stories.js";
+import { COMEDY_POOL, LIFECYCLE_CHAIN, STORY_MAP, TEXTURE_POOL, glowPulse } from "./stories.js";
+
+/** Concurrent disjoint texture stories (spine and comedy are extra lanes). */
+const TEXTURE_CONCURRENCY = 3;
+/** Minimum spacing between comedy gags, and per-gag cooldown. */
+const COMEDY_GAP_MS = 11_000;
+const COMEDY_COOLDOWN_MS = 45_000;
+/** Texture single cooldown so one story does not dominate. */
+const TEXTURE_COOLDOWN_MS = 18_000;
+/** Heartbeat cadence: one district per fire, round-robin. With seven
+ * districts this gives every district a pulse inside the 3 s dead-district
+ * budget even when no story touches it. */
+const HEARTBEAT_MIN_MS = 350;
+const HEARTBEAT_JITTER_MS = 200;
+
+export interface ActivitySnapshot {
+  /** Story ids currently running across all lanes. */
+  stories: string[];
+  /** Agents visibly moving / reacting (from the agent system; 0 if unavailable). */
+  moving: number;
+  reacting: number;
+  total: number;
+  /** Districts touched by a running story or a recent heartbeat. */
+  districts: Partial<Record<DistrictId, boolean>>;
+}
 
 export interface Director {
   start(): void;
   stop(): void;
-  /** Run one story immediately by id (used by interaction/Explore). */
+  /** Run one story immediately by id (used by interaction/Explore). Bypasses
+   * cooldowns but still respects actor and station locks. */
   runStory(id: string): Promise<void>;
+  /** QA/ debug snapshot of current activity. */
+  activity(): ActivitySnapshot;
 }
 
 export interface DirectorDeps {
@@ -44,50 +67,68 @@ export interface DirectorDeps {
   simulation: Simulation;
 }
 
+interface RunningStory {
+  id: string;
+  districts: Set<DistrictId>;
+}
+
 export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Director {
   const rng = seededRandom(20260901);
   const busyStations = new Set<StationId>();
+  /** Stories currently holding locks; removed in the same finally that releases. */
+  const running = new Set<RunningStory>();
+  /** District -> last heartbeat ms (performance.now) for the alive metric. */
+  const heartbeatAt = new Map<DistrictId, number>();
+  const lastRunAt = new Map<string, number>();
+  /** Tracked timeouts so stop() leaves no pending waits behind. */
+  const timers = new Set<ReturnType<typeof setTimeout>>();
   let cancelled = false;
-  let running = false;
+  let runningStarted = false;
+  let lastComedyAt = 0;
 
-  const cancelledNow = (): boolean => cancelled;
+  const now = (): number => performance.now();
 
-  /** Content wait; resolves immediately once stopped or already elapsed. */
+  /** Content wait; resolves immediately once stopped or already elapsed. The
+   * timeout is tracked so stop() can cancel pending waits outright. */
   const wait = (ms: number): Promise<void> =>
     new Promise<void>((resolve) => {
       if (cancelled || ms <= 0) {
         resolve();
         return;
       }
-      setTimeout(resolve, ms);
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        resolve();
+      }, ms);
+      timers.add(timer);
     });
 
   /** Decorative beat: skipped under reduced motion or once stopped. */
   const beat = (ms: number): Promise<void> =>
     ctx.reducedMotion || cancelled ? Promise.resolve() : wait(ms);
 
-  const scatterCandidates = STORIES.map((story) => story.id);
+  const districtsOf = (stations: StationId[]): Set<DistrictId> => {
+    const set = new Set<DistrictId>();
+    for (const station of stations) set.add(STATIONS[station]?.district ?? "floor");
+    return set;
+  };
 
-  /** Weighted pick with no immediate repeat; returns undefined when stuck. */
-  const pickScatter = (lastId: string | null): string | undefined => {
-    const pool = scatterCandidates.filter((id) => id !== lastId);
-    if (pool.length === 0) return undefined;
-    // Lifecycle stories carry the show's spine, texture stories half weight.
-    const weight = (id: string): number => (SCATTER_POOL.includes(id) ? 0.5 : 1);
-    let total = 0;
-    for (const id of pool) total += weight(id);
-    let roll = rng() * total;
-    for (const id of pool) {
-      roll -= weight(id);
-      if (roll <= 0) return id;
+  const districtsAlive = (): Partial<Record<DistrictId, boolean>> => {
+    const alive: Partial<Record<DistrictId, boolean>> = {};
+    const horizon = now() - 9_000;
+    for (const story of running) {
+      for (const district of story.districts) alive[district] = true;
     }
-    return pool[pool.length - 1];
+    for (const [district, at] of heartbeatAt) {
+      if (at >= horizon) alive[district] = true;
+    }
+    return alive;
   };
 
   /**
-   * Run one story under full locking. Resolves with true when the story
-   * actually started; resolves gracefully (false) when locks were unavailable
-   * or the story id is unknown, so a missing dependency never stalls the show.
+   * Run one story under full locking. Resolves true when the story started;
+   * resolves gracefully (false) when locks were unavailable or the id is
+   * unknown, so a busy campus never stalls the show.
    */
   const runStoryLocked = async (id: string): Promise<boolean> => {
     const story = STORY_MAP.get(id);
@@ -105,6 +146,9 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
     }
     for (const station of story.stations) busyStations.add(station);
 
+    const entry: RunningStory = { id, districts: districtsOf(story.stations) };
+    running.add(entry);
+
     try {
       await story.run({
         ctx,
@@ -115,85 +159,145 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
         cast,
         wait,
         beat,
-        cancelled: cancelledNow,
+        cancelled: () => cancelled,
       });
     } catch (err) {
       // One warning per failure; the show keeps going.
       console.warn(`[diorama/director] story ${id} failed:`, err);
     } finally {
+      running.delete(entry);
       for (const station of story.stations) busyStations.delete(station);
       for (const agentId of cast.keys()) deps.agents.release(agentId);
+      lastRunAt.set(id, now());
     }
     return true;
   };
 
-  /** Cycle mode: the lifecycle chain, in order, with short gaps. */
-  const runCycle = async (): Promise<void> => {
-    for (const id of LIFECYCLE_CHAIN) {
-      if (cancelled) return;
-      await runStoryLocked(id);
-      await wait(800 + rng() * 700);
+  /** Try to launch one story from a candidate pool, respecting cooldowns.
+   * Resolves true when something launched. */
+  const launchFrom = async (pool: string[], cooldownMs: number): Promise<boolean> => {
+    const at = now();
+    const candidates = pool.filter((id) => (lastRunAt.get(id) ?? -Infinity) <= at - cooldownMs);
+    // Weighted shuffle-ish: up to 6 attempts so busy locks skip to the next
+    // candidate instead of stalling the lane.
+    for (let attempt = 0; attempt < 6 && candidates.length > 0; attempt += 1) {
+      const index = Math.floor(rng() * candidates.length);
+      const [id] = candidates.splice(index, 1);
+      if (await runStoryLocked(id)) return true;
     }
+    return false;
   };
 
-  /** Scatter mode: 5-7 singles, up to 2 concurrent when disjoint. */
-  const runScatter = async (): Promise<void> => {
-    const target = 5 + Math.floor(rng() * 3); // 5..7 stories
-    let lastId: string | null = null;
-    let launched = 0;
-    const inFlight: Promise<unknown>[] = [];
-
-    while (launched < target && !cancelled) {
-      const id = pickScatter(lastId);
-      if (!id) break;
-      // Concurrency cap: at most 2 stories alive at once. Lock checking inside
-      // runStoryLocked guarantees disjoint agents/stations for both.
-      if (inFlight.length >= 2) {
-        await Promise.race(inFlight);
-        continue;
-      }
-      const promise = runStoryLocked(id);
-      // Self-remove from the in-flight list as stories settle.
-      promise.then(() => {
-        const ix = inFlight.indexOf(promise);
-        if (ix >= 0) inFlight.splice(ix, 1);
-      });
-      inFlight.push(promise);
-      lastId = id;
-      launched += 1;
-      await wait(1500 + rng() * 1500); // short calm between launches
-    }
-    await Promise.all(inFlight);
-  };
-
-  /** The looping timeline: calm, then alternating cycle/scatter iterations. */
-  const loop = async (): Promise<void> => {
-    let lastMode: "cycle" | "scatter" | null = null;
+  /** Spine lane: the lifecycle chain, looping with short gaps. */
+  const spineLoop = async (): Promise<void> => {
     while (!cancelled) {
-      await wait(4000 + rng() * 3000); // calm 4-7 s
-      if (cancelled) break;
-      // Chain at least every other iteration; otherwise 50/50.
-      const mode: "cycle" | "scatter" =
-        lastMode === "scatter" ? "cycle" : rng() < 0.5 ? "cycle" : "scatter";
-      if (mode === "cycle") await runCycle();
-      else await runScatter();
-      lastMode = mode;
+      for (const id of LIFECYCLE_CHAIN) {
+        if (cancelled) return;
+        await runStoryLocked(id);
+        await wait(700 + rng() * 600);
+      }
+      // One breath between full lifecycle passes; other lanes keep moving.
+      await wait(2000 + rng() * 2000);
+    }
+  };
+
+  /** Texture lane: weighted ambient singles, capped concurrency. */
+  const textureLoop = async (): Promise<void> => {
+    let inFlight = 0;
+    while (!cancelled) {
+      if (inFlight < TEXTURE_CONCURRENCY) {
+        const promise = launchFrom(TEXTURE_POOL, TEXTURE_COOLDOWN_MS);
+        inFlight += 1;
+        void promise.then(() => {
+          inFlight -= 1;
+        });
+        await wait(1200 + rng() * 1400);
+      } else {
+        await wait(600 + rng() * 600);
+      }
+    }
+  };
+
+  /** Comedy lane: one gag at a time with a global gap and per-gag cooldowns. */
+  const comedyLoop = async (): Promise<void> => {
+    // Let the campus establish itself for a few seconds before the first gag.
+    await wait(4500 + rng() * 2500);
+    while (!cancelled) {
+      const at = now();
+      if (at - lastComedyAt >= COMEDY_GAP_MS) {
+        const launched = await launchFrom(COMEDY_POOL, COMEDY_COOLDOWN_MS);
+        lastComedyAt = now();
+        if (!launched) await wait(2500 + rng() * 1500);
+      } else {
+        await wait(1200 + rng() * 1200);
+      }
+    }
+  };
+
+  // Heartbeat targets: one station per district that reads as a pulse.
+  const HEARTBEAT_TARGETS: Partial<Record<DistrictId, StationId[]>> = {
+    research: ["sandbox", "researchTools", "budgetPlanning"],
+    floor: ["tradingFloor", "eventClock"],
+    mcp: ["toolSchemas", "portfolioTools"],
+    risk: ["budgetMeter", "protection"],
+    ops: ["stateStore", "observability", "activityGallery"],
+    supervisor: ["supervisor"],
+    external: ["executionGateway"],
+  };
+  const heartbeatOrder = Object.keys(HEARTBEAT_TARGETS) as DistrictId[];
+
+  /** Heartbeat lane: cheap staggered pulses so no district goes dark. */
+  const heartbeatLoop = async (): Promise<void> => {
+    let cursor = Math.floor(rng() * heartbeatOrder.length);
+    while (!cancelled) {
+      const district = heartbeatOrder[cursor % heartbeatOrder.length];
+      cursor += 1;
+      const targets = HEARTBEAT_TARGETS[district] ?? [];
+      const station = targets.find((candidate) => !busyStations.has(candidate));
+      if (station && !ctx.reducedMotion) {
+        glowPulse(ctx, station, 0.55, 1.0);
+        heartbeatAt.set(district, now());
+      } else if (station) {
+        heartbeatAt.set(district, now());
+      }
+      await wait(HEARTBEAT_MIN_MS + rng() * HEARTBEAT_JITTER_MS);
     }
   };
 
   return {
     start(): void {
-      if (running) return;
-      running = true;
+      if (runningStarted) return;
+      runningStarted = true;
       cancelled = false;
-      void loop();
+      // Arrival burst: the spine plus two texture singles immediately; no
+      // campus-wide calm after load.
+      void spineLoop();
+      void textureLoop();
+      void comedyLoop();
+      void heartbeatLoop();
     },
     stop(): void {
       cancelled = true;
-      running = false;
+      runningStarted = false;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      running.clear();
+      busyStations.clear();
     },
     async runStory(id: string): Promise<void> {
       await runStoryLocked(id);
+    },
+    activity(): ActivitySnapshot {
+      // The agent system exposes activity counters when the character lane is
+      // present; guard so the snapshot works at every integration state.
+      const systemActivity = deps.agents.activity?.();
+      return {
+        stories: [...running].map((story) => story.id),
+        moving: systemActivity?.moving ?? 0,
+        reacting: systemActivity?.reacting ?? 0,
+        total: systemActivity?.total ?? 0,
+        districts: districtsAlive(),
+      };
     },
   };
 }

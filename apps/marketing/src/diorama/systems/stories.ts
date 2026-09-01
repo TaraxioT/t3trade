@@ -1,5 +1,5 @@
 /**
- * The 24 micro-stories: small scripted sequences of agent walks, rail
+ * The 34 micro-stories: small scripted sequences of agent walks, rail
  * packets, station api calls, and simulation mutations that continuously
  * explain T3 Trade. Owner: director worker.
  *
@@ -28,8 +28,10 @@ import { stationApi as registryApi } from "../core/registry.js";
 import { getStation } from "../core/registry.js";
 import type { PerimeterApi } from "../world/perimeter.js";
 import type { HyperliquidApi } from "../world/hyperliquid.js";
+import type { MarketLandscapeApi } from "../world/marketLandscape.js";
 import * as perimeterModule from "../world/perimeter.js";
 import * as hyperliquidModule from "../world/hyperliquid.js";
+import * as marketLandscapeModule from "../world/marketLandscape.js";
 import type { DecisionTableApi, MissionBoardApi } from "../stations/research.js";
 import type {
   ApprovalApi,
@@ -46,7 +48,9 @@ import type {
   RecoveryApi,
   ReplayChamberApi,
 } from "../stations/ops.js";
-import type { SignalTowerApi, SupervisorApi } from "../stations/central.js";
+import type { HoloCoreApi, SignalTowerApi, SupervisorApi } from "../stations/central.js";
+import { popMarkAt, scatterCards, rollProp } from "../agents/fx.js";
+import { playDioramaCue } from "../audio.js";
 
 export interface StoryDeps {
   ctx: DioramaContext;
@@ -116,11 +120,16 @@ function hyperliquid(): HyperliquidApi | null {
   return holderApi<HyperliquidApi>(hyperliquidModule, "hyperliquid");
 }
 
+function marketLandscape(): MarketLandscapeApi | null {
+  return holderApi<MarketLandscapeApi>(marketLandscapeModule, "marketLandscape");
+}
+
 /**
  * Station-agnostic glow pulse for stations without a frozen animation api.
  * Tweens the registered root's alpha; cleanup is registered with the world.
+ * Exported: the director's district heartbeats reuse it.
  */
-function glowPulse(ctx: DioramaContext, id: StationId, dip = 0.5, seconds = 0.9): void {
+export function glowPulse(ctx: DioramaContext, id: StationId, dip = 0.5, seconds = 0.9): void {
   const station = getStation(id);
   if (!station) {
     warnOnce(`station not registered: ${id}`);
@@ -136,34 +145,56 @@ function glowPulse(ctx: DioramaContext, id: StationId, dip = 0.5, seconds = 0.9)
   ctx.onCleanup(() => tween.kill());
 }
 
-/** Walk, or snap into place under reduced motion. */
+/** Walk, or snap into place under reduced motion. No-ops once the director
+ * is stopped: story continuations can resume after teardown (pending walks
+ * resolve during cleanup) and must not touch destroyed objects. */
 async function move(deps: StoryDeps, agentId: string, points: { x: number; y: number }[]): Promise<void> {
+  if (deps.cancelled()) return;
   const agent = deps.cast.get(agentId);
   if (!agent) {
     warnOnce(`agent missing from cast: ${agentId}`);
     return;
   }
   if (points.length === 0) return;
-  await deps.agents.walk(agent, points, deps.ctx.reducedMotion ? { speed: 100000 } : undefined);
+  await deps.agents.walk(agent, points, deps.ctx.reducedMotion ? { speed: 100000 } : { ease: "arrive" });
 }
 
-/** Dispatch a packet and wait for arrival. */
+/** Dispatch a packet and wait for arrival. Every packet chirps (foley cooldown
+ * inside the audio layer keeps bursts from machine-gunning). */
 async function send(
   deps: StoryDeps,
   route: RouteId,
   kind?: PacketKind,
   opts?: { reverse?: boolean; label?: string },
 ): Promise<void> {
+  if (deps.cancelled()) return;
+  cue("packet");
   const handle = deps.rails.dispatch(route, kind, opts);
   await handle.done;
 }
 
 function express(deps: StoryDeps, agentId: string, expr: Expression): void {
+  if (deps.cancelled()) return;
   deps.cast.get(agentId)?.setExpression(expr);
 }
 
-function react(deps: StoryDeps, agentId: string, kind: "hop" | "droop" | "lean" | "tilt"): void {
+function react(
+  deps: StoryDeps,
+  agentId: string,
+  kind: "hop" | "droop" | "lean" | "tilt" | "wobble" | "squash" | "startle" | "headrub" | "apologize" | "doubleTake",
+): void {
+  if (deps.cancelled()) return;
   deps.cast.get(agentId)?.react(kind);
+}
+
+function popMark(deps: StoryDeps, agentId: string, kind: "!" | "?" | "stars" | "droplet" | "puff"): void {
+  if (deps.cancelled()) return;
+  deps.cast.get(agentId)?.popMark(kind);
+}
+
+/** Fire a semantic audio cue; a no-op while the visitor keeps sound muted. */
+function cue(name: string): void {
+  playDioramaCue(name);
 }
 
 /** A named walking point near a station anchor, offset toward the floor. */
@@ -255,6 +286,26 @@ export const SCATTER_POOL: string[] = [
   "s-emergency-demo",
 ];
 
+/** Weighted ambient texture for the new director: scatter singles plus the
+ * floor choreography and supervisor rounds that keep the default frame busy. */
+export const TEXTURE_POOL: string[] = [
+  ...SCATTER_POOL,
+  "s-floor-handoff",
+  "s-floor-signal",
+  "s-supervisor-rounds",
+];
+
+/** Harmless slapstick: own concurrency budget and per-gag cooldowns. */
+export const COMEDY_POOL: string[] = [
+  "s-bump-antennae",
+  "s-drop-cards",
+  "s-runaway-cart",
+  "s-spring-gate",
+  "s-cable-trip",
+  "s-booth-jam",
+  "s-stack-topple",
+];
+
 export const STORIES: Story[] = [
   // 1. Research: a probe extracts live data from the landscape.
   s("s-research-fetch", "Probe extracts market data", 8, ["probe-1", "analysis-1"], ["marketLandscape", "marketData", "strategyLab"],
@@ -287,8 +338,9 @@ export const STORIES: Story[] = [
     async (d) => {
       await move(d, "strategy-1", [near("missionBoard", 60, 20)]);
       const board = storyApi<MissionBoardApi>("missionBoard");
-      board?.setPhase("Scanning");
-      d.simulation.setPhase("Scanning");
+      board?.setPhase("Analysing");
+      d.simulation.setPhase("Analysing");
+      cue("lever");
       await d.beat(300);
       await send(d, "missionToSignalTower");
       storyApi<SignalTower>("signalTower")?.pulse("market");
@@ -467,23 +519,45 @@ export const STORIES: Story[] = [
       react(d, "health-watcher", "tilt");
     }),
 
-  // 20. A call on a dead port is refused, shown, then recovers.
-  s("s-tool-refusal", "Tool call refused", 12, ["hub-keeper"], ["mcpHub", "refusalDisplay", "adapterBay"],
+  // 20. A call on a dead port is refused with a comic knock-back, then recovers.
+  s("s-tool-refusal", "Tool call refused", 12, ["hub-keeper", "adapter-op"], ["mcpHub", "refusalDisplay", "adapterBay"],
     async (d) => {
-      await move(d, "hub-keeper", [near("mcpHub", -30, 20)]);
-      storyApi<McpHub>("mcpHub")?.portCall(5); // attempted on the red port
-      express(d, "hub-keeper", "confused");
-      react(d, "hub-keeper", "droop");
-      await d.beat(300);
-      // Refusal card travels back from the hub toward the adapter bay.
-      await send(d, "hubToAdapterBay", "refusal", { reverse: true });
-      d.simulation.refuse("UNAVAILABLE TOOL");
-      glowPulse(d.ctx, "refusalDisplay", 0.35, 1.2);
-      await d.wait(6000); // content timing: the outage lasts a beat
-      if (d.cancelled()) return;
-      storyApi<McpHub>("mcpHub")?.setPortHealth(5, "green");
-      d.simulation.setPortHealth(5, "green");
-      express(d, "hub-keeper", "satisfied");
+      const hub = storyApi<McpHub>("mcpHub");
+      const adapterOp = d.cast.get("adapter-op");
+      try {
+        await move(d, "hub-keeper", [near("mcpHub", -30, 20)]);
+        hub?.portCall(5); // attempted on the red port
+        express(d, "hub-keeper", "confused");
+        react(d, "hub-keeper", "startle"); // ejected packet knocks the caller back
+        popMark(d, "hub-keeper", "?");
+        cue("skid");
+        await d.beat(300);
+        // Refusal card travels back from the hub toward the adapter bay.
+        await send(d, "hubToAdapterBay", "refusal", { reverse: true });
+        d.simulation.refuse("UNAVAILABLE TOOL");
+        cue("reject");
+        glowPulse(d.ctx, "refusalDisplay", 0.35, 1.2);
+        // The outage beat: the caller droops, then the adapter operator comes
+        // over, apologizes for the port, and they wait it out together.
+        react(d, "hub-keeper", "droop");
+        if (adapterOp) {
+          await move(d, "adapter-op", [near("mcpHub", 10, 55)]);
+          react(d, "adapter-op", "apologize");
+          popMark(d, "adapter-op", "droplet");
+        }
+        await d.wait(3500);
+        if (d.cancelled()) return;
+        hub?.setPortHealth(5, "green");
+        d.simulation.setPortHealth(5, "green");
+        express(d, "hub-keeper", "satisfied");
+        react(d, "hub-keeper", "hop");
+        cue("recover");
+      } finally {
+        // Interrupt-safe: a destroyed or cancelled run still restores the port
+        // and shared state so the hub never sits red forever.
+        hub?.setPortHealth(5, "green");
+        d.simulation.setPortHealth(5, "green");
+      }
     }),
 
   // 21. Recovery repairs a drifted flow, then reconciliation aligns.
@@ -527,26 +601,289 @@ export const STORIES: Story[] = [
   s("s-emergency-demo", "Emergency pause demo", 11, ["floor-monitor", "floor-exec"], ["supervisor", "emergencyPanel", "tradingFloor", "signalTower"],
     async (d) => {
       const floor = getStation("tradingFloor");
-      storyApi<Supervisor>("supervisor")?.setCampusPaused(true);
-      d.simulation.setPaused(true);
-      storyApi<SignalTower>("signalTower")?.pulse("warning");
-      if (floor) {
-        // Station-agnostic: dim the floor's children, restore on resume.
-        for (const child of floor.root.children) {
-          gsap.to(child, { alpha: 0.75, duration: 0.5 });
+      const restore = (): void => {
+        if (floor) {
+          for (const child of floor.root.children) {
+            gsap.to(child, { alpha: 1, duration: 0.5, overwrite: true });
+          }
         }
-      }
-      await d.wait(3000);
-      storyApi<Supervisor>("supervisor")?.setCampusPaused(false);
-      d.simulation.setPaused(false);
-      if (floor) {
-        for (const child of floor.root.children) {
-          gsap.to(child, { alpha: 1, duration: 0.5 });
+      };
+      try {
+        storyApi<Supervisor>("supervisor")?.setCampusPaused(true);
+        d.simulation.setPaused(true);
+        storyApi<SignalTower>("signalTower")?.pulse("warning");
+        cue("warn");
+        if (floor) {
+          // Station-agnostic: dim the floor's children, restore on resume.
+          for (const child of floor.root.children) {
+            const tween = gsap.to(child, { alpha: 0.75, duration: 0.5, overwrite: true });
+            d.ctx.onCleanup(() => tween.kill());
+          }
         }
+        await d.wait(3000);
+        storyApi<Supervisor>("supervisor")?.setCampusPaused(false);
+        d.simulation.setPaused(false);
+        restore();
+        express(d, "floor-monitor", "satisfied");
+        express(d, "floor-exec", "satisfied");
+        react(d, "floor-exec", "hop");
+        popMark(d, "floor-monitor", "puff");
+      } finally {
+        // Interrupt-safe: the floor never stays dimmed.
+        storyApi<Supervisor>("supervisor")?.setCampusPaused(false);
+        d.simulation.setPaused(false);
+        restore();
       }
+    }),
+
+  // 25. Rotating duty handoff across the floor consoles.
+  s("s-floor-handoff", "Duty handoff on the floor", 11, ["floor-strategy", "floor-exec", "floor-monitor"], ["tradingFloor", "holoCore"],
+    async (d) => {
+      const holo = storyApi<HoloCoreApi>("holoCore");
+      const strategy = d.cast.get("floor-strategy");
+      const exec = d.cast.get("floor-exec");
+      strategy?.carry(ROLE_COLORS.strategy);
+      express(d, "floor-strategy", "focused");
+      // Ring arcs west -> south -> east, outside the holo footprint.
+      await move(d, "floor-strategy", [{ x: 1292, y: 798 }, { x: 1342, y: 848 }, { x: 1420, y: 880 }, { x: 1502, y: 905 }]);
+      react(d, "floor-exec", "doubleTake");
+      strategy?.carry(null); // card handed over
+      exec?.carry(ROLE_COLORS.execution);
+      express(d, "floor-exec", "focused");
+      await move(d, "floor-exec", [{ x: 1502, y: 905 }, { x: 1440, y: 940 }]);
+      exec?.carry(null); // second handoff
+      d.cast.get("floor-monitor")?.tap();
+      react(d, "floor-monitor", "lean");
+      holo?.rotateStrategies();
+      holo?.orderLaunched();
+      cue("lever");
+      await d.beat(400);
+      react(d, "floor-strategy", "hop");
       express(d, "floor-monitor", "satisfied");
-      express(d, "floor-exec", "satisfied");
-      react(d, "floor-exec", "hop");
+    }),
+
+  // 26. A market signal startles the floor and shifts the regime.
+  s("s-floor-signal", "Market signal reaches the floor", 9, ["floor-research", "floor-analysis"], ["tradingFloor", "holoCore", "signalTower"],
+    async (d) => {
+      const holo = storyApi<HoloCoreApi>("holoCore");
+      const tower = storyApi<SignalTower>("signalTower");
+      tower?.pulse("market");
+      cue("warn");
+      express(d, "floor-research", "alarmed");
+      react(d, "floor-research", "startle");
+      popMark(d, "floor-research", "!");
+      // Landscape flips regime; the holo mirrors it.
+      marketLandscape()?.setRegime("turbulent");
+      await move(d, "floor-research", [{ x: 1288, y: 612 }, { x: 1282, y: 660 }]);
+      express(d, "floor-research", "focused");
+      express(d, "floor-analysis", "curious");
+      react(d, "floor-analysis", "tilt");
+      holo?.marketEvent("state");
+      holo?.rotateStrategies();
+      await d.beat(600);
+      // Calm returns.
+      marketLandscape()?.setRegime("rising");
+      holo?.marketEvent("state");
+      express(d, "floor-research", "satisfied");
+      react(d, "floor-analysis", "hop");
+    }),
+
+  // 27. The supervisor walks the control round: observe, approve, check the panel.
+  s("s-supervisor-rounds", "Supervisor review rounds", 10, ["approval-clerk"], ["supervisor", "approval", "activityGallery"],
+    async (d) => {
+      glowPulse(d.ctx, "supervisor", 0.4, 1.0);
+      storyApi<Approval>("approval")?.setSeal("waiting");
+      await d.beat(500);
+      storyApi<Approval>("approval")?.setSeal("approved");
+      cue("approve");
+      perimeter()?.grantPulse("west");
+      await d.beat(400);
+      glowPulse(d.ctx, "emergencyPanel", 0.45, 0.9);
+      glowPulse(d.ctx, "activityGallery", 0.45, 0.9);
+      express(d, "approval-clerk", "satisfied");
+      react(d, "approval-clerk", "hop");
+    }),
+
+  // 28. COMEDY. Two bots round a console from opposite sides and bump antennae.
+  s("s-bump-antennae", "Antennae bump on the north ring", 8, ["floor-research", "floor-analysis"], ["tradingFloor"],
+    async (d) => {
+      const meet = { x: 1400, y: 572 };
+      void meet;
+      await move(d, "floor-research", [{ x: 1330, y: 572 }, { x: 1378, y: 570 }]);
+      await move(d, "floor-analysis", [{ x: 1545, y: 610 }, { x: 1455, y: 572 }, { x: 1420, y: 570 }]);
+      // Bump.
+      cue("bump");
+      react(d, "floor-research", "startle");
+      react(d, "floor-analysis", "startle");
+      popMark(d, "floor-research", "!");
+      popMark(d, "floor-analysis", "!");
+      await d.beat(350);
+      react(d, "floor-research", "wobble");
+      react(d, "floor-analysis", "wobble");
+      await d.beat(450);
+      react(d, "floor-research", "apologize");
+      react(d, "floor-analysis", "headrub");
+      await d.beat(500);
+      await move(d, "floor-research", [{ x: 1300, y: 620 }, { x: 1268, y: 640 }]);
+      await move(d, "floor-analysis", [{ x: 1500, y: 630 }, { x: 1590, y: 640 }]);
+      d.cast.get("floor-analysis")?.laugh();
+      express(d, "floor-research", "satisfied");
+    }),
+
+  // 29. COMEDY. Dropped schema cards, a skid, and a helpful gather.
+  s("s-drop-cards", "Schema cards dropped and gathered", 10, ["schema-librarian", "adapter-op"], ["toolSchemas", "adapterBay"],
+    async (d) => {
+      const librarian = d.cast.get("schema-librarian");
+      librarian?.carry(ROLE_COLORS.operations);
+      await move(d, "schema-librarian", [{ x: 2440, y: 640 }, { x: 2458, y: 588 }]);
+      // Cards slip.
+      librarian?.carry(null);
+      cue("skid");
+      react(d, "schema-librarian", "squash");
+      popMark(d, "schema-librarian", "?");
+      await scatterCards(2462, 580, ROLE_COLORS.operations, 5);
+      // The adapter operator skids past, narrowly misses, then helps.
+      react(d, "adapter-op", "squash");
+      await move(d, "adapter-op", [{ x: 2480, y: 560 }, { x: 2452, y: 588 }]);
+      react(d, "adapter-op", "apologize");
+      await d.beat(300);
+      await move(d, "schema-librarian", [{ x: 2468, y: 588 }]);
+      react(d, "schema-librarian", "headrub");
+      await d.beat(400);
+      // Gathered together.
+      cue("recover");
+      express(d, "adapter-op", "satisfied");
+      express(d, "schema-librarian", "satisfied");
+      d.cast.get("schema-librarian")?.laugh();
+      await move(d, "schema-librarian", [{ x: 2440, y: 660 }, { x: 2395, y: 690 }]);
+      await move(d, "adapter-op", [{ x: 2488, y: 532 }]);
+    }),
+
+  // 30. COMEDY. A maintenance cart rolls away; three bots chase it.
+  s("s-runaway-cart", "Runaway cart chased down", 12, ["hub-keeper", "schema-librarian", "adapter-op"], ["toolSchemas", "mcpHub", "adapterBay"],
+    async (d) => {
+      cue("cart");
+      const cartDone = rollProp(2430, 690, ROLE_COLORS.execution, [{ x: 2330, y: 620 }, { x: 2230, y: 570 }, { x: 2140, y: 605 }, { x: 2205, y: 660 }], 150);
+      void (async () => {
+        await move(d, "schema-librarian", [{ x: 2380, y: 680 }, { x: 2300, y: 635 }, { x: 2235, y: 585 }]);
+        react(d, "schema-librarian", "wobble");
+      })();
+      void (async () => {
+        await move(d, "adapter-op", [{ x: 2470, y: 560 }, { x: 2380, y: 560 }, { x: 2260, y: 575 }]);
+        react(d, "adapter-op", "startle");
+      })();
+      await move(d, "hub-keeper", [{ x: 2230, y: 570 }, { x: 2170, y: 590 }, { x: 2215, y: 655 }]);
+      react(d, "hub-keeper", "squash"); // the catch
+      popMark(d, "hub-keeper", "stars");
+      await cartDone;
+      cue("bump");
+      await d.beat(300);
+      react(d, "hub-keeper", "hop");
+      d.cast.get("hub-keeper")?.laugh();
+      express(d, "schema-librarian", "satisfied");
+      express(d, "adapter-op", "satisfied");
+    }),
+
+  // 31. COMEDY. The research-only spring gate closes early and bonks a backpack.
+  s("s-spring-gate", "Spring gate bonk at research only", 9, ["sandbox-1"], ["researchOnlyGate", "sandbox"],
+    async (d) => {
+      await move(d, "sandbox-1", [{ x: 270, y: 590 }, { x: 212, y: 612 }]);
+      // The gate springs shut a beat early.
+      cue("door");
+      react(d, "sandbox-1", "squash");
+      popMark(d, "sandbox-1", "stars");
+      glowPulse(d.ctx, "researchOnlyGate", 0.4, 1.0);
+      await d.beat(400);
+      react(d, "sandbox-1", "headrub");
+      react(d, "sandbox-1", "apologize");
+      await d.beat(450);
+      // Retry politely; the gate behaves.
+      await move(d, "sandbox-1", [{ x: 240, y: 640 }, { x: 185, y: 648 }]);
+      cue("door");
+      react(d, "sandbox-1", "hop");
+      express(d, "sandbox-1", "excited");
+      await d.beat(300);
+      await move(d, "sandbox-1", [{ x: 260, y: 610 }, { x: 320, y: 575 }]);
+      d.cast.get("sandbox-1")?.laugh();
+    }),
+
+  // 32. COMEDY. A loose cable trips the recovery bot; a colleague helps up.
+  s("s-cable-trip", "Cable trip and a helping hand", 10, ["recovery-1", "observer-1"], ["recoveryWorkshop", "observability"],
+    async (d) => {
+      await move(d, "recovery-1", [{ x: 470, y: 1365 }, { x: 560, y: 1315 }]);
+      // Trip over the loose cable.
+      cue("bump");
+      react(d, "recovery-1", "squash");
+      popMark(d, "recovery-1", "stars");
+      popMarkAt(585, 1300, "puff");
+      await d.beat(500);
+      react(d, "recovery-1", "wobble");
+      // The observer rushes over and helps upright.
+      await move(d, "observer-1", [{ x: 1050, y: 1120 }, { x: 800, y: 1240 }, { x: 640, y: 1300 }]);
+      react(d, "observer-1", "apologize");
+      await d.beat(400);
+      react(d, "recovery-1", "hop");
+      express(d, "recovery-1", "satisfied");
+      express(d, "observer-1", "satisfied");
+      d.cast.get("observer-1")?.laugh();
+      await move(d, "observer-1", [{ x: 900, y: 1200 }, { x: 1130, y: 1060 }]);
+    }),
+
+  // 33. COMEDY. Two impatient bots jam the same provider booth, then take turns.
+  s("s-booth-jam", "Provider booth traffic jam", 9, ["adapter-op", "schema-librarian"], ["providers"],
+    async (d) => {
+      const booth = { x: 2415, y: 242 };
+      // Both aim for the same narrow booth.
+      const adapterLane = move(d, "adapter-op", [{ x: 2452, y: 470 }, { x: 2434, y: 330 }, booth]);
+      const librarianLane = move(d, "schema-librarian", [{ x: 2400, y: 560 }, { x: 2418, y: 360 }, booth]);
+      await Promise.all([adapterLane, librarianLane]);
+      // Stuck.
+      cue("door");
+      react(d, "adapter-op", "squash");
+      react(d, "schema-librarian", "squash");
+      popMark(d, "adapter-op", "?");
+      popMark(d, "schema-librarian", "?");
+      await d.beat(500);
+      // Reverse and apologize.
+      await Promise.all([
+        move(d, "adapter-op", [{ x: 2452, y: 340 }]),
+        move(d, "schema-librarian", [{ x: 2380, y: 350 }]),
+      ]);
+      react(d, "adapter-op", "apologize");
+      react(d, "schema-librarian", "headrub");
+      await d.beat(400);
+      // One at a time.
+      await move(d, "adapter-op", [booth, { x: 2430, y: 250 }]);
+      react(d, "adapter-op", "doubleTake");
+      await d.beat(350);
+      await move(d, "schema-librarian", [booth, { x: 2400, y: 250 }]);
+      express(d, "schema-librarian", "satisfied");
+      d.cast.get("adapter-op")?.laugh();
+    }),
+
+  // 34. COMEDY. A celebratory hop topples a stack of glowing capsules.
+  s("s-stack-topple", "Capsule stack toppled at the vault", 9, ["receipt-clerk", "archivist"], ["receiptPrinter", "portfolioVault"],
+    async (d) => {
+      storyApi<ReceiptPrinter>("receiptPrinter")?.print("order");
+      cue("stamp");
+      await d.beat(400);
+      react(d, "receipt-clerk", "hop");
+      // The hop knocks the neighbor's capsule stack.
+      cue("bump");
+      popMark(d, "receipt-clerk", "!");
+      express(d, "receipt-clerk", "alarmed");
+      await scatterCards(940, 1125, ROLE_COLORS.reconciliation, 4);
+      await d.beat(300);
+      react(d, "receipt-clerk", "apologize");
+      // The archivist helps gather.
+      await move(d, "archivist", [{ x: 1020, y: 1290 }, { x: 975, y: 1185 }]);
+      react(d, "archivist", "headrub");
+      await d.beat(500);
+      cue("recover");
+      express(d, "archivist", "satisfied");
+      express(d, "receipt-clerk", "satisfied");
+      d.cast.get("receipt-clerk")?.laugh();
+      await move(d, "archivist", [{ x: 1030, y: 1290 }]);
     }),
 ];
 

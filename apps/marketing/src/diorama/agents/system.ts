@@ -10,17 +10,19 @@
  * state, but acquiring remains the intended discipline.
  *
  * Idle life: when no story owns an agent, the system walks its authored
- * wander loop at a leisurely pace with 1.5-4 s pauses and occasional
- * micro-life (weight shift, look-around, expression flicker, blink), all
- * driven from one shared ticker with per-agent schedules from seededRandom.
- * All of that motion is disabled under reducedMotion: agents hold their
- * first wander point and resting expression.
+ * wander loop at a leisurely pace with 0.8-2.4 s pauses and frequent
+ * micro-life (weight shift, look-around, expression flicker, blink, an
+ * occasional solo comedy beat), all driven from one shared ticker with
+ * per-agent schedules from seededRandom. All of that motion is disabled under
+ * reducedMotion: agents hold their first wander point and resting expression.
  */
 import { gsap } from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { DEPTH, seededRandom } from "../config/world.js";
+import type { AgentRole } from "../config/palette.js";
 import { POPULATION, type AgentDef } from "../config/population.js";
 import { createAgentImpl, type Agent, type AgentImpl, type AgentMicroLife, type Expression } from "./agent.js";
+import { agentFx, createAgentFx } from "./fx.js";
 
 export interface AgentSystem {
   agents: Map<string, Agent>;
@@ -28,15 +30,41 @@ export interface AgentSystem {
   acquire(id: string): Agent | undefined;
   release(id: string): void;
   /** Walk an agent through waypoints; resolves when the walk completes. */
-  walk(agent: Agent, waypoints: { x: number; y: number }[], opts?: { speed?: number }): Promise<void>;
+  walk(
+    agent: Agent,
+    waypoints: { x: number; y: number }[],
+    opts?: { speed?: number; ease?: "arrive" },
+  ): Promise<void>;
   /** Idle-loop wandering between story tasks (started by the system). */
   startIdleLife(): void;
+  /** Cheap population counters for the QA debug hook. */
+  activity(): { moving: number; reacting: number; total: number };
 }
 
 /** Default walking speed in world units per second. */
 export const WALK_SPEED = 85;
 /** Leisurely idle-wander speed. */
 const IDLE_SPEED = 55;
+/** Role pace variation applied when the caller does not set a speed. */
+const ROLE_SPEED: Record<AgentRole, number> = {
+  execution: 1.08,
+  operations: 1.08,
+  analysis: 0.92,
+  research: 1,
+  strategy: 1,
+  risk: 1,
+  reconciliation: 1,
+};
+
+/** Deterministic FNV-1a hash of an id, normalized to [0,1). */
+const hashAgent = (id: string): number => {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+};
 
 type IdleState = "waiting" | "walking";
 
@@ -77,6 +105,9 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
   let elapsed = 0;
   let idleLifeEnabled = false;
 
+  // Comic marks / card bursts / rolling props shared by agents and stories.
+  createAgentFx(ctx);
+
   const restingExpression = (def: AgentDef): Expression =>
     (def.restingExpression as Expression | undefined) ?? "neutral";
 
@@ -86,7 +117,7 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
 
   // --- spawn ---------------------------------------------------------------
   POPULATION.forEach((def, index) => {
-    const impl = createAgentImpl(def.id, def.role);
+    const impl = createAgentImpl(def.id, def.role, def.variant, ctx.reducedMotion);
     const first = def.wander[0];
     impl.root.position.set(first.x, first.y);
     impl.setExpression(restingExpression(def));
@@ -138,6 +169,7 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
     rt: Runtime,
     waypoints: { x: number; y: number }[],
     speed: number,
+    ease?: "arrive",
   ): Promise<void> => {
     return new Promise<void>((resolve) => {
       // A new walk cleanly replaces any walk in flight: the superseded caller
@@ -151,6 +183,35 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
       rt.waitUntil = elapsed + 5;
 
       const root = rt.impl.root;
+      const arrive = ease === "arrive";
+      // In arrive mode the agent keeps facing its actual destination instead
+      // of snapping per segment, so curved paths lose the vertex-turn read.
+      const destDx = waypoints.length > 0 ? waypoints[waypoints.length - 1].x - root.x : 0;
+
+      // Long segments gain a perpendicular midpoint offset (10-18u) so paths
+      // curve; magnitude and side are deterministic from the agent id hash.
+      const curved: { x: number; y: number }[] = [];
+      {
+        let px = root.x;
+        let py = root.y;
+        for (const target of waypoints) {
+          const dx = target.x - px;
+          const dy = target.y - py;
+          const dist = Math.hypot(dx, dy);
+          if (arrive && dist > 140) {
+            const side = hashAgent(rt.def.id) < 0.5 ? 1 : -1;
+            const mag = 10 + hashAgent(`${rt.def.id}:${curved.length}`) * 8;
+            curved.push({
+              x: px + dx * 0.5 + (-dy / dist) * mag * side,
+              y: py + dy * 0.5 + (dx / dist) * mag * side,
+            });
+          }
+          curved.push(target);
+          px = target.x;
+          py = target.y;
+        }
+      }
+
       const state = { t: 0 };
       // Reused scratch point; no per-frame allocation in onUpdate.
       const from = { x: root.x, y: root.y };
@@ -162,7 +223,9 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
       });
       rt.walk = tl;
 
-      for (const target of waypoints) {
+      const segCount = curved.length;
+      let segIndex = 0;
+      for (const target of curved) {
         const dx = target.x - from.x;
         const dy = target.y - from.y;
         const dist = Math.hypot(dx, dy);
@@ -173,22 +236,25 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
           continue;
         }
         const duration = Math.max(dist / speed, 0.05);
+        // Arrive walks ease into and out of the whole path: the first and
+        // last segment get sine.inOut so starts and stops feel weighted.
+        const segEase = arrive && (segIndex === 0 || segIndex === segCount - 1) ? "sine.inOut" : "none";
         tl.to(
           state,
           {
             t: 1,
             duration,
-            ease: "none",
+            ease: segEase,
             onUpdate: () => {
               root.x = start.x + dx * state.t;
               root.y = start.y + dy * state.t;
               updateDepth(rt);
               rt.phase += (dist / duration) * gsap.ticker.deltaRatio(60) * (1 / 60);
               rt.impl.setWalkPose(rt.phase, true);
-              if (Math.abs(dx) > 1) rt.impl.faceLeft(dx < 0);
+              if (Math.abs(dx) > 1) rt.impl.faceLeft(arrive ? destDx < 0 : dx < 0);
             },
             onStart: () => {
-              if (Math.abs(dx) > 1) rt.impl.faceLeft(dx < 0);
+              if (Math.abs(dx) > 1) rt.impl.faceLeft(arrive ? destDx < 0 : dx < 0);
               // 2-frame lean into the dominant travel direction (reset by restPose).
               const lateral = Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 4;
               rt.impl.setLean(lateral ? (dx < 0 ? -1 : 1) : 0);
@@ -198,6 +264,7 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
         from.x = target.x;
         from.y = target.y;
         state.t = 0;
+        segIndex++;
       }
       if (tl.duration() === 0) finishWalk(rt);
     });
@@ -244,12 +311,24 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
 
   // --- idle life -----------------------------------------------------------
   const scheduleNextLife = (rt: Runtime): void => {
-    rt.nextLifeAt = elapsed + 5 + rt.rng() * 4; // average every 5-9 s
+    rt.nextLifeAt = elapsed + 3.5 + rt.rng() * 3.5; // average every 3.5-7 s
   };
 
   const idleLifeEvent = (rt: Runtime): void => {
     const roll = rt.rng();
     const impl = rt.impl;
+    // Occasional solo comedy beat so idle clusters never read frozen.
+    if (rt.idle === "waiting" && roll < 0.15) {
+      if (rt.rng() < 0.5) {
+        impl.react("doubleTake"); // looks around
+      } else {
+        // sneeze: quick squash plus a puff mark over the head
+        impl.react("squash");
+        agentFx.current?.popMarkAt(impl.root.x, impl.root.y - 100, "puff");
+      }
+      scheduleNextLife(rt);
+      return;
+    }
     if (roll < 0.24) {
       // expression flicker, then back to resting
       const expr = IDLE_EXPRESSIONS[Math.floor(rt.rng() * IDLE_EXPRESSIONS.length)];
@@ -298,7 +377,8 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
     idleLifeEnabled = true;
     for (const rt of runtimes.values()) {
       rt.idle = "waiting";
-      rt.waitUntil = elapsed + rt.rng() * 2; // staggered starts
+      // Variant-staggered starts so no district settles into sync.
+      rt.waitUntil = elapsed + rt.def.variant * 1.8 + rt.rng() * 0.5;
       scheduleNextLife(rt);
     }
   };
@@ -311,14 +391,24 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
     for (const rt of runtimes.values()) {
       if (locks.has(rt.def.id)) continue;
       if (rt.idle === "waiting" && rt.walk === null && elapsed >= rt.waitUntil) {
-        // Advance to the next authored wander point (looping).
-        rt.wanderIndex = (rt.wanderIndex + 1) % rt.def.wander.length;
-        const target = rt.def.wander[rt.wanderIndex];
+        // Advance along the authored loop two points at a time so idle
+        // movement reads as travel, not vibration at a desk.
+        const count = rt.def.wander.length;
+        const first = (rt.wanderIndex + 1) % count;
+        const second = (rt.wanderIndex + 2) % count;
+        const legs =
+          count >= 2 && first !== second
+            ? [rt.def.wander[first], rt.def.wander[second]]
+            : [rt.def.wander[first]];
+        rt.wanderIndex = count >= 2 && first !== second ? second : first;
+        const walked = startWalk(rt, legs, IDLE_SPEED, "arrive");
+        // startWalk resets idle to "waiting"; mark the stroll after the call
+        // so the completion callback can schedule the next pause.
         rt.idle = "walking";
-        void startWalk(rt, [target], IDLE_SPEED).then(() => {
+        void walked.then(() => {
           if (rt.idle === "walking") {
             rt.idle = "waiting";
-            rt.waitUntil = elapsed + 1.5 + rt.rng() * 2.5; // 1.5-4 s pause
+            rt.waitUntil = elapsed + 0.5 + rt.rng() * 1.1; // 0.5-1.6 s pause
           }
         });
       }
@@ -326,7 +416,8 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
         idleLifeEvent(rt);
       }
       if (elapsed >= rt.nextBlinkAt) {
-        rt.nextBlinkAt = elapsed + 2.5 + rt.rng() * 3.5;
+        // Blink cadence jitters per variant so crowds never blink in unison.
+        rt.nextBlinkAt = elapsed + 2.2 + rt.def.variant * 1.6 + rt.rng() * 3;
         if (rt.walk === null) rt.impl.blink();
       }
     }
@@ -342,10 +433,20 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
       if (!rt) {
         return Promise.reject(new Error(`walk: unknown agent ${agent.id}`));
       }
-      const speed = opts?.speed ?? (ctx.reducedMotion ? WALK_SPEED * 6 : WALK_SPEED);
-      return startWalk(rt, waypoints, speed);
+      const speed =
+        opts?.speed ?? WALK_SPEED * ROLE_SPEED[agent.role] * (ctx.reducedMotion ? 6 : 1);
+      return startWalk(rt, waypoints, speed, opts?.ease);
     },
     startIdleLife,
+    activity: () => {
+      let moving = 0;
+      let reacting = 0;
+      for (const rt of runtimes.values()) {
+        if (rt.walk !== null || rt.impl.isMoving()) moving++;
+        if (rt.impl.isReacting()) reacting++;
+      }
+      return { moving, reacting, total: runtimes.size };
+    },
     acquireWithLabel: acquireLocked,
     locksHeld: () => {
       const out = new Map<string, string>();
@@ -353,6 +454,9 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
       return out;
     },
   };
+  // The population owns its idle life: wandering starts as soon as the
+  // system exists (pose-only under reduced motion).
+  startIdleLife();
   return system;
 }
 

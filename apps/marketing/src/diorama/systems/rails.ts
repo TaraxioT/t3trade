@@ -13,7 +13,7 @@
 import { Container, Graphics, Sprite } from "pixi.js";
 import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
-import { PACKET_STYLE, ROUTES, ROUTE_ORDER } from "../config/rails.js";
+import { PACKET_STYLE, PRIMARY_ROUTES, RETURN_ROUTES, ROUTES, ROUTE_ORDER } from "../config/rails.js";
 import type { PacketKind, RouteDef, RouteId } from "../config/rails.js";
 import { PALETTE } from "../config/palette.js";
 import { DEPTH, seededRandom } from "../config/world.js";
@@ -30,6 +30,8 @@ export interface RailSystem {
   dispatch(route: RouteId, kind?: PacketKind, opts?: { reverse?: boolean; label?: string }): PacketHandle;
   /** Slow ambient pulses so rails never look dead between stories. */
   startAmbient(): void;
+  /** Dim non-primary rails while a station is in focus. No caller yet. */
+  setFocusDim(on: boolean): void;
 }
 
 /** Travel speed in world units per second. */
@@ -125,22 +127,107 @@ function strokePolyline(g: Graphics, points: Point[], width: number, color: numb
   g.stroke({ width, color, alpha, cap: "round", join: "round" });
 }
 
-function buildRouteVisual(ctx: DioramaContext, def: RouteDef): Container {
+/** Dashed polyline: dashes of dashU units with gapU gaps, drawn once. */
+function strokeDashed(
+  g: Graphics,
+  points: Point[],
+  width: number,
+  color: number,
+  alpha: number,
+  dashU: number,
+  gapU: number,
+): void {
+  let remainingDash = 0;
+  let drawing = true;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len <= 0) continue;
+    const ux = (b.x - a.x) / len;
+    const uy = (b.y - a.y) / len;
+    let d = 0;
+    while (d < len) {
+      const budget = drawing ? dashU - remainingDash : gapU - remainingDash;
+      const step = Math.min(budget, len - d);
+      const x1 = a.x + ux * d;
+      const y1 = a.y + uy * d;
+      if (drawing) {
+        g.moveTo(x1, y1);
+        g.lineTo(a.x + ux * (d + step), a.y + uy * (d + step));
+      }
+      d += step;
+      if (step >= budget - 1e-6) {
+        drawing = !drawing;
+        remainingDash = 0;
+      } else {
+        remainingDash += step;
+      }
+    }
+  }
+  g.stroke({ width, color, alpha, cap: "round", join: "round" });
+}
+
+/**
+ * Static direction chevrons stamped along a primary route every ~90 units.
+ * Prebuilt once into a single Graphics (no per-frame draws); they never
+ * animate, so reduced motion needs no variant.
+ */
+function buildChevrons(path: RoutePath, color: number): Graphics {
+  const g = new Graphics();
+  const step = 90;
+  for (let d = step; d < path.total - 40; d += step) {
+    samplePath(path, d);
+    // Copy out of the shared scratch before the next call.
+    const x = sampleOut.x;
+    const y = sampleOut.y;
+    const ca = Math.cos(sampleOut.angle);
+    const sa = Math.sin(sampleOut.angle);
+    // Chevron in local coords: tip (5,0), barbs (-4,-3.6) and (-4,3.6).
+    const tx = (lx: number, ly: number): number => x + lx * ca - ly * sa;
+    const ty = (lx: number, ly: number): number => y + lx * sa + ly * ca;
+    g.moveTo(tx(5, 0), ty(5, 0));
+    g.lineTo(tx(-4, -3.6), ty(-4, -3.6));
+    g.moveTo(tx(5, 0), ty(5, 0));
+    g.lineTo(tx(-4, 3.6), ty(-4, 3.6));
+  }
+  g.stroke({ width: 1.4, color, alpha: 0.5, cap: "round", join: "round" });
+  g.blendMode = "add";
+  return g;
+}
+
+function buildRouteVisual(ctx: DioramaContext, path: RoutePath): Container {
+  const def = path.def;
   const route = new Container();
   route.zIndex = medianY(def.points) + DEPTH.rail;
   const kindColor = PACKET_STYLE[def.kind].color;
+  const primary = PRIMARY_ROUTES.has(def.id);
+  const isReturn = RETURN_ROUTES.has(def.id);
+  // Return legs are warm gold so they read as a distinct flow from the
+  // cyan/violet outgoing traffic and the orange order capsules.
+  const lineColor = isReturn ? PALETTE.yellow : kindColor;
 
-  // Structural base: dark casing the glow line sits inside. Kept subtle so
-  // rails read as light channels in the floor, not PCB traces.
+  // Structural base: dark casing the glow line sits inside. Primary rails
+  // are wider and more present; subordinate traffic stays thin and dim.
   const base = new Graphics();
-  strokePolyline(base, def.points, 5, PALETTE.spaceAlt, 0.32);
+  strokePolyline(base, def.points, primary ? 6 : 4, PALETTE.spaceAlt, primary ? 0.38 : 0.2);
   route.addChild(base);
 
-  // Inner glow line in the route's default packet color, additive.
+  // Inner glow line, additive. Returns draw dashed to separate the return
+  // flow from solid outgoing rails even where the two run near each other.
   const inner = new Graphics();
-  strokePolyline(inner, def.points, 1.8, kindColor, 0.4);
+  if (isReturn) {
+    strokeDashed(inner, def.points, 1.8, lineColor, primary ? 0.5 : 0.34, 10, 8);
+  } else {
+    strokePolyline(inner, def.points, primary ? 2.4 : 1.4, lineColor, primary ? 0.55 : 0.28);
+  }
   inner.blendMode = "add";
   route.addChild(inner);
+
+  // Direction chevrons on the primary lifecycle corridor only.
+  if (primary) {
+    route.addChild(buildChevrons(path, lineColor));
+  }
 
   // Junction nodes: small glowing dots at interior bends.
   if (def.points.length > 2) {
@@ -148,7 +235,7 @@ function buildRouteVisual(ctx: DioramaContext, def: RouteDef): Container {
     for (let i = 1; i < def.points.length - 1; i++) {
       const p = def.points[i];
       nodes.circle(p.x, p.y, 2.2);
-      nodes.fill({ color: kindColor, alpha: 0.26 });
+      nodes.fill({ color: lineColor, alpha: primary ? 0.3 : 0.2 });
     }
     nodes.blendMode = "add";
     route.addChild(nodes);
@@ -289,9 +376,11 @@ function configurePacketVisual(p: Packet, kind: PacketKind): void {
 
 export function createRailSystem(ctx: DioramaContext): RailSystem {
   const paths = new Map<RouteId, RoutePath>();
+  const routeVisuals = new Map<RouteId, Container>();
   for (const id of ROUTE_ORDER) {
-    paths.set(id, buildPath(ROUTES[id]));
-    buildRouteVisual(ctx, ROUTES[id]);
+    const path = buildPath(ROUTES[id]);
+    paths.set(id, path);
+    routeVisuals.set(id, buildRouteVisual(ctx, path));
   }
 
   // Packet pool: fully built up front; dispatch only reuses.
@@ -326,6 +415,7 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     for (const t of ambientTimers) t.kill();
     ambientTimers.length = 0;
     for (const pop of pops) gsap.killTweensOf(pop);
+    for (const visual of routeVisuals.values()) gsap.killTweensOf(visual);
   });
 
   function popArrival(x: number, y: number, color: number): void {
@@ -381,9 +471,26 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     const style = PACKET_STYLE[useKind];
     configurePacketVisual(packet, useKind);
 
+    // Return legs: warm gold tint plus a single-sprite tail so the dash
+    // rhythm matches the dashed rail beneath. Receipt slips keep their pale
+    // paper read; only glow and tail warm up.
+    const isReturn = RETURN_ROUTES.has(routeId);
+    if (isReturn) {
+      packet.glow.tint = PALETTE.yellow;
+      packet.trail[0].tint = PALETTE.yellow;
+      packet.trail[1].tint = PALETTE.yellow;
+      if (style.shape !== "slip" && style.shape !== "card") {
+        packet.chevron.tint = PALETTE.yellow;
+        packet.dotHalo.tint = PALETTE.yellow;
+        packet.dotCore.tint = PALETTE.yellow;
+        packet.capsule.tint = PALETTE.yellow;
+      }
+    }
+
     const useTrail = ctx.quality === "high" && !ctx.reducedMotion;
     packet.trail[0].visible = useTrail;
-    packet.trail[1].visible = useTrail;
+    // Returns keep only the near trail sprite: one trailing dash.
+    packet.trail[1].visible = useTrail && !isReturn;
     if (useTrail) {
       const tw = style.size * 1.6;
       packet.trail[0].width = tw;
@@ -478,5 +585,21 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     schedule();
   }
 
-  return { dispatch, startAmbient };
+  let focusDim = false;
+
+  function setFocusDim(on: boolean): void {
+    if (on === focusDim) return;
+    focusDim = on;
+    for (const [id, visual] of routeVisuals) {
+      if (PRIMARY_ROUTES.has(id)) continue;
+      if (ctx.reducedMotion) {
+        gsap.killTweensOf(visual);
+        visual.alpha = on ? 0.25 : 1;
+      } else {
+        gsap.to(visual, { alpha: on ? 0.25 : 1, duration: 0.3, ease: "power1.out", overwrite: true });
+      }
+    }
+  }
+
+  return { dispatch, startAmbient, setFocusDim };
 }

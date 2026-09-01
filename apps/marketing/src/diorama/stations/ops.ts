@@ -184,9 +184,10 @@ function contactShadow(root: Container, x: number, y: number, w: number, d: numb
   root.addChild(g);
 }
 
-/** Small static crate for filling dead space near structures. */
+/** Small static crate for filling dead space near structures. Magenta rim
+ * is the ops district counter-accent (accent2). */
 function crate(x: number, y: number, s = 11): Graphics {
-  return isoBox({ x, y, w: s, d: s * 0.6, h: s * 0.55, color: PALETTE.structureLight, rim: PALETTE.aqua, rimAlpha: 0.3 });
+  return isoBox({ x, y, w: s, d: s * 0.6, h: s * 0.55, color: PALETTE.structureLight, rim: PALETTE.magenta, rimAlpha: 0.3 });
 }
 
 /** Thin signal pylon with a soft emissive tip light; adds skyline variation. */
@@ -268,7 +269,7 @@ function buildStateStore(ctx: DioramaContext): void {
   slot.rect(def.anchor.x + 49, def.anchor.y - 8, 12, 3);
   slot.fill({ color: PALETTE.aqua, alpha: 0.8 });
   root.addChild(slot);
-  const trayGlow = glow(def.anchor.x + 55, def.anchor.y - 8, 24, PALETTE.aqua, 0.42);
+  const trayGlow = glow(def.anchor.x + 55, def.anchor.y - 8, 24, PALETTE.aqua, 0.3);
   root.addChild(trayGlow);
 
   // Dead-space fill: a crate stack west of the room and a corner signal pylon.
@@ -276,10 +277,11 @@ function buildStateStore(ctx: DioramaContext): void {
   root.addChild(crate(def.anchor.x - 64, def.anchor.y + 32, 8));
   signalPylon(root, def.anchor.x + 66, def.anchor.y + 32, 58, PALETTE.cyan);
 
-  // Sequential soft pulse: exactly one cartridge is hot at a time.
+  // Sequential soft pulse: exactly one cartridge is hot at a time, so the
+  // rack beats like a heart over a ~7 s cycle.
   if (!ctx.reducedMotion) {
     ctx.onTick(() => {
-      const hot = Math.floor(performance.now() / 900) % bandGlows.length;
+      const hot = Math.floor(performance.now() / 1400) % bandGlows.length;
       bandGlows.forEach((b, i) => {
         b.alpha = i === hot ? 0.62 : 0.2;
       });
@@ -326,7 +328,7 @@ function buildRailYard(ctx: DioramaContext): void {
   contactShadow(root, def.anchor.x + 4, def.anchor.y + 8, 170, 96);
   // Raised sorting table.
   root.addChild(isoBox({ x: def.anchor.x, y: def.anchor.y, w: 150, d: 80, h: 16, color: PALETTE.structure, rim: PALETTE.structureLight }));
-  root.addChild(isoTile(def.anchor.x, def.anchor.y - 16, 150, 80, PALETTE.structureLight, 1, PALETTE.aqua));
+  root.addChild(isoTile(def.anchor.x, def.anchor.y - 16, 150, 80, PALETTE.structureLight, 1, PALETTE.magenta));
 
   // Five short rail stubs converging on the table center, with lane glyphs.
   for (const lane of YARD_LANES) {
@@ -642,6 +644,30 @@ function buildReceiptPrinter(ctx: DioramaContext): void {
     kindIdx += 1;
   });
 
+  // District heartbeat: an idle paper glint sweeps the stack every ~13 s,
+  // off-phase with the print cycle.
+  const glint = new Graphics();
+  glint.poly([cx - 50, cy - 3, cx - 44, cy - 3, cx - 40, cy - 13, cx - 46, cy - 13]);
+  glint.fill({ color: 0xffffff, alpha: 0.7 });
+  glint.blendMode = "add";
+  glint.alpha = 0;
+  root.addChild(glint);
+  every(13, 6.5, () => {
+    if (ctx.reducedMotion) return;
+    animatedTargets.push(glint);
+    gsap.fromTo(
+      glint,
+      { alpha: 0, x: -3 },
+      {
+        alpha: 0.9,
+        x: 3,
+        duration: 0.5,
+        ease: "sine.inOut",
+        onComplete: () => gsap.to(glint, { alpha: 0, duration: 0.4 }),
+      },
+    );
+  });
+
   stationSign(ctx, "receiptPrinter", 60);
   registerStation({ id: "receiptPrinter", root, hit: root.children[0] as Graphics, api });
 }
@@ -702,6 +728,29 @@ function buildAuditArchive(ctx: DioramaContext): void {
       drawers.push(d);
     }
   }
+
+  // District heartbeat: a soft shimmer walks the drawer rows in sequence
+  // every ~12 s, like the archive breathing through its index.
+  const shimmer = glow(cx, cy, 30, PALETTE.magenta, 0);
+  root.addChild(shimmer);
+  every(12, 1.8, () => {
+    if (ctx.reducedMotion) return;
+    animatedTargets.push(shimmer);
+    const seq = [drawers[2], drawers[8], drawers[14]];
+    seq.forEach((d, i) => {
+      gsap.fromTo(
+        shimmer,
+        { alpha: 0 },
+        {
+          alpha: 0.4,
+          duration: 0.4,
+          delay: i * 0.9,
+          onStart: () => shimmer.position.set(d.x + 12, d.y + 10),
+          onComplete: () => gsap.to(shimmer, { alpha: 0, duration: 0.5 }),
+        },
+      );
+    });
+  });
 
   // Idle: a receipt slides in from the west conveyor, drawer opens and closes.
   let drawerIdx = Math.floor(rand() * drawers.length);
@@ -941,10 +990,10 @@ function buildObservability(ctx: DioramaContext): void {
   traceColors.forEach((tc, i) => {
     const t = new Graphics();
     let ox = 0;
-    for (let s = 0; s < 4; s++) {
+    for (let s = 0; s < 6; s++) {
       const w = 6 + rand() * 10;
       t.rect(ox, 0, w, 3);
-      t.fill({ color: tc, alpha: 0.85 });
+      t.fill({ color: tc, alpha: 1 });
       ox += w + 5;
     }
     t.position.set(0, 6 + i * 11);
@@ -979,10 +1028,11 @@ function buildObservability(ctx: DioramaContext): void {
 
   // Shared cheap ticker: traces step down/right, one worker goes amber.
   ctx.onTick(() => {
+    if (ctx.reducedMotion) return;
     const t = performance.now() / 1000;
     traces.children.forEach((tr, i) => {
-      const span = 70;
-      tr.x = ((t * (8 + i * 3)) % span) - 20;
+      const span = 110;
+      tr.x = ((t * (10 + i * 3)) % span) - 30;
     });
     const amberWorker = Math.floor(t / 12) % healthDots.length;
     healthDots.forEach((d, i) => {
@@ -1013,34 +1063,34 @@ function buildActivityGallery(ctx: DioramaContext): void {
   const cx = def.anchor.x;
   const cy = def.anchor.y;
 
-  contactShadow(root, cx + 2, cy + 6, 186, 52);
+  contactShadow(root, cx + 2, cy + 6, 196, 56);
   // Plaque wall.
   const wallG = new Graphics();
-  wallG.roundRect(cx - 86, cy - 52, 172, 42, 4);
+  wallG.roundRect(cx - 94, cy - 54, 188, 46, 4);
   wallG.fill({ color: PALETTE.structure });
-  wallG.roundRect(cx - 86, cy - 52, 172, 42, 4);
+  wallG.roundRect(cx - 94, cy - 54, 188, 46, 4);
   wallG.stroke({ width: 1.5, color: PALETTE.structureLight, alpha: 0.9 });
   root.addChild(wallG);
 
   // Five plaques left (oldest) to right (newest); newest glows softly.
-  const newestGlow = glow(cx + 60, cy - 31, 34, PALETTE.aqua, 0.35);
+  const newestGlow = glow(cx + 64, cy - 32, 38, PALETTE.aqua, 0.35);
   root.addChild(newestGlow);
   GALLERY_ACTIONS.forEach((a, i) => {
-    const px = cx - 74 + i * 33;
-    const py = cy - 44;
+    const px = cx - 84 + i * 34;
+    const py = cy - 46;
     const plaque = new Graphics();
-    plaque.roundRect(px, py, 26, 20, 2);
+    plaque.roundRect(px, py, 29, 23, 2);
     plaque.fill({ color: PALETTE.structureLight });
-    plaque.roundRect(px, py, 26, 20, 2);
+    plaque.roundRect(px, py, 29, 23, 2);
     plaque.stroke({ width: 1, color: a.tint, alpha: 0.7 });
     // Time glyph: small clock circle top-left.
-    plaque.circle(px + 6, py + 6, 3);
+    plaque.circle(px + 7, py + 7, 3);
     plaque.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.9 });
     root.addChild(plaque);
     const act = new Graphics();
     a.glyph(act);
     if (a.tint !== PALETTE.blocked && a.tint !== PALETTE.violet) act.tint = a.tint;
-    act.position.set(px + 18, py + 12);
+    act.position.set(px + 20, py + 14);
     root.addChild(act);
   });
 
@@ -1189,12 +1239,13 @@ function buildIdentityGate(ctx: DioramaContext): void {
 // 12. REFUSAL DISPLAY: last two refusals as icon + reason chips
 // ===========================================================================
 
+/** Real mission failure reasons (mission.ts failure causes + trading docs). */
 const REFUSAL_REASONS = [
-  "PERMISSION DENIED",
-  "BUDGET EXCEEDED",
-  "SIGNER UNAVAILABLE",
-  "ENVIRONMENT MISMATCH",
-  "UNSAFE ACTION",
+  "LOSS BUDGET SPENT",
+  "PROTECTION FAILURE",
+  "WAKE BUDGET EXHAUSTED",
+  "NEEDS TRADING ACCOUNT",
+  "PLAN DOCUMENT DRIFTED",
 ];
 
 function buildRefusalDisplay(ctx: DioramaContext, link: (push: (reason: string) => void) => void): void {
@@ -1203,15 +1254,16 @@ function buildRefusalDisplay(ctx: DioramaContext, link: (push: (reason: string) 
   const cx = def.anchor.x;
   const cy = def.anchor.y;
 
-  contactShadow(root, cx + 2, cy + 6, 138, 48, 0.25);
-  // Board with a calm red trim (normal state, not catastrophe).
+  contactShadow(root, cx + 2, cy + 6, 150, 48, 0.25);
+  // Board with a calm red trim (normal state, not catastrophe). Backing is
+  // lifted bright so the red reason text stays readable at fit zoom.
   const board = new Graphics();
-  board.roundRect(cx - 62, cy - 36, 124, 44, 4);
-  board.fill({ color: PALETTE.structure });
-  board.roundRect(cx - 62, cy - 36, 124, 44, 4);
-  board.stroke({ width: 1.5, color: PALETTE.blocked, alpha: 0.55 });
-  board.rect(cx - 62, cy + 5, 124, 1.5);
-  board.fill({ color: PALETTE.blocked, alpha: 0.3 });
+  board.roundRect(cx - 76, cy - 36, 152, 44, 4);
+  board.fill({ color: PALETTE.structureLight });
+  board.roundRect(cx - 76, cy - 36, 152, 44, 4);
+  board.stroke({ width: 1.8, color: PALETTE.blocked, alpha: 0.85 });
+  board.rect(cx - 76, cy + 5, 152, 1.5);
+  board.fill({ color: PALETTE.blocked, alpha: 0.45 });
   root.addChild(board);
 
   // Two chip slots, each an icon diamond + real Text (never baked).
@@ -1219,21 +1271,21 @@ function buildRefusalDisplay(ctx: DioramaContext, link: (push: (reason: string) 
   for (let i = 0; i < 2; i++) {
     const chip = new Container();
     const icon = new Graphics();
-    icon.poly([0, -4, 3, 0, 0, 4, -3, 0]);
+    icon.poly([0, -4.5, 3.5, 0, 0, 4.5, -3.5, 0]);
     icon.fill({ color: PALETTE.blocked, alpha: 0.9 });
-    icon.position.set(-44, 0);
+    icon.position.set(-56, 0);
     chip.addChild(icon);
-    const label = new Text({ text: "", style: tinyStyle(9, PALETTE.inkDim) });
+    const label = new Text({ text: "", style: tinyStyle(8.5, PALETTE.ink) });
     label.resolution = 2;
     label.anchor.set(0, 0.5);
-    label.position.set(-38, 0);
+    label.position.set(-50, 0);
     chip.addChild(label);
     chip.position.set(cx, cy - 24 + i * 17);
     root.addChild(chip);
     chips.push(chip);
   }
 
-  const queue: string[] = ["BUDGET EXCEEDED", "PERMISSION DENIED"];
+  const queue: string[] = ["LOSS BUDGET SPENT", "PROTECTION FAILURE"];
   const render = (): void => {
     chips.forEach((chip, i) => {
       const text = queue[i];
@@ -1296,7 +1348,7 @@ function buildResearchOnlyGate(ctx: DioramaContext): void {
   root.addChild(flask);
 
   // Tiny one-line destination row beneath the arch: real Text, not baked.
-  const leads = new Text({ text: "CHARTS \u00b7 ALERTS \u00b7 BACKTESTS \u00b7 SIMS", style: tinyStyle(9.5, PALETTE.inkDim) });
+  const leads = new Text({ text: "CHARTS \u00b7 ALERTS \u00b7 BACKTESTS \u00b7 SIMS", style: tinyStyle(11, PALETTE.ink) });
   leads.resolution = 2;
   leads.anchor.set(0.5);
   leads.position.set(cx, cy + 34);

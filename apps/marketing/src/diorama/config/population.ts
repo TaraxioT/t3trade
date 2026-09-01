@@ -3,6 +3,11 @@
  * color small accessories (backpack, antenna, screen) only, never the whole
  * body. Homes are stations; wander paths are authored loops around the home
  * district so agents visibly travel instead of freezing at desks.
+ *
+ * `variant` (0..1) is the single deterministic seed every per-agent
+ * difference derives from: height, head width, antenna, backpack, walk
+ * cadence, idle posture, reaction intensity. One field keeps the cast one
+ * coherent species while making individuals recognizable.
  */
 import type { AgentRole } from "./palette.js";
 import type { StationId } from "./stations.js";
@@ -16,47 +21,51 @@ export interface AgentDef {
   wander: { x: number; y: number }[];
   /** Resting expression when idle. */
   restingExpression?: string;
+  /** Deterministic individuality seed in [0, 1). */
+  variant: number;
 }
 
 const p = (x: number, y: number) => ({ x, y });
 
 export const POPULATION: AgentDef[] = [
   // Research & strategy district (6)
-  { id: "probe-1", role: "research", home: "marketLandscape", wander: [p(430, 240), p(560, 250), p(680, 235), p(850, 245), p(930, 250)], restingExpression: "curious" },
-  { id: "research-1", role: "research", home: "researchTools", wander: [p(790, 330), p(850, 350), p(810, 320)], restingExpression: "curious" },
-  { id: "analysis-1", role: "analysis", home: "strategyLab", wander: [p(940, 430), p(990, 450), p(955, 425)], restingExpression: "focused" },
-  { id: "strategy-1", role: "strategy", home: "strategyLab", wander: [p(1000, 430), p(1040, 455), p(1010, 432)], restingExpression: "focused" },
-  { id: "sandbox-1", role: "research", home: "sandbox", wander: [p(300, 560), p(360, 575), p(330, 548)], restingExpression: "excited" },
-  { id: "strategy-2", role: "strategy", home: "decisionTable", wander: [p(980, 640), p(1040, 660), p(1008, 638)], restingExpression: "focused" },
+  { id: "probe-1", role: "research", home: "marketLandscape", variant: 0.12, wander: [p(430, 240), p(560, 250), p(680, 235), p(850, 245), p(930, 250)], restingExpression: "curious" },
+  { id: "research-1", role: "research", home: "researchTools", variant: 0.55, wander: [p(760, 345), p(820, 360), p(870, 340), p(810, 322)], restingExpression: "curious" },
+  { id: "analysis-1", role: "analysis", home: "strategyLab", variant: 0.31, wander: [p(920, 445), p(965, 462), p(1005, 440), p(958, 424)], restingExpression: "focused" },
+  { id: "strategy-1", role: "strategy", home: "strategyLab", variant: 0.78, wander: [p(1000, 430), p(1042, 456), p(1012, 434), p(1055, 470)], restingExpression: "focused" },
+  { id: "sandbox-1", role: "research", home: "sandbox", variant: 0.93, wander: [p(290, 570), p(350, 585), p(395, 560), p(330, 545)], restingExpression: "excited" },
+  { id: "strategy-2", role: "strategy", home: "decisionTable", variant: 0.44, wander: [p(955, 655), p(1010, 672), p(1060, 650), p(1008, 636)], restingExpression: "focused" },
 
-  // Central trading floor desks (6)
-  { id: "floor-research", role: "research", home: "tradingFloor", wander: [p(1268, 640), p(1310, 655)], restingExpression: "focused" },
-  { id: "floor-analysis", role: "analysis", home: "tradingFloor", wander: [p(1590, 640), p(1550, 655)], restingExpression: "focused" },
-  { id: "floor-strategy", role: "strategy", home: "tradingFloor", wander: [p(1225, 830), p(1265, 845)], restingExpression: "focused" },
-  { id: "floor-exec", role: "execution", home: "tradingFloor", wander: [p(1635, 830), p(1595, 845)], restingExpression: "focused" },
-  { id: "floor-monitor", role: "operations", home: "tradingFloor", wander: [p(1370, 935), p(1410, 950)], restingExpression: "neutral" },
-  { id: "floor-recon", role: "reconciliation", home: "tradingFloor", wander: [p(1490, 935), p(1450, 950)], restingExpression: "neutral" },
+  // Central trading floor desks (6). Wanders are ring arcs around the holo so
+  // the floor reads as circulation between consoles, not vibration at desks.
+  // The holo footprint is x 1300..1560, y 590..740; arcs stay outside it.
+  { id: "floor-research", role: "research", home: "tradingFloor", variant: 0.08, wander: [p(1268, 640), p(1315, 570), p(1420, 560), p(1505, 572), p(1568, 618)], restingExpression: "focused" },
+  { id: "floor-analysis", role: "analysis", home: "tradingFloor", variant: 0.62, wander: [p(1590, 640), p(1622, 700), p(1668, 762), p(1618, 812)], restingExpression: "focused" },
+  { id: "floor-strategy", role: "strategy", home: "tradingFloor", variant: 0.27, wander: [p(1225, 830), p(1292, 798), p(1342, 848), p(1290, 884)], restingExpression: "focused" },
+  { id: "floor-exec", role: "execution", home: "tradingFloor", variant: 0.71, wander: [p(1635, 830), p(1580, 882), p(1502, 905), p(1556, 852)], restingExpression: "focused" },
+  { id: "floor-monitor", role: "operations", home: "tradingFloor", variant: 0.36, wander: [p(1370, 935), p(1412, 962), p(1462, 935), p(1424, 900)], restingExpression: "neutral" },
+  { id: "floor-recon", role: "reconciliation", home: "tradingFloor", variant: 0.84, wander: [p(1490, 935), p(1462, 962), p(1398, 968), p(1424, 940)], restingExpression: "neutral" },
 
   // MCP & provider district (4)
-  { id: "hub-keeper", role: "operations", home: "mcpHub", wander: [p(2160, 530), p(2220, 530), p(2190, 555)], restingExpression: "focused" },
-  { id: "schema-librarian", role: "operations", home: "toolSchemas", wander: [p(2370, 690), p(2420, 700), p(2392, 678)], restingExpression: "neutral" },
-  { id: "adapter-op", role: "operations", home: "adapterBay", wander: [p(2470, 520), p(2510, 515), p(2488, 532)], restingExpression: "focused" },
-  { id: "health-watcher", role: "analysis", home: "mcpHealth", wander: [p(2090, 795), p(2140, 800), p(2112, 782)], restingExpression: "neutral" },
+  { id: "hub-keeper", role: "operations", home: "mcpHub", variant: 0.19, wander: [p(2140, 540), p(2200, 548), p(2262, 536), p(2196, 562)], restingExpression: "focused" },
+  { id: "schema-librarian", role: "operations", home: "toolSchemas", variant: 0.66, wander: [p(2340, 700), p(2392, 712), p(2442, 692), p(2394, 676)], restingExpression: "neutral" },
+  { id: "adapter-op", role: "operations", home: "adapterBay", variant: 0.51, wander: [p(2442, 530), p(2496, 522), p(2530, 552), p(2488, 545)], restingExpression: "focused" },
+  { id: "health-watcher", role: "analysis", home: "mcpHealth", variant: 0.03, wander: [p(2062, 806), p(2112, 812), p(2160, 796), p(2112, 782)], restingExpression: "neutral" },
 
   // Risk & execution district (5)
-  { id: "approval-clerk", role: "operations", home: "approval", wander: [p(1700, 965), p(1750, 975)], restingExpression: "neutral" },
-  { id: "permission-keeper", role: "risk", home: "permission", wander: [p(1880, 995), p(1930, 1000)], restingExpression: "focused" },
-  { id: "risk-scanner", role: "risk", home: "riskFortress", wander: [p(2110, 1105), p(2170, 1115), p(2140, 1088), p(2210, 1135)], restingExpression: "focused" },
-  { id: "vault-keeper", role: "execution", home: "signerVault", wander: [p(2415, 1025), p(2455, 1030)], restingExpression: "focused" },
-  { id: "gateway-op", role: "execution", home: "executionGateway", wander: [p(2462, 1180), p(2505, 1185)], restingExpression: "focused" },
+  { id: "approval-clerk", role: "operations", home: "approval", variant: 0.47, wander: [p(1688, 975), p(1740, 986), p(1782, 966), p(1736, 952)], restingExpression: "neutral" },
+  { id: "permission-keeper", role: "risk", home: "permission", variant: 0.24, wander: [p(1866, 1005), p(1918, 1012), p(1962, 992), p(1916, 978)], restingExpression: "focused" },
+  { id: "risk-scanner", role: "risk", home: "riskFortress", variant: 0.89, wander: [p(2085, 1115), p(2142, 1098), p(2212, 1140), p(2160, 1122), p(2240, 1165)], restingExpression: "focused" },
+  { id: "vault-keeper", role: "execution", home: "signerVault", variant: 0.58, wander: [p(2400, 1038), p(2450, 1046), p(2486, 1026), p(2444, 1018)], restingExpression: "focused" },
+  { id: "gateway-op", role: "execution", home: "executionGateway", variant: 0.97, wander: [p(2450, 1192), p(2500, 1200), p(2540, 1180), p(2498, 1170)], restingExpression: "focused" },
 
   // State, audit & operations district (6)
-  { id: "recon-1", role: "reconciliation", home: "reconciliationDock", wander: [p(530, 1285), p(590, 1295), p(558, 1272), p(625, 1278)], restingExpression: "focused" },
-  { id: "receipt-clerk", role: "operations", home: "receiptPrinter", wander: [p(795, 1252), p(838, 1258)], restingExpression: "neutral" },
-  { id: "archivist", role: "operations", home: "auditArchive", wander: [p(1030, 1320), p(1100, 1325), p(1062, 1305)], restingExpression: "neutral" },
-  { id: "recovery-1", role: "reconciliation", home: "recoveryWorkshop", wander: [p(395, 1372), p(450, 1378), p(420, 1358)], restingExpression: "worried" },
-  { id: "observer-1", role: "operations", home: "observability", wander: [p(1140, 1052), p(1190, 1058), p(1162, 1040)], restingExpression: "focused" },
-  { id: "replay-op", role: "analysis", home: "replayChamber", wander: [p(1258, 1190), p(1295, 1195)], restingExpression: "curious" },
+  { id: "recon-1", role: "reconciliation", home: "reconciliationDock", variant: 0.41, wander: [p(500, 1292), p(560, 1302), p(622, 1286), p(566, 1272)], restingExpression: "focused" },
+  { id: "receipt-clerk", role: "operations", home: "receiptPrinter", variant: 0.14, wander: [p(775, 1262), p(822, 1272), p(862, 1254), p(818, 1244)], restingExpression: "neutral" },
+  { id: "archivist", role: "operations", home: "auditArchive", variant: 0.73, wander: [p(1002, 1332), p(1062, 1340), p(1122, 1326), p(1064, 1310)], restingExpression: "neutral" },
+  { id: "recovery-1", role: "reconciliation", home: "recoveryWorkshop", variant: 0.06, wander: [p(370, 1382), p(430, 1390), p(478, 1370), p(424, 1358)], restingExpression: "worried" },
+  { id: "observer-1", role: "operations", home: "observability", variant: 0.69, wander: [p(1118, 1064), p(1168, 1072), p(1212, 1054), p(1166, 1040)], restingExpression: "focused" },
+  { id: "replay-op", role: "analysis", home: "replayChamber", variant: 0.33, wander: [p(1238, 1202), p(1282, 1212), p(1322, 1194), p(1278, 1184)], restingExpression: "curious" },
 ];
 
 export const AGENT_COUNT = POPULATION.length;

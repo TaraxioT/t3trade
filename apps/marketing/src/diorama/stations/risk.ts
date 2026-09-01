@@ -8,7 +8,7 @@
  * All statics are drawn once; motion uses pooled sprites and GSAP timelines
  * that are killed on world cleanup. The scene reads correctly unanimated.
  */
-import { Container, Graphics, Sprite, type Text } from "pixi.js";
+import { Container, Graphics, Sprite, Text, TextStyle } from "pixi.js";
 import { gsap } from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { STATIONS, type StationId } from "../config/stations.js";
@@ -215,8 +215,10 @@ function buildApproval(ctx: DioramaContext): ApprovalApi {
   const gateArch = arch(gx, gy - 40, 84, 54, PALETTE.structure, PALETTE.cyan);
   root.addChild(gateArch);
 
-  // Desk sitting in the opening, tray to the west.
+  // Desk sitting in the opening, tray to the west. Blue counter-inlay on
+  // the desk top edge balances the gold trim.
   root.addChild(isoBox({ x: 14, y: 8, w: 104, d: 58, h: 20, color: PALETTE.structure, rim: PALETTE.yellow }));
+  root.addChild(edgeStrip(-30, -4, 58, -4, PALETTE.blue, 0.6, 1.4));
   const tray = new Graphics();
   tray.roundRect(-58, -14, 34, 12, 2);
   tray.fill({ color: PALETTE.structureLight });
@@ -325,8 +327,8 @@ function buildApproval(ctx: DioramaContext): ApprovalApi {
       // Stamp slam shared by both outcomes.
       t.to(stamp, { y: -10, duration: d(0.14), ease: "power2.in" })
         .to(stamp, { y: -22, duration: d(0.3), ease: "power2.out" })
-        .to(seal, { scaleY: 0.82, scaleX: 1.12, duration: d(0.12), ease: "power2.in" }, "<")
-        .to(seal, { scaleX: 1, scaleY: 1, duration: d(0.28), ease: "back.out(2)" });
+        .to(seal.scale, { y: 0.82, x: 1.12, duration: d(0.12), ease: "power2.in" }, "<")
+        .to(seal.scale, { x: 1, y: 1, duration: d(0.28), ease: "back.out(2)" });
       if (state === "approved") {
         t.call(() => {
           ring.tint = PALETTE.healthy;
@@ -473,6 +475,17 @@ function buildPermission(ctx: DioramaContext): PermissionSweepApi {
     ambient.call(() => api.sweep(-1));
     track(ambient);
     api.sweep(-1);
+    // District heartbeat: one idle token shimmers on a slow off-phase cycle.
+    // Dedicated glow so the sweep's reset never fights the shimmer.
+    const shimmer = glow(17, -14, 24, PALETTE.blue, 0);
+    panel.addChild(shimmer);
+    track(
+      gsap.fromTo(
+        shimmer,
+        { alpha: 0 },
+        { alpha: 0.4, duration: 2.6, yoyo: true, repeat: -1, ease: "sine.inOut", delay: 1.3 },
+      ),
+    );
   }
   return api;
 }
@@ -488,19 +501,34 @@ function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
   root.addChild(propCrate(-72, 44));
   root.addChild(propCrate(-62, 50, 9));
   root.addChild(isoTile(0, 14, 144, 96, PALETTE.structure, 1, PALETTE.structureLight));
-  root.addChild(isoBox({ x: 0, y: 8, w: 128, d: 56, h: 8, color: PALETTE.structureLight, rim: PALETTE.cyan }));
+  root.addChild(isoBox({ x: 0, y: 8, w: 128, d: 56, h: 8, color: PALETTE.structureLight, rim: PALETTE.blue }));
 
+  // Honest reservoirs (TradingBudgetReader / loss accounting): the loss
+  // budget, risk reservations, and capital. The legacy API keys "tools" and
+  // "authority" stay accepted as aliases of the reservations reservoir.
   type ResKey = "loss" | "capital" | "tools" | "authority";
-  const specs: { key: ResKey; x: number; h: number; color: number }[] = [
-    { key: "loss", x: -45, h: 78, color: PALETTE.healthy },
-    { key: "capital", x: -15, h: 62, color: PALETTE.yellow },
-    { key: "tools", x: 15, h: 58, color: PALETTE.aqua },
-    { key: "authority", x: 45, h: 54, color: PALETTE.violet },
+  type TankKey = "loss" | "reservations" | "capital";
+  const alias: Record<ResKey, TankKey> = {
+    loss: "loss",
+    capital: "capital",
+    tools: "reservations",
+    authority: "reservations",
+  };
+  const specs: { key: TankKey; label: string; x: number; h: number; color: number }[] = [
+    { key: "loss", label: "LOSS BUDGET", x: -40, h: 78, color: PALETTE.healthy },
+    { key: "reservations", label: "RESERVATIONS", x: 0, h: 62, color: PALETTE.yellow },
+    { key: "capital", label: "CAPITAL", x: 40, h: 70, color: PALETTE.blue },
   ];
-  const levels: Record<ResKey, number> = { loss: 0.82, capital: 0.7, tools: 0.5, authority: 0.6 };
+  const levels: Record<TankKey, number> = { loss: 0.82, reservations: 0.5, capital: 0.7 };
 
   const liquids: Record<string, Container> = {};
   const bubbles: Record<string, Container> = {};
+  const labelStyle = new TextStyle({
+    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+    fontSize: 7,
+    letterSpacing: 0.7,
+    fill: PALETTE.inkDim,
+  });
 
   for (const s of specs) {
     const baseY = -10;
@@ -538,6 +566,13 @@ function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
     root.addChild(bubble);
     bubbles[s.key] = bubble;
 
+    // Real text label under each tube; never baked into graphics.
+    const label = new Text({ text: s.label, style: labelStyle });
+    label.resolution = 2;
+    label.anchor.set(0.5);
+    label.position.set(s.x, baseY + 12);
+    root.addChild(label);
+
     if (s.key === "loss") {
       // Bold minimum line on the loss tube.
       const min = new Graphics();
@@ -552,14 +587,15 @@ function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
 
   const api: BudgetMeterApi = {
     consume(reservoir, amount) {
-      const next = Math.max(0.04, levels[reservoir] - Math.max(0, Math.min(1, amount)));
-      const from = levels[reservoir];
-      levels[reservoir] = next;
-      const liquid = liquids[reservoir];
-      const bubble = bubbles[reservoir];
+      const tank = alias[reservoir];
+      const next = Math.max(0.04, levels[tank] - Math.max(0, Math.min(1, amount)));
+      const from = levels[tank];
+      levels[tank] = next;
+      const liquid = liquids[tank];
+      const bubble = bubbles[tank];
       gsap.killTweensOf([liquid.scale, bubble]);
       bubble.alpha = 0.9;
-      const h = specs.find((s) => s.key === reservoir)!.h;
+      const h = specs.find((s) => s.key === tank)!.h;
       track(
         gsap.timeline()
           .to(bubble, { y: -10 - h * next, duration: d(0.7), ease: "sine.out" }, 0)
@@ -616,11 +652,14 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   crenel(-140, 0, 0, -100);
   crenel(0, -100, 140, 0);
 
-  // Walkway bypass around the outside (south).
-  root.addChild(isoTile(0, 116, 270, 26, PALETTE.structureLight, 0.5, PALETTE.cyan));
+  // Walkway bypass around the outside (south). Blue counter-inlay keeps the
+  // gold fortress off the shared cyan.
+  root.addChild(isoTile(0, 116, 270, 26, PALETTE.structureLight, 0.5, PALETTE.blue));
 
   // Corridor of 4 scanning arches, west to east through the courtyard.
   const corridorY = 26;
+  // Pale corridor floor so the pavilion reads at fit zoom.
+  root.addChild(isoTile(0, corridorY, 286, 40, PALETTE.structureLight, 0.85, PALETTE.yellow));
   const archXs = [-92, -31, 30, 91];
   const glows: Container[] = [];
   const glyphs: Container[] = [];
@@ -656,6 +695,8 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   archXs.forEach((ax, i) => {
     const a = arch(ax, corridorY, 58, 50, PALETTE.structureLight, PALETTE.cyan);
     root.addChild(a);
+    // Crisper gold rim across the arch beam so each arch reads as a gate.
+    root.addChild(edgeStrip(ax - 29, corridorY - 50, ax + 29, corridorY - 50, PALETTE.yellow, 0.9, 1.6));
     const g = glow(ax, corridorY - 4, 46, PALETTE.cyan, 0.18);
     root.addChild(g);
     glows.push(g);
@@ -956,6 +997,13 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
   keyG.fill({ color: PALETTE.yellow });
   key.addChild(keyG, glow(0, 0, 30, PALETTE.yellow, 0.45));
   root.addChild(key);
+  // District heartbeat: the chamber light over the key breathes slowly.
+  // The key glyph itself never animates.
+  const vaultPulse = glow(0, -48, 44, PALETTE.yellow, 0.14);
+  root.addChild(vaultPulse);
+  if (!ctx.reducedMotion) {
+    track(gsap.to(vaultPulse, { alpha: 0.34, duration: 3.4, yoyo: true, repeat: -1, ease: "sine.inOut" }));
+  }
 
   // Scanning light bar across the open doorway.
   const scanBar = lightBeam(0, 34, 6, 10, 44, PALETTE.cyan, 0.16);
@@ -1164,6 +1212,67 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
 // District assembly
 // ---------------------------------------------------------------------------
 
+/**
+ * Floor guidance for the pipeline reading order:
+ * Approval -> Permissions -> Loss Budget -> Risk -> Protection -> Signer ->
+ * Execution. Static infrastructure-cyan chevrons between adjacent stations
+ * plus one runner light that walks the whole sequence. Semantic colors are
+ * never used here; this is wayfinding, not state.
+ */
+function buildPipelineFlow(ctx: DioramaContext): void {
+  const seq: { x: number; y: number }[] = [
+    STATIONS.approval.anchor,
+    STATIONS.permission.anchor,
+    STATIONS.budgetMeter.anchor,
+    STATIONS.riskFortress.anchor,
+    STATIONS.protection.anchor,
+    STATIONS.signerVault.anchor,
+    STATIONS.executionGateway.anchor,
+  ];
+
+  const chevrons = new Container();
+  for (let g = 0; g < seq.length - 1; g++) {
+    const a = seq[g];
+    const b = seq[g + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const angle = Math.atan2(dy, dx);
+    // Start and end inset so chevrons sit between footprints, not under them.
+    const start = 0.34;
+    const end = 0.66;
+    const count = 3;
+    for (let k = 0; k < count; k++) {
+      const t = start + ((end - start) * (k + 0.5)) / count;
+      const mark = new Graphics();
+      mark.poly([5, 0, -2, -4, 0, 0, -2, 4, 5, 0]);
+      mark.fill({ color: PALETTE.cyan, alpha: 0.45 });
+      mark.position.set(a.x + dx * t, a.y + dy * t);
+      mark.rotation = angle;
+      mark.zIndex = Math.max(a.y, b.y) + DEPTH.base - 3;
+      chevrons.addChild(mark);
+    }
+  }
+  ctx.layers.sortable.addChild(chevrons);
+
+  if (ctx.reducedMotion) return;
+  // Runner light: one pooled dot hops the sequence every ~9.5 s.
+  const runner = new Sprite(dotTexture());
+  runner.anchor.set(0.5);
+  runner.width = 9;
+  runner.height = 9;
+  runner.tint = PALETTE.cyan;
+  runner.alpha = 0.9;
+  runner.zIndex = seq[0].y + DEPTH.base + 2;
+  ctx.layers.sortable.addChild(runner);
+  const rt = gsap.timeline({ repeat: -1, repeatDelay: 4.2 });
+  for (let g = 0; g < seq.length - 1; g++) {
+    rt.to(runner, { x: seq[g + 1].x, y: seq[g + 1].y, duration: 0.62, ease: "none" }, g * 0.7);
+  }
+  rt.to(runner, { alpha: 0, duration: 0.3 }, (seq.length - 1) * 0.7)
+    .set(runner, { x: seq[0].x, y: seq[0].y, alpha: 0.9 });
+  track(rt);
+}
+
 export function buildRiskDistrict(ctx: DioramaContext): void {
   reduced = ctx.reducedMotion;
   killables.length = 0;
@@ -1172,6 +1281,8 @@ export function buildRiskDistrict(ctx: DioramaContext): void {
     for (const k of killables) k.kill();
     killables.length = 0;
   });
+
+  buildPipelineFlow(ctx);
 
   const apis = {
     approval: buildApproval(ctx),

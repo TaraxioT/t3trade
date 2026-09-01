@@ -38,11 +38,11 @@ export function createSimulation(ctx: DioramaContext): Simulation {
   void ctx; // simulation is pure state; no rendering depends on the context
 
   const state: CampusState = {
-    missionPhase: "Monitoring",
+    missionPhase: "Waiting",
     lossAllowancePct: 82,
     paused: false,
     mcpPortHealth: Array.from({ length: MCP_PORT_COUNT }, () => "green" as PortHealth),
-    lastRefusal: "BUDGET EXCEEDED",
+    lastRefusal: "LOSS BUDGET SPENT",
   };
 
   const subscribers = new Set<(state: CampusState) => void>();

@@ -2,21 +2,28 @@
  * Agent character: expressive miniature utility robot with a digital face.
  * Owner: agent system worker.
  *
- * Anatomy (world units after the 0.72 display scale; drawn at 2x internally for
+ * Anatomy (world units after the display scale; drawn at 2x internally for
  * crispness): two short articulated legs, compact torso, oversized rounded
  * head/display (~60% of the 40-unit height), small utility arms, role-colored
  * backpack with antenna. Role color appears ONLY on backpack, antenna tip and
  * the screen trim; the body stays structural blue.
  *
+ * Individuality: every per-agent difference (height, head width, antenna and
+ * backpack style, walk cadence, resting posture, reaction intensity) derives
+ * deterministically from the single `variant` seed in [0,1) so the cast stays
+ * one coherent species while individuals read apart at fit zoom.
+ *
  * Anchor convention: root.position is the foot center at ground level; the
  * depth sort uses root.y directly (zIndex = root.y + DEPTH.base). Everything
  * above ground is drawn at negative y inside an inner "flip" container, so
- * faceLeft can flip scale.x without touching root math.
+ * faceLeft can flip scale.x without touching root math. A "figure" container
+ * between flip and the parts carries squash-and-stretch anchored at the foot.
  */
 import { Container, Graphics } from "pixi.js";
 import { gsap } from "gsap";
 import { PALETTE, ROLE_COLORS, shade, type AgentRole } from "../config/palette.js";
 import { glow } from "../core/iso.js";
+import { agentFx, type MarkKind } from "./fx.js";
 
 export type Expression =
   | "neutral"
@@ -29,16 +36,38 @@ export type Expression =
   | "frustrated"
   | "alarmed";
 
+export type ReactionKind =
+  | "hop"
+  | "droop"
+  | "lean"
+  | "tilt"
+  | "wobble"
+  | "squash"
+  | "startle"
+  | "headrub"
+  | "apologize"
+  | "doubleTake";
+
 export interface Agent {
   readonly id: string;
   readonly role: AgentRole;
   readonly root: Container;
   setExpression(expr: Expression): void;
   faceLeft(left: boolean): void;
-  /** Emotional body motion: hop, droop, lean, tilt. */
-  react(kind: "hop" | "droop" | "lean" | "tilt"): void;
+  /** Face sign from a world-space dx (negative = left). */
+  faceToward(dx: number): void;
+  /** Emotional body motion; see ReactionKind semantics in the reaction table. */
+  react(kind: ReactionKind): void;
+  /** Pooled comic mark above the head; see fx.ts for the glyph set. */
+  popMark(kind: MarkKind): void;
+  /** True while a walk is driving this agent (set by setWalkPose). */
+  isMoving(): boolean;
   /** Carry a small glowing data card (or null to drop it). */
   carry(cardColor: number | null): void;
+  /** Satisfied head-bob laugh; the relief beat stories end on. */
+  laugh(): void;
+  /** Quick impatient foot tap; self-reverting. */
+  tap(): void;
 }
 
 /**
@@ -54,6 +83,8 @@ export interface AgentBody {
   shift(): void;
   /** Revert transient react/shift offsets to the neutral idle pose. */
   restPose(): void;
+  /** True for ~1.3 s after any react() call (activity metric). */
+  isReacting(): boolean;
   /** Kill any live GSAP tweens owned by this agent. */
   dispose(): void;
 }
@@ -120,14 +151,56 @@ const EYE_SHAPES: Record<Exclude<FaceSpec["eyes"], "mismatched">, { rx: number; 
 
 /**
  * Display scale. Agents are drawn at 2x internally for crispness, then
- * scaled down here. 0.72 gives a ~48x56 world-unit footprint so characters
- * read clearly at fit zoom instead of reading as specks.
+ * scaled down here. 0.88 with the per-agent variant scale (0.94..1.12) gives
+ * a ~58..70 world-unit-tall read so faces and props survive fit zoom.
  */
-const DISPLAY_SCALE = 0.72;
+const DISPLAY_SCALE = 0.88;
+
+/** Deterministic variant traits from the single [0,1) seed. */
+interface VariantTraits {
+  /** Overall figure scale, 0.94..1.12. */
+  scale: number;
+  /** Head width multiplier, 0.92..1.08. */
+  headWidth: number;
+  antenna: "short" | "standard" | "coiled";
+  backpack: "slim" | "standard" | "tank";
+  /** Stride frequency multiplier, 0.85..1.2. */
+  cadence: number;
+  /** Resting arm splay offset added to the base angle. */
+  armRest: number;
+  /** Resting head tilt, about +-2 deg. */
+  headTilt: number;
+  /** Reaction amplitude multiplier, 0.8..1.2. */
+  intensity: number;
+}
+
+function variantTraits(variant: number): VariantTraits {
+  const v = Math.min(0.999, Math.max(0, variant));
+  return {
+    scale: 0.94 + v * 0.18,
+    headWidth: 1 + (v - 0.5) * 0.16,
+    antenna: v < 0.3 ? "short" : v < 0.75 ? "standard" : "coiled",
+    backpack: (["slim", "standard", "tank"] as const)[Math.floor(v * 3 + 1) % 3],
+    cadence: 0.85 + v * 0.35,
+    armRest: (v - 0.5) * 0.1,
+    headTilt: (v - 0.5) * 0.07,
+    intensity: 0.8 + v * 0.4,
+  };
+}
 
 /** Full agent with body controls; createAgent is the frozen public wrapper. */
-export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentMicroLife {
+export function createAgentImpl(
+  id: string,
+  role: AgentRole,
+  variant = 0.5,
+  reducedMotion = false,
+): AgentImpl & AgentMicroLife {
   const roleColor = ROLE_COLORS[role];
+  const tr = variantTraits(variant);
+  const flipScale = DISPLAY_SCALE * tr.scale;
+  const it = tr.intensity;
+  // World-unit height of the head top (2x units ~ -112 including antenna).
+  const markOffsetY = 116 * flipScale;
 
   // root: foot center at (0,0); zIndex assigned by the system from root.y.
   const root = new Container();
@@ -142,12 +215,17 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
 
   // flip: horizontal mirror container; DISPLAY_SCALE applies the 2x crispness.
   const flip = new Container();
-  flip.scale.set(DISPLAY_SCALE);
+  flip.scale.set(flipScale);
   root.addChild(flip);
+
+  // figure: squash-and-stretch wrapper anchored at the foot (children are all
+  // at negative y, so scaling about y=0 keeps the feet planted).
+  const figure = new Container();
+  flip.addChild(figure);
 
   // body: everything that bobs/reacts as one rigid figure above the legs.
   const body = new Container();
-  flip.addChild(body);
+  figure.addChild(body);
 
   // --- legs (drawn once; animated purely by rotation) ----------------------
   const makeLeg = (side: -1 | 1): Container => {
@@ -163,22 +241,57 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
   };
   const legL = makeLeg(-1);
   const legR = makeLeg(1);
-  flip.addChild(legL, legR);
+  figure.addChild(legL, legR);
 
   // --- backpack + antenna (behind the torso, role colored) -----------------
   const pack = new Graphics();
-  pack.roundRect(-28, -50, 11, 20, 3);
+  const packX = tr.backpack === "slim" ? -27 : tr.backpack === "tank" ? -30 : -28;
+  const packW = tr.backpack === "slim" ? 7 : tr.backpack === "tank" ? 14 : 11;
+  const packY = tr.backpack === "tank" ? -52 : -50;
+  const packH = tr.backpack === "tank" ? 24 : 20;
+  pack.roundRect(packX, packY, packW, packH, tr.backpack === "tank" ? 6 : 3);
   pack.fill({ color: shade(roleColor, 0.15) }); // bright role read
-  pack.roundRect(-28, -50, 11, 20, 3);
+  pack.roundRect(packX, packY, packW, packH, tr.backpack === "tank" ? 6 : 3);
   pack.stroke({ width: 1.4, color: shade(roleColor, 0.45), alpha: 0.9 });
-  // antenna rising from the backpack
-  pack.moveTo(-22, -50);
-  pack.lineTo(-26, -62);
-  pack.stroke({ width: 1.6, color: PALETTE.structureLight });
-  pack.circle(-26, -63, 3);
+  if (tr.backpack === "tank") {
+    // tank band so the chunky variant still reads as one species
+    pack.moveTo(packX + 3, packY + 8);
+    pack.lineTo(packX + packW - 3, packY + 8);
+    pack.stroke({ width: 1, color: shade(roleColor, 0.45), alpha: 0.7 });
+  }
+  // antenna rising from the backpack; style varies per variant
+  const tip = { x: 0, y: 0 };
+  if (tr.antenna === "short") {
+    pack.moveTo(packX + 5, packY);
+    pack.lineTo(packX + 3, packY - 6);
+    pack.stroke({ width: 1.6, color: PALETTE.structureLight });
+    tip.x = packX + 3;
+    tip.y = packY - 7;
+  } else if (tr.antenna === "coiled") {
+    pack.moveTo(packX + 5, packY);
+    // small zigzag reads as a coiled whip antenna
+    for (const [zx, zy] of [
+      [packX - 1, packY - 3],
+      [packX + 4, packY - 6],
+      [packX - 1, packY - 9],
+      [packX + 3, packY - 12],
+    ] as const) {
+      pack.lineTo(zx, zy);
+    }
+    pack.stroke({ width: 1.4, color: PALETTE.structureLight });
+    tip.x = packX + 3;
+    tip.y = packY - 13;
+  } else {
+    pack.moveTo(packX + 6, packY);
+    pack.lineTo(packX + 2, packY - 12);
+    pack.stroke({ width: 1.6, color: PALETTE.structureLight });
+    tip.x = packX + 2;
+    tip.y = packY - 13;
+  }
+  pack.circle(tip.x, tip.y, tr.antenna === "short" ? 2.5 : 3);
   pack.fill({ color: shade(roleColor, 0.3) });
   // additive beacon on the antenna tip so the role color pops at fit zoom
-  const antennaGlow = glow(-26, -63, 16, roleColor, 0.5);
+  const antennaGlow = glow(tip.x, tip.y, 16, roleColor, 0.5);
   body.addChild(pack, antennaGlow);
 
   // --- torso: darker than the head casing for silhouette contrast ----------
@@ -206,7 +319,7 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
     arm.addChild(g);
     // Positive rotation (clockwise) swings the hanging arm toward -x, so
     // away-from-body rest is + for the left arm, - for the right.
-    arm.rotation = -0.12 * side;
+    arm.rotation = (0.12 + tr.armRest) * -side;
     return arm;
   };
   const armL = makeArm(-1);
@@ -223,6 +336,8 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
   // --- head / display -------------------------------------------------------
   const head = new Container();
   head.position.set(0, -56); // bottom of the head casing
+  head.scale.x = tr.headWidth; // variant head width, persistent
+  head.rotation = tr.headTilt; // variant resting tilt, persistent
   const headG = new Graphics();
   headG.roundRect(-23, -48, 46, 48, 14);
   headG.fill({ color: shade(PALETTE.structureLight, 0.3) }); // pale casing vs dark torso
@@ -300,6 +415,7 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
   let exprRevert: gsap.core.Tween | null = null;
 
   const setExpression = (expr: Expression): void => {
+    if (!alive()) return;
     currentExpr = expr;
     drawFace(expr);
   };
@@ -316,17 +432,33 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
   };
 
   // -------------------------------------------------------------------------
-  // Body controls
+  // Body state
   // -------------------------------------------------------------------------
+  let movingFlag = false;
+  let reacting = false;
+  let reactTimer: gsap.core.Tween | null = null;
+  let rmTimer: gsap.core.Tween | null = null;
+
+  const markReacting = (): void => {
+    reacting = true;
+    reactTimer?.kill();
+    reactTimer = gsap.delayedCall(1.3, () => {
+      reacting = false;
+    });
+  };
+
   const setWalkPose = (phase: number, moving: boolean): void => {
+    movingFlag = moving;
     if (!moving) {
       legL.rotation = 0;
       legR.rotation = 0;
       body.y = 0;
       return;
     }
-    // Exaggerated swing + bob so the walk reads at world zoom.
-    const swing = Math.sin(phase * 0.35);
+    // Exaggerated swing + bob so the walk reads at world zoom; the variant
+    // cadence multiplier makes strides individually paced.
+    const p = phase * tr.cadence;
+    const swing = Math.sin(p * 0.35);
     legL.rotation = swing * 0.78;
     legR.rotation = -swing * 0.78;
     body.y = -Math.abs(swing) * 4.5; // bob (2x units)
@@ -351,66 +483,201 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
     });
   };
 
-  const react = (kind: "hop" | "droop" | "lean" | "tilt"): void => {
+  // -------------------------------------------------------------------------
+  // Reactions
+  // -------------------------------------------------------------------------
+  // Reduced motion: every reaction collapses to a brief static pose that
+  // restPose() clears after <=0.4 s; no oscillation, no marks in motion.
+  const rmPose = (apply: () => void): void => {
+    apply();
+    rmTimer?.kill();
+    rmTimer = gsap.delayedCall(0.35, () => restPose());
+  };
+
+  const react = (kind: ReactionKind): void => {
+    if (!alive()) return;
+    markReacting();
+    if (reducedMotion) {
+      switch (kind) {
+        case "hop":
+        case "startle":
+          rmPose(() => {
+            body.y = -4;
+            flashExpression("alarmed", 350);
+          });
+          break;
+        case "droop":
+        case "apologize":
+          rmPose(() => {
+            head.y = -52;
+            flashExpression("worried", 350);
+          });
+          break;
+        case "lean":
+        case "wobble":
+        case "squash":
+          rmPose(() => {
+            figure.scale.y = 0.92;
+          });
+          break;
+        case "tilt":
+        case "doubleTake":
+          rmPose(() => {
+            head.rotation = tr.headTilt + 0.14;
+            flashExpression("curious", 350);
+          });
+          break;
+        case "headrub":
+          rmPose(() => {
+            armR.rotation = -2.4;
+            flashExpression("worried", 350);
+          });
+          break;
+      }
+      if (kind === "startle") popMarkImpl("!");
+      return;
+    }
+
     switch (kind) {
-      case "hop":
-        gsap.to(body, {
-          y: -8,
-          duration: 0.18,
-          ease: "power2.out",
-          yoyo: true,
-          repeat: 1,
-          overwrite: "auto",
-        });
+      case "hop": {
+        // anticipation dip, jump, land squash with elastic recovery
+        const tl = gsap.timeline();
+        tl.to(body, { y: 2, duration: 0.06, ease: "sine.in" });
+        tl.to(body, { y: -16 * it, duration: 0.16, ease: "power2.out" });
+        tl.to(body, { y: 0, duration: 0.18, ease: "power2.in" });
+        tl.to(
+          figure.scale,
+          { y: 0.86, x: 1.12, duration: 0.09, ease: "power2.out" },
+          "<",
+        );
+        tl.to(figure.scale, { y: 1, x: 1, duration: 0.45, ease: "elastic.out(1.6, 0.45)" });
         flashExpression("alarmed", 450);
         break;
-      case "droop":
+      }
+      case "droop": {
         gsap.to([armL, armR], {
-          rotation: (i: number) => (i === 0 ? 0.5 : -0.5),
-          duration: 0.35,
-          ease: "sine.inOut",
-          yoyo: true,
-          repeat: 1,
-          overwrite: "auto",
-        });
-        gsap.to(head, { y: -52, duration: 0.35, ease: "sine.inOut", yoyo: true, repeat: 1, overwrite: "auto" });
-        flashExpression("worried", 600);
-        break;
-      case "lean":
-        gsap.to(flip, {
-          rotation: 0.105,
+          rotation: (i: number) => (i === 0 ? 0.5 : -0.5) * it,
           duration: 0.3,
-          ease: "sine.inOut",
-          yoyo: true,
-          repeat: 1,
+          ease: "power2.in",
           overwrite: "auto",
         });
+        gsap.to(head, { y: -51, duration: 0.3, ease: "power2.in", overwrite: "auto" });
+        gsap.to(head, { y: -56, duration: 0.7, delay: 0.55, ease: "elastic.out(1, 0.5)", overwrite: false });
+        flashExpression("worried", 650);
+        break;
+      }
+      case "lean": {
+        gsap.to(flip, {
+          rotation: 0.11 * it,
+          duration: 0.18,
+          ease: "power2.out",
+          overwrite: "auto",
+        });
+        gsap.to(flip, { rotation: 0, duration: 0.5, delay: 0.3, ease: "elastic.out(1, 0.45)", overwrite: false });
         flashExpression("alarmed", 400);
         break;
-      case "tilt":
+      }
+      case "tilt": {
         gsap.to(head, {
-          rotation: 0.12,
-          duration: 0.35,
-          ease: "sine.inOut",
-          yoyo: true,
-          repeat: 1,
+          rotation: tr.headTilt + 0.14 * it,
+          duration: 0.2,
+          ease: "back.out(2.5)",
           overwrite: "auto",
         });
+        gsap.to(head, { rotation: tr.headTilt, duration: 0.4, delay: 0.55, ease: "sine.inOut", overwrite: false });
         flashExpression("curious", 600);
         break;
+      }
+      case "wobble": {
+        // body vibration: fast lateral oscillation for ~0.5 s
+        gsap.fromTo(
+          body,
+          { x: 0 },
+          {
+            x: 2.2 * it,
+            duration: 0.08,
+            ease: "sine.inOut",
+            yoyo: true,
+            repeat: 6,
+            overwrite: "auto",
+          },
+        );
+        flashExpression("confused", 550);
+        break;
+      }
+      case "squash": {
+        // squash-and-stretch landing: scaleY dip + scaleX rise, elastic recover
+        gsap.to(
+          figure.scale,
+          { y: 0.8, x: 1.16, duration: 0.09, ease: "power2.out", overwrite: "auto" },
+        );
+        gsap.to(figure.scale, { y: 1.06, x: 0.96, duration: 0.16, delay: 0.09, ease: "sine.out", overwrite: false });
+        gsap.to(figure.scale, { y: 1, x: 1, duration: 0.5, delay: 0.25, ease: "elastic.out(2.2, 0.4)", overwrite: false });
+        break;
+      }
+      case "startle": {
+        // alarm jump-back with an alarmed face and a brief "!" flash
+        const back = facingLeft ? 7 : -7;
+        gsap.to(flip, { x: back * it, duration: 0.14, ease: "power3.out", overwrite: "auto" });
+        gsap.to(flip, { x: 0, duration: 0.5, delay: 0.3, ease: "elastic.out(1, 0.5)", overwrite: false });
+        gsap.to(body, { y: -7 * it, duration: 0.12, ease: "power2.out", overwrite: "auto" });
+        gsap.to(body, { y: 0, duration: 0.3, delay: 0.14, ease: "power2.in", overwrite: false });
+        flashExpression("alarmed", 550);
+        popMarkImpl("!");
+        break;
+      }
+      case "headrub": {
+        // arm rises to the head casing, small circular rub, embarrassed glance
+        const tl = gsap.timeline();
+        tl.to(armR, { rotation: -2.45, duration: 0.2, ease: "back.out(2)" });
+        tl.to(armR, { rotation: -2.32, duration: 0.11, ease: "sine.inOut", yoyo: true, repeat: 3 });
+        tl.to(armR, { rotation: -0.12 - tr.armRest, duration: 0.35, ease: "sine.inOut" });
+        tl.to(head, { rotation: tr.headTilt + 0.08, duration: 0.2, ease: "sine.inOut" }, 0);
+        tl.to(head, { rotation: tr.headTilt, duration: 0.3 }, ">-0.1");
+        flashExpression("worried", 1100);
+        break;
+      }
+      case "apologize": {
+        // bow forward, one arm out, guilty eyes
+        const tl = gsap.timeline();
+        tl.to(body, { rotation: 0.3 * it, y: 3, duration: 0.22, ease: "power2.inOut" });
+        tl.to(armL, { rotation: 0.95, duration: 0.2, ease: "power2.out" }, "<");
+        tl.to(body, { rotation: 0, y: 0, duration: 0.5, delay: 0.45, ease: "elastic.out(1, 0.5)" });
+        tl.to(armL, { rotation: 0.12 + tr.armRest, duration: 0.4, delay: 0.35, ease: "sine.inOut" }, "<");
+        flashExpression("worried", 1000);
+        break;
+      }
+      case "doubleTake": {
+        // head snap-turn, pause, snap back
+        const dir = facingLeft ? -1 : 1;
+        const tl = gsap.timeline();
+        tl.to(head, { rotation: tr.headTilt + dir * 0.5, duration: 0.07, ease: "power3.in" });
+        tl.to(head, { rotation: tr.headTilt + dir * 0.34, duration: 0.06, ease: "power2.out" });
+        tl.to(head, { rotation: tr.headTilt + dir * 0.34, duration: 0.32, ease: "none" });
+        tl.to(head, { rotation: tr.headTilt, duration: 0.09, ease: "back.out(2.5)" });
+        flashExpression("curious", 600);
+        break;
+      }
     }
   };
 
+  const popMarkImpl = (kind: MarkKind): void => {
+    agentFx.current?.popMarkAt(root.x, root.y - markOffsetY, kind);
+  };
+
   const restPose = (): void => {
-    gsap.killTweensOf([body, head, flip, armL, armR]);
+    gsap.killTweensOf([body, head, flip, figure.scale, armL, armR]);
     body.x = 0;
     body.y = 0;
-    head.rotation = 0;
+    body.rotation = 0;
+    head.rotation = tr.headTilt;
     head.y = -56;
     flip.rotation = 0;
+    flip.x = 0;
+    figure.scale.set(1);
     leanDir = 0;
-    armL.rotation = 0.12;
-    armR.rotation = -0.12;
+    armL.rotation = 0.12 + tr.armRest;
+    armR.rotation = -0.12 - tr.armRest;
     face.scale.y = 1;
     legL.rotation = 0;
     legR.rotation = 0;
@@ -433,6 +700,7 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
 
   /** Satisfied micro-laugh: quick double head-bob plus a happy flash. */
   const laugh = (): void => {
+    if (!alive()) return;
     gsap.fromTo(
       head,
       { y: -56 },
@@ -450,6 +718,7 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
 
   /** Impatient/waiting foot tap: quick boot oscillation on the rear leg. */
   const tap = (): void => {
+    if (!alive()) return;
     gsap.fromTo(
       legR,
       { rotation: 0 },
@@ -465,6 +734,7 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
   };
 
   const carry = (cardColor: number | null): void => {
+    if (!alive()) return;
     if (cardColor === null) {
       gsap.to(cardHolder, {
         alpha: 0,
@@ -486,9 +756,19 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
     );
   };
 
+  // Set by dispose(): story continuations can resume a beat after teardown
+  // (pending walk promises resolve during cleanup), and every public method
+  // they might still call must no-op instead of tweening destroyed objects.
+  let agentDisposed = false;
+
+  const alive = (): boolean => !agentDisposed && !root.destroyed;
+
   const dispose = (): void => {
+    agentDisposed = true;
     exprRevert?.kill();
-    gsap.killTweensOf([body, head, flip, armL, armR, legL, legR, face.scale, cardHolder]);
+    reactTimer?.kill();
+    rmTimer?.kill();
+    gsap.killTweensOf([body, head, flip, figure.scale, armL, armR, legL, legR, face.scale, cardHolder]);
   };
 
   setExpression("neutral");
@@ -500,18 +780,25 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
     setExpression,
     faceLeft: (left: boolean) => {
       facingLeft = left;
-      flip.scale.x = left ? -DISPLAY_SCALE : DISPLAY_SCALE;
+      flip.scale.x = left ? -flipScale : flipScale;
       // Reapply any live lean so it keeps pointing into the travel direction.
       if (leanDir !== 0) {
         flip.rotation = leanDir * 0.052 * (left ? -1 : 1);
       }
     },
+    faceToward: (dx: number) => {
+      if (dx !== 0) flip.scale.x = dx < 0 ? -flipScale : flipScale;
+      facingLeft = dx < 0;
+    },
     react,
+    popMark: popMarkImpl,
+    isMoving: () => movingFlag,
     carry,
     setWalkPose,
     blink,
     shift,
     restPose,
+    isReacting: () => reacting,
     dispose,
     laugh,
     tap,
@@ -520,6 +807,6 @@ export function createAgentImpl(id: string, role: AgentRole): AgentImpl & AgentM
 }
 
 /** Frozen public factory: a story-facing agent handle. */
-export function createAgent(id: string, role: AgentRole): Agent {
-  return createAgentImpl(id, role);
+export function createAgent(id: string, role: AgentRole, variant = 0.5): Agent {
+  return createAgentImpl(id, role, variant);
 }

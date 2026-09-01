@@ -69,8 +69,10 @@ export function buildHyperliquid(ctx: DioramaContext): void {
   slab.poly([cx - HW, TOP, cx, cy + HD - SLAB_H, cx + HW, TOP, cx, cy - HD - SLAB_H]);
   slab.stroke({ width: 1.5, color: PALETTE.aqua, alpha: 0.85 });
   root.addChild(slab);
-  // Underglow: floats slightly apart from the campus island.
-  root.addChild(glow(cx, cy + HD * 0.55, 520, PALETTE.aqua, 0.2));
+  // Underglow: floats slightly apart from the campus island. Deliberately
+  // restrained: the platform must read through structure, not outshine the
+  // central trading floor it serves.
+  root.addChild(glow(cx, cy + HD * 0.55, 430, PALETTE.aqua, 0.13));
 
   // --- Floating rock fragments: small iso shards drifting very slowly ------
   // Static geometry; the one shared onTick below offsets their y by a few
@@ -107,7 +109,7 @@ export function buildHyperliquid(ctx: DioramaContext): void {
   }
   root.addChild(posts);
   for (const px of [cx - 58, cx + 58]) {
-    root.addChild(glow(px, BANNER_Y + 12, 18, PALETTE.aqua, 0.5));
+    root.addChild(glow(px, BANNER_Y + 12, 18, PALETTE.aqua, 0.35));
   }
   // Stacked two-line sign: a single xl-width banner would run past the world
   // edge at this x, so the name breaks over two lg boards with one sub line.
@@ -117,10 +119,10 @@ export function buildHyperliquid(ctx: DioramaContext): void {
     text: "AUTHORITATIVE EXCHANGE",
     style: new TextStyle({
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-      fontSize: 14,
+      fontSize: 16,
       fontWeight: "500",
       letterSpacing: 2,
-      fill: 0xa8c0cf,
+      fill: 0xddefe3,
     }),
   });
   sub.resolution = 2;
@@ -154,7 +156,7 @@ export function buildHyperliquid(ctx: DioramaContext): void {
     hexPts.push(Math.cos(a) * 36, Math.sin(a) * 20);
   }
   ring.poly(hexPts);
-  ring.stroke({ width: 2, color: PALETTE.aqua, alpha: 0.85 });
+  ring.stroke({ width: 2, color: PALETTE.aqua, alpha: 0.68 });
   ring.circle(0, 0, 3);
   ring.fill({ color: PALETTE.cyan, alpha: 0.9 });
   ring.blendMode = "add";
@@ -169,8 +171,8 @@ export function buildHyperliquid(ctx: DioramaContext): void {
   pad.ellipse(PAD.x, PAD.y, 3.5, 1.8);
   pad.fill({ color: PALETTE.aqua, alpha: 0.9 });
   root.addChild(pad);
-  const guideL = glow(PAD.x - 40, PAD.y - 12, 26, PALETTE.cyan, 0.7);
-  const guideR = glow(PAD.x + 40, PAD.y - 12, 26, PALETTE.cyan, 0.7);
+  const guideL = glow(PAD.x - 40, PAD.y - 12, 26, PALETTE.cyan, 0.45);
+  const guideR = glow(PAD.x + 40, PAD.y - 12, 26, PALETTE.cyan, 0.45);
   root.addChild(guideL, guideR);
 
   // --- External clerk glyph: rotating cube pedestal near the pad -------------
@@ -315,11 +317,11 @@ export function buildHyperliquid(ctx: DioramaContext): void {
             // Sheet materializes above the platform...
             .fromTo(
               sheet,
-              { alpha: 0, x: cx + 6, y: TOP - 150, scale: 1 },
+              { alpha: 0, x: cx + 6, y: TOP - 150 },
               { alpha: 1, duration: 0.35, ease: "power1.out" },
             )
             // ...folds into a small aqua packet...
-            .to(sheet, { scaleY: 0.25, duration: 0.3, ease: "power2.in" })
+            .to(sheet.scale, { y: 0.25, duration: 0.3, ease: "power2.in" })
             .to(sheet, { alpha: 0, duration: 0.15 })
             .fromTo(
               packet,

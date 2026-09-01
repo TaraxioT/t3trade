@@ -116,8 +116,14 @@ export function buildA11y(ctx: DioramaContext, actions: { onFocus(id: string): v
 
   // Preferred mount: a page-provided region; otherwise an aside at the end of
   // the diorama host's parent section so it never overlays the canvas.
-  let mount = document.querySelector<HTMLElement>("[data-diorama-a11y]");
-  if (!mount) {
+  const provided = document.querySelector<HTMLElement>("[data-diorama-a11y]");
+  let createdAside: HTMLElement | null = null;
+  let mount: HTMLElement;
+  if (provided) {
+    // Re-init safety: never stack a second directory in the same mount.
+    for (const stale of provided.querySelectorAll(".diorama-a11y")) stale.remove();
+    mount = provided;
+  } else {
     const host = ctx.app.canvas.parentElement;
     const aside = document.createElement("aside");
     aside.className = "diorama-a11y-aside";
@@ -126,6 +132,7 @@ export function buildA11y(ctx: DioramaContext, actions: { onFocus(id: string): v
     } else {
       document.body.appendChild(aside);
     }
+    createdAside = aside;
     mount = aside;
   }
 
@@ -175,12 +182,21 @@ export function buildA11y(ctx: DioramaContext, actions: { onFocus(id: string): v
       const btn = buttons.get(id as keyof typeof STATIONS);
       if (!btn) return;
       if (!details.open) details.open = true;
-      btn.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      btn.scrollIntoView({
+        block: "nearest",
+        behavior: ctx.reducedMotion ? "auto" : "smooth",
+      });
       btn.classList.remove("diorama-a11y-flash");
       // Restart the CSS animation.
       void btn.offsetWidth;
       btn.classList.add("diorama-a11y-flash");
     },
   };
+
+  // Teardown: drop the directory (and any fallback aside we created).
+  ctx.onCleanup(() => {
+    details.remove();
+    createdAside?.remove();
+  });
   return controller;
 }

@@ -14,6 +14,14 @@ import type { CleanupFn, DioramaContext } from "./core/context.js";
 import { clearRegistry, allStations } from "./core/registry.js";
 import { WORLD_HEIGHT, WORLD_WIDTH } from "./config/world.js";
 
+// Lazy tween initialization defers a tween's first read of its target to a
+// later tick. The diorama destroys display objects while their tweens are
+// still pending (pool recycling, safeDestroy, route teardown), and a lazily
+// initialized tween then reads a destroyed object's nulled scale/position
+// ("Cannot read properties of null (reading 'y')"). Initializing eagerly is
+// the same work done sooner, with no race.
+gsap.defaults({ lazy: false });
+
 const BG_COLOR = 0x07111f;
 
 /** One live diorama instance; null when destroyed. */
@@ -52,13 +60,30 @@ export async function initDiorama(host: HTMLElement): Promise<void> {
 }
 
 async function build(host: HTMLElement): Promise<void> {
-  await document.fonts.ready;
+  // A previous destroy() in this module context paused the global timeline;
+  // re-play so a client-routed revisit is never frozen.
+  gsap.globalTimeline.play();
+  // Same policy as the page boot: wait for fonts, but not past 2.5 s.
+  await Promise.race([
+    document.fonts.ready.then(() => undefined),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, 2500);
+    }),
+  ]);
+
+  // Quality heuristic runs before renderer creation so low mode actually
+  // reduces work: no antialias and a tighter resolution cap.
+  const dpr = window.devicePixelRatio || 1;
+  const rect0 = host.getBoundingClientRect();
+  const busyScreen = dpr * Math.max(rect0.width, 1) * Math.max(rect0.height, 1) > 6_000_000;
+  const cores = navigator.hardwareConcurrency ?? 8;
+  const quality: "high" | "low" = cores <= 4 || busyScreen ? "low" : "high";
 
   const app = new Application();
   await app.init({
     background: BG_COLOR,
-    antialias: true,
-    resolution: Math.min(window.devicePixelRatio || 1, 2),
+    antialias: quality === "high",
+    resolution: Math.min(dpr, quality === "high" ? 2 : 1.5),
     autoDensity: true,
     resizeTo: host,
   });
@@ -108,10 +133,6 @@ async function build(host: HTMLElement): Promise<void> {
   };
 
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const dpr = window.devicePixelRatio || 1;
-  const busyScreen = dpr * screenW * screenH > 6_000_000;
-  const cores = navigator.hardwareConcurrency ?? 8;
-  const quality: "high" | "low" = cores <= 4 || busyScreen ? "low" : "high";
 
   const ctx: DioramaContext = {
     app,
@@ -128,6 +149,8 @@ async function build(host: HTMLElement): Promise<void> {
 
   // Debug/inspection hook for the environment owner's capture harness. Never
   // used by the page itself; harmless in production.
+  let directorRef: import("./systems/director.js").Director | null = null;
+  let agentsRef: import("./agents/system.js").AgentSystem | undefined;
   (window as unknown as { __dioramaDebug?: object }).__dioramaDebug = {
     focus(x: number, y: number, zoom?: number): void {
       camera.focusOn({ x, y }, zoom);
@@ -140,6 +163,12 @@ async function build(host: HTMLElement): Promise<void> {
     viewport: () => viewport,
     stations: () => allStations(),
     app: () => app,
+    activity(): object {
+      return (
+        directorRef?.activity() ?? { stories: [], moving: 0, reacting: 0, total: 0, districts: {} }
+      );
+    },
+    agents: () => agentsRef,
   };
   onCleanup(() => {
     delete (window as unknown as { __dioramaDebug?: object }).__dioramaDebug;
@@ -174,97 +203,162 @@ async function build(host: HTMLElement): Promise<void> {
   onCleanup(() => resizeObserver.disconnect());
 
   // World builders. Each is independent; a failing builder leaves the rest
-  // of the campus standing.
-  const { buildBackdrop } = await import("./world/backdrop.js");
+  // of the campus standing. Modules load in parallel (dev serves each
+  // separately; serial awaits tripled cold-boot time), then build in order.
+  const [
+    { buildBackdrop },
+    { buildGround },
+    { buildPerimeter },
+    { buildMarketLandscape },
+    { buildHyperliquid },
+    { buildResearchDistrict },
+    { buildCentralDistrict },
+    { buildMcpDistrict },
+    { buildRiskDistrict },
+    { buildOpsDistrict },
+  ] = await Promise.all([
+    import("./world/backdrop.js"),
+    import("./world/ground.js"),
+    import("./world/perimeter.js"),
+    import("./world/marketLandscape.js"),
+    import("./world/hyperliquid.js"),
+    import("./stations/research.js"),
+    import("./stations/central.js"),
+    import("./stations/mcp.js"),
+    import("./stations/risk.js"),
+    import("./stations/ops.js"),
+  ]);
   guard("backdrop", () => buildBackdrop(ctx));
-  const { buildGround } = await import("./world/ground.js");
   guard("ground", () => buildGround(ctx));
-  const { buildPerimeter } = await import("./world/perimeter.js");
   guard("perimeter", () => buildPerimeter(ctx));
-  const { buildMarketLandscape } = await import("./world/marketLandscape.js");
   guard("marketLandscape", () => buildMarketLandscape(ctx));
-  const { buildHyperliquid } = await import("./world/hyperliquid.js");
   guard("hyperliquid", () => buildHyperliquid(ctx));
-  const { buildResearchDistrict } = await import("./stations/research.js");
   guard("researchDistrict", () => buildResearchDistrict(ctx));
-  const { buildCentralDistrict } = await import("./stations/central.js");
   guard("centralDistrict", () => buildCentralDistrict(ctx));
-  const { buildMcpDistrict } = await import("./stations/mcp.js");
   guard("mcpDistrict", () => buildMcpDistrict(ctx));
-  const { buildRiskDistrict } = await import("./stations/risk.js");
   guard("riskDistrict", () => buildRiskDistrict(ctx));
-  const { buildOpsDistrict } = await import("./stations/ops.js");
   guard("opsDistrict", () => buildOpsDistrict(ctx));
 
-  // Systems.
-  const { createRailSystem } = await import("./systems/rails.js");
+  // Systems (parallel module load, ordered creation: the director needs the
+  // other three).
+  const [
+    { createRailSystem },
+    { createPopulation },
+    { createSimulation },
+    { createDirector },
+    { createAudio },
+  ] = await Promise.all([
+    import("./systems/rails.js"),
+    import("./agents/system.js"),
+    import("./systems/simulation.js"),
+    import("./systems/director.js"),
+    import("./audio.js"),
+  ]);
   let rails: import("./systems/rails.js").RailSystem | undefined;
   guard("rails", () => {
     rails = createRailSystem(ctx);
   });
 
-  const { createPopulation } = await import("./agents/system.js");
   let agents: import("./agents/system.js").AgentSystem | undefined;
   guard("population", () => {
     agents = createPopulation(ctx);
+    agentsRef = agents;
   });
 
-  const { createSimulation } = await import("./systems/simulation.js");
   let simulation: import("./systems/simulation.js").Simulation | undefined;
   guard("simulation", () => {
     simulation = createSimulation(ctx);
   });
 
-  const { createDirector } = await import("./systems/director.js");
   guard("director", () => {
     if (agents && rails && simulation) {
       const director = createDirector(ctx, { agents, rails, simulation });
+      directorRef = director;
       director.start();
     }
   });
 
-  const { createAudio } = await import("./audio.js");
   let audio: import("./audio.js").AudioController | undefined;
   guard("audio", () => {
     audio = createAudio();
+    onCleanup(() => {
+      audio?.destroy();
+      audio = undefined;
+    });
   });
 
-  // DOM UI. Info card + HUD live in the page host.
-  const { createInfoCard } = await import("./ui/infoCard.js");
+  // DOM UI. Info card + HUD live in the page host. Both instances own DOM and
+  // listeners without a ctx, so their destroy is registered right here.
+  let clearDioramaSelection: () => void = (): void => {};
+  const [
+    { createInfoCard },
+    { createHud },
+    { buildDistrictBanners },
+    { buildA11y },
+    interactionModule,
+  ] = await Promise.all([
+    import("./ui/infoCard.js"),
+    import("./ui/hud.js"),
+    import("./ui/labels.js"),
+    import("./ui/a11y.js"),
+    import("./ui/interaction.js"),
+  ]);
   let infoCard: import("./ui/infoCard.js").InfoCard | undefined;
   guard("infoCard", () => {
     const cardRoot = host.querySelector<HTMLElement>("[data-diorama-card]");
-    if (cardRoot) infoCard = createInfoCard(cardRoot);
-  });
-
-  const { createHud } = await import("./ui/hud.js");
-  guard("hud", () => {
-    const hudRoot = host.querySelector<HTMLElement>("[data-diorama-hud]");
-    if (hudRoot) {
-      createHud(hudRoot, {
-        onResetView: () => camera.resetView(),
-        onToggleSound: () => audio?.setEnabled(true),
+    if (cardRoot) {
+      infoCard = createInfoCard(cardRoot, {
+        onAction: (storyId: string) => {
+          void directorRef?.runStory(storyId);
+        },
+      });
+      onCleanup(() => {
+        infoCard?.destroy();
+        infoCard = undefined;
       });
     }
   });
 
-  const { buildDistrictBanners } = await import("./ui/labels.js");
+  let hud: import("./ui/hud.js").Hud | undefined;
+  guard("hud", () => {
+    const hudRoot = host.querySelector<HTMLElement>("[data-diorama-hud]");
+    if (hudRoot) {
+      hud = createHud(hudRoot, {
+        onResetView: () => {
+          camera.resetView();
+          clearDioramaSelection();
+        },
+        onToggleSound: (next: boolean) => audio?.setEnabled(next),
+      });
+      onCleanup(() => {
+        hud?.destroy();
+        hud = undefined;
+      });
+    }
+  });
+
   guard("districtBanners", () => buildDistrictBanners(ctx));
 
-  const { buildA11y } = await import("./ui/a11y.js");
   guard("a11y", () => {
     buildA11y(ctx, {
       onFocus: (id) => {
+        // Keyboard focus and pointer selection share focusStationById.
         void id;
-        // Station focus wiring lands with the interaction layer; a11y
-        // keyboard focus still routes through the camera.
       },
     });
   });
 
-  const { createInteraction } = await import("./ui/interaction.js");
   guard("interaction", () => {
-    if (infoCard) createInteraction(ctx, { camera, infoCard });
+    if (infoCard) {
+      interactionModule.createInteraction(ctx, {
+        camera,
+        infoCard,
+        onRunStory: (storyId: string) => {
+          void directorRef?.runStory(storyId);
+        },
+      });
+      clearDioramaSelection = interactionModule.clearSelection;
+    }
   });
 
   runtime = {
@@ -273,6 +367,16 @@ async function build(host: HTMLElement): Promise<void> {
     destroy(): void {
       if (!runtime) return;
       runtime = null;
+      // Stop the scheduler first so in-flight stories unwind while the world
+      // still exists; pending waits are cancelled by stop() itself.
+      directorRef?.stop();
+      directorRef = null;
+      // Kill every tween BEFORE any display object is destroyed: Pixi v8
+      // destroy() nulls _position/_scale, and any tween that renders against
+      // a half-destroyed tree throws "Cannot read properties of null". Pause
+      // first so nothing can render mid-clear; no cleanup needs live tweens.
+      gsap.globalTimeline.pause();
+      gsap.globalTimeline.clear();
       for (const unregister of [...ticks]) unregister();
       ticks.clear();
       for (const cleanup of cleanups.splice(0)) {
@@ -282,7 +386,6 @@ async function build(host: HTMLElement): Promise<void> {
           warn("cleanup", e);
         }
       }
-      gsap.globalTimeline.clear();
       clearRegistry();
       try {
         viewport.destroy({ children: true, texture: false });
