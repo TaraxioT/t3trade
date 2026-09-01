@@ -25,24 +25,25 @@ export type PacketKind =
   | "refusal";
 
 /** Packet visual identity: shape family + tint (semantics from palette). */
-export const PACKET_STYLE: Record<PacketKind, { shape: "chevron" | "dot" | "card" | "capsule" | "slip"; color: number; size: number }> = {
+export const PACKET_STYLE: Record<
+  PacketKind,
+  { shape: "chevron" | "dot" | "card" | "capsule" | "slip"; color: number; size: number }
+> = {
   command: { shape: "chevron", color: 0x34e5e5, size: 12 },
   event: { shape: "dot", color: 0x5a7cff, size: 8 },
   proposal: { shape: "card", color: 0x9a70ff, size: 13 },
   toolResult: { shape: "dot", color: 0x56f2c2, size: 9 },
   approval: { shape: "card", color: 0x63f58b, size: 13 },
   order: { shape: "capsule", color: 0xff9f45, size: 14 },
-  receipt: { shape: "slip", color: 0xddef3, size: 11 },
+  receipt: { shape: "slip", color: 0xddefe3, size: 11 },
   recon: { shape: "dot", color: 0x56f2c2, size: 10 },
   refusal: { shape: "card", color: 0xff6b75, size: 12 },
 };
 
 export type RouteId =
   | "landscapeToMarketData"
-  | "landscapeToResearchTools"
   | "marketDataToStrategy"
   | "strategyToMissionBoard"
-  | "strategyToDecision"
   | "decisionToApproval"
   | "deniedReturn"
   | "approvalToPermission"
@@ -55,16 +56,9 @@ export type RouteId =
   | "exchangeStateReturn"
   | "executionToReceipts"
   | "receiptsToArchive"
-  | "receiptsToStateStore"
   | "localStateStream"
   | "floorToMcp"
-  | "floorToApproval"
-  | "hubToMarketDataTools"
-  | "hubToResearchTools"
-  | "hubToPortfolioTools"
-  | "hubToSchemas"
   | "hubToAdapterBay"
-  | "adapterToProviders"
   | "missionToSignalTower"
   | "recoveryDispatch";
 
@@ -77,23 +71,28 @@ export interface RouteDef {
   /** Endpoints for stories (station ids where meaningful). */
   from?: StationId;
   to?: StationId;
+  /** External (non-station) endpoint for focus reveal: the Hyperliquid
+   * platform is a synthetic pickable, not a StationId. */
+  externalTo?: "hyperliquid";
+  externalFrom?: "hyperliquid";
   /** Two-way routes allow reverse travel (packets flip direction). */
   twoWay?: boolean;
 }
 
 /**
  * PRIMARY lifecycle corridor: research -> strategy -> mission -> decision ->
- * approval -> permission -> risk -> protection -> signer -> execution ->
- * exchange, plus the exchange -> reconciliation -> receipts -> archive
- * return leg. Primary rails render at full contrast with direction chevrons;
- * everything else (research/tool traffic, provider links) is subordinate.
+ * approval -> permission <-> loss budget -> risk -> protection -> signer ->
+ * execution -> exchange, plus the exchange -> reconciliation -> receipts ->
+ * archive return leg. Primary rails are the structural trunks: faintly
+ * present at idle with direction chevrons, while local branches stay hidden
+ * until a story dispatches them (see systems/rails.ts tri-state).
  */
 export const PRIMARY_ROUTES: ReadonlySet<RouteId> = new Set<RouteId>([
   "marketDataToStrategy",
   "strategyToMissionBoard",
-  "strategyToDecision",
   "decisionToApproval",
   "approvalToPermission",
+  "permissionToBudget",
   "permissionToRisk",
   "riskToProtection",
   "protectionToSigner",
@@ -107,13 +106,13 @@ export const PRIMARY_ROUTES: ReadonlySet<RouteId> = new Set<RouteId>([
 /**
  * Return flow: state, receipts, and archive legs coming back from the
  * exchange/execution side. Rendered warm-gold with a dashed tail so returns
- * read as a distinct flow from outgoing orange order capsules.
+ * read as a distinct flow from outgoing orange order capsules (dash rhythm
+ * and direction carry the distinction, not color alone).
  */
 export const RETURN_ROUTES: ReadonlySet<RouteId> = new Set<RouteId>([
   "exchangeStateReturn",
   "executionToReceipts",
   "receiptsToArchive",
-  "receiptsToStateStore",
 ]);
 
 const p = (x: number, y: number) => ({ x, y });
@@ -124,12 +123,6 @@ export const ROUTES: Record<RouteId, RouteDef> = {
     points: [p(545, 235), p(575, 275), p(592, 300)],
     kind: "event",
     to: "marketData",
-  },
-  landscapeToResearchTools: {
-    id: "landscapeToResearchTools",
-    points: [p(790, 235), p(805, 265), p(818, 282)],
-    kind: "event",
-    to: "researchTools",
   },
   marketDataToStrategy: {
     id: "marketDataToStrategy",
@@ -146,13 +139,6 @@ export const ROUTES: Record<RouteId, RouteDef> = {
     from: "strategyLab",
     to: "missionBoard",
     twoWay: true,
-  },
-  strategyToDecision: {
-    id: "strategyToDecision",
-    points: [p(1005, 448), p(1012, 540)],
-    kind: "proposal",
-    from: "strategyLab",
-    to: "decisionTable",
   },
   decisionToApproval: {
     id: "decisionToApproval",
@@ -217,15 +203,19 @@ export const ROUTES: Record<RouteId, RouteDef> = {
   },
   exchangeTunnel: {
     id: "exchangeTunnel",
-    points: [p(2530, 1160), p(2630, 1130), p(2695, 1105)],
+    // Lands at the receiving terminal socket on the platform's west face
+    // (world/hyperliquid.ts builds the socket around PAD 2660,1112).
+    points: [p(2530, 1160), p(2610, 1144), p(2660, 1114)],
     kind: "order",
     from: "executionGateway",
+    externalTo: "hyperliquid",
     twoWay: true,
   },
   exchangeStateReturn: {
     id: "exchangeStateReturn",
+    // Departs from the same terminal heading south along the platform face.
     points: [
-      p(2705, 1170),
+      p(2662, 1132),
       p(2610, 1315),
       p(2200, 1412),
       p(1500, 1432),
@@ -234,13 +224,23 @@ export const ROUTES: Record<RouteId, RouteDef> = {
       p(618, 1292),
     ],
     kind: "recon",
+    externalFrom: "hyperliquid",
+    to: "reconciliationDock",
   },
   executionToReceipts: {
     id: "executionToReceipts",
     // Receipt leg runs above (north of) exchangeStateReturn with ~80-120u
     // of separation, and elbows north of the audit archive footprint
     // (955-1175 x, 1240-1370 y) instead of weaving through it.
-    points: [p(2465, 1210), p(2320, 1270), p(1900, 1320), p(1350, 1300), p(1150, 1240), p(980, 1225), p(852, 1252)],
+    points: [
+      p(2465, 1210),
+      p(2320, 1270),
+      p(1900, 1320),
+      p(1350, 1300),
+      p(1150, 1240),
+      p(980, 1225),
+      p(852, 1252),
+    ],
     kind: "receipt",
     from: "executionGateway",
     to: "receiptPrinter",
@@ -251,13 +251,6 @@ export const ROUTES: Record<RouteId, RouteDef> = {
     kind: "receipt",
     from: "receiptPrinter",
     to: "auditArchive",
-  },
-  receiptsToStateStore: {
-    id: "receiptsToStateStore",
-    points: [p(790, 1215), p(650, 1150), p(520, 1062)],
-    kind: "event",
-    from: "receiptPrinter",
-    to: "stateStore",
   },
   localStateStream: {
     id: "localStateStream",
@@ -274,45 +267,6 @@ export const ROUTES: Record<RouteId, RouteDef> = {
     to: "mcpHub",
     twoWay: true,
   },
-  floorToApproval: {
-    id: "floorToApproval",
-    points: [p(1560, 865), p(1662, 912)],
-    kind: "proposal",
-    from: "tradingFloor",
-    to: "approval",
-  },
-  hubToMarketDataTools: {
-    id: "hubToMarketDataTools",
-    points: [p(2120, 438), p(2072, 392), p(2038, 362)],
-    kind: "command",
-    from: "mcpHub",
-    to: "marketDataTools",
-    twoWay: true,
-  },
-  hubToResearchTools: {
-    id: "hubToResearchTools",
-    points: [p(2258, 438), p(2312, 382), p(2348, 350)],
-    kind: "command",
-    from: "mcpHub",
-    to: "researchToolsMcp",
-    twoWay: true,
-  },
-  hubToPortfolioTools: {
-    id: "hubToPortfolioTools",
-    points: [p(2120, 570), p(2072, 612), p(2040, 640)],
-    kind: "command",
-    from: "mcpHub",
-    to: "portfolioTools",
-    twoWay: true,
-  },
-  hubToSchemas: {
-    id: "hubToSchemas",
-    points: [p(2258, 570), p(2322, 618), p(2368, 648)],
-    kind: "command",
-    from: "mcpHub",
-    to: "toolSchemas",
-    twoWay: true,
-  },
   hubToAdapterBay: {
     id: "hubToAdapterBay",
     points: [p(2320, 505), p(2405, 502)],
@@ -321,20 +275,23 @@ export const ROUTES: Record<RouteId, RouteDef> = {
     to: "adapterBay",
     twoWay: true,
   },
-  adapterToProviders: {
-    id: "adapterToProviders",
-    points: [p(2502, 455), p(2488, 330), p(2440, 245)],
-    kind: "event",
-    from: "adapterBay",
-    to: "providers",
-    twoWay: true,
-  },
   missionToSignalTower: {
     id: "missionToSignalTower",
-    // Rerouted off the old long diagonal across the research floor: gentle
-    // elbows along the district edges (below the mission board, through the
-    // budget-planning/strategy gap, then east to the terminal point).
-    points: [p(425, 348), p(430, 420), p(650, 458), p(850, 495), p(1000, 545), p(1080, 528)],
+    // Mission status changes propagate east to the signal tower. The old path
+    // was one long diagonal that stopped at the event clock; this one walks
+    // readable elbows: below the mission board, along the corridor north of
+    // budget planning, down the budget/strategy gap, under the decision
+    // table, up the research/floor seam past the event clock, then east along
+    // the floor's north apron into the tower's west face.
+    points: [
+      p(448, 332),
+      p(455, 448),
+      p(848, 448),
+      p(848, 708),
+      p(1170, 708),
+      p(1170, 545),
+      p(1808, 545),
+    ],
     kind: "command",
     from: "missionBoard",
     to: "signalTower",

@@ -14,7 +14,10 @@ export const PALETTE = {
   // Structural surfaces
   structure: 0x142a40,
   structureLight: 0x1d3b56,
-  surfacePale: 0xddef3,
+  // Pale blue-white surface per the palette spec (#DDEDF3); the old value
+  // 0x0ddef3 (a dropped digit) rendered saturated cyan everywhere a pale
+  // surface was intended.
+  surfacePale: 0xddedf3,
 
   // Primary energy / system state
   cyan: 0x34e5e5,

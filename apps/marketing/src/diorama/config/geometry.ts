@@ -27,11 +27,14 @@ export const EXIT_SOUTH = { y: 1370, x1: 2300, x2: 2400, cx: 2350 } as const;
 
 /** Main campus walkway from the south slab rim to the trading floor. The
  * first point sits ON the slab's top face (its rim is y 1430): anything
- * lower renders on the under-crust and reads as a beam into space. */
+ * lower renders on the under-crust and reads as a beam into space. The
+ * path runs straight north through the identity gate before bending
+ * north-east, so the emissive strips never cross the gate cluster
+ * diagonally. */
 export const WALKWAY_SOUTH: { x: number; y: number }[] = [
   { x: 950, y: 1425 },
   { x: 950, y: 1330 },
-  { x: 1030, y: 1180 },
+  { x: 990, y: 1260 },
   { x: 1200, y: 1060 },
 ];
 

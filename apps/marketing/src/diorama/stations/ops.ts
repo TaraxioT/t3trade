@@ -21,6 +21,7 @@ import {
   edgeStrip,
   glow,
   isoBox,
+  isoCylinder,
   isoTile,
   isoWall,
   lightBeam,
@@ -108,12 +109,7 @@ function stationBase(ctx: DioramaContext, id: keyof typeof STATIONS): StationPar
 }
 
 /** Signboard above the tallest point of the structure, in the labels layer. */
-function stationSign(
-  ctx: DioramaContext,
-  id: keyof typeof STATIONS,
-  rise: number,
-  dx = 0,
-): void {
+function stationSign(ctx: DioramaContext, id: keyof typeof STATIONS, rise: number, dx = 0): void {
   const def = STATIONS[id];
   const sign = makeSign(def.label, {
     x: def.anchor.x + dx,
@@ -177,7 +173,14 @@ function glyphMark(kind: "chevron" | "dot" | "card" | "capsule" | "slip", color:
  * Soft dark ground ellipse rendered right after the hit surface so every
  * substantial structure visibly sits on the platform instead of floating.
  */
-function contactShadow(root: Container, x: number, y: number, w: number, d: number, alpha = 0.27): void {
+function contactShadow(
+  root: Container,
+  x: number,
+  y: number,
+  w: number,
+  d: number,
+  alpha = 0.27,
+): void {
   const g = new Graphics();
   g.ellipse(x, y, w / 2, d / 2);
   g.fill({ color: 0x03080f, alpha });
@@ -187,7 +190,16 @@ function contactShadow(root: Container, x: number, y: number, w: number, d: numb
 /** Small static crate for filling dead space near structures. Magenta rim
  * is the ops district counter-accent (accent2). */
 function crate(x: number, y: number, s = 11): Graphics {
-  return isoBox({ x, y, w: s, d: s * 0.6, h: s * 0.55, color: PALETTE.structureLight, rim: PALETTE.magenta, rimAlpha: 0.3 });
+  return isoBox({
+    x,
+    y,
+    w: s,
+    d: s * 0.6,
+    h: s * 0.55,
+    color: PALETTE.structureLight,
+    rim: PALETTE.magenta,
+    rimAlpha: 0.3,
+  });
 }
 
 /** Thin signal pylon with a soft emissive tip light; adds skyline variation. */
@@ -215,7 +227,11 @@ const tinyStyle = (size: number, color: number): TextStyle =>
 // 1. STATE STORE: rack of five glowing state cartridges (open-front room)
 // ===========================================================================
 
-const CARTRIDGES: { label: string; tint: number; glyph: "dot" | "card" | "capsule" | "chevron" | "slip" }[] = [
+const CARTRIDGES: {
+  label: string;
+  tint: number;
+  glyph: "dot" | "card" | "capsule" | "chevron" | "slip";
+}[] = [
   { label: "missions", tint: PALETTE.cyan, glyph: "card" },
   { label: "decisions", tint: PALETTE.violet, glyph: "chevron" },
   { label: "account", tint: PALETTE.yellow, glyph: "capsule" },
@@ -229,15 +245,27 @@ function buildStateStore(ctx: DioramaContext): void {
 
   contactShadow(root, def.anchor.x + 4, def.anchor.y + 10, 170, 92);
   // Room: floor plate, low back wall (west+north sides), open front.
-  root.addChild(isoTile(def.anchor.x, def.anchor.y, 150, 100, PALETTE.structure, 1, PALETTE.structureLight));
   root.addChild(
-    isoWall({ x1: def.anchor.x - 66, y1: def.anchor.y - 46, x2: def.anchor.x - 66, y2: def.anchor.y + 44, h: 30, color: PALETTE.structure, rim: PALETTE.aqua }),
+    isoTile(def.anchor.x, def.anchor.y, 150, 100, PALETTE.structure, 1, PALETTE.structureLight),
+  );
+  root.addChild(
+    isoWall({
+      x1: def.anchor.x - 66,
+      y1: def.anchor.y - 46,
+      x2: def.anchor.x - 66,
+      y2: def.anchor.y + 44,
+      h: 30,
+      color: PALETTE.structure,
+      rim: PALETTE.aqua,
+    }),
   );
 
   // Cartridge rack: a bench plus five vertical glass slots.
   const rackX = def.anchor.x - 44;
   const rackY = def.anchor.y + 6;
-  root.addChild(isoBox({ x: rackX + 40, y: rackY + 18, w: 104, d: 26, h: 8, color: PALETTE.structureLight }));
+  root.addChild(
+    isoBox({ x: rackX + 40, y: rackY + 18, w: 104, d: 26, h: 8, color: PALETTE.structureLight }),
+  );
 
   const bandGlows: Sprite[] = [];
   CARTRIDGES.forEach((c, i) => {
@@ -262,14 +290,16 @@ function buildStateStore(ctx: DioramaContext): void {
     bandGlows.push(band);
   });
 
-  // Receiving slot on the east side where receiptsToStateStore terminates.
+  // Intake slot on the east side. The old receiptsToStateStore rail is gone
+  // (dead geometry removal); the slot stays as the store's intake fixture
+  // and brightens when the persist beat writes a cartridge.
   const slot = new Graphics();
   slot.roundRect(def.anchor.x + 46, def.anchor.y - 2, 18, 10, 2);
   slot.fill({ color: PALETTE.structureLight });
   slot.rect(def.anchor.x + 49, def.anchor.y - 8, 12, 3);
   slot.fill({ color: PALETTE.aqua, alpha: 0.8 });
   root.addChild(slot);
-  const trayGlow = glow(def.anchor.x + 55, def.anchor.y - 8, 24, PALETTE.aqua, 0.3);
+  const trayGlow = glow(def.anchor.x + 55, def.anchor.y - 8, 24, PALETTE.aqua, 0.16);
   root.addChild(trayGlow);
 
   // Dead-space fill: a crate stack west of the room and a corner signal pylon.
@@ -278,31 +308,40 @@ function buildStateStore(ctx: DioramaContext): void {
   signalPylon(root, def.anchor.x + 66, def.anchor.y + 32, 58, PALETTE.cyan);
 
   // Sequential soft pulse: exactly one cartridge is hot at a time, so the
-  // rack beats like a heart over a ~7 s cycle.
+  // rack beats like a heart over a ~7 s cycle. The persist beat below flares
+  // one cartridge brighter; this tick stays the single alpha writer.
+  let flared = -1;
+  let flareTimer: gsap.core.Tween | null = null;
   if (!ctx.reducedMotion) {
     ctx.onTick(() => {
       const hot = Math.floor(performance.now() / 1400) % bandGlows.length;
       bandGlows.forEach((b, i) => {
-        b.alpha = i === hot ? 0.62 : 0.2;
+        b.alpha = i === flared ? 0.85 : i === hot ? 0.62 : 0.2;
       });
     });
   }
 
-  // Arriving state packet fades at the receiving slot (rails animate travel).
-  every(6.5, 1.2, () => {
-    const slip = makeSlip(PALETTE.aqua);
-    slip.position.set(def.anchor.x + 55, def.anchor.y - 14);
-    slip.alpha = 0;
-    root.addChild(slip);
-    animatedTargets.push(slip);
-    gsap.to(slip, {
-      alpha: 1,
-      y: def.anchor.y - 6,
-      duration: 0.5,
-      onComplete: () => {
-        gsap.to(slip, { alpha: 0, duration: 0.8, delay: 0.6, onComplete: () => safeDestroy(slip) });
-      },
+  // Persist beat: every ~13 s one cartridge takes a durable write (its band
+  // flares) and the intake slot blips. This is the store's own write cycle,
+  // not an arrival from the removed receiptsToStateStore rail, so no phantom
+  // packets fade in midair.
+  let cartridgeIdx = 1;
+  every(13, 1.2, () => {
+    flared = cartridgeIdx % bandGlows.length;
+    cartridgeIdx += 1;
+    flareTimer?.kill();
+    flareTimer = gsap.delayedCall(1.9, () => {
+      flared = -1;
     });
+    animatedTargets.push(trayGlow);
+    gsap.to(trayGlow, {
+      alpha: 0.5,
+      duration: 0.35,
+      onComplete: () => gsap.to(trayGlow, { alpha: 0.16, duration: 0.9, delay: 0.4 }),
+    });
+  });
+  ctx.onCleanup(() => {
+    flareTimer?.kill();
   });
 
   stationSign(ctx, "stateStore", 66);
@@ -313,12 +352,18 @@ function buildStateStore(ctx: DioramaContext): void {
 // 2. RAIL YARD: Event Bus junction with sorting arm
 // ===========================================================================
 
-const YARD_LANES: { kind: "chevron" | "dot" | "card" | "capsule" | "slip"; color: number; dx: number; dy: number }[] = [
+const YARD_LANES: {
+  kind: "chevron" | "dot" | "card" | "capsule" | "slip";
+  color: number;
+  dx: number;
+  dy: number;
+}[] = [
   { kind: "chevron", color: 0x34e5e5, dx: -62, dy: -22 },
   { kind: "dot", color: 0x5a7cff, dx: -20, dy: -36 },
   { kind: "card", color: 0x9a70ff, dx: 26, dy: -30 },
   { kind: "capsule", color: 0xff9f45, dx: 58, dy: 4 },
-  { kind: "slip", color: 0xddef3, dx: 24, dy: 26 },
+  // Pale receipt slip; matches the corrected PACKET_STYLE.receipt tint.
+  { kind: "slip", color: 0xddefe3, dx: 24, dy: 26 },
 ];
 
 function buildRailYard(ctx: DioramaContext): void {
@@ -327,22 +372,82 @@ function buildRailYard(ctx: DioramaContext): void {
 
   contactShadow(root, def.anchor.x + 4, def.anchor.y + 8, 170, 96);
   // Raised sorting table.
-  root.addChild(isoBox({ x: def.anchor.x, y: def.anchor.y, w: 150, d: 80, h: 16, color: PALETTE.structure, rim: PALETTE.structureLight }));
-  root.addChild(isoTile(def.anchor.x, def.anchor.y - 16, 150, 80, PALETTE.structureLight, 1, PALETTE.magenta));
+  root.addChild(
+    isoBox({
+      x: def.anchor.x,
+      y: def.anchor.y,
+      w: 150,
+      d: 80,
+      h: 16,
+      color: PALETTE.structure,
+      rim: PALETTE.structureLight,
+    }),
+  );
+  root.addChild(
+    isoTile(def.anchor.x, def.anchor.y - 16, 150, 80, PALETTE.structureLight, 1, PALETTE.magenta),
+  );
 
-  // Five short rail stubs converging on the table center, with lane glyphs.
+  // Physical junction hub at the table center: the sorting lanes terminate
+  // on a node instead of crossed lines floating on the tabletop.
+  root.addChild(
+    isoCylinder({
+      x: def.anchor.x,
+      y: def.anchor.y - 16,
+      r: 11,
+      h: 9,
+      color: PALETTE.structure,
+      rim: PALETTE.magenta,
+    }),
+  );
+
+  // Five short rail stubs converging on the hub, with lane glyphs. Stubs sit
+  // dim at rest and brighten only while the sorting arm flicks to their lane.
+  const laneMarks: Graphics[] = [];
+  const laneStubs: Graphics[] = [];
   for (const lane of YARD_LANES) {
-    root.addChild(
-      edgeStrip(def.anchor.x, def.anchor.y - 16, def.anchor.x + lane.dx, def.anchor.y - 16 + lane.dy, 0x2a4a66, 0.9, 3),
+    const stub = edgeStrip(
+      def.anchor.x,
+      def.anchor.y - 16,
+      def.anchor.x + lane.dx,
+      def.anchor.y - 16 + lane.dy,
+      0x2a4a66,
+      0.55,
+      3,
     );
+    root.addChild(stub);
+    laneStubs.push(stub);
     const mark = glyphMark(lane.kind, lane.color);
     mark.position.set(def.anchor.x + lane.dx, def.anchor.y - 20 + lane.dy);
+    mark.alpha = 0.55;
     root.addChild(mark);
+    laneMarks.push(mark);
   }
 
-  // Tall comm mast on the north corner lifts the ops skyline; crate fills the
-  // dead space at the table's east corner.
-  signalPylon(root, def.anchor.x - 68, def.anchor.y - 34, 66, PALETTE.magenta);
+  // Waiting tray on the west approach: queued packets drain one per sort
+  // cycle and refill when empty, so the junction shows real queue depth.
+  const tray = new Graphics();
+  tray.roundRect(def.anchor.x - 128, def.anchor.y - 22, 56, 14, 2);
+  tray.fill({ color: PALETTE.structure, alpha: 0.85 });
+  tray.roundRect(def.anchor.x - 128, def.anchor.y - 22, 56, 14, 2);
+  tray.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.8 });
+  root.addChild(tray);
+  const queue: Graphics[] = [];
+  for (let i = 0; i < 3; i++) {
+    const chip = glyphMark("card", PALETTE.magenta);
+    chip.position.set(def.anchor.x - 118 + i * 16, def.anchor.y - 15);
+    root.addChild(chip);
+    queue.push(chip);
+  }
+
+  // Sign mast standing on the table's north corner: a short, visibly
+  // mounted post that grounds the EVENT BUS sign above (the old tall pylon
+  // hovered beside the sign and read as an unattached antenna).
+  const mast = new Graphics();
+  mast.rect(def.anchor.x - 1.2, def.anchor.y - 96, 2.4, 46);
+  mast.fill({ color: PALETTE.structureLight });
+  mast.rect(def.anchor.x - 4, def.anchor.y - 96, 8, 1.4);
+  mast.fill({ color: PALETTE.magenta, alpha: 0.7 });
+  root.addChild(mast);
   root.addChild(crate(def.anchor.x + 74, def.anchor.y - 44));
 
   // Mechanical sorting arm: pivot post + boom, flicks toward a lane.
@@ -359,7 +464,8 @@ function buildRailYard(ctx: DioramaContext): void {
   arm.angle = -0.5;
   root.addChild(arm);
 
-  // Visual loop (~6 s): a dot arrives, the arm flicks, the dot departs.
+  // Visual loop (~6 s): a dot arrives, the arm flicks, the dot departs, and
+  // the chosen lane plus its stub brighten while the queue drains.
   const dot = new Sprite(dotTexture());
   dot.anchor.set(0.5);
   dot.width = 12;
@@ -370,17 +476,47 @@ function buildRailYard(ctx: DioramaContext): void {
   root.addChild(dot);
   const lanes = YARD_LANES;
   let laneIdx = 0;
+  let queued = 3;
 
   const runSort = (): void => {
     if (ctx.reducedMotion) return;
-    const lane = lanes[laneIdx % lanes.length];
+    // Queue depth: drain one chip per cycle; refill all when empty.
+    if (queued === 0) {
+      queued = queue.length;
+      queue.forEach((chip, i) => {
+        animatedTargets.push(chip);
+        gsap.fromTo(chip, { alpha: 0 }, { alpha: 0.9, duration: 0.3, delay: i * 0.15 });
+      });
+    }
+    queued -= 1;
+    const drainedChip = queue[queued];
+    if (drainedChip) {
+      animatedTargets.push(drainedChip);
+      gsap.to(drainedChip, { alpha: 0.12, duration: 0.4, delay: 1.5 });
+    }
+    const laneIdxMod = laneIdx % lanes.length;
+    const lane = lanes[laneIdxMod];
     laneIdx += 1;
+    // Active lane reads hot; the rest settle back to their resting dim.
+    laneStubs.forEach((stub, i) => {
+      animatedTargets.push(stub);
+      gsap.to(stub, { alpha: i === laneIdxMod ? 1 : 0.55, duration: 0.3, delay: 1.3 });
+    });
+    laneMarks.forEach((mark, i) => {
+      animatedTargets.push(mark);
+      gsap.to(mark, { alpha: i === laneIdxMod ? 1 : 0.55, duration: 0.3, delay: 1.3 });
+    });
     dot.tint = lane.color;
     dot.position.set(def.anchor.x - 78, def.anchor.y - 30);
     animatedTargets.push(dot);
     gsap.to(dot, { alpha: 1, x: def.anchor.x, y: def.anchor.y - 22, duration: 1.4, ease: "none" });
     animatedTargets.push(arm);
-    gsap.to(arm, { angle: Math.atan2(lane.dy, lane.dx) * 57.3, duration: 0.3, delay: 1.4, ease: "power2.out" });
+    gsap.to(arm, {
+      angle: Math.atan2(lane.dy, lane.dx) * 57.3,
+      duration: 0.3,
+      delay: 1.4,
+      ease: "power2.out",
+    });
     gsap.to(dot, {
       alpha: 0,
       x: def.anchor.x + lane.dx * 1.2,
@@ -409,7 +545,17 @@ function buildReconciliationDock(ctx: DioramaContext): void {
 
   contactShadow(root, cx + 6, cy + 12, 230, 130);
   // Dock platform.
-  root.addChild(isoBox({ x: cx, y: cy, w: 200, d: 120, h: 10, color: PALETTE.structure, rim: PALETTE.structureLight }));
+  root.addChild(
+    isoBox({
+      x: cx,
+      y: cy,
+      w: 200,
+      d: 120,
+      h: 10,
+      color: PALETTE.structure,
+      rim: PALETTE.structureLight,
+    }),
+  );
   root.addChild(isoTile(cx, cy - 10, 200, 120, PALETTE.structureLight, 1, PALETTE.healthy));
 
   // East belt carrying local expected state (pale slips) from portfolio vault.
@@ -448,9 +594,9 @@ function buildReconciliationDock(ctx: DioramaContext): void {
     pipeline.fill({ color: PALETTE.structure });
   }
   pipeline.rect(cx - 62, cy + 53.5, 160, 1.4);
-  pipeline.fill({ color: PALETTE.healthy, alpha: 0.7 });
+  pipeline.fill({ color: PALETTE.healthy, alpha: 0.8 });
   root.addChild(pipeline);
-  root.addChild(glow(cx - 20, cy + 55, 40, PALETTE.healthy, 0.22));
+  root.addChild(glow(cx - 20, cy + 55, 40, PALETTE.healthy, 0.3));
 
   // Dead-space fill: crates west of the platform, one upright, one tipped.
   root.addChild(crate(cx - 108, cy + 18));
@@ -524,7 +670,8 @@ function buildReconciliationDock(ctx: DioramaContext): void {
           alpha: 1,
           y: cy - 14,
           duration: 0.4,
-          onComplete: () => gsap.to(popReceipt, { alpha: 0, y: cy - 26, duration: 0.6, delay: 1.2 }),
+          onComplete: () =>
+            gsap.to(popReceipt, { alpha: 0, y: cy - 26, duration: 0.6, delay: 1.2 }),
         });
         gsap.to(exDot, { width: 18, height: 18, duration: 0.25, yoyo: true, repeat: 1 });
         gsap.to([localSlip], { alpha: 1, duration: 0.3 });
@@ -532,7 +679,11 @@ function buildReconciliationDock(ctx: DioramaContext): void {
         // Amber wash, both representations stay side by side, beacon + arm.
         animatedTargets.push(driftWash, beacon, beam, dispatchArm, localSlip, exDot);
         driftWash.tint = 0xffffff;
-        gsap.to(driftWash, { alpha: 0.55, duration: 0.4, onComplete: () => gsap.to(driftWash, { alpha: 0, duration: 1.6, delay: 1.6 }) });
+        gsap.to(driftWash, {
+          alpha: 0.55,
+          duration: 0.4,
+          onComplete: () => gsap.to(driftWash, { alpha: 0, duration: 1.6, delay: 1.6 }),
+        });
         gsap.to(beam, { angle: 9, duration: 0.4 });
         gsap.to(localSlip, { x: cx + 96, duration: 0.4 });
         gsap.to(exDot, { x: cx + 18, duration: 0.4 });
@@ -543,7 +694,11 @@ function buildReconciliationDock(ctx: DioramaContext): void {
           yoyo: true,
           onComplete: () => gsap.set(beacon, { alpha: 0 }),
         });
-        gsap.to(dispatchArm, { angle: 42, duration: 0.5, onComplete: () => gsap.to(dispatchArm, { angle: -20, duration: 0.8, delay: 2.2 }) });
+        gsap.to(dispatchArm, {
+          angle: 42,
+          duration: 0.5,
+          onComplete: () => gsap.to(dispatchArm, { angle: -20, duration: 0.8, delay: 2.2 }),
+        });
       }
     },
   };
@@ -586,9 +741,35 @@ function buildReceiptPrinter(ctx: DioramaContext): void {
   const cy = def.anchor.y;
 
   contactShadow(root, cx - 6, cy + 6, 200, 70);
-  // Machine body, paper stack, status dot.
-  root.addChild(isoBox({ x: cx - 20, y: cy, w: 76, d: 56, h: 34, color: PALETTE.structure, rim: PALETTE.structureLight }));
-  root.addChild(isoBox({ x: cx - 44, y: cy + 8, w: 26, d: 30, h: 12, color: PALETTE.structureLight }));
+  // Machine body on a raised plinth, paper stack, status dot. The receipts
+  // printer is half of the district's active foreground pair (with the
+  // reconciliation dock), so it gets a heavier base and a brighter conveyor
+  // than the downstream storage fixtures.
+  root.addChild(
+    isoBox({
+      x: cx - 20,
+      y: cy + 4,
+      w: 88,
+      d: 62,
+      h: 7,
+      color: PALETTE.structure,
+      rim: PALETTE.structureLight,
+    }),
+  );
+  root.addChild(
+    isoBox({
+      x: cx - 20,
+      y: cy,
+      w: 76,
+      d: 56,
+      h: 34,
+      color: PALETTE.structure,
+      rim: PALETTE.structureLight,
+    }),
+  );
+  root.addChild(
+    isoBox({ x: cx - 44, y: cy + 8, w: 26, d: 30, h: 12, color: PALETTE.structureLight }),
+  );
   const paper = new Graphics();
   paper.roundRect(cx - 50, cy - 8, 14, 5, 1);
   paper.fill({ color: PALETTE.surfacePale, alpha: 0.9 });
@@ -613,8 +794,16 @@ function buildReceiptPrinter(ctx: DioramaContext): void {
     conveyor.fill({ color: 0x2a4a66 });
   }
   conveyor.rect(cx + 8, cy + 2, 96, 2);
-  conveyor.fill({ color: PALETTE.aqua, alpha: 0.4 });
+  conveyor.fill({ color: PALETTE.aqua, alpha: 0.55 });
   root.addChild(conveyor);
+
+  // Printed pile at the conveyor's far end: output volume at a glance.
+  const pile = new Graphics();
+  for (let i = 0; i < 3; i++) {
+    pile.roundRect(cx + 100 - i * 1.5, cy + 16 - i * 3.5, 13, 8, 1);
+    pile.fill({ color: PALETTE.surfacePale, alpha: 0.85 - i * 0.14 });
+  }
+  root.addChild(pile);
 
   let kindIdx = 0;
   const api: ReceiptPrinterApi = {
@@ -683,40 +872,45 @@ function buildAuditArchive(ctx: DioramaContext): void {
   const cy = def.anchor.y;
 
   contactShadow(root, cx, cy - 2, 200, 60);
-  // Billboard wall with ladder rail.
+  // Billboard wall with ladder rail. The wall is biased east on the footprint
+  // so its west corner clears the identity gate arch below; the archive is
+  // downstream storage, so its rim is a step calmer than the foreground pair.
   const wall = new Graphics();
-  wall.roundRect(cx - 92, cy - 86, 184, 78, 4);
+  wall.roundRect(cx - 78, cy - 86, 184, 78, 4);
   wall.fill({ color: PALETTE.structure });
-  wall.roundRect(cx - 92, cy - 86, 184, 78, 4);
-  wall.stroke({ width: 1.5, color: PALETTE.structureLight, alpha: 0.9 });
-  wall.rect(cx + 70, cy - 82, 3, 70);
-  wall.rect(cx + 78, cy - 82, 3, 70);
+  wall.roundRect(cx - 78, cy - 86, 184, 78, 4);
+  wall.stroke({ width: 1.5, color: PALETTE.structureLight, alpha: 0.7 });
+  wall.rect(cx + 84, cy - 82, 3, 70);
+  wall.rect(cx + 92, cy - 82, 3, 70);
   wall.fill({ color: 0x2a4a66 });
   for (let r = 0; r < 3; r++) {
     for (let i = 0; i < 5; i++) {
-      wall.rect(cx - 86 + i * 30, cy - 80 + r * 24, 4, 2);
-      wall.rect(cx - 86 + i * 30 + 22, cy - 80 + r * 24, 4, 2);
+      wall.rect(cx - 72 + i * 30, cy - 80 + r * 24, 4, 2);
+      wall.rect(cx - 72 + i * 30 + 22, cy - 80 + r * 24, 4, 2);
     }
   }
   wall.fill({ color: 0x2a4a66, alpha: 0.8 });
   root.addChild(wall);
 
-  // Thin antenna mast on the wall's east end lifts the archive silhouette.
-  signalPylon(root, cx + 62, cy - 84, 46, PALETTE.violet);
-
   // 3 rows x 6 pale drawers, each with a tiny kind glyph.
-  const drawerGlyphs: ("dot" | "card" | "capsule" | "slip" | "chevron")[] = ["card", "slip", "capsule", "dot", "chevron"];
+  const drawerGlyphs: ("dot" | "card" | "capsule" | "slip" | "chevron")[] = [
+    "card",
+    "slip",
+    "capsule",
+    "dot",
+    "chevron",
+  ];
   const drawers: Container[] = [];
   for (let r = 0; r < 3; r++) {
     for (let cIdx = 0; cIdx < 6; cIdx++) {
       const d = new Container();
-      const dx = cx - 86 + cIdx * 29;
+      const dx = cx - 72 + cIdx * 29;
       const dy = cy - 80 + r * 24;
       const front = new Graphics();
       front.roundRect(0, 0, 25, 19, 2);
       front.fill({ color: PALETTE.structureLight });
       front.roundRect(0, 0, 25, 19, 2);
-      front.stroke({ width: 1.2, color: PALETTE.aqua, alpha: 0.55 });
+      front.stroke({ width: 1.2, color: PALETTE.aqua, alpha: 0.45 });
       front.rect(9, 15, 7, 2);
       front.fill({ color: 0x2a4a66 });
       d.addChild(front);
@@ -817,6 +1011,41 @@ function buildReplayChamber(ctx: DioramaContext): void {
   slip.alpha = 0;
   root.addChild(slip);
 
+  // Standby projection: a breathing violet pool keeps the chamber reading
+  // "ready" between replays instead of a dead black pit. Suppressed while a
+  // receipt plays, restored afterwards.
+  const standbyPool = new Graphics();
+  standbyPool.ellipse(cx, cy, 34, 17);
+  standbyPool.fill({ color: PALETTE.violet, alpha: 0.12 });
+  standbyPool.ellipse(cx, cy, 34, 17);
+  standbyPool.stroke({ width: 1, color: PALETTE.violet, alpha: 0.35 });
+  standbyPool.blendMode = "add";
+  root.addChild(standbyPool);
+  const standbyGlow = glow(cx, cy - 16, 70, PALETTE.violet, 0.12);
+  root.addChild(standbyGlow);
+  animatedTargets.push(standbyPool, standbyGlow);
+  const startStandby = (): void => {
+    standbyPool.alpha = 1;
+    standbyGlow.alpha = 0.12;
+    if (ctx.reducedMotion) return;
+    gsap.to(standbyGlow, {
+      alpha: 0.24,
+      duration: 2.6,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+    });
+    gsap.to(standbyPool, {
+      alpha: 0.55,
+      duration: 2.6,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+      delay: 1.3,
+    });
+  };
+  startStandby();
+
   // Three pooled ghost sprites re-enacting proposal -> arch -> capsule.
   const ghosts: Container[] = [];
   for (let i = 0; i < 3; i++) {
@@ -837,6 +1066,16 @@ function buildReplayChamber(ctx: DioramaContext): void {
 
   const api: ReplayChamberApi = {
     playReceipt(): void {
+      // Take over from standby and any in-flight playback; every element
+      // resets so overlapping calls never stack tweens.
+      gsap.killTweensOf([standbyPool, standbyGlow, cone, slip, propCard, propCapsule, ...ghosts]);
+      standbyPool.alpha = 0;
+      standbyGlow.alpha = 0;
+      cone.alpha = 0;
+      slip.alpha = 0;
+      ghosts.forEach((g) => (g.alpha = 0));
+      propCard.alpha = 0;
+      propCapsule.alpha = 0;
       animatedTargets.push(cone, slip, ...ghosts, propCard, propCapsule);
       gsap.to(cone, { alpha: 1, duration: 0.4 });
       gsap.to(slip, { alpha: 1, duration: 0.3 });
@@ -855,7 +1094,12 @@ function buildReplayChamber(ctx: DioramaContext): void {
       gsap.to(ghosts, { ...fade });
       gsap.to(propCapsule, { ...fade });
       gsap.to(cone, { alpha: 0, duration: 0.6, delay: 2.8 });
-      gsap.to(slip, { alpha: 0, duration: 0.5, delay: 2.8 });
+      gsap.to(slip, {
+        alpha: 0,
+        duration: 0.5,
+        delay: 2.8,
+        onComplete: () => startStandby(),
+      });
     },
   };
 
@@ -890,7 +1134,17 @@ function buildRecoveryWorkshop(ctx: DioramaContext): void {
   root.addChild(toolWall);
 
   // Workbench with a disassembled capsule (halves + parts).
-  root.addChild(isoBox({ x: cx + 18, y: cy + 6, w: 88, d: 44, h: 16, color: PALETTE.structureLight, rim: PALETTE.orange }));
+  root.addChild(
+    isoBox({
+      x: cx + 18,
+      y: cy + 6,
+      w: 88,
+      d: 44,
+      h: 16,
+      color: PALETTE.structureLight,
+      rim: PALETTE.orange,
+    }),
+  );
   const parts = new Graphics();
   parts.roundRect(cx - 4, cy - 16, 14, 6, 3);
   parts.fill({ color: PALETTE.orange, alpha: 0.85 });
@@ -946,13 +1200,40 @@ function buildRecoveryWorkshop(ctx: DioramaContext): void {
     sparks.push(s);
   }
 
+  // Standby lamp on the bench's left end: the workshop reads "on call",
+  // not abandoned. Blinks slowly; static under reduced motion.
+  const standbyLamp = glow(cx - 20, cy - 12, 14, PALETTE.warning, 0.2);
+  root.addChild(standbyLamp);
+  animatedTargets.push(standbyLamp);
+  if (!ctx.reducedMotion) {
+    gsap.to(standbyLamp, {
+      alpha: 0.45,
+      duration: 2.8,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+    });
+  }
+
+  // Tool-wall worklight: dark until a repair is dispatched, then the wall
+  // visibly lights up while the bot works (and dims after).
+  const workLight = glow(cx - 49, cy - 40, 64, PALETTE.orange, 0);
+  root.addChild(workLight);
+  animatedTargets.push(workLight);
+
   const api: RecoveryApi = {
     dispatchRepair(): void {
-      animatedTargets.push(bot, crane, ...sparks);
+      animatedTargets.push(bot, crane, workLight, ...sparks);
       gsap.to(bot, { alpha: 0.95, duration: 0.3 });
+      gsap.to(workLight, { alpha: 0.5, duration: 0.4 });
       gsap.to(crane, { angle: -8, duration: 0.6, yoyo: true, repeat: 1 });
       sparks.forEach((s, i) => {
-        gsap.to(s, { alpha: 0.9, duration: 0.12, delay: 0.5 + i * 0.45, onComplete: () => gsap.to(s, { alpha: 0, duration: 0.25 }) });
+        gsap.to(s, {
+          alpha: 0.9,
+          duration: 0.12,
+          delay: 0.5 + i * 0.45,
+          onComplete: () => gsap.to(s, { alpha: 0, duration: 0.25 }),
+        });
       });
       // A mended capsule leaves the bench and re-racks.
       const mended = glyphMark("capsule", PALETTE.orange);
@@ -961,8 +1242,22 @@ function buildRecoveryWorkshop(ctx: DioramaContext): void {
       root.addChild(mended);
       animatedTargets.push(mended);
       gsap.to(mended, { alpha: 1, duration: 0.3, delay: 1.6 });
-      gsap.to(mended, { x: cx + 66, y: cy + 10, duration: 0.9, delay: 2.0, ease: "power1.inOut", onComplete: () => gsap.to(mended, { alpha: 0, duration: 0.4, delay: 0.8, onComplete: () => safeDestroy(mended) }) });
+      gsap.to(mended, {
+        x: cx + 66,
+        y: cy + 10,
+        duration: 0.9,
+        delay: 2.0,
+        ease: "power1.inOut",
+        onComplete: () =>
+          gsap.to(mended, {
+            alpha: 0,
+            duration: 0.4,
+            delay: 0.8,
+            onComplete: () => safeDestroy(mended),
+          }),
+      });
       gsap.to(bot, { alpha: 0, duration: 0.5, delay: 3.2 });
+      gsap.to(workLight, { alpha: 0, duration: 0.8, delay: 3.0 });
     },
   };
 
@@ -983,9 +1278,14 @@ function buildObservability(ctx: DioramaContext): void {
   contactShadow(root, cx + 4, cy + 8, 180, 104);
   root.addChild(isoTile(cx, cy, 160, 96, PALETTE.structure, 1, PALETTE.structureLight));
 
-  // Screen 1: trace waterfall (3 colored traces stepping down).
-  const s1 = screenPanel({ x: cx - 84, y: cy - 52, w: 52, h: 40, accent: PALETTE.cyan });
+  // Screen 1: trace waterfall (3 colored traces stepping down). The traces
+  // container is anchored at the panel's top-left corner; screenPanel draws
+  // its frame at absolute coordinates while the container stays at (0,0), so
+  // children must be offset explicitly (the baseline had them stranded at
+  // the world origin).
+  const s1 = screenPanel({ x: cx - 88, y: cy - 52, w: 48, h: 40, accent: PALETTE.cyan });
   const traces = new Container();
+  traces.position.set(cx - 88, cy - 52);
   const traceColors = [PALETTE.cyan, PALETTE.violet, PALETTE.aqua];
   traceColors.forEach((tc, i) => {
     const t = new Graphics();
@@ -1003,24 +1303,24 @@ function buildObservability(ctx: DioramaContext): void {
   root.addChild(s1);
 
   // Screen 2: latency histogram.
-  const s2 = screenPanel({ x: cx - 26, y: cy - 56, w: 52, h: 44, accent: PALETTE.blue });
+  const s2 = screenPanel({ x: cx - 30, y: cy - 56, w: 48, h: 44, accent: PALETTE.blue });
   const hist = new Graphics();
   for (let i = 0; i < 6; i++) {
     const bh = 8 + rand() * 22;
-    hist.rect(cx - 22 + i * 8, cy - 16 - bh, 5, bh);
+    hist.rect(cx - 26 + i * 7.5, cy - 16 - bh, 5, bh);
     hist.fill({ color: i === 4 ? PALETTE.warning : PALETTE.blue, alpha: 0.85 });
   }
   s2.addChild(hist);
   root.addChild(s2);
 
   // Screen 3: worker health row (5 dots, one occasionally amber).
-  const s3 = screenPanel({ x: cx + 32, y: cy - 52, w: 52, h: 40, accent: PALETTE.healthy });
+  const s3 = screenPanel({ x: cx + 20, y: cy - 52, w: 48, h: 40, accent: PALETTE.healthy });
   const healthDots: Graphics[] = [];
   for (let i = 0; i < 5; i++) {
     const d = new Graphics();
     d.circle(0, 0, 3);
     d.fill({ color: PALETTE.healthy });
-    d.position.set(cx + 41 + i * 9, cy - 32);
+    d.position.set(cx + 25 + i * 9, cy - 32);
     s3.addChild(d);
     healthDots.push(d);
   }
@@ -1031,8 +1331,8 @@ function buildObservability(ctx: DioramaContext): void {
     if (ctx.reducedMotion) return;
     const t = performance.now() / 1000;
     traces.children.forEach((tr, i) => {
-      const span = 110;
-      tr.x = ((t * (10 + i * 3)) % span) - 30;
+      const span = 60;
+      tr.x = ((t * (10 + i * 3)) % span) - 12;
     });
     const amberWorker = Math.floor(t / 12) % healthDots.length;
     healthDots.forEach((d, i) => {
@@ -1050,11 +1350,37 @@ function buildObservability(ctx: DioramaContext): void {
 // ===========================================================================
 
 const GALLERY_ACTIONS: { glyph: (g: Graphics) => void; tint: number }[] = [
-  { glyph: (g) => { g.poly([0, -4, 4, 0, 0, 4, -4, 0]); g.poly([-1.5, 0, 0.5, 1.5, 2.5, -1.5]); }, tint: PALETTE.healthy }, // approve check
-  { glyph: (g) => { g.rect(-4, -4, 3, 8); g.rect(1, -4, 3, 8); }, tint: PALETTE.waiting }, // pause bars
-  { glyph: (g) => { g.poly([0, -4, 4, 2, -4, 2]); g.rect(-1, 2, 2, 3); }, tint: PALETTE.warning }, // reduce down-arrow
-  { glyph: (g) => { g.moveTo(-3, -3); g.lineTo(3, 3); g.moveTo(3, -3); g.lineTo(-3, 3); g.stroke({ width: 2, color: 0xffffff }); }, tint: PALETTE.blocked }, // close x
-  { glyph: (g) => { g.circle(-2, -2, 2.6); g.circle(2, 2, 2.6); g.stroke({ width: 1.4, color: 0xffffff }); }, tint: PALETTE.violet }, // revoke key-x
+  {
+    glyph: (g) => {
+      g.poly([0, -6, 6, 0, 0, 6, -6, 0]);
+      g.poly([-2, 0, 0.5, 2, 3, -2]);
+    },
+    tint: PALETTE.healthy,
+  }, // approve check
+  {
+    glyph: (g) => {
+      g.rect(-5, -6, 4, 12);
+      g.rect(1, -6, 4, 12);
+    },
+    tint: PALETTE.waiting,
+  }, // pause bars
+  {
+    glyph: (g) => {
+      g.poly([0, -6, 6, 3, -6, 3]);
+      g.rect(-1.5, 3, 3, 4);
+    },
+    tint: PALETTE.warning,
+  }, // reduce down-arrow
+  {
+    glyph: (g) => {
+      g.moveTo(-4, -4);
+      g.lineTo(4, 4);
+      g.moveTo(4, -4);
+      g.lineTo(-4, 4);
+      g.stroke({ width: 2.4, color: 0xffffff });
+    },
+    tint: PALETTE.blocked,
+  }, // close x
 ];
 
 function buildActivityGallery(ctx: DioramaContext): void {
@@ -1064,33 +1390,34 @@ function buildActivityGallery(ctx: DioramaContext): void {
   const cy = def.anchor.y;
 
   contactShadow(root, cx + 2, cy + 6, 196, 56);
-  // Plaque wall.
+  // Plaque wall. Four large plaques instead of five cramped ones: the human
+  // actions stay readable at fit zoom (baseline: "microscopic icons").
   const wallG = new Graphics();
-  wallG.roundRect(cx - 94, cy - 54, 188, 46, 4);
+  wallG.roundRect(cx - 88, cy - 56, 176, 50, 4);
   wallG.fill({ color: PALETTE.structure });
-  wallG.roundRect(cx - 94, cy - 54, 188, 46, 4);
+  wallG.roundRect(cx - 88, cy - 56, 176, 50, 4);
   wallG.stroke({ width: 1.5, color: PALETTE.structureLight, alpha: 0.9 });
   root.addChild(wallG);
 
-  // Five plaques left (oldest) to right (newest); newest glows softly.
-  const newestGlow = glow(cx + 64, cy - 32, 38, PALETTE.aqua, 0.35);
+  // Four plaques left (oldest) to right (newest); newest glows softly.
+  const newestGlow = glow(cx + 66, cy - 35, 42, PALETTE.aqua, 0.35);
   root.addChild(newestGlow);
   GALLERY_ACTIONS.forEach((a, i) => {
-    const px = cx - 84 + i * 34;
-    const py = cy - 46;
+    const px = cx - 78 + i * 42;
+    const py = cy - 48;
     const plaque = new Graphics();
-    plaque.roundRect(px, py, 29, 23, 2);
+    plaque.roundRect(px, py, 36, 30, 2);
     plaque.fill({ color: PALETTE.structureLight });
-    plaque.roundRect(px, py, 29, 23, 2);
+    plaque.roundRect(px, py, 36, 30, 2);
     plaque.stroke({ width: 1, color: a.tint, alpha: 0.7 });
     // Time glyph: small clock circle top-left.
-    plaque.circle(px + 7, py + 7, 3);
+    plaque.circle(px + 9, py + 9, 3.5);
     plaque.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.9 });
     root.addChild(plaque);
     const act = new Graphics();
     a.glyph(act);
-    if (a.tint !== PALETTE.blocked && a.tint !== PALETTE.violet) act.tint = a.tint;
-    act.position.set(px + 20, py + 14);
+    if (a.tint !== PALETTE.blocked) act.tint = a.tint;
+    act.position.set(px + 24, py + 17);
     root.addChild(act);
   });
 
@@ -1116,15 +1443,51 @@ function buildPortfolioVault(ctx: DioramaContext): void {
 
   contactShadow(root, cx + 4, cy + 8, 172, 112);
   // Vault plinth + glass case (low-alpha walls, gold frame edges).
-  root.addChild(isoBox({ x: cx, y: cy, w: 150, d: 100, h: 8, color: PALETTE.structure, rim: PALETTE.yellow }));
   root.addChild(
-    isoWall({ x1: cx - 62, y1: cy - 40, x2: cx - 62, y2: cy + 38, h: 40, color: 0x8fd8e8, alpha: 0.12, rim: PALETTE.yellow }),
-    isoWall({ x1: cx + 62, y1: cy - 40, x2: cx + 62, y2: cy + 38, h: 40, color: 0x8fd8e8, alpha: 0.12, rim: PALETTE.yellow }),
-    isoWall({ x1: cx - 62, y1: cy - 40, x2: cx + 62, y2: cy - 40, h: 40, color: 0x8fd8e8, alpha: 0.1, rim: PALETTE.yellow }),
+    isoBox({ x: cx, y: cy, w: 150, d: 100, h: 8, color: PALETTE.structure, rim: PALETTE.yellow }),
+  );
+  root.addChild(
+    isoWall({
+      x1: cx - 62,
+      y1: cy - 40,
+      x2: cx - 62,
+      y2: cy + 38,
+      h: 40,
+      color: 0x8fd8e8,
+      alpha: 0.12,
+      rim: PALETTE.yellow,
+    }),
+    isoWall({
+      x1: cx + 62,
+      y1: cy - 40,
+      x2: cx + 62,
+      y2: cy + 38,
+      h: 40,
+      color: 0x8fd8e8,
+      alpha: 0.12,
+      rim: PALETTE.yellow,
+    }),
+    isoWall({
+      x1: cx - 62,
+      y1: cy - 40,
+      x2: cx + 62,
+      y2: cy - 40,
+      h: 40,
+      color: 0x8fd8e8,
+      alpha: 0.1,
+      rim: PALETTE.yellow,
+    }),
   );
 
   // Pedestals + account-state blocks. Deliberately no coins.
-  const mkBlock = (bx: number, bz: number, w: number, h: number, d2: number, color: number): void => {
+  const mkBlock = (
+    bx: number,
+    bz: number,
+    w: number,
+    h: number,
+    d2: number,
+    color: number,
+  ): void => {
     root.addChild(isoBox({ x: bx, y: cy + 2, w: 10, d: 10, h: bz, color: PALETTE.structureLight }));
     root.addChild(isoBox({ x: bx, y: cy + 2 - bz, w, h, d: d2, color, rim: color }));
   };
@@ -1148,7 +1511,11 @@ function buildPortfolioVault(ctx: DioramaContext): void {
       const s = pulses[block];
       if (!s) return;
       animatedTargets.push(s);
-      gsap.to(s, { alpha: 0.6, duration: 0.3, onComplete: () => gsap.to(s, { alpha: 0, duration: 1.0, delay: 0.4 }) });
+      gsap.to(s, {
+        alpha: 0.6,
+        duration: 0.3,
+        onComplete: () => gsap.to(s, { alpha: 0, duration: 1.0, delay: 0.4 }),
+      });
     },
   };
 
@@ -1168,16 +1535,22 @@ function buildIdentityGate(ctx: DioramaContext): void {
 
   contactShadow(root, cx, cy + 6, 130, 80);
   // Two kiosks flanking the walkway line (walkway runs north-south at x~950).
-  root.addChild(isoBox({ x: cx - 52, y: cy, w: 34, d: 30, h: 22, color: PALETTE.structure, rim: PALETTE.aqua }));
-  root.addChild(isoBox({ x: cx + 52, y: cy, w: 34, d: 30, h: 22, color: PALETTE.structure, rim: PALETTE.aqua }));
+  // The gate is deliberately narrow: the audit archive wall sits just north
+  // east, and the baseline had the two structures nearly touching.
+  root.addChild(
+    isoBox({ x: cx - 42, y: cy, w: 34, d: 30, h: 22, color: PALETTE.structure, rim: PALETTE.aqua }),
+  );
+  root.addChild(
+    isoBox({ x: cx + 42, y: cy, w: 34, d: 30, h: 22, color: PALETTE.structure, rim: PALETTE.aqua }),
+  );
   // Overhead scanner arch with a soft beam down onto the walkway.
-  root.addChild(arch(cx, cy - 4, 92, 52, PALETTE.structureLight, PALETTE.aqua));
-  const scan = lightBeam(cx, cy - 2, 10, 34, 46, PALETTE.aqua, 0.14);
+  root.addChild(arch(cx, cy - 4, 68, 44, PALETTE.structureLight, PALETTE.aqua));
+  const scan = lightBeam(cx, cy - 2, 8, 26, 46, PALETTE.aqua, 0.14);
   root.addChild(scan);
 
   // Gate ring light around the arch opening.
   const ring = new Graphics();
-  ring.ellipse(cx, cy - 20, 30, 12);
+  ring.ellipse(cx, cy - 16, 24, 10);
   ring.stroke({ width: 2, color: PALETTE.waiting, alpha: 0.8 });
   root.addChild(ring);
 
@@ -1185,9 +1558,9 @@ function buildIdentityGate(ctx: DioramaContext): void {
   const barrier = new Container();
   barrier.position.set(cx, cy + 2);
   const barG = new Graphics();
-  barG.rect(-26, -2, 52, 4);
+  barG.rect(-22, -2, 44, 4);
   barG.fill({ color: PALETTE.structureLight });
-  barG.rect(-26, -2, 52, 1.2);
+  barG.rect(-22, -2, 44, 1.2);
   barG.fill({ color: PALETTE.blocked, alpha: 0.8 });
   barrier.addChild(barG);
   barrier.angle = 84; // lying flat/open against the kiosk
@@ -1208,17 +1581,37 @@ function buildIdentityGate(ctx: DioramaContext): void {
       badge.position.set(cx, cy + 60);
       badge.tint = 0xffffff;
       if (passes) {
-        gsap.to(ring, { alpha: 0.3, duration: 0.2, onComplete: () => gsap.to(ring, { alpha: 1, duration: 0.5 }) });
+        gsap.to(ring, {
+          alpha: 0.3,
+          duration: 0.2,
+          onComplete: () => gsap.to(ring, { alpha: 1, duration: 0.5 }),
+        });
         ring.tint = PALETTE.healthy;
-        gsap.to(badge, { y: cy - 64, duration: ctx.reducedMotion ? 0.4 : 1.6, ease: "none", onComplete: () => gsap.to(badge, { alpha: 0, duration: 0.4, onComplete: () => (badge.alpha = 1) }) });
+        gsap.to(badge, {
+          y: cy - 64,
+          duration: ctx.reducedMotion ? 0.4 : 1.6,
+          ease: "none",
+          onComplete: () =>
+            gsap.to(badge, { alpha: 0, duration: 0.4, onComplete: () => (badge.alpha = 1) }),
+        });
       } else {
         ring.tint = PALETTE.blocked;
         badge.tint = 0xff6b75;
         gsap.to(barrier, { angle: 0, duration: 0.18, ease: "power3.out" });
-        gsap.to(badge, { y: cy + 44, duration: 0.5, ease: "power2.out", onComplete: () => {
-          gsap.to(badge, { alpha: 0, duration: 0.4, delay: 0.6, onComplete: () => (badge.alpha = 1) });
-          gsap.to(barrier, { angle: 84, duration: 0.6, delay: 0.8 });
-        } });
+        gsap.to(badge, {
+          y: cy + 44,
+          duration: 0.5,
+          ease: "power2.out",
+          onComplete: () => {
+            gsap.to(badge, {
+              alpha: 0,
+              duration: 0.4,
+              delay: 0.6,
+              onComplete: () => (badge.alpha = 1),
+            });
+            gsap.to(barrier, { angle: 84, duration: 0.6, delay: 0.8 });
+          },
+        });
         if (refusalPush) refusalPush(reason ?? "PERMISSION DENIED");
       }
     },
@@ -1248,7 +1641,10 @@ const REFUSAL_REASONS = [
   "PLAN DOCUMENT DRIFTED",
 ];
 
-function buildRefusalDisplay(ctx: DioramaContext, link: (push: (reason: string) => void) => void): void {
+function buildRefusalDisplay(
+  ctx: DioramaContext,
+  link: (push: (reason: string) => void) => void,
+): void {
   const def = STATIONS.refusalDisplay;
   const { root } = stationBase(ctx, "refusalDisplay");
   const cx = def.anchor.x;
@@ -1338,7 +1734,17 @@ function buildResearchOnlyGate(ctx: DioramaContext): void {
   root.addChild(path);
 
   // Small booth with a flask glyph (no key glyph: signer never needed here).
-  root.addChild(isoBox({ x: cx - 54, y: cy + 18, w: 30, d: 26, h: 18, color: PALETTE.structure, rim: PALETTE.cyan }));
+  root.addChild(
+    isoBox({
+      x: cx - 54,
+      y: cy + 18,
+      w: 30,
+      d: 26,
+      h: 18,
+      color: PALETTE.structure,
+      rim: PALETTE.cyan,
+    }),
+  );
   const flask = new Graphics();
   flask.poly([-2, -8, 2, -8, 2, -3, 6, 5, -6, 5, -2, -3]);
   flask.fill({ color: PALETTE.cyan, alpha: 0.9 });
@@ -1348,7 +1754,10 @@ function buildResearchOnlyGate(ctx: DioramaContext): void {
   root.addChild(flask);
 
   // Tiny one-line destination row beneath the arch: real Text, not baked.
-  const leads = new Text({ text: "CHARTS \u00b7 ALERTS \u00b7 BACKTESTS \u00b7 SIMS", style: tinyStyle(11, PALETTE.ink) });
+  const leads = new Text({
+    text: "CHARTS \u00b7 ALERTS \u00b7 BACKTESTS \u00b7 SIMS",
+    style: tinyStyle(11, PALETTE.ink),
+  });
   leads.resolution = 2;
   leads.anchor.set(0.5);
   leads.position.set(cx, cy + 34);

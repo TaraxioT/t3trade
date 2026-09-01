@@ -59,6 +59,13 @@ export interface Director {
   runStory(id: string): Promise<void>;
   /** True while the named story currently holds its locks. */
   isRunning(id: string): boolean;
+  /** True while ANY running story holds this station. The info card uses
+   * this to show busy when a different story owns the focused station. */
+  isStationBusy(id: string): boolean;
+  /** Observe every story settle (any lane, success, failure, or cancelled).
+   * Returns an unsubscribe. Dependent UI (the info card's busy button) uses
+   * this instead of owning the promise of only its own launches. */
+  onStorySettle(cb: (id: string) => void): () => void;
   /** QA/ debug snapshot of current activity. */
   activity(): ActivitySnapshot;
 }
@@ -82,6 +89,8 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
   /** District -> last heartbeat ms (performance.now) for the alive metric. */
   const heartbeatAt = new Map<DistrictId, number>();
   const lastRunAt = new Map<string, number>();
+  /** Notified in the settle finally of every story run, whichever lane launched it. */
+  const settleListeners = new Set<(id: string) => void>();
   /** Tracked timeouts so stop() leaves no pending waits behind. */
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let cancelled = false;
@@ -165,6 +174,10 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
 
     const entry: RunningStory = { id, districts: districtsOf(story.stations) };
     running.add(entry);
+    // A stop() followed by start() flips `cancelled` back to false; without
+    // this per-run generation snapshot an old story suspended mid-walk would
+    // resume its remaining beats as a zombie alongside the fresh show.
+    const runGeneration = generation;
 
     try {
       await story.run({
@@ -176,7 +189,7 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
         cast,
         wait,
         beat,
-        cancelled: () => cancelled,
+        cancelled: () => cancelled || runGeneration !== generation,
       });
     } catch (err) {
       // One warning per failure; the show keeps going.
@@ -186,6 +199,16 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
       for (const station of story.stations) busyStations.delete(station);
       for (const agentId of cast.keys()) deps.agents.release(agentId);
       lastRunAt.set(id, now());
+      // A story instance may have been launched by any lane, not only the
+      // info card that waits on it; notify settle listeners (e.g. the card's
+      // busy button) so dependent UI never sticks on a finished story.
+      for (const notify of settleListeners) {
+        try {
+          notify(id);
+        } catch {
+          // Listener defects must not break lock release.
+        }
+      }
     }
     return true;
   };
@@ -263,14 +286,15 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
     }
   };
 
-  // Heartbeat targets: one station per district that reads as a pulse.
+  // Heartbeat targets: one station per district that reads as a pulse. The
+  // former supervisor district is gone; its authority seam now pulses here
+  // through the emergency control and the mission board carries research.
   const HEARTBEAT_TARGETS: Partial<Record<DistrictId, StationId[]>> = {
-    research: ["sandbox", "researchTools", "budgetPlanning"],
+    research: ["missionBoard", "sandbox", "researchTools", "budgetPlanning"],
     floor: ["tradingFloor", "eventClock"],
     mcp: ["toolSchemas", "portfolioTools"],
-    risk: ["budgetMeter", "protection"],
+    risk: ["budgetMeter", "protection", "emergencyPanel"],
     ops: ["stateStore", "observability", "activityGallery"],
-    supervisor: ["supervisor"],
     external: ["executionGateway"],
   };
   const heartbeatOrder = Object.keys(HEARTBEAT_TARGETS) as DistrictId[];
@@ -326,6 +350,13 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
         if (story.id === id) return true;
       }
       return false;
+    },
+    isStationBusy(id: string): boolean {
+      return busyStations.has(id as StationId);
+    },
+    onStorySettle(cb: (id: string) => void): () => void {
+      settleListeners.add(cb);
+      return () => settleListeners.delete(cb);
     },
     activity(): ActivitySnapshot {
       // The agent system exposes activity counters when the character lane is

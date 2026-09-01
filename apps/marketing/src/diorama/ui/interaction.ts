@@ -26,6 +26,14 @@ const STORY_DEBOUNCE_MS = 2500;
 /** Delay before the first-visit hint appears after the scene is ready. */
 const HINT_DELAY_MS = 1200;
 
+/**
+ * Self-dismiss lifetime for the first-visit hint. The pill is guidance, not
+ * state: a visitor who never interacts must not have it parked over world
+ * labels (it clipped EMERGENCY CONTROL at the risk district's west seam when
+ * it lived at bottom-center).
+ */
+const HINT_AUTO_DISMISS_MS = 9000;
+
 /** Affordance beacon cadence until the first station selection. */
 const BEACON_INTERVAL_MS = 6000;
 
@@ -40,6 +48,11 @@ export interface InteractionDeps {
   /** Notified true on station focus and false on every clear path
    * (Escape, backdrop click, card close, HUD reset). Used for rail dimming. */
   onFocusChange?: (focused: boolean) => void;
+  /** Notified on every selection transition: the selected station id (or the
+   * synthetic "hyperliquid") when a selection is set, null on every clear
+   * path (Escape, backdrop click, card close, HUD reset). Deduped, so
+   * repeated clears fire once. main.ts drives rails.setFocusStation. */
+  onSelectionChange?: (stationId: string | null) => void;
   /** True while a story is running (Director.isRunning); gates retry clicks. */
   isStoryActive?: (storyId: string) => boolean;
 }
@@ -52,6 +65,16 @@ let activeCard: InfoCard | null = null;
 let activeFocus: ((def: CardStation) => void) | null = null;
 let activeClearHover: (() => void) | null = null;
 let activeFocusChange: ((focused: boolean) => void) | null = null;
+let activeSelectionChange: ((stationId: string | null) => void) | null = null;
+/** Current selection id (module-level so clearSelection can detect transitions). */
+let selectedStationId: string | null = null;
+
+/** Set the selection id and fire the change hook on transition only. */
+function setSelection(id: string | null): void {
+  if (selectedStationId === id) return;
+  selectedStationId = id;
+  activeSelectionChange?.(id);
+}
 
 /** Shared selection clearing, also usable before interaction is wired. */
 export function clearSelection(): void {
@@ -59,13 +82,15 @@ export function clearSelection(): void {
   setBannersDim(false);
   activeClearHover?.();
   activeFocusChange?.(false);
+  setSelection(null);
 }
 
 /** Focus a station programmatically (a11y directory, keyboard, stories). */
 export function focusStationById(id: string): void {
   if (!activeFocus) return;
   const station = STATIONS[id as StationId];
-  const def: CardStation | undefined = station ?? (id === HYPERLIQUID_DEF.id ? HYPERLIQUID_DEF : undefined);
+  const def: CardStation | undefined =
+    station ?? (id === HYPERLIQUID_DEF.id ? HYPERLIQUID_DEF : undefined);
   if (def) activeFocus(def);
 }
 
@@ -81,7 +106,7 @@ const HYPERLIQUID_DEF: CardStation = {
   anchor: { x: HYPERLIQUID.cx, y: HYPERLIQUID.cy },
   size: { w: HYPERLIQUID.w + 40, d: HYPERLIQUID.d + 40 },
   blurb: "The external exchange, authoritative for positions, orders, and fills.",
-  status: "Testnet live",
+  status: "Simulated feed",
   relation: "Execution → Hyperliquid → Reconciliation",
   focusZoom: 1.5,
 };
@@ -178,9 +203,14 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     setLift(picked);
     if (!picked) {
       canvas.style.cursor = "";
-      gsap.to(hoverRing, { alpha: 0, duration: 0.2, overwrite: true, onComplete: () => {
-        hoverRing.visible = false;
-      } });
+      gsap.to(hoverRing, {
+        alpha: 0,
+        duration: 0.2,
+        overwrite: true,
+        onComplete: () => {
+          hoverRing.visible = false;
+        },
+      });
       return;
     }
     const def = picked;
@@ -203,7 +233,10 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   activeClearHover = clearHover;
 
   /** Station screen position for card placement; undefined without support. */
-  const stationScreen = (anchor: { x: number; y: number }): { x: number; y: number } | undefined => {
+  const stationScreen = (anchor: {
+    x: number;
+    y: number;
+  }): { x: number; y: number } | undefined => {
     const cam = deps.camera as Camera & {
       worldToScreen?: (p: { x: number; y: number }) => { x: number; y: number };
     };
@@ -223,7 +256,13 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     ring.position.set(x, y);
     ctx.layers.overlay.addChild(ring);
     if (ctx.reducedMotion) {
-      gsap.to(ring, { alpha: 0, duration: 0.9, delay: 0.4, overwrite: true, onComplete: () => safeDestroy(ring) });
+      gsap.to(ring, {
+        alpha: 0,
+        duration: 0.9,
+        delay: 0.4,
+        overwrite: true,
+        onComplete: () => safeDestroy(ring),
+      });
       return;
     }
     ring.scale.set(0.5);
@@ -277,6 +316,12 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   }
 
   // ----- First-visit onboarding hint (DOM, one per session). -----
+  // Top-center: the bottom band is crowded with world labels at fit zoom
+  // (AUDIT, IDENTITY & ACCESS, RECONCILIATION, EMERGENCY CONTROL), while the
+  // top-center band is the empty north void above Market Landscape and stays
+  // clear of the top-right HUD cluster. The pill is pointer-events:none and
+  // also self-dismisses (HINT_AUTO_DISMISS_MS), so it can never linger over
+  // a label for a visitor who does not interact.
 
   let hintEl: HTMLElement | null = null;
   let hintTimer: number | null = null;
@@ -311,8 +356,8 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     style.textContent = `
 .diorama-hint{
   position:absolute;
+  top:16px;
   left:50%;
-  bottom:96px;
   transform:translateX(-50%);
   z-index:5;
   font-family:'JetBrains Mono',ui-monospace,monospace;
@@ -380,6 +425,9 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
       hintEl = el;
       if (ctx.reducedMotion) el.classList.add("diorama-hint-visible");
       else requestAnimationFrame(() => el.classList.add("diorama-hint-visible"));
+      // Reuse the same cleared-on-teardown slot: once visible, the hint
+      // dismisses itself even without interaction.
+      hintTimer = window.setTimeout(dismissHint, HINT_AUTO_DISMISS_MS);
     }, HINT_DELAY_MS);
     host.addEventListener("pointerdown", dismissHint);
     host.addEventListener("wheel", dismissHint, { passive: true });
@@ -408,12 +456,17 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     deps.infoCard.show(def, undefined, stationScreen(def.anchor));
     setBannersDim(true);
     deps.onFocusChange?.(true);
+    setSelection(def.id);
     pulseAt(def.anchor.x, def.anchor.y, def.size, DISTRICTS[def.district].accent);
     playDioramaCue(CUES.select);
     maybeRunStory(def);
+    // The card was shown before the story auto-ran; now that a story may
+    // have just launched, re-render its busy/disabled action state.
+    deps.infoCard.refreshActionState();
   };
   activeFocus = focusStation;
   activeFocusChange = (focused: boolean): void => deps.onFocusChange?.(focused);
+  activeSelectionChange = (stationId: string | null): void => deps.onSelectionChange?.(stationId);
 
   // Canvas-level pointer handling: down records the point, up picks a station
   // when the pointer did not travel (drag threshold) and clears otherwise.
@@ -465,5 +518,7 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     activeFocus = null;
     activeClearHover = null;
     activeFocusChange = null;
+    activeSelectionChange = null;
+    selectedStationId = null;
   });
 }

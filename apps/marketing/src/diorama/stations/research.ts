@@ -3,20 +3,39 @@
  * strategy lab, sandbox, budget planning, decision table.
  * Owner: research district worker.
  *
- * Busy, creative, experimental energy: open-top structures, screens, holo
- * projections, and visible test loops. All statics are built once; ambient
- * motion runs through a single shared onTick registration with per-station
- * phase offsets, and GSAP only for the brief phase-flip and proposal
- * highlight transitions.
+ * Hierarchy by function, one left-to-right decision story:
+ * - MISSION BOARD is the initiating landmark: widest structure, side pylons
+ *   with beacons, and a live phase readout driven by MissionBoardApi.
+ * - MARKET DATA + RESEARCH TOOLS form the paired evidence tier: twin console
+ *   walls on one shared ground apron; quantitative feeds on one side,
+ *   qualitative documents on the other.
+ * - STRATEGY LAB is the synthesis tier: a light table with a west gathering
+ *   apron whose footplates match the s-research-synthesis landing points.
+ * - DECISION TABLE is the single decision endpoint (DecisionTableApi).
+ * - SANDBOX and BUDGET PLAN are subordinate side branches: warm trim, smaller
+ *   mass, quieter motion.
+ *
+ * All statics are built once; ambient motion runs through ctx.onTick with
+ * per-station phase offsets, GSAP only for brief state transitions. Station
+ * signs sit at or below the market-landscape contour band (band ends at
+ * world y 250) so labels never ride the terrain.
  */
-import { Container, Graphics, Sprite } from "pixi.js";
+import { Container, Graphics, Sprite, Text, TextStyle } from "pixi.js";
 import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { registerStation } from "../core/registry.js";
 import { STATIONS } from "../config/stations.js";
 import { PALETTE } from "../config/palette.js";
 import { seededRandom, DEPTH } from "../config/world.js";
-import { dotTexture, glow, isoBox, isoCylinder, isoTile, isoWall, screenPanel, lightBeam } from "../core/iso.js";
+import {
+  dotTexture,
+  glow,
+  isoBox,
+  isoCylinder,
+  isoTile,
+  isoWall,
+  screenPanel,
+} from "../core/iso.js";
 import { makeSign } from "../core/signs.js";
 
 export interface DecisionTableApi {
@@ -36,7 +55,7 @@ function stationBase(
   ctx: DioramaContext,
   id: keyof typeof STATIONS,
   structureHeight: number,
-  opts: { signDx?: number } = {},
+  opts: { signDx?: number; signY?: number; signHalo?: boolean } = {},
 ): StationRoot {
   const def = STATIONS[id];
   const root = new Container() as StationRoot;
@@ -57,11 +76,15 @@ function stationBase(
   root.addChild(hit);
   root.hit = hit;
 
+  // signY lets a station pin its sign to a collision-checked world height
+  // (the top-row stations must clear the market-landscape band); signHalo
+  // false drops the wide soft halo where it would wash a neighbor's screens.
   const sign = makeSign(def.label, {
     x: def.anchor.x + (opts.signDx ?? 0),
-    y: def.anchor.y - (structureHeight + 26),
+    y: opts.signY ?? def.anchor.y - (structureHeight + 26),
     size: def.signSize,
     accent: PALETTE.cyan,
+    halo: opts.signHalo ?? true,
   });
   sign.zIndex = def.anchor.y + DEPTH.overlay;
   ctx.layers.labels.addChild(sign);
@@ -69,8 +92,29 @@ function stationBase(
   return root;
 }
 
+/** Tiny console readout text; real Pixi text so it stays crisp at zoom. */
+function microText(text: string, size: number, color: number): Text {
+  const t = new Text({
+    text,
+    style: new TextStyle({
+      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontSize: size,
+      letterSpacing: size * 0.08,
+      fill: color,
+    }),
+  });
+  t.resolution = 2;
+  return t;
+}
+
 /** Status light paired with a shape cue: pulsing ring + blinking inner dot. */
-function statusLight(x: number, y: number, color: number, ctx: DioramaContext, phase: number): Container {
+function statusLight(
+  x: number,
+  y: number,
+  color: number,
+  ctx: DioramaContext,
+  phase: number,
+): Container {
   const c = new Container();
   c.position.set(x, y);
   const ring = new Graphics();
@@ -92,6 +136,32 @@ function statusLight(x: number, y: number, color: number, ctx: DioramaContext, p
   return c;
 }
 
+/** Landmark beacon: soft dot + tight glow with a slow sine pulse. */
+function beacon(
+  x: number,
+  y: number,
+  color: number,
+  ctx: DioramaContext,
+  phase: number,
+): Container {
+  const c = new Container();
+  c.position.set(x, y);
+  c.addChild(glow(0, 0, 16, color, 0.45));
+  const dot = new Sprite(dotTexture());
+  dot.anchor.set(0.5);
+  dot.width = 6;
+  dot.height = 6;
+  dot.tint = color;
+  c.addChild(dot);
+  const off = ctx.onTick(() => {
+    if (ctx.reducedMotion) return;
+    const s = (performance.now() / 1000 + phase) % 3;
+    dot.alpha = 0.6 + 0.4 * Math.sin(s * Math.PI * 2);
+  });
+  ctx.onCleanup(off);
+  return c;
+}
+
 /** Slow sine breathing helper for ambient loops. */
 const breathe = (t: number, period: number, phase: number): number =>
   Math.sin(((t + phase) / period) * Math.PI * 2);
@@ -101,137 +171,178 @@ const breathe = (t: number, period: number, phase: number): number =>
  * structure sits on the platform instead of floating over it. Coordinates
  * are root-local (research roots are positioned at their anchor).
  */
-function contactShadow(root: Container, x: number, y: number, w: number, d: number, alpha = 0.27): void {
+function contactShadow(
+  root: Container,
+  x: number,
+  y: number,
+  w: number,
+  d: number,
+  alpha = 0.27,
+): void {
   const g = new Graphics();
   g.ellipse(x, y, w / 2, d / 2);
   g.fill({ color: 0x03080f, alpha });
   root.addChild(g);
 }
 
+/**
+ * Shared-tier and gathering floor pads, drawn once on the unsorted ground
+ * layer so every sortable object (agents included) passes above them. Used
+ * for the evidence-tier apron under marketData + researchTools and the
+ * convene apron west of the strategy lab.
+ */
+function groundPad(
+  ctx: DioramaContext,
+  x: number,
+  y: number,
+  w: number,
+  d: number,
+  rim: number,
+  rimAlpha: number,
+): void {
+  const g = new Graphics();
+  g.roundRect(x - w / 2, y - d / 2, w, d, Math.min(w, d) * 0.28);
+  g.fill({ color: PALETTE.structure, alpha: 0.5 });
+  g.roundRect(x - w / 2, y - d / 2, w, d, Math.min(w, d) * 0.28);
+  g.stroke({ width: 1.5, color: rim, alpha: rimAlpha });
+  ctx.layers.ground.addChild(g);
+}
+
+/** Small marked standing plate: rounded pad + tick, bots convene on these. */
+function footPlate(x: number, y: number, accent: number): Graphics {
+  const g = new Graphics();
+  g.roundRect(x - 13, y - 7, 26, 14, 3);
+  g.fill({ color: PALETTE.structureLight, alpha: 0.85 });
+  g.roundRect(x - 13, y - 7, 26, 14, 3);
+  g.stroke({ width: 1, color: accent, alpha: 0.7 });
+  g.moveTo(x - 4, y);
+  g.lineTo(x + 4, y);
+  g.stroke({ width: 1.5, color: accent, alpha: 0.9 });
+  return g;
+}
+
 // ---------------------------------------------------------------------------
-// Mission Board: wide angled billboard on two posts.
+// Mission Board: the district's initiating landmark. A wide angled billboard
+// on a plinth, flanked by beacon pylons, with a live phase readout.
 // ---------------------------------------------------------------------------
 
 /** Real mission statuses (packages/trading-contracts/src/mission.ts). */
 const MISSION_PHASES = ["WAITING", "ANALYSING", "EXECUTING", "HOLDING"];
 
 function buildMissionBoard(ctx: DioramaContext): void {
-  const root = stationBase(ctx, "missionBoard", 78);
-  const { accent } = { accent: PALETTE.cyan };
+  const root = stationBase(ctx, "missionBoard", 58, { signY: 262 });
+  const accent = PALETTE.cyan;
 
-  contactShadow(root, 0, 10, 200, 66);
-  // Dead-space fill: a small crate pair tucked under the board's east end.
-  root.addChild(isoBox({ x: 74, y: 14, w: 14, d: 9, h: 8, color: PALETTE.structure, rim: accent, rimAlpha: 0.3 }));
+  contactShadow(root, 0, 12, 208, 84);
+  // Wide plinth grounds the landmark and gives it the district's largest
+  // footprint mass without rising into the landscape band above.
+  root.addChild(
+    isoBox({
+      x: 0,
+      y: 22,
+      w: 206,
+      d: 84,
+      h: 8,
+      color: PALETTE.structure,
+      rim: accent,
+      rimAlpha: 0.35,
+    }),
+  );
 
-  // Two posts.
-  for (const px of [-70, 70]) {
-    root.addChild(isoCylinder({ x: px, y: 8, r: 6, h: 46, color: PALETTE.structure, rim: accent }));
+  // Side pylons outside the board span: posts rise past the board top and
+  // carry the beacons, so the board reads as a gate-style landmark.
+  for (const px of [-106, 106]) {
+    root.addChild(
+      isoCylinder({ x: px, y: 12, r: 5, h: 70, color: PALETTE.structure, rim: accent }),
+    );
   }
 
+  // Briefing ledge on the plinth's top face: the synthesis story walks
+  // strategy-1 to near("missionBoard", 60, 20) = world (390, 350), so that
+  // point gets a marked stand, a carried-brief card pair, and a queue strip
+  // along the front edge. The wedge now reads as the board's work apron.
+  root.addChild(footPlate(60, 20, accent));
+  const brief = new Graphics();
+  brief.roundRect(34, 22, 14, 9, 1.5);
+  brief.fill({ color: PALETTE.surfacePale, alpha: 0.5 });
+  brief.roundRect(41, 27, 14, 9, 1.5);
+  brief.fill({ color: PALETTE.surfacePale, alpha: 0.35 });
+  brief.rotation = -0.15;
+  root.addChild(brief);
+  const queue = new Graphics();
+  for (let q = 0; q < 3; q++) {
+    queue.roundRect(-32 + q * 12, 36, 8, 3, 1.5);
+    queue.fill({ color: PALETTE.structureLight, alpha: 0.9 });
+    queue.roundRect(-32 + q * 12, 36, 8, 3, 1.5);
+    queue.stroke({ width: 0.75, color: accent, alpha: 0.5 });
+  }
+  root.addChild(queue);
+  const queueLabel = microText("QUEUE", 7, PALETTE.inkDim);
+  queueLabel.anchor.set(0.5);
+  queueLabel.position.set(-16, 45);
+  root.addChild(queueLabel);
+
   // Angled board: dark screen slab tilted toward camera, trim lit.
-  const board = screenPanel({ x: -95, y: -74, w: 190, h: 52, accent });
+  const board = screenPanel({ x: -102, y: -56, w: 204, h: 50, accent });
   root.addChild(board);
-  // Slight iso underside to seat the billboard on the posts.
-  root.addChild(isoBox({ x: 0, y: -18, w: 196, d: 22, h: 8, color: PALETTE.structure, rim: accent, rimAlpha: 0.5 }));
 
-  // Mission card: pale backing, goal line, market glyph, gold progress bar.
-  // Backing stays bright so the machinery reads at fit zoom.
-  const card = new Container();
-  const cardG = new Graphics();
-  cardG.roundRect(-86, -68, 130, 40, 4);
-  cardG.fill({ color: PALETTE.surfacePale, alpha: 0.16 });
-  cardG.roundRect(-86, -68, 130, 40, 4);
-  cardG.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.55 });
-  cardG.rect(-80, -42, 92, 4);
-  cardG.fill({ color: PALETTE.yellow, alpha: 0.9 });
-  cardG.rect(-80, -42, 58, 4);
-  cardG.fill({ color: PALETTE.space, alpha: 0.9 });
-  // Tiny market glyph: rising tick steps.
-  cardG.moveTo(52, -62);
-  cardG.lineTo(58, -68);
-  cardG.lineTo(62, -64);
-  cardG.lineTo(68, -72);
-  cardG.stroke({ width: 2, color: PALETTE.orange });
-  card.addChild(cardG);
-  board.addChild(card);
+  // Live phase block (left): the mid-zoom legible phase state.
+  const phaseChip = new Graphics();
+  phaseChip.roundRect(-98, -50, 92, 22, 3);
+  phaseChip.fill({ color: accent, alpha: 0.18 });
+  phaseChip.roundRect(-98, -50, 92, 22, 3);
+  phaseChip.stroke({ width: 1, color: accent, alpha: 0.8 });
+  board.addChild(phaseChip);
+  const phaseLabel = microText("PHASE", 7.5, PALETTE.inkDim);
+  phaseLabel.anchor.set(0, 0.5);
+  phaseLabel.position.set(-94, -44);
+  board.addChild(phaseLabel);
+  const phaseValue = microText("WAITING", 13, PALETTE.ink);
+  phaseValue.anchor.set(0, 0.5);
+  phaseValue.position.set(-94, -33);
+  board.addChild(phaseValue);
 
-  // District heartbeat: warm ticker line under the goal bar advances and
-  // wraps on a ~9 s cycle (drawn once; only x is animated).
+  // Phase chip row (right): four state slots; setPhase moves the highlight.
+  const chips: Container[] = [];
+  MISSION_PHASES.forEach((_, i) => {
+    const chip = new Container();
+    const g = new Graphics();
+    g.roundRect(-6, -4, 12, 8, 2);
+    g.fill({ color: i === 0 ? accent : PALETTE.structureLight, alpha: i === 0 ? 0.95 : 0.7 });
+    chip.addChild(g);
+    chip.position.set(14 + i * 18, -39);
+    chip.scale.set(i === 0 ? 1.2 : 0.8);
+    board.addChild(chip);
+    chips.push(chip);
+  });
+
+  // Goal strip: one honest simulated mission line, warm progress bar, and
+  // the district-heartbeat ticker sweeping the bar (~9 s).
+  const goal = microText("SIM MISSION 07", 7.5, PALETTE.inkDim);
+  goal.anchor.set(0, 0.5);
+  goal.position.set(-94, -14);
+  board.addChild(goal);
+  const bar = new Graphics();
+  bar.roundRect(28, -17, 68, 5, 2);
+  bar.fill({ color: PALETTE.structureLight, alpha: 0.9 });
+  bar.roundRect(28, -17, 46, 5, 2);
+  bar.fill({ color: PALETTE.orange, alpha: 0.9 });
+  board.addChild(bar);
   const ticker = new Graphics();
-  ticker.roundRect(-80, -46, 26, 2, 1);
+  ticker.roundRect(28, -18, 10, 7, 2);
   ticker.fill({ color: PALETTE.orange, alpha: 0.95 });
   board.addChild(ticker);
   const tickerOff = ctx.onTick(() => {
     if (ctx.reducedMotion) return;
-    const t = (performance.now() / 1000) % 9 / 9;
-    ticker.x = t * 66;
+    const t = ((performance.now() / 1000) % 9) / 9;
+    ticker.x = t * 58;
     ticker.alpha = 0.55 + 0.4 * Math.sin(t * Math.PI);
   });
   ctx.onCleanup(tickerOff);
 
-  // Phase chips row (animated). Big chip + smaller followers.
-  const chips: Container[] = [];
-  const chipLayer = new Container();
-  chipLayer.position.set(48, -30);
-  board.addChild(chipLayer);
-  MISSION_PHASES.forEach((_, i) => {
-    const chip = new Container();
-    const g = new Graphics();
-    g.roundRect(-10, -5, 20, 10, 2);
-    g.fill({ color: i === 0 ? PALETTE.cyan : PALETTE.structureLight, alpha: i === 0 ? 0.95 : 0.7 });
-    chip.addChild(g);
-    chip.position.set(i * 13, i === 0 ? -4 : 0);
-    chip.scale.set(i === 0 ? 1.2 : 0.8);
-    chipLayer.addChild(chip);
-    chips.push(chip);
-  });
-
-  // Alert dot row + wake schedule strip (tiny clock faces).
-  const extras = new Graphics();
-  for (let i = 0; i < 3; i++) {
-    extras.circle(-78 + i * 10, -14, 2.5);
-    extras.fill({ color: i === 1 ? PALETTE.warning : PALETTE.waiting, alpha: 0.9 });
-  }
-  for (let i = 0; i < 4; i++) {
-    const cx = 30 + i * 12;
-    extras.circle(cx, -14, 4);
-    extras.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.8 });
-    extras.moveTo(cx, -14);
-    extras.lineTo(cx, -17);
-    extras.moveTo(cx, -14);
-    extras.lineTo(cx + 2, -13);
-    extras.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.8 });
-  }
-  board.addChild(extras);
-
-  root.addChild(statusLight(98, -78, PALETTE.healthy, ctx, 0.3));
-
-  // Ambient: every ~7 s a phase chip slides and the row rotates.
-  let active = 0;
-  const off = ctx.onTick(() => {
-    if (ctx.reducedMotion) return;
-    const slot = Math.floor(performance.now() / 7000) % MISSION_PHASES.length;
-    if (slot === active) return;
-    active = slot;
-    chips.forEach((chip, i) => {
-      const on = i === active;
-      gsap.fromTo(
-        chip,
-        { x: chip.x, y: chip.y - 6, alpha: 0.2 },
-        {
-          x: i * 13,
-          y: on ? -4 : 0,
-          alpha: on ? 1 : 0.65,
-          scale: on ? 1.2 : 0.8,
-          duration: 0.5,
-          ease: "back.out(2)",
-          overwrite: true,
-        },
-      );
-      (chip.getChildAt(0) as Graphics).alpha = on ? 0.95 : 0.7;
-    });
-  });
-  ctx.onCleanup(off);
+  // Pylon beacons: two pulses mark the landmark from fit zoom.
+  root.addChild(beacon(-106, -60, PALETTE.cyan, ctx, 0.0));
+  root.addChild(beacon(106, -60, PALETTE.cyan, ctx, 0.5));
 
   const api: MissionBoardApi = {
     setPhase(phase: string): void {
@@ -239,7 +350,15 @@ function buildMissionBoard(ctx: DioramaContext): void {
       const idx = Math.max(0, MISSION_PHASES.indexOf(phase.trim().toUpperCase()));
       const chip = chips[idx];
       if (!chip) return;
-      gsap.timeline()
+      phaseValue.text = MISSION_PHASES[idx];
+      chips.forEach((c, i) => {
+        const on = i === idx;
+        (c.getChildAt(0) as Graphics).alpha = on ? 0.95 : 0.7;
+        c.scale.set(on ? 1.2 : 0.8);
+      });
+      gsap.fromTo(phaseChip, { alpha: 0.35 }, { alpha: 1, duration: 0.5, ease: "power1.inOut" });
+      gsap
+        .timeline()
         .to(chip.scale, { x: 1.7, y: 1.7, duration: 0.22, ease: "power2.out" })
         .to(chip.scale, { x: 1.2, y: 1.2, duration: 0.3, ease: "elastic.out(1, 0.5)" });
       gsap.fromTo(chip, { alpha: 0.1 }, { alpha: 1, duration: 0.45, ease: "power1.inOut" });
@@ -249,45 +368,62 @@ function buildMissionBoard(ctx: DioramaContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Market Data: curved wall of 4 mini screens with a clear probe landing strip.
+// Market Data: quantitative feed wall. Twin of Research Tools (same slab +
+// backdrop construction); content family = numbers, ticks, gauges.
 // ---------------------------------------------------------------------------
 
 function buildMarketData(ctx: DioramaContext): void {
-  const root = stationBase(ctx, "marketData", 64);
+  const root = stationBase(ctx, "marketData", 50, { signY: 264 });
 
-  contactShadow(root, 0, 26, 196, 56);
-  // Curved wall base: a low arc of platform segments (billboarded curve).
-  const base = isoBox({ x: 0, y: 20, w: 176, d: 40, h: 12, color: PALETTE.structure, rim: PALETTE.cyan, rimAlpha: 0.65 });
+  contactShadow(root, 0, 26, 196, 60);
+  const base = isoBox({
+    x: 0,
+    y: 14,
+    w: 184,
+    d: 44,
+    h: 12,
+    color: PALETTE.structure,
+    rim: PALETTE.cyan,
+    rimAlpha: 0.55,
+  });
   root.addChild(base);
 
-  // Landing strip decal on top for probes from the landscape.
-  const strip = new Graphics();
-  strip.moveTo(-70, 12);
-  strip.lineTo(0, -4);
-  strip.lineTo(70, 12);
-  strip.stroke({ width: 2, color: PALETTE.waiting, alpha: 0.4 });
-  root.addChild(strip);
+  // Dark backdrop wall the screens mount on; top edge stays below the
+  // landscape contour band (world y 270 here, band ends at 250) and the
+  // sign band (world 250-278) rides the wall's blank top rim.
+  const wall = new Graphics();
+  wall.roundRect(-92, -50, 184, 58, 6);
+  wall.fill({ color: PALETTE.space, alpha: 0.8 });
+  wall.roundRect(-92, -50, 184, 58, 6);
+  wall.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.3 });
+  root.addChild(wall);
 
-  // 4 mini screens arranged along the curve (slight fan angles).
+  // 4 feed screens along the wall (slight fan angles), all below the sign
+  // band so the twin-tier signs never cover feed content.
   const screens: Array<{ x: number; y: number; rot: number }> = [
-    { x: -78, y: -40, rot: -0.12 },
-    { x: -27, y: -46, rot: -0.04 },
-    { x: 27, y: -46, rot: 0.04 },
-    { x: 78, y: -40, rot: 0.12 },
+    { x: -69, y: -27, rot: -0.1 },
+    { x: -23, y: -27, rot: -0.03 },
+    { x: 23, y: -27, rot: 0.03 },
+    { x: 69, y: -27, rot: 0.1 },
   ];
+  const captions = ["PX", "BOOK", "FUND", "VOL"];
   const candles: Graphics[] = [];
   const bookRows: Graphics[] = [];
   const funding: Graphics[] = [];
   const volBars: Graphics[] = [];
 
   screens.forEach((s, si) => {
-    const panel = screenPanel({ x: -20, y: -22, w: 40, h: 30, accent: PALETTE.cyan });
+    const panel = screenPanel({ x: -20, y: -15, w: 40, h: 30, accent: PALETTE.cyan });
     panel.position.set(s.x, s.y);
     panel.rotation = s.rot;
     root.addChild(panel);
+    const caption = microText(captions[si], 8, PALETTE.inkDim);
+    caption.anchor.set(0.5);
+    caption.position.set(s.x, -4);
+    root.addChild(caption);
 
     if (si === 0) {
-      // Candlestick micro-chart.
+      // Candlestick micro-chart plus a live price readout.
       const g = new Graphics();
       drawCandles(g, [4, 7, 5]);
       panel.addChild(g);
@@ -296,7 +432,7 @@ function buildMarketData(ctx: DioramaContext): void {
       // Order-book ladder rows.
       const g = new Graphics();
       for (let r = 0; r < 5; r++) {
-        g.rect(-17, -17 + r * 6, 10 + ((r * 7) % 16), 3);
+        g.rect(-17, -13 + r * 6, 10 + ((r * 7) % 16), 3);
         g.fill({ color: r % 2 === 0 ? PALETTE.aqua : PALETTE.waiting, alpha: 0.55 });
       }
       panel.addChild(g);
@@ -319,59 +455,64 @@ function buildMarketData(ctx: DioramaContext): void {
     }
   });
 
-  root.addChild(statusLight(92, -52, PALETTE.healthy, ctx, 1.1));
+  // Price readout inside the candle screen's lower half, refreshed with the
+  // feed timer.
+  const candleData = [4, 7, 5];
+  const price = microText("1.0260", 8.5, PALETTE.healthy);
+  price.anchor.set(0.5);
+  price.position.set(-69, -18);
+  root.addChild(price);
 
-  // Whip antenna on the curve's east end lifts the district skyline.
+  root.addChild(statusLight(76, 22, PALETTE.healthy, ctx, 1.1));
+
+  // Feed mast on the slab's east corner; tip kept below the sign band.
   const mast = new Graphics();
-  mast.rect(80, -76, 2, 84);
+  mast.rect(94, -30, 2, 40);
   mast.fill({ color: PALETTE.structureLight });
-  mast.rect(77, -76, 8, 1.4);
+  mast.rect(91, -30, 8, 1.4);
   mast.fill({ color: PALETTE.cyan, alpha: 0.7 });
-  mast.circle(81, -79, 2.2);
+  mast.circle(95, -32, 2.2);
   mast.fill({ color: PALETTE.cyan, alpha: 0.95 });
   root.addChild(mast);
-  root.addChild(glow(81, -79, 12, PALETTE.cyan, 0.32));
 
-  const candleData = [4, 7, 5];
   const off = ctx.onTick(() => {
     const t = performance.now() / 1000;
-    if (!ctx.reducedMotion) {
-      // Volatility bars breathe continuously.
-      volBars.forEach((bar, i) => {
-        const k = 0.6 + 0.5 * breathe(t, 5, i * 0.8);
-        bar.scale.y = k;
-        bar.pivot.set(0, 4);
-      });
-      // Funding dial drift redraw (tiny Graphics, ~1 Hz).
-      const angle = Math.sin(t / 9) * 0.9;
-      if (funding.length && Math.floor(t * 2) !== Math.floor((t - 0.016) * 2)) {
-        redrawFundingArc(funding[0], angle);
-      }
+    if (ctx.reducedMotion) return;
+    // Volatility bars breathe continuously (transform only).
+    volBars.forEach((bar, i) => {
+      const k = 0.6 + 0.5 * breathe(t, 5, i * 0.8);
+      bar.scale.y = k;
+      bar.pivot.set(0, 4);
+    });
+    // Funding dial drift redraw (tiny Graphics, ~1 Hz).
+    const angle = Math.sin(t / 9) * 0.9;
+    if (funding.length && Math.floor(t) !== Math.floor(t - 0.016)) {
+      redrawFundingArc(funding[0], angle);
     }
   });
   ctx.onCleanup(off);
 
-  // Every ~4 s nudge the last 3 candles (rare redraw, brief transition).
-  const candleTimer = window.setInterval(
-    () => {
-      if (ctx.reducedMotion) return;
-      for (let i = 0; i < 3; i++) {
-        candleData[i] = 3 + Math.round(Math.random() * 6);
-      }
-      if (candles[0]) drawCandles(candles[0], candleData);
+  // Every ~4 s the feed refreshes: candles roll, the price ticks, and the
+  // book rows flash. Rare redraw plus one text swap; clearly simulated.
+  const feedTimer = window.setInterval(() => {
+    for (let i = 0; i < 3; i++) {
+      candleData[i] = 3 + Math.round(Math.random() * 6);
+    }
+    if (candles[0]) drawCandles(candles[0], candleData);
+    price.text = (1.02 + (candleData[0] + candleData[1] + candleData[2]) / 300).toFixed(4);
+    if (!ctx.reducedMotion) {
       bookRows.forEach((g) => {
         g.alpha = 0.3;
         gsap.to(g, { alpha: 0.85, duration: 0.6, ease: "power1.inOut" });
       });
-    },
-    4000,
-  );
-  ctx.onCleanup(() => window.clearInterval(candleTimer));
+    }
+  }, 4000);
+  ctx.onCleanup(() => window.clearInterval(feedTimer));
 
-  // District heartbeat: a refresh sweep crosses the screen wall every ~13 s,
-  // as if all four feeds re-synced. One static line; only x animates.
+  // District heartbeat: a refresh sweep crosses the feed screens every
+  // ~13 s, as if all four feeds re-synced. One static line; only x animates.
   const sweep = new Graphics();
-  sweep.rect(-1, -62, 2, 34);
+  sweep.rect(-1, -44, 2, 36);
   sweep.fill({ color: PALETTE.aqua, alpha: 0.4 });
   sweep.blendMode = "add";
   sweep.alpha = 0;
@@ -394,10 +535,10 @@ function drawCandles(g: Graphics, heights: number[]): void {
     const cx = -13 + i * 9;
     const up = i === heights.length - 1 ? h >= 5 : i % 2 === 0;
     const color = up ? PALETTE.healthy : PALETTE.blocked;
-    g.rect(cx - 2, -2 - h, 4, h);
+    g.rect(cx - 2, -4 - h, 4, h);
     g.fill({ color, alpha: 0.9 });
-    g.moveTo(cx, -4 - h);
-    g.lineTo(cx, -1 - h - 3);
+    g.moveTo(cx, -6 - h);
+    g.lineTo(cx, -1 - h);
     g.moveTo(cx, -2);
     g.lineTo(cx, 1);
     g.stroke({ width: 1, color, alpha: 0.7 });
@@ -406,89 +547,128 @@ function drawCandles(g: Graphics, heights: number[]): void {
 
 function redrawFundingArc(g: Graphics, angle: number): void {
   g.clear();
-  g.circle(0, -7, 9);
+  g.circle(0, -3, 8);
   g.stroke({ width: 1.5, color: PALETTE.structureLight, alpha: 0.9 });
-  const tipX = Math.sin(angle) * 8;
-  const tipY = -7 - Math.cos(angle) * 8;
-  g.moveTo(0, -7);
+  const tipX = Math.sin(angle) * 7;
+  const tipY = -3 - Math.cos(angle) * 7;
+  g.moveTo(0, -3);
   g.lineTo(tipX, tipY);
   g.stroke({ width: 2, color: PALETTE.orange, alpha: 0.9 });
-  g.circle(0, -7, 1.6);
+  g.circle(0, -3, 1.6);
   g.fill({ color: PALETTE.orange });
 }
 
 // ---------------------------------------------------------------------------
-// Research Tools: 3 open consoles with glyph icons, one with a scan line.
+// Research Tools: qualitative document wall. Twin of Market Data; content
+// family = headlines, sheets, history rows.
 // ---------------------------------------------------------------------------
 
+const NEWS_LINES = ["LIQ UP", "FUND +", "RANGE"];
+
 function buildResearchTools(ctx: DioramaContext): void {
-  const root = stationBase(ctx, "researchTools", 52);
+  const root = stationBase(ctx, "researchTools", 46, { signY: 264 });
 
-  contactShadow(root, 0, 10, 176, 62);
+  contactShadow(root, 0, 40, 196, 60);
+  const base = isoBox({
+    x: 0,
+    y: 34,
+    w: 184,
+    d: 44,
+    h: 12,
+    color: PALETTE.structure,
+    rim: PALETTE.cyan,
+    rimAlpha: 0.55,
+  });
+  root.addChild(base);
 
-  const glyphFns: Array<(g: Graphics) => void> = [
-    // News: pulse lines.
-    (g) => {
-      g.moveTo(-6, 4);
-      g.lineTo(-2, 4);
-      g.lineTo(0, -3);
-      g.lineTo(2, 6);
-      g.lineTo(4, 0);
-      g.lineTo(6, 0);
-      g.stroke({ width: 1.5, color: PALETTE.aqua, alpha: 0.95 });
-    },
-    // Token: hex outline.
-    (g) => {
-      for (let i = 0; i <= 6; i++) {
-        const a = (Math.PI / 3) * i - Math.PI / 6;
-        const px = Math.cos(a) * 6;
-        const py = Math.sin(a) * 6;
-        if (i === 0) g.moveTo(px, py);
-        else g.lineTo(px, py);
-      }
-      g.stroke({ width: 1.5, color: PALETTE.violet, alpha: 0.95 });
-    },
-    // History: stacked sheets.
-    (g) => {
-      for (let i = 0; i < 3; i++) {
-        g.roundRect(-6, -4 + i * 4, 12, 3, 1);
-        g.fill({ color: PALETTE.blue, alpha: 0.5 + i * 0.2 });
-      }
-    },
-  ];
+  // Backdrop wall mirroring marketData's construction (twin tier language):
+  // wall top at world y 250, sign band 250-278 on the blank rim, screens
+  // aligned with marketData's screen row at world 278-304.
+  const wall = new Graphics();
+  wall.roundRect(-92, -50, 184, 72, 6);
+  wall.fill({ color: PALETTE.space, alpha: 0.8 });
+  wall.roundRect(-92, -50, 184, 72, 6);
+  wall.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.3 });
+  root.addChild(wall);
 
-  // Low desks along a shallow arc, each with a tilted screen and glyph.
+  const captions = ["NEWS", "TOKENS", "HISTORY"];
   const seats = [
-    { x: -62, y: 6 },
-    { x: 0, y: -6 },
-    { x: 62, y: 6 },
+    { x: -60, y: -9 },
+    { x: 0, y: -9 },
+    { x: 60, y: -9 },
   ];
   const scanLine = new Graphics();
   scanLine.moveTo(-14, -12);
   scanLine.lineTo(14, -12);
   scanLine.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.8 });
   scanLine.blendMode = "add";
+  const headlines: Text[] = [];
+
   seats.forEach((seat, i) => {
-    root.addChild(isoBox({ x: seat.x, y: seat.y, w: 52, d: 30, h: 10, color: PALETTE.structure, rim: PALETTE.cyan, rimAlpha: 0.4 }));
-    const panel = screenPanel({ x: -16, y: -34, w: 32, h: 24, accent: PALETTE.cyan });
-    panel.position.set(seat.x, seat.y - 12);
-    panel.rotation = (i - 1) * 0.05;
+    const panel = screenPanel({ x: -20, y: -13, w: 40, h: 26, accent: PALETTE.cyan });
+    panel.position.set(seat.x, seat.y);
+    panel.rotation = (i - 1) * 0.03;
     root.addChild(panel);
-    const glyph = new Graphics();
-    glyphFns[i](glyph);
-    glyph.position.set(seat.x, seat.y - 24);
-    root.addChild(glyph);
-    if (i === 1) {
+    const caption = microText(captions[i], 8, PALETTE.inkDim);
+    caption.anchor.set(0.5);
+    caption.position.set(seat.x, 12);
+    root.addChild(caption);
+
+    if (i === 0) {
+      // News screen: three real text tickers, one rotating highlight.
+      NEWS_LINES.forEach((line, h) => {
+        const t = microText(line, 7, h === 0 ? PALETTE.ink : PALETTE.inkDim);
+        t.anchor.set(0, 0.5);
+        t.position.set(-16, -6 + h * 7);
+        panel.addChild(t);
+        headlines.push(t);
+      });
+    } else if (i === 1) {
+      // Token screen: hex registry glyph over stacked sheets.
+      const glyph = new Graphics();
+      for (let k = 0; k <= 6; k++) {
+        const a = (Math.PI / 3) * k - Math.PI / 6;
+        const px = Math.cos(a) * 6;
+        const py = Math.sin(a) * 6 - 4;
+        if (k === 0) glyph.moveTo(px, py);
+        else glyph.lineTo(px, py);
+      }
+      glyph.stroke({ width: 1.5, color: PALETTE.violet, alpha: 0.95 });
+      for (let s2 = 0; s2 < 2; s2++) {
+        glyph.roundRect(-7, 4 + s2 * 4, 14, 3, 1);
+        glyph.fill({ color: PALETTE.blue, alpha: 0.5 + s2 * 0.25 });
+      }
+      panel.addChild(glyph);
+    } else {
+      // History screen: backtest rows with a passing scan line.
+      const bars = new Graphics();
+      for (let b = 0; b < 5; b++) {
+        const h = 4 + ((b * 5) % 9);
+        bars.rect(-16 + b * 7, 8 - h, 4, h);
+        bars.fill({ color: PALETTE.blue, alpha: 0.55 + b * 0.08 });
+      }
+      panel.addChild(bars);
       panel.addChild(scanLine);
     }
   });
 
-  root.addChild(statusLight(80, -30, PALETTE.healthy, ctx, 2.2));
+  // Rotating headline highlight: one line brightens every ~6 s.
+  let hot = 0;
+  const newsTimer = window.setInterval(() => {
+    if (ctx.reducedMotion) return;
+    hot = (hot + 1) % headlines.length;
+    headlines.forEach((t, h) => {
+      const on = h === hot;
+      gsap.to(t, { alpha: on ? 1 : 0.45, duration: 0.4, ease: "power1.inOut" });
+      t.style.fill = on ? PALETTE.ink : PALETTE.inkDim;
+    });
+  }, 6000);
+  ctx.onCleanup(() => window.clearInterval(newsTimer));
 
   const off = ctx.onTick(() => {
     if (ctx.reducedMotion) return;
-    const t = (performance.now() / 1000) % 5 / 5;
-    scanLine.y = -10 + t * 16;
+    const t = ((performance.now() / 1000) % 5) / 5;
+    scanLine.y = -10 + t * 14;
     scanLine.alpha = 0.25 + 0.6 * Math.sin(t * Math.PI);
   });
   ctx.onCleanup(off);
@@ -496,15 +676,29 @@ function buildResearchTools(ctx: DioramaContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Strategy Lab: light-table with rotating dial, violet card racks, holo diamond.
+// Strategy Lab: synthesis workspace. Light table + candidate racks; bots
+// convene on the west apron footplates (s-research-synthesis landing points).
 // ---------------------------------------------------------------------------
 
 function buildStrategyLab(ctx: DioramaContext): void {
-  const root = stationBase(ctx, "strategyLab", 66);
+  // Sign nudged east with its halo off: at (980,308) the board and its wide
+  // soft halo crowded the RESEARCH TOOLS history screen 35 px to the west.
+  const root = stationBase(ctx, "strategyLab", 66, { signDx: 40, signHalo: false });
 
-  contactShadow(root, 0, 6, 108, 68);
+  contactShadow(root, 0, 6, 120, 76);
   // Central light-table: pale top, low body, warm orange inlay strip.
-  root.addChild(isoBox({ x: 0, y: 0, w: 88, d: 52, h: 16, color: PALETTE.structure, rim: PALETTE.violet, rimAlpha: 0.65 }));
+  root.addChild(
+    isoBox({
+      x: 0,
+      y: 0,
+      w: 88,
+      d: 52,
+      h: 16,
+      color: PALETTE.structure,
+      rim: PALETTE.violet,
+      rimAlpha: 0.5,
+    }),
+  );
   const tableTop = isoTile(0, -16, 84, 48, PALETTE.structureLight, 1);
   root.addChild(tableTop);
   const warmInlay = new Graphics();
@@ -515,18 +709,24 @@ function buildStrategyLab(ctx: DioramaContext): void {
   warmInlay.lineTo(-30, -16);
   warmInlay.stroke({ width: 1.5, color: PALETTE.orange, alpha: 0.75 });
   root.addChild(warmInlay);
-  root.addChild(glow(0, -18, 110, PALETTE.violet, 0.2));
+  // Table-local glow only: the lab reads by its workspace, not a district wash.
+  root.addChild(glow(0, -18, 60, PALETTE.violet, 0.14));
 
-  // Rotating strategy dial on the table: a spinning needle over a ring.
-  const dial = new Graphics();
-  dial.circle(0, -18, 12);
-  dial.stroke({ width: 1.5, color: PALETTE.violet, alpha: 0.8 });
-  dial.moveTo(0, -18);
-  dial.lineTo(9, -24);
-  dial.stroke({ width: 2, color: PALETTE.magenta });
-  root.addChild(dial);
+  // Candidate fan on the table: three card outlines, one bright. Echoes the
+  // decision-table card language and stays honest at rest (no spin).
+  const fan = new Graphics();
+  [-14, 0, 14].forEach((cx, i) => {
+    fan.roundRect(cx - 6, -26, 12, 9, 1.5);
+    fan.stroke({
+      width: 1.2,
+      color: i === 1 ? PALETTE.violet : PALETTE.structureLight,
+      alpha: i === 1 ? 0.95 : 0.7,
+    });
+  });
+  root.addChild(fan);
 
-  // Side racks of tiny violet cards.
+  // Side racks of tiny violet cards: the candidate library the stories
+  // scatter and sort during the conflict beat.
   const rack = new Graphics();
   for (const side of [-1, 1]) {
     rack.rect(side * 78 - 8, -34, 16, 4);
@@ -538,120 +738,114 @@ function buildStrategyLab(ctx: DioramaContext): void {
   }
   root.addChild(rack);
 
-  // Hologram arm + rotating diamond above the table (additive, 9 s loop).
-  const arm = new Graphics();
-  arm.moveTo(34, -16);
-  arm.lineTo(10, -58);
-  arm.stroke({ width: 3, color: PALETTE.structureLight });
-  root.addChild(arm);
-  const beam = lightBeam(0, -30, 6, 30, 34, PALETTE.violet, 0.16);
-  root.addChild(beam);
-  const diamond = new Graphics();
-  diamond.poly([
-    { x: 0, y: -10 },
-    { x: 7, y: -2 },
-    { x: 0, y: 6 },
-    { x: -7, y: -2 },
-  ]);
-  diamond.fill({ color: PALETTE.violet, alpha: 0.45 });
-  diamond.stroke({ width: 1.5, color: PALETTE.magenta, alpha: 0.9 });
-  diamond.blendMode = "add";
-  const holo = new Container();
-  holo.position.set(0, -46);
-  holo.addChild(diamond);
-  root.addChild(holo);
+  // Gathering apron (ground layer): a convene pad west of the table with
+  // footplates at the exact story landing points near("strategyLab",-75,35)
+  // and (-75,65), so the convergence beat lands on marked spots. The tiny
+  // caption names the pad's role so the plates never read as stray pucks.
+  groundPad(ctx, 905, 450, 110, 72, PALETTE.violet, 0.35);
+  ctx.layers.ground.addChild(footPlate(905, 435, PALETTE.cyan));
+  ctx.layers.ground.addChild(footPlate(905, 465, PALETTE.blue));
+  const apronLabel = microText("EVIDENCE", 7, PALETTE.inkDim);
+  apronLabel.anchor.set(0.5);
+  apronLabel.position.set(905, 480);
+  ctx.layers.ground.addChild(apronLabel);
 
-  // Spinning gyroid above the lab: two counter-rotating wireframe triangles
-  // on a taller emitter mast, so the lab reads as the district's beacon.
-  const gyroidMast = new Graphics();
-  gyroidMast.rect(-1, -84, 2, 52);
-  gyroidMast.fill({ color: PALETTE.structureLight });
-  gyroidMast.circle(0, -86, 2);
-  gyroidMast.fill({ color: PALETTE.violet, alpha: 0.9 });
-  root.addChild(gyroidMast);
-  const gyroid = new Container();
-  gyroid.position.set(0, -100);
-  for (const scale of [1, 0.6]) {
-    const tri = new Graphics();
-    tri.poly([
-      { x: 0, y: -9 * scale },
-      { x: 8 * scale, y: 6 * scale },
-      { x: -8 * scale, y: 6 * scale },
-    ]);
-    tri.stroke({ width: 1.6, color: PALETTE.violet, alpha: 0.9 });
-    tri.blendMode = "add";
-    gyroid.addChild(tri);
-  }
-  root.addChild(gyroid);
-  root.addChild(glow(0, -100, 30, PALETTE.violet, 0.24));
-
-  root.addChild(statusLight(-88, -20, PALETTE.healthy, ctx, 0.7));
-
-  const off = ctx.onTick(() => {
-    if (ctx.reducedMotion) {
-      dial.rotation = 0.6;
-      return;
-    }
-    const t = performance.now() / 1000;
-    dial.rotation = (t / 6) * Math.PI * 2;
-    // Gyroid: nested triangles counter-rotate on a slow 7 s loop.
-    gyroid.children.forEach((tri, i) => {
-      tri.rotation = ((t / 7) * Math.PI * 2) * (i === 0 ? 1 : -0.7);
-    });
-    // 9 s loop: diamond spins and bobs subtly.
-    diamond.rotation = (t / 9) * Math.PI * 2;
-    holo.y = -46 + Math.sin((t / 9) * Math.PI * 2) * 2;
-    holo.alpha = 0.75 + 0.25 * Math.sin((t / 9) * Math.PI * 4);
-  });
-  ctx.onCleanup(off);
   registerStation({ id: "strategyLab", root, hit: root.hit });
 }
 
 // ---------------------------------------------------------------------------
-// Sandbox: walled garden with a looping test market and a racetrack dot.
+// Sandbox: contained test area. Tall back walls, low see-through front lips,
+// and an explicit south gate where the research walkway arrives. A warm rim
+// keeps this side branch off the shared cyan.
 // ---------------------------------------------------------------------------
 
 function buildSandbox(ctx: DioramaContext): void {
-  const root = stationBase(ctx, "sandbox", 44, { signDx: 0 });
+  const root = stationBase(ctx, "sandbox", 44, { signDx: 68, signY: 600 });
 
-  contactShadow(root, 0, 4, 190, 116);
+  contactShadow(root, 0, 6, 190, 112);
 
-  // Garden floor: pale tile inside low walls (h = 32). Warm rim inlay keeps
-  // the sandbox off the shared cyan.
+  // Garden floor: pale tile inside the walls.
   root.addChild(isoTile(0, 0, 170, 100, PALETTE.structureLight, 1, PALETTE.orange));
-  const wallH = 32;
-  root.addChild(isoWall({ x1: -85, y1: 0, x2: 0, y2: -50, h: wallH, color: PALETTE.structure, rim: PALETTE.orange }));
-  root.addChild(isoWall({ x1: 0, y1: -50, x2: 85, y2: 0, h: wallH, color: PALETTE.structure, rim: PALETTE.cyan }));
-  root.addChild(isoWall({ x1: 85, y1: 0, x2: 0, y2: 50, h: wallH, color: PALETTE.structure, rim: PALETTE.cyan }));
+  // Back walls (north edges) contain the test area...
+  root.addChild(
+    isoWall({
+      x1: -85,
+      y1: 0,
+      x2: 0,
+      y2: -50,
+      h: 26,
+      color: PALETTE.structure,
+      rim: PALETTE.orange,
+    }),
+  );
+  root.addChild(
+    isoWall({
+      x1: 0,
+      y1: -50,
+      x2: 85,
+      y2: 0,
+      h: 26,
+      color: PALETTE.structure,
+      rim: PALETTE.orange,
+    }),
+  );
+  // ...front edges are low lips so the interior stays visible (cutaway) and
+  // reads as an open test bay, not a sealed box.
+  root.addChild(
+    isoWall({ x1: 85, y1: 0, x2: 0, y2: 50, h: 8, color: PALETTE.structure, rim: PALETTE.orange }),
+  );
+  root.addChild(
+    isoWall({ x1: 0, y1: 50, x2: -85, y2: 0, h: 8, color: PALETTE.structure, rim: PALETTE.orange }),
+  );
+
+  // Explicit entrance on the south corner: gate posts + header where the
+  // research walkway (WALKWAY_RESEARCH) terminates at world (330,590).
+  const gate = new Graphics();
+  for (const gx of [-14, 14]) {
+    gate.roundRect(gx - 2.5, 43 - 22, 5, 22, 2);
+    gate.fill({ color: PALETTE.structureLight });
+    gate.roundRect(gx - 2.5, 43 - 22, 5, 22, 2);
+    gate.stroke({ width: 1, color: PALETTE.orange, alpha: 0.9 });
+  }
+  gate.roundRect(-19, 43 - 22 - 5, 38, 5, 2);
+  gate.fill({ color: PALETTE.structure });
+  gate.roundRect(-19, 43 - 22 - 5, 38, 5, 2);
+  gate.stroke({ width: 1.2, color: PALETTE.orange, alpha: 0.9 });
+  // Threshold chevrons pointing inward (north).
+  for (let c = 0; c < 3; c++) {
+    const cy = 38 - c * 7;
+    gate.moveTo(-6, cy + 3);
+    gate.lineTo(0, cy - 2);
+    gate.lineTo(6, cy + 3);
+    gate.stroke({ width: 1.5, color: PALETTE.orange, alpha: 0.6 });
+  }
+  root.addChild(gate);
 
   // Sine-terrain strip: a tiny test market landscape.
   const terrain = new Graphics();
   for (let i = 0; i <= 24; i++) {
     const px = -62 + i * 3;
-    const py = 14 + Math.sin(i * 0.7) * 6;
+    const py = 12 + Math.sin(i * 0.7) * 6;
     if (i === 0) terrain.moveTo(px, py);
     else terrain.lineTo(px, py);
   }
   terrain.stroke({ width: 2, color: PALETTE.aqua, alpha: 0.8 });
   root.addChild(terrain);
 
-  // 3 mini candle bots: tiny pedestals with colored candles.
-  const bots = [PALETTE.cyan, PALETTE.magenta, PALETTE.orange];
-  bots.forEach((color, i) => {
-    const bx = -48 + i * 20;
-    root.addChild(isoCylinder({ x: bx, y: -22, r: 5, h: 6, color: PALETTE.structure }));
-    const bot = new Graphics();
-    bot.rect(bx - 2, -36, 4, 8);
-    bot.fill({ color, alpha: 0.9 });
-    root.addChild(bot);
+  // Two test candles on pedestals.
+  [PALETTE.cyan, PALETTE.magenta].forEach((color, i) => {
+    const bx = -44 + i * 24;
+    root.addChild(isoCylinder({ x: bx, y: -18, r: 5, h: 6, color: PALETTE.structure }));
+    const candle = new Graphics();
+    candle.rect(bx - 2, -32, 4, 8);
+    candle.fill({ color, alpha: 0.9 });
+    root.addChild(candle);
   });
 
-  // Racetrack ring: ellipse lane where a micro dot loops (4 s).
+  // Test loop: one lane where a micro runner dot circles (~4 s).
   const track = new Graphics();
-  track.ellipse(38, 4, 34, 17);
+  track.ellipse(38, 6, 32, 15);
   track.stroke({ width: 2, color: PALETTE.structureLight, alpha: 0.9 });
-  track.ellipse(38, 4, 30, 14);
-  track.stroke({ width: 1, color: PALETTE.waiting, alpha: 0.35 });
   root.addChild(track);
   const racer = new Sprite(dotTexture());
   racer.anchor.set(0.5);
@@ -660,48 +854,38 @@ function buildSandbox(ctx: DioramaContext): void {
   racer.tint = PALETTE.yellow;
   root.addChild(racer);
 
-  // "No perimeter crossing" floor decal: dashed line ending at a barrier.
-  const decal = new Graphics();
-  for (let i = 0; i < 6; i++) {
-    const t = i / 6;
-    decal.moveTo(-70 + t * 56, 26 - t * 18);
-    decal.lineTo(-70 + t * 56 + 6, 26 - t * 18 - 2);
-    decal.stroke({ width: 2, color: PALETTE.warning, alpha: 0.75 });
-  }
-  decal.rect(-16, 2, 5, 12);
-  decal.fill({ color: PALETTE.warning, alpha: 0.9 });
-  root.addChild(decal);
-
-  root.addChild(statusLight(-80, -30, PALETTE.healthy, ctx, 1.7));
-
   const off = ctx.onTick(() => {
     if (ctx.reducedMotion) return;
     const t = performance.now() / 1000;
     const a = (t / 4) * Math.PI * 2;
-    racer.position.set(38 + Math.cos(a) * 32, 4 + Math.sin(a) * 15.5);
+    racer.position.set(38 + Math.cos(a) * 30, 6 + Math.sin(a) * 13.5);
   });
   ctx.onCleanup(off);
 
-  // District heartbeat: test-market bubbles grow and pop on staggered
-  // ~11 s cycles. Bubbles are drawn once; only scale and alpha animate.
+  // Test-market bubbles grow and pop on staggered ~11 s cycles. Bubbles are
+  // drawn once; only scale and alpha animate.
   const bubbles: Container[] = [];
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     const b = new Graphics();
     b.circle(0, 0, 3);
     b.stroke({ width: 1.2, color: PALETTE.aqua, alpha: 0.9 });
     b.circle(-1, -1, 0.9);
     b.fill({ color: PALETTE.aqua, alpha: 0.8 });
-    b.position.set(-40 + i * 16, 8 - i * 2);
+    b.position.set(-38 + i * 18, 10 - i * 3);
     b.alpha = 0;
     root.addChild(b);
     bubbles.push(b);
   }
   const bubbleTweens: Array<gsap.core.Timeline> = [];
   bubbles.forEach((b, i) => {
-    const cycle = 11 + i * 1.7;
     if (ctx.reducedMotion) return;
-    const tl = gsap.timeline({ repeat: -1, delay: i * 3.6 });
-    tl.fromTo(b, { alpha: 0, scale: 0.4 }, { alpha: 0.95, scale: 1.5, duration: cycle * 0.5, ease: "sine.in" })
+    const cycle = 11 + i * 2.4;
+    const tl = gsap.timeline({ repeat: -1, delay: i * 4.5 });
+    tl.fromTo(
+      b,
+      { alpha: 0, scale: 0.4 },
+      { alpha: 0.95, scale: 1.5, duration: cycle * 0.5, ease: "sine.in" },
+    )
       .to(b, { alpha: 0, scale: 2.1, duration: 0.18, ease: "back.in(2)" })
       .to(b, { scale: 0.4, duration: cycle * 0.4 });
     bubbleTweens.push(tl);
@@ -713,11 +897,12 @@ function buildSandbox(ctx: DioramaContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Budget Planning: gold-trimmed lectern with a stacked-bar plan and slider.
+// Budget Planning: gold-trimmed lectern. Subordinate side branch: small,
+// quiet, one stacked plan and one slider.
 // ---------------------------------------------------------------------------
 
 function buildBudgetPlanning(ctx: DioramaContext): void {
-  const root = stationBase(ctx, "budgetPlanning", 60);
+  const root = stationBase(ctx, "budgetPlanning", 60, { signY: 428 });
 
   contactShadow(root, 0, 20, 66, 44);
 
@@ -743,10 +928,6 @@ function buildBudgetPlanning(ctx: DioramaContext): void {
     stack.fill({ color: seg.c, alpha: 0.85 });
     sy -= seg.h + 1;
   }
-  // Axis marks.
-  stack.moveTo(-24, -30);
-  stack.lineTo(22, -30);
-  stack.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.4 });
   panel.addChild(stack);
 
   // Slider glyph that occasionally nudges: static track + movable knob.
@@ -759,56 +940,70 @@ function buildBudgetPlanning(ctx: DioramaContext): void {
   knob.fill({ color: PALETTE.yellow });
   panel.addChild(track, knob);
 
-  root.addChild(statusLight(30, -50, PALETTE.healthy, ctx, 2.9));
-
-  const nudge = window.setInterval(
-    () => {
-      if (ctx.reducedMotion) return;
-      gsap.fromTo(
-        knob,
-        { x: -6 },
-        { x: 4, duration: 0.8, ease: "power2.inOut", yoyo: true, repeat: 1 },
-      );
-    },
-    6000,
-  );
+  const nudge = window.setInterval(() => {
+    if (ctx.reducedMotion) return;
+    gsap.fromTo(
+      knob,
+      { x: -6 },
+      { x: 4, duration: 0.8, ease: "power2.inOut", yoyo: true, repeat: 1 },
+    );
+  }, 6000);
   ctx.onCleanup(() => window.clearInterval(nudge));
   registerStation({ id: "budgetPlanning", root, hit: root.hit });
 }
 
 // ---------------------------------------------------------------------------
-// Decision Table: round table, holo ring, pooled proposal cards.
+// Decision Table: the district's single decision endpoint. Round table,
+// holo ring, pooled proposal cards (DecisionTableApi).
 // ---------------------------------------------------------------------------
 
 const MAX_PROPOSALS = 4;
 
 function buildDecisionTable(ctx: DioramaContext): void {
-  const root = stationBase(ctx, "decisionTable", 70);
+  const root = stationBase(ctx, "decisionTable", 70, { signY: 500 });
 
-  contactShadow(root, 0, 32, 196, 100);
+  contactShadow(root, 0, 28, 186, 80);
 
   // Round table: iso ellipse platform on a pedestal, pale rim.
   root.addChild(isoCylinder({ x: 0, y: 30, r: 14, h: 14, color: PALETTE.structure }));
   const tableTop = new Graphics();
   tableTop.ellipse(0, 16, 88, 44);
-  tableTop.fill({ color: topFaceTable() });
+  tableTop.fill({ color: PALETTE.structureLight });
   tableTop.ellipse(0, 16, 88, 44);
   tableTop.stroke({ width: 2, color: PALETTE.surfacePale, alpha: 0.8 });
   tableTop.ellipse(0, 16, 70, 34);
   tableTop.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.22 });
   root.addChild(tableTop);
-  root.addChild(glow(0, 14, 150, PALETTE.blue, 0.12));
+  root.addChild(glow(0, 14, 120, PALETTE.blue, 0.1));
 
-  // Holo ring above the table.
+  // Decision surface: one card outline laid on the table marking where the
+  // chosen proposal is read. Static, quiet; the cards carry the event.
+  const slot = new Graphics();
+  slot.roundRect(-14, -4, 28, 20, 2);
+  slot.stroke({ width: 1.2, color: PALETTE.orange, alpha: 0.55 });
+  slot.rotation = -0.08;
+  root.addChild(slot);
+
+  // Holo ring above the table; idle shimmer kept, contrast lowered so the
+  // endpoint stays crisp without competing with the landmark tiers.
   const ring = new Graphics();
   ring.ellipse(0, -34, 60, 20);
-  ring.stroke({ width: 2, color: PALETTE.blue, alpha: 0.7 });
+  ring.stroke({ width: 2, color: PALETTE.blue, alpha: 0.5 });
   ring.ellipse(0, -34, 46, 14);
-  ring.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.4 });
+  ring.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.35 });
   ring.blendMode = "add";
   root.addChild(ring);
 
   root.addChild(statusLight(-84, 20, PALETTE.healthy, ctx, 0.05));
+
+  // Witness plate where the reviewing strategist stands
+  // (s-proposals-appear lands strategy-2 at near("decisionTable",-40,25));
+  // captioned so the lone plate reads as a stand, not a stray puck.
+  ctx.layers.ground.addChild(footPlate(970, 650, PALETTE.violet));
+  const reviewLabel = microText("REVIEW", 7, PALETTE.inkDim);
+  reviewLabel.anchor.set(0.5);
+  reviewLabel.position.set(970, 667);
+  ctx.layers.ground.addChild(reviewLabel);
 
   // Pooled proposal cards.
   const cards: Container[] = [];
@@ -904,7 +1099,14 @@ function buildDecisionTable(ctx: DioramaContext): void {
         timeline.fromTo(
           card,
           { x: 0, y: 10, alpha: 0, rotation: 0 },
-          { x: fanX, y: fanY, alpha: 1, rotation: angle * 0.4, duration: 0.45, ease: "back.out(1.6)" },
+          {
+            x: fanX,
+            y: fanY,
+            alpha: 1,
+            rotation: angle * 0.4,
+            duration: 0.45,
+            ease: "back.out(1.6)",
+          },
           i * 0.08,
         );
         if (i === chosen) {
@@ -912,23 +1114,31 @@ function buildDecisionTable(ctx: DioramaContext): void {
           timeline.to(card, { y: fanY - 16, duration: 0.4, ease: "power2.out" }, 0.6);
           timeline.to(card, { alpha: 1, duration: 0.3 }, 0.6);
           const body = card.getChildAt(0) as Graphics;
-          timeline.call(() => {
-            body.clear();
-            body.roundRect(-19, -26, 38, 52, 3);
-            body.fill({ color: PALETTE.structureLight, alpha: 0.98 });
-            body.roundRect(-19, -26, 38, 52, 3);
-            body.stroke({ width: 3, color: PALETTE.orange, alpha: 1 });
-          }, undefined, 0.6);
+          timeline.call(
+            () => {
+              body.clear();
+              body.roundRect(-19, -26, 38, 52, 3);
+              body.fill({ color: PALETTE.structureLight, alpha: 0.98 });
+              body.roundRect(-19, -26, 38, 52, 3);
+              body.stroke({ width: 3, color: PALETTE.orange, alpha: 1 });
+            },
+            undefined,
+            0.6,
+          );
         } else if (i === rejected) {
           // Rejected lead card flashes a red refusal trim, then retracts.
           const body = card.getChildAt(0) as Graphics;
-          timeline.call(() => {
-            body.clear();
-            body.roundRect(-19, -26, 38, 52, 3);
-            body.fill({ color: PALETTE.structure, alpha: 0.95 });
-            body.roundRect(-19, -26, 38, 52, 3);
-            body.stroke({ width: 2.5, color: PALETTE.blocked, alpha: 1 });
-          }, undefined, 0.55);
+          timeline.call(
+            () => {
+              body.clear();
+              body.roundRect(-19, -26, 38, 52, 3);
+              body.fill({ color: PALETTE.structure, alpha: 0.95 });
+              body.roundRect(-19, -26, 38, 52, 3);
+              body.stroke({ width: 2.5, color: PALETTE.blocked, alpha: 1 });
+            },
+            undefined,
+            0.55,
+          );
           timeline.to(
             card,
             { x: fanX * 0.3, y: 6, alpha: 0, duration: 0.5, ease: "power2.in" },
@@ -937,13 +1147,17 @@ function buildDecisionTable(ctx: DioramaContext): void {
         } else {
           // Others dim to a cool tone and slide back / retract.
           const body = card.getChildAt(0) as Graphics;
-          timeline.call(() => {
-            body.clear();
-            body.roundRect(-19, -26, 38, 52, 3);
-            body.fill({ color: PALETTE.structure, alpha: 0.8 });
-            body.roundRect(-19, -26, 38, 52, 3);
-            body.stroke({ width: 1.2, color: PALETTE.blue, alpha: 0.55 });
-          }, undefined, 0.7);
+          timeline.call(
+            () => {
+              body.clear();
+              body.roundRect(-19, -26, 38, 52, 3);
+              body.fill({ color: PALETTE.structure, alpha: 0.8 });
+              body.roundRect(-19, -26, 38, 52, 3);
+              body.stroke({ width: 1.2, color: PALETTE.blue, alpha: 0.55 });
+            },
+            undefined,
+            0.7,
+          );
           timeline.to(
             card,
             { x: fanX * 0.45, y: fanY * 0.6 + 8, alpha: 0.35, duration: 0.5, ease: "power2.in" },
@@ -981,42 +1195,38 @@ function buildDecisionTable(ctx: DioramaContext): void {
   const off = ctx.onTick(() => {
     if (ctx.reducedMotion) return;
     const t = performance.now() / 1000;
-    ring.alpha = 0.55 + 0.3 * breathe(t, 6, 0);
-    ring.rotation = 0;
+    ring.alpha = 0.4 + 0.25 * breathe(t, 6, 0);
   });
   ctx.onCleanup(off);
 }
 
-/** Table top tone (structure lightened strongly, kept local for readability). */
-function topFaceTable(): number {
-  // Matches palette surface tone family without exporting new tokens.
-  return PALETTE.structureLight;
-}
-
 // ---------------------------------------------------------------------------
 // Scatter props: crates, a rolled chart, planters with glowing reeds.
+// Spots verified against station footprints, rails, the research walkway,
+// and the market-landscape band (x 220-1100 above y ~267 stays clear).
 // ---------------------------------------------------------------------------
 
 function scatterProps(ctx: DioramaContext): void {
   const rnd = seededRandom(11);
   const layer = ctx.layers.sortable;
 
-  // District-edge positions hand-placed to avoid station footprints.
   const spots: Array<{ x: number; y: number }> = [
-    { x: 215, y: 230 },
-    { x: 470, y: 240 },
-    { x: 700, y: 250 },
-    { x: 930, y: 240 },
-    { x: 1080, y: 340 },
-    { x: 250, y: 640 },
+    { x: 465, y: 322 },
+    { x: 465, y: 432 },
+    { x: 706, y: 300 },
+    { x: 706, y: 420 },
+    { x: 620, y: 545 },
+    { x: 872, y: 540 },
+    { x: 1120, y: 470 },
+    { x: 1125, y: 335 },
+    { x: 250, y: 440 },
+    // Kept east of x ~330: the RESEARCH ONLY gate's leads text extends to
+    // roughly x 305 at y ~665, and the walkway terminus sits at (330,590).
+    { x: 335, y: 668 },
     { x: 560, y: 640 },
-    { x: 880, y: 600 },
-    { x: 1090, y: 500 },
-    { x: 430, y: 430 },
-    { x: 340, y: 330 },
-    { x: 820, y: 430 },
-    { x: 1010, y: 560 },
-    { x: 620, y: 540 },
+    { x: 850, y: 655 },
+    { x: 950, y: 502 },
+    { x: 455, y: 270 },
   ];
 
   spots.forEach((spot, i) => {
@@ -1027,12 +1237,26 @@ function scatterProps(ctx: DioramaContext): void {
     if (kind === 0) {
       // Crate.
       const s = 16 + rnd() * 8;
-      root.addChild(isoBox({ x: 0, y: 0, w: s, d: s * 0.6, h: s * 0.6, color: PALETTE.structure, rim: PALETTE.structureLight, rimAlpha: 0.4 }));
+      root.addChild(
+        isoBox({
+          x: 0,
+          y: 0,
+          w: s,
+          d: s * 0.6,
+          h: s * 0.6,
+          color: PALETTE.structure,
+          rim: PALETTE.structureLight,
+          rimAlpha: 0.4,
+        }),
+      );
     } else if (kind === 1) {
       // Rolled chart: a small cylinder on its side look via low cylinder.
-      root.addChild(isoCylinder({ x: 0, y: 0, r: 8, h: 6, color: PALETTE.surfacePale, alpha: 0.85 }));
+      root.addChild(
+        isoCylinder({ x: 0, y: 0, r: 8, h: 6, color: PALETTE.surfacePale, alpha: 0.85 }),
+      );
     } else {
-      // Planter with glowing reeds.
+      // Planter with quiet reeds: no additive glow. Glowing freestanding
+      // props read as ambiguous status pucks; planters are garden texture.
       root.addChild(isoBox({ x: 0, y: 0, w: 18, d: 11, h: 8, color: PALETTE.structure }));
       const reeds = new Graphics();
       const reedColor = rnd() > 0.5 ? PALETTE.violet : PALETTE.cyan;
@@ -1040,19 +1264,27 @@ function scatterProps(ctx: DioramaContext): void {
         const rx = -5 + r * 5;
         reeds.moveTo(rx, -8);
         reeds.lineTo(rx + (rnd() - 0.5) * 4, -22 - rnd() * 6);
-        reeds.stroke({ width: 1.5, color: reedColor, alpha: 0.75 });
+        reeds.stroke({ width: 1.5, color: reedColor, alpha: 0.5 });
       }
-      reeds.blendMode = "add";
       root.addChild(reeds);
-      root.addChild(glow(0, -14, 26, reedColor, 0.14));
     }
     layer.addChild(root);
   });
 }
 
 // ---------------------------------------------------------------------------
+// Evidence tier apron: one shared ground pad tying the twin consoles
+// (marketData west, researchTools east) into a single evidence tier.
+// ---------------------------------------------------------------------------
+
+function buildEvidenceApron(ctx: DioramaContext): void {
+  groundPad(ctx, 705, 330, 420, 82, PALETTE.cyan, 0.22);
+}
+
+// ---------------------------------------------------------------------------
 
 export function buildResearchDistrict(ctx: DioramaContext): void {
+  buildEvidenceApron(ctx);
   buildMissionBoard(ctx);
   buildMarketData(ctx);
   buildResearchTools(ctx);

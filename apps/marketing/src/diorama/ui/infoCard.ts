@@ -22,8 +22,17 @@ export interface CardStation extends Omit<StationDef, "id"> {
 }
 
 export interface InfoCard {
-  show(station: CardStation, statusOverride?: string, stationScreen?: { x: number; y: number }): void;
+  show(
+    station: CardStation,
+    statusOverride?: string,
+    stationScreen?: { x: number; y: number },
+  ): void;
   hide(): void;
+  /** Re-evaluate the action button's busy state against isStoryActive.
+   * Called after the card's station story auto-launches (focus runs the
+   * story after show(), so the show-time check is too early); no-op while
+   * the action is hidden. */
+  refreshActionState(): void;
   /** Remove DOM and listeners; safe to call twice. */
   destroy(): void;
 }
@@ -37,6 +46,10 @@ export interface InfoCardOptions {
    * the action button renders disabled/busy and click is a no-op. Checked on
    * card show and on click only; no polling. */
   isStoryActive?: (storyId: string) => boolean;
+  /** True while ANY story holds this station (Director.isStationBusy); the
+   * action button also shows busy then, so a click can never be silently
+   * dropped on lock contention from another story. */
+  isStationBusy?: (stationId: string) => boolean;
 }
 
 const STYLE_ID = "diorama-infocard-style";
@@ -44,7 +57,8 @@ const STYLE_ID = "diorama-infocard-style";
 /** Heuristic status color: semantic palette keyed off status wording. */
 function statusColor(status: string): string {
   const s = status.toLowerCase();
-  if (/(refus|denied|exceed|blocked|emergency|fail|stale|drift)/.test(s)) return css(PALETTE.blocked);
+  if (/(refus|denied|exceed|blocked|emergency|fail|stale|drift)/.test(s))
+    return css(PALETTE.blocked);
   if (/(degrad|amber|warning|retry|loss)/.test(s)) return css(PALETTE.warning);
   if (/(healthy|protect|shield|align|green|sealed|armed)/.test(s)) return css(PALETTE.healthy);
   return css(PALETTE.waiting);
@@ -221,8 +235,10 @@ export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): I
    */
   const setFlippedPosition = (stationScreen: { x: number; y: number }): void => {
     clearPosition();
-    const stationLeft = stationScreen.x < (root.parentElement?.clientWidth ?? window.innerWidth) / 2;
-    const stationTop = stationScreen.y < (root.parentElement?.clientHeight ?? window.innerHeight) / 2;
+    const stationLeft =
+      stationScreen.x < (root.parentElement?.clientWidth ?? window.innerWidth) / 2;
+    const stationTop =
+      stationScreen.y < (root.parentElement?.clientHeight ?? window.innerHeight) / 2;
     if (stationLeft) {
       root.style.left = "";
       root.style.right = "20px";
@@ -283,7 +299,11 @@ export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): I
   /** Story id from the last show(); empty when the card has no action. */
   const storyActive = (): boolean => {
     const storyId = actionBtn.dataset.storyId;
-    return storyId !== undefined && opts.isStoryActive?.(storyId) === true;
+    if (storyId !== undefined && opts.isStoryActive?.(storyId) === true) return true;
+    // A different story holding this station also blocks the action: the
+    // click would be refused by the director's station locks.
+    const stationId = actionBtn.dataset.stationId;
+    return stationId !== undefined && opts.isStationBusy?.(stationId) === true;
   };
   /** Render the busy/normal action state without claiming completion. */
   const setActionBusy = (busy: boolean): void => {
@@ -314,7 +334,10 @@ export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): I
       relation.textContent = "";
       if (station.relation) {
         // "A -> B -> C" becomes small chips separated by arrow glyphs.
-        const parts = station.relation.split("→").map((p) => p.trim()).filter(Boolean);
+        const parts = station.relation
+          .split("→")
+          .map((p) => p.trim())
+          .filter(Boolean);
         parts.forEach((part, i) => {
           if (i > 0) {
             const arrow = document.createElement("span");
@@ -331,11 +354,13 @@ export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): I
       if (station.action && station.story) {
         actionBtn.dataset.actionLabel = station.action;
         actionBtn.dataset.storyId = station.story;
+        actionBtn.dataset.stationId = station.id;
         actionBtn.hidden = false;
         setActionBusy(storyActive());
       } else {
         actionBtn.hidden = true;
         delete actionBtn.dataset.storyId;
+        delete actionBtn.dataset.stationId;
         delete actionBtn.dataset.actionLabel;
         setActionBusy(false);
       }
@@ -347,6 +372,10 @@ export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): I
     },
     hide(): void {
       card.classList.add("diorama-card-hidden");
+    },
+    refreshActionState(): void {
+      if (actionBtn.hidden) return;
+      setActionBusy(storyActive());
     },
     destroy(): void {
       narrow.removeEventListener("change", onChange);

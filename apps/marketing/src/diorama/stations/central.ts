@@ -1,13 +1,14 @@
 /**
  * Central Trading Floor: circular floor, holographic market core, six agent
- * workstations, signal tower, event clock, status mast, plus the Human
- * Supervisor elevated deck and emergency control panel. Owner: central
- * district worker.
+ * workstations, signal tower, event clock, status mast, plus the emergency
+ * control kiosk at the safety-perimeter seam. Owner: central district worker.
  *
- * Depth notes: the floor platform root sits at anchor.y - 8 so anything on
- * the platform (desks, pedestal) sorts above it. Desks are registered as
- * their own sortable roots at their foot Y so population agents standing at
- * the same Y interleave correctly in front of and behind them.
+ * Depth notes: the floor platform geometry (steps, medallion, ring lights)
+ * lives in the ground layer, below every sortable fixture. A single sortable
+ * plinth root used to sort above the holo core and the north desks and paint
+ * them under its opaque top face. Desks are registered as their own sortable
+ * roots at their foot Y so population agents standing at the same Y interleave
+ * correctly in front of and behind them.
  */
 import { Container, Graphics, Sprite } from "pixi.js";
 import gsap from "gsap";
@@ -47,13 +48,15 @@ export interface SignalTowerApi {
   pulse(kind: "market" | "alert" | "wake" | "warning" | "execution"): void;
 }
 
-export interface SupervisorApi {
-  /** Demonstrate pause / resume of the whole campus. */
-  setCampusPaused(paused: boolean): void;
-}
-
-export interface EmergencyApi {
-  /** Flip the protected cover, pulse the button, and run the pause demo. */
+/**
+ * Emergency control contract (frozen; stories.ts depends on the shape).
+ * Registered once, under station id "emergencyPanel".
+ */
+export interface EmergencyControlApi {
+  /** Pause or resume the whole campus: badge at the kiosk, floor ring and
+   * status mast hold a dim steady state while paused. */
+  setCampusPaused(on: boolean): void;
+  /** Flip the protected cover, press the button, hold a 2.4 s pause, resume. */
   demoPause(): void;
 }
 
@@ -65,6 +68,15 @@ const RNG = seededRandom(0xc3e7411);
  * market events, so a market tick is felt at every console in the ring.
  */
 let deskPulseHook: ((color: number) => void) | null = null;
+
+/**
+ * Campus-pause hooks set by the floor and status mast builders and invoked by
+ * the emergency control api, so the paused state is readable across the floor
+ * without the panel owning those builders' internals. Reset by their owning
+ * builders so a failed rebuild never leaves a stale hook behind.
+ */
+let floorPauseHook: ((on: boolean) => void) | null = null;
+let statusPauseHook: ((on: boolean) => void) | null = null;
 
 /** Floor desks at the population wander points; roles tint the console trim. */
 const DESKS: { x: number; y: number; role: AgentRole }[] = [
@@ -116,7 +128,7 @@ export function buildCentralDistrict(ctx: DioramaContext): void {
   buildSignalTower(ctx);
   buildEventClock(ctx);
   buildStatusMast(ctx);
-  buildSupervisorDeck(ctx);
+  buildEmergencyPanel(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,13 +137,25 @@ export function buildCentralDistrict(ctx: DioramaContext): void {
 
 function buildTradingFloor(ctx: DioramaContext): void {
   const def = STATIONS.tradingFloor;
-  const root = stationRoot(ctx, def, def.anchor.y - 8);
+  // Hit-only root (registration + transparent footprint); the platform itself
+  // is ground geometry (below).
+  stationRoot(ctx, def, def.anchor.y - 8);
   // District counter-accent: warm gold inlays subordinate to the cyan ring
   // lights, which stay the floor's infrastructure language.
   const GOLD = DISTRICTS.floor.accent2;
-  // Reset first so a failed rebuild never leaves holo events pulsing desks
-  // from a destroyed world.
+  // Reset first so a failed rebuild never leaves holo events or pause state
+  // driving objects from a destroyed world.
   deskPulseHook = null;
+  floorPauseHook = null;
+  let campusPaused = false;
+
+  // Platform geometry goes to the ground layer, below every sortable fixture.
+  // One sortable plinth root (zIndex 732) used to paint the opaque platform
+  // face over the holo core root (665), the two north desks (640), and agents
+  // wandering the north ring; ground placement exposes all of them while
+  // desks and agents keep sorting against each other by foot Y.
+  const platform = new Container();
+  ctx.layers.ground.addChild(platform);
 
   // Raised plinth: two low steps under a circular top platform, with a soft
   // ground shadow and strongly shaded side faces so the step faces read.
@@ -158,30 +182,28 @@ function buildTradingFloor(ctx: DioramaContext): void {
   plinth.stroke({ width: 2, color: PALETTE.cyan, alpha: 0.5 });
   plinth.ellipse(FLOOR.x, FLOOR.y, 322, 180);
   plinth.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.2 });
-  root.addChild(plinth);
+  platform.addChild(plinth);
 
-  // Warm-lit central medallion: gold inlays on the inner rings, cyan kept for
-  // the infrastructure band, alternating pale/gold spokes.
+  // Central medallion, kept calm now that the holo is the visible centerpiece:
+  // a gold inlay ring outside the cyan infrastructure band and four faint
+  // spokes bridging them. The denser ring/spoke stack existed to make the
+  // empty (buried) center read; it only competed once the holo appeared.
   const medallion = new Graphics();
-  medallion.ellipse(FLOOR.x, FLOOR.y, 250, 142);
-  medallion.stroke({ width: 3, color: PALETTE.violet, alpha: 0.35 });
   medallion.ellipse(FLOOR.x, FLOOR.y, 240, 136);
   medallion.stroke({ width: 2, color: GOLD, alpha: 0.5 });
   medallion.ellipse(FLOOR.x, FLOOR.y, 190, 108);
-  medallion.stroke({ width: 3, color: PALETTE.cyan, alpha: 0.45 });
-  medallion.ellipse(FLOOR.x, FLOOR.y, 120, 68);
-  medallion.stroke({ width: 2, color: GOLD, alpha: 0.45 });
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
-    medallion.moveTo(FLOOR.x + Math.cos(a) * 122, FLOOR.y + Math.sin(a) * 69);
-    medallion.lineTo(FLOOR.x + Math.cos(a) * 246, FLOOR.y + Math.sin(a) * 140);
+  medallion.stroke({ width: 2.5, color: PALETTE.cyan, alpha: 0.45 });
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 8;
+    medallion.moveTo(FLOOR.x + Math.cos(a) * 196, FLOOR.y + Math.sin(a) * 111);
+    medallion.lineTo(FLOOR.x + Math.cos(a) * 238, FLOOR.y + Math.sin(a) * 134);
     medallion.stroke({
       width: 1.5,
       color: i % 2 ? GOLD : PALETTE.surfacePale,
-      alpha: i % 2 ? 0.3 : 0.22,
+      alpha: 0.22,
     });
   }
-  root.addChild(medallion);
+  platform.addChild(medallion);
 
   // Walkway chevrons: tiny pale arrows on three spokes pointing at the holo.
   const chevrons = new Graphics();
@@ -202,38 +224,7 @@ function buildTradingFloor(ctx: DioramaContext): void {
       chevrons.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.4 });
     }
   }
-  root.addChild(chevrons);
-
-  // Mid-ring glyph pads: small diamond floor projections between the holo and
-  // the desk ring so the arena's middle band carries data imagery instead of
-  // reading as empty floor. Static, one draw.
-  const midPads = new Graphics();
-  const PAD_ACCENTS = [
-    PALETTE.cyan,
-    PALETTE.violet,
-    PALETTE.aqua,
-    PALETTE.blue,
-    PALETTE.orange,
-    PALETTE.magenta,
-  ];
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
-    const px = FLOOR.x + Math.cos(a) * 205;
-    const py = FLOOR.y + Math.sin(a) * 116;
-    midPads.poly([px - 26, py, px, py + 13, px + 26, py, px, py - 13]);
-    midPads.fill({ color: PALETTE.structureLight, alpha: 0.85 });
-    midPads.poly([px - 26, py, px, py + 13, px + 26, py, px, py - 13]);
-    midPads.stroke({ width: 1.5, color: PAD_ACCENTS[i], alpha: 0.75 });
-    // Two abstract data glyphs inside each pad (bar + dot arrangements).
-    const acc = PAD_ACCENTS[i];
-    midPads.rect(px - 12, py - 4, 5, 8);
-    midPads.fill({ color: acc, alpha: 0.8 });
-    midPads.rect(px - 4, py - 7, 5, 11);
-    midPads.fill({ color: acc, alpha: 0.55 });
-    midPads.circle(px + 9, py + 2, 3);
-    midPads.fill({ color: acc, alpha: 0.9 });
-  }
-  root.addChild(midPads);
+  platform.addChild(chevrons);
 
   // Low curved console bars between desks so the ring feels furnished. Drawn
   // in a Y-squashed container so circular arcs read as iso ellipse arcs.
@@ -249,7 +240,7 @@ function buildTradingFloor(ctx: DioramaContext): void {
     g.arc(0, 0, 295, a0 + 0.03, a0 + 0.47);
     g.stroke({ width: 2, color: PALETTE.cyan, alpha: 0.7 });
     bar.addChild(g);
-    root.addChild(bar);
+    platform.addChild(bar);
   }
 
   // Chase lights around the outer ring: 12 additive dots, one shared ticker.
@@ -257,25 +248,32 @@ function buildTradingFloor(ctx: DioramaContext): void {
   const CHASE_COLORS = [PALETTE.cyan, PALETTE.blue, PALETTE.violet];
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
-    const light = glow(FLOOR.x + Math.cos(a) * 286, FLOOR.y + Math.sin(a) * 163, 12, CHASE_COLORS[i % 3], 0.5);
+    const light = glow(
+      FLOOR.x + Math.cos(a) * 286,
+      FLOOR.y + Math.sin(a) * 163,
+      12,
+      CHASE_COLORS[i % 3],
+      0.5,
+    );
     chase.push(light);
-    root.addChild(light);
+    platform.addChild(light);
   }
+  // Resting brightness per light (reduced motion uses a static arrangement;
+  // the pause cue restores these values when the campus resumes).
+  const chaseBase = chase.map((_, i) => 0.25 + 0.35 * (((i * 5) % 12) / 12));
   if (ctx.reducedMotion) {
-    // Static arrangement, varied brightness so the ring still reads lit.
     chase.forEach((c, i) => {
-      c.alpha = 0.25 + 0.35 * (((i * 5) % 12) / 12);
+      c.alpha = chaseBase[i];
     });
   }
 
-  // Slowly pulsing concentric emissive floor lines (8 s), alpha only. Each
-  // ring carries a different material (color and weight) so the stack reads
-  // as layered system state rather than one decorative motif.
+  // Slowly pulsing concentric emissive floor lines (8 s), alpha only. Two
+  // rings carry the floor's layered-state read; the third (inner, blue) sat
+  // directly under the holo's floating content and competed with it.
   const pulseRings: { ring: Graphics; base: number }[] = [];
   const RING_MATERIALS: { r: number; color: number; width: number }[] = [
     { r: 300, color: PALETTE.cyan, width: 1.75 },
     { r: 230, color: GOLD, width: 1.25 },
-    { r: 160, color: PALETTE.blue, width: 2 },
   ];
   for (const m of RING_MATERIALS) {
     const ring = new Graphics();
@@ -284,8 +282,7 @@ function buildTradingFloor(ctx: DioramaContext): void {
     ring.blendMode = "add";
     ring.alpha = 0.3;
     pulseRings.push({ ring, base: 0.22 + pulseRings.length * 0.02 });
-    root.addChild(ring);
-    ring.zIndex = 1;
+    platform.addChild(ring);
   }
 
   // Per-desk feedback flashes driven by holo market events.
@@ -302,8 +299,24 @@ function buildTradingFloor(ctx: DioramaContext): void {
   ctx.onCleanup(() => deskFlashes.forEach((f) => gsap.killTweensOf(f)));
   deskPulseHook = pulseDesks;
 
+  // Campus pause, seen from the floor: the ring stops sweeping and holds a
+  // dim steady state so the freeze reads at fit zoom. Resume needs no state
+  // repair; the ticker simply returns to its sine values.
+  const dimFloor = (on: boolean): void => {
+    for (const [i, light] of chase.entries()) light.alpha = on ? 0.12 : chaseBase[i];
+    for (const { ring, base } of pulseRings) ring.alpha = on ? 0.08 : base;
+  };
+  floorPauseHook = (on: boolean): void => {
+    campusPaused = on;
+    if (ctx.reducedMotion) dimFloor(on);
+  };
+
   if (!ctx.reducedMotion) {
     ctx.onTick(() => {
+      if (campusPaused) {
+        dimFloor(true);
+        return;
+      }
       const time = performance.now() / 1000;
       const phase = (time * Math.PI * 2) / 8;
       for (const [i, { ring, base }] of pulseRings.entries()) {
@@ -317,7 +330,7 @@ function buildTradingFloor(ctx: DioramaContext): void {
   }
 
   // The district banner "CENTRAL TRADING FLOOR" above the arena carries the
-  // name; a second rim sign here would stack on the supervisor zone below.
+  // name; the open ground south of the platform stays circulation space.
 }
 
 /** One open workstation: wide console with role trim, a chair with a tall
@@ -454,13 +467,21 @@ function buildHoloCore(ctx: DioramaContext): void {
   const { x, y } = def.anchor;
   const root = stationRoot(ctx, def, y);
 
-  // Soft AO + pedestal + breathing additive cone carrying the hologram.
+  // Soft AO + pedestal + breathing additive cone carrying the hologram. The
+  // pedestal is two-tier (emitter disc under a short column) so the floor's
+  // primary fixture grounds deliberately now that the platform no longer
+  // buries it.
   const ao = new Graphics();
-  ao.ellipse(x, y + 6, 26, 11);
+  ao.ellipse(x, y + 8, 34, 14);
   ao.fill({ color: PALETTE.space, alpha: 0.3 });
   root.addChild(ao);
-  root.addChild(isoCylinder({ x, y: y + 4, r: 16, h: 12, color: PALETTE.structure, rim: PALETTE.cyan }));
-  root.addChild(glow(x, y - 8, 48, PALETTE.cyan, 0.45));
+  root.addChild(
+    isoCylinder({ x, y: y + 7, r: 24, h: 8, color: PALETTE.structure, rim: PALETTE.cyan }),
+  );
+  root.addChild(
+    isoCylinder({ x, y: y + 6, r: 14, h: 18, color: PALETTE.structureLight, rim: PALETTE.cyan }),
+  );
+  root.addChild(glow(x, y - 10, 56, PALETTE.cyan, 0.45));
   const cone = lightBeam(x, y - 12, 120, 34, 118, PALETTE.cyan, 0.4);
   root.addChild(cone);
 
@@ -471,7 +492,12 @@ function buildHoloCore(ctx: DioramaContext): void {
   root.addChild(stack);
 
   // Price ribbon: tiny candles; one new candle every ~4 s, then scroll.
-  interface Candle { o: number; c: number; h: number; l: number }
+  interface Candle {
+    o: number;
+    c: number;
+    h: number;
+    l: number;
+  }
   const candleW = 8;
   const candleCount = 14;
   const candles: Candle[] = [];
@@ -639,7 +665,7 @@ function buildHoloCore(ctx: DioramaContext): void {
       const lastCandle = candles[candleCount - 1];
       lastGlow.position.set(
         lastX,
-        ribbonTop + 4 + ribbonH - (lastCandle.o + lastCandle.c) / 2 * ribbonH,
+        ribbonTop + 4 + ribbonH - ((lastCandle.o + lastCandle.c) / 2) * ribbonH,
       );
     });
   } else {
@@ -785,7 +811,9 @@ function buildSignalTower(ctx: DioramaContext): void {
   towerAo.ellipse(x, y + 7, 22, 9);
   towerAo.fill({ color: PALETTE.space, alpha: 0.3 });
   root.addChild(towerAo);
-  root.addChild(isoBox({ x, y: y + 3, w: 30, d: 16, h: 8, color: PALETTE.structure, rim: PALETTE.surfacePale }));
+  root.addChild(
+    isoBox({ x, y: y + 3, w: 30, d: 16, h: 8, color: PALETTE.structure, rim: PALETTE.surfacePale }),
+  );
 
   // Segmented mast with 5 stacked pulse emitters (tall, bright).
   const emitters: Sprite[] = [];
@@ -868,15 +896,19 @@ function buildSignalTower(ctx: DioramaContext): void {
     }
     beacon.tint = color;
     gsap.killTweensOf(beacon);
-    gsap.fromTo(beacon, { alpha: 0.5 }, {
-      alpha: 1,
-      duration: 0.3,
-      yoyo: true,
-      repeat: 1,
-      onComplete: () => {
-        beacon.alpha = 0.6;
+    gsap.fromTo(
+      beacon,
+      { alpha: 0.5 },
+      {
+        alpha: 1,
+        duration: 0.3,
+        yoyo: true,
+        repeat: 1,
+        onComplete: () => {
+          beacon.alpha = 0.6;
+        },
       },
-    });
+    );
   };
   const riseSpark = (color: number): void => {
     const spark = new Sprite(dotTexture());
@@ -962,8 +994,12 @@ function buildEventClock(ctx: DioramaContext): void {
   clockAo.ellipse(x, y + 6, 18, 8);
   clockAo.fill({ color: PALETTE.space, alpha: 0.3 });
   root.addChild(clockAo);
-  root.addChild(isoBox({ x, y: y + 2, w: 26, d: 14, h: 6, color: PALETTE.structureLight, rim: PALETTE.aqua }));
-  root.addChild(isoBox({ x, y: y - 2, w: 16, d: 9, h: 44, color: PALETTE.structure, rim: PALETTE.surfacePale }));
+  root.addChild(
+    isoBox({ x, y: y + 2, w: 26, d: 14, h: 6, color: PALETTE.structureLight, rim: PALETTE.aqua }),
+  );
+  root.addChild(
+    isoBox({ x, y: y - 2, w: 16, d: 9, h: 44, color: PALETTE.structure, rim: PALETTE.surfacePale }),
+  );
   const face = new Container();
   face.position.set(x, y - 84);
   root.addChild(face);
@@ -1037,8 +1073,19 @@ function buildStatusMast(ctx: DioramaContext): void {
   const def = STATIONS.statusMast;
   const { x, y } = def.anchor;
   const root = stationRoot(ctx, def, y);
+  statusPauseHook = null;
 
-  root.addChild(isoBox({ x, y: y + 2, w: 12, d: 7, h: 46, color: PALETTE.structureLight, rim: PALETTE.surfacePale }));
+  root.addChild(
+    isoBox({
+      x,
+      y: y + 2,
+      w: 12,
+      d: 7,
+      h: 46,
+      color: PALETTE.structureLight,
+      rim: PALETTE.surfacePale,
+    }),
+  );
   const bar = new Graphics();
   bar.roundRect(x - 32, y - 50, 64, 6, 3);
   bar.fill({ color: PALETTE.structureLight });
@@ -1053,9 +1100,12 @@ function buildStatusMast(ctx: DioramaContext): void {
     { color: PALETTE.warning, shape: "square" },
     { color: PALETTE.blocked, shape: "diamond" },
   ];
+  const lamps: Sprite[] = [];
   lights.forEach((l, i) => {
     const lx = x - 24 + i * 16;
-    root.addChild(glow(lx, y - 56, 12, l.color, 0.55));
+    const lamp = glow(lx, y - 56, 12, l.color, 0.55);
+    lamps.push(lamp);
+    root.addChild(lamp);
     const dot = new Graphics();
     dot.circle(lx, y - 56, 3);
     dot.fill({ color: l.color });
@@ -1065,324 +1115,72 @@ function buildStatusMast(ctx: DioramaContext): void {
     if (l.shape === "circle") shield.circle(lx, y - 44, 4);
     if (l.shape === "square") shield.rect(lx - 3.5, y - 47.5, 7, 7);
     if (l.shape === "triangle") shield.poly([lx, y - 49, lx + 4, y - 41, lx - 4, y - 41]);
-    if (l.shape === "diamond") shield.poly([lx, y - 49, lx + 4, y - 44, lx, y - 39, lx - 4, y - 44]);
+    if (l.shape === "diamond")
+      shield.poly([lx, y - 49, lx + 4, y - 44, lx, y - 39, lx - 4, y - 44]);
     shield.stroke();
     root.addChild(shield);
   });
 
-  addSign(ctx, def, x, y + 34, PALETTE.healthy);
-}
-
-// ---------------------------------------------------------------------------
-// Supervisor deck + emergency panel
-// ---------------------------------------------------------------------------
-
-function buildSupervisorDeck(ctx: DioramaContext): void {
-  const sDef = STATIONS.supervisor;
-  const eDef = STATIONS.emergencyPanel;
-  const { x, y } = sDef.anchor;
-  // Deck sorts at its front edge so agents standing below render behind it.
-  const root = stationRoot(ctx, sDef, y + 62);
-
-  // Elevated platform with front steps and a gold rim.
-  root.addChild(isoBox({ x, y, w: 210, d: 124, h: 24, color: PALETTE.structure, rim: PALETTE.yellow }));
-  root.addChild(isoTile(x, y - 24, 196, 112, topFace(PALETTE.structure), 1, PALETTE.yellow));
-  // Warm gold wash across the deck floor: authority read, alpha only.
-  const wash = isoTile(x, y - 24, 196, 112, PALETTE.yellow, 0.09);
-  wash.blendMode = "add";
-  root.addChild(wash);
-  root.addChild(edgeStrip(x - 105, y + 31, x, y + 62, PALETTE.yellow, 0.9, 2));
-  root.addChild(edgeStrip(x, y + 62, x + 105, y + 31, PALETTE.yellow, 0.9, 2));
-  for (let i = 0; i < 2; i++) {
-    root.addChild(isoTile(x, y + 68 + i * 9 - i * 4, 150 - i * 40, 18, shade(PALETTE.structure, -0.1 * (i + 1))));
-  }
-
-  // Command desk: wide, pale top, gold trim.
-  root.addChild(isoBox({ x, y: y - 20, w: 96, d: 42, h: 26, color: PALETTE.structureLight, rim: PALETTE.yellow }));
-  root.addChild(isoTile(x, y - 46, 86, 38, PALETTE.surfacePale, 0.95));
-
-  // Screens: risk dial, approval queue, exposure gauge, mission controls.
-  const screens = new Container();
-  screens.position.set(x, y - 78);
-  root.addChild(screens);
-  const dial = new Graphics();
-  dial.arc(-45, 0, 11, Math.PI * 0.8, Math.PI * 2.2);
-  dial.stroke({ width: 2, color: PALETTE.yellow, alpha: 0.9 });
-  dial.moveTo(-45, 0);
-  dial.lineTo(-52, -7);
-  dial.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.9 });
-  screens.addChild(dial);
-
-  const approvalCard = new Graphics();
-  approvalCard.roundRect(-16, -12, 32, 22, 4);
-  approvalCard.fill({ color: PALETTE.waiting, alpha: 0.35 });
-  approvalCard.roundRect(-16, -12, 32, 22, 4);
-  approvalCard.stroke({ width: 1.5, color: PALETTE.waiting, alpha: 0.95 });
-  approvalCard.moveTo(-11, -4);
-  approvalCard.lineTo(11, -4);
-  approvalCard.moveTo(-11, 2);
-  approvalCard.lineTo(4, 2);
-  approvalCard.stroke({ width: 1, color: PALETTE.waiting, alpha: 0.7 });
-  screens.addChild(approvalCard);
-
-  const gauge = new Graphics();
-  gauge.arc(45, 8, 12, Math.PI, Math.PI * 1.6);
-  gauge.stroke({ width: 2, color: PALETTE.orange, alpha: 0.9 });
-  gauge.moveTo(45, 8);
-  gauge.lineTo(45 + 10 * Math.cos(Math.PI * 1.45), 8 + 10 * Math.sin(Math.PI * 1.45));
-  gauge.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.9 });
-  screens.addChild(gauge);
-
-  const missions = new Graphics();
-  missions.roundRect(-48, 14, 96, 12, 3);
-  missions.fill({ color: PALETTE.space, alpha: 0.6 });
-  missions.roundRect(-48, 14, 96, 12, 3);
-  missions.stroke({ width: 1, color: PALETTE.orange, alpha: 0.7 });
-  for (let i = 0; i < 4; i++) {
-    missions.rect(-42 + i * 22, 18, 14, 4);
-    missions.fill({ color: i < 2 ? PALETTE.orange : PALETTE.inkDim, alpha: 0.8 });
-  }
-  screens.addChild(missions);
-
-  // Controls rail: 6 glyphed controls. pause, cancel, reduce, close, revoke, budget.
-  const rail = new Graphics();
-  const glyphs: ((gx: number) => void)[] = [
-    (gx) => {
-      rail.rect(gx - 3, y - 34, 2, 6);
-      rail.rect(gx + 1, y - 34, 2, 6);
-    },
-    (gx) => {
-      rail.moveTo(gx - 3, y - 34);
-      rail.lineTo(gx + 3, y - 28);
-      rail.moveTo(gx + 3, y - 34);
-      rail.lineTo(gx - 3, y - 28);
-    },
-    (gx) => {
-      rail.moveTo(gx - 3, y - 33);
-      rail.lineTo(gx, y - 29);
-      rail.lineTo(gx + 3, y - 33);
-    },
-    (gx) => {
-      rail.rect(gx - 3, y - 34, 6, 6);
-    },
-    (gx) => {
-      rail.circle(gx, y - 31, 3.5);
-      rail.moveTo(gx - 3, y - 27);
-      rail.lineTo(gx + 3, y - 35);
-    },
-    (gx) => {
-      rail.arc(gx, y - 31, 3.5, Math.PI * 0.2, Math.PI * 1.4);
-    },
-  ];
-  glyphs.forEach((draw, i) => {
-    const gx = x - 42 + i * 17;
-    rail.roundRect(gx - 6.5, y - 37, 13, 12, 2.5);
-    rail.fill({ color: PALETTE.space, alpha: 0.7 });
-    rail.setStrokeStyle({ color: PALETTE.surfacePale, width: 1, alpha: 0.85 });
-    rail.roundRect(gx - 6.5, y - 37, 13, 12, 2.5);
-    rail.stroke();
-    draw(gx);
-  });
-  rail.fill({ color: PALETTE.surfacePale, alpha: 0.95 });
-  rail.stroke({ width: 1.2, color: PALETTE.surfacePale, alpha: 0.9 });
-  root.addChild(rail);
-
-  // Owner: a human silhouette with warm rim light and a soft halo.
-  const figure = new Container();
-  figure.position.set(x + 2, y - 48);
-  root.addChild(figure);
-  figure.addChild(glow(0, -26, 88, PALETTE.orange, 0.22));
-  const body = new Graphics();
-  body.circle(0, -44, 6);
-  body.poly([-11, 6, 11, 6, 8, -34, -8, -34]);
-  body.fill({ color: 0x0b1524, alpha: 0.95 });
-  body.circle(0, -44, 6);
-  body.poly([-11, 6, 11, 6, 8, -34, -8, -34]);
-  body.stroke({ width: 2.2, color: PALETTE.orange, alpha: 0.95 });
-  figure.addChild(body);
-
-  // The owner's seat, deliberately empty and beside the desk.
-  const chair = new Graphics();
-  const chX = x - 78;
-  chair.roundRect(chX - 10, y - 62, 20, 5, 2);
-  chair.fill({ color: PALETTE.structureLight });
-  chair.roundRect(chX - 10, y - 62, 20, 5, 2);
-  chair.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.7 });
-  chair.poly([chX - 10, y - 62, chX - 10, y - 80, chX + 10, y - 80, chX + 10, y - 62]);
-  chair.fill({ color: PALETTE.structure, alpha: 0.9 });
-  chair.poly([chX - 10, y - 62, chX - 10, y - 80, chX + 10, y - 80, chX + 10, y - 62]);
-  chair.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.55 });
-  root.addChild(chair);
-
-  // Cantilevered canopy rail: two thin posts and a slim gold bar (not a roof)
-  // with three pendant lights hanging over the command desk.
-  const canopy = new Graphics();
-  canopy.rect(x - 62, y - 128, 3, 84);
-  canopy.rect(x + 59, y - 128, 3, 84);
-  canopy.fill({ color: PALETTE.structureLight });
-  canopy.rect(x - 62, y - 128, 3, 84);
-  canopy.rect(x + 59, y - 128, 3, 84);
-  canopy.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.6 });
-  canopy.roundRect(x - 74, y - 134, 148, 6, 3);
-  canopy.fill({ color: PALETTE.structureLight });
-  canopy.roundRect(x - 74, y - 134, 148, 6, 3);
-  canopy.stroke({ width: 1.2, color: PALETTE.yellow, alpha: 0.9 });
-  for (const px of [x - 42, x, x + 42]) {
-    canopy.moveTo(px, y - 128);
-    canopy.lineTo(px, y - 114);
-    canopy.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.7 });
-    canopy.circle(px, y - 111, 2.5);
-    canopy.fill({ color: PALETTE.yellow, alpha: 0.95 });
-  }
-  root.addChild(canopy);
-  for (const px of [x - 42, x, x + 42]) {
-    root.addChild(glow(px, y - 111, 16, PALETTE.yellow, 0.55));
-  }
-
-  // Small holographic campus map floating beside the desk: tiny gold campus
-  // silhouette on a translucent pane.
-  const mapX = x + 96;
-  const campusMap = new Container();
-  campusMap.position.set(mapX, y - 58);
-  const mapG = new Graphics();
-  mapG.roundRect(-24, -17, 48, 32, 4);
-  mapG.fill({ color: PALETTE.space, alpha: 0.55 });
-  mapG.roundRect(-24, -17, 48, 32, 4);
-  mapG.stroke({ width: 1, color: PALETTE.yellow, alpha: 0.75 });
-  mapG.moveTo(-18, 6);
-  mapG.lineTo(-4, -2);
-  mapG.lineTo(8, 3);
-  mapG.lineTo(18, -4);
-  mapG.stroke({ width: 1, color: PALETTE.yellow, alpha: 0.5 });
-  for (const [mx, my, ms] of [
-    [-16, -2, 5],
-    [-2, -8, 7],
-    [10, -3, 5],
-    [4, 9, 4],
-  ] as const) {
-    mapG.poly([mx, my - ms / 2, mx + ms / 2, my, mx, my + ms / 2, mx - ms / 2, my]);
-    mapG.stroke({ width: 1, color: PALETTE.yellow, alpha: 0.85 });
-  }
-  mapG.circle(10, -3, 2);
-  mapG.fill({ color: PALETTE.yellow, alpha: 0.9 });
-  campusMap.addChild(mapG);
-  const mapGlow = glow(0, 0, 40, PALETTE.yellow, 0.12);
-  campusMap.addChild(mapGlow);
-  root.addChild(campusMap);
-  if (!ctx.reducedMotion) {
-    gsap.to(campusMap, {
-      y: y - 62,
-      duration: 4,
-      yoyo: true,
-      repeat: -1,
-      ease: "sine.inOut",
-    });
-    ctx.onCleanup(() => gsap.killTweensOf(campusMap));
-  }
-
-  // Gold pause glyph shown while the campus is paused.
-  const pauseGlyph = new Container();
-  pauseGlyph.position.set(x, y - 118);
-  pauseGlyph.alpha = 0;
-  pauseGlyph.visible = false;
-  root.addChild(pauseGlyph);
-  const glyph = new Graphics();
-  glyph.circle(0, 0, 13);
-  glyph.fill({ color: PALETTE.space, alpha: 0.85 });
-  glyph.circle(0, 0, 13);
-  glyph.stroke({ width: 2, color: PALETTE.yellow, alpha: 0.95 });
-  glyph.rect(-4, -6, 3, 12);
-  glyph.rect(1, -6, 3, 12);
-  glyph.fill({ color: PALETTE.yellow });
-  pauseGlyph.addChild(glyph);
-  pauseGlyph.addChild(glow(0, 0, 44, PALETTE.yellow, 0.3));
-
-  let paused = false;
-  const supervisorApi: SupervisorApi = {
-    setCampusPaused(next) {
-      if (next === paused) return;
-      paused = next;
-      // Reduced motion: snap to composed states, no gestures.
-      if (ctx.reducedMotion) {
-        pauseGlyph.visible = next;
-        pauseGlyph.alpha = next ? 1 : 0;
-        screens.alpha = next ? 0.55 : 1;
-        mapGlow.alpha = next ? 0.3 : 0.12;
-        return;
-      }
-      gsap.killTweensOf([pauseGlyph, screens, mapGlow, approvalCard, approvalCard.scale]);
-      if (next) {
-        pauseGlyph.visible = true;
-        pauseGlyph.y = y - 108;
-        gsap.to(pauseGlyph, { alpha: 1, y: y - 118, duration: 0.6, ease: "power2.out" });
-        gsap.to(screens, { alpha: 0.3, duration: 0.4 });
-        // Localized gestures, not a floor wash: the campus map brightens and
-        // the approval card pops so the pause reads at fit zoom.
-        gsap.fromTo(mapGlow, { alpha: 0.4 }, { alpha: 0.12, duration: 0.9, ease: "power2.out" });
-        approvalCard.scale.set(1.18);
-        gsap.to(approvalCard.scale, { x: 1, y: 1, duration: 0.5, ease: "back.out(2)" });
-      } else {
-        gsap.to(pauseGlyph, {
-          alpha: 0,
-          y: y - 108,
-          duration: 0.4,
-          onComplete: () => {
-            pauseGlyph.visible = false;
-          },
-        });
-        gsap.to(screens, { alpha: 1, duration: 0.4 });
-        gsap.fromTo(mapGlow, { alpha: 0.3 }, { alpha: 0.12, duration: 0.6, ease: "power2.out" });
-      }
-    },
+  // Campus-pause cue: the mast is the campus lighting master, so its warning
+  // square (amber, degraded) holds bright and grows while the emergency
+  // control has everything paused. Alpha/scale only; snaps in reduced motion.
+  const warnLamp = lamps[2];
+  statusPauseHook = (on: boolean): void => {
+    if (!warnLamp) return;
+    warnLamp.alpha = on ? 1 : 0.55;
+    warnLamp.scale.set(on ? 1.35 : 1);
   };
-  registerApi(ctx, sDef.id, supervisorApi);
-  // Below the deck front: the TRADING FLOOR sign owns the rim space at
-  // y ~1000; placing this sign above the deck would collide with it.
-  addSign(ctx, sDef, x, y + 112, PALETTE.orange);
 
-  if (!ctx.reducedMotion) {
-    ctx.onTick(() => {
-      const t = performance.now() / 1000;
-      approvalCard.alpha = 0.75 + 0.25 * Math.sin((t * Math.PI * 2) / 2.4);
-    });
-  }
-
-  ctx.onCleanup(() => {
-    gsap.killTweensOf([pauseGlyph, screens, mapGlow, approvalCard, approvalCard.scale]);
-  });
-
-  buildEmergencyPanel(ctx, eDef, { x: eDef.anchor.x, y: eDef.anchor.y }, supervisorApi);
+  // Sign offset east of the mast: at the anchor the sign tangents the
+  // observability console's north-east corner (console spans x to 1245).
+  addSign(ctx, def, x + 34, y + 40, PALETTE.healthy);
 }
 
-function buildEmergencyPanel(
-  ctx: DioramaContext,
-  def: StationDef,
-  at: { x: number; y: number },
-  supervisorApi: SupervisorApi,
-): void {
-  const root = stationRoot(ctx, def, at.y + 40);
-  const { x, y } = at;
+// ---------------------------------------------------------------------------
+// Emergency control kiosk (safety-perimeter seam)
+// ---------------------------------------------------------------------------
 
-  // Red-trimmed wall box on the deck edge.
+/**
+ * Free-standing red-trimmed control kiosk on the safety-perimeter seam: just
+ * inside the west wall, south of the approval gate. A human control, not an
+ * agent station: one protected button, no consoles. Owns the campus-pause
+ * visuals (badge here, floor ring and status mast through their hooks).
+ */
+function buildEmergencyPanel(ctx: DioramaContext): void {
+  const def = STATIONS.emergencyPanel;
+  const { x, y } = def.anchor;
+  const root = stationRoot(ctx, def, y);
+
+  // Grounding: contact shadow, a small red-rimmed pad, and a low pedestal.
+  const ao = new Graphics();
+  ao.ellipse(x, y + 6, 27, 12);
+  ao.fill({ color: PALETTE.space, alpha: 0.32 });
+  root.addChild(ao);
+  root.addChild(
+    isoTile(x, y + 2, 58, 32, topFace(PALETTE.structure), 1, shade(PALETTE.emergency, -0.45)),
+  );
+  root.addChild(isoBox({ x, y: y + 6, w: 34, d: 20, h: 10, color: PALETTE.structure }));
+
+  // Red-trimmed panel box on the pedestal.
   const box = new Graphics();
-  box.roundRect(x - 18, y - 52, 36, 54, 5);
+  box.roundRect(x - 18, y - 58, 36, 54, 5);
   box.fill({ color: PALETTE.structure });
-  box.roundRect(x - 18, y - 52, 36, 54, 5);
+  box.roundRect(x - 18, y - 58, 36, 54, 5);
   box.stroke({ width: 2, color: PALETTE.emergency, alpha: 0.95 });
-  box.roundRect(x - 14, y - 34, 28, 26, 3);
+  box.roundRect(x - 14, y - 40, 28, 26, 3);
   box.fill({ color: PALETTE.space, alpha: 0.8 });
   root.addChild(box);
 
   const statusDot = new Graphics();
-  statusDot.circle(x, y - 44, 2.5);
+  statusDot.circle(x, y - 50, 2.5);
   statusDot.fill({ color: PALETTE.emergency });
   root.addChild(statusDot);
-  const statusLight = glow(x, y - 44, 12, PALETTE.emergency, 0.8);
+  const statusLight = glow(x, y - 50, 12, PALETTE.emergency, 0.8);
   root.addChild(statusLight);
 
   // Big protected button under a glass cover hinged on its left edge.
   const button = new Container();
-  button.position.set(x, y - 21);
+  button.position.set(x, y - 27);
   const btn = new Graphics();
   btn.circle(0, 0, 8);
   btn.fill({ color: PALETTE.emergency });
@@ -1392,10 +1190,10 @@ function buildEmergencyPanel(
   btn.fill({ color: PALETTE.surfacePale, alpha: 0.85 });
   button.addChild(btn);
   root.addChild(button);
-  root.addChild(glow(x, y - 21, 22, PALETTE.emergency, 0.22));
+  root.addChild(glow(x, y - 27, 22, PALETTE.emergency, 0.22));
 
   const cover = new Container();
-  cover.position.set(x - 14, y - 34); // hinge pivot
+  cover.position.set(x - 14, y - 40); // hinge pivot
   const coverG = new Graphics();
   coverG.rect(0, 0, 28, 26);
   coverG.fill({ color: PALETTE.surfacePale, alpha: 0.16 });
@@ -1404,14 +1202,63 @@ function buildEmergencyPanel(
   cover.addChild(coverG);
   root.addChild(cover);
 
+  // Pause badge: the fit-zoom cue while the campus is paused. Red ring and
+  // bars held above the kiosk; hidden at rest.
+  const pauseBadge = new Container();
+  pauseBadge.position.set(x, y - 86);
+  pauseBadge.alpha = 0;
+  pauseBadge.visible = false;
+  root.addChild(pauseBadge);
+  const badge = new Graphics();
+  badge.circle(0, 0, 13);
+  badge.fill({ color: PALETTE.space, alpha: 0.85 });
+  badge.circle(0, 0, 13);
+  badge.stroke({ width: 2.2, color: PALETTE.emergency, alpha: 0.95 });
+  badge.rect(-4.5, -6.5, 3.2, 13);
+  badge.rect(1.3, -6.5, 3.2, 13);
+  badge.fill({ color: PALETTE.emergency });
+  pauseBadge.addChild(badge);
+  pauseBadge.addChild(glow(0, 0, 46, PALETTE.emergency, 0.3));
+
+  let paused = false;
+  const setCampusPaused = (on: boolean): void => {
+    if (on === paused) return;
+    paused = on;
+    floorPauseHook?.(on);
+    statusPauseHook?.(on);
+    // Reduced motion: snap to composed states, no gestures.
+    if (ctx.reducedMotion) {
+      pauseBadge.visible = on;
+      pauseBadge.alpha = on ? 1 : 0;
+      pauseBadge.y = y - 86;
+      return;
+    }
+    gsap.killTweensOf(pauseBadge);
+    if (on) {
+      pauseBadge.visible = true;
+      pauseBadge.y = y - 78;
+      gsap.to(pauseBadge, { alpha: 1, y: y - 88, duration: 0.6, ease: "power2.out" });
+    } else {
+      gsap.to(pauseBadge, {
+        alpha: 0,
+        y: y - 78,
+        duration: 0.4,
+        onComplete: () => {
+          pauseBadge.visible = false;
+        },
+      });
+    }
+  };
+
   let demoRunning = false;
-  const emergencyApi: EmergencyApi = {
+  const api: EmergencyControlApi = {
+    setCampusPaused,
     demoPause() {
       if (demoRunning) return;
       demoRunning = true;
       if (ctx.reducedMotion) {
-        supervisorApi.setCampusPaused(true);
-        ctx.onCleanup(() => supervisorApi.setCampusPaused(false));
+        setCampusPaused(true);
+        ctx.onCleanup(() => setCampusPaused(false));
         demoRunning = false;
         return;
       }
@@ -1423,25 +1270,29 @@ function buildEmergencyPanel(
       tl.to(cover, { rotation: -0.5, alpha: 0.25, duration: 0.35, ease: "power2.in" })
         .to(cover.scale, { x: 0.12, duration: 0.35, ease: "power2.in" }, "<")
         .to(button.scale, { x: 0.85, y: 0.85, duration: 0.12, yoyo: true, repeat: 1 }, ">")
-        .call(() => supervisorApi.setCampusPaused(true))
+        .call(() => setCampusPaused(true))
         .to({}, { duration: 2.4 })
-        .call(() => supervisorApi.setCampusPaused(false))
+        .call(() => setCampusPaused(false))
         .to(cover, { rotation: 0, alpha: 1, duration: 0.4, ease: "power2.out" })
         .to(cover.scale, { x: 1, duration: 0.4, ease: "power2.out" }, "<");
       ctx.onCleanup(() => {
         tl.kill();
         gsap.killTweensOf([cover, button]);
+        // A teardown mid-demo must not leave the pause applied.
+        setCampusPaused(false);
       });
     },
   };
-  registerApi(ctx, def.id, emergencyApi);
-  addSign(ctx, def, x, y - 58, PALETTE.emergency);
+  registerApi(ctx, def.id, api);
+  // South of the kiosk: the badge and panel top own the space above.
+  addSign(ctx, def, x, y + 40, PALETTE.emergency);
 
   if (!ctx.reducedMotion) {
     ctx.onTick(() => {
       const t = performance.now() / 1000;
       statusLight.alpha = 0.55 + 0.3 * Math.sin(t * 2.4);
     });
+    ctx.onCleanup(() => gsap.killTweensOf(pauseBadge));
   }
 }
 

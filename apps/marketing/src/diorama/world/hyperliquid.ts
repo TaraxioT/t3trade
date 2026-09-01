@@ -1,10 +1,12 @@
 /**
  * External Hyperliquid Testnet platform: a floating slab in a deliberately
- * different material language (pale cool top, aqua trim, dark edge) so it
+ * different material language (pale cool top, aqua trim, dark keel) so it
  * reads as foreign and authoritative next to the campus, with an order-book
- * sculpture, a slow rotating trade ring, a landing pad where the exchange
- * tunnel arrives, and short pooled event animations. Not a registered
- * station: the interaction layer wires the exported holder specially.
+ * sculpture, a slow rotating trade ring, a terminal socket where the exchange
+ * tunnel arrives, and short pooled event animations. Idle luminance is kept
+ * low so the central floor dominates; the terminal and pad peak only during
+ * order/ack/fill beats. Not a registered station: the interaction layer
+ * wires the exported holder specially.
  * Owner: hyperliquid worker.
  */
 import { Container, Graphics, Polygon, Text, TextStyle } from "pixi.js";
@@ -12,7 +14,7 @@ import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { glow, isoBox } from "../core/iso.js";
 import { makeSign } from "../core/signs.js";
-import { PALETTE } from "../config/palette.js";
+import { PALETTE, shade } from "../config/palette.js";
 import { HYPERLIQUID } from "../config/geometry.js";
 import { seededRandom, DEPTH } from "../config/world.js";
 
@@ -29,8 +31,10 @@ const HW = w / 2;
 const HD = d / 2;
 const SLAB_H = 22;
 const TOP = cy - SLAB_H;
-/** Landing pad on the west face, aligned with the east tunnel (cy 1140). */
-const PAD = { x: cx - HW + 55, y: 1132 };
+/** Landing pad / terminal socket on the west face. Sits a little north-east
+ * of the platform's west point so the pad and its cradle stay fully on the
+ * top face (the SW diamond edge crosses y ~1148 at this x). */
+const PAD = { x: cx - HW + 60, y: 1112 };
 /** West drift target: the tunnel mouth where slips and packets exit. */
 const MOUTH = { x: cx - HW - 42, y: 1142 };
 const BANNER_Y = cy - HD - 80;
@@ -56,7 +60,49 @@ export function buildHyperliquid(ctx: DioramaContext): void {
   root.zIndex = cy + DEPTH.base;
   root.eventMode = "static";
   root.cursor = "pointer";
-  root.hitArea = new Polygon([cx - HW, TOP, cx, cy + HD - SLAB_H, cx + HW, TOP, cx, cy - HD - SLAB_H]);
+  root.hitArea = new Polygon([
+    cx - HW,
+    TOP,
+    cx,
+    cy + HD - SLAB_H,
+    cx + HW,
+    TOP,
+    cx,
+    cy - HD - SLAB_H,
+  ]);
+
+  // --- Keel and drop shadow: mass under the pale top so the platform reads
+  // as a floating island like the campus slab, not a cardboard cutout. Both
+  // sit behind everything and stay dark/quiet at idle.
+  const shadow = new Graphics();
+  shadow.ellipse(cx, cy + 44, 150, 58);
+  shadow.fill({ color: 0x000000, alpha: 0.32 });
+  root.addChild(shadow);
+
+  const keel = new Graphics();
+  keel.poly([
+    cx - HW,
+    TOP + 18,
+    cx,
+    cy + HD - SLAB_H + 18,
+    cx + HW,
+    TOP + 18,
+    cx,
+    cy - HD - SLAB_H + 18,
+  ]);
+  keel.fill({ color: shade(PALETTE.structure, -0.45) });
+  keel.poly([
+    cx - HW + 10,
+    TOP + 8,
+    cx,
+    cy + HD - SLAB_H + 8,
+    cx + HW - 10,
+    TOP + 8,
+    cx,
+    cy - HD - SLAB_H + 8,
+  ]);
+  keel.fill({ color: PALETTE.spaceAlt });
+  root.addChild(keel);
 
   // --- Slab: foreign material, pale cool top with aqua trim -----------------
   const slab = new Graphics();
@@ -67,12 +113,12 @@ export function buildHyperliquid(ctx: DioramaContext): void {
   slab.poly([cx - HW, TOP, cx, cy + HD - SLAB_H, cx + HW, TOP, cx, cy - HD - SLAB_H]);
   slab.fill({ color: PALETTE.surfacePale, alpha: 0.88 });
   slab.poly([cx - HW, TOP, cx, cy + HD - SLAB_H, cx + HW, TOP, cx, cy - HD - SLAB_H]);
-  slab.stroke({ width: 1.5, color: PALETTE.aqua, alpha: 0.85 });
+  slab.stroke({ width: 1.5, color: PALETTE.aqua, alpha: 0.6 });
   root.addChild(slab);
   // Underglow: floats slightly apart from the campus island. Deliberately
   // restrained: the platform must read through structure, not outshine the
   // central trading floor it serves.
-  root.addChild(glow(cx, cy + HD * 0.55, 430, PALETTE.aqua, 0.13));
+  root.addChild(glow(cx, cy + HD * 0.55, 400, PALETTE.aqua, 0.08));
 
   // --- Floating rock fragments: small iso shards drifting very slowly ------
   // Static geometry; the one shared onTick below offsets their y by a few
@@ -91,7 +137,7 @@ export function buildHyperliquid(ctx: DioramaContext): void {
       h: s.h,
       color: PALETTE.structureLight,
       rim: PALETTE.aqua,
-      rimAlpha: 0.5,
+      rimAlpha: 0.35,
     });
     root.addChild(box);
     return { box, y0: s.y, p: s.p };
@@ -109,11 +155,16 @@ export function buildHyperliquid(ctx: DioramaContext): void {
   }
   root.addChild(posts);
   for (const px of [cx - 58, cx + 58]) {
-    root.addChild(glow(px, BANNER_Y + 12, 18, PALETTE.aqua, 0.35));
+    root.addChild(glow(px, BANNER_Y + 12, 18, PALETTE.aqua, 0.25));
   }
   // Stacked two-line sign: a single xl-width banner would run past the world
   // edge at this x, so the name breaks over two lg boards with one sub line.
-  const sign1 = makeSign("HYPERLIQUID", { x: cx, y: BANNER_Y - 16, size: "lg", accent: PALETTE.aqua });
+  const sign1 = makeSign("HYPERLIQUID", {
+    x: cx,
+    y: BANNER_Y - 16,
+    size: "lg",
+    accent: PALETTE.aqua,
+  });
   const sign2 = makeSign("TESTNET", { x: cx, y: BANNER_Y + 22, size: "lg", accent: PALETTE.aqua });
   const sub = new Text({
     text: "AUTHORITATIVE EXCHANGE",
@@ -156,35 +207,65 @@ export function buildHyperliquid(ctx: DioramaContext): void {
     hexPts.push(Math.cos(a) * 36, Math.sin(a) * 20);
   }
   ring.poly(hexPts);
-  ring.stroke({ width: 2, color: PALETTE.aqua, alpha: 0.68 });
+  ring.stroke({ width: 2, color: PALETTE.aqua, alpha: 0.5 });
   ring.circle(0, 0, 3);
-  ring.fill({ color: PALETTE.cyan, alpha: 0.9 });
+  ring.fill({ color: PALETTE.cyan, alpha: 0.8 });
   ring.blendMode = "add";
   root.addChild(ring);
 
   // --- Landing pad: cyan target ring + two guide lights ----------------------
   const pad = new Graphics();
   pad.ellipse(PAD.x, PAD.y, 30, 15);
-  pad.stroke({ width: 2, color: PALETTE.cyan, alpha: 0.9 });
+  pad.stroke({ width: 2, color: PALETTE.cyan, alpha: 0.75 });
   pad.ellipse(PAD.x, PAD.y, 16, 8);
-  pad.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.55 });
+  pad.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.45 });
   pad.ellipse(PAD.x, PAD.y, 3.5, 1.8);
-  pad.fill({ color: PALETTE.aqua, alpha: 0.9 });
+  pad.fill({ color: PALETTE.aqua, alpha: 0.8 });
   root.addChild(pad);
-  const guideL = glow(PAD.x - 40, PAD.y - 12, 26, PALETTE.cyan, 0.45);
-  const guideR = glow(PAD.x + 40, PAD.y - 12, 26, PALETTE.cyan, 0.45);
+  const guideL = glow(PAD.x - 40, PAD.y - 12, 26, PALETTE.cyan, 0.3);
+  const guideR = glow(PAD.x + 40, PAD.y - 12, 26, PALETTE.cyan, 0.3);
   root.addChild(guideL, guideR);
+
+  // --- Receiving terminal socket: the exchange tunnel ends at this pad
+  // (exchangeTunnel / exchangeStateReturn in config/rails.ts). A cradle of
+  // two concentric rings plus etched side ticks gives the beam a visible
+  // terminal instead of stopping mid-platform. Flat etching only: posts here
+  // would collide with the campus tunnel arches and overhang the SW edge.
+  const socket = new Graphics();
+  socket.ellipse(PAD.x, PAD.y, 38, 18);
+  socket.stroke({ width: 2, color: PALETTE.aqua, alpha: 0.7 });
+  socket.ellipse(PAD.x, PAD.y, 32, 14);
+  socket.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.45 });
+  socket.moveTo(PAD.x - 46, PAD.y);
+  socket.lineTo(PAD.x - 40, PAD.y);
+  socket.moveTo(PAD.x + 40, PAD.y);
+  socket.lineTo(PAD.x + 46, PAD.y);
+  socket.moveTo(PAD.x, PAD.y - 24);
+  socket.lineTo(PAD.x, PAD.y - 20);
+  socket.moveTo(PAD.x, PAD.y + 20);
+  socket.lineTo(PAD.x, PAD.y + 24);
+  socket.stroke({ width: 1.5, color: PALETTE.aqua, alpha: 0.55, cap: "round" });
+  socket.blendMode = "add";
+  root.addChild(socket);
 
   // --- External clerk glyph: rotating cube pedestal near the pad -------------
   root.addChild(
-    isoBox({ x: cx - 26, y: PAD.y - 34, w: 16, d: 9, h: 10, color: PALETTE.structureLight, rim: PALETTE.aqua }),
+    isoBox({
+      x: cx - 26,
+      y: PAD.y - 34,
+      w: 16,
+      d: 9,
+      h: 10,
+      color: PALETTE.structureLight,
+      rim: PALETTE.aqua,
+    }),
   );
   const clerkCube = new Graphics();
   clerkCube.position.set(cx - 26, PAD.y - 52);
   clerkCube.rect(-5, -5, 10, 10);
-  clerkCube.stroke({ width: 1.5, color: PALETTE.aqua, alpha: 0.9 });
+  clerkCube.stroke({ width: 1.5, color: PALETTE.aqua, alpha: 0.7 });
   clerkCube.rect(-2.5, -2.5, 5, 5);
-  clerkCube.fill({ color: PALETTE.aqua, alpha: 0.45 });
+  clerkCube.fill({ color: PALETTE.aqua, alpha: 0.4 });
   root.addChild(clerkCube);
 
   // --- Pooled event sprites ---------------------------------------------------
@@ -238,6 +319,24 @@ export function buildHyperliquid(ctx: DioramaContext): void {
   packet.alpha = 0;
   root.addChild(packet);
 
+  // Idle vs peaks: the platform sits quiet between beats, then the terminal
+  // flashes with each exchange event so activity, not static glow, carries
+  // the platform's presence. Alpha-only; skipped under reduced motion.
+  const surge = glow(PAD.x, PAD.y, 130, PALETTE.cyan, 0);
+  surge.alpha = 0;
+  root.addChild(surge);
+  let surgeTween: gsap.core.Tween | null = null;
+  const surgePulse = (color: number, strength: number): void => {
+    if (ctx.reducedMotion) return;
+    surge.tint = color;
+    surgeTween?.kill();
+    surgeTween = gsap.fromTo(
+      surge,
+      { alpha: strength },
+      { alpha: 0, duration: 0.8, ease: "power2.out" },
+    );
+  };
+
   let orderTL: gsap.core.Timeline | null = null;
   let ackTL: gsap.core.Timeline | null = null;
   let fillTL: gsap.core.Timeline | null = null;
@@ -250,6 +349,7 @@ export function buildHyperliquid(ctx: DioramaContext): void {
     exchangeEvent(kind) {
       switch (kind) {
         case "order": {
+          surgePulse(PALETTE.orange, 0.55);
           orderTL?.kill();
           settle.alpha = 0;
           orderTL = gsap
@@ -269,6 +369,7 @@ export function buildHyperliquid(ctx: DioramaContext): void {
           break;
         }
         case "ack": {
+          surgePulse(PALETTE.cyan, 0.45);
           ackTL?.kill();
           ackTL = gsap
             .timeline()
@@ -290,6 +391,7 @@ export function buildHyperliquid(ctx: DioramaContext): void {
           break;
         }
         case "fill": {
+          surgePulse(PALETTE.healthy, 0.45);
           fillTL?.kill();
           fillTL = gsap
             .timeline()
@@ -361,7 +463,11 @@ export function buildHyperliquid(ctx: DioramaContext): void {
           b.on = !b.on;
           paintBlock(b.g, b.on);
           ambientDelay?.kill();
-          ambientDelay = gsap.fromTo(b.g, { alpha: 1 }, { alpha: b.on ? 1 : 0.45, duration: 0.5, ease: "power1.inOut" });
+          ambientDelay = gsap.fromTo(
+            b.g,
+            { alpha: 1 },
+            { alpha: b.on ? 1 : 0.45, duration: 0.5, ease: "power1.inOut" },
+          );
         }
       }
     }
@@ -375,6 +481,7 @@ export function buildHyperliquid(ctx: DioramaContext): void {
     stateTL?.kill();
     flipDelay?.kill();
     ambientDelay?.kill();
+    surgeTween?.kill();
     hyperliquid.api = null;
     hyperliquid.root = null;
   });

@@ -111,7 +111,7 @@ function injectStyles(): void {
   document.head.appendChild(style);
 }
 
-export function buildA11y(ctx: DioramaContext, actions: { onFocus(id: string): void }): A11yController {
+export function buildA11y(ctx: DioramaContext): A11yController {
   injectStyles();
 
   // Preferred mount: a page-provided region; otherwise an aside at the end of
@@ -164,7 +164,6 @@ export function buildA11y(ctx: DioramaContext, actions: { onFocus(id: string): v
     const blurb = document.createTextNode(station.blurb);
     btn.append(label, blurb);
     btn.addEventListener("click", () => {
-      actions.onFocus(id);
       controller.focusStation(id);
     });
     buttons.set(id, btn);

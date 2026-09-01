@@ -37,29 +37,36 @@ export function buildDistrictBanners(ctx: DioramaContext): void {
 
   for (const def of Object.values(DISTRICTS)) {
     if (def.id === "external") continue; // built by world/hyperliquid.ts
-    if (def.id === "supervisor") continue; // the HUMAN SUPERVISOR station
-    // sign below the deck carries this zone; a banner here stacks on the
-    // TRADING FLOOR rim sign.
 
     let x = def.center.x;
     let y = def.bounds.y1 - 28;
 
-    if (def.id === "mcp") {
-      // The provider booths sit at the district's top edge and their booth
-      // frames rise well above the footprint; lift the banner clear of both
-      // the frames and the PROVIDERS station sign.
-      y = def.bounds.y1 - 96;
-    }
     if (def.id === "ops") {
-      // The EVENT BUS (railYard, anchor 720/965 with its sign near y 925)
-      // collides with a district-center banner. Shift the banner east and
-      // up so it sits over the observability gap, clear of every ops
-      // station sign at fit zoom.
-      x = 1060;
+      // Two constraints at fit zoom: the EVENT BUS sign (railYard anchor
+      // 720/965, sign near y 925) and the trading floor disc's southwest
+      // rim, which reaches west to about x 1115 at this latitude. A banner
+      // at x 800 clears the rim by ~300 units and hovers open ops floor
+      // north of the event bus instead of straddling the floor seam.
+      x = 800;
       y = def.bounds.y1 - 56;
     }
 
-    const banner = makeSign(def.title, { x, y, size: "lg", accent: def.accent, halo: true, lod: "always" });
+    if (def.id === "risk") {
+      // The default spot straddles the MCP district seam over the MCP
+      // HEALTH sign; anchor the banner over the district's own approval
+      // and permission row instead.
+      x = 1905;
+      y = def.bounds.y1 + 16;
+    }
+
+    const banner = makeSign(def.title, {
+      x,
+      y,
+      size: "lg",
+      accent: def.accent,
+      halo: true,
+      lod: "always",
+    });
     banner.zIndex = def.bounds.y1 + DEPTH.overlay;
     ctx.layers.labels.addChild(banner);
     banners.push(banner);

@@ -1,19 +1,19 @@
 /**
- * MCP & Provider district: tool hub interchange, tool consoles, schema
- * library drawers, adapter bay, provider booths, health console, and the
- * environment switchboard. Owner: MCP district worker.
+ * MCP & Adapters district: tool hub interchange, tool consoles, schema
+ * library drawers, adapter bay with its provider dock, health console, and
+ * the environment switchboard. Owner: MCP district worker.
  *
  * Story: agents OBTAIN capabilities here. The hub hands out typed tools,
  * schemas document them, adapters translate provider protocols, and the
  * switchboard picks the environment. Providers are adapters, never
- * authorities: six identical booths, no thrones.
+ * authorities: identical dock sockets at the bay, no thrones.
  */
 import { Container, Graphics, Sprite } from "pixi.js";
 import { gsap } from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { registerStation } from "../core/registry.js";
 import { DISTRICTS, STATIONS, type StationDef } from "../config/stations.js";
-import { PALETTE, shade } from "../config/palette.js";
+import { PALETTE } from "../config/palette.js";
 import { DEPTH, seededRandom } from "../config/world.js";
 import { makeSign } from "../core/signs.js";
 import { dotTexture, glow, isoBox, isoCylinder, isoTile, screenPanel } from "../core/iso.js";
@@ -112,7 +112,14 @@ function stateBadge(state: PortState): Graphics {
  * structure grounds onto the platform instead of floating. Coordinates are
  * root-local (mcp roots are positioned at their anchor).
  */
-function contactShadow(root: Container, x: number, y: number, w: number, d: number, alpha = 0.27): void {
+function contactShadow(
+  root: Container,
+  x: number,
+  y: number,
+  w: number,
+  d: number,
+  alpha = 0.27,
+): void {
   const g = new Graphics();
   g.ellipse(x, y, w / 2, d / 2);
   g.fill({ color: 0x03080f, alpha });
@@ -121,7 +128,16 @@ function contactShadow(root: Container, x: number, y: number, w: number, d: numb
 
 /** Small crate for filling dead space around the district. */
 function propCrate(x: number, y: number, s = 13): Graphics {
-  return isoBox({ x, y, w: s, d: s * 0.6, h: s * 0.55, color: PALETTE.structure, rim: PALETTE.violet, rimAlpha: 0.3 });
+  return isoBox({
+    x,
+    y,
+    w: s,
+    d: s * 0.6,
+    h: s * 0.55,
+    color: PALETTE.structure,
+    rim: PALETTE.violet,
+    rimAlpha: 0.3,
+  });
 }
 
 /* -------------------------------------------------------------- 1. hub */
@@ -141,7 +157,9 @@ function buildHub(ctx: DioramaContext): McpHubApi {
   root.addChild(platform);
 
   // Central core pillar with one soft violet light; no stacked pillar wash.
-  root.addChild(isoCylinder({ x: 0, y: -2, r: 20, h: 62, color: PALETTE.structureLight, rim: PALETTE.violet }));
+  root.addChild(
+    isoCylinder({ x: 0, y: -2, r: 20, h: 62, color: PALETTE.structureLight, rim: PALETTE.violet }),
+  );
   const coreGlow = glow(0, -74, 110, PALETTE.violet, 0.45);
   root.addChild(coreGlow);
 
@@ -231,7 +249,11 @@ function buildHub(ctx: DioramaContext): McpHubApi {
       ease: "power2.in",
       onComplete: () => {
         gsap.to(spark, { alpha: 0, duration: 0.25 });
-        gsap.fromTo(coreGlow, { alpha: 0.5 }, { alpha: 0.85, duration: 0.18, yoyo: true, repeat: 1 });
+        gsap.fromTo(
+          coreGlow,
+          { alpha: 0.5 },
+          { alpha: 0.85, duration: 0.18, yoyo: true, repeat: 1 },
+        );
       },
     });
   };
@@ -298,7 +320,18 @@ function buildHub(ctx: DioramaContext): McpHubApi {
 function miniConsole(x: number, y: number, screen: (g: Graphics) => void): Container {
   const c = new Container();
   c.position.set(x, y);
-  c.addChild(isoBox({ x: 0, y: 4, w: 30, d: 16, h: 9, color: PALETTE.structure, rim: PALETTE.violet, rimAlpha: 0.5 }));
+  c.addChild(
+    isoBox({
+      x: 0,
+      y: 4,
+      w: 30,
+      d: 16,
+      h: 9,
+      color: PALETTE.structure,
+      rim: PALETTE.violet,
+      rimAlpha: 0.5,
+    }),
+  );
   const panel = screenPanel({ x: -15, y: -14, w: 30, h: 20, accent: PALETTE.cyan, alpha: 0.9 });
   const content = new Graphics();
   content.position.set(15, 10); // panel-local center
@@ -316,8 +349,12 @@ function buildMarketDataTools(ctx: DioramaContext): void {
   root.addChild(isoTile(0, 0, 150, 76, PALETTE.structure, 1, PALETTE.structureLight));
 
   const cells: Array<{ x: number; y: number }> = [
-    { x: -44, y: -18 }, { x: 0, y: -28 }, { x: 44, y: -18 },
-    { x: -44, y: 16 }, { x: 0, y: 8 }, { x: 44, y: 16 },
+    { x: -44, y: -18 },
+    { x: 0, y: -28 },
+    { x: 44, y: -18 },
+    { x: -44, y: 16 },
+    { x: 0, y: 8 },
+    { x: 44, y: 16 },
   ];
   const screens: Array<(g: Graphics) => void> = [
     // chart
@@ -328,7 +365,10 @@ function buildMarketDataTools(ctx: DioramaContext): void {
     // ladder
     (g) => {
       for (let i = 0; i < 4; i++) {
-        g.rect(-11 + i * 0.5, -8 + i * 5, 18 - i * 1.5, 2.4).fill({ color: i < 2 ? PALETTE.healthy : PALETTE.blocked, alpha: 0.8 });
+        g.rect(-11 + i * 0.5, -8 + i * 5, 18 - i * 1.5, 2.4).fill({
+          color: i < 2 ? PALETTE.healthy : PALETTE.blocked,
+          alpha: 0.8,
+        });
       }
     },
     // funding arc
@@ -388,17 +428,22 @@ function buildResearchToolsMcp(ctx: DioramaContext): void {
   });
   // Token hex console.
   const hex = miniConsole(0, -10, (g) => {
-    g.poly(Array.from({ length: 6 }, (_, i) => {
-      const a = (Math.PI / 3) * i - Math.PI / 6;
-      return [Math.cos(a) * 8, Math.sin(a) * 8 + 1];
-    }).flat());
+    g.poly(
+      Array.from({ length: 6 }, (_, i) => {
+        const a = (Math.PI / 3) * i - Math.PI / 6;
+        return [Math.cos(a) * 8, Math.sin(a) * 8 + 1];
+      }).flat(),
+    );
     g.stroke({ width: 1.4, color: PALETTE.magenta, alpha: 0.85 });
     g.circle(0, 1, 2.4).fill({ color: PALETTE.magenta, alpha: 0.8 });
   });
   // Protocol layers stack console.
   const stack = miniConsole(44, -6, (g) => {
     for (let i = 0; i < 4; i++) {
-      g.rect(-11, 5 - i * 4.5, 22 - i * 2, 2.6).fill({ color: PALETTE.blue, alpha: 0.5 + i * 0.15 });
+      g.rect(-11, 5 - i * 4.5, 22 - i * 2, 2.6).fill({
+        color: PALETTE.blue,
+        alpha: 0.5 + i * 0.15,
+      });
     }
   });
   root.addChild(news, hex, stack);
@@ -418,7 +463,9 @@ function buildResearchToolsMcp(ctx: DioramaContext): void {
   toolPorts.forEach((port, i) => {
     const stand = new Container();
     stand.position.set(port.lx, 32);
-    stand.addChild(isoCylinder({ x: 0, y: 0, r: 7, h: 12, color: PALETTE.structureLight, rim: port.accent }));
+    stand.addChild(
+      isoCylinder({ x: 0, y: 0, r: 7, h: 12, color: PALETTE.structureLight, rim: port.accent }),
+    );
     const socket = new Graphics();
     socket.circle(0, -14, 5).fill({ color: port.accent, alpha: 0.3 });
     socket.circle(0, -14, 5).stroke({ width: 1.5, color: port.accent, alpha: 0.95 });
@@ -489,7 +536,10 @@ function buildPortfolioTools(ctx: DioramaContext): void {
   // Four angled screens: balances, positions, orders, fills.
   const panels: Container[] = [];
   const layout = [
-    [-40, -20], [40, -20], [-40, 18], [40, 18],
+    [-40, -20],
+    [40, -20],
+    [-40, 18],
+    [40, 18],
   ];
   layout.forEach(([x, y], idx) => {
     const p = screenPanel({ x: -19, y: -12, w: 38, h: 24, accent: PALETTE.cyan, alpha: 0.9 });
@@ -527,7 +577,18 @@ function buildToolSchemas(ctx: DioramaContext): void {
   root.addChild(isoTile(0, 6, 160, 66, PALETTE.structure, 1, PALETTE.structureLight));
 
   // Library cabinet body.
-  root.addChild(isoBox({ x: 0, y: -14, w: 130, d: 46, h: 40, color: PALETTE.structure, rim: PALETTE.violet, rimAlpha: 0.75 }));
+  root.addChild(
+    isoBox({
+      x: 0,
+      y: -14,
+      w: 130,
+      d: 46,
+      h: 40,
+      color: PALETTE.structure,
+      rim: PALETTE.violet,
+      rimAlpha: 0.75,
+    }),
+  );
   // Soft violet wash behind the cabinet so drawer rows read at fit zoom.
   root.addChild(glow(0, -40, 130, PALETTE.violet, 0.14));
 
@@ -576,25 +637,29 @@ function buildToolSchemas(ctx: DioramaContext): void {
     const card = d.children[1] as Graphics;
     card.visible = true;
     card.alpha = 0;
-    gsap.fromTo(card, { y: 6, alpha: 0 }, {
-      y: 0,
-      alpha: 1,
-      duration: 0.8,
-      ease: "power2.out",
-      onComplete: () => {
-        gsap.to(card, {
-          y: -4,
-          alpha: 0,
-          duration: 0.6,
-          delay: 5.4,
-          ease: "power2.in",
-          onComplete: () => {
-            card.visible = false;
-            card.y = 0;
-          },
-        });
+    gsap.fromTo(
+      card,
+      { y: 6, alpha: 0 },
+      {
+        y: 0,
+        alpha: 1,
+        duration: 0.8,
+        ease: "power2.out",
+        onComplete: () => {
+          gsap.to(card, {
+            y: -4,
+            alpha: 0,
+            duration: 0.6,
+            delay: 5.4,
+            ease: "power2.in",
+            onComplete: () => {
+              card.visible = false;
+              card.y = 0;
+            },
+          });
+        },
       },
-    });
+    );
   };
   if (ctx.reducedMotion) {
     // Static: one drawer simply stays open with its card out.
@@ -617,11 +682,41 @@ function buildAdapterBay(ctx: DioramaContext): void {
   root.addChild(propCrate(-46, 40));
   root.addChild(isoTile(0, 0, 110, 100, PALETTE.structure, 1, PALETTE.structureLight));
 
+  // Provider dock: six identical sockets standing at the bay's west edge,
+  // where the neutral cubes spawn. Same shape, same size, no privileged
+  // position and no labels: Codex, Claude, Cursor, Grok, OpenCode, and custom
+  // instances all arrive as the same plug, and only the shared packet shape
+  // leaves. Static, one draw; the belts keep the motion.
+  const dock = new Graphics();
+  for (let i = 0; i < 6; i++) {
+    const py = -25 + i * 10;
+    dock.roundRect(-55, py - 4.5, 7, 9, 1.5);
+    dock.fill({ color: PALETTE.structureLight });
+    dock.roundRect(-55, py - 4.5, 7, 9, 1.5);
+    dock.stroke({ width: 1, color: PALETTE.violet, alpha: 0.65 });
+    dock.circle(-51.5, py - 1.5, 1.4);
+    dock.fill({ color: PALETTE.violet, alpha: 0.85 });
+    dock.rect(-53.5, py + 1, 4, 1);
+    dock.fill({ color: PALETTE.violet, alpha: 0.45 });
+  }
+  root.addChild(dock);
+
   const tints = [PALETTE.cyan, PALETTE.magenta];
   for (let m = 0; m < 2; m++) {
     const my = -22 + m * 40;
     // Translation machine: standardized cube in on the west, tinted packet out east.
-    root.addChild(isoBox({ x: 0, y: my, w: 34, d: 20, h: 22, color: PALETTE.structureLight, rim: tints[m], rimAlpha: 0.7 }));
+    root.addChild(
+      isoBox({
+        x: 0,
+        y: my,
+        w: 34,
+        d: 20,
+        h: 22,
+        color: PALETTE.structureLight,
+        rim: tints[m],
+        rimAlpha: 0.7,
+      }),
+    );
     const tintGlow = glow(0, my - 22, 40, tints[m], 0.2);
     root.addChild(tintGlow);
 
@@ -670,97 +765,23 @@ function buildAdapterBay(ctx: DioramaContext): void {
   registerStation({ id: "adapterBay", root, hit });
 }
 
-/* ------------------------------------------------------------ 7. providers */
-
-const PROVIDERS: Array<{ name: string; accent: number }> = [
-  { name: "CODEX", accent: PALETTE.cyan },
-  { name: "CLAUDE", accent: PALETTE.orange },
-  { name: "CURSOR", accent: PALETTE.blue },
-  { name: "GROK", accent: PALETTE.magenta },
-  { name: "OPENCODE", accent: PALETTE.aqua },
-  { name: "CUSTOM", accent: PALETTE.violet },
-];
-
-function buildProviders(ctx: DioramaContext): void {
-  const { def, root, hit } = stationShell(ctx, "providers", -76);
-  contactShadow(root, 0, 22, 470, 96, 0.25);
-
-  PROVIDERS.forEach((p, i) => {
-    // 96 unit pitch keeps the xs name boards (OPENCODE is the widest) clear
-    // of their neighbours at fit zoom.
-    const bx = (i - 2.5) * 96;
-    const booth = new Container();
-    booth.position.set(bx, 18);
-
-    // Open frame: two posts, lintel, low back rail. Same for every provider.
-    const frame = new Graphics();
-    for (const px of [-20, 16]) {
-      frame.rect(px, -46, 4, 46).fill({ color: PALETTE.structureLight });
-    }
-    frame.rect(-22, -50, 44, 5).fill({ color: PALETTE.structure });
-    frame.rect(-22, -50, 44, 5).stroke({ width: 1, color: shade(p.accent, -0.1), alpha: 0.7 });
-    frame.rect(-20, -10, 40, 3).fill({ color: PALETTE.structure });
-    booth.addChild(frame);
-    booth.addChild(isoTile(0, 4, 52, 26, PALETTE.structure, 1, shade(p.accent, -0.2)));
-
-    // Translating pedestal with a low-saturation accent tint.
-    booth.addChild(isoBox({ x: 0, y: 0, w: 16, d: 9, h: 12, color: PALETTE.structure, rim: shade(p.accent, 0.05), rimAlpha: 0.6 }));
-    const tint = glow(0, -18, 26, p.accent, 0.14);
-    booth.addChild(tint);
-
-    // Shared motif: a translation glyph (bracket pair around a dot).
-    const glyph = new Graphics();
-    glyph.moveTo(-6, -8).lineTo(-9, -8).lineTo(-9, -2).lineTo(-6, -2);
-    glyph.moveTo(6, -8).lineTo(9, -8).lineTo(9, -2).lineTo(6, -2);
-    glyph.stroke({ width: 1.2, color: p.accent, alpha: 0.85 });
-    glyph.circle(0, -5, 2).fill({ color: p.accent });
-    glyph.y = -14;
-    booth.addChild(glyph);
-
-    // Booth label sign (sm) above the lintel, in the labels layer.
-    const label = makeSign(p.name, {
-      x: def.anchor.x + bx,
-      y: def.anchor.y - 46,
-      size: "xs",
-      accent: p.accent,
-      halo: false,
-    });
-    label.zIndex = def.anchor.y + DEPTH.overlay - 5;
-    ctx.layers.labels.addChild(label);
-
-    root.addChild(booth);
-
-    // Activity LED above each pedestal: non-synchronized blinks so the row
-    // reads as six independently working adapters.
-    const led = glow(0, -28, 10, p.accent, 0);
-    booth.addChild(led);
-
-    if (!ctx.reducedMotion) {
-      // Gentle shared breathing across the row, staggered per booth.
-      const tl = gsap.timeline({ repeat: -1, delay: i * 0.7 });
-      tl.to(tint, { alpha: 0.3, duration: 3.2, ease: "sine.inOut" });
-      tl.to(tint, { alpha: 0.14, duration: 3.2, ease: "sine.inOut" });
-      ctx.onCleanup(() => tl.kill());
-      const blink = gsap.timeline({ repeat: -1, delay: 1.1 + i * 0.83 });
-      blink.to(led, { alpha: 0.7, duration: 0.18, ease: "power2.out" });
-      blink.to(led, { alpha: 0, duration: 0.4 });
-      blink.to({}, { duration: 2.6 + (i % 3) * 0.9 });
-      ctx.onCleanup(() => blink.kill());
-    } else {
-      led.alpha = i % 2 === 0 ? 0.55 : 0.15;
-    }
-  });
-
-  registerStation({ id: "providers", root, hit });
-}
-
-/* ----------------------------------------------------------- 8. mcp health */
+/* ----------------------------------------------------------- 7. mcp health */
 
 function buildMcpHealth(ctx: DioramaContext): void {
   const { root, hit } = stationShell(ctx, "mcpHealth", -52);
   contactShadow(root, 0, 8, 148, 78);
   root.addChild(isoTile(0, 4, 130, 66, PALETTE.structure, 1, PALETTE.structureLight));
-  root.addChild(isoBox({ x: 0, y: 10, w: 26, d: 14, h: 8, color: PALETTE.structure, rim: PALETTE.structureLight }));
+  root.addChild(
+    isoBox({
+      x: 0,
+      y: 10,
+      w: 26,
+      d: 14,
+      h: 8,
+      color: PALETTE.structure,
+      rim: PALETTE.structureLight,
+    }),
+  );
 
   // Panel-local space below: (0,0) is the panel's top-left, 104 x 44.
   const panel = screenPanel({ x: -52, y: -38, w: 104, h: 44, accent: PALETTE.cyan });
@@ -794,7 +815,15 @@ function buildMcpHealth(ctx: DioramaContext): void {
 
   // Latency sparkline.
   const spark = new Graphics();
-  spark.moveTo(6, 32).lineTo(18, 28).lineTo(30, 34).lineTo(42, 26).lineTo(54, 31).lineTo(66, 27).lineTo(78, 32).lineTo(88, 29);
+  spark
+    .moveTo(6, 32)
+    .lineTo(18, 28)
+    .lineTo(30, 34)
+    .lineTo(42, 26)
+    .lineTo(54, 31)
+    .lineTo(66, 27)
+    .lineTo(78, 32)
+    .lineTo(88, 29);
   spark.stroke({ width: 1, color: PALETTE.waiting, alpha: 0.8 });
   panel.addChild(spark);
 
@@ -810,7 +839,9 @@ function buildMcpHealth(ctx: DioramaContext): void {
   for (let i = 0; i < 4; i++) {
     const track = new Graphics();
     track.rect(8 + i * 24, 38, 20, 3.5).fill({ color: PALETTE.space });
-    track.rect(8 + i * 24, 38, 20, 3.5).stroke({ width: 0.6, color: PALETTE.structureLight, alpha: 0.9 });
+    track
+      .rect(8 + i * 24, 38, 20, 3.5)
+      .stroke({ width: 0.6, color: PALETTE.structureLight, alpha: 0.9 });
     panel.addChild(track);
     const fill = new Graphics();
     fill.rect(8 + i * 24, 38, 20 * limits[i], 3.5).fill({ color: PALETTE.violet, alpha: 0.85 });
@@ -829,7 +860,7 @@ function buildMcpHealth(ctx: DioramaContext): void {
   registerStation({ id: "mcpHealth", root, hit });
 }
 
-/* ------------------------------------------------------ 9. env switchboard */
+/* ------------------------------------------------------ 8. env switchboard */
 
 type EnvKey = "research" | "testnet" | "connected" | "signer";
 
@@ -847,7 +878,18 @@ function buildEnvSwitchboard(ctx: DioramaContext): EnvSwitchboardApi {
   mast.fill({ color: PALETTE.healthy, alpha: 0.95 });
   root.addChild(mast);
   root.addChild(glow(-59, -81, 12, PALETTE.healthy, 0.3));
-  root.addChild(isoBox({ x: 0, y: -6, w: 110, d: 34, h: 26, color: PALETTE.structureLight, rim: PALETTE.violet, rimAlpha: 0.6 }));
+  root.addChild(
+    isoBox({
+      x: 0,
+      y: -6,
+      w: 110,
+      d: 34,
+      h: 26,
+      color: PALETTE.structureLight,
+      rim: PALETTE.violet,
+      rimAlpha: 0.6,
+    }),
+  );
 
   const glyphs: Record<EnvKey, (g: Graphics) => void> = {
     // flask
@@ -858,7 +900,8 @@ function buildEnvSwitchboard(ctx: DioramaContext): EnvSwitchboardApi {
     // grid
     testnet: (g) => {
       for (let r = 0; r < 2; r++) {
-        for (let c = 0; c < 2; c++) g.rect(-5 + c * 6, -5 + r * 6, 4, 4).fill({ color: PALETTE.aqua, alpha: 0.9 });
+        for (let c = 0; c < 2; c++)
+          g.rect(-5 + c * 6, -5 + r * 6, 4, 4).fill({ color: PALETTE.aqua, alpha: 0.9 });
       }
     },
     // link
@@ -924,7 +967,11 @@ function buildEnvSwitchboard(ctx: DioramaContext): EnvSwitchboardApi {
   columns.forEach((c) => applyColumn(c, c.key !== "research", false));
 
   const throwLever = (col: Column): void => {
-    gsap.fromTo(col.lever, { y: col.lit ? -36 : -30 }, { y: col.lit ? -28 : -36, duration: 0.45, ease: "bounce.out" });
+    gsap.fromTo(
+      col.lever,
+      { y: col.lit ? -36 : -30 },
+      { y: col.lit ? -28 : -36, duration: 0.45, ease: "bounce.out" },
+    );
   };
 
   const api: EnvSwitchboardApi = {
@@ -964,7 +1011,6 @@ export function buildMcpDistrict(ctx: DioramaContext): void {
   buildPortfolioTools(ctx);
   buildToolSchemas(ctx);
   buildAdapterBay(ctx);
-  buildProviders(ctx);
   buildMcpHealth(ctx);
   buildEnvSwitchboard(ctx);
 }

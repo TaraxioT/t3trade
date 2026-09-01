@@ -6,7 +6,7 @@
  */
 import { Container, Graphics } from "pixi.js";
 import type { DioramaContext } from "../core/context.js";
-import { edgeStrip, glow, isoBox } from "../core/iso.js";
+import { edgeStrip, isoBox } from "../core/iso.js";
 import { leftFace, PALETTE, rightFace, shade } from "../config/palette.js";
 import { DISTRICTS } from "../config/stations.js";
 import { WALKWAY_RESEARCH, WALKWAY_SOUTH } from "../config/geometry.js";
@@ -32,12 +32,7 @@ function buildSlab(root: Container): void {
 
   // Drop shadow: large soft dark ellipse below the whole slab, offset south.
   const shadow = new Graphics();
-  shadow.ellipse(
-    (SLAB.x1 + SLAB.x2) / 2,
-    (SLAB.y1 + SLAB.y2) / 2 + 30,
-    w * 0.55,
-    h * 0.24,
-  );
+  shadow.ellipse((SLAB.x1 + SLAB.x2) / 2, (SLAB.y1 + SLAB.y2) / 2 + 30, w * 0.55, h * 0.24);
   shadow.fill({ color: 0x000000, alpha: 0.5 });
   root.addChild(shadow);
 
@@ -70,8 +65,47 @@ const DISTRICT_WASH: Record<string, number> = {
   mcp: 0x9a70ff, // violet
   risk: 0xffd35a, // warm gold
   ops: 0x56f2c2, // aqua green
-  supervisor: 0xff9f45, // orange
 };
+
+/**
+ * Circulation pad over the former supervisor deck (x 1310-1650, y
+ * 1100-1300). The deck is gone; the slab there keeps the district floor
+ * material (structure tint + tile lattice, no accent wash, no border) so it
+ * reads as open circulation between floor, operations, and risk rather than
+ * a hole or a leftover platform. Drawn before district fills so overlapping
+ * district inlays keep their own identity on top.
+ */
+const CIRCULATION = { x1: 1310, y1: 1100, x2: 1650, y2: 1300 } as const;
+
+function buildCirculationPad(root: Container): void {
+  const fills = new Graphics();
+  const grid = new Graphics();
+  const pad = 10;
+  const b = {
+    x: CIRCULATION.x1 + pad,
+    y: CIRCULATION.y1 + pad,
+    w: CIRCULATION.x2 - CIRCULATION.x1 - pad * 2,
+    h: CIRCULATION.y2 - CIRCULATION.y1 - pad * 2,
+  };
+
+  fills.roundRect(b.x, b.y, b.w, b.h, 26);
+  fills.fill({ color: PALETTE.structure, alpha: 0.45 });
+
+  const step = 96;
+  const cx = b.x + b.w / 2;
+  const cy = b.y + b.h / 2;
+  for (let o = -Math.max(b.w, b.h); o < Math.max(b.w, b.h); o += step) {
+    grid.moveTo(cx + o, cy - b.h);
+    grid.lineTo(cx + o + b.h * 2, cy + b.h);
+    grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
+    grid.moveTo(cx + o, cy - b.h);
+    grid.lineTo(cx + o - b.h * 2, cy + b.h);
+    grid.stroke({ width: 0.5, color: PALETTE.surfacePale, alpha: 0.06 });
+  }
+
+  root.addChild(fills);
+  root.addChild(grid);
+}
 
 function buildDistrictInlays(root: Container): void {
   const fills = new Graphics();
@@ -85,13 +119,14 @@ function buildDistrictInlays(root: Container): void {
 
     // Structural tint plus the district-specific accent wash. The fill sits
     // darker than the slab top so district floors and pale structure tops
-    // separate by value, not by stacked translucency.
+    // separate by value, not by stacked translucency. The border stays very
+    // faint: districts must blend into one campus, not read as UI cards.
     fills.roundRect(b.x, b.y, b.w, b.h, 26);
     fills.fill({ color: PALETTE.structure, alpha: 0.45 });
     fills.roundRect(b.x, b.y, b.w, b.h, 26);
     fills.fill({ color: DISTRICT_WASH[def.id] ?? def.accent, alpha: 0.1 });
     fills.roundRect(b.x, b.y, b.w, b.h, 26);
-    fills.stroke({ width: 1.2, color: def.accent, alpha: 0.18 });
+    fills.stroke({ width: 1, color: def.accent, alpha: 0.1 });
 
     // 2:1 diamond lattice: diagonal lines at slopes +0.5 and -0.5.
     const step = 96;
@@ -202,26 +237,10 @@ function buildBridge(root: Container, cx: number, cy: number, horizontal: boolea
   root.addChild(posts);
 }
 
-/** Angled causeway platform tying the sandbox overhang back to the research
- * slab edge: structure + rim only, no rails (rails live in config/rails.ts). */
-function buildSandboxCauseway(root: Container): void {
-  const g = new Graphics();
-  // Deck: an angled quad from the west slab edge toward the sandbox zone.
-  const deck = [
-    { x: 186, y: 566 },
-    { x: 300, y: 598 },
-    { x: 300, y: 648 },
-    { x: 186, y: 618 },
-  ];
-  // Side thickness below the deck outline.
-  g.poly([deck[3].x, deck[3].y, deck[2].x, deck[2].y, deck[2].x, deck[2].y + 12, deck[3].x, deck[3].y + 12]);
-  g.fill({ color: rightFace(PALETTE.structure) });
-  g.poly(deck.flatMap((p) => [p.x, p.y]));
-  g.fill({ color: leftFace(PALETTE.structureLight) });
-  g.poly(deck.flatMap((p) => [p.x, p.y]));
-  g.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.35 });
-  root.addChild(g);
-}
+/** The former sandbox causeway (an angled deck at the west slab edge below
+ * the research-only gate) was removed: the sandbox sits well inside the
+ * slab, so the deck had nothing to tie back to and read as a dark slab
+ * floating past the campus edge. */
 
 /** Deterministic scatter: vents and hatches (<= 40 props). Cable conduits were
  * removed: they doubled up the rail network's line language on the floor. */
@@ -256,36 +275,34 @@ function buildScatter(root: Container): void {
   root.addChild(g);
 
   // Mid-campus garden cluster: the slab band between sandbox, event bus, and
-  // the decision table reads as a void otherwise. A small planter row with
-  // glow reeds and a relay pylon grounds the space without blocking paths.
+  // the decision table reads as a void otherwise. Soil mounds with curved
+  // glow reeds ground the space without blocking paths. Deliberately
+  // plant-like (curved leaning stems, mound shading, no pylons) so it never
+  // reads as an unmounted gray platform with antenna pins.
   const garden = new Container();
   for (const [gx, gy, hue] of [
-    [640, 815, PALETTE.aqua],
-    [700, 845, PALETTE.cyan],
-    [590, 870, PALETTE.violet],
+    [640, 815, PALETTE.healthy],
+    [700, 845, PALETTE.aqua],
+    [590, 870, PALETTE.cyan],
   ] as Array<[number, number, number]>) {
     const planter = new Graphics();
     planter.ellipse(gx, gy + 6, 22, 10);
-    planter.fill({ color: PALETTE.structure, alpha: 0.9 });
+    planter.fill({ color: shade(PALETTE.structure, -0.25), alpha: 0.92 });
+    planter.ellipse(gx, gy + 6, 15, 6.5);
+    planter.fill({ color: PALETTE.structure, alpha: 0.5 });
     planter.ellipse(gx, gy + 6, 22, 10);
-    planter.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.8 });
+    planter.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.7 });
     for (let r = 0; r < 3; r++) {
       const rx = gx - 10 + r * 10;
+      const lean = (r - 1) * 4;
       planter.moveTo(rx, gy + 2);
-      planter.lineTo(rx + (r - 1) * 3, gy - 16);
-      planter.stroke({ width: 1.5, color: hue, alpha: 0.75 });
-      planter.circle(rx + (r - 1) * 3, gy - 17, 2.2);
+      planter.quadraticCurveTo(rx + lean * 0.4, gy - 9, rx + lean, gy - 17);
+      planter.stroke({ width: 1.5, color: hue, alpha: 0.7 });
+      planter.circle(rx + lean, gy - 18, 2);
       planter.fill({ color: hue, alpha: 0.85 });
     }
     garden.addChild(planter);
   }
-  const pylon = new Graphics();
-  pylon.rect(806, 858, 5, 26);
-  pylon.fill({ color: PALETTE.structureLight });
-  pylon.circle(808.5, 854, 3.4);
-  pylon.fill({ color: PALETTE.cyan, alpha: 0.95 });
-  garden.addChild(pylon);
-  garden.addChild(glow(808.5, 854, 26, PALETTE.cyan, 0.4));
   root.addChild(garden);
 }
 
@@ -389,13 +406,15 @@ function buildServiceInfrastructure(root: Container): void {
 export function buildGround(ctx: DioramaContext): void {
   const root = new Container();
   buildSlab(root);
+  // Circulation pad first: district inlays draw over it where they overlap.
+  buildCirculationPad(root);
   buildDistrictInlays(root);
-  buildSandboxCauseway(root);
   buildWalkway(root, [...WALKWAY_SOUTH]);
   buildWalkway(root, [...WALKWAY_RESEARCH]);
-  // Bridges: research district to the central floor, and ops to the floor.
+  // Bridge: research district to the central floor. The former ops-to-floor
+  // bridge at (1495,1030) is gone with the supervisor deck it served; the
+  // freed zone is intentional circulation space with no dead-end ramp.
   buildBridge(root, 1075, 545, true);
-  buildBridge(root, 1495, 1030, false);
   buildScatter(root);
   buildServiceInfrastructure(root);
   ctx.layers.ground.addChild(root);

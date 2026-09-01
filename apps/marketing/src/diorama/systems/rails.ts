@@ -5,6 +5,9 @@
  * Design notes:
  * - Static rail geometry (base line, kind glow line, junction dots) is drawn
  *   once per route into Graphics; only child alpha is animated afterwards.
+ * - Route visibility is a tri-state (idle trunk/branch split, active reveal
+ *   per dispatch, station-focus mask) driven by short GSAP alpha tweens on
+ *   those same containers. No Graphics is ever rebuilt for a state change.
  * - Packets come from a fixed pool of 40 containers built up front; dispatch
  *   only flips visibility/tints and starts a GSAP tween. No construction and
  *   no per-frame allocations happen in the travel update path (positions are
@@ -13,8 +16,15 @@
 import { Container, Graphics, Sprite } from "pixi.js";
 import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
-import { PACKET_STYLE, PRIMARY_ROUTES, RETURN_ROUTES, ROUTES, ROUTE_ORDER } from "../config/rails.js";
+import {
+  PACKET_STYLE,
+  PRIMARY_ROUTES,
+  RETURN_ROUTES,
+  ROUTES,
+  ROUTE_ORDER,
+} from "../config/rails.js";
 import type { PacketKind, RouteDef, RouteId } from "../config/rails.js";
+import type { StationId } from "../config/stations.js";
 import { PALETTE } from "../config/palette.js";
 import { DEPTH, seededRandom } from "../config/world.js";
 import type { Point } from "../config/world.js";
@@ -26,12 +36,25 @@ export interface PacketHandle {
   cancel(): void;
 }
 
+/** A focus target is a station id or the synthetic Hyperliquid platform id
+ * (a pickable that is deliberately not a StationId). */
+export type FocusTarget = StationId | "hyperliquid" | null;
+
 export interface RailSystem {
-  dispatch(route: RouteId, kind?: PacketKind, opts?: { reverse?: boolean; label?: string }): PacketHandle;
+  dispatch(
+    route: RouteId,
+    kind?: PacketKind,
+    opts?: { reverse?: boolean; label?: string },
+  ): PacketHandle;
   /** Slow ambient pulses so rails never look dead between stories. */
   startAmbient(): void;
-  /** Dim non-primary rails while a station is in focus. No caller yet. */
-  setFocusDim(on: boolean): void;
+  /**
+   * Station focus: reveal only routes incident to the station (from, to, or
+   * an external Hyperliquid endpoint) and dim every unrelated trunk. Pass
+   * null to restore the idle split (lifecycle trunks faint, local branches
+   * hidden until dispatched).
+   */
+  setFocusStation(target: FocusTarget): void;
 }
 
 /** Travel speed in world units per second. */
@@ -41,12 +64,25 @@ const POP_POOL_SIZE = 6;
 /** Quiet routes ambient traffic may use; never busy story corridors. */
 const AMBIENT_ROUTES: RouteId[] = [
   "landscapeToMarketData",
-  "landscapeToResearchTools",
   "floorToMcp",
   "receiptsToArchive",
   "localStateStream",
 ];
 const AMBIENT_MAX_ALIVE = 2;
+
+// --- Route visibility tri-state --------------------------------------------
+// Idle: lifecycle trunks (primary + return legs) stay faintly visible as the
+// structural spine; local branches are hidden until a story dispatches them.
+// Active: a dispatched route brightens while its packets run, then decays.
+// Focused: only routes incident to the focused station stay revealed.
+// All transitions are short alpha tweens on the route containers built once
+// at startup; nothing redraws per frame.
+const TRUNK_IDLE_ALPHA = 0.55;
+const ACTIVE_ALPHA = 1;
+const FOCUS_INCIDENT_ALPHA = 0.95;
+const FOCUS_UNRELATED_ALPHA = 0.12;
+/** How long a route stays bright after its last packet settles. */
+const ACTIVE_HOLD_S = 0.6;
 
 interface RoutePath {
   def: RouteDef;
@@ -69,6 +105,7 @@ interface Packet {
 
 interface ActivePacket {
   packet: Packet;
+  route: RouteId;
   tween: gsap.core.Tween;
   resolve: () => void;
   settled: boolean;
@@ -121,7 +158,13 @@ function medianY(points: Point[]): number {
   return ys[Math.floor(ys.length / 2)];
 }
 
-function strokePolyline(g: Graphics, points: Point[], width: number, color: number, alpha: number): void {
+function strokePolyline(
+  g: Graphics,
+  points: Point[],
+  width: number,
+  color: number,
+  alpha: number,
+): void {
   g.moveTo(points[0].x, points[0].y);
   for (let i = 1; i < points.length; i++) g.lineTo(points[i].x, points[i].y);
   g.stroke({ width, color, alpha, cap: "round", join: "round" });
@@ -383,6 +426,50 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     routeVisuals.set(id, buildRouteVisual(ctx, path));
   }
 
+  // --- Tri-state bookkeeping ------------------------------------------------
+  const activeCount = new Map<RouteId, number>();
+  let focusStation: FocusTarget = null;
+  let decayCall: gsap.core.Tween | null = null;
+
+  function isTrunk(id: RouteId): boolean {
+    return PRIMARY_ROUTES.has(id) || RETURN_ROUTES.has(id);
+  }
+
+  function targetAlpha(id: RouteId): number {
+    if ((activeCount.get(id) ?? 0) > 0) return ACTIVE_ALPHA;
+    if (focusStation !== null) {
+      const def = ROUTES[id];
+      const incident =
+        def.from === focusStation ||
+        def.to === focusStation ||
+        def.externalFrom === focusStation ||
+        def.externalTo === focusStation;
+      return incident ? FOCUS_INCIDENT_ALPHA : FOCUS_UNRELATED_ALPHA;
+    }
+    return isTrunk(id) ? TRUNK_IDLE_ALPHA : 0;
+  }
+
+  function applyRouteState(id: RouteId, visual: Container): void {
+    const target = targetAlpha(id);
+    if (Math.abs(visual.alpha - target) < 0.01) {
+      gsap.killTweensOf(visual);
+      return;
+    }
+    if (ctx.reducedMotion) {
+      gsap.killTweensOf(visual);
+      visual.alpha = target;
+    } else {
+      gsap.to(visual, { alpha: target, duration: 0.3, ease: "power1.out", overwrite: true });
+    }
+  }
+
+  function applyAllRouteStates(): void {
+    for (const [id, visual] of routeVisuals) applyRouteState(id, visual);
+  }
+
+  // First paint: idle trunk/branch split without tweens.
+  for (const [id, visual] of routeVisuals) visual.alpha = targetAlpha(id);
+
   // Packet pool: fully built up front; dispatch only reuses.
   const pool: Packet[] = [];
   const free: Packet[] = [];
@@ -418,6 +505,9 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     ambientTimers.length = 0;
     for (const pop of pops) gsap.killTweensOf(pop);
     for (const visual of routeVisuals.values()) gsap.killTweensOf(visual);
+    decayCall?.kill();
+    decayCall = null;
+    activeCount.clear();
   });
 
   function popArrival(x: number, y: number, color: number): void {
@@ -454,6 +544,20 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     free.push(a.packet);
     active.delete(a);
     a.resolve();
+    // Route activity decays back to the idle/focus level after a short hold
+    // so consecutive packets keep the corridor bright. One shared timer
+    // recomputes every route: releases on different routes coalesce, and a
+    // route that dispatched again inside the hold window stays bright.
+    const remaining = (activeCount.get(a.route) ?? 1) - 1;
+    if (remaining > 0) activeCount.set(a.route, remaining);
+    else {
+      activeCount.delete(a.route);
+      if (decayCall) decayCall.kill();
+      decayCall = gsap.delayedCall(ACTIVE_HOLD_S, () => {
+        decayCall = null;
+        applyAllRouteStates();
+      });
+    }
   }
 
   function dispatch(
@@ -472,6 +576,11 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     const useKind = kind ?? path.def.kind;
     const style = PACKET_STYLE[useKind];
     configurePacketVisual(packet, useKind);
+
+    // Active state: the dispatched route reveals/brightens for the trip.
+    activeCount.set(routeId, (activeCount.get(routeId) ?? 0) + 1);
+    const visual = routeVisuals.get(routeId);
+    if (visual) applyRouteState(routeId, visual);
 
     // Return legs: warm gold tint plus a single-sprite tail so the dash
     // rhythm matches the dashed rail beneath. Receipt slips keep their pale
@@ -508,7 +617,13 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     let tween: gsap.core.Tween;
 
     const done = new Promise<void>((resolve) => {
-      const record: ActivePacket = { packet, tween: null as unknown as gsap.core.Tween, resolve, settled: false };
+      const record: ActivePacket = {
+        packet,
+        route: routeId,
+        tween: null as unknown as gsap.core.Tween,
+        resolve,
+        settled: false,
+      };
       tween = gsap.to(state, {
         d: path.total,
         duration: path.total / PACKET_SPEED,
@@ -587,21 +702,11 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
     schedule();
   }
 
-  let focusDim = false;
-
-  function setFocusDim(on: boolean): void {
-    if (on === focusDim) return;
-    focusDim = on;
-    for (const [id, visual] of routeVisuals) {
-      if (PRIMARY_ROUTES.has(id)) continue;
-      if (ctx.reducedMotion) {
-        gsap.killTweensOf(visual);
-        visual.alpha = on ? 0.25 : 1;
-      } else {
-        gsap.to(visual, { alpha: on ? 0.25 : 1, duration: 0.3, ease: "power1.out", overwrite: true });
-      }
-    }
+  function setFocusStation(target: FocusTarget): void {
+    if (target === focusStation) return;
+    focusStation = target;
+    applyAllRouteStates();
   }
 
-  return { dispatch, startAmbient, setFocusDim };
+  return { dispatch, startAmbient, setFocusStation };
 }

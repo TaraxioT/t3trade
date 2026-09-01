@@ -13,6 +13,8 @@ import { createCamera, type Camera } from "./core/camera.js";
 import type { CleanupFn, DioramaContext } from "./core/context.js";
 import { clearRegistry, allStations } from "./core/registry.js";
 import { clearSigns } from "./core/signs.js";
+import type { StationId } from "./config/stations.js";
+import type { FocusTarget } from "./systems/rails.js";
 import { WORLD_HEIGHT, WORLD_WIDTH } from "./config/world.js";
 
 // Lazy tween initialization defers a tween's first read of its target to a
@@ -206,7 +208,13 @@ async function build(host: HTMLElement): Promise<void> {
       app: () => app,
       activity(): object {
         return (
-          directorRef?.activity() ?? { stories: [], moving: 0, reacting: 0, total: 0, districts: {} }
+          directorRef?.activity() ?? {
+            stories: [],
+            moving: 0,
+            reacting: 0,
+            total: 0,
+            districts: {},
+          }
         );
       },
       agents: () => agentsRef,
@@ -291,7 +299,7 @@ async function build(host: HTMLElement): Promise<void> {
       { createPopulation },
       { createSimulation },
       { createDirector },
-      { createAudio },
+      { createAudio, registerSpatialResolver, registerSourceHook },
     ] = await Promise.all([
       import("./systems/rails.js"),
       import("./agents/system.js"),
@@ -320,6 +328,11 @@ async function build(host: HTMLElement): Promise<void> {
       if (agents && rails && simulation) {
         const director = createDirector(ctx, { agents, rails, simulation });
         directorRef = director;
+        // Any lane can run a card's station story (the texture pool overlaps
+        // station stories), so the card's busy button listens for settles
+        // instead of owning only its own launch promises.
+        const offStorySettle = director.onStorySettle(() => infoCard?.refreshActionState());
+        onCleanup(offStorySettle);
         director.start();
       }
     });
@@ -327,9 +340,22 @@ async function build(host: HTMLElement): Promise<void> {
     let audio: import("./audio.js").AudioController | undefined;
     guard("audio", () => {
       audio = createAudio();
+      // Spatial sound: pan from the emitter's screen x, volume from its
+      // distance to the viewport center. Registered against the live camera
+      // so focus and resize stay truthful without audio knowing about Pixi.
+      registerSpatialResolver((world) => {
+        const s = camera.worldToScreen(world);
+        const w = Math.max(ctx.screenSize.w, 1);
+        const h = Math.max(ctx.screenSize.h, 1);
+        const pan = Math.max(-1, Math.min(1, (s.x / w) * 2 - 1));
+        const reach = Math.hypot(w, h) / 2;
+        const falloff = (Math.hypot(s.x - w / 2, s.y - h / 2) / reach) * 0.75;
+        return { pan, volume: Math.max(0.25, Math.min(1, 1 - falloff)) };
+      });
       onCleanup(() => {
         audio?.destroy();
         audio = undefined;
+        registerSpatialResolver(null);
       });
     });
 
@@ -346,12 +372,14 @@ async function build(host: HTMLElement): Promise<void> {
       { buildDistrictBanners },
       { buildA11y },
       interactionModule,
+      { createSourceCues },
     ] = await Promise.all([
       import("./ui/infoCard.js"),
       import("./ui/hud.js"),
       import("./ui/labels.js"),
       import("./ui/a11y.js"),
       import("./ui/interaction.js"),
+      import("./ui/sourceCues.js"),
     ]);
     let infoCard: import("./ui/infoCard.js").InfoCard | undefined;
     guard("infoCard", () => {
@@ -365,6 +393,8 @@ async function build(host: HTMLElement): Promise<void> {
           // route through the live variable, not its initial empty value.
           onClose: () => clearDioramaSelection(),
           isStoryActive,
+          isStationBusy: (stationId: string) =>
+            directorRef?.isStationBusy(stationId as StationId) ?? false,
         });
         onCleanup(() => {
           infoCard?.destroy();
@@ -394,12 +424,15 @@ async function build(host: HTMLElement): Promise<void> {
     guard("districtBanners", () => buildDistrictBanners(ctx));
 
     guard("a11y", () => {
-      buildA11y(ctx, {
-        onFocus: (id) => {
-          // Keyboard focus and pointer selection share focusStationById.
-          void id;
-        },
-      });
+      buildA11y(ctx);
+    });
+
+    // Visual sound-source pulses: same world point the audio layer accepted
+    // a cue for, so sight and sound always agree on the emitter.
+    guard("sourceCues", () => {
+      const sourceCues = createSourceCues(ctx);
+      registerSourceHook((world, cue) => sourceCues.pulse(world, cue));
+      onCleanup(() => registerSourceHook(null));
     });
 
     guard("interaction", () => {
@@ -410,7 +443,12 @@ async function build(host: HTMLElement): Promise<void> {
           onRunStory: (storyId: string) => {
             void directorRef?.runStory(storyId);
           },
-          onFocusChange: (focused: boolean) => rails?.setFocusDim(focused),
+          // Selection identity (not just focus on/off) drives the rails'
+          // incident-route reveal; Escape/backdrop/reset report null. The
+          // Hyperliquid platform is a legal focus target (external routes).
+          onSelectionChange: (stationId: string | null) => {
+            rails?.setFocusStation(stationId as FocusTarget);
+          },
           isStoryActive,
         });
         clearDioramaSelection = interactionModule.clearSelection;

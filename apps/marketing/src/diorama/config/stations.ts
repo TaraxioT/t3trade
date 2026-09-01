@@ -4,16 +4,16 @@
  * off these ids and anchors. Coordinates are ground-level footprint centers.
  *
  * Reading order: upper-left research and planning, center trading floor,
- * right tools and providers, lower-right approval through execution inside
- * the safety perimeter, lower-left state, audit, and operations. The human
- * supervisor sits front-center on an elevated deck. Hyperliquid Testnet is
- * an external platform beyond the east perimeter edge.
+ * right tools and adapters, lower-right approval through execution inside
+ * the safety perimeter, lower-left state, audit, and operations. Emergency
+ * control sits at the west perimeter seam beside Approval. Hyperliquid
+ * Testnet is an external platform beyond the east perimeter edge.
  *
  * Copy rules: one sentence, no em/en dashes, sentence case for descriptions,
  * uppercase only for sign text.
  */
 
-export type DistrictId = "research" | "floor" | "mcp" | "risk" | "ops" | "supervisor" | "external";
+export type DistrictId = "research" | "floor" | "mcp" | "risk" | "ops" | "external";
 
 export interface DistrictDef {
   id: DistrictId;
@@ -49,18 +49,17 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
     bounds: { x1: 980, y1: 450, x2: 1880, y2: 1050 },
     accent: 0x5a7cff,
     accent2: 0xffd35a,
-    blurb:
-      "The coordination heart where agent workstations surround a holographic market display.",
+    blurb: "The coordination heart where agent workstations surround a holographic market display.",
   },
   mcp: {
     id: "mcp",
-    title: "MCP & PROVIDERS",
+    title: "MCP & ADAPTERS",
     center: { x: 2190, y: 500 },
     bounds: { x1: 1800, y1: 180, x2: 2580, y2: 820 },
     accent: 0x9a70ff,
     accent2: 0xff6a5f,
     blurb:
-      "Capabilities arrive through the MCP tool hub, schema library, and provider-neutral adapter booths.",
+      "Capabilities arrive through the MCP tool hub, schema library, and the provider-neutral adapter bay.",
   },
   risk: {
     id: "risk",
@@ -79,17 +78,7 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
     bounds: { x1: 250, y1: 900, x2: 1550, y2: 1420 },
     accent: 0x56f2c2,
     accent2: 0xff5fc8,
-    blurb:
-      "Every action lands as state, receipts, reconciliation, audit, and recoverable history.",
-  },
-  supervisor: {
-    id: "supervisor",
-    title: "HUMAN AUTHORITY",
-    center: { x: 1470, y: 1180 },
-    bounds: { x1: 1310, y1: 1100, x2: 1650, y2: 1300 },
-    accent: 0xff9f45,
-    accent2: 0x34e5e5,
-    blurb: "The human supervisor holds the controls that outrank every autonomous agent.",
+    blurb: "Every action lands as state, receipts, reconciliation, audit, and recoverable history.",
   },
   external: {
     id: "external",
@@ -118,7 +107,6 @@ export type StationId =
   | "signalTower"
   | "eventClock"
   | "statusMast"
-  | "supervisor"
   | "emergencyPanel"
   // MCP & provider district
   | "mcpHub"
@@ -127,7 +115,6 @@ export type StationId =
   | "portfolioTools"
   | "toolSchemas"
   | "adapterBay"
-  | "providers"
   | "mcpHealth"
   | "envSwitchboard"
   // Risk & execution district
@@ -190,10 +177,10 @@ export const STATIONS: Record<StationId, StationDef> = {
     anchor: { x: 660, y: 185 },
     size: { w: 860, d: 150 },
     blurb:
-      "A living terrain of market regimes: calm, rising, falling, and turbulent, with probes extracting live data packets.",
+      "A living terrain of market regimes: calm, rising, falling, and turbulent, with probes extracting simulated data packets.",
     status: "Rising regime",
     relation: "Landscape → Market Data → Strategy",
-    story: "s-research-fetch",
+    story: "s-research-synthesis",
     action: "Run a probe",
   }),
   missionBoard: S({
@@ -207,7 +194,7 @@ export const STATIONS: Record<StationId, StationDef> = {
       "Active goals, phase, loss budget, and scheduled wakes; agents visit it whenever a mission changes phase.",
     status: "Phase: waiting",
     relation: "Mission Board → Signal Tower",
-    story: "s-mission-update",
+    story: "s-research-synthesis",
     action: "Advance phase",
   }),
   marketData: S({
@@ -220,7 +207,7 @@ export const STATIONS: Record<StationId, StationDef> = {
     blurb: "Price, order book, funding, and volatility screens fed by the probes above.",
     status: "Streaming",
     relation: "Landscape → Market Data → Strategy Lab",
-    story: "s-research-fetch",
+    story: "s-research-synthesis",
     action: "Pull data",
   }),
   researchTools: S({
@@ -232,7 +219,7 @@ export const STATIONS: Record<StationId, StationDef> = {
     size: { w: 200, d: 120 },
     blurb: "News, token research, protocol research, and historical comparison stations.",
     status: "Operational",
-    story: "s-research-to-strategy",
+    story: "s-research-synthesis",
     action: "Fetch research",
   }),
   strategyLab: S({
@@ -245,8 +232,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     blurb: "Where analysis becomes strategy: candidate plays, backtests, and mission drafts.",
     status: "Operational",
     relation: "Strategy Lab → Decision Table",
-    story: "s-research-to-strategy",
-    action: "Hand to strategy",
+    story: "s-research-synthesis",
+    action: "Run synthesis",
   }),
   sandbox: S({
     id: "sandbox",
@@ -308,8 +295,9 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 1430, y: 665 },
     size: { w: 260, d: 150 },
-    blurb: "Price movement, strategy cards, positions, orders, P&L, and system health in one hologram.",
-    status: "Live",
+    blurb:
+      "Price movement, strategy cards, positions, orders, P&L, and system health in one hologram.",
+    status: "Simulated",
     focusZoom: 1.5,
     story: "s-floor-signal",
     action: "Signal market event",
@@ -321,7 +309,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 1855, y: 545 },
     size: { w: 90, d: 90 },
-    blurb: "Distinct pulses for market events, alerts, agent wakes, warnings, and execution updates.",
+    blurb:
+      "Distinct pulses for market events, alerts, agent wakes, warnings, and execution updates.",
     status: "Standby",
     focusZoom: 1.4,
     story: "s-alert-wake",
@@ -334,7 +323,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 1075, y: 525 },
     size: { w: 130, d: 110 },
-    blurb: "Concentric rings track market time, agent activity, order lifecycle, and scheduled wakes.",
+    blurb:
+      "Concentric rings track market time, agent activity, order lifecycle, and scheduled wakes.",
     status: "Ticking",
     focusZoom: 1.4,
   }),
@@ -348,31 +338,17 @@ export const STATIONS: Record<StationId, StationDef> = {
     blurb: "Campus-wide lighting master: green healthy, cyan working, amber degraded, red blocked.",
     status: "All healthy",
   }),
-  supervisor: S({
-    id: "supervisor",
-    district: "supervisor",
-    label: "HUMAN SUPERVISOR",
-    signSize: "lg",
-    anchor: { x: 1465, y: 1175 },
-    size: { w: 260, d: 150 },
-    blurb:
-      "The owner's command desk: risk budget, mission controls, approval queue, pause, cancel, reduce, close, and revoke.",
-    status: "Overseeing",
-    focusZoom: 1.3,
-    relation: "Supervisor → Approval → All agents",
-    story: "s-supervisor-rounds",
-    action: "Review controls",
-  }),
   emergencyPanel: S({
     id: "emergencyPanel",
-    district: "supervisor",
+    district: "risk",
     label: "EMERGENCY CONTROL",
     signSize: "sm",
-    anchor: { x: 1600, y: 1215 },
+    anchor: { x: 1690, y: 1075 },
     size: { w: 110, d: 80 },
-    blurb: "System-wide pause and emergency stop, physically beside the owner's desk.",
+    blurb: "Emergency stop and pause drill at the safety perimeter, beside Approval.",
     status: "Armed",
     focusZoom: 1.4,
+    relation: "Human controls outrank every agent",
     story: "s-emergency-demo",
     action: "Test pause",
   }),
@@ -442,22 +418,11 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 2490, y: 500 },
     size: { w: 130, d: 120 },
-    blurb: "Physical translation machines: one standardized packet in, a provider-specific packet out.",
+    blurb:
+      "Provider adapters translate Codex, Claude, Cursor, Grok, OpenCode, and custom instances into one shared shape: adapters, never authorities.",
     status: "Translating",
     story: "s-tool-refusal",
     action: "Translate a packet",
-  }),
-  providers: S({
-    id: "providers",
-    district: "mcp",
-    label: "PROVIDERS",
-    signSize: "md",
-    anchor: { x: 2300, y: 218 },
-    size: { w: 460, d: 110 },
-    blurb:
-      "Codex, Claude, Cursor, Grok, OpenCode, and custom provider instances share one shape: adapters, never authorities.",
-    status: "Neutral",
-    focusZoom: 1.2,
   }),
   mcpHealth: S({
     id: "mcpHealth",
@@ -466,7 +431,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 2115, y: 838 },
     size: { w: 150, d: 90 },
-    blurb: "Availability, latency, authentication, and rate limits per tool port, green to amber to red.",
+    blurb:
+      "Availability, latency, authentication, and rate limits per tool port, green to amber to red.",
     status: "All ports green",
     story: "s-mcp-degraded",
     action: "Degrade a port",
@@ -478,7 +444,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 2315, y: 872 },
     size: { w: 160, d: 90 },
-    blurb: "Research mode, testnet-only exchange, and signer availability; environments never share authority.",
+    blurb:
+      "Research mode, testnet-only exchange, and signer availability; environments never share authority.",
     status: "Testnet connected",
   }),
 
@@ -516,7 +483,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 1905, y: 1165 },
     size: { w: 150, d: 110 },
-    blurb: "Maximum-loss budget, risk reservations, and the remaining allowance every trade draws down.",
+    blurb:
+      "Maximum-loss budget, risk reservations, and the remaining allowance every trade draws down.",
     status: "Loss allowance 82%",
     story: "s-budget-consume",
     action: "Draw down budget",
@@ -570,7 +538,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "md",
     anchor: { x: 2485, y: 1160 },
     size: { w: 170, d: 130 },
-    blurb: "A guarded terminal that turns authorized decisions into order capsules on the exchange tunnel.",
+    blurb:
+      "A guarded terminal that turns authorized decisions into order capsules on the exchange tunnel.",
     status: "Idle",
     focusZoom: 1.35,
     relation: "Execution → Hyperliquid Testnet",
@@ -595,7 +564,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 720, y: 965 },
     size: { w: 200, d: 110 },
-    blurb: "The junction where command, event, proposal, order, and receipt packets sort onto rails.",
+    blurb:
+      "The junction where command, event, proposal, order, and receipt packets sort onto rails.",
     status: "Routing",
   }),
   reconciliationDock: S({
@@ -620,7 +590,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 815, y: 1235 },
     size: { w: 140, d: 100 },
-    blurb: "Prints an illuminated receipt for every tool call, decision, order, result, and refusal.",
+    blurb:
+      "Prints an illuminated receipt for every tool call, decision, order, result, and refusal.",
     status: "Printing",
     story: "s-receipt-print",
     action: "Print a receipt",
@@ -656,7 +627,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 420, y: 1355 },
     size: { w: 200, d: 120 },
-    blurb: "Retries, partial failures, stale orders, and reconnection repairs with spare order capsules.",
+    blurb:
+      "Retries, partial failures, stale orders, and reconnection repairs with spare order capsules.",
     status: "On standby",
     story: "s-recovery-retry",
     action: "Dispatch recovery",
@@ -678,7 +650,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 1340, y: 1390 },
     size: { w: 180, d: 90 },
-    blurb: "A chronological wall of the human's approvals, overrides, pauses, reductions, and closes.",
+    blurb:
+      "A chronological wall of the human's approvals, overrides, pauses, reductions, and closes.",
     status: "3 recent actions",
   }),
   portfolioVault: S({
@@ -688,7 +661,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "md",
     anchor: { x: 940, y: 1125 },
     size: { w: 170, d: 120 },
-    blurb: "A transparent vault of account-state capsules: capital, balances, realized and unrealized results.",
+    blurb:
+      "A transparent vault of account-state capsules: capital, balances, realized and unrealized results.",
     status: "Updating",
     story: "s-fill-vault",
     action: "Update on a fill",
@@ -700,7 +674,8 @@ export const STATIONS: Record<StationId, StationDef> = {
     signSize: "sm",
     anchor: { x: 950, y: 1330 },
     size: { w: 160, d: 100 },
-    blurb: "Badges for users, agents, sessions, and roles; requests without permission are physically turned away.",
+    blurb:
+      "Badges for users, agents, sessions, and roles; requests without permission are physically turned away.",
     status: "Checking",
   }),
   refusalDisplay: S({
