@@ -1,7 +1,9 @@
 /**
- * Central Trading Floor: circular floor, holographic market core, six agent
- * workstations, signal tower, event clock, status mast, plus the emergency
- * control kiosk at the safety-perimeter seam. Owner: central district worker.
+ * Central Trading Floor: circular floor, holographic market core, the Uniswap
+ * and Hyperliquid venue pavilions flanking the holo (research and monitoring
+ * windows, never exchanges themselves), six agent workstations, signal tower,
+ * event clock, status mast, plus the emergency control kiosk at the
+ * safety-perimeter seam. Owner: central district worker.
  *
  * Depth notes: the floor platform geometry (steps, medallion, ring lights)
  * lives in the ground layer, below every sortable fixture. A single sortable
@@ -10,7 +12,7 @@
  * roots at their foot Y so population agents standing at the same Y interleave
  * correctly in front of and behind them.
  */
-import { Container, Graphics, Sprite } from "pixi.js";
+import { Assets, Container, Graphics, Sprite, Text, TextStyle, type Texture } from "pixi.js";
 import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { PALETTE, ROLE_COLORS, rightFace, shade, topFace } from "../config/palette.js";
@@ -25,6 +27,7 @@ import {
   isoBox,
   isoCylinder,
   isoTile,
+  isoWall,
   lightBeam,
   screenPanel,
   safeDestroy,
@@ -60,8 +63,34 @@ export interface EmergencyControlApi {
   demoPause(): void;
 }
 
+/**
+ * Uniswap venue contract (frozen; stories.ts depends on the shape).
+ * Registered under station id "uniswapVenue". The pavilion is a liquidity
+ * research window only: pool gauges and the quote comparison readout blip
+ * when research stories reference them.
+ */
+export interface UniswapVenueApi {
+  /** Highlight the pool-depth gauges or the quote comparison readout. */
+  pulse(kind: "pool" | "quote"): void;
+}
+
+/**
+ * Hyperliquid venue contract (frozen; stories.ts depends on the shape).
+ * Registered under station id "hyperliquidVenue". The pavilion mirrors the
+ * external exchange's order lifecycle; the exchange itself stays external.
+ */
+export interface HyperliquidVenueApi {
+  /** Light the matching slot on the order/fill board. */
+  exchangeBeat(kind: "order" | "ack" | "fill"): void;
+}
+
 const FLOOR = { x: 1430, y: 740 };
 const RNG = seededRandom(0xc3e7411);
+
+/** Brand trims for the venue pavilions; the marks themselves are real
+ * Sprite assets, never approximated procedurally. */
+const UNISWAP_PINK = 0xff007a;
+const HYPERLIQUID_MINT = 0x97fce4;
 
 /**
  * Floor-wide desk flash set by buildTradingFloor and read by the holo core's
@@ -78,10 +107,13 @@ let deskPulseHook: ((color: number) => void) | null = null;
 let floorPauseHook: ((on: boolean) => void) | null = null;
 let statusPauseHook: ((on: boolean) => void) | null = null;
 
-/** Floor desks at the population wander points; roles tint the console trim. */
+/** Floor desks at the population wander points; roles tint the console trim.
+ * The former north pair ceded its latitude to the venue pavilions flanking
+ * the holo and moved outward along the ring (WSW / ENE), clear of the
+ * pavilion footprints x 1235..1355 and 1505..1625, y 620..710. */
 const DESKS: { x: number; y: number; role: AgentRole }[] = [
-  { x: 1268, y: 640, role: "research" },
-  { x: 1590, y: 640, role: "analysis" },
+  { x: 1198, y: 652, role: "research" },
+  { x: 1662, y: 652, role: "analysis" },
   { x: 1225, y: 830, role: "strategy" },
   { x: 1635, y: 830, role: "execution" },
   { x: 1370, y: 935, role: "operations" },
@@ -125,6 +157,11 @@ function addSign(
 export function buildCentralDistrict(ctx: DioramaContext): void {
   buildTradingFloor(ctx);
   buildHoloCore(ctx);
+  // Venues build after the holo so the equal-zIndex overlap sliver between
+  // the pavilion diamonds and the holo diamond resolves to the holo, keeping
+  // the primary element dominant in pointer picks too.
+  buildUniswapVenue(ctx);
+  buildHyperliquidVenue(ctx);
   buildSignalTower(ctx);
   buildEventClock(ctx);
   buildStatusMast(ctx);
@@ -138,8 +175,11 @@ export function buildCentralDistrict(ctx: DioramaContext): void {
 function buildTradingFloor(ctx: DioramaContext): void {
   const def = STATIONS.tradingFloor;
   // Hit-only root (registration + transparent footprint); the platform itself
-  // is ground geometry (below).
-  stationRoot(ctx, def, def.anchor.y - 8);
+  // is ground geometry (below). Sorts below the nested holo and venue roots
+  // (anchor y 665): the interaction picker resolves a point to the highest
+  // root zIndex whose footprint contains it, so a floor root above them would
+  // swallow every inner station's picks.
+  stationRoot(ctx, def, 640);
   // District counter-accent: warm gold inlays subordinate to the cyan ring
   // lights, which stay the floor's infrastructure language.
   const GOLD = DISTRICTS.floor.accent2;
@@ -795,6 +835,322 @@ function buildHoloCore(ctx: DioramaContext): void {
   }
 
   addSign(ctx, def, x, y - 172);
+}
+
+// ---------------------------------------------------------------------------
+// Venue pavilions (Uniswap research, Hyperliquid execution link)
+// ---------------------------------------------------------------------------
+
+/** Tiny console readout text; real Pixi text so it stays crisp at zoom. */
+function microText(text: string, size: number, color: number): Text {
+  const t = new Text({
+    text,
+    style: new TextStyle({
+      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontSize: size,
+      letterSpacing: size * 0.08,
+      fill: color,
+    }),
+  });
+  t.resolution = 2;
+  return t;
+}
+
+/** Fire-and-forget highlight on a prebuilt object: pop, then fade back to its
+ * resting alpha. Reduced motion snaps to the peak and fades; no gestures. */
+function blip(
+  target: Container,
+  ctx: DioramaContext,
+  peak: number,
+  rest: number,
+  fade: number,
+  delay = 0,
+): void {
+  gsap.killTweensOf(target);
+  if (ctx.reducedMotion) {
+    target.alpha = peak;
+    gsap.to(target, { alpha: rest, duration: 0.3, ease: "none", delay });
+    return;
+  }
+  gsap.fromTo(target, { alpha: peak }, { alpha: rest, duration: fade, ease: "power2.out", delay });
+}
+
+/**
+ * Load a real brand mark onto its mount: the 400 px source shown small stays
+ * crisp. On failure the venue still reads through trim, sign and caption; the
+ * mark is never approximated procedurally.
+ */
+function mountLogo(url: string, mount: Container, size: number, ctx: DioramaContext): void {
+  let disposed = false;
+  ctx.onCleanup(() => {
+    disposed = true;
+  });
+  void Assets.load<Texture>(url)
+    .then((tex) => {
+      if (disposed || mount.destroyed) return;
+      const logo = new Sprite(tex);
+      logo.anchor.set(0.5);
+      logo.width = size;
+      logo.height = size;
+      mount.addChild(logo);
+    })
+    .catch(() => {
+      // Venue reads via trim, sign and caption; no fallback mark.
+    });
+}
+
+/** Pieces of the shared venue booth the per-venue builders decorate. */
+interface VenueBooth {
+  root: Container;
+  /** Console screen container; readout content joins as world-coord children. */
+  screen: Container;
+}
+
+/**
+ * Shared open-top venue booth: branded base tile, a chevron back wall along
+ * the north diamond edges (open top, open south face so the ring stays
+ * walkable and the sightline to the mascot pad stays clear), a billboard
+ * header board carrying the real logo plus its micro caption, and a wide
+ * front console on the open side. Heights stay below the holo cone so the
+ * market holo remains the floor's primary vertical.
+ */
+function buildVenueBooth(
+  ctx: DioramaContext,
+  def: StationDef,
+  accent: number,
+  caption: string,
+  logoUrl: string,
+): VenueBooth {
+  const { x, y } = def.anchor;
+  const root = stationRoot(ctx, def, y);
+
+  // Grounding: contact shadow, branded rim tile, darker interior inset.
+  const ao = new Graphics();
+  ao.ellipse(x, y + 6, 58, 25);
+  ao.fill({ color: PALETTE.space, alpha: 0.3 });
+  root.addChild(ao);
+  root.addChild(isoTile(x, y + 2, 116, 86, PALETTE.structure, 1, accent));
+  root.addChild(isoTile(x, y + 3, 90, 64, PALETTE.space, 0.4));
+
+  // Back wall: two low segments meeting at the north corner.
+  for (const edge of [
+    { x1: x - 56, y1: y + 1, x2: x, y2: y - 39 },
+    { x1: x, y1: y - 39, x2: x + 56, y2: y + 1 },
+  ]) {
+    root.addChild(isoWall({ ...edge, h: 40, color: PALETTE.structure, alpha: 0.96, rim: accent }));
+  }
+
+  // Header board crowning the wall corner: real logo plus micro caption.
+  root.addChild(glow(x, y - 88, 64, accent, 0.14));
+  const board = new Graphics();
+  board.roundRect(x - 42, y - 115, 84, 54, 6);
+  board.fill({ color: PALETTE.space, alpha: 0.72 });
+  board.roundRect(x - 42, y - 115, 84, 54, 6);
+  board.stroke({ width: 1.75, color: accent, alpha: 0.9 });
+  board.roundRect(x - 40, y - 113, 80, 50, 5);
+  board.stroke({ width: 0.75, color: PALETTE.ink, alpha: 0.16 });
+  root.addChild(board);
+  const logoMount = new Container();
+  logoMount.position.set(x, y - 100);
+  root.addChild(logoMount);
+  mountLogo(logoUrl, logoMount, 30, ctx);
+  const cap = microText(caption, 6, PALETTE.inkDim);
+  cap.anchor.set(0.5);
+  cap.position.set(x, y - 78);
+  root.addChild(cap);
+
+  // Front console on the open south side: the stand the venue hosts gather
+  // around, facing the ring.
+  root.addChild(isoBox({ x, y: y + 20, w: 96, d: 26, h: 13, color: PALETTE.structure }));
+  root.addChild(edgeStrip(x - 48, y + 26.5, x, y + 33, accent, 0.85, 2));
+  root.addChild(edgeStrip(x, y + 33, x + 48, y + 26.5, accent, 0.85, 2));
+  const screen = screenPanel({ x: x - 26, y: y - 10, w: 52, h: 18, accent });
+  root.addChild(screen);
+  // Only the console trim breathes at idle; readouts stay static so story
+  // pulses never fight an idle tween.
+  const trimGlow = glow(x, y + 6, 66, accent, 0.16);
+  root.addChild(trimGlow);
+  if (!ctx.reducedMotion) {
+    gsap.to(trimGlow, {
+      alpha: 0.3,
+      duration: 3.2,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+    });
+    ctx.onCleanup(() => gsap.killTweensOf(trimGlow));
+  }
+
+  return { root, screen };
+}
+
+/**
+ * Uniswap pavilion: liquidity research only. Two pool-depth gauge columns
+ * and a two-line quote comparison readout; nothing here routes toward
+ * execution. pulse() blips the gauges (pool) or the readout (quote).
+ */
+function buildUniswapVenue(ctx: DioramaContext): void {
+  const def = STATIONS.uniswapVenue;
+  const { x, y } = def.anchor;
+  const { root, screen } = buildVenueBooth(
+    ctx,
+    def,
+    UNISWAP_PINK,
+    "LIQUIDITY RESEARCH",
+    "/diorama/logos/uniswap.png",
+  );
+
+  // Pool-depth gauges: slim columns in front of the back wall with seeded
+  // fill levels; their glows stay dormant until a pool pulse.
+  const gaugeFlashes: Sprite[] = [];
+  for (const [i, gx] of [x - 33, x + 33].entries()) {
+    const level = i === 0 ? 0.62 : 0.47;
+    root.addChild(
+      isoCylinder({
+        x: gx,
+        y: y - 12,
+        r: 6,
+        h: 26,
+        color: PALETTE.structureLight,
+        rim: UNISWAP_PINK,
+      }),
+    );
+    const fill = new Graphics();
+    const top = y - 12 - 24 * level;
+    fill.rect(gx - 3, top, 6, 24 * level);
+    fill.fill({ color: UNISWAP_PINK, alpha: 0.55 });
+    fill.moveTo(gx - 3, top);
+    fill.lineTo(gx + 3, top);
+    fill.stroke({ width: 1.5, color: UNISWAP_PINK, alpha: 0.95 });
+    for (let t = 1; t <= 3; t++) {
+      const ty = y - 12 - 6 * t;
+      fill.moveTo(gx - 7.5, ty);
+      fill.lineTo(gx - 5, ty);
+      fill.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.5 });
+    }
+    root.addChild(fill);
+    const flash = glow(gx, y - 22, 26, UNISWAP_PINK, 0);
+    gaugeFlashes.push(flash);
+    root.addChild(flash);
+  }
+
+  // Quote comparison readout: two compared quotes as real text, resting
+  // slightly dim so a quote pulse can brighten them.
+  const lineA = microText("A 1.0264", 6.5, PALETTE.ink);
+  lineA.anchor.set(0, 0.5);
+  lineA.position.set(x - 20, y - 4.5);
+  const lineB = microText("B 1.0271", 6.5, PALETTE.inkDim);
+  lineB.anchor.set(0, 0.5);
+  lineB.position.set(x - 20, y + 3.5);
+  lineA.alpha = 0.85;
+  lineB.alpha = 0.85;
+  screen.addChild(lineA, lineB);
+  const quoteFlash = glow(x, y - 1, 46, UNISWAP_PINK, 0);
+  root.addChild(quoteFlash);
+
+  const api: UniswapVenueApi = {
+    pulse(kind) {
+      if (kind === "pool") {
+        gaugeFlashes.forEach((g, i) => blip(g, ctx, 0.85, 0, 0.8, i * 0.12));
+        return;
+      }
+      blip(quoteFlash, ctx, 0.8, 0, 0.6);
+      gsap.killTweensOf([lineA, lineB]);
+      lineA.alpha = 1;
+      lineB.alpha = 1;
+      gsap.to([lineA, lineB], { alpha: 0.85, duration: 0.5, ease: "power2.out" });
+    },
+  };
+  registerApi(ctx, def.id, api);
+  ctx.onCleanup(() => gsap.killTweensOf([...gaugeFlashes, quoteFlash, lineA, lineB]));
+  addSign(ctx, def, x - 13, 536, UNISWAP_PINK);
+}
+
+/**
+ * Hyperliquid pavilion: the campus window onto its only execution venue.
+ * A three-slot order/fill board mirrors the external exchange's lifecycle
+ * and floor chevrons cue the east tunnel; the exchange itself stays beyond
+ * the perimeter. exchangeBeat() lights the matching slot.
+ */
+function buildHyperliquidVenue(ctx: DioramaContext): void {
+  const def = STATIONS.hyperliquidVenue;
+  const { x, y } = def.anchor;
+  const { root, screen } = buildVenueBooth(
+    ctx,
+    def,
+    HYPERLIQUID_MINT,
+    "EXECUTION VENUE LINK",
+    "/diorama/logos/hyperliquid.png",
+  );
+
+  // Console readout, honest about the route orders take.
+  const lineA = microText("TESTNET LINK", 6.5, PALETTE.ink);
+  lineA.anchor.set(0, 0.5);
+  lineA.position.set(x - 20, y - 4.5);
+  const lineB = microText("VIA SIGNER", 6.5, PALETTE.inkDim);
+  lineB.anchor.set(0, 0.5);
+  lineB.position.set(x - 20, y + 3.5);
+  screen.addChild(lineA, lineB);
+
+  // Order/fill board: a slim totem east of the console with three lifecycle
+  // slots; pills rest dim and light on their beat.
+  const bx = x + 36;
+  root.addChild(isoBox({ x: bx, y: y + 4, w: 24, d: 13, h: 6, color: PALETTE.structure }));
+  const post = new Graphics();
+  post.rect(bx - 1.5, y - 10, 3, 12);
+  post.fill({ color: PALETTE.structureLight });
+  root.addChild(post);
+  const board = new Graphics();
+  board.roundRect(bx - 18, y - 54, 36, 46, 4);
+  board.fill({ color: PALETTE.space, alpha: 0.72 });
+  board.roundRect(bx - 18, y - 54, 36, 46, 4);
+  board.stroke({ width: 1.5, color: HYPERLIQUID_MINT, alpha: 0.85 });
+  root.addChild(board);
+
+  const SLOT_LABELS = ["ORDER", "ACK", "FILL"] as const;
+  const slotPills: Graphics[] = [];
+  const slotHalos: Sprite[] = [];
+  SLOT_LABELS.forEach((name, i) => {
+    const sy = y - 44 + i * 14;
+    const pill = new Graphics();
+    pill.roundRect(bx - 13, sy, 26, 9, 4.5);
+    pill.fill({ color: HYPERLIQUID_MINT, alpha: 0.9 });
+    pill.alpha = 0.28;
+    root.addChild(pill);
+    slotPills.push(pill);
+    const label = microText(name, 5.5, PALETTE.ink);
+    label.anchor.set(0.5);
+    label.position.set(bx, sy + 4.5);
+    root.addChild(label);
+    const halo = glow(bx, sy + 4.5, 24, HYPERLIQUID_MINT, 0);
+    slotHalos.push(halo);
+    root.addChild(halo);
+  });
+
+  // Direction cue: three fading floor chevrons east of the booth, pointing
+  // along the order path toward the exchange tunnel.
+  const cue = new Graphics();
+  const dir = 0.14;
+  for (const [i, d] of [8, 20, 32].entries()) {
+    const tx = x + 62 + Math.cos(dir) * d;
+    const ty = y + 24 + Math.sin(dir) * d;
+    cue.moveTo(tx + Math.cos(dir - 2.5) * 7, ty + Math.sin(dir - 2.5) * 7);
+    cue.lineTo(tx, ty);
+    cue.lineTo(tx + Math.cos(dir + 2.5) * 7, ty + Math.sin(dir + 2.5) * 7);
+    cue.stroke({ width: 1.5, color: HYPERLIQUID_MINT, alpha: 0.42 - i * 0.12 });
+  }
+  root.addChild(cue);
+
+  const api: HyperliquidVenueApi = {
+    exchangeBeat(kind) {
+      const i = kind === "order" ? 0 : kind === "ack" ? 1 : 2;
+      blip(slotPills[i], ctx, 1, 0.28, 0.7);
+      blip(slotHalos[i], ctx, 0.8, 0, 0.6);
+    },
+  };
+  registerApi(ctx, def.id, api);
+  ctx.onCleanup(() => gsap.killTweensOf([...slotPills, ...slotHalos]));
+  addSign(ctx, def, x + 35, 536, HYPERLIQUID_MINT);
 }
 
 // ---------------------------------------------------------------------------

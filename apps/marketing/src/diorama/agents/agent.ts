@@ -13,6 +13,13 @@
  * deterministically from the single `variant` seed in [0,1) so the cast stays
  * one coherent species while individuals read apart at fit zoom.
  *
+ * Venue themes (`theme`): a themed bot is a regular cast member wearing team
+ * colors, never a new species. The theme adds ONE silhouette signature plus
+ * small accents (antenna beacon, pack trim, chest emblem) in the venue's
+ * brand color; proportions, the expression system, walk poses and per-variant
+ * traits all stay untouched. Logos are never rasterized onto characters;
+ * theming is silhouette + color language only.
+ *
  * Anchor convention: root.position is the foot center at ground level; the
  * depth sort uses root.y directly (zIndex = root.y + DEPTH.base). Everything
  * above ground is drawn at negative y inside an inner "flip" container, so
@@ -24,6 +31,18 @@ import { gsap } from "gsap";
 import { PALETTE, ROLE_COLORS, shade, type AgentRole } from "../config/palette.js";
 import { glow } from "../core/iso.js";
 import { agentFx, type MarkKind } from "./fx.js";
+
+/** Venue brand identity for themed cast members (silhouette + accents only). */
+export type AgentTheme = "uniswap" | "hyperliquid";
+
+/**
+ * Brand colors for venue theming, shared with mascot.ts so both files draw
+ * from one source. These are venue identities, not palette state colors.
+ */
+export const THEME_COLORS = {
+  uniswap: 0xff007a, // Uniswap pink
+  hyperliquid: 0x97fce4, // Hyperliquid mint
+} as const;
 
 export type Expression =
   | "neutral"
@@ -124,15 +143,78 @@ interface FaceSpec {
 }
 
 const FACE_SPECS: Record<Expression, FaceSpec> = {
-  neutral: { eyes: "round", pupil: { dx: 0, dy: 0 }, pupilScale: 1, brow: null, mouth: 0.4, mouthOpen: false },
-  focused: { eyes: "narrow", pupil: { dx: 0, dy: 0.8 }, pupilScale: 1, brow: 0.35, mouth: -0.8, mouthOpen: false },
-  curious: { eyes: "mismatched", pupil: { dx: 1.4, dy: 0 }, pupilScale: 1, brow: -0.2, mouth: 0, mouthOpen: false },
-  excited: { eyes: "wide", pupil: { dx: 0, dy: -0.5 }, pupilScale: 1, brow: null, mouth: 3, mouthOpen: false },
-  satisfied: { eyes: "round", pupil: { dx: 0, dy: -0.4 }, pupilScale: 1, brow: null, mouth: 2.2, mouthOpen: false },
-  worried: { eyes: "wide", pupil: { dx: 0, dy: 1.2 }, pupilScale: 1, brow: -0.4, mouth: -1.8, mouthOpen: false },
-  confused: { eyes: "mismatched", pupil: { dx: -1.4, dy: 0.6 }, pupilScale: 1, brow: -0.25, mouth: -0.6, mouthOpen: false },
-  frustrated: { eyes: "narrow", pupil: { dx: 0, dy: 0 }, pupilScale: 1, brow: 0.55, mouth: -2.6, mouthOpen: false },
-  alarmed: { eyes: "wide", pupil: { dx: 0, dy: 0 }, pupilScale: 0.55, brow: -0.5, mouth: 0, mouthOpen: true },
+  neutral: {
+    eyes: "round",
+    pupil: { dx: 0, dy: 0 },
+    pupilScale: 1,
+    brow: null,
+    mouth: 0.4,
+    mouthOpen: false,
+  },
+  focused: {
+    eyes: "narrow",
+    pupil: { dx: 0, dy: 0.8 },
+    pupilScale: 1,
+    brow: 0.35,
+    mouth: -0.8,
+    mouthOpen: false,
+  },
+  curious: {
+    eyes: "mismatched",
+    pupil: { dx: 1.4, dy: 0 },
+    pupilScale: 1,
+    brow: -0.2,
+    mouth: 0,
+    mouthOpen: false,
+  },
+  excited: {
+    eyes: "wide",
+    pupil: { dx: 0, dy: -0.5 },
+    pupilScale: 1,
+    brow: null,
+    mouth: 3,
+    mouthOpen: false,
+  },
+  satisfied: {
+    eyes: "round",
+    pupil: { dx: 0, dy: -0.4 },
+    pupilScale: 1,
+    brow: null,
+    mouth: 2.2,
+    mouthOpen: false,
+  },
+  worried: {
+    eyes: "wide",
+    pupil: { dx: 0, dy: 1.2 },
+    pupilScale: 1,
+    brow: -0.4,
+    mouth: -1.8,
+    mouthOpen: false,
+  },
+  confused: {
+    eyes: "mismatched",
+    pupil: { dx: -1.4, dy: 0.6 },
+    pupilScale: 1,
+    brow: -0.25,
+    mouth: -0.6,
+    mouthOpen: false,
+  },
+  frustrated: {
+    eyes: "narrow",
+    pupil: { dx: 0, dy: 0 },
+    pupilScale: 1,
+    brow: 0.55,
+    mouth: -2.6,
+    mouthOpen: false,
+  },
+  alarmed: {
+    eyes: "wide",
+    pupil: { dx: 0, dy: 0 },
+    pupilScale: 0.55,
+    brow: -0.5,
+    mouth: 0,
+    mouthOpen: true,
+  },
 };
 
 /** Eye center positions and sizes inside the head screen (2x units). */
@@ -188,14 +270,91 @@ function variantTraits(variant: number): VariantTraits {
   };
 }
 
+/**
+ * Uniswap unicorn kit: a small forward-tilted horn rising from the head's
+ * top-back plus a short mane strip hugging the back rim. Pure silhouette
+ * language in brand pink; drawn in head-local 2x units, above the casing
+ * graphic but clear of the face screen (horn tops out at y -58.5, the screen
+ * inset starts at y -40 and never reaches the back rim).
+ */
+function drawUnicornKit(head: Container, pink: number): void {
+  const g = new Graphics();
+  const edge = shade(pink, 0.45);
+  // Horn cone: base seated 1 unit inside the casing top so no gap shows;
+  // tip leans ~2 units forward (+x is the facing direction before mirroring).
+  const baseY = -47;
+  const tip = { x: -9.8, y: -58.5 };
+  g.moveTo(-15.5, baseY);
+  g.lineTo(-8.5, baseY);
+  g.lineTo(tip.x, tip.y);
+  g.closePath();
+  g.fill({ color: shade(pink, 0.18) });
+  g.moveTo(-15.5, baseY);
+  g.lineTo(-8.5, baseY);
+  g.lineTo(tip.x, tip.y);
+  g.closePath();
+  g.stroke({ width: 1.2, color: edge });
+  // Ridge hints at 1/3 and 2/3 height so the cone reads as a horn, not a spike.
+  for (const t of [0.38, 0.68] as const) {
+    const lx = -15.5 + (tip.x + 15.5) * t;
+    const rx = -8.5 + (tip.x + 8.5) * t;
+    const yy = baseY + (tip.y - baseY) * t;
+    g.moveTo(lx, yy);
+    g.lineTo(rx, yy);
+    g.stroke({ width: 1, color: edge, alpha: 0.75 });
+  }
+  // Mane: short rounded strip crossing the back rim (pokes ~1.5 units past
+  // the casing edge so it reads as hair, not paint) with two lighter strands.
+  // Top sits at y -42: higher would clear the casing's rounded corner and
+  // float detached, since the top-left arc pulls the rim inward above that.
+  g.roundRect(-24.5, -42, 5.5, 20, 3);
+  g.fill({ color: shade(pink, 0.08) });
+  for (const dx of [-1.4, 0.6] as const) {
+    g.moveTo(-22.5 + dx, -42);
+    g.quadraticCurveTo(-23.5 + dx, -33, -22.5 + dx, -24);
+    g.stroke({ width: 1, color: edge, alpha: 0.8 });
+  }
+  head.addChild(g);
+}
+
+/**
+ * Hyperliquid chest emblem: the venue blob as two small joined circles (the
+ * overlapping fill reads as one body; the stroked loops plus a center seam
+ * pinch the bridge). Replaces the structural chest dot for themed bots.
+ */
+function drawBlobEmblem(g: Graphics, cx: number, cy: number, mint: number): void {
+  const r = 3.2;
+  const dx = 2.7;
+  const edge = shade(mint, -0.35);
+  for (const side of [-1, 1] as const) {
+    g.circle(cx + dx * side, cy, r);
+    g.fill({ color: mint });
+    g.circle(cx + dx * side, cy, r);
+    g.stroke({ width: 1, color: edge, alpha: 0.85 });
+  }
+  // Pinch seam at the waist where the two loops join.
+  g.moveTo(cx, cy - r * 0.5);
+  g.lineTo(cx, cy + r * 0.5);
+  g.stroke({ width: 1.2, color: edge, alpha: 0.9 });
+}
+
 /** Full agent with body controls; createAgent is the frozen public wrapper. */
 export function createAgentImpl(
   id: string,
   role: AgentRole,
   variant = 0.5,
   reducedMotion = false,
+  theme?: AgentTheme,
 ): AgentImpl & AgentMicroLife {
   const roleColor = ROLE_COLORS[role];
+  // Theme accent color: recolors the antenna beacon and adds one pack accent;
+  // null for unthemed bots so role color stays the only accent.
+  const themeColor =
+    theme === "uniswap"
+      ? THEME_COLORS.uniswap
+      : theme === "hyperliquid"
+        ? THEME_COLORS.hyperliquid
+        : null;
   const tr = variantTraits(variant);
   const flipScale = DISPLAY_SCALE * tr.scale;
   const it = tr.intensity;
@@ -259,6 +418,18 @@ export function createAgentImpl(
     pack.lineTo(packX + packW - 3, packY + 8);
     pack.stroke({ width: 1, color: shade(roleColor, 0.45), alpha: 0.7 });
   }
+  if (theme === "uniswap") {
+    // Team stripe across the pack; the role color keeps the body so the bot
+    // still reads as its role first, venue second.
+    pack.roundRect(packX + 1.5, packY + 3.5, packW - 3, 4, 2);
+    pack.fill({ color: shade(THEME_COLORS.uniswap, 0.05) });
+  }
+  if (theme === "hyperliquid") {
+    // Subtle teal tint along the pack's back edge (edge trim, not a repaint).
+    pack.moveTo(packX, packY + 2);
+    pack.lineTo(packX, packY + packH - 2);
+    pack.stroke({ width: 2, color: shade(THEME_COLORS.hyperliquid, -0.12), alpha: 0.65 });
+  }
   // antenna rising from the backpack; style varies per variant
   const tip = { x: 0, y: 0 };
   if (tr.antenna === "short") {
@@ -289,9 +460,10 @@ export function createAgentImpl(
     tip.y = packY - 13;
   }
   pack.circle(tip.x, tip.y, tr.antenna === "short" ? 2.5 : 3);
-  pack.fill({ color: shade(roleColor, 0.3) });
-  // additive beacon on the antenna tip so the role color pops at fit zoom
-  const antennaGlow = glow(tip.x, tip.y, 16, roleColor, 0.5);
+  pack.fill({ color: themeColor ? shade(themeColor, 0.25) : shade(roleColor, 0.3) });
+  // additive beacon on the antenna tip so the accent pops at fit zoom
+  // (theme color for venue bots, role color otherwise)
+  const antennaGlow = glow(tip.x, tip.y, 16, themeColor ?? roleColor, 0.5);
   body.addChild(pack, antennaGlow);
 
   // --- torso: darker than the head casing for silhouette contrast ----------
@@ -303,8 +475,13 @@ export function createAgentImpl(
   torso.moveTo(-10, -42);
   torso.lineTo(10, -42); // panel line
   torso.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.9 });
-  torso.circle(0, -34, 2.2); // chest status dot (structural, not role colored)
-  torso.fill({ color: PALETTE.blue });
+  if (theme === "hyperliquid") {
+    // venue chest emblem replaces the structural dot for themed bots
+    drawBlobEmblem(torso, 0, -34, THEME_COLORS.hyperliquid);
+  } else {
+    torso.circle(0, -34, 2.2); // chest status dot (structural, not role colored)
+    torso.fill({ color: PALETTE.blue });
+  }
   body.addChild(torso);
 
   // --- arms (pivot at shoulder; droop/idle rotate them) ---------------------
@@ -348,6 +525,7 @@ export function createAgentImpl(
   headG.roundRect(-17, -40, 34, 32, 6);
   headG.stroke({ width: 1.4, color: roleColor, alpha: 0.9 }); // role screen trim
   head.addChild(headG);
+  if (theme === "uniswap") drawUnicornKit(head, THEME_COLORS.uniswap);
 
   // face layer: redrawn only by setExpression; blink scales it.
   const face = new Container();
@@ -545,11 +723,7 @@ export function createAgentImpl(
         tl.to(body, { y: 2, duration: 0.06, ease: "sine.in" });
         tl.to(body, { y: -16 * it, duration: 0.16, ease: "power2.out" });
         tl.to(body, { y: 0, duration: 0.18, ease: "power2.in" });
-        tl.to(
-          figure.scale,
-          { y: 0.86, x: 1.12, duration: 0.09, ease: "power2.out" },
-          "<",
-        );
+        tl.to(figure.scale, { y: 0.86, x: 1.12, duration: 0.09, ease: "power2.out" }, "<");
         tl.to(figure.scale, { y: 1, x: 1, duration: 0.45, ease: "elastic.out(1.6, 0.45)" });
         flashExpression("alarmed", 450);
         break;
@@ -562,7 +736,13 @@ export function createAgentImpl(
           overwrite: "auto",
         });
         gsap.to(head, { y: -51, duration: 0.3, ease: "power2.in", overwrite: "auto" });
-        gsap.to(head, { y: -56, duration: 0.7, delay: 0.55, ease: "elastic.out(1, 0.5)", overwrite: false });
+        gsap.to(head, {
+          y: -56,
+          duration: 0.7,
+          delay: 0.55,
+          ease: "elastic.out(1, 0.5)",
+          overwrite: false,
+        });
         flashExpression("worried", 650);
         break;
       }
@@ -573,7 +753,13 @@ export function createAgentImpl(
           ease: "power2.out",
           overwrite: "auto",
         });
-        gsap.to(flip, { rotation: 0, duration: 0.5, delay: 0.3, ease: "elastic.out(1, 0.45)", overwrite: false });
+        gsap.to(flip, {
+          rotation: 0,
+          duration: 0.5,
+          delay: 0.3,
+          ease: "elastic.out(1, 0.45)",
+          overwrite: false,
+        });
         flashExpression("alarmed", 400);
         break;
       }
@@ -584,7 +770,13 @@ export function createAgentImpl(
           ease: "back.out(2.5)",
           overwrite: "auto",
         });
-        gsap.to(head, { rotation: tr.headTilt, duration: 0.4, delay: 0.55, ease: "sine.inOut", overwrite: false });
+        gsap.to(head, {
+          rotation: tr.headTilt,
+          duration: 0.4,
+          delay: 0.55,
+          ease: "sine.inOut",
+          overwrite: false,
+        });
         flashExpression("curious", 600);
         break;
       }
@@ -607,19 +799,42 @@ export function createAgentImpl(
       }
       case "squash": {
         // squash-and-stretch landing: scaleY dip + scaleX rise, elastic recover
-        gsap.to(
-          figure.scale,
-          { y: 0.8, x: 1.16, duration: 0.09, ease: "power2.out", overwrite: "auto" },
-        );
-        gsap.to(figure.scale, { y: 1.06, x: 0.96, duration: 0.16, delay: 0.09, ease: "sine.out", overwrite: false });
-        gsap.to(figure.scale, { y: 1, x: 1, duration: 0.5, delay: 0.25, ease: "elastic.out(2.2, 0.4)", overwrite: false });
+        gsap.to(figure.scale, {
+          y: 0.8,
+          x: 1.16,
+          duration: 0.09,
+          ease: "power2.out",
+          overwrite: "auto",
+        });
+        gsap.to(figure.scale, {
+          y: 1.06,
+          x: 0.96,
+          duration: 0.16,
+          delay: 0.09,
+          ease: "sine.out",
+          overwrite: false,
+        });
+        gsap.to(figure.scale, {
+          y: 1,
+          x: 1,
+          duration: 0.5,
+          delay: 0.25,
+          ease: "elastic.out(2.2, 0.4)",
+          overwrite: false,
+        });
         break;
       }
       case "startle": {
         // alarm jump-back with an alarmed face and a brief "!" flash
         const back = facingLeft ? 7 : -7;
         gsap.to(flip, { x: back * it, duration: 0.14, ease: "power3.out", overwrite: "auto" });
-        gsap.to(flip, { x: 0, duration: 0.5, delay: 0.3, ease: "elastic.out(1, 0.5)", overwrite: false });
+        gsap.to(flip, {
+          x: 0,
+          duration: 0.5,
+          delay: 0.3,
+          ease: "elastic.out(1, 0.5)",
+          overwrite: false,
+        });
         gsap.to(body, { y: -7 * it, duration: 0.12, ease: "power2.out", overwrite: "auto" });
         gsap.to(body, { y: 0, duration: 0.3, delay: 0.14, ease: "power2.in", overwrite: false });
         flashExpression("alarmed", 550);
@@ -643,7 +858,11 @@ export function createAgentImpl(
         tl.to(body, { rotation: 0.3 * it, y: 3, duration: 0.22, ease: "power2.inOut" });
         tl.to(armL, { rotation: 0.95, duration: 0.2, ease: "power2.out" }, "<");
         tl.to(body, { rotation: 0, y: 0, duration: 0.5, delay: 0.45, ease: "elastic.out(1, 0.5)" });
-        tl.to(armL, { rotation: 0.12 + tr.armRest, duration: 0.4, delay: 0.35, ease: "sine.inOut" }, "<");
+        tl.to(
+          armL,
+          { rotation: 0.12 + tr.armRest, duration: 0.4, delay: 0.35, ease: "sine.inOut" },
+          "<",
+        );
         flashExpression("worried", 1000);
         break;
       }
@@ -768,7 +987,18 @@ export function createAgentImpl(
     exprRevert?.kill();
     reactTimer?.kill();
     rmTimer?.kill();
-    gsap.killTweensOf([body, head, flip, figure.scale, armL, armR, legL, legR, face.scale, cardHolder]);
+    gsap.killTweensOf([
+      body,
+      head,
+      flip,
+      figure.scale,
+      armL,
+      armR,
+      legL,
+      legR,
+      face.scale,
+      cardHolder,
+    ]);
   };
 
   setExpression("neutral");

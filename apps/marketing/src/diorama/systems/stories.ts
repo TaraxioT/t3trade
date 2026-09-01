@@ -50,9 +50,16 @@ import type {
   RefusalBoardApi,
   ReplayChamberApi,
 } from "../stations/ops.js";
-import type { EmergencyControlApi, HoloCoreApi, SignalTowerApi } from "../stations/central.js";
+import type {
+  EmergencyControlApi,
+  HoloCoreApi,
+  HyperliquidVenueApi,
+  SignalTowerApi,
+  UniswapVenueApi,
+} from "../stations/central.js";
 import { popMarkAt, scatterCards, rollProp } from "../agents/fx.js";
 import { cueAt } from "../audio.js";
+import { mascot as mascotHolder } from "../agents/mascot.js";
 
 export interface StoryDeps {
   ctx: DioramaContext;
@@ -162,11 +169,9 @@ async function move(
     return;
   }
   if (points.length === 0) return;
-  await deps.agents.walk(
-    agent,
-    points,
-    deps.ctx.reducedMotion ? { speed: 100000 } : { ease: "arrive" },
-  );
+  // Locomotion always walks (also under reduced motion): miniature agents
+  // walking between stations is scene content, so stories never teleport.
+  await deps.agents.walk(agent, points, { ease: "arrive" });
 }
 
 /** Dispatch a packet and wait for arrival. The packet chirp is anchored to
@@ -227,6 +232,12 @@ function cue(name: string, at: { x: number; y: number }): void {
   cueAt(name, at);
 }
 
+/** The floor mascot celebrates when a beat lands near its pad; no-op before
+ * the mascot module has built (story beats must never depend on it). */
+function mascotCelebrate(): void {
+  mascotHolder.api?.celebrate();
+}
+
 /** Advance the mission phase on the shared simulation AND the board, so the
  * visible mission board tracks the lifecycle instead of drifting stale. */
 function setMissionPhase(deps: StoryDeps, phase: string): void {
@@ -255,6 +266,8 @@ type Recovery = RecoveryApi;
 type ReplayChamber = ReplayChamberApi;
 type SignalTower = SignalTowerApi;
 type EmergencyControl = EmergencyControlApi;
+type UniswapVenue = UniswapVenueApi;
+type HyperliquidVenue = HyperliquidVenueApi;
 
 // ---------------------------------------------------------------------------
 // Story builders
@@ -323,7 +336,12 @@ export const SCATTER_POOL: string[] = [
 
 /** Weighted ambient texture for the new director: scatter singles plus the
  * floor choreography that keeps the default frame busy. */
-export const TEXTURE_POOL: string[] = [...SCATTER_POOL, "s-floor-handoff", "s-floor-signal"];
+export const TEXTURE_POOL: string[] = [
+  ...SCATTER_POOL,
+  "s-floor-handoff",
+  "s-floor-signal",
+  "s-venue-greet",
+];
 
 /** Harmless slapstick: own concurrency budget and per-gag cooldowns. */
 export const COMEDY_POOL: string[] = [
@@ -408,6 +426,8 @@ export const STORIES: Story[] = [
       react(d, "research-1", "hop");
       express(d, "analysis-1", "satisfied");
       glowPulse(d.ctx, "strategyLab");
+      // Liquidity research informed the pick: the floor's Uniswap desk blips.
+      storyApi<UniswapVenue>("uniswapVenue")?.pulse("quote");
       await d.beat(300);
       // The chosen strategy updates the mission; the signal tower hears it.
       await move(d, "strategy-1", [near("missionBoard", 60, 20)]);
@@ -577,6 +597,7 @@ export const STORIES: Story[] = [
       cue("execute", near("executionGateway"));
       await send(d, "exchangeTunnel");
       hyperliquid()?.exchangeEvent("order");
+      storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("order");
     },
   ),
 
@@ -591,6 +612,7 @@ export const STORIES: Story[] = [
       await send(d, "exchangeTunnel", "event", { reverse: true });
       storyApi<ExecutionGateway>("executionGateway")?.setState("acknowledged");
       hyperliquid()?.exchangeEvent("ack");
+      storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("ack");
       storyApi<SignalTower>("signalTower")?.pulse("execution");
     },
   ),
@@ -598,6 +620,8 @@ export const STORIES: Story[] = [
   // 15. The fill returns and the portfolio vault updates.
   s("s-fill-vault", "Fill updates portfolio", 8, [], ["portfolioVault"], async (d) => {
     hyperliquid()?.exchangeEvent("fill");
+    storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("fill");
+    mascotCelebrate();
     await send(d, "exchangeStateReturn");
     // No frozen PortfolioVault api; station-agnostic pulse.
     glowPulse(d.ctx, "portfolioVault", 0.4, 1.2);
@@ -906,7 +930,43 @@ export const STORIES: Story[] = [
     },
   ),
 
-  // 28. COMEDY. Two bots round a console from opposite sides and bump antennae.
+  // 26b. The venue hosts meet at the mascot: liquidity research on one side,
+  // venue fills on the other, one handshake between them.
+  s(
+    "s-venue-greet",
+    "Venue hosts meet at the mascot",
+    12,
+    ["uniswap-bot", "hyperliquid-bot"],
+    ["uniswapVenue", "hyperliquidVenue"],
+    async (d) => {
+      const uni = d.cast.get("uniswap-bot");
+      const hl = d.cast.get("hyperliquid-bot");
+      uni?.carry(0xff007a);
+      hl?.carry(0x97fce4);
+      await Promise.all([
+        move(d, "uniswap-bot", [{ x: 1378, y: 782 }]),
+        move(d, "hyperliquid-bot", [{ x: 1482, y: 782 }]),
+      ]);
+      react(d, "uniswap-bot", "doubleTake");
+      react(d, "hyperliquid-bot", "doubleTake");
+      await d.beat(300);
+      uni?.carry(null); // cards swapped
+      hl?.carry(null);
+      storyApi<UniswapVenue>("uniswapVenue")?.pulse("pool");
+      storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("fill");
+      react(d, "uniswap-bot", "hop");
+      react(d, "hyperliquid-bot", "hop");
+      mascotCelebrate();
+      cue("celebrate2", { x: 1430, y: 790 });
+      await d.beat(900);
+      await Promise.all([
+        move(d, "uniswap-bot", [near("uniswapVenue", 10, 50)]),
+        move(d, "hyperliquid-bot", [near("hyperliquidVenue", -10, 50)]),
+      ]);
+    },
+  ),
+
+  // 27. COMEDY. Two bots round a console from opposite sides and bump antennae.
   s(
     "s-bump-antennae",
     "Antennae bump on the north ring",

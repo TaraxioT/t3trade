@@ -126,9 +126,15 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
       waiters.add(settle);
     });
 
-  /** Decorative beat: skipped under reduced motion or once stopped. */
+  /** Decorative beat: calmer (shortened) under reduced motion, skipped once
+   * stopped. Beats are no longer fully skipped because stories walk instead
+   * of teleporting; without pauses the sequence would rush. */
   const beat = (ms: number): Promise<void> =>
-    ctx.reducedMotion || cancelled ? Promise.resolve() : wait(ms);
+    cancelled
+      ? Promise.resolve()
+      : ctx.reducedMotion
+        ? wait(Math.min(Math.round(ms * 0.4), 1200))
+        : wait(ms);
 
   const districtsOf = (stations: StationId[]): Set<DistrictId> => {
     const set = new Set<DistrictId>();

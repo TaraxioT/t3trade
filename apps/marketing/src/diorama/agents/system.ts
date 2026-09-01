@@ -14,14 +14,21 @@
  * micro-life (weight shift, look-around, expression flicker, blink, an
  * occasional solo comedy beat), all driven from one shared ticker with
  * per-agent schedules from seededRandom. All of that motion is disabled under
- * reducedMotion: agents hold their first wander point and resting expression.
+ * reducedMotion: agents still walk (idle wandering and story walks alike,
+ * at a calmer cadence); only the comedy micro-life is suppressed.
  */
 import { gsap } from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { DEPTH, seededRandom } from "../config/world.js";
 import type { AgentRole } from "../config/palette.js";
 import { POPULATION, type AgentDef } from "../config/population.js";
-import { createAgentImpl, type Agent, type AgentImpl, type AgentMicroLife, type Expression } from "./agent.js";
+import {
+  createAgentImpl,
+  type Agent,
+  type AgentImpl,
+  type AgentMicroLife,
+  type Expression,
+} from "./agent.js";
 import { agentFx, createAgentFx } from "./fx.js";
 
 export interface AgentSystem {
@@ -91,12 +98,7 @@ interface Lock {
   acquiredBy: string;
 }
 
-const IDLE_EXPRESSIONS: Expression[] = [
-  "neutral",
-  "focused",
-  "curious",
-  "satisfied",
-];
+const IDLE_EXPRESSIONS: Expression[] = ["neutral", "focused", "curious", "satisfied"];
 
 export function createPopulation(ctx: DioramaContext): AgentSystem {
   const agents = new Map<string, Agent>();
@@ -117,7 +119,7 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
 
   // --- spawn ---------------------------------------------------------------
   POPULATION.forEach((def, index) => {
-    const impl = createAgentImpl(def.id, def.role, def.variant, ctx.reducedMotion);
+    const impl = createAgentImpl(def.id, def.role, def.variant, ctx.reducedMotion, def.theme);
     const first = def.wander[0];
     impl.root.position.set(first.x, first.y);
     impl.setExpression(restingExpression(def));
@@ -238,29 +240,27 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
         const duration = Math.max(dist / speed, 0.05);
         // Arrive walks ease into and out of the whole path: the first and
         // last segment get sine.inOut so starts and stops feel weighted.
-        const segEase = arrive && (segIndex === 0 || segIndex === segCount - 1) ? "sine.inOut" : "none";
-        tl.to(
-          state,
-          {
-            t: 1,
-            duration,
-            ease: segEase,
-            onUpdate: () => {
-              root.x = start.x + dx * state.t;
-              root.y = start.y + dy * state.t;
-              updateDepth(rt);
-              rt.phase += (dist / duration) * gsap.ticker.deltaRatio(60) * (1 / 60);
-              rt.impl.setWalkPose(rt.phase, true);
-              if (Math.abs(dx) > 1) rt.impl.faceLeft(arrive ? destDx < 0 : dx < 0);
-            },
-            onStart: () => {
-              if (Math.abs(dx) > 1) rt.impl.faceLeft(arrive ? destDx < 0 : dx < 0);
-              // 2-frame lean into the dominant travel direction (reset by restPose).
-              const lateral = Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 4;
-              rt.impl.setLean(lateral ? (dx < 0 ? -1 : 1) : 0);
-            },
+        const segEase =
+          arrive && (segIndex === 0 || segIndex === segCount - 1) ? "sine.inOut" : "none";
+        tl.to(state, {
+          t: 1,
+          duration,
+          ease: segEase,
+          onUpdate: () => {
+            root.x = start.x + dx * state.t;
+            root.y = start.y + dy * state.t;
+            updateDepth(rt);
+            rt.phase += (dist / duration) * gsap.ticker.deltaRatio(60) * (1 / 60);
+            rt.impl.setWalkPose(rt.phase, true);
+            if (Math.abs(dx) > 1) rt.impl.faceLeft(arrive ? destDx < 0 : dx < 0);
           },
-        );
+          onStart: () => {
+            if (Math.abs(dx) > 1) rt.impl.faceLeft(arrive ? destDx < 0 : dx < 0);
+            // 2-frame lean into the dominant travel direction (reset by restPose).
+            const lateral = Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 4;
+            rt.impl.setLean(lateral ? (dx < 0 ? -1 : 1) : 0);
+          },
+        });
         from.x = target.x;
         from.y = target.y;
         state.t = 0;
@@ -366,20 +366,16 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
   };
 
   const startIdleLife = (): void => {
-    if (ctx.reducedMotion) {
-      // Pose only: agents stay at their first wander point with their
-      // resting expression; no walks, no micro-life, no blinks.
-      for (const rt of runtimes.values()) {
-        rt.impl.setExpression(restingExpression(rt.def));
-      }
-      return;
-    }
+    // Reduced motion keeps locomotion: miniature agents walking between
+    // authored posts is scene content, not a vestibular trigger. Only the
+    // comedy micro-life is suppressed and the cadence calms down.
     idleLifeEnabled = true;
     for (const rt of runtimes.values()) {
       rt.idle = "waiting";
       // Variant-staggered starts so no district settles into sync.
       rt.waitUntil = elapsed + rt.def.variant * 1.8 + rt.rng() * 0.5;
       scheduleNextLife(rt);
+      if (ctx.reducedMotion) rt.nextLifeAt = Infinity;
     }
   };
 
@@ -408,7 +404,9 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
         void walked.then(() => {
           if (rt.idle === "walking") {
             rt.idle = "waiting";
-            rt.waitUntil = elapsed + 0.5 + rt.rng() * 1.1; // 0.5-1.6 s pause
+            // 0.5-1.6 s pause between strolls; calmer under reduced motion.
+            const base = 0.5 + rt.rng() * 1.1;
+            rt.waitUntil = elapsed + (ctx.reducedMotion ? base * 1.8 : base);
           }
         });
       }
@@ -433,8 +431,7 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
       if (!rt) {
         return Promise.reject(new Error(`walk: unknown agent ${agent.id}`));
       }
-      const speed =
-        opts?.speed ?? WALK_SPEED * ROLE_SPEED[agent.role] * (ctx.reducedMotion ? 6 : 1);
+      const speed = opts?.speed ?? WALK_SPEED * ROLE_SPEED[agent.role];
       return startWalk(rt, waypoints, speed, opts?.ease);
     },
     startIdleLife,

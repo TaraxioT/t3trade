@@ -23,6 +23,8 @@ export interface AgentDef {
   restingExpression?: string;
   /** Deterministic individuality seed in [0, 1). */
   variant: number;
+  /** Branded accent kit for the floor venue hosts (see agents/agent.ts). */
+  theme?: "uniswap" | "hyperliquid";
 }
 
 const p = (x: number, y: number) => ({ x, y });
@@ -86,7 +88,9 @@ export const POPULATION: AgentDef[] = [
     role: "research",
     home: "tradingFloor",
     variant: 0.08,
-    wander: [p(1268, 640), p(1315, 570), p(1420, 560), p(1505, 572), p(1568, 618)],
+    // First point is its desk, moved west with the desk when the Uniswap
+    // pavilion took the old inner-ring spot; the arc stays north of the holo.
+    wander: [p(1198, 652), p(1315, 570), p(1420, 560), p(1505, 572), p(1585, 608)],
     restingExpression: "focused",
   },
   {
@@ -94,7 +98,9 @@ export const POPULATION: AgentDef[] = [
     role: "analysis",
     home: "tradingFloor",
     variant: 0.62,
-    wander: [p(1590, 640), p(1622, 700), p(1668, 762), p(1618, 812)],
+    // First point is its desk, moved east with the desk clear of the
+    // Hyperliquid pavilion footprint.
+    wander: [p(1662, 652), p(1678, 706), p(1668, 762), p(1618, 812)],
     restingExpression: "focused",
   },
   {
@@ -128,6 +134,27 @@ export const POPULATION: AgentDef[] = [
     variant: 0.84,
     wander: [p(1520, 950), p(1556, 920), p(1502, 895), p(1470, 940)],
     restingExpression: "neutral",
+  },
+  // Floor venue hosts: branded bots living at the Uniswap and Hyperliquid
+  // pavilions flanking the holo. Loops hug the inner apron south of the
+  // venues, clear of the ring arcs above and the mascot pad between them.
+  {
+    id: "uniswap-bot",
+    role: "research",
+    home: "uniswapVenue",
+    variant: 0.42,
+    theme: "uniswap",
+    wander: [p(1300, 715), p(1330, 745), p(1355, 710)],
+    restingExpression: "curious",
+  },
+  {
+    id: "hyperliquid-bot",
+    role: "execution",
+    home: "hyperliquidVenue",
+    variant: 0.61,
+    theme: "hyperliquid",
+    wander: [p(1560, 715), p(1530, 745), p(1505, 710)],
+    restingExpression: "focused",
   },
 
   // MCP & provider district (4)

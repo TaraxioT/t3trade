@@ -292,6 +292,18 @@ async function build(host: HTMLElement): Promise<void> {
     guard("riskDistrict", () => buildRiskDistrict(ctx));
     guard("opsDistrict", () => buildOpsDistrict(ctx));
 
+    // Floor mascot: the duo-themed herald on its pad south of the holo.
+    guard("mascot", () => {
+      void import("./agents/mascot.js")
+        .then(({ buildMascot, mascot }) => {
+          mascot.api = buildMascot(ctx, { x: 1430, y: 800 });
+          onCleanup(() => {
+            mascot.api = null;
+          });
+        })
+        .catch((e: unknown) => warn("mascot", e));
+    });
+
     // Systems (parallel module load, ordered creation: the director needs the
     // other three).
     const [
