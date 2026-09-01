@@ -757,7 +757,7 @@ function buildProviders(ctx: DioramaContext): void {
 /* ----------------------------------------------------------- 8. mcp health */
 
 function buildMcpHealth(ctx: DioramaContext): void {
-  const { root, hit } = stationShell(ctx, "mcpHealth", -66);
+  const { root, hit } = stationShell(ctx, "mcpHealth", -52);
   contactShadow(root, 0, 8, 148, 78);
   root.addChild(isoTile(0, 4, 130, 66, PALETTE.structure, 1, PALETTE.structureLight));
   root.addChild(isoBox({ x: 0, y: 10, w: 26, d: 14, h: 8, color: PALETTE.structure, rim: PALETTE.structureLight }));
@@ -834,7 +834,7 @@ function buildMcpHealth(ctx: DioramaContext): void {
 type EnvKey = "research" | "testnet" | "connected" | "signer";
 
 function buildEnvSwitchboard(ctx: DioramaContext): EnvSwitchboardApi {
-  const { root, hit } = stationShell(ctx, "envSwitchboard", -66);
+  const { root, hit } = stationShell(ctx, "envSwitchboard", -52);
   contactShadow(root, 0, 4, 158, 82);
   root.addChild(isoTile(0, 0, 140, 70, PALETTE.structure, 1, PALETTE.structureLight));
   // Signal mast on the west edge lifts the switchboard silhouette.

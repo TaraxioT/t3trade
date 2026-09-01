@@ -311,9 +311,9 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   font-family:'JetBrains Mono',ui-monospace,monospace;
   font-size:10px;
   letter-spacing:.05em;
-  color:#a8c0cf;
-  background:rgba(10,24,40,.75);
-  border:1px solid rgba(52,229,229,.18);
+  color:#d9e8f2;
+  background:rgba(7,17,31,.88);
+  border:1px solid rgba(52,229,229,.22);
   border-radius:8px;
   padding:5px 9px;
   white-space:nowrap;

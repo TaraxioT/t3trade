@@ -50,7 +50,7 @@ export const POPULATION: AgentDef[] = [
   { id: "hub-keeper", role: "operations", home: "mcpHub", variant: 0.19, wander: [p(2140, 540), p(2200, 548), p(2262, 536), p(2196, 562)], restingExpression: "focused" },
   { id: "schema-librarian", role: "operations", home: "toolSchemas", variant: 0.66, wander: [p(2340, 700), p(2392, 712), p(2442, 692), p(2394, 676)], restingExpression: "neutral" },
   { id: "adapter-op", role: "operations", home: "adapterBay", variant: 0.51, wander: [p(2442, 530), p(2496, 522), p(2530, 552), p(2488, 545)], restingExpression: "focused" },
-  { id: "health-watcher", role: "analysis", home: "mcpHealth", variant: 0.03, wander: [p(2062, 806), p(2112, 812), p(2160, 796), p(2112, 782)], restingExpression: "neutral" },
+  { id: "health-watcher", role: "analysis", home: "mcpHealth", variant: 0.03, wander: [p(2062, 868), p(2112, 874), p(2160, 858), p(2112, 844)], restingExpression: "neutral" },
 
   // Risk & execution district (5)
   { id: "approval-clerk", role: "operations", home: "approval", variant: 0.47, wander: [p(1688, 975), p(1740, 986), p(1782, 966), p(1736, 952)], restingExpression: "neutral" },
