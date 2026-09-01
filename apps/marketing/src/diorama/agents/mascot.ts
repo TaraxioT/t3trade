@@ -1,27 +1,30 @@
 /**
- * Floor mascot: a dignified unicorn-bot herald for its pad on the
- * central floor. The character keeps the cast anatomy (structural blue body,
- * CRT face, cyan shoulder light) but reads as the room's emblem, not
- * entertainment: a slender silver-blue horn with one soft mint glow at the
- * tip, a short swept crest in deep structural blue, and a single tailored
- * deep-teal mantle with a thin restrained pink hem trim (the only pink on
- * the figure). Accents are strokes and deep tones; nothing glows neon.
- * Owner: mascot/theming worker.
+ * West threshold mascot: a dignified unicorn-bot herald parked beside the
+ * former research-only door as an easter egg (freeze cycle-4 §6). The
+ * character keeps the cast anatomy (structural blue body, CRT face, cyan
+ * shoulder light) but reads as the room's emblem, not entertainment: a
+ * slender silver-blue horn with one soft mint glow at the tip, a short swept
+ * crest in deep structural blue, and a single tailored deep-teal mantle with
+ * a thin restrained pink hem trim (the only pink on the figure). Accents are
+ * strokes and deep tones; nothing glows neon.
+ * Owner: agent-system (life) worker.
  *
- * Anchor convention matches agent.ts: root.position is the pad anchor on the
- * floor; the pedestal top sits ~6 world units above it, so the contact shadow
- * and the whole figure are lifted to y = -6 inside root. zIndex carries a
- * small forward bias (+3) so the mascot sorts above the pedestal it stands
- * on while ring bots south of it still pass in front.
+ * The herald is NOT a flow actor: it never moves on its own and there is no
+ * fill celebration. Its whole social repertoire is one quiet `wave()`, which
+ * main.ts triggers through `setFocused(true)` when the mascot's area gains
+ * focus (once per focus; focus-out re-arms it). Between waves it holds a
+ * statue pose with slow bob + mantle sway + rare blink ambience, all
+ * disabled under reduced motion (one static composed pose).
  *
- * Motion is fully tween-driven (GSAP timelines, no per-frame redraw loops)
- * and deliberately slow, so the figure reads as a statue that occasionally
- * moves. Idle life = a graceful wave loop + slow bob + mantle sway + rare
- * blink; under reduced motion the mascot holds one static composed pose.
- * celebrate() = a dignified bow + one sparkle + at most one gentle hop;
- * wave() = one slow regal raise-and-tilt. Both are interrupt-safe: each
- * kills any live animation, resets to the base pose and restarts cleanly,
- * and every public path guards the destroyed state.
+ * Anchor: MASCOT_ANCHOR is exported for main.ts (Bootstrap lane) so the
+ * build call and the collision reasoning stay in one file. It sits on the
+ * research floor beside the removed researchOnlyGate threshold — outside
+ * every station footprint diamond (see the comment on the constant).
+ *
+ * Anchor convention matches agent.ts: root.position is the foot center at
+ * ground level; the contact shadow sits at the feet. Motion is fully
+ * tween-driven (GSAP timelines, no per-frame redraw loops) and deliberately
+ * slow. Every public path guards the destroyed state and restarts cleanly.
  */
 import { Container, FillGradient, Graphics } from "pixi.js";
 import { gsap } from "gsap";
@@ -29,27 +32,34 @@ import type { DioramaContext } from "../core/context.js";
 import { PALETTE, shade } from "../config/palette.js";
 import { glow } from "../core/iso.js";
 import { DEPTH } from "../config/world.js";
-import { agentFx } from "./fx.js";
 
 export interface MascotApi {
-  /** Bounded ~3 s bow, sparkle and one gentle hop; restarts cleanly. */
-  celebrate(): void;
-  /** One slow regal raise-and-tilt greeting. */
+  /** One slow regal raise-and-tilt greeting; restarts cleanly. */
   wave(): void;
+  /** Wave once on focus-in (rising edge); focus-out re-arms the greeting. */
+  setFocused(focused: boolean): void;
 }
 
 /** Live mascot instance holder (set by main.ts, read by stories); null
  * before build and after teardown, the same pattern as the world holders. */
 export const mascot: { api: MascotApi | null } = { api: null };
 
-/** Herald scale: 1.6x a standard bot, drawn in the same 2x idiom as agent.ts. */
-const MASCOT_SCALE = 0.88 * 1.6;
-/** Pedestal top height above the pad anchor (world units). */
-const PEDESTAL_TOP = 6;
-/** Forward depth bias so the mascot sorts above its own pedestal. */
-const DEPTH_BIAS = 3;
-/** Comic-mark origin above the root: clears the horn tip at 2x y -122. */
-const MARK_OFFSET = 132 * MASCOT_SCALE;
+/**
+ * West threshold anchor for buildMascot: beside the former researchOnlyGate
+ * door (old anchor (540,635), w130×d110), 62 u to its south-east so the
+ * point is outside even the removed gate's footprint diamond (sum 1.21) and
+ * clear of every other west footprint in the current stations layout
+ * (marketData 3.59, missionBoard 4.15, decisionTable 2.30 in
+ * |dx|/(w/2)+|dy|/(d/2) units). It passes insideRoom(595,655) with ~99 u of
+ * wall margin and lies in the research section polygon; the floor polygon's
+ * minimum x is 1120, so it can never be a center-section point. At 55 %
+ * scale the figure's contact shadow is ~25 u wide, inside every margin.
+ */
+export const MASCOT_ANCHOR: { x: number; y: number } = { x: 595, y: 655 };
+
+/** Herald scale: 55% of the cycle-3 floor-herald size (0.88 * 1.6 * 0.55),
+ * drawn in the same 2x idiom as agent.ts. */
+const MASCOT_SCALE = 0.88 * 1.6 * 0.55;
 /** Pale silver-blue from the world's pale-surface family (horn material). */
 const SILVER_BLUE = 0xcfe7f2;
 
@@ -61,7 +71,6 @@ const SILVER_BLUE = 0xcfe7f2;
  * brand pink 0xff007a shaded -0.28 for the single hem trim.
  */
 const MINT = 0x97fce4;
-const PINK = 0xff007a;
 /** Deep teal mantle tones: formal wear, not a cape. */
 const MANTLE_SHOULDER = 0x589284;
 const MANTLE_HEM = 0x3c655b;
@@ -89,20 +98,19 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   const root = new Container();
   root.label = "mascot";
   root.position.set(at.x, at.y);
-  root.zIndex = at.y + DEPTH.base + DEPTH_BIAS;
+  root.zIndex = at.y + DEPTH.base;
 
-  // Contact shadow on the pedestal top, in world units outside the flip so
-  // nothing that mirrors or scales inside can move it.
+  // Contact shadow at the feet, in world units outside the flip so nothing
+  // that mirrors or scales inside can move it.
   const shadow = new Graphics();
-  shadow.ellipse(0, -PEDESTAL_TOP, 32, 9);
+  shadow.ellipse(0, -1, 32 * MASCOT_SCALE, 9 * MASCOT_SCALE);
   shadow.fill({ color: 0x000000, alpha: 0.3 });
   root.addChild(shadow);
 
-  // flip carries the 1.6x display scale; the figure inside holds
-  // squash-and-stretch anchored at the feet (children at negative y).
+  // flip carries the display scale; the figure inside holds squash-and-
+  // stretch anchored at the feet (children at negative y).
   const flip = new Container();
   flip.scale.set(MASCOT_SCALE);
-  flip.position.set(0, -PEDESTAL_TOP);
   root.addChild(flip);
 
   const figure = new Container();
@@ -314,16 +322,11 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   /** Resting greeting-arm angle; reduced motion holds a composed half-raise. */
   const restArmR = ctx.reducedMotion ? -0.6 : -0.12;
 
-  let waveLoop: gsap.core.Timeline | null = null;
   let bobTween: gsap.core.Tween | null = null;
   let capeTween: gsap.core.Tween | null = null;
   let blinkLoop: gsap.core.Timeline | null = null;
-  // The active celebrate/wave animation; a re-trigger kills and restarts it.
-  let burstAnim: gsap.core.Timeline | gsap.core.Tween | null = null;
-
-  const sparkle = (): void => {
-    agentFx.current?.popMarkAt(root.x, root.y - MARK_OFFSET, "stars");
-  };
+  // The active wave animation; a re-trigger kills and restarts it.
+  let waveAnim: gsap.core.Timeline | gsap.core.Tween | null = null;
 
   /** Revert every animated offset to the neutral herald pose. */
   const basePose = (): void => {
@@ -338,27 +341,17 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     face.scale.y = 1;
   };
 
-  const killIdle = (): void => {
-    waveLoop?.kill();
+  const killAmbience = (): void => {
     bobTween?.kill();
     capeTween?.kill();
-    waveLoop = null;
     bobTween = null;
     capeTween = null;
   };
 
-  const startIdle = (): void => {
+  /** Statue ambience between greetings: slow bob + mantle sway. Never a wave. */
+  const startAmbience = (): void => {
     if (!alive() || ctx.reducedMotion) return;
-    killIdle();
-    // Graceful wave loop: slow raise with a slight head tilt, one gentle
-    // sway, slow lower, long rest (~8 s cycle). Reads as a regal greeting.
-    waveLoop = gsap.timeline({ repeat: -1, repeatDelay: 4.2 });
-    waveLoop.to(armR, { rotation: -1.9, duration: 0.8, ease: "sine.inOut" });
-    waveLoop.to(head, { rotation: 0.07, duration: 0.8, ease: "sine.inOut" }, 0);
-    waveLoop.to(armR, { rotation: -1.66, duration: 1.15, ease: "sine.inOut" });
-    waveLoop.to(armR, { rotation: -1.9, duration: 1.15, ease: "sine.inOut" });
-    waveLoop.to(armR, { rotation: restArmR, duration: 0.9, ease: "sine.inOut" });
-    waveLoop.to(head, { rotation: 0, duration: 0.9, ease: "sine.inOut" }, "<");
+    killAmbience();
     bobTween = gsap.to(body, {
       y: -2.2,
       duration: 2.8,
@@ -375,69 +368,25 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     });
   };
 
-  /** Interrupt-safe preamble shared by celebrate() and wave(). */
-  const beginAct = (): boolean => {
-    if (!alive()) return false;
-    burstAnim?.kill();
-    burstAnim = null;
-    killIdle();
-    basePose();
-    return true;
-  };
-
-  const celebrate = (): void => {
-    if (!beginAct()) return;
-    if (ctx.reducedMotion) {
-      // Single expression brighten + one static mark; no bow, no hop.
-      drawFace("excited");
-      sparkle();
-      burstAnim = gsap.delayedCall(0.9, () => {
-        burstAnim = null;
-        if (alive()) drawFace("happy");
-      });
-      return;
-    }
-    const tl = gsap.timeline({
-      onComplete: () => {
-        burstAnim = null;
-        if (alive()) drawFace("happy");
-        startIdle();
-      },
-    });
-    // Dignified bow: the body folds forward over the planted feet while the
-    // right arm sweeps across the waist (a presenting gesture, not a wave).
-    tl.to(body, { rotation: 0.24, y: 2.5, duration: 0.55, ease: "power2.inOut" });
-    tl.to(armR, { rotation: 0.62, duration: 0.5, ease: "sine.out" }, "<");
-    tl.to({}, { duration: 0.55 }); // hold the bow
-    tl.call(sparkle);
-    tl.to(body, { rotation: 0, y: 0, duration: 0.6, ease: "power2.inOut" });
-    tl.to(armR, { rotation: restArmR, duration: 0.55, ease: "sine.inOut" }, "<");
-    // One gentle hop only: small anticipation dip, modest rise, soft settle
-    // (sine recovery, no cartoon elastic).
-    tl.to(body, { y: 2, duration: 0.12, ease: "sine.in" });
-    tl.call(() => drawFace("excited"));
-    tl.to(body, { y: -11, duration: 0.28, ease: "power2.out" });
-    tl.to(body, { y: 0, duration: 0.26, ease: "power2.in" });
-    tl.to(figure.scale, { y: 0.93, x: 1.05, duration: 0.08, ease: "power2.out" }, "<");
-    tl.to(figure.scale, { y: 1, x: 1, duration: 0.45, ease: "sine.out" });
-    burstAnim = tl;
-  };
-
   const wave = (): void => {
-    if (!beginAct()) return;
+    if (!alive()) return;
+    waveAnim?.kill();
+    waveAnim = null;
+    killAmbience();
+    basePose();
     if (ctx.reducedMotion) {
       // Static raised-arm pose with a brief hold; self-reverting.
       armR.rotation = -1.6;
-      burstAnim = gsap.delayedCall(0.9, () => {
-        burstAnim = null;
+      waveAnim = gsap.delayedCall(0.9, () => {
+        waveAnim = null;
         if (alive()) armR.rotation = restArmR;
       });
       return;
     }
     const tl = gsap.timeline({
       onComplete: () => {
-        burstAnim = null;
-        startIdle();
+        waveAnim = null;
+        startAmbience();
       },
     });
     // One regal greeting: slow raise with a slight head tilt, one gentle
@@ -448,7 +397,15 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     tl.to(armR, { rotation: -1.9, duration: 1.2, ease: "sine.inOut" });
     tl.to(armR, { rotation: restArmR, duration: 1, ease: "sine.inOut" });
     tl.to(head, { rotation: 0, duration: 1, ease: "sine.inOut" }, "<");
-    burstAnim = tl;
+    waveAnim = tl;
+  };
+
+  // Focus edge tracking: at most one wave per focus, re-armed on focus-out.
+  let focused = false;
+  const setFocused = (next: boolean): void => {
+    const wasFocused = focused;
+    focused = next;
+    if (next && !wasFocused) wave();
   };
 
   // --- assemble and start ---------------------------------------------------
@@ -459,8 +416,8 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     // Static composed pose: arm in a calm half-raise, no loops at all.
     armR.rotation = restArmR;
   } else {
-    startIdle();
-    // Blink cadence independent of bursts so the face never freezes; rare
+    startAmbience();
+    // Blink cadence independent of waves so the face never freezes; rare
     // enough to preserve the statue read.
     blinkLoop = gsap.timeline({ repeat: -1, repeatDelay: 4.6 });
     blinkLoop.to(face.scale, {
@@ -474,12 +431,12 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
 
   ctx.onCleanup(() => {
     disposed = true;
-    burstAnim?.kill();
-    killIdle();
+    waveAnim?.kill();
+    killAmbience();
     blinkLoop?.kill();
     gsap.killTweensOf([body, figure.scale, head, armL, armR, capePivot, face.scale, legL, legR]);
     root.destroy({ children: true });
   });
 
-  return { celebrate, wave };
+  return { wave, setFocused };
 }

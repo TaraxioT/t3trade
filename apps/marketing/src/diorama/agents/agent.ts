@@ -13,6 +13,10 @@
  * deterministically from the single `variant` seed in [0,1) so the cast stays
  * one coherent species while individuals read apart at fit zoom.
  *
+ * Tasking contract (cycle 4): the model never animates itself. Expressions,
+ * reactions, carried cards and marks change only when a story calls them;
+ * the population system adds purposeful locomotion and blinks, nothing else.
+ *
  * Anchor convention: root.position is the foot center at ground level; the
  * depth sort uses root.y directly (zIndex = root.y + DEPTH.base). Everything
  * above ground is drawn at negative y inside an inner "flip" container, so

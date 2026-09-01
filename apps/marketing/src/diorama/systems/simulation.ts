@@ -1,10 +1,18 @@
 /**
- * Simulated campus state: statuses, budgets, health, mission phase. A single
- * observable store the director mutates and the UI reads. Owner: director
- * worker.
+ * Simulated campus state: statuses, budgets, health, mission phase. The
+ * scenario-owned mutable store: sceneBindings mirrors bus events into it and
+ * any remaining reader may subscribe. Owner: bus lane.
  *
- * The frozen CampusState fields are the UI contract; the mutation helpers are
- * the director's write surface so state changes always notify subscribers.
+ * The simulation emits no bus events itself — mission status changes arrive
+ * as dispatched events (freeze §8) and sceneBindings writes them back here.
+ * The CampusState fields are the UI contract; the mutation helpers are the
+ * write surface so state changes always notify subscribers.
+ *
+ * Loss budget units are pinned (addendum §B.7): the reservoir tracks CUMULATIVE
+ * USED percentage POINTS on a 0..100 scale; the remaining projection is
+ * clamp(1 - usedPoints/100) as a 0..1 fraction. There is NO rollover or
+ * replenish: once used reaches 100 the budget stays exhausted until a new
+ * mission create resets it to 0.
  */
 import type { DioramaContext } from "../core/context.js";
 
@@ -15,23 +23,26 @@ export const MCP_PORT_COUNT = 8;
 
 export interface CampusState {
   missionPhase: string;
-  lossAllowancePct: number;
+  /** Cumulative loss-budget draw in percentage points, 0..100, no rollover. */
+  lossBudgetUsedPoints: number;
   paused: boolean;
   mcpPortHealth: PortHealth[];
-  lastRefusal: string;
 }
 
 export interface Simulation {
   state: CampusState;
   subscribe(fn: (state: CampusState) => void): () => void;
-  /** Consume percentage points of the loss allowance reservoir. */
-  consumeLoss(pct: number): void;
+  /** Consume percentage POINTS (0..100 scale) of the loss budget. */
+  consumeLoss(points: number): void;
+  /** Mission create: the loss budget resets to 0 used points. */
+  resetLossBudget(): void;
+  /** Remaining allowance as a fraction 0..1: clamp(1 - usedPoints/100). */
+  lossRemainingFraction(): number;
   /** Consume a fraction of the tool spend reservoir (0..1). */
   consumeTools(fraction: number): void;
   setPortHealth(port: number, health: PortHealth): void;
   setPhase(phase: string): void;
   setPaused(paused: boolean): void;
-  refuse(reason: string): void;
 }
 
 export function createSimulation(ctx: DioramaContext): Simulation {
@@ -39,10 +50,9 @@ export function createSimulation(ctx: DioramaContext): Simulation {
 
   const state: CampusState = {
     missionPhase: "Waiting",
-    lossAllowancePct: 82,
+    lossBudgetUsedPoints: 0,
     paused: false,
     mcpPortHealth: Array.from({ length: MCP_PORT_COUNT }, () => "green" as PortHealth),
-    lastRefusal: "LOSS BUDGET SPENT",
   };
 
   const subscribers = new Set<(state: CampusState) => void>();
@@ -58,7 +68,7 @@ export function createSimulation(ctx: DioramaContext): Simulation {
     for (const fn of subscribers) fn(snap);
   };
 
-  const clampPct = (v: number): number => Math.max(0, Math.min(100, v));
+  const clamp = (v: number, min: number, max: number): number => Math.max(min, Math.min(max, v));
 
   return {
     state,
@@ -69,9 +79,19 @@ export function createSimulation(ctx: DioramaContext): Simulation {
         subscribers.delete(fn);
       };
     },
-    consumeLoss(pct: number): void {
-      state.lossAllowancePct = clampPct(state.lossAllowancePct - pct);
+    consumeLoss(points: number): void {
+      const used = clamp(state.lossBudgetUsedPoints + Math.max(0, points), 0, 100);
+      if (used === state.lossBudgetUsedPoints) return;
+      state.lossBudgetUsedPoints = used;
       notify();
+    },
+    resetLossBudget(): void {
+      if (state.lossBudgetUsedPoints === 0) return;
+      state.lossBudgetUsedPoints = 0;
+      notify();
+    },
+    lossRemainingFraction(): number {
+      return clamp(1 - state.lossBudgetUsedPoints / 100, 0, 1);
     },
     consumeTools(fraction: number): void {
       // Tool spend has no frozen display field yet; modeled as a no-op until
@@ -92,10 +112,6 @@ export function createSimulation(ctx: DioramaContext): Simulation {
     setPaused(paused: boolean): void {
       if (state.paused === paused) return;
       state.paused = paused;
-      notify();
-    },
-    refuse(reason: string): void {
-      state.lastRefusal = reason.toUpperCase();
       notify();
     },
   };

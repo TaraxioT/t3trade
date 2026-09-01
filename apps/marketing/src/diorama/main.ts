@@ -4,7 +4,16 @@
  * renders correctly at every intermediate implementation state (typed stubs
  * included) and a failure logs instead of blanking the canvas.
  *
- * Owner: skeleton worker.
+ * Wiring order: the event bus is created first and rides on DioramaContext,
+ * then the guarded parallel world builders, mascot, systems (rails,
+ * population, simulation, director), audio, DOM UI (info card, HUD), and the
+ * scene bindings — the single semantic bus consumer. The director starts
+ * only after the bindings exist so the first spine events already land on
+ * stations and HUD. Teardown mirrors creation: cleanups run in registration
+ * order, and bindings destroy is registered before bus destroy, so the bus
+ * dies last, after every consumer is gone.
+ *
+ * Owner: bootstrap worker.
  */
 import gsap from "gsap";
 import { Application, Container } from "pixi.js";
@@ -12,9 +21,10 @@ import { Viewport } from "pixi-viewport";
 import { createCamera, type Camera } from "./core/camera.js";
 import type { CleanupFn, DioramaContext } from "./core/context.js";
 import { clearRegistry, allStations, stationApi } from "./core/registry.js";
-import { clearSigns } from "./core/signs.js";
+import { clearSigns, signSnapshot } from "./core/signs.js";
 import type { StationId } from "./config/stations.js";
 import type { FocusTarget } from "./systems/rails.js";
+import { createEventBus } from "./systems/eventBus.js";
 import { WORLD_HEIGHT, WORLD_WIDTH } from "./config/world.js";
 
 // Lazy tween initialization defers a tween's first read of its target to a
@@ -26,6 +36,14 @@ import { WORLD_HEIGHT, WORLD_WIDTH } from "./config/world.js";
 gsap.defaults({ lazy: false });
 
 const BG_COLOR = 0x07111f;
+
+/** West research stations whose focus earns the mascot's one quiet wave. */
+const MASCOT_FOCUS_IDS: ReadonlySet<string> = new Set([
+  "marketData",
+  "researchTools",
+  "missionBoard",
+  "decisionTable",
+]);
 
 /** One live diorama instance; null when destroyed. */
 interface DioramaRuntime {
@@ -132,27 +150,39 @@ async function build(host: HTMLElement): Promise<void> {
 
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  // The event bus is the first subsystem: DioramaContext carries it, so every
+  // later builder can dispatch or subscribe without extra wiring. busRef
+  // mirrors the live instance for the debug accessors; it is nulled when the
+  // bus is destroyed so a post-teardown probe sees the truth.
+  const bus = createEventBus();
+  let busRef: typeof bus | null = bus;
+
   const ctx: DioramaContext = {
     app,
     layers,
     reducedMotion,
     quality,
+    bus,
     onTick,
     onCleanup,
     screenSize: { w: screenW, h: screenH },
   };
 
-  // Debug/inspection hook for the environment owner's capture harness. Never
-  // used by the page itself; harmless in production.
+  // Subsystem handles the debug hook and teardown reach for across guards.
   let directorRef: import("./systems/director.js").Director | null = null;
   let agentsRef: import("./agents/system.js").AgentSystem | undefined;
   let simulationRef: import("./systems/simulation.js").Simulation | undefined;
+  // Local mirror of the mascot api for the selection easter egg below; the
+  // imported holder stays the shared storage stories read.
+  let mascotApi: import("./agents/mascot.js").MascotApi | null = null;
 
   /**
    * Full teardown: unregisters listeners/tickers/cleanups recorded so far and
    * destroys the renderer. Shared by runtime.destroy() and the bootstrap
    * failure path below, so a throw mid-build never leaves a half-constructed
-   * canvas bolted to the host.
+   * canvas bolted to the host. The bus dies inside the cleanup pass: its
+   * destroy is registered after the bindings destroy, so consumers (and the
+   * bindings themselves) are always gone first.
    */
   const teardown = (): void => {
     // Stop the scheduler first so in-flight stories unwind while the world
@@ -208,6 +238,11 @@ async function build(host: HTMLElement): Promise<void> {
       // Read-only api accessor for the QA harnesses (dispatch checks).
       stationApi: (id: string) => stationApi(id as Parameters<typeof stationApi>[0]),
       app: () => app,
+      // Read-only bus introspection for the QA harnesses; dispatch stays
+      // unreachable from the console by contract.
+      bus: () => busRef,
+      busHistory: () => busRef?.history?.() ?? [],
+      signs: () => signSnapshot(),
       activity(): object {
         return (
           directorRef?.activity() ?? {
@@ -260,14 +295,14 @@ async function build(host: HTMLElement): Promise<void> {
     // World builders. Each is independent; a failing builder leaves the rest
     // of the room standing. Modules load in parallel (dev serves each
     // separately; serial awaits tripled cold-boot time), then build in order.
-    // world/hyperliquid.ts now builds the docked exchange port, invoked from
-    // stations/central.ts; the old perimeter module is retired with the campus.
+    // world/hyperliquid.ts builds the docked exchange port, invoked from
+    // stations/central.ts; the former marketLandscape module is deleted and
+    // holoCore owns quiet regime shading instead.
     const [
       { buildBackdrop },
       { buildGround },
       { buildWalls },
       { buildSeam },
-      { buildMarketLandscape },
       { buildResearchDistrict },
       { buildCentralDistrict },
       { buildMcpDistrict },
@@ -278,7 +313,6 @@ async function build(host: HTMLElement): Promise<void> {
       import("./world/ground.js"),
       import("./world/walls.js"),
       import("./world/seam.js"),
-      import("./world/marketLandscape.js"),
       import("./stations/research.js"),
       import("./stations/central.js"),
       import("./stations/mcp.js"),
@@ -289,20 +323,24 @@ async function build(host: HTMLElement): Promise<void> {
     guard("ground", () => buildGround(ctx));
     guard("walls", () => buildWalls(ctx));
     guard("seam", () => buildSeam(ctx));
-    guard("marketLandscape", () => buildMarketLandscape(ctx));
     guard("researchDistrict", () => buildResearchDistrict(ctx));
     guard("centralDistrict", () => buildCentralDistrict(ctx));
     guard("mcpDistrict", () => buildMcpDistrict(ctx));
     guard("riskDistrict", () => buildRiskDistrict(ctx));
     guard("opsDistrict", () => buildOpsDistrict(ctx));
 
-    // Floor mascot: the duo-themed herald on its pad south of the holo.
+    // Floor mascot: the duo-themed herald on its west-threshold pad. The
+    // anchor is owned by the mascot module (kept in the lazy chunk), and the
+    // api is stored on the shared holder stories read, mirrored locally for
+    // the interaction easter egg.
     guard("mascot", () => {
       void import("./agents/mascot.js")
-        .then(({ buildMascot, mascot }) => {
-          mascot.api = buildMascot(ctx, { x: 1435, y: 965 });
+        .then(({ buildMascot, mascot, MASCOT_ANCHOR }) => {
+          mascotApi = buildMascot(ctx, MASCOT_ANCHOR);
+          mascot.api = mascotApi;
           onCleanup(() => {
             mascot.api = null;
+            mascotApi = null;
           });
         })
         .catch((e: unknown) => warn("mascot", e));
@@ -349,7 +387,8 @@ async function build(host: HTMLElement): Promise<void> {
         // instead of owning only its own launch promises.
         const offStorySettle = director.onStorySettle(() => infoCard?.refreshActionState());
         onCleanup(offStorySettle);
-        director.start();
+        // start() is deferred until the scene bindings exist below, so the
+        // spine's first dispatches already land on stations and HUD.
       }
     });
 
@@ -379,12 +418,14 @@ async function build(host: HTMLElement): Promise<void> {
     // the info card's action button and interaction's retry guard.
     const isStoryActive = (storyId: string): boolean => directorRef?.isRunning(storyId) ?? false;
 
-    // DOM UI. Info card + HUD live in the page host. Both instances own DOM and
-    // listeners without a ctx, so their destroy is registered right here.
+    // DOM UI. Info card + HUD live in the page host. Both instances own DOM
+    // and listeners without a ctx, so their destroy is registered right here.
+    // sceneBindings rides this batch: it is created once the HUD exists.
     let clearDioramaSelection: () => void = (): void => {};
     const [
       { createInfoCard },
       { createHud },
+      { createSceneBindings },
       { buildDistrictBanners },
       { buildA11y },
       interactionModule,
@@ -392,6 +433,7 @@ async function build(host: HTMLElement): Promise<void> {
     ] = await Promise.all([
       import("./ui/infoCard.js"),
       import("./ui/hud.js"),
+      import("./systems/sceneBindings.js"),
       import("./ui/labels.js"),
       import("./ui/a11y.js"),
       import("./ui/interaction.js"),
@@ -437,6 +479,28 @@ async function build(host: HTMLElement): Promise<void> {
       }
     });
 
+    // Scene bindings: the single semantic bus consumer (event → station
+    // APIs, rail sends, simulation state, HUD). Created only when its
+    // producers survived their guards; a degraded room still renders without
+    // event wiring. Cleanups run in registration order, so registering the
+    // bindings destroy before the bus destroy tears the consumer down first
+    // and kills the bus last, after every other consumer cleanup has run.
+    guard("sceneBindings", () => {
+      if (!rails || !simulation || !hud) return;
+      const bindings = createSceneBindings({ bus, rails, hud, simulation });
+      onCleanup(() => bindings.destroy());
+    });
+    onCleanup(() => {
+      bus.destroy();
+      busRef = null;
+    });
+
+    // Spine starts only now: with bindings live, the first mission-create
+    // dispatch reaches stations and HUD instead of vanishing.
+    guard("director-start", () => {
+      directorRef?.start();
+    });
+
     guard("districtBanners", () => buildDistrictBanners(ctx));
 
     guard("a11y", () => {
@@ -462,8 +526,11 @@ async function build(host: HTMLElement): Promise<void> {
           // Selection identity (not just focus on/off) drives the rails'
           // incident-route reveal; Escape/backdrop/reset report null. The
           // Hyperliquid platform is a legal focus target (external routes).
+          // Focusing one of the west research stations is the mascot's
+          // easter egg: one quiet wave, settled again on deselect.
           onSelectionChange: (stationId: string | null) => {
             rails?.setFocusStation(stationId as FocusTarget);
+            mascotApi?.setFocused(stationId !== null && MASCOT_FOCUS_IDS.has(stationId));
           },
           isStoryActive,
         });

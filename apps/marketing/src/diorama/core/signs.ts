@@ -6,11 +6,18 @@
  * Typography: JetBrains Mono (system signage, uppercase, tracked) and
  * DM Sans (descriptions), matching the marketing site fonts.
  *
- * LOD: every sign belongs to a lod class that decides at which camera zoom
- * tier it is visible. "zoom" signs (the default for xs/sm boards) hide at
- * fit view so phone-width frames are not a wall of shouting labels; "fit"
- * (md/lg/xl default) and "always" (banners, explicit) stay visible. Drivers
- * call setSignLod with the camera tier.
+ * LOD policy (freeze cycle-4 §5): every sign declares an explicit policy
+ * class instead of deriving importance from font size:
+ *   "overview" — the fit-view boards; visible at every tier.
+ *   "zoom"     — station boards revealed from tier 1 (>=1.15).
+ *   "detail"   — registered screen/caption copy revealed from tier 2 (>=1.8).
+ *   "always"   — genuinely permanent signage (nothing uses it today).
+ *
+ * Focus override: while a station is focused, its signs force visible at any
+ * tier and every other registered board/detail dims, so the room reads as
+ * "this station, context dimmed". ui/interaction.ts owns the override; the
+ * tier rule resumes when it clears. No free-floating Pixi Text may bypass
+ * registration.
  */
 import { Container, Graphics, Text, TextStyle } from "pixi.js";
 import gsap from "gsap";
@@ -19,19 +26,23 @@ import { glow } from "./iso.js";
 
 export type SignSize = "xs" | "sm" | "md" | "lg" | "xl";
 
-/** LOD class: at which camera zoom tiers the sign is visible. */
-export type SignLod = "always" | "fit" | "zoom";
+/** Policy class: at which camera zoom tiers the sign is visible. */
+export type SignLod = "overview" | "zoom" | "detail" | "always";
 
 /** Camera LOD tier: 0 = fit view, 1 = mid zoom, 2 = deep zoom. */
 export type SignLodLevel = 0 | 1 | 2;
 
-const SIZE_MAP: Record<SignSize, { fontSize: number; padX: number; padY: number; board: number }> = {
-  xs: { fontSize: 12, padX: 7, padY: 3, board: 1 },
-  sm: { fontSize: 14, padX: 9, padY: 4, board: 1 },
-  md: { fontSize: 18, padX: 12, padY: 5, board: 1.5 },
-  lg: { fontSize: 25, padX: 18, padY: 7, board: 2 },
-  xl: { fontSize: 36, padX: 26, padY: 10, board: 2.5 },
-};
+const SIZE_MAP: Record<SignSize, { fontSize: number; padX: number; padY: number; board: number }> =
+  {
+    xs: { fontSize: 12, padX: 7, padY: 3, board: 1 },
+    sm: { fontSize: 14, padX: 9, padY: 4, board: 1 },
+    md: { fontSize: 18, padX: 12, padY: 5, board: 1.5 },
+    lg: { fontSize: 25, padX: 18, padY: 7, board: 2 },
+    xl: { fontSize: 36, padX: 26, padY: 10, board: 2.5 },
+  };
+
+/** Alpha for boards/details unrelated to the focused station. */
+const FOCUS_DIM_ALPHA = 0.15;
 
 export interface SignOptions {
   x: number;
@@ -48,43 +59,66 @@ export interface SignOptions {
   postHeight?: number;
   align?: "center" | "left";
   /**
-   * LOD class. Omitted: derived from size (xs/sm -> "zoom", else "fit") so
-   * existing callers get fit-view decluttering without signature changes.
+   * Policy class. Station builders pass `lod: def.lod` from the registry def.
+   * Default "zoom" errs toward fit-view decluttering: a forgotten lod must
+   * never put a non-overview board on the tier-0 screen.
    */
   lod?: SignLod;
+  /** Owning station id; the focus override forces/dims by this. */
+  stationId?: string;
+}
+
+export interface DetailTextOptions {
+  x: number;
+  y: number;
+  /** Owning station id; the focus override forces/dims by this. */
+  stationId?: string;
+  /** Font size in world units; default 11. */
+  size?: number;
+  /** Fill color; default PALETTE.inkDim. */
+  color?: number;
+  align?: "center" | "left";
 }
 
 interface SignEntry {
   root: Container;
   lod: SignLod;
+  stationId?: string;
+  /** Sign text when known; the QA snapshot skips anonymous entries. */
+  text?: string;
+  /**
+   * False only for district banners: ui/labels.ts owns their alpha (focus
+   * dim to 0.35 plus tier hiding), so the sign tweens here must not fight it.
+   */
+  managed: boolean;
 }
 
 /** All live signs; pruned lazily when their roots leave the display tree. */
 const registry: SignEntry[] = [];
 let lodLevel: SignLodLevel = 0;
+/** Focused station id while a focus override is active; null = tier rule. */
+let focusId: string | null = null;
 
 const reducedMotion = (): boolean =>
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
-/** Size-derived default so small station labels declutter at fit zoom. */
-const lodForSize = (size: SignSize): SignLod => (size === "xs" || size === "sm" ? "zoom" : "fit");
+/** Tier half of the visibility rule. */
+const visibleAtTier = (lod: SignLod, level: SignLodLevel): boolean =>
+  lod === "overview" || lod === "always" ? true : lod === "zoom" ? level >= 1 : level >= 2;
 
-const visibleAt = (lod: SignLod, level: SignLodLevel): boolean => lod !== "zoom" || level >= 1;
-
-function registerSign(root: Container, lod: SignLod): void {
-  registry.push({ root, lod });
-  // Late-built signs must respect the tier already in effect.
-  root.alpha = visibleAt(lod, lodLevel) ? 1 : 0;
+/** Resolved alpha for a live entry, or null when another module owns it. */
+function alphaTargetFor(entry: SignEntry): number | null {
+  if (!entry.managed) return null;
+  if (focusId !== null) {
+    // Focus at any tier: the focused station's overview+zoom+detail signs are
+    // forced visible; unrelated boards/details stay visible but dimmed.
+    return entry.stationId === focusId ? 1 : FOCUS_DIM_ALPHA;
+  }
+  return visibleAtTier(entry.lod, lodLevel) ? 1 : 0;
 }
 
-/**
- * Set the camera LOD tier. Fades "zoom" signs in/out over ~0.25 s; snaps
- * under reduced motion. Safe to call repeatedly; destroyed roots (parent
- * cleared by teardown) are dropped here.
- */
-export function setSignLod(level: SignLodLevel): void {
-  if (level === lodLevel) return;
-  lodLevel = level;
+/** Tween (or snap) every managed entry to its resolved alpha; prunes dead roots. */
+function applySignTargets(): void {
   const snap = reducedMotion();
   for (let i = registry.length - 1; i >= 0; i--) {
     const entry = registry[i];
@@ -93,10 +127,8 @@ export function setSignLod(level: SignLodLevel): void {
       registry.splice(i, 1);
       continue;
     }
-    // Only "zoom" signs change visibility; "fit"/"always" entries are left
-    // untouched so banner focus-dimming never fights the LOD tween.
-    if (entry.lod !== "zoom") continue;
-    const target = visibleAt(entry.lod, lodLevel) ? 1 : 0;
+    const target = alphaTargetFor(entry);
+    if (target === null) continue;
     if (snap) {
       gsap.killTweensOf(entry.root);
       entry.root.alpha = target;
@@ -106,15 +138,54 @@ export function setSignLod(level: SignLodLevel): void {
   }
 }
 
+function registerSign(
+  root: Container,
+  lod: SignLod,
+  stationId?: string,
+  managed = true,
+  text?: string,
+): void {
+  const entry: SignEntry = { root, lod, stationId, managed, text };
+  registry.push(entry);
+  // Late-built signs must respect the policy already in effect. Unmanaged
+  // entries keep their constructed alpha; their owner module drives it.
+  const target = alphaTargetFor(entry);
+  if (target !== null) root.alpha = target;
+}
+
 /**
- * Empty the sign registry, killing any in-flight LOD tweens first. Repeated
- * visits at the same LOD tier never trigger the lazy prune in setSignLod, so
- * destroyed roots accumulate indefinitely; the diorama teardown must call
- * this explicitly.
+ * Set the camera LOD tier (fed from the camera's throttled zoom broadcast).
+ * Safe to call repeatedly; under an active focus override the override rule
+ * keeps governing. Destroyed roots (parent cleared by teardown) are dropped.
+ */
+export function setSignLod(level: SignLodLevel): void {
+  if (level === lodLevel) return;
+  lodLevel = level;
+  applySignTargets();
+}
+
+/**
+ * Focus override: force every sign owned by `stationId` visible at any tier
+ * and dim all other boards/details; null restores the camera-tier rule.
+ * Called by ui/interaction.ts on selection transitions.
+ */
+export function setFocusSignOverride(stationId: string | null): void {
+  if (stationId === focusId) return;
+  focusId = stationId;
+  applySignTargets();
+}
+
+/**
+ * Empty the sign registry, killing any in-flight tweens and resetting module
+ * policy state. Repeated visits at the same tier never trigger the lazy prune
+ * in applySignTargets, so destroyed roots accumulate indefinitely; the
+ * diorama teardown must call this explicitly.
  */
 export function clearSigns(): void {
   for (const entry of registry) gsap.killTweensOf(entry.root);
   registry.length = 0;
+  lodLevel = 0;
+  focusId = null;
 }
 
 const signStyle = (fontSize: number, color: number): TextStyle =>
@@ -123,6 +194,15 @@ const signStyle = (fontSize: number, color: number): TextStyle =>
     fontSize,
     fontWeight: "500",
     letterSpacing: fontSize * 0.14,
+    fill: color,
+  });
+
+const detailStyle = (fontSize: number, color: number): TextStyle =>
+  new TextStyle({
+    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+    fontSize,
+    fontWeight: "400",
+    letterSpacing: fontSize * 0.06,
     fill: color,
   });
 
@@ -142,7 +222,8 @@ export function makeSign(text: string, opts: SignOptions): Container & { signTex
     post = false,
     postHeight = 14,
     align = "center",
-    lod,
+    lod = "zoom",
+    stationId,
   } = opts;
   const { fontSize, padX, padY, board } = SIZE_MAP[size];
   const c = new Container() as Container & { signText: Text };
@@ -185,14 +266,61 @@ export function makeSign(text: string, opts: SignOptions): Container & { signTex
   c.addChild(boardG);
   c.addChild(label);
   c.signText = label;
-  registerSign(c, lod ?? lodForSize(size));
+  registerSign(c, lod, stationId, true, label.text);
   return c;
 }
 
 /**
+ * Registered screen/caption copy (policy class "detail"): station screens
+ * render their product strings through this so the text participates in the
+ * tier/focus policy — visible at tier >= 2 and when its station is focused.
+ * Rendered verbatim (screen copy is mixed case); embed "\n" for extra lines.
+ */
+export function makeDetailText(text: string, opts: DetailTextOptions): Text {
+  const { x, y, stationId, size = 11, color = PALETTE.inkDim, align = "center" } = opts;
+  const t = new Text({ text, style: detailStyle(size, color) });
+  t.resolution = 2;
+  t.anchor.set(align === "center" ? 0.5 : 0, 0.5);
+  t.position.set(x, y);
+  registerSign(t, "detail", stationId, true, text);
+  return t;
+}
+
+/**
+ * Bring an already-built Text under the detail policy without moving it.
+ * Station-local text kits (e.g. west console screens) call this per string so
+ * tier gating, focus forcing, and focus dimming all flow through the same
+ * registry instead of each kit reimplementing the rule.
+ */
+export function adoptDetailText(text: Text, stationId: string): void {
+  registerSign(text, "detail", stationId, true, text.text);
+}
+
+/** Read-only snapshot for the QA/debug seam: every on-screen registered text. */
+export function signSnapshot(): {
+  text: string;
+  lod: SignLod;
+  stationId?: string;
+  alpha: number;
+}[] {
+  return registry
+    .filter(
+      (entry) =>
+        entry.text !== undefined && entry.root.parent !== null && entry.root.visible !== false,
+    )
+    .map((entry) => ({
+      text: entry.text as string,
+      lod: entry.lod,
+      stationId: entry.stationId,
+      alpha: entry.root.alpha,
+    }));
+}
+
+/**
  * Large district banner: bigger board with a double accent rule beneath.
- * Used for HYPERLIQUID TESTNET and district titles. Banners default to
- * lod "always": they are the wayfinding layer and never declutter.
+ * Banners are wayfinding, not station signage: registered here for the
+ * no-free-text guarantee, but alpha-exempt from the tier/focus tweens —
+ * ui/labels.ts owns banner visibility (hidden at tier 0, dim on focus).
  */
 export function makeBanner(
   text: string,
@@ -200,7 +328,7 @@ export function makeBanner(
   y: number,
   accent: number,
   sub?: string,
-  lod: SignLod = "always",
+  lod: SignLod = "zoom",
 ): Container & { signText: Text } {
   const c = makeSign(text, { x, y, size: "xl", accent, post: false, halo: true, lod });
   const w = c.signText.width + 48;
@@ -222,5 +350,8 @@ export function makeBanner(
     subT.position.set(0, 58);
     c.addChild(subT);
   }
+  // Registered first (no-free-text sweep), then handed to labels.ts for alpha.
+  const entry = registry.find((e) => e.root === c);
+  if (entry) entry.managed = false;
   return c;
 }

@@ -4,6 +4,7 @@
  * module reaches for global state or leaks tickers.
  */
 import type { Application, Container, TickerCallback } from "pixi.js";
+import type { DioramaEventBus } from "../systems/eventBus.js";
 
 export interface WorldLayers {
   /** Static deep-space backdrop; never sorted, never animated per frame. */
@@ -26,6 +27,12 @@ export type CleanupFn = () => void;
 export interface DioramaContext {
   app: Application;
   layers: WorldLayers;
+  /**
+   * Typed synchronous event bus: the single semantic input seam. Stories and
+   * the director dispatch; systems/sceneBindings.ts is the only semantic
+   * consumer (freeze §3).
+   */
+  bus: DioramaEventBus;
   /** True when prefers-reduced-motion is set; builders pick calmer variants. */
   reducedMotion: boolean;
   /** Quality tier used for glow density and trail effects. */

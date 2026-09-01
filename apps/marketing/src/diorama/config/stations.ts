@@ -5,13 +5,21 @@
  * footprint centers.
  *
  * Reading order: one square cutaway room in three sections. The west
- * RESEARCH & AGENTS section holds the research row along the west wall and
- * the MCP tool row in the south-west wedge. The CENTRAL TRADING FLOOR holds
- * the tiered dais, the market holo, and the Hyperliquid testnet exchange
- * booth docked at its east seam. The east GUARDED EXECUTION &
- * RECONCILIATION section runs the approval-to-signer flow along the
- * back-right wall, then the state and reconciliation cluster across the
- * south band. Emergency control sits beside Approval at the center seam.
+ * RESEARCH & AGENTS section holds the watchlist, ideas and validation,
+ * mission, and trade row along the west wall with the TOOLS compound in the
+ * south-west wedge. The CENTRAL TRADING FLOOR is a structural compound of
+ * five console banks around the mission chart and alert tower, with the
+ * Hyperliquid testnet exchange booth docked at its east seam. The east
+ * GUARDED EXECUTION & RECONCILIATION section runs controls, risk guards,
+ * protection, local signing, and execution along the back wall, then
+ * reconciliation, positions, and history across the south band.
+ *
+ * Registry is the cycle-4 freeze set: exactly 18 stations. A per-station
+ * `lod` class drives the sign policy (core/signs.ts, ui/labels.ts):
+ * "overview" boards are visible at tier 0 (fit), "zoom" boards appear at
+ * tier >=1.15 and on focus, and the focused station's board is forced
+ * visible at any tier. Registered in-station screen detail text is owned by
+ * the signs policy, not by this registry.
  *
  * Copy rules: one sentence, no em/en dashes, sentence case for descriptions,
  * uppercase only for sign text.
@@ -44,7 +52,7 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
     accent: 0x34e5e5,
     accent2: 0x9a70ff,
     blurb:
-      "Research mode pairs native agents with the t3-trade MCP endpoint to study markets, run backtests, and validate ideas without a signer.",
+      "Research mode where the watchlist, ideas and validation, mission, trade ticket, and tools work without a signer.",
   },
   floor: {
     id: "floor",
@@ -54,7 +62,7 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
     accent: 0x5a7cff,
     accent2: 0xffd35a,
     blurb:
-      "The coordination heart where watchlist, positions, alerts, and charts meet around the holographic market display.",
+      "The trading floor where the mission chart, alerts, and the authoritative Hyperliquid testnet venue anchor the order path.",
   },
   risk: {
     id: "risk",
@@ -64,65 +72,57 @@ export const DISTRICTS: Record<DistrictId, DistrictDef> = {
     accent: 0xffd35a,
     accent2: 0x56f2c2,
     blurb:
-      "Guarded manual execution moves through approval, loss budget, protection, and the signer, while event-sourced state converges through reconciliation.",
+      "Guarded execution where controls, risk guards, protection, local signing, reconciliation, positions, and history surround every order.",
   },
 };
 
+/**
+ * The frozen cycle-4 station set (freeze §1). Internal ids survive cycle-3
+ * names; display labels follow the product naming. Do not add ids without a
+ * freeze change.
+ */
 export type StationId =
   // West section: research row (research district)
-  | "marketLandscape"
-  | "researchOnlyGate"
   | "marketData"
   | "researchTools"
-  | "strategyLab"
-  | "liquidityResearch"
   | "missionBoard"
-  | "sandbox"
-  | "budgetPlanning"
   | "decisionTable"
-  // West section: MCP tool row (research district)
+  // West section: tools compound (research district)
   | "mcpHub"
-  | "toolSchemas"
-  | "adapterBay"
-  | "mcpHealth"
-  | "envSwitchboard"
-  | "portfolioTools"
   // Central trading floor
   | "tradingFloor"
   | "holoCore"
-  | "eventClock"
   | "signalTower"
-  | "statusMast"
   | "hyperliquidVenue"
   // East section: guarded execution flow (risk district)
-  | "approval"
   | "emergencyPanel"
-  | "permission"
   | "budgetMeter"
   | "riskFortress"
   | "protection"
   | "signerVault"
   | "executionGateway"
   // East section: state and reconciliation cluster (risk district)
-  | "stateStore"
-  | "railYard"
   | "reconciliationDock"
-  | "receiptPrinter"
-  | "auditArchive"
-  | "replayChamber"
-  | "recoveryWorkshop"
-  | "observability"
-  | "activityGallery"
   | "portfolioVault"
-  | "identityGate"
-  | "refusalDisplay";
+  | "auditArchive";
+
+/**
+ * Sign policy class for the station board (freeze §1): "overview" boards are
+ * the only boards visible at tier 0 (fit), "zoom" boards appear at tier
+ * >=1.15 and whenever their station is focused. tradingFloor is zoom and has
+ * no fit board: its label is internal a11y/card text and its board never
+ * renders at tier 0.
+ */
+export type StationLod = "overview" | "zoom";
 
 export interface StationDef {
   id: StationId;
   district: DistrictId;
-  /** Uppercase sign text; empty for sub-fixtures that carry no sign. */
+  /** Uppercase sign text; doubles as the a11y / card name. */
   label: string;
-  /** Sign size class for core/signs.ts. */
+  /** Board sign policy class; decides visibility per camera tier. */
+  lod: StationLod;
+  /** Visual plate size class for the board sign (core/signs.ts). */
   signSize: "sm" | "md" | "lg";
   /** Ground-level footprint center. */
   anchor: { x: number; y: number };
@@ -132,11 +132,11 @@ export interface StationDef {
   blurb: string;
   /** Initial simulated status shown on the info card. */
   status: string;
-  /** One key relationship, e.g. "Strategy → Risk → Execution". */
+  /** One key relationship, e.g. "Trade → Risk → Protection". */
   relation?: string;
   /** Camera zoom multiplier when focused (default 1). */
   focusZoom?: number;
-  /** Micro-story the info-card action button runs (STORIES id). */
+  /** Micro-story the info-card action button runs (freeze §11 id). */
   story?: string;
   /** Info-card action label; omit on stations without a safe demo story. */
   action?: string;
@@ -145,552 +145,298 @@ export interface StationDef {
 const S = (def: StationDef): StationDef => def;
 
 export const STATIONS: Record<StationId, StationDef> = {
-  marketLandscape: S({
-    id: "marketLandscape",
-    district: "research",
-    label: "MARKET LANDSCAPE",
-    signSize: "sm",
-    anchor: { x: 872, y: 464 },
-    size: { w: 540, d: 260 },
-    blurb:
-      "A living terrain of market regimes: calm, rising, falling, and turbulent, with probes extracting simulated data packets.",
-    status: "Rising regime",
-    relation: "Landscape → Market Data → Strategy",
-    story: "s-research-synthesis",
-    action: "Run a probe",
-  }),
-  researchOnlyGate: S({
-    id: "researchOnlyGate",
-    district: "research",
-    label: "RESEARCH ONLY",
-    signSize: "md",
-    anchor: { x: 540, y: 635 },
-    size: { w: 130, d: 110 },
-    blurb:
-      "An entrance to charts, alerts, backtests, and simulations that never requires a signer or grants exposure.",
-    status: "Open",
-    story: "s-sandbox-test",
-    action: "Run a research sim",
-  }),
   marketData: S({
     id: "marketData",
     district: "research",
-    label: "MARKET DATA",
+    label: "WATCHLIST",
+    lod: "overview",
     signSize: "md",
     anchor: { x: 790, y: 570 },
     size: { w: 185, d: 115 },
-    blurb: "Price, order book, funding, and volatility screens fed by the probes above.",
-    status: "Streaming",
-    relation: "Landscape → Market Data → Strategy Lab",
-    story: "s-research-synthesis",
-    action: "Pull data",
+    blurb:
+      "Asset rows with mark and 24 hour change for the selected market; chart data arrives as a refresh fetch, never a tick stream.",
+    status: "ETH selected",
+    relation: "Watchlist → Chart → Mission",
+    focusZoom: 1.4,
+    story: "s-watch-market",
+    action: "Arm a watch",
   }),
   researchTools: S({
     id: "researchTools",
     district: "research",
-    label: "RESEARCH TOOLS",
+    label: "IDEAS & VALIDATION",
+    lod: "zoom",
     signSize: "md",
     anchor: { x: 950, y: 490 },
     size: { w: 180, d: 110 },
-    blurb: "News, token research, protocol research, and historical comparison stations.",
-    status: "Operational",
-    story: "s-research-synthesis",
-    action: "Fetch research",
-  }),
-  strategyLab: S({
-    id: "strategyLab",
-    district: "research",
-    label: "STRATEGY LAB",
-    signSize: "md",
-    anchor: { x: 1075, y: 425 },
-    size: { w: 190, d: 140 },
-    blurb: "Where analysis becomes strategy: candidate plays, backtests, and mission drafts.",
-    status: "Operational",
-    relation: "Strategy Lab → Decision Table",
-    story: "s-research-synthesis",
-    action: "Run synthesis",
-  }),
-  liquidityResearch: S({
-    id: "liquidityResearch",
-    district: "research",
-    label: "LIQUIDITY RESEARCH",
-    signSize: "md",
-    anchor: { x: 730, y: 760 },
-    size: { w: 225, d: 150 },
     blurb:
-      "A liquidity research concept: pool depth and quote paths compared on a constant-product curve model, unconnected and not an execution venue.",
-    status: "Concept model",
-    relation: "Research concept → Strategy",
-    story: "s-venue-greet",
-    action: "Compare quotes",
+      "Forward validation of candidate ideas on paper, in research mode with no signer required.",
+    status: "Validating on paper",
+    relation: "Ideas → Mission",
+    story: "s-run-validation",
+    action: "Run validation",
   }),
   missionBoard: S({
     id: "missionBoard",
     district: "research",
-    label: "MISSION BOARD",
+    label: "MISSION",
+    lod: "zoom",
     signSize: "md",
     anchor: { x: 540, y: 870 },
     size: { w: 195, d: 120 },
     blurb:
-      "Active goals, phase, loss budget, and scheduled wakes; agents visit it whenever a mission changes phase.",
-    status: "Phase: waiting",
-    relation: "Mission Board → Signal Tower",
-    story: "s-research-synthesis",
-    action: "Advance phase",
-  }),
-  sandbox: S({
-    id: "sandbox",
-    district: "research",
-    label: "SANDBOX",
-    signSize: "md",
-    anchor: { x: 370, y: 780 },
-    size: { w: 195, d: 130 },
-    blurb: "Strategies are tested here without ever needing a signer or increasing exposure.",
-    status: "Simulating",
-    story: "s-sandbox-test",
-    action: "Run simulation",
-  }),
-  budgetPlanning: S({
-    id: "budgetPlanning",
-    district: "research",
-    label: "BUDGET PLAN",
-    signSize: "sm",
-    anchor: { x: 990, y: 945 },
-    size: { w: 150, d: 95 },
-    blurb: "Planned capital and loss allowance for the active mission, before any approval.",
-    status: "Planning",
+      'Exact mission status with the "Analyse › Wait › Execute › Position" breadcrumb, the "Maximum cumulative loss" strip, and the armed watch count.',
+    status: "Waiting",
+    relation: "Mission → Trade",
+    story: "s-lifecycle",
+    action: "Run the lifecycle",
   }),
   decisionTable: S({
     id: "decisionTable",
     district: "research",
-    label: "DECISION TABLE",
+    label: "TRADE",
+    lod: "overview",
     signSize: "md",
     anchor: { x: 675, y: 950 },
     size: { w: 195, d: 130 },
     blurb:
-      "Candidate hypotheses and backtests are compared with evidence and risk; a validated one becomes the mission plan.",
-    status: "Reviewing",
-    relation: "Decision → Approval → Risk → Execution",
-    story: "s-proposals-appear",
-    action: "Compare proposals",
+      "Order ticket for the selected market with a live preview, or the verbatim refusal sentence when a guard blocks the order.",
+    status: "Preview ready",
+    relation: "Trade → Risk guards → Protection → Signer",
+    focusZoom: 1.4,
+    story: "s-place-order",
+    action: "Place an order",
   }),
 
   mcpHub: S({
     id: "mcpHub",
     district: "research",
-    label: "MCP TOOL HUB",
+    label: "TOOLS",
+    lod: "zoom",
     signSize: "lg",
     anchor: { x: 850, y: 1000 },
     size: { w: 250, d: 185 },
     blurb:
-      "A circular interchange of glowing ports: agents request tools here and receive typed results.",
-    status: "Operational",
+      'One quiet infrastructure compound of typed tool call and result ports, provider adapters, and health state under "Research mode · signer not required".',
+    status: "Available",
     focusZoom: 1.35,
-    relation: "Agents → MCP Hub → Tools",
-    story: "s-tool-refusal",
+    relation: "Floor ↔ Tools",
+    story: "s-tool-call",
     action: "Demo a tool call",
-  }),
-  toolSchemas: S({
-    id: "toolSchemas",
-    district: "research",
-    label: "TOOL SCHEMAS",
-    signSize: "sm",
-    anchor: { x: 1010, y: 1035 },
-    size: { w: 155, d: 95 },
-    blurb:
-      "Illuminated drawers of inputs, outputs, capabilities, and failure conditions; agents pull a schema card before calling.",
-    status: "Operational",
-    story: "s-drop-cards",
-    action: "Fetch schema cards",
-  }),
-  adapterBay: S({
-    id: "adapterBay",
-    district: "research",
-    label: "ADAPTER BAY",
-    signSize: "sm",
-    anchor: { x: 1092, y: 1075 },
-    size: { w: 115, d: 105 },
-    blurb:
-      "Provider adapters translate Codex, Claude, Cursor, Grok, OpenCode, and custom instances into one shared shape: adapters, never authorities.",
-    status: "Translating",
-    story: "s-tool-refusal",
-    action: "Translate a packet",
-  }),
-  mcpHealth: S({
-    id: "mcpHealth",
-    district: "research",
-    label: "MCP HEALTH",
-    signSize: "sm",
-    anchor: { x: 950, y: 1100 },
-    size: { w: 130, d: 80 },
-    blurb:
-      "Availability, latency, authentication, and rate limits per tool port, green to amber to red.",
-    status: "All ports green",
-    story: "s-mcp-degraded",
-    action: "Degrade a port",
-  }),
-  envSwitchboard: S({
-    id: "envSwitchboard",
-    district: "research",
-    label: "ENVIRONMENTS",
-    signSize: "sm",
-    anchor: { x: 1075, y: 1160 },
-    size: { w: 140, d: 80 },
-    blurb:
-      "Research mode, testnet-only exchange, and signer availability; environments never share authority.",
-    status: "Testnet connected",
-  }),
-  portfolioTools: S({
-    id: "portfolioTools",
-    district: "research",
-    label: "PORTFOLIO TOOLS",
-    signSize: "sm",
-    anchor: { x: 735, y: 900 },
-    size: { w: 145, d: 85 },
-    blurb: "Balances, positions, orders, fills, exposure, and performance panels.",
-    status: "Operational",
   }),
 
   tradingFloor: S({
     id: "tradingFloor",
     district: "floor",
     label: "TRADING FLOOR",
+    // No fit board: this label is a11y/card text only and the board must
+    // never render at tier 0 (freeze §1).
+    lod: "zoom",
     signSize: "lg",
     anchor: { x: 1435, y: 845 },
     size: { w: 540, d: 390 },
     blurb:
-      "The coordination heart: agent workstations ring a holographic market display with positions, orders, and health.",
-    status: "Coordinating",
+      "Structural platform coordinating the five console banks: watchlist, chart, trade, positions, and alerts.",
+    status: "Consoles ready",
     focusZoom: 1.25,
-    relation: "Floor → MCP Tool Hub / Approval",
-    story: "s-floor-handoff",
-    action: "Run duty handoff",
+    relation: "Floor ↔ Tools",
   }),
   holoCore: S({
     id: "holoCore",
     district: "floor",
-    label: "MARKET HOLO",
+    label: "CHART",
+    lod: "overview",
     signSize: "sm",
     anchor: { x: 1435, y: 705 },
     size: { w: 230, d: 140 },
     blurb:
-      "Price movement, strategy cards, positions, orders, P&L, and system health in one hologram.",
-    status: "Simulated",
+      "Mission chart with entry, stop, and liquidation lines over a simulated feed, plus quiet regime shading for market context.",
+    status: "Simulated feed",
     focusZoom: 1.5,
-    story: "s-floor-signal",
-    action: "Signal market event",
-  }),
-  eventClock: S({
-    id: "eventClock",
-    district: "floor",
-    label: "EVENT CLOCK",
-    signSize: "sm",
-    anchor: { x: 1190, y: 480 },
-    size: { w: 130, d: 110 },
-    blurb:
-      "Concentric rings track market time, agent activity, order lifecycle, and scheduled wakes.",
-    status: "Ticking",
-    focusZoom: 1.4,
+    relation: "Watchlist → Chart → Mission",
+    story: "s-market-shift",
+    action: "Shift the regime",
   }),
   signalTower: S({
     id: "signalTower",
     district: "floor",
-    label: "SIGNAL TOWER",
+    label: "ALERTS",
+    lod: "overview",
     signSize: "sm",
     anchor: { x: 1620, y: 390 },
     size: { w: 90, d: 90 },
-    blurb:
-      "Distinct pulses for market events, alerts, agent wakes, warnings, and execution updates.",
-    status: "Standby",
+    blurb: "Watch feed of armed, fired, and cancelled alerts with a distinct pulse for each state.",
+    status: "Armed",
     focusZoom: 1.4,
-    story: "s-alert-wake",
-    action: "Pulse an alert",
-  }),
-  statusMast: S({
-    id: "statusMast",
-    district: "floor",
-    label: "STATUS",
-    signSize: "sm",
-    anchor: { x: 1170, y: 1000 },
-    size: { w: 90, d: 70 },
-    blurb: "Room-wide lighting master: green healthy, cyan working, amber degraded, red blocked.",
-    status: "All healthy",
+    relation: "Mission → Alerts",
+    story: "s-alert-fire",
+    action: "Fire an alert",
   }),
   hyperliquidVenue: S({
     id: "hyperliquidVenue",
     district: "floor",
     label: "HYPERLIQUID TESTNET",
+    lod: "overview",
     signSize: "md",
     anchor: { x: 1810, y: 500 },
     size: { w: 240, d: 170 },
     blurb:
-      "The Hyperliquid testnet booth docked into the Central Trading Floor, authoritative for positions, orders, and fills, and T3 Trade's sole current execution venue.",
+      'The "AUTHORITATIVE EXCHANGE" booth with a simulated feed: testnet only, and the sole current execution venue, authoritative for positions, orders, and fills.',
     status: "Simulated feed",
     focusZoom: 1.45,
     relation: "Execution → Hyperliquid → Reconciliation",
+    story: "s-exchange-roundtrip",
+    action: "Run the round trip",
   }),
 
-  approval: S({
-    id: "approval",
-    district: "risk",
-    label: "APPROVAL",
-    signSize: "md",
-    anchor: { x: 1800, y: 760 },
-    size: { w: 165, d: 115 },
-    blurb:
-      "Where the human's authority binds: permission modes decide what runs alone and what stops here to ask.",
-    status: "Queue: 1",
-    focusZoom: 1.35,
-    relation: "Decision → Approval → Permissions",
-    story: "s-proposal-needs-human",
-    action: "Request approval",
-  }),
   emergencyPanel: S({
     id: "emergencyPanel",
     district: "risk",
-    label: "EMERGENCY CONTROL",
+    label: "CONTROLS",
+    lod: "overview",
     signSize: "sm",
     anchor: { x: 1775, y: 850 },
     size: { w: 95, d: 70 },
-    blurb: "Emergency stop and pause drill beside Approval, working even with the agent provider down.",
+    blurb:
+      "Operator controls that outrank every agent: pause, cancel entries, reduce, close, revoke, and close and revoke, without the provider running.",
     status: "Armed",
     focusZoom: 1.4,
-    relation: "Human controls outrank every agent",
-    story: "s-emergency-demo",
+    relation: "Controls → History",
+    story: "s-pause-control",
     action: "Test pause",
-  }),
-  permission: S({
-    id: "permission",
-    district: "risk",
-    label: "PERMISSIONS",
-    signSize: "md",
-    anchor: { x: 2000, y: 560 },
-    size: { w: 175, d: 125 },
-    blurb: "A lock of glowing capability tokens answers whether this agent may use this tool now.",
-    status: "Verifying",
-    story: "s-permission-verify",
-    action: "Verify capability",
   }),
   budgetMeter: S({
     id: "budgetMeter",
     district: "risk",
     label: "LOSS BUDGET",
+    lod: "zoom",
     signSize: "sm",
     anchor: { x: 2220, y: 620 },
     size: { w: 145, d: 105 },
     blurb:
-      "Maximum-loss budget, risk reservations, and the remaining allowance every trade draws down.",
-    status: "Loss allowance 82%",
+      "Maximum cumulative loss with the used and remaining allowance and the pending entry reservation; positive P&L is never extra budget.",
+    status: "Remaining 82%",
+    relation: "Risk guards → Loss budget",
     story: "s-budget-consume",
     action: "Draw down budget",
   }),
   riskFortress: S({
     id: "riskFortress",
     district: "risk",
-    label: "RISK",
+    label: "RISK GUARDS",
+    lod: "zoom",
     signSize: "lg",
     anchor: { x: 2190, y: 800 },
     size: { w: 250, d: 180 },
     blurb:
-      "An open fortress of scanning arches for loss budgets, position limits, leverage, and exposure caps; invalid trades stop at the arch they fail.",
-    status: "Scanning",
+      "Deterministic guards for stop required, loss budget, direction, and exposure; refusals are explicit states with a stated reason.",
+    status: "All guards pass",
     focusZoom: 1.3,
-    relation: "Approval → Risk → Signer",
-    story: "s-risk-pass",
+    relation: "Trade → Risk guards → Protection",
+    story: "s-risk-scan",
     action: "Run a risk scan",
   }),
   protection: S({
     id: "protection",
     district: "risk",
     label: "PROTECTION",
+    lod: "zoom",
     signSize: "sm",
     anchor: { x: 1980, y: 780 },
     size: { w: 140, d: 100 },
-    blurb: "Exchange-native reduce-only stop protection wraps every confirmed position increase.",
-    status: "Shielding",
+    blurb:
+      "Exchange-native protection wraps every confirmed exposure increase; the default is a stop resting on the exchange and unprotected is never a success.",
+    status: "Stop on exchange",
+    relation: "Risk guards → Protection → Signer",
     story: "s-protection-attach",
     action: "Attach protection",
   }),
   signerVault: S({
     id: "signerVault",
     district: "risk",
-    label: "SIGNER VAULT",
+    label: "LOCAL SIGNING",
+    lod: "zoom",
     signSize: "md",
     anchor: { x: 2395, y: 765 },
     size: { w: 145, d: 125 },
     blurb:
-      "An isolated cutaway chamber where orders receive a signing pulse; the key itself never leaves the vault.",
-    status: "Sealed",
+      "A sealed boundary where orders receive a local signing pulse; signing material never leaves the vault.",
+    status: "Signer armed",
     focusZoom: 1.4,
-    relation: "Risk → Signer → Execution",
-    story: "s-signer-pulse",
+    relation: "Protection → Signer → Execution",
+    story: "s-sign-pulse",
     action: "Show local signing",
   }),
   executionGateway: S({
     id: "executionGateway",
     district: "risk",
     label: "EXECUTION",
+    lod: "zoom",
     signSize: "md",
     anchor: { x: 1930, y: 660 },
     size: { w: 145, d: 110 },
     blurb:
-      "A guarded terminal that turns authorized decisions into order capsules bound for the docked exchange.",
+      "Execution state strip from previewed through filled, with rejected, cancelled, and failed as terminal alternatives, before the order reaches the venue.",
     status: "Idle",
     focusZoom: 1.35,
-    relation: "Execution → Hyperliquid Testnet",
-    story: "s-execute-order",
-    action: "Demo the order path",
+    relation: "Signer → Execution → Hyperliquid",
+    story: "s-submit-order",
+    action: "Submit an order",
   }),
 
-  stateStore: S({
-    id: "stateStore",
-    district: "risk",
-    label: "STATE STORE",
-    signSize: "sm",
-    anchor: { x: 1945, y: 485 },
-    size: { w: 165, d: 115 },
-    blurb: "Glowing cartridges of missions, durable decisions, account state, and read models.",
-    status: "Persisting",
-  }),
-  railYard: S({
-    id: "railYard",
-    district: "risk",
-    label: "EVENT BUS",
-    signSize: "sm",
-    anchor: { x: 1850, y: 980 },
-    size: { w: 170, d: 95 },
-    blurb:
-      "The junction where command, event, proposal, order, and receipt packets sort onto rails.",
-    status: "Routing",
-  }),
   reconciliationDock: S({
     id: "reconciliationDock",
     district: "risk",
-    label: "RECONCILIATION",
+    label: "RECONCILE",
+    lod: "overview",
     signSize: "md",
     anchor: { x: 1700, y: 1120 },
     size: { w: 210, d: 135 },
     blurb:
-      "Local expected state and the exchange's authoritative state arrive as two streams; agreement flashes green, drift summons recovery.",
+      "Exchange invalidation rings the doorbell, the account view is refetched, and aligned or drift is reported honestly.",
     status: "Aligned",
     focusZoom: 1.3,
-    relation: "Exchange → Reconciliation → Portfolio",
+    relation: "Hyperliquid → Reconcile → Positions",
     story: "s-reconcile",
     action: "Reconcile state",
-  }),
-  receiptPrinter: S({
-    id: "receiptPrinter",
-    district: "risk",
-    label: "RECEIPTS",
-    signSize: "sm",
-    anchor: { x: 1795, y: 1065 },
-    size: { w: 120, d: 85 },
-    blurb:
-      "Prints an illuminated receipt for every tool call, decision, order, result, and refusal.",
-    status: "Printing",
-    story: "s-receipt-print",
-    action: "Print a receipt",
-  }),
-  auditArchive: S({
-    id: "auditArchive",
-    district: "risk",
-    label: "AUDIT",
-    signSize: "md",
-    anchor: { x: 1865, y: 1085 },
-    size: { w: 190, d: 115 },
-    blurb: "A wall of drawers holding proposals, approvals, transactions, reasoning, and failures.",
-    status: "Archiving",
-    story: "s-audit-store",
-    action: "Archive a receipt",
-  }),
-  replayChamber: S({
-    id: "replayChamber",
-    district: "risk",
-    label: "REPLAY",
-    signSize: "sm",
-    anchor: { x: 1865, y: 880 },
-    size: { w: 115, d: 95 },
-    blurb: "An archived receipt becomes a translucent reconstruction of the original event.",
-    status: "Ready",
-    story: "s-audit-store",
-    action: "Replay a receipt",
-  }),
-  recoveryWorkshop: S({
-    id: "recoveryWorkshop",
-    district: "risk",
-    label: "RECOVERY",
-    signSize: "sm",
-    anchor: { x: 1598, y: 1182 },
-    size: { w: 170, d: 105 },
-    blurb:
-      "Retries, partial failures, stale orders, and reconnection repairs with spare order capsules.",
-    status: "On standby",
-    story: "s-recovery-retry",
-    action: "Dispatch recovery",
-  }),
-  observability: S({
-    id: "observability",
-    district: "risk",
-    label: "OBSERVABILITY",
-    signSize: "sm",
-    anchor: { x: 2090, y: 980 },
-    size: { w: 155, d: 95 },
-    blurb: "Logs, metrics, traces, latency, worker health, and incidents as moving light traces.",
-    status: "Watching",
-  }),
-  activityGallery: S({
-    id: "activityGallery",
-    district: "risk",
-    label: "USER ACTIVITY",
-    signSize: "sm",
-    anchor: { x: 1725, y: 1015 },
-    size: { w: 155, d: 80 },
-    blurb:
-      "A chronological wall of the human's approvals, overrides, pauses, reductions, and closes.",
-    status: "3 recent actions",
   }),
   portfolioVault: S({
     id: "portfolioVault",
     district: "risk",
-    label: "PORTFOLIO",
+    label: "POSITIONS",
+    lod: "overview",
     signSize: "md",
     anchor: { x: 1975, y: 910 },
     size: { w: 145, d: 105 },
     blurb:
-      "A transparent vault of account-state capsules: capital, balances, realized and unrealized results.",
-    status: "Updating",
-    story: "s-fill-vault",
-    action: "Update on a fill",
+      "Positions and open orders with side, size, and P&L, the protection label, and reduce or close controls.",
+    status: "No open position",
+    focusZoom: 1.4,
+    relation: "Reconcile → Positions → History",
+    story: "s-position-update",
+    action: "Apply a refetch",
   }),
-  identityGate: S({
-    id: "identityGate",
+  auditArchive: S({
+    id: "auditArchive",
     district: "risk",
-    label: "IDENTITY & ACCESS",
-    signSize: "sm",
-    anchor: { x: 2220, y: 910 },
-    size: { w: 140, d: 90 },
+    label: "HISTORY",
+    lod: "zoom",
+    signSize: "md",
+    anchor: { x: 1865, y: 1085 },
+    size: { w: 190, d: 115 },
     blurb:
-      "Badges for users, agents, sessions, and roles; requests without permission are physically turned away.",
-    status: "Checking",
-  }),
-  refusalDisplay: S({
-    id: "refusalDisplay",
-    district: "risk",
-    label: "REFUSALS",
-    signSize: "sm",
-    anchor: { x: 1985, y: 1040 },
-    size: { w: 120, d: 70 },
-    blurb:
-      "Loss budget spent, protection failure, wake budget exhausted: refusals are normal system states, shown and archived.",
-    status: "Last: loss budget spent",
-    story: "s-tool-refusal",
-    action: "Show a refusal",
+      "Mission event rows for controls, fills, and refusals with net P&L, replay capability, and one quiet archiver health line.",
+    status: "Archiving",
+    relation: "Positions → History",
+    story: "s-history-row",
+    action: "Add a history row",
   }),
 };
 
 /**
  * Ordered list for a11y listing and keyboard exploration. Key order is the
- * room reading order: west research row, west MCP tool row, central trading
- * floor, east guarded-execution flow, then the east state cluster.
+ * room reading order and the freeze §1 order: west research row, tools
+ * compound, central trading floor, east guarded-execution flow, then the
+ * east state cluster.
  */
 export const STATION_ORDER: StationId[] = Object.keys(STATIONS) as StationId[];

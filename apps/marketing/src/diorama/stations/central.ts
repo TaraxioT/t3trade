@@ -1,22 +1,25 @@
 /**
- * Central Trading Floor: a tiered circular dais with six dual-screen agent
- * workstations, crowned by the holographic market core, plus the signal
- * tower, event clock, and status mast. The Hyperliquid testnet exchange
- * booth (world/hyperliquid.ts) docks at the floor's east seam and is built
- * from here. Owner: central district worker.
+ * Central Trading Floor: a bot-free product floor. A tiered circular dais
+ * carries five dual-screen console banks — the user's tools (Watchlist,
+ * Chart, Trade, Positions, Alerts) — around the holographic mission chart
+ * (the CHART hero), with the alerts tower (the ALERTS hero) wired in at the
+ * north-east rim. The Hyperliquid testnet exchange booth
+ * (world/hyperliquid.ts) docks at the floor's east seam and is built from
+ * here. The cycle-3 agent desks, chairs, role panes, event clock, and
+ * status mast are gone: their concepts moved to MISSION and the HUD
+ * (freeze §1), and nothing on the dais anchors or invites population.
  *
- * Depth notes: the floor platform geometry (steps, medallion, ring lights)
- * lives in the ground layer, below every sortable fixture. The trading floor
- * registers a hit-only root that sorts below the nested holo core so the
- * interaction picker resolves inner stations to their own roots. Desks are
- * registered as their own sortable roots at their foot Y so population agents
- * standing at the same Y interleave correctly in front of and behind them.
+ * Depth notes: the platform geometry (steps, medallion, ring lights) lives
+ * in the ground layer, below every sortable fixture. The trading floor
+ * registers a hit-only root that sorts below the nested holo root so the
+ * interaction picker resolves inner stations to their own roots. Console
+ * banks are unregistered scenery owned by the floor compound; they sort by
+ * their own foot Y, which keeps them layered correctly against the holo.
  */
-import { Container, Graphics, Sprite, Text, TextStyle } from "pixi.js";
+import { Container, Graphics, Sprite } from "pixi.js";
 import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
-import { PALETTE, ROLE_COLORS, rightFace, shade, topFace } from "../config/palette.js";
-import type { AgentRole } from "../config/palette.js";
+import { PALETTE, rightFace, shade, topFace } from "../config/palette.js";
 import { DISTRICTS, STATIONS } from "../config/stations.js";
 import type { StationDef, StationId } from "../config/stations.js";
 import { seededRandom } from "../config/world.js";
@@ -30,70 +33,67 @@ import {
   screenPanel,
   safeDestroy,
 } from "../core/iso.js";
-import { makeSign } from "../core/signs.js";
+import { makeDetailText, makeSign } from "../core/signs.js";
 import { getStation, registerStation } from "../core/registry.js";
 import { buildExchangePort } from "../world/hyperliquid.js";
 
+/** Overlay line values in chart space (0..1 across the candle range). */
+export interface ChartOverlays {
+  entry?: number;
+  stop?: number;
+  liq?: number;
+}
+
 export interface HoloCoreApi {
-  /** Mirror a market event on the holo: order launch, fill landing, or state refresh. */
+  /** Mirror a market event on the chart: order launch, fill landing, or state refresh. */
   marketEvent(kind: "order" | "fill" | "state"): void;
-  /** Cycle the strategy chip row. */
-  rotateStrategies(): void;
-  /** Launch an order marker along the holo's orders row. */
+  /** Launch an order marker along the chart's order lane. */
   orderLaunched(): void;
-  /** Land a fill on the positions strip. */
+  /** Land a fill flash on the chart's mark line. */
   fillLanded(): void;
+  /** Show or clear the entry/stop/liquidation overlay lines (freeze §2). */
+  setOverlays(o: ChartOverlays | null): void;
+  /** Shift the quiet regime shading and label (absorbs the old landscape semantics). */
+  setRegime(regime: string): void;
 }
 
 export interface SignalTowerApi {
   /** Emit a differentiated pulse: market, alert, wake, warning, execution. */
   pulse(kind: "market" | "alert" | "wake" | "warning" | "execution"): void;
+  /** Light the matching watch feed row: armed, fired, or cancelled (freeze §2). */
+  setWatch(state: "armed" | "fired" | "cancelled"): void;
 }
 
 /**
- * Floor-wide pause contract. The emergency control kiosk now lives in the
- * risk district (stations/risk.ts), so the floor itself exposes the pause
- * state: s-emergency-demo (and any rebuilt emergency panel api) calls this to
- * hold the dim steady state across the floor ring and the status mast.
+ * Floor-wide pause contract. The CONTROLS kiosk lives in the risk district;
+ * sceneBindings calls this on pause/resume so the whole floor reads the
+ * paused state at fit zoom.
  */
 export interface TradingFloorApi {
-  /** Pause or resume the floor: ring lights and status mast hold a dim
-   * steady state while paused. */
+  /** Pause or resume the floor: lights hold a dim steady state and a PAUSED
+   * board appears on the platform while paused. */
   setCampusPaused(on: boolean): void;
 }
 
 const FLOOR = STATIONS.tradingFloor.anchor;
 const RNG = seededRandom(0xc3e7411);
+/** Floor district trim: one architectural language across banks and rails. */
+const FLOOR_TRIM = DISTRICTS.floor.accent;
 
-/** Uniform console rescale: the dais shrank from 700x480 to 540x390, so the
- * retained cycle-2 workstation art scales by ~540/700. */
-const DESK_SCALE = 0.78;
+/** Uniform console scale: the dais is 540x390, so the console art scales
+ * from its cycle-2 drawing units. */
+const BANK_SCALE = 0.78;
 
-/**
- * Floor-wide desk flash set by buildTradingFloor and read by the holo core's
- * market events, so a market tick is felt at every console in the ring.
- */
-let deskPulseHook: ((color: number) => void) | null = null;
-
-/**
- * Status-mast pause hook set by buildStatusMast and invoked by the trading
- * floor's pause api, so the paused state is readable at the room's lighting
- * master without this file owning the mast's internals. Reset by the mast
- * builder so a failed rebuild never leaves a stale hook behind.
- */
-let statusPauseHook: ((on: boolean) => void) | null = null;
-
-/** Floor desks at the population wander points; roles tint the console trim.
- * The six workstations are the cycle-2 ring rescaled onto the smaller dais
- * (ellipse units preserved): the east side stays an open walkway with a
- * sightline to the signal tower and across the seam to the exchange booth. */
-const DESKS: { x: number; y: number; role: AgentRole }[] = [
-  { x: 1255, y: 777, role: "research" },
-  { x: 1559, y: 767, role: "analysis" },
-  { x: 1276, y: 915, role: "strategy" },
-  { x: 1594, y: 915, role: "execution" },
-  { x: 1389, y: 996, role: "operations" },
-  { x: 1481, y: 996, role: "reconciliation" },
+/** One console bank: which user tool it represents and where it stands on
+ * the dais (inside the platform ellipse, east walkway kept open toward the
+ * exchange seam). Positions are scenery, never population anchors. */
+type BankTool = "watchlist" | "chart" | "trade" | "positions" | "alerts";
+const BANKS: { x: number; y: number; tool: BankTool; label: string }[] = [
+  { x: 1235, y: 800, tool: "watchlist", label: "Watchlist" },
+  { x: 1555, y: 745, tool: "chart", label: "Chart" },
+  { x: 1640, y: 855, tool: "positions", label: "Positions" },
+  { x: 1520, y: 975, tool: "trade", label: "Trade" },
+  { x: 1345, y: 965, tool: "alerts", label: "Alerts" },
 ];
 
 /** Register a station root in the sortable layer with its transparent hit box. */
@@ -126,16 +126,27 @@ function addSign(
   accent?: number,
 ): void {
   ctx.layers.labels.addChild(
-    makeSign(def.label, { x, y, size: def.signSize, accent: accent ?? PALETTE.cyan }),
+    makeSign(def.label, {
+      x,
+      y,
+      size: def.signSize,
+      accent: accent ?? PALETTE.cyan,
+      lod: def.lod,
+      stationId: def.id,
+    }),
   );
+}
+
+/** Attach an api post-registration (helper for split builds). */
+function registerApi(_ctx: DioramaContext, id: StationId, api: object): void {
+  const handle = getStation(id);
+  if (handle) handle.api = api;
 }
 
 export function buildCentralDistrict(ctx: DioramaContext): void {
   buildTradingFloor(ctx);
   buildHoloCore(ctx);
   buildSignalTower(ctx);
-  buildEventClock(ctx);
-  buildStatusMast(ctx);
   // The exchange booth docks last: it completes the floor's east seam.
   buildExchangePort(ctx);
 }
@@ -152,22 +163,18 @@ function buildTradingFloor(ctx: DioramaContext): void {
   // whose footprint contains it, so a floor root above the holo would swallow
   // its picks.
   stationRoot(ctx, def, 640);
-  // District counter-accent: warm gold inlays subordinate to the cyan ring
-  // lights, which stay the floor's infrastructure language.
-  const GOLD = DISTRICTS.floor.accent2;
-  // Reset first so a failed rebuild never leaves holo events or pause state
-  // driving objects from a destroyed world.
-  deskPulseHook = null;
+  // Reset first so a failed rebuild never leaves pause state driving objects
+  // from a destroyed world.
+  const pausables: { obj: Container | Sprite; base: number }[] = [];
   let campusPaused = false;
 
   // Platform geometry goes to the ground layer, below every sortable fixture,
-  // so desks and agents keep sorting against each other by foot Y.
+  // so banks keep sorting against the holo by foot Y.
   const platform = new Container();
   ctx.layers.ground.addChild(platform);
 
-  // Raised plinth: two low steps under a circular top platform (rescaled to
-  // the 540x390 footprint), with a soft ground shadow and strongly shaded
-  // side faces so the step faces read.
+  // Raised plinth: two low steps under a circular top platform, with a soft
+  // ground shadow and strongly shaded side faces so the step faces read.
   const plinth = new Graphics();
   plinth.ellipse(FLOOR.x, FLOOR.y + 14, 288, 163);
   plinth.fill({ color: PALETTE.space, alpha: 0.3 });
@@ -186,16 +193,11 @@ function buildTradingFloor(ctx: DioramaContext): void {
   plinth.fill({ color: PALETTE.surfacePale, alpha: 0.06 });
   plinth.ellipse(FLOOR.x, FLOOR.y, 268, 153);
   plinth.stroke({ width: 2, color: PALETTE.surfacePale, alpha: 0.45 });
-  // Inset cyan ring lights just inside the rim.
-  plinth.ellipse(FLOOR.x, FLOOR.y, 254, 144);
-  plinth.stroke({ width: 2, color: PALETTE.cyan, alpha: 0.5 });
-  plinth.ellipse(FLOOR.x, FLOOR.y, 248, 139);
-  plinth.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.2 });
   platform.addChild(plinth);
 
-  // Central medallion, kept calm now that the holo is the visible centerpiece:
-  // a gold inlay ring outside the cyan infrastructure band and four faint
-  // spokes bridging them.
+  // Central medallion: a gold inlay ring outside the cyan infrastructure band
+  // and four faint spokes bridging them. Static ornament, kept calm.
+  const GOLD = DISTRICTS.floor.accent2;
   const medallion = new Graphics();
   medallion.ellipse(FLOOR.x, FLOOR.y, 185, 105);
   medallion.stroke({ width: 2, color: GOLD, alpha: 0.5 });
@@ -213,12 +215,20 @@ function buildTradingFloor(ctx: DioramaContext): void {
   }
   platform.addChild(medallion);
 
-  // Emissive floor pool: the holo's screens cast soft additive light onto the
-  // platform so the floating fixture illuminates the ground it floats over.
-  // A squashed glow ellipse; it breathes with the floor's shared 8 s tick below.
+  // Emissive floor pool + inset ring lights in one dimmable group: the holo's
+  // screens cast soft light onto the platform, and pausing dims the group.
+  const lights = new Container();
   const holoPool = glow(FLOOR.x, FLOOR.y - 40, 270, PALETTE.cyan, 0.13);
   holoPool.scale.y *= 0.42;
-  platform.addChild(holoPool);
+  lights.addChild(holoPool);
+  const ringLights = new Graphics();
+  ringLights.ellipse(FLOOR.x, FLOOR.y, 254, 144);
+  ringLights.stroke({ width: 2, color: PALETTE.cyan, alpha: 0.5 });
+  ringLights.ellipse(FLOOR.x, FLOOR.y, 248, 139);
+  ringLights.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.2 });
+  lights.addChild(ringLights);
+  platform.addChild(lights);
+  pausables.push({ obj: lights, base: 1 });
 
   // Walkway chevrons: tiny pale arrows on three spokes pointing at the holo.
   const chevrons = new Graphics();
@@ -241,68 +251,9 @@ function buildTradingFloor(ctx: DioramaContext): void {
   }
   platform.addChild(chevrons);
 
-  // Low curved console bars between desks so the ring feels furnished. Drawn
-  // in a Y-squashed container so circular arcs read as iso ellipse arcs.
-  for (const a0 of [0.55, 2.65, 4.75]) {
-    const bar = new Container();
-    bar.position.set(FLOOR.x, FLOOR.y);
-    bar.scale.y = 0.57;
-    const g = new Graphics();
-    g.arc(0, 0, 231, a0, a0 + 0.5);
-    g.stroke({ width: 8.5, color: rightFace(PALETTE.structure), alpha: 0.95 });
-    g.arc(0, 0, 231, a0, a0 + 0.5);
-    g.stroke({ width: 7, color: topFace(PALETTE.structure), alpha: 0.9 });
-    g.arc(0, 0, 227, a0 + 0.03, a0 + 0.47);
-    g.stroke({ width: 2, color: PALETTE.cyan, alpha: 0.7 });
-    bar.addChild(g);
-    platform.addChild(bar);
-  }
-
-  // Chase lights around the outer ring: 12 additive dots, one shared ticker.
-  const chase: Sprite[] = [];
-  const CHASE_COLORS = [PALETTE.cyan, PALETTE.blue, PALETTE.violet];
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 2;
-    const light = glow(
-      FLOOR.x + Math.cos(a) * 220,
-      FLOOR.y + Math.sin(a) * 125,
-      12,
-      CHASE_COLORS[i % 3],
-      0.5,
-    );
-    chase.push(light);
-    platform.addChild(light);
-  }
-  // Resting brightness per light (reduced motion uses a static arrangement;
-  // the pause cue restores these values when the campus resumes).
-  const chaseBase = chase.map((_, i) => 0.25 + 0.35 * (((i * 5) % 12) / 12));
-  if (ctx.reducedMotion) {
-    chase.forEach((c, i) => {
-      c.alpha = chaseBase[i];
-    });
-  }
-
-  // Slowly pulsing concentric emissive floor lines (8 s), alpha only.
-  const pulseRings: { ring: Graphics; base: number }[] = [];
-  const RING_MATERIALS: { r: number; color: number; width: number }[] = [
-    { r: 231, color: PALETTE.cyan, width: 1.75 },
-    { r: 177, color: GOLD, width: 1.25 },
-  ];
-  for (const m of RING_MATERIALS) {
-    const ring = new Graphics();
-    ring.ellipse(FLOOR.x, FLOOR.y, m.r, m.r * 0.57);
-    ring.stroke({ width: m.width, color: m.color, alpha: 0.3 });
-    ring.blendMode = "add";
-    ring.alpha = 0.3;
-    pulseRings.push({ ring, base: 0.22 + pulseRings.length * 0.02 });
-    platform.addChild(ring);
-  }
-
-  // Tower feed conduit: a dotted floor trace from the east rim of the
-  // platform to the signal tower base, so the tower reads as wired into the
-  // floor instead of floating beyond it. Static dots carry the path; two
-  // additive feed dots drift tower-to-ring (the tower broadcasts, the floor
-  // receives) on a slow loop.
+  // Tower conduit: a dotted floor trace from the platform rim to the alert
+  // tower base, so the tower reads as wired into the floor. Static dots only;
+  // ambient motion lives in the director's heartbeats, not here.
   const tower = STATIONS.signalTower.anchor;
   const tdx = tower.x - FLOOR.x;
   const tdy = tower.y + 8 - FLOOR.y;
@@ -325,182 +276,150 @@ function buildTradingFloor(ctx: DioramaContext): void {
   }
   conduit.blendMode = "add";
   platform.addChild(conduit);
-  const feedMovers: { mover: Sprite; state: { t: number } }[] = [];
-  if (!ctx.reducedMotion) {
-    for (let i = 0; i < 2; i++) {
-      const mover = glow(feedB.x, feedB.y, 9, PALETTE.cyan, 0.55);
-      platform.addChild(mover);
-      const state = { t: 0 };
-      gsap.fromTo(
-        state,
-        { t: 0 },
-        {
-          t: 1,
-          duration: 3.4,
-          ease: "none",
-          repeat: -1,
-          delay: i * 1.7,
-          onUpdate: () => {
-            mover.position.set(
-              feedB.x + (feedA.x - feedB.x) * state.t,
-              feedB.y + (feedA.y - feedB.y) * state.t,
-            );
-          },
-        },
-      );
-      feedMovers.push({ mover, state });
-    }
-    ctx.onCleanup(() => feedMovers.forEach((f) => gsap.killTweensOf(f.state)));
-  }
 
-  // Per-desk feedback flashes driven by holo market events.
-  const deskFlashes: Sprite[] = [];
-  for (const [deskIndex, desk] of DESKS.entries()) buildDesk(ctx, desk, deskIndex, deskFlashes);
-  const pulseDesks = (color: number): void => {
-    if (ctx.reducedMotion || deskFlashes.length === 0) return;
-    for (const flash of deskFlashes) {
-      flash.tint = color;
-      gsap.killTweensOf(flash);
-      gsap.fromTo(flash, { alpha: 0.5 }, { alpha: 0, duration: 0.7, ease: "power2.out" });
-    }
-  };
-  ctx.onCleanup(() => deskFlashes.forEach((f) => gsap.killTweensOf(f)));
-  deskPulseHook = pulseDesks;
+  // The five user-tool console banks. No chairs, no role colors, no panes:
+  // they are tools on a platform, not workplaces.
+  for (const bank of BANKS) buildBank(ctx, bank, pausables);
 
-  // Floor pause, seen from the ring: the lights stop sweeping and hold a dim
+  // Paused overlay: a registered warning board that only exists while the
+  // campus is paused. The signs policy owns its alpha ("always" tier rule);
+  // this api owns its visibility, so the two never fight.
+  const pausedBoard = makeSign("PAUSED", {
+    x: FLOOR.x,
+    y: FLOOR.y + 98,
+    size: "sm",
+    accent: PALETTE.warning,
+    halo: false,
+    lod: "always",
+    stationId: def.id,
+  });
+  pausedBoard.visible = false;
+  ctx.layers.labels.addChild(pausedBoard);
+
+  // Floor pause, seen from the ring: lights and console glows hold a dim
   // steady state so the freeze reads at fit zoom. Resume needs no state
-  // repair; the ticker simply returns to its sine values.
+  // repair; the base alphas are restored verbatim.
   const dimFloor = (on: boolean): void => {
-    for (const [i, light] of chase.entries()) light.alpha = on ? 0.12 : chaseBase[i];
-    for (const { ring, base } of pulseRings) ring.alpha = on ? 0.08 : base;
-    // Pools dim with the floor: paused fixtures stop casting light.
-    holoPool.alpha = on ? 0.04 : 0.13;
+    for (const { obj, base } of pausables) obj.alpha = on ? base * 0.22 : base;
   };
 
-  if (!ctx.reducedMotion) {
-    ctx.onTick(() => {
-      if (campusPaused) {
-        dimFloor(true);
-        return;
-      }
-      const time = performance.now() / 1000;
-      const phase = (time * Math.PI * 2) / 8;
-      for (const [i, { ring, base }] of pulseRings.entries()) {
-        ring.alpha = base + 0.18 * (0.5 + 0.5 * Math.sin(phase - i * 0.9));
-      }
-      holoPool.alpha = 0.11 + 0.05 * (0.5 + 0.5 * Math.sin(phase * 0.75));
-      const chasePhase = (time * Math.PI * 2) / 4;
-      for (const [i, light] of chase.entries()) {
-        light.alpha = 0.18 + 0.55 * Math.max(0, Math.sin(chasePhase - (i / 12) * Math.PI * 2));
-      }
-    });
-  }
-
-  // Pause api: drives this floor's lights and the status mast's warning cue.
-  // The emergency control kiosk (risk district) and s-emergency-demo call it.
   const api: TradingFloorApi = {
     setCampusPaused(on: boolean): void {
       if (on === campusPaused) return;
       campusPaused = on;
-      if (ctx.reducedMotion) dimFloor(on);
-      statusPauseHook?.(on);
+      pausedBoard.visible = on;
+      dimFloor(on);
     },
   };
   registerApi(ctx, def.id, api);
 
-  // The district banner "CENTRAL TRADING FLOOR" above the arena carries the
-  // name; the open ground south of the platform stays circulation space.
+  // The registry label "TRADING FLOOR" is a zoom-class board: never at tier 0,
+  // visible from tier 1 and whenever the floor compound is focused.
+  addSign(ctx, def, FLOOR.x, FLOOR.y + 196, FLOOR_TRIM);
 }
 
-/** Tiny chart glyph inside a workstation screen, varied per desk so the six
- * consoles read as different jobs: candles, bars, or a line trace. */
-function chartGlyph(kind: "candles" | "bars" | "line", accent: number): Graphics {
+/** Tool glyph inside a console screen, one per bank so the five tools read at
+ * a glance: asset rows, candles, an order ticket, protected position rows,
+ * and a bell. Glyph colors stay in the floor's blue/cyan language; the buy,
+ * sell, and protection pips reuse reserved semantic colors deliberately. */
+function toolGlyph(tool: BankTool): Graphics {
   const g = new Graphics();
-  if (kind === "line") {
-    g.moveTo(-9, 2);
-    g.lineTo(-3, -3);
-    g.lineTo(2, 0);
-    g.lineTo(9, -5);
-    g.stroke({ width: 1.4, color: accent, alpha: 0.95 });
-    g.moveTo(-9, 5);
-    g.lineTo(9, 5);
-    g.stroke({ width: 1, color: accent, alpha: 0.45 });
-    return g;
-  }
-  if (kind === "bars") {
-    for (const [i, h] of [5, 8, 4, 7].entries()) {
-      g.rect(-8 + i * 5.4, 5 - h, 2.6, h);
-      g.fill({ color: accent, alpha: 0.85 });
+  const accent = PALETTE.cyan;
+  if (tool === "watchlist") {
+    for (let i = 0; i < 3; i++) {
+      const ry = -5 + i * 5;
+      g.rect(-9, ry - 1.7, 3.4, 3.4);
+      g.fill({ color: accent, alpha: 0.9 });
+      g.moveTo(-3.5, ry);
+      g.lineTo(9 - i * 2.5, ry);
+      g.stroke({ width: 1, color: accent, alpha: 0.6 });
     }
     return g;
   }
-  for (const [i, up] of [true, false, true].entries()) {
-    const cx = -7 + i * 7;
-    g.moveTo(cx, -6);
-    g.lineTo(cx, 6);
-    g.stroke({ width: 1, color: accent, alpha: 0.7 });
-    g.rect(cx - 1.8, up ? -1 : -4, 3.6, 5);
-    g.fill({ color: accent, alpha: 0.9 });
+  if (tool === "chart") {
+    for (const [i, up] of [true, false, true].entries()) {
+      const cx = -7 + i * 7;
+      g.moveTo(cx, -6);
+      g.lineTo(cx, 6);
+      g.stroke({ width: 1, color: accent, alpha: 0.7 });
+      g.rect(cx - 1.8, up ? -1 : -4, 3.6, 5);
+      g.fill({ color: accent, alpha: 0.9 });
+    }
+    return g;
   }
+  if (tool === "trade") {
+    // Buy and sell pills over a size line, in the same up/down language as
+    // the chart candles.
+    g.roundRect(-9, -6.5, 7, 5, 2);
+    g.fill({ color: PALETTE.healthy, alpha: 0.9 });
+    g.roundRect(-9, 1.5, 7, 5, 2);
+    g.fill({ color: PALETTE.blocked, alpha: 0.9 });
+    g.moveTo(1, -4);
+    g.lineTo(9, -4);
+    g.moveTo(1, 0);
+    g.lineTo(9, 0);
+    g.moveTo(1, 4);
+    g.lineTo(6, 4);
+    g.stroke({ width: 1, color: accent, alpha: 0.6 });
+    return g;
+  }
+  if (tool === "positions") {
+    // Position rows fronted by protection shield pips.
+    for (let i = 0; i < 2; i++) {
+      const ry = -3 + i * 6.5;
+      g.moveTo(-8, ry - 2.6);
+      g.lineTo(-5.4, ry);
+      g.lineTo(-8, ry + 1.2);
+      g.lineTo(-10.6, ry);
+      g.closePath();
+      g.fill({ color: PALETTE.healthy, alpha: 0.95 });
+      g.moveTo(-2.5, ry - 0.5);
+      g.lineTo(9, ry - 0.5);
+      g.stroke({ width: 1, color: accent, alpha: 0.6 });
+    }
+    return g;
+  }
+  // alerts: a bell.
+  g.arc(0, -0.5, 5.5, Math.PI, 0);
+  g.moveTo(-5.5, -0.5);
+  g.lineTo(5.5, -0.5);
+  g.stroke({ width: 1.4, color: accent, alpha: 0.9 });
+  g.moveTo(-6.8, -0.5);
+  g.lineTo(6.8, -0.5);
+  g.stroke({ width: 1, color: accent, alpha: 0.5 });
+  g.circle(0, 3.4, 1.4);
+  g.fill({ color: accent, alpha: 0.95 });
   return g;
 }
 
-/** One open workstation: wide console with role trim, a chair with a tall
- * backrest, two angled screens with varied chart glyphs, a keyboard strip,
- * one breathing status LED, a floating role holo pane, and a soft AO ellipse
- * at its root. Pushes a flash glow so market events are felt at the console.
- * Drawn in local units around (0, 0) and scaled by DESK_SCALE at the root so
- * the retained art rescales with the smaller dais. */
-function buildDesk(
+/** One console bank: wide console with floor-blue trim, a keyboard strip, two
+ * angled screens carrying the tool glyph and a faint secondary trace, one
+ * static status LED, and a registered detail text with the product string.
+ * Drawn in local units around (0, 0) and scaled by BANK_SCALE at the root. */
+function buildBank(
   ctx: DioramaContext,
-  desk: { x: number; y: number; role: AgentRole },
-  deskIndex: number,
-  deskFlashes: Sprite[],
+  bank: { x: number; y: number; tool: BankTool; label: string },
+  pausables: { obj: Container | Sprite; base: number }[],
 ): void {
-  const accent = ROLE_COLORS[desk.role];
   const root = new Container();
-  root.position.set(desk.x, desk.y);
-  root.zIndex = desk.y;
-  root.scale.set(DESK_SCALE);
+  root.position.set(bank.x, bank.y);
+  root.zIndex = bank.y;
+  root.scale.set(BANK_SCALE);
   ctx.layers.sortable.addChild(root);
 
-  // Soft contact shadow under the workstation.
+  // Soft contact shadow under the console.
   const ao = new Graphics();
   ao.ellipse(0, 5, 42, 16);
   ao.fill({ color: PALETTE.space, alpha: 0.3 });
   root.addChild(ao);
 
-  // Direction toward the floor center; the chair sits on the center side and
-  // the console screen leans the same way, so every desk faces the core.
-  const dx = FLOOR.x - desk.x;
-  const dy = FLOOR.y - desk.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const nx = dx / len;
-  const ny = dy / len;
-  const sx = nx * 30;
-  const sy = ny * 17;
-
   root.addChild(isoBox({ x: 0, y: 0, w: 60, d: 34, h: 18, color: PALETTE.structure }));
-  // Role trim across the desk's front (south) edges.
-  root.addChild(edgeStrip(-30, 8.5, 0, 17, accent, 0.85, 2));
-  root.addChild(edgeStrip(0, 17, 30, 8.5, accent, 0.85, 2));
-
-  // Chair: seat cylinder plus a tall backrest on the center side.
-  root.addChild(isoCylinder({ x: sx, y: sy, r: 6, h: 9, color: PALETTE.structureLight, rim: accent }));
-  const backrest = new Graphics();
-  const bx = sx + nx * 6;
-  const by = sy + ny * 3.4 - 24;
-  backrest.roundRect(bx - 8, by, 16, 22, 4);
-  backrest.fill({ color: PALETTE.structure, alpha: 0.95 });
-  backrest.roundRect(bx - 8, by, 16, 22, 4);
-  backrest.stroke({ width: 1.2, color: PALETTE.structureLight, alpha: 0.9 });
-  backrest.moveTo(bx - 5, by + 5);
-  backrest.lineTo(bx + 5, by + 5);
-  backrest.stroke({ width: 1, color: accent, alpha: 0.6 });
-  root.addChild(backrest);
+  // Floor trim across the console's front (south) edges.
+  root.addChild(edgeStrip(-30, 8.5, 0, 17, FLOOR_TRIM, 0.8, 2));
+  root.addChild(edgeStrip(0, 17, 30, 8.5, FLOOR_TRIM, 0.8, 2));
 
   // Keyboard strip on the console's top face, between the front edge and the
-  // screens: reads as a workstation, not a wedge.
+  // screens.
   const keys = new Graphics();
   keys.roundRect(-13, -22, 26, 5, 1.5);
   keys.fill({ color: PALETTE.structureLight, alpha: 0.95 });
@@ -513,103 +432,60 @@ function buildDesk(
   }
   root.addChild(keys);
 
-  // Dual angled screens: two small panels tilted toward the core at slightly
-  // different angles, carrying varied chart glyphs per desk. Both live under
-  // one container so the idle shimmer treats them as one console.
-  const GLYPHS = ["candles", "bars", "line"] as const;
-  const mkScreen = (
-    offX: number,
-    offY: number,
-    rot: number,
-    kind: (typeof GLYPHS)[number],
-  ): Container => {
+  // Dual angled screens: the tool glyph on the left panel, a faint generic
+  // trace on the right, both under one container so the pause dim treats
+  // them as one console.
+  const mkScreen = (offX: number, offY: number, rot: number, glyph?: Graphics): Container => {
     const c = new Container();
     c.position.set(offX, offY);
     c.rotation = rot;
-    c.addChild(screenPanel({ x: -12, y: -8, w: 24, h: 16, accent }));
-    c.addChild(chartGlyph(kind, accent));
+    c.addChild(screenPanel({ x: -12, y: -8, w: 24, h: 16, accent: PALETTE.cyan }));
+    if (glyph) c.addChild(glyph);
+    else {
+      const trace = new Graphics();
+      trace.moveTo(-9, 2);
+      trace.lineTo(-3, -3);
+      trace.lineTo(2, 0);
+      trace.lineTo(9, -5);
+      trace.stroke({ width: 1.2, color: PALETTE.cyan, alpha: 0.5 });
+      c.addChild(trace);
+    }
     return c;
   };
   const screens = new Container();
-  screens.addChild(
-    mkScreen(-13, -37, -0.09, GLYPHS[deskIndex % 3]),
-    mkScreen(13, -40, 0.07, GLYPHS[(deskIndex + 1) % 3]),
-  );
+  screens.addChild(mkScreen(-13, -37, -0.09, toolGlyph(bank.tool)), mkScreen(13, -40, 0.07));
   root.addChild(screens);
-  const trimGlow = glow(0, -34, 52, accent, 0.16);
-  root.addChild(trimGlow);
-  // One status LED per console: role-colored, slow breathing, staggered by
-  // desk so the ring's heartbeats desynchronize.
-  const led = glow(26, -14, 8, accent, 0.55);
+  pausables.push({ obj: screens, base: 1 });
+
+  // One status LED per console: static, so the floor stays calm between the
+  // director's beats.
+  const led = glow(26, -14, 8, FLOOR_TRIM, 0.5);
   root.addChild(led);
   const ledDot = new Graphics();
   ledDot.circle(26, -14, 1.7);
-  ledDot.fill({ color: accent });
+  ledDot.fill({ color: FLOOR_TRIM });
   root.addChild(ledDot);
-  // Dedicated market-event flash above the console: stays dormant so the idle
-  // shimmer and trim breathing never fight it.
-  const flash = glow(0, -38, 46, accent, 0);
-  root.addChild(flash);
-  deskFlashes.push(flash);
+  pausables.push({ obj: led, base: 0.5 });
 
-  // Floating role holo pane above the console: two abstract glyphs.
-  const pane = new Container();
-  pane.position.set(0, -64);
-  const paneG = new Graphics();
-  paneG.roundRect(-9, -7, 18, 13, 3);
-  paneG.stroke({ width: 1.2, color: accent, alpha: 0.85 });
-  paneG.circle(-3, -1, 2.4);
-  paneG.stroke({ width: 1, color: accent, alpha: 0.9 });
-  paneG.moveTo(2, -4);
-  paneG.lineTo(7, -4);
-  paneG.moveTo(2, 0);
-  paneG.lineTo(6, 0);
-  paneG.stroke({ width: 1, color: accent, alpha: 0.9 });
-  paneG.blendMode = "add";
-  pane.addChild(paneG);
-  root.addChild(pane);
-  if (!ctx.reducedMotion) {
-    gsap.to(pane, {
-      y: -68,
-      duration: 3,
-      yoyo: true,
-      repeat: -1,
-      ease: "sine.inOut",
-      delay: (desk.x % 7) * 0.4,
-    });
-    // Idle telemetry: each desk's screens shimmer, its LED and role trim
-    // breathe on their own clocks so the six jobs read as separate live
-    // consoles, not one texture.
-    gsap.to(screens, {
-      alpha: 0.6,
-      duration: 2.2 + (desk.x % 5) * 0.35,
-      yoyo: true,
-      repeat: -1,
-      ease: "sine.inOut",
-      delay: (desk.y % 7) * 0.35,
-    });
-    gsap.to(led, {
-      alpha: 0.22,
-      duration: 2.6 + (deskIndex % 3) * 0.6,
-      yoyo: true,
-      repeat: -1,
-      ease: "sine.inOut",
-      delay: deskIndex * 0.45,
-    });
-    gsap.to(trimGlow, {
-      alpha: 0.32,
-      duration: 3 + (desk.x % 4) * 0.6,
-      yoyo: true,
-      repeat: -1,
-      ease: "sine.inOut",
-      delay: (desk.y % 5) * 0.5,
-    });
-    ctx.onCleanup(() => gsap.killTweensOf([pane, screens, trimGlow, led]));
-  }
+  // Soft trim glow above the console.
+  const trimGlow = glow(0, -34, 52, FLOOR_TRIM, 0.16);
+  root.addChild(trimGlow);
+  pausables.push({ obj: trimGlow, base: 0.16 });
+
+  // Registered product string for the tool this bank represents: detail tier,
+  // so it reveals at tier 2 and when the floor compound is focused.
+  ctx.layers.labels.addChild(
+    makeDetailText(bank.label, {
+      x: bank.x,
+      y: bank.y - 47,
+      stationId: STATIONS.tradingFloor.id,
+      size: 10,
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Holographic market core
+// Holographic mission chart
 // ---------------------------------------------------------------------------
 
 function buildHoloCore(ctx: DioramaContext): void {
@@ -617,10 +493,9 @@ function buildHoloCore(ctx: DioramaContext): void {
   const { x, y } = def.anchor;
   const root = stationRoot(ctx, def, y);
 
-  // Soft AO + projection dais + breathing additive cone carrying the
-  // hologram. The dais is two low tiered steps crowned by an emitter ring, so
-  // the floor's primary fixture grounds deliberately and visibly owns the
-  // center of the platform.
+  // Soft AO + projection dais + emitter ring carrying the hologram. The dais
+  // is two low tiered steps, so the floor's primary fixture grounds
+  // deliberately and visibly owns the center of the platform.
   const ao = new Graphics();
   ao.ellipse(x, y + 8, 46, 18);
   ao.fill({ color: PALETTE.space, alpha: 0.32 });
@@ -631,7 +506,6 @@ function buildHoloCore(ctx: DioramaContext): void {
   root.addChild(
     isoCylinder({ x, y: y + 5, r: 22, h: 8, color: PALETTE.structureLight, rim: PALETTE.cyan }),
   );
-  // Emitter ring inset in the upper tier: additive stroke plus small nubs.
   const emitterY = y - 3;
   const emitter = new Graphics();
   emitter.ellipse(x, emitterY, 17, 8.5);
@@ -643,19 +517,18 @@ function buildHoloCore(ctx: DioramaContext): void {
     root.addChild(glow(x + Math.cos(a) * 17, emitterY + Math.sin(a) * 8.5, 7, PALETTE.cyan, 0.5));
   }
   root.addChild(glow(x, y - 10, 56, PALETTE.cyan, 0.45));
-  const cone = lightBeam(x, y - 12, 120, 34, 118, PALETTE.cyan, 0.4);
+  const cone = lightBeam(x, y - 12, 120, 34, 118, PALETTE.cyan, 0.38);
   root.addChild(cone);
 
   // Volumetric shafts: three soft additive beams rising from the emitter ring
-  // past the content stack, so the holo crowns the floor. Low alpha, drawn
-  // behind the stack so the glyphs stay crisp; they breathe on the holo's
-  // existing tick (never a new ticker).
+  // past the content stack. Static alphas; per-frame work stays with the
+  // simulated feed tick below.
   const shafts = new Container();
   shafts.position.set(x, y - 4);
   for (const s of [
-    { dx: -12, topW: 30, botW: 10, h: 128, rot: -0.055, alpha: 0.1 },
-    { dx: 0, topW: 38, botW: 14, h: 150, rot: 0, alpha: 0.13 },
-    { dx: 12, topW: 30, botW: 10, h: 128, rot: 0.055, alpha: 0.1 },
+    { dx: -12, topW: 30, botW: 10, h: 128, rot: -0.055, alpha: 0.09 },
+    { dx: 0, topW: 38, botW: 14, h: 150, rot: 0, alpha: 0.12 },
+    { dx: 12, topW: 30, botW: 10, h: 128, rot: 0.055, alpha: 0.09 },
   ] as const) {
     const beam = lightBeam(s.dx, 0, s.topW, s.botW, s.h, PALETTE.cyan, s.alpha);
     beam.rotation = s.rot;
@@ -663,11 +536,33 @@ function buildHoloCore(ctx: DioramaContext): void {
   }
   root.addChild(shafts);
 
-  // Floating content stack: abstract glyphs, billboard, gently bobbing (6 s).
+  // Floating chart stack: billboard, gently bobbing (6 s).
   const stack = new Container();
   stack.scale.set(1.5);
   stack.position.set(x, y - 88);
   root.addChild(stack);
+
+  // Chart panel frame.
+  const panel = new Graphics();
+  panel.roundRect(-64, -46, 128, 80, 5);
+  panel.fill({ color: PALETTE.space, alpha: 0.6 });
+  panel.roundRect(-64, -46, 128, 80, 5);
+  panel.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.45 });
+  stack.addChild(panel);
+
+  // Quiet regime shading strip along the panel's top edge. This absorbs the
+  // deleted market landscape: a subtle hue and label shift, nothing more.
+  const REGIME_HUES = [PALETTE.blue, PALETTE.violet, PALETTE.aqua, PALETTE.cyan];
+  const regimeShade = new Graphics();
+  stack.addChild(regimeShade);
+  const regimeText = makeDetailText("", {
+    x: 0,
+    y: -38.5,
+    stationId: def.id,
+    size: 7.5,
+    color: PALETTE.inkDim,
+  });
+  stack.addChild(regimeText);
 
   // Price ribbon: tiny candles; one new candle every ~4 s, then scroll.
   interface Candle {
@@ -678,6 +573,8 @@ function buildHoloCore(ctx: DioramaContext): void {
   }
   const candleW = 8;
   const candleCount = 14;
+  const ribbonTop = -28;
+  const ribbonH = 32;
   const candles: Candle[] = [];
   let price = 0.5;
   const nextCandle = (): Candle => {
@@ -687,34 +584,27 @@ function buildHoloCore(ctx: DioramaContext): void {
     return { o, c, h: Math.max(o, c) + RNG() * 0.12, l: Math.min(o, c) - RNG() * 0.12 };
   };
   for (let i = 0; i < candleCount; i++) candles.push(nextCandle());
+  const yOf = (v: number): number => ribbonTop + 4 + ribbonH - v * ribbonH;
+  const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 
   // Ribbon front plus a dimmer depth twin offset behind it, so the price
-  // ribbon reads as a volumetric slab instead of a flat card. One shared
-  // draw routine refreshes both on each new candle.
+  // ribbon reads as a volumetric slab. One draw routine refreshes both.
   const ribbonDepth = new Graphics();
   ribbonDepth.position.set(5, 4);
   const ribbon = new Graphics();
-  const ribbonH = 20;
-  const ribbonTop = -34;
   const drawRibbonInto = (g: Graphics, dim: boolean): void => {
-    const panelA = dim ? 0.2 : 0.55;
-    const frameA = dim ? 0.15 : 0.4;
-    const dataA = dim ? 0.3 : 1;
+    const dataA = dim ? 0.35 : 1;
     g.clear();
-    g.roundRect(-62, ribbonTop, 124, ribbonH + 8, 4);
-    g.fill({ color: PALETTE.space, alpha: panelA });
-    g.roundRect(-62, ribbonTop, 124, ribbonH + 8, 4);
-    g.stroke({ width: 1, color: PALETTE.cyan, alpha: frameA });
-    const yOf = (v: number): number => ribbonTop + 4 + ribbonH - v * ribbonH;
+    const yOfLocal = yOf;
     candles.forEach((k, idx) => {
       const cx = -58 + idx * candleW + candleW / 2;
       const up = k.c >= k.o;
       const col = up ? PALETTE.healthy : PALETTE.blocked;
-      g.moveTo(cx, yOf(Math.min(1, k.h)));
-      g.lineTo(cx, yOf(Math.max(0, k.l)));
+      g.moveTo(cx, yOfLocal(Math.min(1, k.h)));
+      g.lineTo(cx, yOfLocal(Math.max(0, k.l)));
       g.stroke({ width: 1.5, color: col, alpha: 0.95 * dataA });
-      const top = yOf(Math.max(k.o, k.c));
-      const bot = yOf(Math.min(k.o, k.c));
+      const top = yOfLocal(Math.max(k.o, k.c));
+      const bot = yOfLocal(Math.min(k.o, k.c));
       g.rect(cx - 2.5, top, 5, Math.max(2, bot - top));
       g.fill({ color: col, alpha: dataA });
     });
@@ -725,165 +615,121 @@ function buildHoloCore(ctx: DioramaContext): void {
   };
   drawRibbon();
   stack.addChild(ribbonDepth, ribbon);
-  const lastGlow = glow(0, 0, 10, PALETTE.cyan, 0.7);
+
+  // Mark line: the current price level across the chart, with a glow dot on
+  // the live candle. Redrawn whenever the feed advances.
+  const markLine = new Graphics();
+  stack.addChild(markLine);
+  const lastX = -58 + (candleCount - 1) * candleW + candleW / 2;
+  const lastGlow = glow(lastX, yOf(0.5), 10, PALETTE.cyan, 0.7);
   stack.addChild(lastGlow);
-
-  // Strategy chips + health dots, one row. The chip tint cycles through
-  // variants when strategies rotate; the dots stay semantic green.
-  const CHIP_TINTS = [PALETTE.violet, PALETTE.blue, PALETTE.magenta];
-  let chipVariant = 0;
-  const chips = new Container();
-  const chipsG = new Graphics();
-  chips.addChild(chipsG);
-  const drawChips = (): void => {
-    const tint = CHIP_TINTS[chipVariant % CHIP_TINTS.length];
-    chipsG.clear();
-    for (const cx of [-40, -6]) {
-      chipsG.roundRect(cx, -1, 30, 9, 3);
-      chipsG.fill({ color: tint, alpha: 0.35 });
-      chipsG.roundRect(cx, -1, 30, 9, 3);
-      chipsG.stroke({ width: 1, color: tint, alpha: 0.85 });
-      chipsG.moveTo(cx + 4, 3.5);
-      chipsG.lineTo(cx + 18, 3.5);
-      chipsG.stroke({ width: 1, color: tint, alpha: 0.6 });
-    }
-    for (let i = 0; i < 4; i++) {
-      chipsG.circle(26 + i * 9, 3.5, 2.2);
-      chipsG.fill({ color: PALETTE.healthy, alpha: 0.9 });
-    }
+  const drawMark = (): void => {
+    const last = candles[candleCount - 1];
+    const mid = yOf((last.o + last.c) / 2);
+    markLine.clear();
+    markLine.moveTo(-60, mid);
+    markLine.lineTo(60, mid);
+    markLine.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.5 });
+    lastGlow.position.set(lastX, mid);
   };
-  drawChips();
-  stack.addChild(chips);
+  drawMark();
 
-  // Positions strip: 3 tokens each with a green shield pip.
-  const positions = new Graphics();
-  for (let i = 0; i < 3; i++) {
-    const px = -34 + i * 26;
-    positions.roundRect(px, 14, 18, 12, 3);
-    positions.fill({ color: PALETTE.surfacePale, alpha: 0.18 });
-    positions.roundRect(px, 14, 18, 12, 3);
-    positions.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.5 });
-    // Shield pip: small protective chevron above the token.
-    positions.moveTo(px + 9, 8);
-    positions.lineTo(px + 13, 12);
-    positions.lineTo(px + 9, 11);
-    positions.lineTo(px + 5, 12);
-    positions.closePath();
-    positions.fill({ color: PALETTE.healthy, alpha: 0.95 });
-    positions.moveTo(px + 4, 20);
-    positions.lineTo(px + 14, 20);
-    positions.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.6 });
-  }
-  stack.addChild(positions);
-  // Fill feedback: one dormant flash per token plus a shield pulse overlay.
-  const tokenFlashes: Sprite[] = [];
-  for (let i = 0; i < 3; i++) {
-    const flash = glow(-34 + i * 26 + 9, 20, 16, PALETTE.healthy, 0);
-    tokenFlashes.push(flash);
-    stack.addChild(flash);
-  }
-  const shieldPulse = glow(0, 18, 40, PALETTE.healthy, 0);
-  stack.addChild(shieldPulse);
+  // Entry / stop / liquidation overlays: dashed horizontal lines with
+  // distinct dash rhythms plus a color, so state never rides on hue alone.
+  const OVERLAY_SPECS = [
+    { key: "entry", color: PALETTE.blue, dash: 6, gap: 3 },
+    { key: "stop", color: PALETTE.warning, dash: 3, gap: 3 },
+    { key: "liq", color: PALETTE.blocked, dash: 1.5, gap: 2.5 },
+  ] as const;
+  type OverlayKey = (typeof OVERLAY_SPECS)[number]["key"];
+  const overlayValues: Record<OverlayKey, number | undefined> = {
+    entry: undefined,
+    stop: undefined,
+    liq: undefined,
+  };
+  const overlayGs: Record<OverlayKey, Graphics> = {
+    entry: new Graphics(),
+    stop: new Graphics(),
+    liq: new Graphics(),
+  };
+  const overlays = new Container();
+  for (const spec of OVERLAY_SPECS) overlays.addChild(overlayGs[spec.key]);
+  overlays.visible = false;
+  stack.addChild(overlays);
+  const drawOverlay = (key: OverlayKey): void => {
+    const g = overlayGs[key];
+    const spec = OVERLAY_SPECS.find((s) => s.key === key);
+    g.clear();
+    const v = overlayValues[key];
+    if (v === undefined || !spec) return;
+    const yy = yOf(clamp01(v));
+    for (let px = -60; px < 60; px += spec.dash + spec.gap) {
+      g.moveTo(px, yy);
+      g.lineTo(Math.min(60, px + spec.dash), yy);
+    }
+    g.stroke({ width: 1.5, color: spec.color, alpha: 0.9 });
+    g.rect(61, yy - 1.5, 3, 3);
+    g.fill({ color: spec.color, alpha: 0.95 });
+  };
 
-  // Orders row: 2 orange capsules, plus the P&L arc (gold) to the right.
-  const orders = new Graphics();
-  for (const ox of [-46, -24]) {
-    orders.roundRect(ox, 32, 17, 7, 3.5);
-    orders.fill({ color: PALETTE.orange, alpha: 0.5 });
-    orders.roundRect(ox, 32, 17, 7, 3.5);
-    orders.stroke({ width: 1, color: PALETTE.orange, alpha: 0.9 });
-  }
-  // P&L arc: gold sweep from 120 to 60 degrees with an end dot.
-  orders.arc(28, 37, 13, Math.PI * 0.75, Math.PI * 1.9);
-  orders.stroke({ width: 2, color: PALETTE.yellow, alpha: 0.9 });
-  orders.circle(28 + Math.cos(Math.PI * 1.9) * 13, 37 + Math.sin(Math.PI * 1.9) * 13, 2.4);
-  orders.fill({ color: PALETTE.yellow });
-  stack.addChild(orders);
-  // Order feedback: warm launch flash at the row's start and a marker that
-  // travels to the live order slot.
-  const GOLD = DISTRICTS.floor.accent2;
-  const orderFlash = glow(-58, 35.5, 22, GOLD, 0);
-  stack.addChild(orderFlash);
-  const marker = glow(-58, 35.5, 14, GOLD, 0);
+  // Order lane under the chart: the baseline the order marker travels.
+  const lane = new Graphics();
+  lane.moveTo(-58, 22);
+  lane.lineTo(58, 22);
+  lane.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.18 });
+  stack.addChild(lane);
+  const orderFlash = glow(-58, 22, 18, DISTRICTS.floor.accent2, 0);
+  const marker = glow(-58, 22, 12, DISTRICTS.floor.accent2, 0);
   marker.visible = false;
-  stack.addChild(marker);
+  stack.addChild(orderFlash, marker);
 
-  // Two orbiting mini-panes: translucent additive-edge screens circling the
-  // holo at different radii (14 s and 22 s).
-  const orbiters: { c: Container; r: number; ry: number; period: number }[] = [];
-  for (const [r, period, color] of [
-    [58, 14, PALETTE.cyan],
-    [86, 22, PALETTE.blue],
-  ] as const) {
-    const c = new Container();
-    const g = new Graphics();
-    g.roundRect(-14, -9, 28, 17, 3);
-    g.stroke({ width: 1.2, color, alpha: 0.8 });
-    g.moveTo(-9, 1);
-    g.lineTo(0, -4);
-    g.lineTo(6, 2);
-    g.stroke({ width: 1, color, alpha: 0.7 });
-    g.blendMode = "add";
-    c.addChild(g);
-    root.addChild(c);
-    orbiters.push({ c, r, ry: r * 0.45, period });
-  }
+  // Fill feedback: a healthy pulse ring + flash that lands on the mark.
+  const fillRing = new Graphics();
+  fillRing.ellipse(0, 0, 12, 5);
+  fillRing.stroke({ width: 1.5, color: PALETTE.healthy, alpha: 0.9 });
+  fillRing.alpha = 0;
+  stack.addChild(fillRing);
+  const fillFlash = glow(lastX, yOf(0.5), 16, PALETTE.healthy, 0);
+  stack.addChild(fillFlash);
+
+  // Honesty disclosure, registered: the feed is simulated.
+  stack.addChild(makeDetailText("Simulated feed", { x: 0, y: 31, stationId: def.id, size: 8 }));
 
   if (!ctx.reducedMotion) {
     let candleClock = 0;
     let last = performance.now();
-    const lastX = -58 + (candleCount - 1) * candleW + candleW / 2;
     ctx.onTick(() => {
       const now = performance.now();
-      const dt = (now - last) / 1000;
+      candleClock += (now - last) / 1000;
       last = now;
-      const t = now / 1000;
-      stack.y = y - 88 + Math.sin(t * Math.PI * 2 * (1 / 6)) * 4;
-      cone.alpha = 0.35 + 0.15 * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 4));
-      shafts.alpha = 0.8 + 0.2 * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 7 + 1.3));
-      for (const [i, o] of orbiters.entries()) {
-        const a = (t * Math.PI * 2) / o.period + i * 2.1;
-        o.c.position.set(x + Math.cos(a) * o.r, y - 78 + Math.sin(a) * o.ry);
-        o.c.scale.y = Math.sin(a) < 0 ? 0.75 : 1;
-      }
-      candleClock += dt;
+      stack.y = y - 88 + Math.sin((now / 1000) * Math.PI * 2 * (1 / 6)) * 4;
       if (candleClock >= 4) {
         candleClock = 0;
         candles.shift();
         candles.push(nextCandle());
         drawRibbon();
+        drawMark();
       }
-      const lastCandle = candles[candleCount - 1];
-      lastGlow.position.set(
-        lastX,
-        ribbonTop + 4 + ribbonH - ((lastCandle.o + lastCandle.c) / 2) * ribbonH,
-      );
     });
   } else {
     lastGlow.visible = false;
-    cone.alpha = 0.4;
-    shafts.alpha = 1;
-    orbiters.forEach((o, i) => {
-      const a = 1.2 + i * 2.4;
-      o.c.position.set(x + Math.cos(a) * o.r, y - 78 + Math.sin(a) * o.ry);
-    });
   }
 
-  // --- Story API: market events mirrored on the holo and felt at the desks ---
+  // --- Story API ---
   const launchOrder = (): void => {
     if (ctx.reducedMotion) {
       marker.visible = true;
       marker.alpha = 0.9;
-      marker.position.set(-22, 35.5);
+      marker.position.set(lastX, 22);
       return;
     }
     gsap.killTweensOf(marker);
     marker.visible = true;
     gsap.fromTo(
       marker,
-      { x: -58, y: 35.5, alpha: 0.95 },
+      { x: -58, y: 22, alpha: 0.95 },
       {
-        x: -22,
+        x: lastX,
         duration: 0.55,
         ease: "power2.out",
         onComplete: () => {
@@ -893,52 +739,34 @@ function buildHoloCore(ctx: DioramaContext): void {
     );
     gsap.killTweensOf(orderFlash);
     gsap.fromTo(orderFlash, { alpha: 0.8 }, { alpha: 0, duration: 0.5 });
-    deskPulseHook?.(GOLD);
   };
 
-  let fillToken = 0;
   const landFill = (): void => {
-    const flash = tokenFlashes[fillToken++ % tokenFlashes.length];
+    const last = candles[candleCount - 1];
+    const mid = yOf((last.o + last.c) / 2);
+    fillRing.position.set(lastX, mid);
+    fillFlash.position.set(lastX, mid);
     if (ctx.reducedMotion) {
-      flash.alpha = 0.8;
-      shieldPulse.alpha = 0.4;
+      fillFlash.alpha = 0.7;
+      fillRing.alpha = 0.6;
       return;
     }
-    gsap.killTweensOf(flash);
-    gsap.fromTo(flash, { alpha: 0.9 }, { alpha: 0, duration: 0.9, ease: "power2.out" });
-    gsap.killTweensOf([shieldPulse, shieldPulse.scale]);
-    shieldPulse.scale.set(0.7);
-    gsap.to(shieldPulse.scale, { x: 1.5, y: 1.5, duration: 0.7, ease: "power2.out" });
-    gsap.fromTo(shieldPulse, { alpha: 0.7 }, { alpha: 0, duration: 0.7 });
+    gsap.killTweensOf(fillFlash);
+    gsap.fromTo(fillFlash, { alpha: 0.85 }, { alpha: 0, duration: 0.9, ease: "power2.out" });
+    gsap.killTweensOf([fillRing, fillRing.scale]);
+    fillRing.scale.set(0.6);
+    gsap.to(fillRing.scale, { x: 1.6, y: 1.6, duration: 0.7, ease: "power2.out" });
+    gsap.fromTo(fillRing, { alpha: 0.8 }, { alpha: 0, duration: 0.7 });
   };
 
   const refreshState = (): void => {
     candles.shift();
     candles.push(nextCandle());
     drawRibbon();
+    drawMark();
     if (ctx.reducedMotion) return;
     gsap.killTweensOf(ribbon);
     gsap.fromTo(ribbon, { alpha: 0.4 }, { alpha: 1, duration: 0.5, ease: "power2.out" });
-  };
-
-  const rotateChips = (): void => {
-    if (ctx.reducedMotion) {
-      chipVariant++;
-      drawChips();
-      return;
-    }
-    gsap.killTweensOf(chips);
-    gsap.to(chips, {
-      alpha: 0,
-      y: 10,
-      duration: 0.28,
-      ease: "power2.in",
-      onComplete: () => {
-        chipVariant++;
-        drawChips();
-        gsap.to(chips, { alpha: 1, y: 0, duration: 0.35, ease: "back.out(2)" });
-      },
-    });
   };
 
   const api: HoloCoreApi = {
@@ -947,50 +775,41 @@ function buildHoloCore(ctx: DioramaContext): void {
       else if (kind === "fill") landFill();
       else refreshState();
     },
-    rotateStrategies() {
-      rotateChips();
-    },
     orderLaunched() {
       launchOrder();
     },
     fillLanded() {
       landFill();
     },
+    setOverlays(o) {
+      overlayValues.entry = o?.entry;
+      overlayValues.stop = o?.stop;
+      overlayValues.liq = o?.liq;
+      for (const spec of OVERLAY_SPECS) drawOverlay(spec.key);
+      overlays.visible = OVERLAY_SPECS.some((s) => overlayValues[s.key] !== undefined);
+    },
+    setRegime(regime) {
+      // Quiet hue pick from the label: same label, same shade. The regime is
+      // context, not a market claim, so it never animates.
+      let hash = 0;
+      for (let i = 0; i < regime.length; i++) hash = (hash * 31 + regime.charCodeAt(i)) >>> 0;
+      regimeShade.clear();
+      regimeShade.roundRect(-60, -43, 120, 9, 2.5);
+      regimeShade.fill({ color: REGIME_HUES[hash % REGIME_HUES.length], alpha: 0.3 });
+      regimeText.text = regime;
+    },
   };
   registerApi(ctx, def.id, api);
 
-  // Mild self-animation so the floor lives between stories: an order launches
-  // and the strategy row cycles on staggered, non-synchronized clocks.
-  if (!ctx.reducedMotion) {
-    type DelayedCall = ReturnType<typeof gsap.delayedCall>;
-    let orderTimer: DelayedCall | null = null;
-    let chipTimer: DelayedCall | null = null;
-    const scheduleOrder = (): void => {
-      orderTimer = gsap.delayedCall(12 + RNG() * 6, () => {
-        launchOrder();
-        scheduleOrder();
-      });
-    };
-    const scheduleChips = (): void => {
-      chipTimer = gsap.delayedCall(14 + RNG() * 5, () => {
-        rotateChips();
-        scheduleChips();
-      });
-    };
-    scheduleOrder();
-    scheduleChips();
-    ctx.onCleanup(() => {
-      orderTimer?.kill();
-      chipTimer?.kill();
-      gsap.killTweensOf([marker, orderFlash, ...tokenFlashes, shieldPulse, ribbon, chips]);
-    });
-  }
+  ctx.onCleanup(() => {
+    gsap.killTweensOf([marker, orderFlash, fillRing, fillRing.scale, fillFlash, ribbon]);
+  });
 
-  addSign(ctx, def, x, y - 172);
+  addSign(ctx, def, x, y - 176);
 }
 
 // ---------------------------------------------------------------------------
-// Signal tower
+// Alerts tower
 // ---------------------------------------------------------------------------
 
 function buildSignalTower(ctx: DioramaContext): void {
@@ -1023,6 +842,54 @@ function buildSignalTower(ctx: DioramaContext): void {
   root.addChildAt(mast, 0);
   const beacon = glow(x, y - 178, 26, PALETTE.cyan, 0.7);
   root.addChild(beacon);
+
+  // Watch feed console east of the mast: the ALERTS rows with per-state
+  // indicator dots. Rows are registered detail text; the console holds the
+  // dots and never duplicates the words in graphics.
+  const panelX = x + 40;
+  const panelY = y + 6;
+  root.addChild(
+    isoBox({
+      x: panelX,
+      y: panelY,
+      w: 46,
+      d: 14,
+      h: 10,
+      color: PALETTE.structure,
+      rim: FLOOR_TRIM,
+    }),
+  );
+  root.addChild(screenPanel({ x: panelX - 25, y: panelY - 46, w: 50, h: 42, accent: FLOOR_TRIM }));
+  const WATCH_ROWS = ["armed", "fired", "cancelled"] as const;
+  type WatchState = (typeof WATCH_ROWS)[number];
+  const WATCH_COLORS: Record<WatchState, number> = {
+    armed: PALETTE.cyan,
+    fired: PALETTE.warning,
+    cancelled: PALETTE.inkDim,
+  };
+  for (const [i, row] of WATCH_ROWS.entries()) {
+    const word = row.charAt(0).toUpperCase() + row.slice(1);
+    root.addChild(
+      makeDetailText(word, {
+        x: panelX - 8,
+        y: panelY - 37 + i * 10,
+        stationId: def.id,
+        size: 7.5,
+        align: "left",
+      }),
+    );
+  }
+  const watchDots = new Graphics();
+  root.addChild(watchDots);
+  const drawWatchDots = (active: WatchState): void => {
+    watchDots.clear();
+    for (const [i, row] of WATCH_ROWS.entries()) {
+      const on = row === active;
+      watchDots.circle(panelX - 19, panelY - 37 + i * 10, on ? 2.4 : 1.5);
+      watchDots.fill({ color: WATCH_COLORS[row], alpha: on ? 1 : 0.3 });
+    }
+  };
+  drawWatchDots("armed");
 
   // Pooled expanding ring waves (ellipse strokes scaled and faded via GSAP).
   const ringPool: Container[] = [];
@@ -1147,221 +1014,20 @@ function buildSignalTower(ctx: DioramaContext): void {
         flashMast(PALETTE.orange, 1);
       }
     },
-  };
-
-  if (!ctx.reducedMotion) {
-    let idle = 0;
-    let last = performance.now();
-    ctx.onTick(() => {
-      const now = performance.now();
-      idle += (now - last) / 1000;
-      last = now;
-      if (idle >= 10) {
-        idle = 0;
-        api.pulse("market");
+    setWatch(state) {
+      drawWatchDots(state);
+      if (ctx.reducedMotion) {
+        for (const e of emitters) e.tint = WATCH_COLORS[state];
+        return;
       }
-    });
-  }
+      flashMast(WATCH_COLORS[state], 1);
+    },
+  };
 
   ctx.onCleanup(() => {
     gsap.killTweensOf([...ringPool, ...emitters, beacon]);
   });
 
-  // The registry api lives on the handle; expose via closure variable.
   registerApi(ctx, def.id, api);
-  addSign(ctx, def, x, y + 42);
-}
-
-// ---------------------------------------------------------------------------
-// Event clock
-// ---------------------------------------------------------------------------
-
-function buildEventClock(ctx: DioramaContext): void {
-  const def = STATIONS.eventClock;
-  const { x, y } = def.anchor;
-  const root = stationRoot(ctx, def, y);
-
-  // Substantial mount: AO, wide base pillar with an aqua accent rim ring.
-  const clockAo = new Graphics();
-  clockAo.ellipse(x, y + 6, 18, 8);
-  clockAo.fill({ color: PALETTE.space, alpha: 0.3 });
-  root.addChild(clockAo);
-  root.addChild(
-    isoBox({ x, y: y + 2, w: 26, d: 14, h: 6, color: PALETTE.structureLight, rim: PALETTE.aqua }),
-  );
-  root.addChild(
-    isoBox({ x, y: y - 2, w: 16, d: 9, h: 44, color: PALETTE.structure, rim: PALETTE.surfacePale }),
-  );
-  const face = new Container();
-  face.position.set(x, y - 84);
-  root.addChild(face);
-
-  // Illuminated radial dial: soft aqua halo, a tick ring with cardinal
-  // emphasis, a slow sweeping phase arc, a counter ring, and an epoch
-  // counter, so the clock reads as a lit instrument instead of empty circles.
-  face.addChild(glow(0, 0, 108, PALETTE.aqua, 0.1));
-  const plate = new Graphics();
-  plate.circle(0, 0, 42);
-  plate.fill({ color: PALETTE.space, alpha: 0.72 });
-  plate.circle(0, 0, 42);
-  plate.stroke({ width: 1.5, color: PALETTE.structureLight, alpha: 0.9 });
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 2;
-    const cardinal = i % 3 === 0;
-    plate.moveTo(Math.cos(a) * (cardinal ? 34 : 36.5), Math.sin(a) * (cardinal ? 34 : 36.5));
-    plate.lineTo(Math.cos(a) * 41, Math.sin(a) * 41);
-    plate.stroke({
-      width: cardinal ? 2.2 : 1,
-      color: cardinal ? PALETTE.ink : PALETTE.inkDim,
-      alpha: cardinal ? 0.9 : 0.5,
-    });
-  }
-  plate.circle(0, 0, 2.2);
-  plate.fill({ color: PALETTE.aqua });
-  face.addChild(plate);
-  const epoch = microText("EPOCH 41", 5.5, PALETTE.inkDim);
-  epoch.anchor.set(0.5);
-  epoch.position.set(0, 10);
-  face.addChild(epoch);
-
-  // Slow sweeping phase arc (24 s per revolution) with a bright end dot.
-  const phaseArc = new Container();
-  const arcG = new Graphics();
-  const arcSweep = Math.PI * 2 * (100 / 360);
-  arcG.arc(0, 0, 30, -Math.PI / 2, -Math.PI / 2 + arcSweep);
-  arcG.stroke({ width: 3, color: PALETTE.aqua, alpha: 0.85 });
-  arcG.blendMode = "add";
-  phaseArc.addChild(arcG);
-  phaseArc.addChild(
-    glow(
-      Math.cos(-Math.PI / 2 + arcSweep) * 30,
-      Math.sin(-Math.PI / 2 + arcSweep) * 30,
-      10,
-      PALETTE.aqua,
-      0.7,
-    ),
-  );
-  face.addChild(phaseArc);
-
-  // Thin counter ring rotating against the sweep (60 s), for depth.
-  const counter = new Container();
-  const counterG = new Graphics();
-  for (let i = 0; i < 2; i++) {
-    const start = (i / 2) * Math.PI * 2 + 0.5;
-    counterG.arc(0, 0, 20, start, start + Math.PI - 0.9);
-    counterG.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.55 });
-  }
-  counterG.blendMode = "add";
-  counter.addChild(counterG);
-  face.addChild(counter);
-
-  if (!ctx.reducedMotion) {
-    ctx.onTick(() => {
-      const time = performance.now() / 1000;
-      phaseArc.rotation = (time / 24) * Math.PI * 2;
-      counter.rotation = -(time / 60) * Math.PI * 2;
-    });
-  } else {
-    phaseArc.rotation = 0.9;
-    counter.rotation = 2.1;
-  }
-
-  // Sign offset right and low: the dial's halo owns the space directly above.
-  addSign(ctx, def, x + 48, y + 52, PALETTE.aqua);
-}
-
-// ---------------------------------------------------------------------------
-// Status mast
-// ---------------------------------------------------------------------------
-
-function buildStatusMast(ctx: DioramaContext): void {
-  const def = STATIONS.statusMast;
-  const { x, y } = def.anchor;
-  const root = stationRoot(ctx, def, y);
-  statusPauseHook = null;
-
-  // Grounded contact shadow under the mast base.
-  const mastAo = new Graphics();
-  mastAo.ellipse(x, y + 5, 17, 7);
-  mastAo.fill({ color: PALETTE.space, alpha: 0.3 });
-  root.addChild(mastAo);
-  root.addChild(
-    isoBox({
-      x,
-      y: y + 2,
-      w: 12,
-      d: 7,
-      h: 46,
-      color: PALETTE.structureLight,
-      rim: PALETTE.surfacePale,
-    }),
-  );
-  const bar = new Graphics();
-  bar.roundRect(x - 32, y - 50, 64, 6, 3);
-  bar.fill({ color: PALETTE.structureLight });
-  bar.roundRect(x - 32, y - 50, 64, 6, 3);
-  bar.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.6 });
-  root.addChild(bar);
-
-  // Color + shape pairs so state never relies on hue alone.
-  const lights: { color: number; shape: "circle" | "triangle" | "square" | "diamond" }[] = [
-    { color: PALETTE.healthy, shape: "circle" },
-    { color: PALETTE.waiting, shape: "triangle" },
-    { color: PALETTE.warning, shape: "square" },
-    { color: PALETTE.blocked, shape: "diamond" },
-  ];
-  const lamps: Sprite[] = [];
-  lights.forEach((l, i) => {
-    const lx = x - 24 + i * 16;
-    const lamp = glow(lx, y - 56, 12, l.color, 0.55);
-    lamps.push(lamp);
-    root.addChild(lamp);
-    const dot = new Graphics();
-    dot.circle(lx, y - 56, 3);
-    dot.fill({ color: l.color });
-    root.addChild(dot);
-    const shield = new Graphics();
-    shield.setStrokeStyle({ width: 1.2, color: l.color, alpha: 0.9 });
-    if (l.shape === "circle") shield.circle(lx, y - 44, 4);
-    if (l.shape === "square") shield.rect(lx - 3.5, y - 47.5, 7, 7);
-    if (l.shape === "triangle") shield.poly([lx, y - 49, lx + 4, y - 41, lx - 4, y - 41]);
-    if (l.shape === "diamond")
-      shield.poly([lx, y - 49, lx + 4, y - 44, lx, y - 39, lx - 4, y - 44]);
-    shield.stroke();
-    root.addChild(shield);
-  });
-
-  // Floor-pause cue: the mast is the room lighting master, so its warning
-  // square (amber, degraded) holds bright and grows while the trading floor
-  // holds its paused state. Alpha/scale only; snaps in reduced motion.
-  const warnLamp = lamps[2];
-  statusPauseHook = (on: boolean): void => {
-    if (!warnLamp) return;
-    warnLamp.alpha = on ? 1 : 0.55;
-    warnLamp.scale.set(on ? 1.35 : 1);
-  };
-
-  // Sign offset east of the mast, clear of the dais steps to the north-east.
-  addSign(ctx, def, x + 34, y + 40, PALETTE.healthy);
-}
-
-/** Tiny console readout text; real Pixi text so it stays crisp at zoom. */
-function microText(text: string, size: number, color: number): Text {
-  const t = new Text({
-    text,
-    style: new TextStyle({
-      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-      fontSize: size,
-      letterSpacing: size * 0.08,
-      fill: color,
-    }),
-  });
-  t.resolution = 2;
-  return t;
-}
-
-/** Attach an api post-registration (helper for split builds). */
-function registerApi(_ctx: DioramaContext, id: StationId, api: object): void {
-  const handle = getStation(id);
-  if (handle) handle.api = api;
+  addSign(ctx, def, x, y + 46);
 }

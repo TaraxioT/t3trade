@@ -4,19 +4,20 @@
  * different material language (pale cool slab, aqua trim, dark keel) so it
  * reads as outside infrastructure plugged through the N-E wall rather than
  * another internal console: a service collar on the wall face, an umbilical
- * conduit down to the slab, a rescaled order-book wall on the booth's back,
- * a slow rotating trade ring, and the terminal threshold (pad + frame) where
- * the order and state rails dock. Registered like every station under id
+ * conduit down to the slab, an order-book wall on the booth's back, a slow
+ * rotating trade ring, and the terminal threshold (pad + frame) where the
+ * order and state rails dock. Registered like every station under id
  * "hyperliquidVenue", exposing the frozen exchangeEvent api through the
- * station registry for the stories. Idle luminance stays low so the central
- * floor dominates; the pad and collar peak only on order/ack/fill/state
- * beats. Owner: central district worker.
+ * station registry. Idle luminance stays low so the central floor dominates;
+ * the pad and collar peak only on order/ack/fill/state beats. Honesty copy
+ * ("AUTHORITATIVE EXCHANGE", "Simulated feed", "Open on Hyperliquid") is
+ * registered detail text owned by the signs policy.
  */
 import { Container, Graphics } from "pixi.js";
 import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import { glow, isoBox, isoWall } from "../core/iso.js";
-import { makeSign } from "../core/signs.js";
+import { makeDetailText, makeSign } from "../core/signs.js";
 import { registerStation } from "../core/registry.js";
 import { PALETTE, shade } from "../config/palette.js";
 import { STATIONS } from "../config/stations.js";
@@ -27,9 +28,6 @@ export interface HyperliquidApi {
   /** Animate: order received, acknowledged, filled, state update. */
   exchangeEvent(kind: "order" | "ack" | "fill" | "state"): void;
 }
-
-/** Populated by buildExchangePort; consumed by the director/stories/interaction. */
-
 
 const S = 1 / Math.sqrt(5);
 /** Along the N-E wall base (screen slope +1/2), pointing toward the E corner. */
@@ -84,8 +82,7 @@ export function buildExchangePort(ctx: DioramaContext): void {
   ctx.layers.sortable.addChild(root);
 
   // --- Keel and contact shadow: dark mass under the pale top so the booth
-  // reads as heavy infrastructure resting on the room floor, in the same
-  // vocabulary the old external platform used (dark keel under a pale slab).
+  // reads as heavy infrastructure resting on the room floor.
   const shadow = new Graphics();
   shadow.ellipse(x, y + 20, 138, 48);
   shadow.fill({ color: PALETTE.space, alpha: 0.32 });
@@ -263,7 +260,15 @@ export function buildExchangePort(ctx: DioramaContext): void {
   root.addChild(umbilical);
   const junction = lerp(back, foot, 0.5);
   root.addChild(
-    isoBox({ x: junction.x, y: junction.y, w: 20, d: 11, h: 9, color: PALETTE.structureLight, rim: PALETTE.aqua }),
+    isoBox({
+      x: junction.x,
+      y: junction.y,
+      w: 20,
+      d: 11,
+      h: 9,
+      color: PALETTE.structureLight,
+      rim: PALETTE.aqua,
+    }),
   );
   root.addChild(
     isoWall({
@@ -278,7 +283,7 @@ export function buildExchangePort(ctx: DioramaContext): void {
   );
   root.addChild(glow(foot.x, foot.y - 20, 26, PALETTE.aqua, 0.35));
   root.addChild(glow(foot.x - E1.x * 32, foot.y - E1.y * 32 - 8, 16, PALETTE.aqua, 0.3));
-  root.addChild(glow(foot.x + E1.x * 32, foot.y + E1.y * 32 - 8, 16, PALETTE.aqua, 0.3));
+  root.addChild(glow(foot.x + E1.x * 32, foot.y - E1.y * 32 - 8, 16, PALETTE.aqua, 0.3));
 
   // --- Pooled event sprites ---------------------------------------------------
   const capsule = new Graphics();
@@ -468,19 +473,32 @@ export function buildExchangePort(ctx: DioramaContext): void {
     },
   };
 
-  // --- Signage: station sign plus the honesty sub-line, both through the
-  // signs system (never text inside graphics).
+  // --- Signage: the tier-0 board plus the exchange-owned honesty details,
+  // all through the signs system (never text inside graphics).
   ctx.layers.labels.addChild(
-    makeSign(def.label, { x, y: y - 140, size: def.signSize, accent: PALETTE.aqua }),
+    makeSign(def.label, {
+      x,
+      y: y - 140,
+      size: def.signSize,
+      accent: PALETTE.aqua,
+      lod: def.lod,
+      stationId: def.id,
+    }),
   );
   ctx.layers.labels.addChild(
-    makeSign("AUTHORITATIVE EXCHANGE", {
+    makeDetailText("AUTHORITATIVE EXCHANGE", {
       x,
-      y: y - 117,
-      size: "xs",
-      accent: PALETTE.aqua,
-      lod: "fit",
+      y: y - 112,
+      stationId: def.id,
+      size: 11,
+      color: PALETTE.aqua,
     }),
+  );
+  ctx.layers.labels.addChild(
+    makeDetailText("Simulated feed", { x, y: y - 97, stationId: def.id, size: 9 }),
+  );
+  ctx.layers.labels.addChild(
+    makeDetailText("Open on Hyperliquid", { x, y: y - 84, stationId: def.id, size: 9 }),
   );
 
   // --- Registration: like every station, with the frozen api on the handle.
@@ -495,14 +513,17 @@ export function buildExchangePort(ctx: DioramaContext): void {
   registerStation({ id: def.id, root, hit, api });
 
   // --- Shared slow loops: ring rotation + ambient book flip. No bob, no
-  // drifting shards: the booth is docked, not floating.
-  let lastFlip = 0;
-  const un = ctx.onTick((ticker) => {
-    const t = ticker.elapsedMS;
+  // drifting shards: the booth is docked, not floating. Wall-clock time is
+  // accumulated per tick; elapsedMS is a frame delta, not a clock.
+  let lastFlip = performance.now();
+  let lastT = lastFlip;
+  const un = ctx.onTick(() => {
     if (ctx.reducedMotion) return;
-    ring.rotation = (t / 40000) * Math.PI * 2;
-    if (t - lastFlip >= 5000) {
-      lastFlip = t;
+    const now = performance.now();
+    ring.rotation += ((now - lastT) / 40000) * Math.PI * 2;
+    lastT = now;
+    if (now - lastFlip >= 5000) {
+      lastFlip = now;
       const b = blocks[flipIdx % blocks.length];
       flipIdx++;
       if (b) {

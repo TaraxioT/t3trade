@@ -8,12 +8,13 @@
 import gsap from "gsap";
 import { Graphics, type Container } from "pixi.js";
 import type { DioramaContext } from "../core/context.js";
-import type { Camera } from "../core/camera.js";
+import { lodLevelForZoom, type Camera } from "../core/camera.js";
 import type { InfoCard } from "./infoCard.js";
 import { allStations, type StationHandle } from "../core/registry.js";
 import { DISTRICTS, STATIONS, type StationDef, type StationId } from "../config/stations.js";
 import { safeDestroy } from "../core/iso.js";
 import { setBannersDim } from "./labels.js";
+import { setFocusSignOverride } from "../core/signs.js";
 import { CUES, playDioramaCue } from "../audio.js";
 
 /** Pointer travel (px) under which a down/up pair still counts as a click. */
@@ -35,8 +36,20 @@ const HINT_AUTO_DISMISS_MS = 9000;
 /** Affordance beacon cadence until the first station selection. */
 const BEACON_INTERVAL_MS = 6000;
 
+/** Hover delay before the name-only tooltip appears. */
+const TOOLTIP_DELAY_MS = 250;
+
 /** sessionStorage key suppressing the hint for the rest of the session. */
 const HINT_STORAGE_KEY = "t3-diorama-hint";
+
+/**
+ * True when the station's board is hidden at the current camera tier and the
+ * hover tooltip should supply the name. overview boards are visible at every
+ * tier; zoom boards reveal from tier 1.
+ */
+function boardHiddenAtTier(lod: StationDef["lod"], tier: number): boolean {
+  return lod !== "overview" && tier < 1;
+}
 
 export interface InteractionDeps {
   camera: Camera;
@@ -71,6 +84,10 @@ let selectedStationId: string | null = null;
 function setSelection(id: string | null): void {
   if (selectedStationId === id) return;
   selectedStationId = id;
+  // Signs policy: force the focused station's boards/details visible at any
+  // tier and dim the rest; null restores the camera-tier rule. Shared by the
+  // pointer and keyboard paths so both get identical sign treatment.
+  setFocusSignOverride(id);
   activeSelectionChange?.(id);
 }
 
@@ -131,6 +148,98 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   let hovered: string | null = null;
   let liftedRoot: Container | null = null;
 
+  // ----- Name-only hover tooltip for stations whose board is hidden. -----
+  // At the current camera tier an unlabeled station still needs a name while
+  // hovered. Name only (the a11y directory supplies descriptions), 250 ms
+  // delay, follows the pointer without covering it; suppressed while dragging,
+  // during an active focus, and on coarse pointers; aria-hidden because the
+  // directory already carries the accessible names.
+
+  let hoverDef: PickedStation | null = null;
+  let tipEl: HTMLElement | null = null;
+  let tipTimer: number | null = null;
+  let tipDef: PickedStation | null = null;
+  let lastPointer: { x: number; y: number } | null = null;
+  const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+
+  const hideTip = (): void => {
+    if (tipTimer !== null) {
+      window.clearTimeout(tipTimer);
+      tipTimer = null;
+    }
+    tipDef = null;
+    tipEl?.remove();
+    tipEl = null;
+  };
+
+  // The subscription replays the current zoom synchronously; every name it
+  // touches above is already declared.
+  let currentTier = 0;
+  const offZoomTier = deps.camera.onZoom((zoom) => {
+    currentTier = lodLevelForZoom(zoom);
+    // A tier crossing can make the hovered station's board visible.
+    if (hoverDef && !boardHiddenAtTier(hoverDef.lod, currentTier)) hideTip();
+  });
+
+  const positionTip = (): void => {
+    if (!tipEl || !lastPointer) return;
+    const rect = host.getBoundingClientRect();
+    const w = tipEl.offsetWidth;
+    const h = tipEl.offsetHeight;
+    let x = lastPointer.x - rect.left + 14;
+    let y = lastPointer.y - rect.top + 18;
+    // Flip to the other side of the pointer near the edges so it never
+    // covers the pointer or leaves the host.
+    if (x + w > rect.width - 8) x = lastPointer.x - rect.left - w - 12;
+    if (y + h > rect.height - 8) y = lastPointer.y - rect.top - h - 12;
+    tipEl.style.left = `${Math.max(8, x)}px`;
+    tipEl.style.top = `${Math.max(8, y)}px`;
+  };
+
+  const showTip = (def: PickedStation): void => {
+    if (coarsePointer || selectedStationId !== null) return;
+    if (!tipEl) {
+      tipEl = document.createElement("div");
+      tipEl.className = "diorama-station-tip";
+      tipEl.setAttribute("aria-hidden", "true");
+      host.appendChild(tipEl);
+    }
+    tipEl.textContent = def.label;
+    positionTip();
+  };
+
+  const scheduleTip = (def: PickedStation): void => {
+    hideTip();
+    if (coarsePointer || selectedStationId !== null) return;
+    if (!boardHiddenAtTier(def.lod, currentTier)) return;
+    tipDef = def;
+    tipTimer = window.setTimeout(() => {
+      tipTimer = null;
+      if (tipDef && selectedStationId === null) showTip(tipDef);
+    }, TOOLTIP_DELAY_MS);
+  };
+
+  if (!document.getElementById("diorama-station-tip-style")) {
+    const style = document.createElement("style");
+    style.id = "diorama-station-tip-style";
+    style.textContent = `
+.diorama-station-tip{
+  position:absolute;
+  z-index:6;
+  padding:4px 8px;
+  border-radius:7px;
+  background:rgba(7,17,31,.92);
+  border:1px solid rgba(52,229,229,.3);
+  font-family:'JetBrains Mono',ui-monospace,monospace;
+  font-size:10px;
+  letter-spacing:.08em;
+  color:#d9e8f2;
+  pointer-events:none;
+  white-space:nowrap;
+}`;
+    document.head.appendChild(style);
+  }
+
   /**
    * Station lookup by world point: diamond footprint containment over the
    * registered stations, highest zIndex wins so nested stations (holo core
@@ -175,10 +284,17 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
 
   const setHover = (picked: PickedStation | null): void => {
     const id = picked?.id ?? null;
-    if (id === hovered) return;
+    if (id === hovered) {
+      hoverDef = picked;
+      // Same station under the pointer: keep a visible tooltip glued to it.
+      if (tipEl) positionTip();
+      return;
+    }
     hovered = id;
-    setLift(picked);
+    hoverDef = picked;
     if (!picked) {
+      hideTip();
+      setLift(null);
       canvas.style.cursor = "";
       gsap.to(hoverRing, {
         alpha: 0,
@@ -190,6 +306,9 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
       });
       return;
     }
+    // Name tooltip only while the station's own board is hidden at this tier.
+    scheduleTip(picked);
+    setLift(picked);
     const def = picked;
     hoverRing.tint = DISTRICTS[def.district].accent;
     drawDiamond(hoverRing, def.size);
@@ -201,6 +320,8 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
 
   const clearHover = (): void => {
     hovered = null;
+    hoverDef = null;
+    hideTip();
     setLift(null);
     canvas.style.cursor = "";
     gsap.killTweensOf(hoverRing);
@@ -258,7 +379,7 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   // entry is a registered station, so pointer clicks reach the same targets.
 
   const BEACON_TARGETS: StationDef[] = [
-    STATIONS.liquidityResearch,
+    STATIONS.marketData,
     STATIONS.mcpHub,
     STATIONS.tradingFloor,
     STATIONS.hyperliquidVenue,
@@ -301,12 +422,11 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   }
 
   // ----- First-visit onboarding hint (DOM, one per session). -----
-  // Top-center: the room's south band is crowded with station signs at fit
-  // zoom (RECOVERY, RECONCILIATION, AUDIT, IDENTITY & ACCESS), while the
-  // top-center band is the open north mouth above the CENTRAL TRADING FLOOR
-  // banner and stays clear of the top-right HUD cluster. The pill is
-  // pointer-events:none and also self-dismisses (HINT_AUTO_DISMISS_MS), so it
-  // can never linger over a label for a visitor who does not interact.
+  // Top-center: the top-center band is the open north mouth above the
+  // district banner and stays clear of the top-left mission strip and the
+  // top-right HUD cluster. The pill is pointer-events:none and also
+  // self-dismisses (HINT_AUTO_DISMISS_MS), so it can never linger over a
+  // label for a visitor who does not interact.
 
   let hintEl: HTMLElement | null = null;
   let hintTimer: number | null = null;
@@ -437,6 +557,8 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     selectedOnce = true;
     stopBeacon();
     dismissHint();
+    // Focus suppresses the hover tooltip (its name is on the forced board).
+    hideTip();
     deps.camera.focusOn(def.anchor, def.focusZoom ?? 1.35);
     deps.infoCard.show(def, undefined, stationScreen(def.anchor));
     setBannersDim(true);
@@ -457,6 +579,8 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
   // when the pointer did not travel (drag threshold) and clears otherwise.
   const onDown = (e: PointerEvent): void => {
     downPoint = { x: e.clientX, y: e.clientY };
+    // A press starts a possible drag; the tooltip must not ride along.
+    hideTip();
   };
   const onUp = (e: PointerEvent): void => {
     if (!downPoint) return;
@@ -470,6 +594,7 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     else clearSelection();
   };
   const onMove = (e: PointerEvent): void => {
+    lastPointer = { x: e.clientX, y: e.clientY };
     const rect = canvas.getBoundingClientRect();
     const world = deps.camera.screenToWorld({ x: e.clientX - rect.left, y: e.clientY - rect.top });
     setHover(pickStation(world.x, world.y));
@@ -493,6 +618,8 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     canvas.removeEventListener("pointermove", onMove);
     canvas.removeEventListener("pointerleave", onLeave);
     window.removeEventListener("keydown", onKeyDown);
+    offZoomTier();
+    hideTip();
     stopBeacon();
     removeHint();
     gsap.killTweensOf(hoverRing);

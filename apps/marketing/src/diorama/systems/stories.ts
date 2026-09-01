@@ -1,80 +1,52 @@
 /**
- * The 31 micro-stories: small scripted sequences of agent walks, rail
- * packets, station api calls, and simulation mutations that continuously
- * explain T3 Trade. Owner: director worker.
+ * The cycle-4 story catalog: 19 event-driven scenarios that continuously
+ * explain T3 Trade. Stories are the simulated product actor: they dispatch
+ * typed events through the diorama event bus (ctx.bus) and move background
+ * agents. They NEVER call station APIs, send rail packets, mutate the
+ * simulation, or cue audio — systems/sceneBindings.ts is the single semantic
+ * consumer that turns each event into station visuals, rails, state, and HUD.
  *
- * Contract notes relied on here (see artifacts/diorama/workers/director.md):
- * - DecisionTableApi.showProposals(count, -1) means "reject beat": all cards
- *   retract and one dims red. The research district worker must honor -1
- *   instead of clamping it to 0.
- * - Stations without a frozen animation api (marketData, portfolioVault,
- *   auditArchive, approval waiting shimmer) get a station-agnostic glow
- *   pulse on their registered root via GSAP alpha.
- * - Hyperliquid / MarketLandscape apis are reached through the exported
- *   holder objects (`hyperliquid`, `marketLandscape`), each `{ api: X | null }`,
- *   and are null-guarded. The authority seam sweep comes from world/seam.ts
- *   (`pulseSeam()`), fired when approval binds.
- * - Every literal walk point and cue anchor must sit inside the room diamond
- *   (config/geometry.ts insideRoom); nothing routes outside the room.
+ * Catalog = freeze §11 ledger exactly:
+ * - 1 spine: s-lifecycle, the full mission pass the director loops.
+ * - 16 segment stories, one per card-action station.
+ * - 2 textures (no card): s-refusal, s-tool-texture.
+ *
+ * Determinism: fake ids/sizes/sides and hold lengths come from the shared
+ * seeded rng in StoryDeps, so the same seed replays the same show. Reduced
+ * motion keeps the same event order; the director's beat() shortens holds and
+ * stories never manage packet visuals, so no story work is motion-specific.
+ *
+ * Owner: stories worker (sole writer of this file). Consumers: the director
+ * (SPINE_ID / TEXTURE_POOL / STORY_MAP) and station info cards,
+ * which run story ids through Director.runStory.
  */
-import gsap from "gsap";
 import type { DioramaContext } from "../core/context.js";
 import type { StationId } from "../config/stations.js";
 import { STATIONS } from "../config/stations.js";
-import type { PacketKind, RouteId } from "../config/rails.js";
-import { ROUTES } from "../config/rails.js";
-import { ROLE_COLORS } from "../config/palette.js";
-import type { Agent, Expression } from "../agents/agent.js";
+import type { Expression, ReactionKind } from "../agents/agent.js";
+import type { Agent } from "../agents/agent.js";
 import type { AgentSystem } from "../agents/system.js";
-import type { RailSystem } from "./rails.js";
-import type { Simulation } from "./simulation.js";
-import { stationApi as registryApi } from "../core/registry.js";
-import { getStation } from "../core/registry.js";
-import type { HyperliquidApi } from "../world/hyperliquid.js";
-import type { MarketLandscapeApi } from "../world/marketLandscape.js";
-import * as marketLandscapeModule from "../world/marketLandscape.js";
-import type {
-  DecisionTableApi,
-  LiquidityResearchApi,
-  MissionBoardApi,
-} from "../stations/research.js";
-import type {
-  ApprovalApi,
-  BudgetMeterApi,
-  ExecutionGatewayApi,
-  ProtectionApi,
-  RiskFortressApi,
-  SignerVaultApi,
-} from "../stations/risk.js";
-import type { McpHubApi } from "../stations/mcp.js";
-import type {
-  ReceiptPrinterApi,
-  ReconciliationApi,
-  RecoveryApi,
-  RefusalBoardApi,
-  ReplayChamberApi,
-} from "../stations/ops.js";
-import type {
-  HoloCoreApi,
-  SignalTowerApi,
-  TradingFloorApi,
-} from "../stations/central.js";
-import { popMarkAt, scatterCards, rollProp } from "../agents/fx.js";
-import { cueAt } from "../audio.js";
-import { mascot as mascotHolder } from "../agents/mascot.js";
+
+/**
+ * The bus event union, derived from the frozen context surface instead of a
+ * direct eventBus.ts import: freeze §3 adds `bus` to DioramaContext and the
+ * bus lane owns the union type. This keeps the coupling point to exactly one
+ * field name.
+ */
+type BusEvent = Parameters<DioramaContext["bus"]["dispatch"]>[0];
 
 export interface StoryDeps {
   ctx: DioramaContext;
   agents: AgentSystem;
-  rails: RailSystem;
-  simulation: Simulation;
   /** Seeded rng shared with the director; same seed = same show. */
   rng: () => number;
   /** Actors acquired for this run; guaranteed held until the story finishes. */
   cast: Map<string, Agent>;
-  /** Content timing (story beats). Resolves immediately once stopped. */
+  /** Content wait; resolves immediately once stopped. (Reserved for holds
+   * that must not compress under reduced motion; current stories use beat.) */
   wait(ms: number): Promise<void>;
-  /** Decorative pause. Skipped entirely under reduced motion. */
+  /** Story beat: the director shortens it under reduced motion and resolves
+   * immediately once stopped, so every spacing wait in a story goes through it. */
   beat(ms: number): Promise<void>;
   /** True once the director has been stopped; finish early when set. */
   cancelled(): boolean;
@@ -85,15 +57,16 @@ export interface Story {
   title: string;
   /** Rough playing time in seconds; scheduler hint only. */
   durationHint: number;
-  /** Actor ids that must be acquirable for the story to start. */
+  /** Agent ids acquired for the run; the story skips when any is busy. */
   agents: string[];
-  /** Stations that must be free; the director marks them busy. */
-  stations: StationId[];
+  /** Stations whose visuals this story drives; the director marks them busy
+   * so no other story or heartbeat writes the same station concurrently. */
+  locks: StationId[];
   run(deps: StoryDeps): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
-// Robustness helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
 const warned = new Set<string>();
@@ -104,175 +77,79 @@ function warnOnce(message: string): void {
   console.warn(`[diorama/stories] ${message}`);
 }
 
-/** Typed station api lookup that logs once when a station is not built yet. */
-function storyApi<T extends object>(id: StationId): T | undefined {
-  const api = registryApi<T>(id);
-  if (!api) warnOnce(`station api not registered: ${id}`);
-  return api;
-}
+/** The one hero asset across every story; matches the WATCHLIST board. */
+const MARKET = "ETH";
+/** Mid-row MCP tool port used by tool-call/tool-health stories. */
+const TOOL_PORT = 3;
 
-/** Ground-worker holder objects may not exist yet; read them defensively. */
-function holderApi<T>(mod: object, name: string): T | null {
-  const holder = (mod as unknown as Record<string, unknown>)[name] as { api: T | null } | undefined;
-  if (!holder || !holder.api) {
-    warnOnce(`world holder missing or empty: ${name}`);
-    return null;
-  }
-  return holder.api;
-}
-
-function hyperliquid(): HyperliquidApi | undefined {
-  return storyApi<HyperliquidApi>("hyperliquidVenue");
-}
-
-function marketLandscape(): MarketLandscapeApi | null {
-  return holderApi<MarketLandscapeApi>(marketLandscapeModule, "marketLandscape");
+/** Dispatch a bus event unless the director already stopped this run. */
+function emit(d: StoryDeps, event: BusEvent): void {
+  if (d.cancelled()) return;
+  d.ctx.bus.dispatch(event);
 }
 
 /**
- * Station-agnostic glow pulse for stations without a frozen animation api.
- * Tweens the registered root's alpha. Exported: the director's district
- * heartbeats reuse it. The tween is short-lived and self-terminating; route
- * teardown's gsap.globalTimeline.clear() is the cleanup, so NO per-call
- * cleanup is registered (heartbeats fire every few hundred milliseconds and
- * per-call registrations would grow the cleanup list without bound).
+ * Cleanup dispatch from finally paths: an interrupted story must still leave
+ * coherent state (recovered port, resumed campus). The bus is inert after
+ * destroy, so after teardown this is a harmless no-op.
  */
-export function glowPulse(ctx: DioramaContext, id: StationId, dip = 0.5, seconds = 0.9): void {
-  const station = getStation(id);
-  if (!station) {
-    warnOnce(`station not registered: ${id}`);
-    return;
-  }
-  gsap.to(station.root, {
-    alpha: dip,
-    duration: seconds / 2,
-    yoyo: true,
-    repeat: 1,
-    ease: "sine.inOut",
-  });
+function emitRestore(d: StoryDeps, event: BusEvent): void {
+  d.ctx.bus.dispatch(event);
 }
 
-/** Walk, or snap into place under reduced motion. No-ops once the director
- * is stopped: story continuations can resume after teardown (pending walks
- * resolve during cleanup) and must not touch destroyed objects. */
+/** Seeded fake identifier, e.g. "watch-3f0a"; never shown as real data. */
+function fakeId(d: StoryDeps, prefix: string): string {
+  return `${prefix}-${Math.floor(d.rng() * 0xffff)
+    .toString(16)
+    .padStart(4, "0")}`;
+}
+
+/** Seeded order size in ETH (0.20-1.00) as a plain decimal string, the shape
+ * the execution-requested event carries; nothing in the scene parses it. */
+function fakeSize(d: StoryDeps): string {
+  return (0.2 + d.rng() * 0.8).toFixed(2);
+}
+
+/**
+ * Walk a cast agent through waypoints; no-ops once the director is stopped
+ * (story continuations can resume after teardown and must not touch
+ * destroyed objects). Locomotion always walks, also under reduced motion:
+ * miniature agents walking between posts is scene content, not a vestibular
+ * trigger. Waypoints must come from near() so registry re-anchoring keeps
+ * them inside the agent's legal west/east district.
+ */
 async function move(
-  deps: StoryDeps,
+  d: StoryDeps,
   agentId: string,
   points: { x: number; y: number }[],
 ): Promise<void> {
-  if (deps.cancelled()) return;
-  const agent = deps.cast.get(agentId);
+  if (d.cancelled()) return;
+  const agent = d.cast.get(agentId);
   if (!agent) {
     warnOnce(`agent missing from cast: ${agentId}`);
     return;
   }
   if (points.length === 0) return;
-  // Locomotion always walks (also under reduced motion): miniature agents
-  // walking between stations is scene content, so stories never teleport.
-  await deps.agents.walk(agent, points, { ease: "arrive" });
+  await d.agents.walk(agent, points, { ease: "arrive" });
 }
 
-/** Dispatch a packet and wait for arrival. The packet chirp is anchored to
- * the route's origin station so sound and the visual source cue come from
- * where the packet leaves (foley cooldown inside the audio layer keeps
- * bursts from machine-gunning). */
-async function send(
-  deps: StoryDeps,
-  route: RouteId,
-  kind?: PacketKind,
-  opts?: { reverse?: boolean; label?: string },
-): Promise<void> {
-  if (deps.cancelled()) return;
-  const origin = opts?.reverse ? ROUTES[route]?.to : ROUTES[route]?.from;
-  if (origin) cue("packet", STATIONS[origin].anchor);
-  const handle = deps.rails.dispatch(route, kind, opts);
-  await handle.done;
+/** Face work expression on a cast agent (tasking, not comedy). */
+function express(d: StoryDeps, agentId: string, expr: Expression): void {
+  if (d.cancelled()) return;
+  d.cast.get(agentId)?.setExpression(expr);
 }
 
-function express(deps: StoryDeps, agentId: string, expr: Expression): void {
-  if (deps.cancelled()) return;
-  deps.cast.get(agentId)?.setExpression(expr);
+/** One purposeful body reaction on a cast agent. */
+function react(d: StoryDeps, agentId: string, kind: ReactionKind): void {
+  if (d.cancelled()) return;
+  d.cast.get(agentId)?.react(kind);
 }
 
-function react(
-  deps: StoryDeps,
-  agentId: string,
-  kind:
-    | "hop"
-    | "droop"
-    | "lean"
-    | "tilt"
-    | "wobble"
-    | "squash"
-    | "startle"
-    | "headrub"
-    | "apologize"
-    | "doubleTake",
-): void {
-  if (deps.cancelled()) return;
-  deps.cast.get(agentId)?.react(kind);
-}
-
-function popMark(
-  deps: StoryDeps,
-  agentId: string,
-  kind: "!" | "?" | "stars" | "droplet" | "puff",
-): void {
-  if (deps.cancelled()) return;
-  deps.cast.get(agentId)?.popMark(kind);
-}
-
-/** Fire a semantic audio cue anchored to its emitting world point; a no-op
- * while the visitor keeps sound muted. The audio layer derives stereo pan
- * and distance attenuation from the point and pulses a matching visual
- * source cue at the same location. */
-function cue(name: string, at: { x: number; y: number }): void {
-  cueAt(name, at);
-}
-
-/** The floor mascot celebrates when a beat lands near its pad; no-op before
- * the mascot module has built (story beats must never depend on it). */
-function mascotCelebrate(): void {
-  mascotHolder.api?.celebrate();
-}
-
-/** Advance the mission phase on the shared simulation AND the board, so the
- * visible mission board tracks the lifecycle instead of drifting stale. */
-function setMissionPhase(deps: StoryDeps, phase: string): void {
-  if (deps.cancelled()) return;
-  deps.simulation.setPhase(phase);
-  storyApi<MissionBoardApi>("missionBoard")?.setPhase(phase);
-}
-
-/** A named walking point near a station anchor, offset toward the floor. */
+/** A walking point offset from a station anchor; the only legal source of
+ * story coordinates (small offsets, west/east stations only for agents). */
 function near(id: StationId, dx = 0, dy = 0): { x: number; y: number } {
   const s = STATIONS[id].anchor;
   return { x: s.x + dx, y: s.y + dy };
-}
-
-// Short local aliases for the station api interfaces the stories call.
-type Approval = ApprovalApi;
-type BudgetMeter = BudgetMeterApi;
-type ExecutionGateway = ExecutionGatewayApi;
-type Protection = ProtectionApi;
-type RiskFortress = RiskFortressApi;
-type SignerVault = SignerVaultApi;
-type McpHub = McpHubApi;
-type ReceiptPrinter = ReceiptPrinterApi;
-type Reconciliation = ReconciliationApi;
-type Recovery = RecoveryApi;
-type ReplayChamber = ReplayChamberApi;
-type SignalTower = SignalTowerApi;
-type TradingFloor = TradingFloorApi;
-type MarketStructure = LiquidityResearchApi;
-
-/**
- * The approval desk may expose a grant pulse alongside its frozen seal api;
- * optional so the seam story works at every integration state of the risk
- * lane (the seam sweep itself never depends on it).
- */
-interface ApprovalGrantPulse {
-  grantPulse?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,978 +161,542 @@ const s = (
   title: string,
   durationHint: number,
   agents: string[],
-  stations: StationId[],
-  run: (deps: StoryDeps) => Promise<void>,
-): Story => ({ id, title, durationHint, agents, stations, run });
-
-// Probe walk along the floor terrain band (matches the landscape worker's
-// probe drift lane and probe-1's authored wander).
-const probeWalk: { x: number; y: number }[] = [
-  { x: 715, y: 508 },
-  { x: 768, y: 481 },
-  { x: 845, y: 443 },
-  { x: 930, y: 401 },
-];
-
-// Scanner patrol across the risk fortress apron (matches risk-scanner's
-// authored wander loop).
-const corridorWalk: { x: number; y: number }[] = [
-  { x: 2130, y: 735 },
-  { x: 2200, y: 745 },
-  { x: 2270, y: 770 },
-];
-
-// Sandbox stroll in the northwest research pocket (matches sandbox-1's
-// authored wander loop).
-const sandboxWalk: { x: number; y: number }[] = [
-  { x: 295, y: 730 },
-  { x: 345, y: 712 },
-  { x: 315, y: 698 },
-];
+  locks: StationId[],
+  run: (d: StoryDeps) => Promise<void>,
+): Story => ({ id, title, durationHint, agents, locks, run });
 
 /**
- * The full trade lifecycle chain: research through reconciliation, played in
- * order with short gaps so a viewer can follow one decision end to end.
+ * The spine: one full mission pass from creation to open position, played as
+ * the ordered freeze §8 event sequence with 250-450 ms gaps, a readable
+ * 6-8 s analyse beat, and the 2.5 s finale hold. Exactly two background
+ * agent waypoints (research-1 during the analyse beat, recon-1 during the
+ * reconcile beat). No rejection in the spine.
  */
-export const LIFECYCLE_CHAIN: string[] = [
-  "s-research-synthesis",
-  "s-proposals-appear",
-  "s-proposal-rejected",
-  "s-proposal-needs-human",
-  "s-human-approval",
-  "s-permission-verify",
-  "s-budget-consume",
-  "s-risk-pass",
+const sLifecycle = s(
+  "s-lifecycle",
+  "Full mission lifecycle",
+  28,
+  ["research-1", "recon-1"],
+  [
+    "marketData",
+    "researchTools",
+    "missionBoard",
+    "decisionTable",
+    "budgetMeter",
+    "riskFortress",
+    "protection",
+    "signerVault",
+    "executionGateway",
+    "hyperliquidVenue",
+    "reconciliationDock",
+    "portfolioVault",
+    "holoCore",
+    "signalTower",
+    "auditArchive",
+  ],
+  async (d) => {
+    const missionId = fakeId(d, "mission");
+    const watchId = fakeId(d, "watch");
+    const side = d.rng() < 0.5 ? "buy" : "sell";
+    const size = fakeSize(d);
+
+    // Mission opens; the board holds "Analysing" while research reads it.
+    emit(d, { type: "trading.mission-create-requested", missionId, market: MARKET });
+    emit(d, { type: "trading.mission-status-changed", status: "Analysing" });
+    const researchWalk = move(d, "research-1", [
+      near("marketData", 46, 62),
+      near("researchTools", 34, 56),
+    ]);
+    await d.beat(6800 + d.rng() * 700);
+    await researchWalk;
+    if (d.cancelled()) return;
+
+    // A watch goes armed, the mission waits, the market crosses it.
+    emit(d, { type: "trading.mission-watch-registered", watchId, asset: MARKET });
+    await d.beat(400);
+    emit(d, { type: "trading.mission-status-changed", status: "Waiting" });
+    await d.beat(420);
+    emit(d, { type: "trading.mission-watch-fired", watchId });
+    await d.beat(400);
+    emit(d, { type: "trading.mission-run-started", cause: "watch-fired" });
+    await d.beat(380);
+
+    // The plan becomes an order: preview, guards, protection, signature.
+    emit(d, { type: "trading.execution-requested", market: MARKET, side, size });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "previewed" });
+    await d.beat(450);
+    emit(d, { type: "diorama.execution-status", status: "reserved" });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "signed" });
+    await d.beat(380);
+
+    // Out to the authoritative exchange, then back through reconciliation.
+    // "Executing" lands the moment the order is submitted, before the ack.
+    emit(d, { type: "diorama.execution-status", status: "submitted" });
+    emit(d, { type: "trading.mission-status-changed", status: "Executing" });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "accepted" });
+    await d.beat(400);
+    emit(d, { type: "diorama.execution-status", status: "filled" });
+    await d.beat(300);
+    emit(d, { type: "diorama.account-invalidated", reason: "reconcile:after_fill" });
+    const reconWalk = move(d, "recon-1", [near("reconciliationDock", 44, -30)]);
+    await d.beat(420);
+    emit(d, {
+      type: "diorama.account-view-refetched",
+      market: MARKET,
+      hasPosition: true,
+      protection: "resting_on_exchange",
+    });
+    await d.beat(400);
+    emit(d, { type: "trading.mission-status-changed", status: "Position open" });
+    await reconWalk;
+    // Finale: the canonical wave RECONCILE -> POSITIONS -> CHART and the one
+    // HISTORY receipt row are sceneBindings' answer to the refetch; hold so
+    // the viewer can read them before the loop breathes.
+    await d.beat(2600);
+  },
+);
+
+/** The execution half of the spine, runnable from the TRADE card. */
+const sPlaceOrder = s(
+  "s-place-order",
+  "Place an order",
+  14,
+  [],
+  [
+    "decisionTable",
+    "budgetMeter",
+    "riskFortress",
+    "protection",
+    "signerVault",
+    "executionGateway",
+    "hyperliquidVenue",
+    "reconciliationDock",
+    "portfolioVault",
+    "holoCore",
+    "missionBoard",
+    "auditArchive",
+  ],
+  async (d) => {
+    const side = d.rng() < 0.5 ? "buy" : "sell";
+    const size = fakeSize(d);
+    emit(d, { type: "trading.execution-requested", market: MARKET, side, size });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "previewed" });
+    await d.beat(450);
+    emit(d, { type: "diorama.execution-status", status: "reserved" });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "signed" });
+    await d.beat(380);
+    emit(d, { type: "diorama.execution-status", status: "submitted" });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "accepted" });
+    await d.beat(400);
+    emit(d, { type: "diorama.execution-status", status: "filled" });
+    await d.beat(300);
+    emit(d, { type: "diorama.account-invalidated", reason: "reconcile:after_fill" });
+    await d.beat(420);
+    emit(d, {
+      type: "diorama.account-view-refetched",
+      market: MARKET,
+      hasPosition: true,
+      protection: "resting_on_exchange",
+    });
+    await d.beat(400);
+    emit(d, { type: "trading.mission-status-changed", status: "Position open" });
+    await d.beat(2400);
+  },
+);
+
+/** Arm a watch on the WATCHLIST card; it fires and the mission run starts. */
+const sWatchMarket = s(
+  "s-watch-market",
+  "Watch the market",
+  6,
+  ["research-1"],
+  ["marketData", "missionBoard", "signalTower"],
+  async (d) => {
+    const watchId = fakeId(d, "watch");
+    const walk = move(d, "research-1", [near("marketData", 46, 62)]);
+    emit(d, { type: "trading.mission-watch-registered", watchId, asset: MARKET });
+    await d.beat(400);
+    emit(d, { type: "trading.mission-status-changed", status: "Waiting" });
+    await d.beat(420);
+    emit(d, { type: "trading.mission-watch-fired", watchId });
+    await d.beat(420);
+    emit(d, { type: "trading.mission-run-started", cause: "watch-fired" });
+    await d.beat(600);
+    // Settle: this segment runs no execution, so the mission returns to
+    // waiting instead of hanging on a started run that never trades.
+    emit(d, { type: "trading.mission-status-changed", status: "Waiting" });
+    await walk;
+  },
+);
+
+/** ALERTS card: arm then fire a watch so the fired pulse and row are real. */
+const sAlertFire = s(
+  "s-alert-fire",
+  "Alert fires",
+  4,
+  [],
+  ["signalTower", "missionBoard"],
+  async (d) => {
+    const watchId = fakeId(d, "watch");
+    emit(d, { type: "trading.mission-watch-registered", watchId, asset: MARKET });
+    await d.beat(350);
+    emit(d, { type: "trading.mission-watch-fired", watchId });
+    await d.beat(900);
+  },
+);
+
+/** IDEAS & VALIDATION card: a research cycle that stays in research mode. */
+const sRunValidation = s(
+  "s-run-validation",
+  "Forward validation",
+  6,
+  ["research-1"],
+  ["researchTools", "missionBoard"],
+  async (d) => {
+    const missionId = fakeId(d, "mission");
+    const walk = move(d, "research-1", [near("researchTools", 32, 58)]);
+    emit(d, { type: "trading.mission-create-requested", missionId, market: MARKET });
+    await d.beat(300);
+    emit(d, { type: "trading.mission-status-changed", status: "Analysing" });
+    await d.beat(2400);
+    // Paper validation never trades: the cycle ends back in waiting.
+    emit(d, { type: "trading.mission-status-changed", status: "Waiting" });
+    await walk;
+  },
+);
+
+/** CHART card: re-assert the open-position chart state (overlay refresh). */
+const sMarketShift = s(
+  "s-market-shift",
+  "Market regime shift",
+  4,
+  [],
+  ["holoCore", "missionBoard"],
+  async (d) => {
+    // Regime shifts flow through the derived projection so the binding owns
+    // the CHART reaction (overlays + regime shading) like every other event.
+    emit(d, { type: "diorama.market-regime-changed", regime: "turbulent" });
+    await d.beat(900);
+    emit(d, { type: "diorama.market-regime-changed", regime: "rising" });
+    await d.beat(500);
+  },
+);
+
+/** TOOLS card: one tool call briefly loads a port, then it recovers. */
+const sToolCall = s("s-tool-call", "Tool call", 6, ["hub-keeper"], ["mcpHub"], async (d) => {
+  const walk = move(d, "hub-keeper", [near("mcpHub", -34, 52)]);
+  emit(d, { type: "diorama.tool-health-changed", port: TOOL_PORT, health: "amber" });
+  await d.beat(1400);
+  emit(d, { type: "diorama.tool-health-changed", port: TOOL_PORT, health: "green" });
+  await d.beat(600);
+  await walk;
+});
+
+/** HYPERLIQUID card: order, ack, fill, authoritative state return, align. */
+const sExchangeRoundtrip = s(
+  "s-exchange-roundtrip",
+  "Exchange round trip",
+  9,
+  [],
+  [
+    "hyperliquidVenue",
+    "executionGateway",
+    "reconciliationDock",
+    "portfolioVault",
+    "holoCore",
+    "missionBoard",
+    "auditArchive",
+  ],
+  async (d) => {
+    emit(d, { type: "diorama.execution-status", status: "submitted" });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "accepted" });
+    await d.beat(400);
+    emit(d, { type: "diorama.execution-status", status: "filled" });
+    await d.beat(300);
+    emit(d, { type: "diorama.account-invalidated", reason: "reconcile:after_fill" });
+    await d.beat(420);
+    emit(d, {
+      type: "diorama.account-view-refetched",
+      market: MARKET,
+      hasPosition: true,
+      protection: "resting_on_exchange",
+    });
+    // Refetch finale (aligned dock, positions, history row) is bindings' side.
+    await d.beat(2200);
+  },
+);
+
+/** EXECUTION card: the previewed -> submitted progression. */
+const sSubmitOrder = s(
+  "s-submit-order",
+  "Order submitted",
+  4,
+  [],
+  ["executionGateway", "hyperliquidVenue"],
+  async (d) => {
+    emit(d, { type: "diorama.execution-status", status: "previewed" });
+    await d.beat(450);
+    emit(d, { type: "diorama.execution-status", status: "submitted" });
+    await d.beat(700);
+  },
+);
+
+/** LOCAL SIGNING card: the signed pulse; the key itself never leaves. */
+const sSignPulse = s(
+  "s-sign-pulse",
+  "Local signing",
+  3,
+  ["vault-keeper"],
+  ["signerVault"],
+  async (d) => {
+    express(d, "vault-keeper", "focused");
+    react(d, "vault-keeper", "lean");
+    emit(d, { type: "diorama.execution-status", status: "signed" });
+    await d.beat(800);
+  },
+);
+
+/** PROTECTION card: the reserved beat that raises the exchange-native shield. */
+const sProtectionAttach = s(
   "s-protection-attach",
-  "s-signer-pulse",
-  "s-execute-order",
-  "s-exchange-ack",
-  "s-fill-vault",
-  "s-receipt-print",
+  "Protection attached",
+  4,
+  [],
+  ["protection", "riskFortress", "budgetMeter"],
+  async (d) => {
+    emit(d, { type: "diorama.execution-status", status: "reserved" });
+    await d.beat(900);
+  },
+);
+
+/** RISK GUARDS card: the reserved scan pass, with the scanner on patrol. */
+const sRiskScan = s(
+  "s-risk-scan",
+  "Risk scan",
+  5,
+  ["risk-scanner"],
+  ["riskFortress", "protection", "budgetMeter"],
+  async (d) => {
+    emit(d, { type: "diorama.execution-status", status: "reserved" });
+    const walk = move(d, "risk-scanner", [
+      near("riskFortress", 42, 48),
+      near("riskFortress", -28, 60),
+    ]);
+    await d.beat(300);
+    await walk;
+  },
+);
+
+/** LOSS BUDGET card: the reserved beat that consumes the reservation. */
+const sBudgetConsume = s(
+  "s-budget-consume",
+  "Loss budget reserved",
+  3,
+  [],
+  ["budgetMeter", "riskFortress", "protection"],
+  async (d) => {
+    emit(d, { type: "diorama.execution-status", status: "reserved" });
+    await d.beat(700);
+  },
+);
+
+/** CONTROLS card: pause, hold, resume; the campus is never left dimmed. */
+const sPauseControl = s(
+  "s-pause-control",
+  "Pause and resume",
+  8,
+  [],
+  ["emergencyPanel", "tradingFloor", "missionBoard"],
+  async (d) => {
+    let paused = false;
+    try {
+      emit(d, { type: "trading.mission-control-requested", control: "trading.mission.pause" });
+      paused = true;
+      await d.beat(450);
+      emit(d, { type: "trading.mission-status-changed", status: "Paused" });
+      await d.beat(2200);
+      emit(d, { type: "trading.mission-control-requested", control: "trading.mission.resume" });
+      await d.beat(450);
+      emit(d, { type: "trading.mission-status-changed", status: "Waiting" });
+      paused = false;
+    } finally {
+      // Interrupt-safe: an abandoned pause must not leave the campus frozen.
+      if (paused) {
+        emitRestore(d, {
+          type: "trading.mission-control-requested",
+          control: "trading.mission.resume",
+        });
+        emitRestore(d, { type: "trading.mission-status-changed", status: "Waiting" });
+      }
+    }
+  },
+);
+
+/** RECONCILE card: after-fill invalidation, canonical refetch, aligned. */
+const sReconcile = s(
   "s-reconcile",
-  "s-audit-store",
-];
+  "Reconciliation",
+  8,
+  ["recon-1"],
+  ["reconciliationDock", "portfolioVault", "holoCore", "missionBoard", "auditArchive"],
+  async (d) => {
+    emit(d, { type: "diorama.account-invalidated", reason: "reconcile:after_fill" });
+    const walk = move(d, "recon-1", [near("reconciliationDock", 40, -28)]);
+    await d.beat(500);
+    emit(d, {
+      type: "diorama.account-view-refetched",
+      market: MARKET,
+      hasPosition: true,
+      protection: "resting_on_exchange",
+    });
+    await d.beat(900);
+    await walk;
+    await d.beat(1200);
+  },
+);
 
-/** Scattered singles: system texture between lifecycle runs. */
-export const SCATTER_POOL: string[] = [
-  "s-mcp-degraded",
-  "s-tool-refusal",
-  "s-recovery-retry",
-  "s-alert-wake",
-  "s-sandbox-test",
-  "s-emergency-demo",
-];
+/** POSITIONS card: the refetch that updates protection and the position. */
+const sPositionUpdate = s(
+  "s-position-update",
+  "Position update",
+  4,
+  [],
+  ["portfolioVault", "reconciliationDock", "holoCore", "missionBoard", "auditArchive"],
+  async (d) => {
+    emit(d, {
+      type: "diorama.account-view-refetched",
+      market: MARKET,
+      hasPosition: true,
+      protection: "resting_on_exchange",
+    });
+    await d.beat(1400);
+  },
+);
 
-/** Weighted ambient texture for the new director: scatter singles plus the
- * floor choreography that keeps the default frame busy. */
+/** HISTORY card: a manual reconcile whose receipt row lands in the archive. */
+const sHistoryRow = s(
+  "s-history-row",
+  "History row",
+  6,
+  [],
+  ["auditArchive", "reconciliationDock", "portfolioVault", "missionBoard", "holoCore"],
+  async (d) => {
+    emit(d, { type: "diorama.account-invalidated", reason: "reconcile:manual" });
+    await d.beat(450);
+    emit(d, {
+      type: "diorama.account-view-refetched",
+      market: MARKET,
+      hasPosition: true,
+      protection: "resting_on_exchange",
+    });
+    // The receipt row travels to HISTORY during the refetch finale.
+    await d.beat(1600);
+  },
+);
+
+/**
+ * Texture (no card): a product-true refusal. Only meaningful after a first
+ * successful pass; the director owns that gate and the >= 90 s spacing
+ * (addendum §D.11). Dispatches the refusal progression bus-only — requested,
+ * previewed, rejected with a product guard reason, the Blocked status that
+ * reason produces, then recovery to Waiting. Every visual (refused ticket
+ * sentence, ALERTS pulse, HISTORY row, failed scan) is sceneBindings' answer.
+ */
+const sRefusal = s(
+  "s-refusal",
+  "Order refused",
+  8,
+  [],
+  ["decisionTable", "signalTower", "auditArchive", "missionBoard"],
+  async (d) => {
+    const side = d.rng() < 0.5 ? "buy" : "sell";
+    const size = fakeSize(d);
+    emit(d, { type: "trading.execution-requested", market: MARKET, side, size });
+    await d.beat(420);
+    emit(d, { type: "diorama.execution-status", status: "previewed" });
+    await d.beat(450);
+    emit(d, {
+      type: "diorama.execution-status",
+      status: "rejected",
+      reason: "cumulative_loss_limit",
+    });
+    await d.beat(700);
+    emit(d, {
+      type: "trading.mission-status-changed",
+      status: "Blocked",
+      blockedReason: "cumulative_loss_limit",
+    });
+    await d.beat(1400);
+    // The mission survives the refusal and keeps waiting.
+    emit(d, { type: "trading.mission-status-changed", status: "Waiting" });
+    await d.beat(400);
+  },
+);
+
+/** Texture (no card): a tool port degrades and recovers; interrupt-safe. */
+const sToolTexture = s("s-tool-texture", "Tool health texture", 9, [], ["mcpHub"], async (d) => {
+  let recovered = false;
+  try {
+    emit(d, { type: "diorama.tool-health-changed", port: TOOL_PORT, health: "amber" });
+    await d.beat(1300);
+    emit(d, { type: "diorama.tool-health-changed", port: TOOL_PORT, health: "red" });
+    await d.beat(2800);
+    emit(d, { type: "diorama.tool-health-changed", port: TOOL_PORT, health: "green" });
+    recovered = true;
+    await d.beat(700);
+  } finally {
+    // Interrupt-safe: a destroyed or cancelled run still restores the port
+    // so the hub never sits red forever.
+    if (!recovered) {
+      emitRestore(d, { type: "diorama.tool-health-changed", port: TOOL_PORT, health: "green" });
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+/** The spine story id: the director's spine lane loops exactly this one. */
+export const SPINE_ID = "s-lifecycle";
+
+/** Ambient texture singles; the director runs at most one at a time and only
+ * after the first pass (s-refusal additionally needs its >= 90 s gate). */
 export const TEXTURE_POOL: string[] = [
-  ...SCATTER_POOL,
-  "s-floor-handoff",
-  "s-floor-signal",
-  "s-venue-greet",
-];
-
-/** Harmless slapstick: own concurrency budget and per-gag cooldowns. */
-export const COMEDY_POOL: string[] = [
-  "s-bump-antennae",
-  "s-drop-cards",
-  "s-runaway-cart",
-  "s-spring-gate",
-  "s-cable-trip",
-  "s-stack-topple",
+  "s-refusal",
+  "s-tool-texture",
+  "s-alert-fire",
+  "s-market-shift",
+  "s-tool-call",
 ];
 
 export const STORIES: Story[] = [
-  // 1. Research synthesis: the probe harvests evidence, the researcher
-  // gathers a card from Research Tools, the evidence tier converges on
-  // market data, competing candidates collide harmlessly at the strategy
-  // lab, one is selected, the mission flips to Analysing, and the chosen
-  // candidate is tabled at the decision table. One bounded sequence
-  // (formerly three disconnected beats) so the district reads as a single
-  // research-to-decision process with every station participating.
-  s(
-    "s-research-synthesis",
-    "Research converges on a strategy",
-    38,
-    ["probe-1", "research-1", "analysis-1", "strategy-1", "strategy-2"],
-    [
-      "marketLandscape",
-      "researchTools",
-      "marketData",
-      "strategyLab",
-      "missionBoard",
-      "signalTower",
-      "decisionTable",
-    ],
-    async (d) => {
-      await move(d, "probe-1", probeWalk);
-      react(d, "probe-1", "hop");
-      await send(d, "landscapeToMarketData");
-      glowPulse(d.ctx, "marketData");
-      // Evidence gathering: the researcher visibly originates at the
-      // Research Tools stations before joining the convergence.
-      const research = d.cast.get("research-1");
-      const analysis = d.cast.get("analysis-1");
-      research?.carry(ROLE_COLORS.research);
-      express(d, "research-1", "focused");
-      await move(d, "research-1", [near("researchTools", 0, 55)]);
-      react(d, "research-1", "tilt");
-      glowPulse(d.ctx, "researchTools");
-      // Evidence tier: both researchers converge on market data, each
-      // carrying a distinct evidence card.
-      analysis?.carry(ROLE_COLORS.analysis);
-      await Promise.all([
-        move(d, "research-1", [near("marketData", 20, 55)]),
-        move(d, "analysis-1", [near("marketData", -35, 70)]),
-      ]);
-      express(d, "research-1", "focused");
-      express(d, "analysis-1", "focused");
-      await d.beat(350);
-      // Both carry their evidence to the strategy lab.
-      await Promise.all([
-        move(d, "research-1", [near("strategyLab", -75, 35)]),
-        move(d, "analysis-1", [near("strategyLab", -75, 65)]),
-      ]);
-      research?.carry(null); // cards handed over
-      analysis?.carry(null);
-      // Harmless conflict: competing candidates reach for the same console
-      // slot and bump. Competing research ideas realistically compete; this
-      // must read as expressive accident, never violence.
-      cue("bump", near("strategyLab", -70, 45));
-      react(d, "research-1", "startle");
-      react(d, "analysis-1", "startle");
-      popMark(d, "research-1", "!");
-      popMark(d, "analysis-1", "?");
-      const scatterAt = near("strategyLab", -60, 45);
-      await scatterCards(scatterAt.x, scatterAt.y, ROLE_COLORS.strategy, 4);
-      await d.beat(500);
-      react(d, "research-1", "apologize");
-      react(d, "analysis-1", "headrub");
-      await d.beat(400);
-      // Sorted: the strategist picks one candidate; the losers retract.
-      d.cast.get("strategy-1")?.carry(ROLE_COLORS.strategy);
-      express(d, "strategy-1", "focused");
-      react(d, "research-1", "hop");
-      express(d, "analysis-1", "satisfied");
-      glowPulse(d.ctx, "strategyLab");
-      // Market-structure research informed the pick: the concept exhibit blips.
-      storyApi<MarketStructure>("liquidityResearch")?.pulse("quote");
-      await d.beat(300);
-      // The chosen strategy updates the mission; the signal tower hears it.
-      await move(d, "strategy-1", [near("missionBoard", 60, 20)]);
-      d.cast.get("strategy-1")?.carry(null);
-      setMissionPhase(d, "Analysing");
-      cue("lever", near("missionBoard"));
-      await d.beat(300);
-      await send(d, "missionToSignalTower");
-      storyApi<SignalTower>("signalTower")?.pulse("market");
-      // The chosen candidate is tabled: the strategist carries it to the
-      // decision table, where the analyst witness acknowledges it. The table
-      // sits near the room's southwest taper, so the approach stays north of
-      // the anchor to remain inside the room.
-      d.cast.get("strategy-1")?.carry(ROLE_COLORS.strategy);
-      await move(d, "strategy-1", [near("decisionTable", -25, -25)]);
-      d.cast.get("strategy-1")?.carry(null);
-      express(d, "strategy-2", "focused");
-      react(d, "strategy-2", "lean");
-      glowPulse(d.ctx, "decisionTable", 0.45, 1.0);
-    },
-  ),
-
-  // 4. Proposals appear at the decision table.
-  s("s-proposals-appear", "Proposals compared", 7, ["strategy-2"], ["decisionTable"], async (d) => {
-    await move(d, "strategy-2", [near("decisionTable", -25, -25)]);
-    storyApi<DecisionTableApi>("decisionTable")?.showProposals(3, 1);
-    express(d, "strategy-2", "focused");
-    react(d, "strategy-2", "lean");
-  }),
-
-  // 5. A proposal is rejected at the table and returns west.
-  // CONTRACT: showProposals(count, -1) = reject beat (all retract, one dimmed red).
-  s(
-    "s-proposal-rejected",
-    "Proposal rejected",
-    7,
-    ["strategy-2"],
-    ["decisionTable", "approval", "refusalDisplay"],
-    async (d) => {
-      storyApi<DecisionTableApi>("decisionTable")?.showProposals(3, -1);
-      express(d, "strategy-2", "frustrated");
-      react(d, "strategy-2", "droop");
-      await d.beat(400);
-      await send(d, "deniedReturn");
-      glowPulse(d.ctx, "refusalDisplay", 0.35, 1.1);
-    },
-  ),
-
-  // 6. The surviving proposal needs human approval at the west gate.
-  s(
-    "s-proposal-needs-human",
-    "Approval requested",
-    9,
-    ["approval-clerk"],
-    ["decisionTable", "approval"],
-    async (d) => {
-      await send(d, "decisionToApproval");
-      storyApi<Approval>("approval")?.setSeal("waiting");
-      express(d, "approval-clerk", "curious");
-      react(d, "approval-clerk", "tilt");
-      // Approval has no "waiting shimmer" in its frozen api; glow the desk.
-      glowPulse(d.ctx, "approval", 0.45, 1.4);
-    },
-  ),
-
-  // 7. Human authority binds at the approval desk; the authority seam
-  // between the floor and the guarded east section pulses.
-  s(
-    "s-human-approval",
-    "Human approval granted",
-    9,
-    ["approval-clerk"],
-    ["approval", "permission", "activityGallery"],
-    async (d) => {
-      glowPulse(d.ctx, "approval", 0.4, 1.2);
-      cue("approve", near("approval"));
-      await d.beat(300);
-      storyApi<Approval>("approval")?.setSeal("approved");
-      // The seam sweep plus the desk's own grant pulse (optional api).
-      storyApi<ApprovalGrantPulse>("approval")?.grantPulse?.();
-      await send(d, "approvalToPermission");
-      // Plaque pulse for the user-activity wall (no frozen api).
-      glowPulse(d.ctx, "activityGallery", 0.45, 1.0);
-      express(d, "approval-clerk", "satisfied");
-      react(d, "approval-clerk", "hop");
-    },
-  ),
-
-  // 8. Permission tokens verify the agent may act.
-  s(
-    "s-permission-verify",
-    "Permissions verified",
-    8,
-    ["permission-keeper"],
-    ["permission", "budgetMeter"],
-    async (d) => {
-      express(d, "permission-keeper", "focused");
-      glowPulse(d.ctx, "permission");
-      // Command round trip: permission asks budget, budget answers.
-      await send(d, "permissionToBudget");
-      await send(d, "permissionToBudget", "event", { reverse: true });
-      react(d, "permission-keeper", "lean");
-    },
-  ),
-
-  // 9. Budget reservoirs are consumed transparently.
-  s("s-budget-consume", "Budget consumed", 6, [], ["budgetMeter"], async (d) => {
-    const budget = storyApi<BudgetMeter>("budgetMeter");
-    budget?.consume("loss", 0.04);
-    d.simulation.consumeLoss(4);
-    await d.beat(300);
-    budget?.consume("tools", 0.03);
-    d.simulation.consumeTools(0.03);
-    glowPulse(d.ctx, "budgetMeter", 0.45, 0.8);
-  }),
-
-  // 10. The risk fortress scans the proposal.
-  s("s-risk-pass", "Risk arches pass", 9, ["risk-scanner"], ["riskFortress"], async (d) => {
-    await send(d, "permissionToRisk");
-    storyApi<RiskFortress>("riskFortress")?.runScan(true);
-    express(d, "risk-scanner", "focused");
-    await move(d, "risk-scanner", corridorWalk);
-  }),
-
-  // 11. Protection wraps the position token before any signing.
-  s(
-    "s-protection-attach",
-    "Protection attached",
-    8,
-    [],
-    ["riskFortress", "protection", "signerVault"],
-    async (d) => {
-      await send(d, "riskToProtection");
-      storyApi<Protection>("protection")?.shieldUp();
-      await d.beat(400);
-      // The shielded token continues toward the signer.
-      await send(d, "protectionToSigner");
-    },
-  ),
-
-  // 12. The signer vault pulses; the key itself never leaves.
-  s(
-    "s-signer-pulse",
-    "Order signed in vault",
-    7,
-    ["vault-keeper"],
-    ["signerVault", "executionGateway"],
-    async (d) => {
-      storyApi<SignerVault>("signerVault")?.signPulse();
-      cue("vault", near("signerVault"));
-      express(d, "vault-keeper", "focused");
-      react(d, "vault-keeper", "lean");
-      await d.beat(400);
-      await send(d, "signerToExecution");
-    },
-  ),
-
-  // 13. The execution gateway ships the order capsule to the exchange.
-  s(
-    "s-execute-order",
-    "Order sent to exchange",
-    9,
-    ["gateway-op"],
-    ["executionGateway", "hyperliquidVenue"],
-    async (d) => {
-      const gateway = storyApi<ExecutionGateway>("executionGateway");
-      gateway?.setState("preparing");
-      express(d, "gateway-op", "focused");
-      await d.beat(300);
-      gateway?.setState("submitted");
-      setMissionPhase(d, "Executing");
-      cue("execute", near("executionGateway"));
-      await send(d, "exchangeOrder");
-      hyperliquid()?.exchangeEvent("order");
-      storyApi<HoloCoreApi>("holoCore")?.orderLaunched();
-    },
-  ),
-
-  // 14. The exchange acknowledges; the tower signals execution.
-  s(
-    "s-exchange-ack",
-    "Exchange acknowledgment",
-    7,
-    [],
-    ["executionGateway", "signalTower", "hyperliquidVenue"],
-    async (d) => {
-      await send(d, "exchangeOrder", "event", { reverse: true });
-      storyApi<ExecutionGateway>("executionGateway")?.setState("acknowledged");
-      hyperliquid()?.exchangeEvent("ack");
-      cue("ack", near("hyperliquidVenue"));
-      storyApi<SignalTower>("signalTower")?.pulse("execution");
-    },
-  ),
-
-  // 15. The fill returns and the portfolio vault updates.
-  s("s-fill-vault", "Fill updates portfolio", 8, [], ["portfolioVault", "hyperliquidVenue"], async (d) => {
-    hyperliquid()?.exchangeEvent("fill");
-    storyApi<HoloCoreApi>("holoCore")?.fillLanded();
-    mascotCelebrate();
-    // State truth flows back from the exchange before reconciliation
-    // compares (the canonical return dispatch follows immediately).
-    hyperliquid()?.exchangeEvent("state");
-    await send(d, "exchangeStateReturn");
-    // No frozen PortfolioVault api; station-agnostic pulse.
-    glowPulse(d.ctx, "portfolioVault", 0.4, 1.2);
-  }),
-
-  // 16. A receipt prints and rolls into the archive.
-  s(
-    "s-receipt-print",
-    "Receipt printed",
-    8,
-    ["receipt-clerk"],
-    ["executionGateway", "receiptPrinter", "auditArchive"],
-    async (d) => {
-      await send(d, "executionToReceipts");
-      storyApi<ReceiptPrinter>("receiptPrinter")?.print("order");
-      cue("print", near("receiptPrinter"));
-      express(d, "receipt-clerk", "neutral");
-      await d.beat(600);
-      await send(d, "receiptsToArchive");
-    },
-  ),
-
-  // 17. Reconciliation compares local and exchange state.
-  s(
-    "s-reconcile",
-    "Reconciliation aligned",
-    8,
-    ["recon-1"],
-    ["reconciliationDock", "portfolioVault"],
-    async (d) => {
-      await move(d, "recon-1", [near("reconciliationDock", 30, -20)]);
-      await send(d, "localStateStream");
-      storyApi<Reconciliation>("reconciliationDock")?.compare(true);
-      setMissionPhase(d, "Holding");
-      express(d, "recon-1", "satisfied");
-      react(d, "recon-1", "hop");
-    },
-  ),
-
-  // 18. History is archived; occasionally replayed.
-  s(
-    "s-audit-store",
-    "Audit and replay",
-    8,
-    ["archivist"],
-    ["auditArchive", "replayChamber"],
-    async (d) => {
-      express(d, "archivist", "focused");
-      // Drawer cycle has no frozen api; station-agnostic glow.
-      glowPulse(d.ctx, "auditArchive", 0.45, 1.2);
-      setMissionPhase(d, "Waiting");
-      if (d.rng() < 0.5) {
-        await d.beat(500);
-        storyApi<ReplayChamber>("replayChamber")?.playReceipt();
-      }
-    },
-  ),
-
-  // 19. MCP ports degrade; the health console follows shared state.
-  s(
-    "s-mcp-degraded",
-    "Tool port degradation",
-    9,
-    ["health-watcher"],
-    ["mcpHub", "mcpHealth"],
-    async (d) => {
-      const hub = storyApi<McpHub>("mcpHub");
-      hub?.setPortHealth(3, "amber");
-      d.simulation.setPortHealth(3, "amber");
-      await d.beat(500);
-      hub?.setPortHealth(5, "red");
-      d.simulation.setPortHealth(5, "red");
-      express(d, "health-watcher", "worried");
-      react(d, "health-watcher", "tilt");
-    },
-  ),
-
-  // 20. A call on a dead port is refused with a comic knock-back, then recovers.
-  s(
-    "s-tool-refusal",
-    "Tool call refused",
-    12,
-    ["hub-keeper", "adapter-op"],
-    ["mcpHub", "refusalDisplay", "adapterBay"],
-    async (d) => {
-      const hub = storyApi<McpHub>("mcpHub");
-      const adapterOp = d.cast.get("adapter-op");
-      try {
-        await move(d, "hub-keeper", [near("mcpHub", -30, 20)]);
-        hub?.portCall(5); // attempted on the red port
-        express(d, "hub-keeper", "confused");
-        react(d, "hub-keeper", "startle"); // ejected packet knocks the caller back
-        popMark(d, "hub-keeper", "?");
-        cue("skid", near("mcpHub"));
-        await d.beat(300);
-        // Refusal card travels back from the hub toward the adapter bay.
-        await send(d, "hubToAdapterBay", "refusal", { reverse: true });
-        d.simulation.refuse("UNAVAILABLE TOOL");
-        storyApi<RefusalBoardApi>("refusalDisplay")?.push("UNAVAILABLE TOOL");
-        cue("reject", near("refusalDisplay"));
-        glowPulse(d.ctx, "refusalDisplay", 0.35, 1.2);
-        // The outage beat: the caller droops, then the adapter operator comes
-        // over, apologizes for the port, and they wait it out together.
-        react(d, "hub-keeper", "droop");
-        if (adapterOp) {
-          await move(d, "adapter-op", [near("mcpHub", 10, 55)]);
-          react(d, "adapter-op", "apologize");
-          popMark(d, "adapter-op", "droplet");
-        }
-        await d.wait(3500);
-        if (d.cancelled()) return;
-        hub?.setPortHealth(5, "green");
-        d.simulation.setPortHealth(5, "green");
-        express(d, "hub-keeper", "satisfied");
-        react(d, "hub-keeper", "hop");
-        cue("recover", near("mcpHub"));
-      } finally {
-        // Interrupt-safe: a destroyed or cancelled run still restores the port
-        // and shared state so the hub never sits red forever.
-        hub?.setPortHealth(5, "green");
-        d.simulation.setPortHealth(5, "green");
-      }
-    },
-  ),
-
-  // 21. Recovery repairs a drifted flow, then reconciliation aligns.
-  s(
-    "s-recovery-retry",
-    "Recovery and retry",
-    10,
-    ["recovery-1"],
-    ["recoveryWorkshop", "reconciliationDock"],
-    async (d) => {
-      express(d, "recovery-1", "worried");
-      storyApi<Recovery>("recoveryWorkshop")?.dispatchRepair();
-      await send(d, "recoveryDispatch");
-      express(d, "recovery-1", "focused");
-      await d.beat(400);
-      storyApi<Reconciliation>("reconciliationDock")?.compare(false);
-      await d.beat(700);
-      storyApi<Reconciliation>("reconciliationDock")?.compare(true);
-      express(d, "recovery-1", "satisfied");
-      react(d, "recovery-1", "hop");
-    },
-  ),
-
-  // 22. An alert wakes the floor.
-  s(
-    "s-alert-wake",
-    "Alert wake",
-    7,
-    ["floor-monitor"],
-    ["signalTower", "missionBoard"],
-    async (d) => {
-      storyApi<SignalTower>("signalTower")?.pulse("alert");
-      await send(d, "missionToSignalTower");
-      express(d, "floor-monitor", "alarmed");
-      react(d, "floor-monitor", "hop");
-    },
-  ),
-
-  // 23. Sandbox: everything stays inside the research section.
-  // NOTE: this story deliberately crosses NO section seam; sandbox traffic
-  // loops marketData -> strategy -> missionBoard inside research only.
-  s(
-    "s-sandbox-test",
-    "Sandbox simulation",
-    9,
-    ["sandbox-1"],
-    ["sandbox", "marketData", "strategyLab", "missionBoard"],
-    async (d) => {
-      express(d, "sandbox-1", "excited");
-      await move(d, "sandbox-1", sandboxWalk);
-      react(d, "sandbox-1", "hop");
-      await send(d, "marketDataToStrategy");
-      await send(d, "strategyToMissionBoard");
-      glowPulse(d.ctx, "sandbox", 0.45, 1.0);
-    },
-  ),
-
-  // 24. Emergency pause demo from the emergency panel beside Approval.
-  s(
-    "s-emergency-demo",
-    "Emergency pause demo",
-    11,
-    ["floor-monitor", "floor-exec"],
-    ["emergencyPanel", "tradingFloor", "signalTower"],
-    async (d) => {
-      const floor = getStation("tradingFloor");
-      const restore = (): void => {
-        if (floor) {
-          for (const child of floor.root.children) {
-            gsap.to(child, { alpha: 1, duration: 0.5, overwrite: true });
-          }
-        }
-      };
-      try {
-        glowPulse(d.ctx, "emergencyPanel", 0.4, 1.0);
-        storyApi<TradingFloor>("tradingFloor")?.setCampusPaused(true);
-        d.simulation.setPaused(true);
-        storyApi<SignalTower>("signalTower")?.pulse("warning");
-        cue("warn", near("emergencyPanel"));
-        if (floor) {
-          // Station-agnostic: dim the floor's children, restore on resume.
-          for (const child of floor.root.children) {
-            const tween = gsap.to(child, { alpha: 0.75, duration: 0.5, overwrite: true });
-            d.ctx.onCleanup(() => tween.kill());
-          }
-        }
-        await d.wait(3000);
-        storyApi<TradingFloor>("tradingFloor")?.setCampusPaused(false);
-        d.simulation.setPaused(false);
-        restore();
-        express(d, "floor-monitor", "satisfied");
-        express(d, "floor-exec", "satisfied");
-        react(d, "floor-exec", "hop");
-        popMark(d, "floor-monitor", "puff");
-      } finally {
-        // Interrupt-safe: the floor never stays dimmed.
-        storyApi<TradingFloor>("tradingFloor")?.setCampusPaused(false);
-        d.simulation.setPaused(false);
-        restore();
-      }
-    },
-  ),
-
-  // 25. Rotating duty handoff across the floor consoles.
-  s(
-    "s-floor-handoff",
-    "Duty handoff on the floor",
-    11,
-    ["floor-strategy", "floor-exec", "floor-monitor"],
-    ["tradingFloor", "holoCore"],
-    async (d) => {
-      const holo = storyApi<HoloCoreApi>("holoCore");
-      const strategy = d.cast.get("floor-strategy");
-      const exec = d.cast.get("floor-exec");
-      strategy?.carry(ROLE_COLORS.strategy);
-      express(d, "floor-strategy", "focused");
-      // Ring arcs west -> south -> east, outside the holo footprint.
-      await move(d, "floor-strategy", [
-        { x: 1292, y: 798 },
-        { x: 1342, y: 848 },
-        { x: 1420, y: 880 },
-        { x: 1502, y: 905 },
-      ]);
-      react(d, "floor-exec", "doubleTake");
-      strategy?.carry(null); // card handed over
-      exec?.carry(ROLE_COLORS.execution);
-      express(d, "floor-exec", "focused");
-      await move(d, "floor-exec", [
-        { x: 1502, y: 905 },
-        { x: 1440, y: 940 },
-      ]);
-      exec?.carry(null); // second handoff
-      d.cast.get("floor-monitor")?.tap();
-      react(d, "floor-monitor", "lean");
-      holo?.rotateStrategies();
-      holo?.orderLaunched();
-      cue("lever", near("tradingFloor"));
-      await d.beat(400);
-      react(d, "floor-strategy", "hop");
-      express(d, "floor-monitor", "satisfied");
-    },
-  ),
-
-  // 26. A market signal startles the floor and shifts the regime.
-  s(
-    "s-floor-signal",
-    "Market signal reaches the floor",
-    9,
-    ["floor-research", "floor-analysis"],
-    ["tradingFloor", "holoCore", "signalTower"],
-    async (d) => {
-      const holo = storyApi<HoloCoreApi>("holoCore");
-      const tower = storyApi<SignalTower>("signalTower");
-      const priorRegime = marketLandscape()?.regime() ?? "rising";
-      try {
-        tower?.pulse("market");
-        // A market signal is routine data, not a warning: a short packet
-        // chirp at the tower keeps the warn bell reserved for real alerts.
-        cue("packet", near("signalTower"));
-        express(d, "floor-research", "alarmed");
-        react(d, "floor-research", "startle");
-        popMark(d, "floor-research", "!");
-        // Landscape flips regime; the holo mirrors it.
-        marketLandscape()?.setRegime("turbulent");
-        await move(d, "floor-research", [
-          { x: 1288, y: 612 },
-          { x: 1282, y: 660 },
-        ]);
-        express(d, "floor-research", "focused");
-        express(d, "floor-analysis", "curious");
-        react(d, "floor-analysis", "tilt");
-        holo?.marketEvent("state");
-        holo?.rotateStrategies();
-        await d.beat(600);
-        // Calm returns.
-        marketLandscape()?.setRegime("rising");
-        holo?.marketEvent("state");
-        express(d, "floor-research", "satisfied");
-        react(d, "floor-analysis", "hop");
-      } finally {
-        // Interrupt-safe: the landscape never stays turbulent.
-        if (priorRegime !== "turbulent") marketLandscape()?.setRegime(priorRegime);
-      }
-    },
-  ),
-
-  // 26b. The market-structure desk welcome: a plain research-role host meets
-  // a floor analyst at the concept-model exhibit, a quote card changes hands
-  // where structure research meets the strategy loop, and the mascot waves
-  // from its pad on the floor.
-  s(
-    "s-venue-greet",
-    "Market-structure desk welcome",
-    11,
-    ["structure-host", "floor-research"],
-    ["liquidityResearch", "tradingFloor"],
-    async (d) => {
-      const host = d.cast.get("structure-host");
-      const analyst = d.cast.get("floor-research");
-      host?.carry(ROLE_COLORS.research);
-      await Promise.all([
-        move(d, "structure-host", [near("liquidityResearch", 45, -15)]),
-        move(d, "floor-research", [
-          { x: 1080, y: 700 },
-          { x: 960, y: 740 },
-          near("liquidityResearch", 130, 10),
-        ]),
-      ]);
-      react(d, "structure-host", "doubleTake");
-      express(d, "floor-research", "curious");
-      await d.beat(300);
-      host?.carry(null); // quote card handed over
-      analyst?.carry(ROLE_COLORS.research);
-      storyApi<MarketStructure>("liquidityResearch")?.pulse("quote");
-      react(d, "structure-host", "hop");
-      mascotHolder.api?.wave();
-      cue("door", near("liquidityResearch"));
-      await d.beat(700);
-      await Promise.all([
-        move(d, "structure-host", [near("liquidityResearch", 10, 55)]),
-        move(d, "floor-research", [
-          { x: 1000, y: 785 },
-          { x: 1150, y: 745 },
-        ]),
-      ]);
-    },
-  ),
-
-  // 27. COMEDY. Two bots round a console from opposite sides and bump antennae.
-  s(
-    "s-bump-antennae",
-    "Antennae bump on the north ring",
-    8,
-    ["floor-research", "floor-analysis"],
-    ["tradingFloor"],
-    async (d) => {
-      // Both approaches run together so the collision reads as an accident.
-      await Promise.all([
-        move(d, "floor-research", [
-          { x: 1330, y: 572 },
-          { x: 1378, y: 570 },
-        ]),
-        move(d, "floor-analysis", [
-          { x: 1545, y: 610 },
-          { x: 1455, y: 572 },
-          { x: 1420, y: 570 },
-        ]),
-      ]);
-      // Bump.
-      cue("bump", { x: 1400, y: 571 });
-      react(d, "floor-research", "startle");
-      react(d, "floor-analysis", "startle");
-      popMark(d, "floor-research", "!");
-      popMark(d, "floor-analysis", "!");
-      await d.beat(350);
-      react(d, "floor-research", "wobble");
-      react(d, "floor-analysis", "wobble");
-      await d.beat(450);
-      react(d, "floor-research", "apologize");
-      react(d, "floor-analysis", "headrub");
-      await d.beat(500);
-      await move(d, "floor-research", [
-        { x: 1300, y: 620 },
-        { x: 1268, y: 640 },
-      ]);
-      await move(d, "floor-analysis", [
-        { x: 1500, y: 630 },
-        { x: 1590, y: 640 },
-      ]);
-      d.cast.get("floor-analysis")?.laugh();
-      express(d, "floor-research", "satisfied");
-    },
-  ),
-
-  // 29. COMEDY. Dropped schema cards, a skid, and a helpful gather. Plays on
-  // the tool-row corridor between the schema drawers and the adapter bay.
-  s(
-    "s-drop-cards",
-    "Schema cards dropped and gathered",
-    10,
-    ["schema-librarian", "adapter-op"],
-    ["toolSchemas", "adapterBay"],
-    async (d) => {
-      const librarian = d.cast.get("schema-librarian");
-      librarian?.carry(ROLE_COLORS.operations);
-      await move(d, "schema-librarian", [
-        { x: 960, y: 975 },
-        { x: 1020, y: 958 },
-      ]);
-      // Cards slip.
-      librarian?.carry(null);
-      cue("skid", { x: 1030, y: 955 });
-      react(d, "schema-librarian", "squash");
-      popMark(d, "schema-librarian", "?");
-      await scatterCards(1030, 953, ROLE_COLORS.operations, 5);
-      // The adapter operator skids past, narrowly misses, then helps.
-      react(d, "adapter-op", "squash");
-      await move(d, "adapter-op", [
-        { x: 1080, y: 958 },
-        { x: 1035, y: 962 },
-      ]);
-      react(d, "adapter-op", "apologize");
-      await d.beat(300);
-      await move(d, "schema-librarian", [{ x: 1032, y: 968 }]);
-      react(d, "schema-librarian", "headrub");
-      await d.beat(400);
-      // Gathered together.
-      cue("recover", { x: 1030, y: 958 });
-      express(d, "adapter-op", "satisfied");
-      express(d, "schema-librarian", "satisfied");
-      d.cast.get("schema-librarian")?.laugh();
-      await move(d, "schema-librarian", [
-        { x: 975, y: 1000 },
-        { x: 935, y: 1030 },
-      ]);
-      await move(d, "adapter-op", [
-        { x: 1100, y: 985 },
-        { x: 1092, y: 1035 },
-      ]);
-    },
-  ),
-
-  // 30. COMEDY. A maintenance cart rolls away west along the MCP tool row;
-  // three bots chase it down before it reaches the hub.
-  s(
-    "s-runaway-cart",
-    "Runaway cart chased down",
-    12,
-    ["hub-keeper", "schema-librarian", "adapter-op"],
-    ["toolSchemas", "mcpHub", "adapterBay"],
-    async (d) => {
-      cue("cart", { x: 1105, y: 1035 });
-      const cartDone = rollProp(
-        1105,
-        1035,
-        ROLE_COLORS.execution,
-        [
-          { x: 1005, y: 990 },
-          { x: 925, y: 935 },
-          { x: 855, y: 905 },
-          { x: 915, y: 880 },
-        ],
-        150,
-      );
-      // All three chases run concurrently with the cart; the story holds its
-      // locks until every branch settles so no agent is released mid-gag.
-      const chases = Promise.all([
-        move(d, "schema-librarian", [
-          { x: 1060, y: 1000 },
-          { x: 990, y: 950 },
-          { x: 930, y: 905 },
-        ]).then(() => {
-          react(d, "schema-librarian", "wobble");
-        }),
-        move(d, "adapter-op", [
-          { x: 1100, y: 990 },
-          { x: 1020, y: 950 },
-          { x: 950, y: 915 },
-        ]).then(() => {
-          react(d, "adapter-op", "startle");
-        }),
-        move(d, "hub-keeper", [
-          { x: 870, y: 895 },
-          { x: 830, y: 905 },
-          { x: 880, y: 940 },
-        ]),
-      ]);
-      await Promise.all([cartDone, chases]);
-      react(d, "hub-keeper", "squash"); // the catch
-      popMark(d, "hub-keeper", "stars");
-      cue("bump", { x: 915, y: 880 });
-      await d.beat(300);
-      react(d, "hub-keeper", "hop");
-      d.cast.get("hub-keeper")?.laugh();
-      express(d, "schema-librarian", "satisfied");
-      express(d, "adapter-op", "satisfied");
-    },
-  ),
-
-  // 31. COMEDY. The research-only spring gate closes early and bonks a
-  // backpack. The gate is the wall door in the west wall's southeast reach.
-  s(
-    "s-spring-gate",
-    "Spring gate bonk at research only",
-    9,
-    ["sandbox-1"],
-    ["researchOnlyGate", "sandbox"],
-    async (d) => {
-      await move(d, "sandbox-1", [
-        { x: 455, y: 700 },
-        { x: 505, y: 672 },
-      ]);
-      // The gate springs shut a beat early.
-      cue("door", near("researchOnlyGate"));
-      react(d, "sandbox-1", "squash");
-      popMark(d, "sandbox-1", "stars");
-      glowPulse(d.ctx, "researchOnlyGate", 0.4, 1.0);
-      await d.beat(400);
-      react(d, "sandbox-1", "headrub");
-      react(d, "sandbox-1", "apologize");
-      await d.beat(450);
-      // Retry politely; the gate behaves.
-      await move(d, "sandbox-1", [
-        { x: 475, y: 715 },
-        { x: 530, y: 690 },
-      ]);
-      cue("door", near("researchOnlyGate"));
-      react(d, "sandbox-1", "hop");
-      express(d, "sandbox-1", "excited");
-      await d.beat(300);
-      await move(d, "sandbox-1", [
-        { x: 420, y: 730 },
-        { x: 370, y: 750 },
-      ]);
-      d.cast.get("sandbox-1")?.laugh();
-    },
-  ),
-
-  // 32. COMEDY. A loose cable trips the recovery bot beside the workshop; a
-  // colleague rushes over from observability and helps it upright.
-  s(
-    "s-cable-trip",
-    "Cable trip and a helping hand",
-    10,
-    ["recovery-1", "observer-1"],
-    ["recoveryWorkshop", "observability"],
-    async (d) => {
-      await move(d, "recovery-1", [
-        { x: 1640, y: 1170 },
-        { x: 1690, y: 1160 },
-      ]);
-      // Trip over the loose cable.
-      cue("bump", { x: 1705, y: 1155 });
-      react(d, "recovery-1", "squash");
-      popMark(d, "recovery-1", "stars");
-      popMarkAt(1705, 1155, "puff");
-      await d.beat(500);
-      react(d, "recovery-1", "wobble");
-      // The observer rushes over and helps upright.
-      await move(d, "observer-1", [
-        { x: 2050, y: 990 },
-        { x: 1900, y: 1030 },
-        { x: 1760, y: 1090 },
-      ]);
-      react(d, "observer-1", "apologize");
-      await d.beat(400);
-      react(d, "recovery-1", "hop");
-      express(d, "recovery-1", "satisfied");
-      express(d, "observer-1", "satisfied");
-      d.cast.get("observer-1")?.laugh();
-      await move(d, "observer-1", [
-        { x: 1880, y: 1040 },
-        { x: 2040, y: 995 },
-      ]);
-    },
-  ),
-
-  // 34. COMEDY. A celebratory hop topples a stack of glowing capsules beside
-  // the portfolio vault; the archivist helps gather them.
-  s(
-    "s-stack-topple",
-    "Capsule stack toppled at the vault",
-    9,
-    ["receipt-clerk", "archivist"],
-    ["receiptPrinter", "portfolioVault"],
-    async (d) => {
-      storyApi<ReceiptPrinter>("receiptPrinter")?.print("order");
-      cue("stamp", near("receiptPrinter"));
-      await d.beat(400);
-      react(d, "receipt-clerk", "hop");
-      // The hop knocks the neighbor's capsule stack.
-      cue("bump", near("portfolioVault"));
-      popMark(d, "receipt-clerk", "!");
-      express(d, "receipt-clerk", "alarmed");
-      await scatterCards(1880, 905, ROLE_COLORS.reconciliation, 4);
-      await d.beat(300);
-      react(d, "receipt-clerk", "apologize");
-      // The archivist helps gather.
-      await move(d, "archivist", [
-        { x: 1900, y: 1075 },
-        { x: 1890, y: 975 },
-      ]);
-      react(d, "archivist", "headrub");
-      await d.beat(500);
-      cue("recover", near("portfolioVault"));
-      express(d, "archivist", "satisfied");
-      express(d, "receipt-clerk", "satisfied");
-      d.cast.get("receipt-clerk")?.laugh();
-      await move(d, "archivist", [{ x: 1905, y: 1075 }]);
-    },
-  ),
+  sLifecycle,
+  sPlaceOrder,
+  sWatchMarket,
+  sAlertFire,
+  sRunValidation,
+  sMarketShift,
+  sToolCall,
+  sExchangeRoundtrip,
+  sSubmitOrder,
+  sSignPulse,
+  sProtectionAttach,
+  sRiskScan,
+  sBudgetConsume,
+  sPauseControl,
+  sReconcile,
+  sPositionUpdate,
+  sHistoryRow,
+  sRefusal,
+  sToolTexture,
 ];
 
 export const STORY_MAP: Map<string, Story> = new Map(STORIES.map((story) => [story.id, story]));

@@ -4,10 +4,12 @@
  *
  * A <details> with one button per station; focus routes through the shared
  * module-level focus helper in ui/interaction.ts (set after createInteraction
- * runs, which happens before any user click).
+ * runs, which happens before any user click). Keyboard activation follows the
+ * same path as pointer focus, so the signs focus override (focused station's
+ * boards/details forced visible, the rest dimmed) applies identically.
  */
 import type { DioramaContext } from "../core/context.js";
-import { STATIONS, STATION_ORDER } from "../config/stations.js";
+import { DISTRICTS, STATIONS, STATION_ORDER } from "../config/stations.js";
 import { focusStationById } from "./interaction.js";
 
 export interface A11yController {
@@ -145,9 +147,19 @@ export function buildA11y(ctx: DioramaContext): A11yController {
 
   const intro = document.createElement("p");
   intro.className = "diorama-a11y-intro";
+  // Section names derive from DISTRICTS so the prose can never drift from
+  // the registry's district titles.
+  const sections = Object.values(DISTRICTS)
+    .map((d) =>
+      d.title
+        .toLowerCase()
+        .replace(/(^|[\s&-])([a-z])/g, (_, p: string, c: string) => p + c.toUpperCase()),
+    )
+    .join(", ");
   intro.textContent =
-    "The scene above is one cutaway trading room in three sections: " +
-    "Research & Agents, Central Trading Floor, and Guarded Execution & Reconciliation. " +
+    "The scene above is one cutaway trading room whose product flow runs " +
+    "Watchlist, Chart, Mission, Trade, Risk, Signing, the Hyperliquid testnet " +
+    `exchange, Reconcile, Positions and History across ${sections}. ` +
     `This directory lists all ${STATION_ORDER.length} stations as text; activating a station ` +
     "focuses the camera on it and shows its description.";
   details.appendChild(intro);

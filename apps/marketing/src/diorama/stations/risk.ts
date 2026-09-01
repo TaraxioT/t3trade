@@ -1,21 +1,24 @@
 /**
- * East section, guarded-execution cluster: approval desk at the authority
- * seam, permission control, loss-budget meter, risk scanning arches,
- * protection ring, signer vault, and the execution gateway dispatching
- * toward the docked exchange booth. Owner: east lane (risk.ts).
+ * East section, guarded-execution band. Six survivors (freeze §1):
+ * CONTROLS (operator control kiosk), LOSS BUDGET (single maximum-cumulative-
+ * loss reservoir), RISK GUARDS (four check lamps + one scanning arch),
+ * PROTECTION (orbiting positions with shield states), LOCAL SIGNING (demoted
+ * sealed module), EXECUTION (execution-state progression strip). Owner: east
+ * lane (risk.ts). Approval and permission are cut per freeze §1; the approval
+ * pad's floor space simply empties.
  *
- * Layout reads along the N-E wall matching the pipeline:
- * Decision -> Approval -> Permission -> Risk -> Sign -> Execute -> Exchange.
- * The emergency control kiosk beside Approval also lives here: it owns its
- * own lever and pause-badge visuals only; the room-wide pause side effects
- * live on the trading floor's api (story s-emergency-demo).
+ * Product truth mirrored here: there is no human approval gate in the order
+ * path. Human authority is the CONTROLS kiosk; deterministic guards either
+ * pass a scan or refuse with a stated reason. Capability checks survive as
+ * quiet hex badges on the RISK GUARDS apron.
  *
- * Shared language (R6): every station uses the standard booth/desk family
- * (structural-blue isoTile platforms, low isoWall backs h <= 34, gold as the
- * district accent) and the common sign system. The risk station keeps its
- * scanning arches because they are functional storytelling, not decoration.
- * All statics are drawn once; motion uses pooled sprites and GSAP timelines
- * that are killed on world cleanup. The scene reads correctly unanimated.
+ * Shared language (R6): standard booth/desk family (structural-blue isoTile
+ * platforms, low isoWall backs, gold district accent) and the common sign
+ * system. Station screen copy renders only through the local detailText
+ * helper (registered detail, tier >= 1.8). All statics draw once; motion uses
+ * pooled sprites and tracked GSAP timelines killed on cleanup. There are no
+ * internal demo loops: the flow director and the event bindings own when this
+ * district moves.
  */
 import { Container, Graphics, Sprite, Text, TextStyle } from "pixi.js";
 import { gsap } from "gsap";
@@ -35,56 +38,75 @@ import {
   lightBeam,
   safeDestroy,
 } from "../core/iso.js";
-import { makeSign } from "../core/signs.js";
+import { adoptDetailText, makeSign } from "../core/signs.js";
 import { registerStation } from "../core/registry.js";
-import { pulseSeam } from "../world/seam.js";
 
-export interface ApprovalApi {
-  setSeal(state: "waiting" | "approved" | "denied"): void;
-  /**
-   * Authority binds: replays the approved-seal flourish and pulses the
-   * center<->east authority seam (world/seam.ts). Story s-human-approval
-   * calls this instead of the retired perimeter pulse.
-   */
-  grantPulse(): void;
-}
+export type ControlKind =
+  | "pause"
+  | "resume"
+  | "revoke"
+  | "cancel_entries"
+  | "reduce"
+  | "close"
+  | "close_and_revoke";
 
-/**
- * Local emergency-drill visuals on the panel: guarded cover opens, lever
- * pulls, pause badge shows, then resets. The room-wide pause side effects
- * live on TradingFloorApi.setCampusPaused("tradingFloor").
- */
 export interface EmergencyPanelApi {
-  demoPause(): void;
-}
-
-export interface RiskFortressApi {
-  /** Packet passes arches; stops at stopAtArch index when invalid. */
-  runScan(valid: boolean, stopAtArch?: number): void;
-}
-
-export interface SignerVaultApi {
-  /** Signing pulse: packet in, pulse, signed packet out. Never a key. */
-  signPulse(): void;
-}
-
-export interface ExecutionGatewayApi {
-  setState(state: "idle" | "preparing" | "submitted" | "acknowledged" | "failed"): void;
+  /**
+   * Operator control fires: visual confirmation flash + status lamp. No agent
+   * actor is required; controls outrank the agent provider.
+   */
+  runControl(control: ControlKind, reductionPercent?: 25 | 50 | 75 | 100): void;
 }
 
 export interface BudgetMeterApi {
-  /** Consume a fraction (0..1) of a named reservoir. */
-  consume(reservoir: "loss" | "capital" | "tools" | "authority", amount: number): void;
+  /**
+   * Consume loss-budget percentage POINTS on the 0..100 scale (4 = 4% of the
+   * maximum cumulative loss). The visual is the single loss reservoir, so
+   * every call draws the same bar.
+   */
+  consume(points: number): void;
+  /** Set the remaining allowance as a fraction 0..1 (used becomes 1 - fraction). */
+  setRemaining(fraction: number): void;
 }
+
+export interface RiskFortressApi {
+  /**
+   * A checked order walks the scanning arch and the guard lamps. On fail the
+   * reason is shown verbatim ("cumulative loss limit" | "protection failure" |
+   * "wake budget exhausted") as registered detail.
+   */
+  runScan(pass: boolean, reason?: string): void;
+}
+
+export type ProtectionState = "stop_on_exchange" | "server_executed" | "unprotected";
 
 export interface ProtectionApi {
   /** Attach layered shields to a position token passing through. */
   shieldUp(): void;
+  /** Exchange-native protection state; the label is registered detail text. */
+  setState(state: ProtectionState): void;
 }
 
-/** Extended (non-frozen) surface for the permission sweep demo loop. */
-export interface PermissionSweepApi {
-  sweep(failAt?: number): void;
+export interface SignerVaultApi {
+  /** Signing pulse: packet in, pulse, signed packet out. Never key imagery. */
+  signPulse(): void;
+}
+
+export type ExecutionState =
+  | "idle"
+  | "previewed"
+  | "reserved"
+  | "signed"
+  | "submitted"
+  | "accepted"
+  | "filled"
+  | "rejected"
+  | "cancelled"
+  | "failed";
+
+export interface ExecutionGatewayApi {
+  /** Execution-state progression strip; terminal alternatives are refused. */
+  setState(state: ExecutionState): void;
 }
 
 type Killable = gsap.core.Timeline | gsap.core.Tween;
@@ -98,17 +120,8 @@ const track = <T extends Killable>(k: T): T => {
 let reduced = false;
 const d = (seconds: number): number => (reduced ? 0.04 : seconds);
 
-/**
- * Live bridge from the budget meter to the permission room's mini gauge, so
- * the two stations read as one control cluster on the guarded band. Cleared
- * on every district rebuild; only consume("loss") drives it.
- */
-let lossMirror: ((level: number) => void) | null = null;
-/** Initial loss-budget level shared by the meter and its permission mirror. */
-const INITIAL_LOSS_LEVEL = 0.82;
-
 // ---------------------------------------------------------------------------
-// Shared small props
+// Shared plumbing
 // ---------------------------------------------------------------------------
 
 interface StationBase {
@@ -151,29 +164,50 @@ function stationSign(
     size: def.signSize,
     accent: accent ?? PALETTE.cyan,
     halo: true,
+    lod: def.lod,
+    stationId: id,
   });
   sign.zIndex = def.anchor.y + DEPTH.overlay;
   ctx.layers.labels.addChild(sign);
   return sign;
 }
 
-/** Billboard proposal card (pooled look, cheap Graphics). */
-function makeCard(w: number, h: number, accent: number): Container {
-  const c = new Container();
-  const g = new Graphics();
-  g.roundRect(-w / 2, -h / 2, w, h, 2);
-  g.fill({ color: PALETTE.surfacePale, alpha: 0.92 });
-  g.roundRect(-w / 2, -h / 2, w, h, 2);
-  g.stroke({ width: 1, color: accent, alpha: 0.8 });
-  g.rect(-w / 2 + 3, -h / 2 + 3, w * 0.4, 2);
-  g.fill({ color: accent, alpha: 0.5 });
-  g.rect(-w / 2 + 3, 0, w * 0.6, 1.5);
-  g.fill({ color: PALETTE.inkDim, alpha: 0.5 });
-  c.addChild(g);
-  return c;
+/**
+ * Registered detail text (freeze §5): station screen copy, adopted into the
+ * sign registry under the building station's id, so tier gating, focus
+ * forcing, and focus dimming all flow through the shared policy. The owner is
+ * set around each builder call in buildRiskDistrict; every piece of screen
+ * copy is produced through this helper.
+ */
+let detailOwner = "";
+
+function detailText(text: string, size: number, fill: number): Text {
+  const t = new Text({
+    text,
+    style: new TextStyle({
+      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontSize: size,
+      letterSpacing: size * 0.08,
+      fill,
+    }),
+  });
+  t.resolution = 2;
+  adoptDetailText(t, detailOwner);
+  return t;
 }
 
-/** Billboard order capsule (pooled, tintable). */
+/** Run a builder with detailText strings attributed to one station. */
+function buildWithOwner<T>(id: StationId, build: () => T): T {
+  const previous = detailOwner;
+  detailOwner = id;
+  try {
+    return build();
+  } finally {
+    detailOwner = previous;
+  }
+}
+
+/** Pooled order capsule (pooled look, tintable). */
 function makeCapsule(color: number): Container & { body: Graphics } {
   const c = new Container() as Container & { body: Graphics };
   const body = new Graphics();
@@ -202,8 +236,7 @@ function hexPath(g: Graphics, r: number): void {
 
 /**
  * Soft dark ground ellipse added right after the hit surface so each
- * structure grounds onto the platform instead of floating. Coordinates are
- * root-local (roots are positioned at their anchor).
+ * structure grounds onto the platform. Coordinates are root-local.
  */
 function contactShadow(
   root: Container,
@@ -219,757 +252,333 @@ function contactShadow(
   root.addChild(g);
 }
 
-/** Small crate for filling dead space around the district. */
-function propCrate(x: number, y: number, s = 13): Graphics {
-  return isoBox({
-    x,
-    y,
-    w: s,
-    d: s * 0.6,
-    h: s * 0.55,
-    color: PALETTE.structure,
-    rim: PALETTE.yellow,
-    rimAlpha: 0.3,
-  });
-}
-
 // ---------------------------------------------------------------------------
-// 1. Approval desk (at the center/east authority seam)
+// 1. CONTROLS: operator control kiosk (hero, overview board)
 // ---------------------------------------------------------------------------
 
-function buildApproval(ctx: DioramaContext): ApprovalApi {
-  const { root } = stationBase(ctx, "approval");
+/** Product-true control list shown as registered detail on the kiosk screen. */
+const CONTROL_ROWS: string[] = [
+  "Pause",
+  "Cancel entries",
+  "Reduce 25% 50% 75% 100%",
+  "Close",
+  "Revoke",
+  "Close and revoke",
+];
 
-  contactShadow(root, 8, 10, 160, 110);
-  // Seam-side pad: a gold-trimmed step whose west corner meets the authority
-  // seam inlay, tying the desk to the boundary it enforces. The seam itself
-  // (a floor inlay, no barrier) is drawn by world/seam.ts and pulses via
-  // grantPulse() below.
-  root.addChild(isoTile(-64, 8, 44, 34, PALETTE.structureLight, 0.85, PALETTE.yellow));
-  root.addChild(edgeStrip(-64, -11, -64, -6, PALETTE.yellow, 0.6));
-  root.addChild(edgeStrip(-64, 22, -64, 27, PALETTE.yellow, 0.6));
+/** Which screen row / button a control kind drives (resume re-arms Pause). */
+const CONTROL_INDEX: Record<ControlKind, number> = {
+  pause: 0,
+  resume: 0,
+  cancel_entries: 1,
+  reduce: 2,
+  close: 3,
+  revoke: 4,
+  close_and_revoke: 5,
+};
 
-  // Desk beside the seam, tray to the west where proposals arrive from the
-  // floor section. Blue counter-inlay on the desk top edge balances the gold.
-  root.addChild(
-    isoBox({ x: 14, y: 8, w: 104, d: 58, h: 20, color: PALETTE.structure, rim: PALETTE.yellow }),
-  );
-  root.addChild(edgeStrip(-30, -4, 58, -4, PALETTE.blue, 0.6, 1.4));
-  const tray = new Graphics();
-  tray.roundRect(-58, -14, 34, 12, 2);
-  tray.fill({ color: PALETTE.structureLight });
-  tray.roundRect(-58, -14, 34, 12, 2);
-  tray.stroke({ width: 1.2, color: PALETTE.cyan, alpha: 0.85 });
-  root.addChild(tray);
+/** Semantic lamp color per control; the kiosk rests calm and armed. */
+const CONTROL_LAMP: Record<ControlKind, number> = {
+  pause: PALETTE.waiting,
+  resume: PALETTE.healthy,
+  revoke: PALETTE.emergency,
+  cancel_entries: PALETTE.warning,
+  reduce: PALETTE.warning,
+  close: PALETTE.warning,
+  close_and_revoke: PALETTE.emergency,
+};
 
-  // Queue of dimmed waiting cards west of the tray, arriving across the seam.
-  const q1 = makeCard(18, 12, PALETTE.waiting);
-  q1.position.set(-84, -6);
-  q1.rotation = -0.12;
-  q1.alpha = 0.45;
-  const q2 = makeCard(18, 12, PALETTE.waiting);
-  q2.position.set(-97, -1);
-  q2.rotation = 0.1;
-  q2.alpha = 0.35;
-  root.addChild(q1, q2);
-
-  // The active proposal card on the tray.
-  const card = makeCard(20, 13, PALETTE.cyan);
-  card.position.set(-41, -12);
-  root.addChild(card);
-
-  // Stamp arm: pivot above the desk right side, slams onto the card.
-  const stamp = new Container();
-  stamp.position.set(30, -22);
-  const armG = new Graphics();
-  armG.rect(-2, 0, 4, 16);
-  armG.fill({ color: PALETTE.structureLight });
-  armG.roundRect(-8, 14, 16, 8, 2);
-  armG.fill({ color: PALETTE.yellow });
-  stamp.addChild(armG);
-  root.addChild(stamp);
-
-  // Seal disc above the desk: ring + face + X + laurel layers.
-  const seal = new Container();
-  seal.position.set(2, -64);
-  const face = new Graphics();
-  face.circle(0, 0, 14);
-  face.fill({ color: PALETTE.structure, alpha: 0.95 });
-  face.circle(0, 0, 14);
-  face.stroke({ width: 1.5, color: PALETTE.inkDim, alpha: 0.8 });
-  face.circle(0, 0, 7);
-  face.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.6 });
-  const ring = new Graphics(); // waiting / laurel ring
-  ring.circle(0, 0, 19);
-  ring.stroke({ width: 2, color: PALETTE.waiting, alpha: 0.9 });
-  const laurel = new Graphics(); // approved: broken laurel arcs
-  for (const s of [-1, 1]) {
-    laurel.arc(s * 3, 0, 17, (s * 50 * Math.PI) / 180, (s * 50 * Math.PI) / 180 + 1.9);
-    laurel.stroke({ width: 2.5, color: PALETTE.healthy, alpha: 0.95 });
-  }
-  laurel.alpha = 0;
-  const cross = new Graphics(); // denied: red X
-  cross.moveTo(-8, -8);
-  cross.lineTo(8, 8);
-  cross.moveTo(8, -8);
-  cross.lineTo(-8, 8);
-  cross.stroke({ width: 3, color: PALETTE.blocked });
-  cross.alpha = 0;
-  const sealGlow = glow(0, 0, 52, PALETTE.waiting, 0.3);
-  seal.addChild(sealGlow, ring, face, laurel, cross);
-  root.addChild(seal);
-
-  stationSign(ctx, "approval", 100);
-
-  let waitingLoop: Killable | null = track(
-    gsap.to(ring, { alpha: 0.35, duration: 2.2, yoyo: true, repeat: -1, ease: "sine.inOut" }),
-  );
-  let tl: gsap.core.Timeline | null = null;
-
-  const reset = (): void => {
-    tl?.kill();
-    gsap.killTweensOf([card, stamp, seal, ring, laurel, cross, sealGlow]);
-    card.position.set(-41, -12);
-    card.alpha = 1;
-    card.rotation = 0;
-    stamp.position.set(30, -22);
-    seal.scale.set(1);
-    laurel.alpha = 0;
-    cross.alpha = 0;
-    ring.tint = PALETTE.waiting;
-  };
-
-  const startWaiting = (): void => {
-    ring.alpha = 0.9;
-    ring.tint = PALETTE.waiting;
-    sealGlow.tint = PALETTE.waiting;
-    sealGlow.alpha = 0.3;
-    waitingLoop = track(
-      gsap.to(ring, { alpha: 0.35, duration: 2.2, yoyo: true, repeat: -1, ease: "sine.inOut" }),
-    );
-  };
-
-  const api: ApprovalApi = {
-    setSeal(state) {
-      reset();
-      waitingLoop?.kill();
-      waitingLoop = null;
-      if (state === "waiting") {
-        startWaiting();
-        return;
-      }
-      const t = track(gsap.timeline());
-      tl = t;
-      // Stamp slam shared by both outcomes.
-      t.to(stamp, { y: -10, duration: d(0.14), ease: "power2.in" })
-        .to(stamp, { y: -22, duration: d(0.3), ease: "power2.out" })
-        .to(seal.scale, { y: 0.82, x: 1.12, duration: d(0.12), ease: "power2.in" }, "<")
-        .to(seal.scale, { x: 1, y: 1, duration: d(0.28), ease: "back.out(2)" });
-      if (state === "approved") {
-        t.call(() => {
-          ring.tint = PALETTE.healthy;
-          sealGlow.tint = PALETTE.healthy;
-          sealGlow.alpha = 0.55;
-        })
-          .to(laurel, { alpha: 1, duration: d(0.35), ease: "back.out(2)" })
-          .to(card, { x: 70, duration: d(0.5), ease: "power1.inOut" }, "<")
-          .to(card, { alpha: 0, duration: d(0.2) }, "-=0.1")
-          .to(laurel, { alpha: 0, duration: d(0.3) }, "+=0.4")
-          .call(() => {
-            sealGlow.alpha = 0.3;
-            startWaiting();
-          });
-      } else {
-        t.call(() => {
-          ring.tint = PALETTE.blocked;
-          sealGlow.tint = PALETTE.blocked;
-          sealGlow.alpha = 0.55;
-        })
-          .fromTo(cross, { alpha: 0 }, { alpha: 1, duration: d(0.08), repeat: 3, yoyo: true })
-          // Card drops back west across the seam, toward the floor section.
-          .to(card, { x: -120, y: -2, rotation: -0.4, duration: d(0.55), ease: "power1.in" }, "<")
-          .to(card, { alpha: 0, duration: d(0.2) }, "-=0.15")
-          .to(cross, { alpha: 0, duration: d(0.3) }, "+=0.3")
-          .call(() => {
-            sealGlow.alpha = 0.3;
-            startWaiting();
-          });
-      }
-    },
-    grantPulse() {
-      // The human's authority binds: seal flourish plus the seam sweep.
-      api.setSeal("approved");
-      pulseSeam();
-    },
-  };
-  return api;
-}
-
-// ---------------------------------------------------------------------------
-// 1b. Emergency control kiosk (beside Approval, at the seam)
-// ---------------------------------------------------------------------------
-
-/**
- * Small red-trimmed stop kiosk beside the approval desk: a guarded lever
- * under a hinged glass cover, a blinking status light paired with a pause
- * glyph, and a pause badge held above while the local drill runs. A human
- * control, not an agent station: one protected lever, no consoles. The
- * room-wide pause side effects (floor ring, mast, dimming) are owned by the
- * trading floor's api; the story flashes this kiosk through glowPulse on
- * its registered root and may optionally call demoPause() for the lever.
- */
 function buildEmergencyPanel(ctx: DioramaContext): EmergencyPanelApi {
   const { root } = stationBase(ctx, "emergencyPanel");
 
   contactShadow(root, 0, 6, 100, 62, 0.25);
-  // Pad + pedestal. Emergency red is semantic here, not decorative.
+  // Pad + pedestal + red-trimmed panel box. Emergency red is semantic here.
   root.addChild(isoTile(0, 4, 78, 46, PALETTE.structure, 1, PALETTE.emergency));
   root.addChild(isoBox({ x: 0, y: 6, w: 26, d: 16, h: 9, color: PALETTE.structure }));
 
-  // Panel box on the pedestal with a dark inset screen carrying the pause
-  // wordmark: the shape glyph paired with the status light's blink.
   const box = new Graphics();
   box.roundRect(-16, -52, 32, 50, 5);
   box.fill({ color: PALETTE.structure });
   box.roundRect(-16, -52, 32, 50, 5);
   box.stroke({ width: 2, color: PALETTE.emergency, alpha: 0.95 });
-  box.roundRect(-12, -38, 24, 22, 3);
-  box.fill({ color: PALETTE.space, alpha: 0.8 });
-  box.rect(-4, -32, 3, 10);
-  box.rect(1, -32, 3, 10);
-  box.fill({ color: PALETTE.emergency, alpha: 0.9 });
   root.addChild(box);
 
-  // Guarded lever: pivot on the panel face, red knob at the top of the arm.
-  const lever = new Container();
-  lever.position.set(0, -18);
-  const leverG = new Graphics();
-  leverG.rect(-1.2, -14, 2.4, 14);
-  leverG.fill({ color: PALETTE.structureLight });
-  leverG.circle(0, -14, 4);
-  leverG.fill({ color: PALETTE.emergency });
-  leverG.circle(0, -14, 1.6);
-  leverG.fill({ color: PALETTE.surfacePale, alpha: 0.85 });
-  lever.addChild(leverG);
-  root.addChild(lever);
+  // 2x3 control button grid on the panel face; each control kind flashes its
+  // button. Buttons are position-coded; names live on the screen above.
+  const buttons: Graphics[] = [];
+  for (let i = 0; i < CONTROL_ROWS.length; i++) {
+    const bx = i % 2 === 0 ? -7 : 7;
+    const by = -44 + Math.floor(i / 2) * 12;
+    const b = new Graphics();
+    b.roundRect(bx - 4.5, by - 3.5, 9, 7, 2);
+    b.fill({ color: PALETTE.structureLight });
+    b.roundRect(bx - 4.5, by - 3.5, 9, 7, 2);
+    b.stroke({ width: 1, color: PALETTE.emergency, alpha: 0.7 });
+    root.addChild(b);
+    buttons.push(b);
+  }
 
-  // Hinged glass cover over the lever, closed at rest.
-  const cover = new Container();
-  cover.position.set(-13, -36);
-  const coverG = new Graphics();
-  coverG.rect(0, 0, 26, 24);
-  coverG.fill({ color: PALETTE.surfacePale, alpha: 0.16 });
-  coverG.rect(0, 0, 26, 24);
-  coverG.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.75 });
-  cover.addChild(coverG);
-  root.addChild(cover);
-
-  // Status light above the box: blinking dot + halo at rest.
-  const statusDot = new Graphics();
-  statusDot.circle(0, -57, 2.5);
-  statusDot.fill({ color: PALETTE.emergency });
-  root.addChild(statusDot);
-  const statusLight = glow(0, -57, 12, PALETTE.emergency, 0.8);
-  root.addChild(statusLight);
-  if (!ctx.reducedMotion) {
+  // Status lamp above the box: calm healthy at rest, semantic flash per
+  // control, then back to the armed breathing.
+  const lampDot = new Graphics();
+  lampDot.circle(0, -57, 2.5);
+  lampDot.fill({ color: 0xffffff });
+  lampDot.tint = PALETTE.healthy;
+  root.addChild(lampDot);
+  const lampGlow = glow(0, -57, 12, PALETTE.healthy, 0.6);
+  root.addChild(lampGlow);
+  const REST_ALPHA = 0.55;
+  const startBreathing = (): void => {
+    gsap.killTweensOf(lampGlow);
+    lampGlow.alpha = REST_ALPHA;
+    if (ctx.reducedMotion) return;
     track(
-      gsap.to(statusLight, {
-        alpha: 0.35,
+      gsap.to(lampGlow, {
+        alpha: 0.3,
         duration: 1.2,
         yoyo: true,
         repeat: -1,
         ease: "sine.inOut",
       }),
     );
-  }
-
-  // Drill flare: a dedicated expanding glow so the drill never fights the
-  // idle blink tween over statusLight's alpha.
-  const drillGlow = glow(0, -57, 0, PALETTE.emergency, 0.9);
-  root.addChild(drillGlow);
-
-  // Pause badge: the local "paused" cue while the drill runs, hidden at rest.
-  const pauseBadge = new Container();
-  pauseBadge.position.set(0, -86);
-  pauseBadge.alpha = 0;
-  pauseBadge.visible = false;
-  const badge = new Graphics();
-  badge.circle(0, 0, 13);
-  badge.fill({ color: PALETTE.space, alpha: 0.85 });
-  badge.circle(0, 0, 13);
-  badge.stroke({ width: 2.2, color: PALETTE.emergency, alpha: 0.95 });
-  badge.rect(-4.5, -6.5, 3.2, 13);
-  badge.rect(1.3, -6.5, 3.2, 13);
-  badge.fill({ color: PALETTE.emergency });
-  pauseBadge.addChild(badge);
-  pauseBadge.addChild(glow(0, 0, 46, PALETTE.emergency, 0.3));
-  root.addChild(pauseBadge);
-
-  stationSign(ctx, "emergencyPanel", 96, PALETTE.emergency);
-
-  let drill: gsap.core.Timeline | null = null;
-  const api: EmergencyPanelApi = {
-    demoPause() {
-      drill?.kill();
-      gsap.killTweensOf([cover, cover.scale, lever, pauseBadge, drillGlow]);
-      drillGlow.width = 0;
-      drillGlow.height = 0;
-      drillGlow.alpha = 0.9;
-      // Reduced motion: snap to the composed paused state, then restore.
-      if (ctx.reducedMotion) {
-        cover.rotation = -0.5;
-        cover.alpha = 0.25;
-        lever.angle = 26;
-        pauseBadge.visible = true;
-        pauseBadge.alpha = 1;
-        pauseBadge.y = -86;
-        drill = track(
-          gsap
-            .timeline()
-            .to({}, { duration: 0.6 })
-            .call(() => {
-              cover.rotation = 0;
-              cover.alpha = 1;
-              lever.angle = 0;
-              pauseBadge.visible = false;
-              pauseBadge.alpha = 0;
-            }),
-        );
-        return;
-      }
-      drill = track(
-        gsap
-          .timeline()
-          .to(cover, { rotation: -0.5, alpha: 0.25, duration: 0.35, ease: "power2.in" })
-          .to(cover.scale, { x: 0.12, duration: 0.35, ease: "power2.in" }, "<")
-          .to(lever, { angle: 26, duration: 0.16, ease: "power3.out" })
-          .call(() => {
-            pauseBadge.visible = true;
-            pauseBadge.y = -78;
-          })
-          .fromTo(pauseBadge, { alpha: 0 }, { alpha: 1, duration: 0.4, ease: "power2.out" })
-          .to(pauseBadge, { y: -88, duration: 0.6, ease: "power2.out" }, "<")
-          .fromTo(
-            drillGlow,
-            { width: 10, height: 10 },
-            { width: 46, height: 46, alpha: 0, duration: 0.5 },
-            "<",
-          )
-          .to({}, { duration: 2.0 })
-          .to(lever, { angle: 0, duration: 0.3, ease: "power2.inOut" })
-          .to(pauseBadge, {
-            alpha: 0,
-            y: -78,
-            duration: 0.4,
-            onComplete: () => {
-              pauseBadge.visible = false;
-            },
-          })
-          .to(cover, { rotation: 0, alpha: 1, duration: 0.4, ease: "power2.out" }, "<")
-          .to(cover.scale, { x: 1, duration: 0.4, ease: "power2.out" }, "<"),
-      );
-    },
   };
-  return api;
-}
+  startBreathing();
 
-// ---------------------------------------------------------------------------
-// 2. Permission control room (wall of capability tokens)
-// ---------------------------------------------------------------------------
+  // Confirmation flare: dedicated expanding ring so a control flash never
+  // fights the lamp's idle breathing tween.
+  const confirmRing = glow(0, -30, 12, PALETTE.healthy, 0.9);
+  root.addChild(confirmRing);
 
-function buildPermission(ctx: DioramaContext): PermissionSweepApi {
-  const { root } = stationBase(ctx, "permission");
-
-  contactShadow(root, 0, 10, 196, 136);
-  root.addChild(isoTile(0, 6, 176, 122, PALETTE.structure, 1, PALETTE.structureLight));
-  // Low back walls, open front. h <= 34 per spec.
-  root.addChild(
-    isoWall({ x1: -88, y1: 6, x2: 0, y2: -55, h: 34, color: PALETTE.structure, rim: PALETTE.cyan }),
-  );
-  root.addChild(
-    isoWall({ x1: 0, y1: -55, x2: 88, y2: 6, h: 34, color: PALETTE.structure, rim: PALETTE.cyan }),
-  );
-
-  // Back-panel screen holding the token slots.
-  const panel = new Container();
-  panel.position.set(0, -34);
-  const panelG = new Graphics();
-  panelG.roundRect(-74, -30, 148, 58, 6);
-  panelG.fill({ color: 0x07111f, alpha: 0.85 });
-  panelG.roundRect(-74, -30, 148, 58, 6);
-  panelG.stroke({ width: 1.8, color: PALETTE.cyan, alpha: 0.95 });
-  panelG.moveTo(-70, 6);
-  panelG.lineTo(70, 6);
-  panelG.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.18 });
-  panel.addChild(panelG);
-  root.addChild(panel);
-
-  interface Tok {
-    lit: Graphics;
-    halo: Container;
-  }
-  const toks: Tok[] = [];
-  for (let i = 0; i < 8; i++) {
-    const col = i % 4;
-    const row = Math.floor(i / 4);
-    const tx = -51 + col * 34;
-    const ty = -14 + row * 24;
-    const slot = new Graphics();
-    hexPath(slot, 11);
-    slot.fill({ color: PALETTE.structureLight, alpha: 0.5 });
-    hexPath(slot, 11);
-    slot.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.45 });
-    slot.position.set(tx, ty);
-    const lit = new Graphics();
-    hexPath(lit, 10);
-    lit.fill({ color: PALETTE.cyan, alpha: 0.55 });
-    hexPath(lit, 10);
-    lit.stroke({ width: 1.5, color: 0xffffff, alpha: 0.7 });
-    lit.position.set(tx, ty);
-    lit.tint = PALETTE.cyan;
-    lit.alpha = 0;
-    const halo = glow(tx, ty, 26, PALETTE.cyan, 0);
-    panel.addChild(slot, halo, lit);
-    toks.push({ lit, halo });
-  }
-
-  // Standard lift: the east banner now floats in the void band above the
-  // wall cap, so the wall-face sign lane is free again.
-  const def = STATIONS.permission;
-  const sign = makeSign(def.label, {
-    x: def.anchor.x,
-    y: def.anchor.y - 78,
-    size: def.signSize,
-    accent: PALETTE.cyan,
-    halo: true,
+  // Control screen carrying the product-true control list (registered
+  // detail). One row per control, mirroring the button grid order.
+  const screen = new Graphics();
+  screen.roundRect(-59, -150, 118, 78, 5);
+  screen.fill({ color: 0x07111f, alpha: 0.88 });
+  screen.roundRect(-59, -150, 118, 78, 5);
+  screen.stroke({ width: 1.5, color: PALETTE.emergency, alpha: 0.8 });
+  root.addChild(screen);
+  const controlRows: Container[] = [];
+  CONTROL_ROWS.forEach((label, i) => {
+    const row = new Container();
+    row.position.set(-53, -140 + i * 11.5);
+    const tick = new Graphics();
+    tick.poly([0, -2.5, 2.5, 0, 0, 2.5, -2.5, 0]);
+    tick.fill({ color: PALETTE.inkDim, alpha: 0.9 });
+    row.addChild(tick);
+    row.addChild(detailText(label, 7, PALETTE.ink));
+    root.addChild(row);
+    controlRows.push(row);
   });
-  sign.zIndex = def.anchor.y + DEPTH.overlay;
-  ctx.layers.labels.addChild(sign);
 
-  // Resting capability state: a stable set of granted tokens stays lit (with
-  // slow off-phase breathing when motion is allowed) so the lock answers
-  // "may this run?" at a glance instead of reading as a dead wall between
-  // sweeps. Sweeps reset everything, then restore this resting set.
-  const RESTING_LIT = [1, 4, 6];
-  let restingTweens: Killable[] = [];
-  const startResting = (breathe: boolean): void => {
-    for (const k of restingTweens) k.kill();
-    restingTweens = [];
-    for (const i of RESTING_LIT) {
-      const t = toks[i];
-      gsap.killTweensOf([t.lit, t.halo]);
-      t.lit.alpha = 0.5;
-      t.halo.alpha = 0.25;
-      if (breathe) {
-        restingTweens.push(
-          track(
-            gsap.to(t.lit, {
-              alpha: 0.28,
-              duration: 2.4 + i * 0.5,
-              yoyo: true,
-              repeat: -1,
-              ease: "sine.inOut",
-            }),
-          ),
-        );
-      }
-    }
-  };
+  stationSign(ctx, "emergencyPanel", 168, PALETTE.emergency);
 
-  let sweepTl: gsap.core.Timeline | null = null;
-  const reset = (): void => {
-    sweepTl?.kill();
-    for (const t of toks) {
-      gsap.killTweensOf([t.lit, t.halo]);
-      t.lit.tint = PALETTE.cyan;
-      t.lit.alpha = 0;
-      t.halo.alpha = 0;
-    }
-  };
-
-  const api: PermissionSweepApi = {
-    sweep(failAt = -1) {
-      reset();
-      const st = track(gsap.timeline());
-      sweepTl = st;
-      toks.forEach((t, i) => {
-        const at = i * 0.08;
-        st.to(t.lit, { alpha: 1, duration: d(0.1) }, at).to(
-          t.halo,
-          { alpha: 0.6, duration: d(0.1) },
-          at,
-        );
-        if (i === failAt) {
-          st.call(
-            () => {
-              t.lit.tint = PALETTE.blocked;
-              t.halo.tint = PALETTE.blocked;
-            },
-            undefined,
-            at,
-          ).to(t.lit, { alpha: 0.25, duration: d(0.14), yoyo: true, repeat: 5 }, at + 0.08);
-        }
-      });
-      st.to(
-        toks.map((t) => t.lit),
-        { alpha: 0, duration: d(0.3), delay: d(0.8) },
-      );
-      st.to(
-        toks.map((t) => t.halo),
-        { alpha: 0, duration: d(0.3), delay: d(0.8) },
-        "<",
-      );
-      if (failAt >= 0) {
-        st.call(() => {
-          for (const t of toks) {
-            t.lit.tint = PALETTE.cyan;
-            t.halo.tint = PALETTE.cyan;
-          }
+  let tl: Killable | null = null;
+  const api: EmergencyPanelApi = {
+    runControl(control, _reductionPercent) {
+      tl?.kill();
+      gsap.killTweensOf([lampGlow, confirmRing]);
+      gsap.killTweensOf(controlRows[CONTROL_INDEX[control]]);
+      const color = CONTROL_LAMP[control];
+      const idx = CONTROL_INDEX[control];
+      lampDot.tint = color;
+      lampGlow.tint = color;
+      lampGlow.alpha = 0.95;
+      confirmRing.tint = color;
+      confirmRing.width = 12;
+      confirmRing.height = 12;
+      confirmRing.alpha = 0.9;
+      const row = controlRows[idx];
+      const t = track(gsap.timeline());
+      tl = t;
+      t.to(
+        confirmRing,
+        { width: 56, height: 56, alpha: 0, duration: d(0.5), ease: "power1.out" },
+        0,
+      )
+        .fromTo(row, { alpha: 0.25 }, { alpha: 1, duration: d(0.14), repeat: 3, yoyo: true }, 0)
+        .fromTo(
+          buttons[idx],
+          { alpha: 0.2 },
+          { alpha: 1, duration: d(0.14), repeat: 3, yoyo: true },
+          0,
+        )
+        .to(lampGlow, { alpha: 0.7, duration: d(0.7) })
+        .call(() => {
+          lampDot.tint = PALETTE.healthy;
+          lampGlow.tint = PALETTE.healthy;
+          startBreathing();
         });
-      }
-      st.call(() => startResting(!ctx.reducedMotion));
     },
-  };
-
-  // Ambient verification sweep when motion is allowed.
-  if (!ctx.reducedMotion) {
-    const ambient = gsap.timeline({ repeat: -1, repeatDelay: 8 });
-    ambient.call(() => api.sweep(-1));
-    track(ambient);
-    api.sweep(-1);
-    // District heartbeat: one idle token shimmers on a slow off-phase cycle.
-    // Dedicated glow so the sweep's reset never fights the shimmer.
-    const shimmer = glow(17, -14, 24, PALETTE.blue, 0);
-    panel.addChild(shimmer);
-    track(
-      gsap.fromTo(
-        shimmer,
-        { alpha: 0 },
-        { alpha: 0.4, duration: 2.6, yoyo: true, repeat: -1, ease: "sine.inOut", delay: 1.3 },
-      ),
-    );
-  } else {
-    startResting(false);
-  }
-
-  // Shared apron stepping east toward the Loss Budget: Permissions and the
-  // loss budget stay one adjacent control cluster on the guarded band.
-  root.addChild(isoTile(84, 64, 92, 56, PALETTE.structureLight, 0.8, PALETTE.blue));
-
-  // Miniature loss-budget gauge on the apron, mirroring the real meter live:
-  // the permission room keeps the budget it enforces in view.
-  root.addChild(
-    isoBox({
-      x: 96,
-      y: 44,
-      w: 20,
-      d: 13,
-      h: 9,
-      color: PALETTE.structureLight,
-      rim: PALETTE.blue,
-      rimAlpha: 0.55,
-    }),
-  );
-  const miniLiquid = new Graphics();
-  miniLiquid.roundRect(-4, -22, 8, 22, 3);
-  miniLiquid.fill({ color: PALETTE.healthy, alpha: 0.8 });
-  const miniGlass = new Graphics();
-  miniGlass.roundRect(-5, -23, 10, 23, 4);
-  miniGlass.stroke({ width: 1.1, color: PALETTE.surfacePale, alpha: 0.55 });
-  const mini = new Container();
-  mini.position.set(96, 40);
-  mini.addChild(miniLiquid, miniGlass);
-  root.addChild(mini);
-  miniLiquid.scale.y = INITIAL_LOSS_LEVEL;
-  lossMirror = (level: number): void => {
-    gsap.killTweensOf(miniLiquid.scale);
-    track(gsap.to(miniLiquid.scale, { y: level, duration: d(0.9), ease: "power2.inOut" }));
   };
   return api;
 }
 
 // ---------------------------------------------------------------------------
-// 3. Budget meter (glass reservoirs)
+// 2. LOSS BUDGET: single maximum-cumulative-loss reservoir
 // ---------------------------------------------------------------------------
+
+/** Remaining allowance at a fresh mission budget (matches the card status). */
+const INITIAL_REMAINING = 0.82;
+/** Budget a pending entry holds before its fill consumes it. */
+const RESERVE = 0.06;
 
 function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
   const { root } = stationBase(ctx, "budgetMeter");
 
   contactShadow(root, 0, 16, 150, 100);
-  root.addChild(propCrate(-62, 40));
-  root.addChild(propCrate(-52, 46, 9));
   root.addChild(isoTile(0, 14, 140, 92, PALETTE.structure, 1, PALETTE.structureLight));
   root.addChild(
     isoBox({ x: 0, y: 8, w: 124, d: 54, h: 8, color: PALETTE.structureLight, rim: PALETTE.blue }),
   );
 
-  // Honest reservoirs (TradingBudgetReader / loss accounting): the loss
-  // budget, risk reservations, and capital. The legacy API keys "tools" and
-  // "authority" stay accepted as aliases of the reservations reservoir.
-  type ResKey = "loss" | "capital" | "tools" | "authority";
-  type TankKey = "loss" | "reservations" | "capital";
-  const alias: Record<ResKey, TankKey> = {
-    loss: "loss",
-    capital: "capital",
-    tools: "reservations",
-    authority: "reservations",
-  };
-  const specs: { key: TankKey; label: string; x: number; h: number; color: number; row: number }[] =
-    [
-      { key: "loss", label: "LOSS BUDGET", x: -40, h: 78, color: PALETTE.healthy, row: 0 },
-      { key: "reservations", label: "RESERVATIONS", x: 0, h: 62, color: PALETTE.yellow, row: 1 },
-      { key: "capital", label: "CAPITAL", x: 40, h: 70, color: PALETTE.blue, row: 0 },
-    ];
-  const levels: Record<TankKey, number> = {
-    loss: INITIAL_LOSS_LEVEL,
-    reservations: 0.5,
-    capital: 0.7,
-  };
+  // One honest reservoir: fill rising from the bottom is budget already used
+  // against the maximum cumulative loss; the headroom above is what remains.
+  const TUBE_H = 84;
+  const baseY = -10;
+  let remaining = INITIAL_REMAINING;
 
-  const liquids: Record<string, Container> = {};
-  const bubbles: Record<string, Container> = {};
-  const readouts: Record<TankKey, Text> = {} as Record<TankKey, Text>;
-  // Captions carry name plus live value on two staggered rows (row 0 = outer
-  // tanks, row 1 = center): the 40-unit tube pitch cannot fit three wide
-  // captions side by side. Values refresh only on consume events; nothing
-  // redraws per frame.
-  const labelStyle = new TextStyle({
-    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-    fontSize: 7.5,
-    letterSpacing: 0.4,
-    fill: PALETTE.inkDim,
-  });
-  const pct = (level: number): string => `${Math.round(level * 100)}%`;
-
-  for (const s of specs) {
-    const baseY = -10;
-    // Glass tube outline (static, drawn once).
-    const tube = new Graphics();
-    tube.roundRect(s.x - 8, baseY - s.h - 4, 16, s.h + 8, 8);
-    tube.fill({ color: PALETTE.surfacePale, alpha: 0.06 });
-    tube.roundRect(s.x - 8, baseY - s.h - 4, 16, s.h + 8, 8);
-    tube.stroke({ width: 1.2, color: PALETTE.surfacePale, alpha: 0.4 });
-    // Gauge scale: quarter ticks so the drawdown reads without any values.
-    for (let t = 1; t <= 3; t++) {
-      const ty = baseY - (s.h * t) / 4;
-      tube.moveTo(s.x + 9, ty);
-      tube.lineTo(s.x + 13, ty);
-      tube.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.5 });
-    }
-    root.addChild(tube);
-
-    // Liquid: full-height graphics inside a bottom-anchored container.
-    const liquid = new Container();
-    liquid.position.set(s.x, baseY);
-    const lg = new Graphics();
-    lg.roundRect(-7, -s.h, 14, s.h, 6);
-    lg.fill({ color: s.color, alpha: 0.75 });
-    lg.rect(-7, -s.h, 14, 1.5); // meniscus line
-    lg.fill({ color: PALETTE.surfacePale, alpha: 0.85 });
-    liquid.addChild(lg);
-    root.addChild(liquid);
-    liquid.scale.y = levels[s.key];
-    liquids[s.key] = liquid;
-
-    // Pooled bubble sprite, hidden until a consume plays.
-    const bubble = glow(s.x, 0, 10, s.color, 0);
-    bubble.position.set(s.x, baseY - 6);
-    root.addChild(bubble);
-    bubbles[s.key] = bubble;
-
-    // Real text caption under each tube on its staggered row; never baked.
-    const label = new Text({ text: `${s.label} ${pct(levels[s.key])}`, style: labelStyle });
-    label.resolution = 2;
-    label.anchor.set(0.5);
-    label.position.set(s.x, baseY + 13 + s.row * 11);
-    root.addChild(label);
-    readouts[s.key] = label;
-
-    if (s.key === "loss") {
-      // Bold minimum line where a fresh mission budget rolls over (0.15),
-      // labeled so the gauge scale reads at mid zoom.
-      const min = new Graphics();
-      min.moveTo(s.x - 11, baseY - s.h * 0.15);
-      min.lineTo(s.x + 11, baseY - s.h * 0.15);
-      min.stroke({ width: 2.5, color: PALETTE.blocked, alpha: 0.9 });
-      root.addChild(min);
-      const minLabel = new Text({
-        text: "MIN",
-        style: new TextStyle({
-          fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-          fontSize: 6,
-          letterSpacing: 0.5,
-          fill: PALETTE.blocked,
-        }),
-      });
-      minLabel.resolution = 2;
-      minLabel.anchor.set(1, 0.5);
-      minLabel.position.set(s.x - 13, baseY - s.h * 0.15);
-      root.addChild(minLabel);
-    }
+  const tube = new Graphics();
+  tube.roundRect(-8, baseY - TUBE_H - 4, 16, TUBE_H + 8, 8);
+  tube.fill({ color: PALETTE.surfacePale, alpha: 0.06 });
+  tube.roundRect(-8, baseY - TUBE_H - 4, 16, TUBE_H + 8, 8);
+  tube.stroke({ width: 1.2, color: PALETTE.surfacePale, alpha: 0.4 });
+  for (let q = 1; q <= 3; q++) {
+    const ty = baseY - (TUBE_H * q) / 4;
+    tube.moveTo(9, ty);
+    tube.lineTo(13, ty);
+    tube.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.5 });
   }
+  root.addChild(tube);
 
-  stationSign(ctx, "budgetMeter", 104);
+  const liquid = new Container();
+  liquid.position.set(0, baseY);
+  const lg = new Graphics();
+  lg.roundRect(-7, -TUBE_H, 14, TUBE_H, 6);
+  lg.fill({ color: 0xffffff, alpha: 0.78 });
+  lg.rect(-7, -TUBE_H, 14, 1.5);
+  lg.fill({ color: PALETTE.surfacePale, alpha: 0.85 });
+  lg.tint = PALETTE.warning;
+  liquid.addChild(lg);
+  root.addChild(liquid);
+
+  // Pending-entry reservation notch: a cyan bracket marking the slice a
+  // pending entry holds above the used level, before its fill consumes it.
+  const notch = new Container();
+  const notchG = new Graphics();
+  notchG.moveTo(8, 0);
+  notchG.lineTo(15, 0);
+  notchG.stroke({ width: 1.4, color: PALETTE.cyan, alpha: 0.95 });
+  notchG.poly([5, 0, 8, -2.5, 11, 0, 8, 2.5]);
+  notchG.fill({ color: PALETTE.cyan, alpha: 0.95 });
+  notch.addChild(notchG);
+  root.addChild(notch);
+
+  const bubble = glow(0, baseY - 6, 10, PALETTE.warning, 0);
+  root.addChild(bubble);
+
+  const title = detailText("MAXIMUM CUMULATIVE LOSS", 7, PALETTE.inkDim);
+  title.anchor.set(0.5);
+  title.position.set(0, -106);
+  root.addChild(title);
+  const readout = detailText("", 7, PALETTE.ink);
+  readout.anchor.set(0.5);
+  readout.position.set(0, 32);
+  root.addChild(readout);
+
+  const usedOf = (): number => 1 - remaining;
+  // Readouts and the notch track the animated fill level, so the caption and
+  // reservation stay coherent with the bar while it moves. Red is reserved
+  // for a genuinely exhausted budget and holds until an external call resets.
+  const syncFromScale = (): void => {
+    const used = liquid.scale.y;
+    notch.y = -Math.min(0.97, used + RESERVE) * TUBE_H;
+    lg.tint = used >= 0.999 ? PALETTE.blocked : PALETTE.warning;
+    readout.text = `Used ${Math.round(used * 100)}% · Remaining ${Math.round((1 - used) * 100)}%`;
+  };
+  liquid.scale.y = usedOf();
+  syncFromScale();
+
+  stationSign(ctx, "budgetMeter", 124);
+
+  const animateTo = (nextRemaining: number): void => {
+    // Full 0..1 range on purpose: the meter must be able to show an exhausted
+    // (empty) budget instead of silently clamping away the loss.
+    remaining = Math.max(0, Math.min(1, nextRemaining));
+    gsap.killTweensOf([liquid.scale, bubble, notch]);
+    bubble.alpha = 0.9;
+    bubble.y = baseY - 6;
+    track(
+      gsap
+        .timeline()
+        .to(
+          liquid.scale,
+          { y: usedOf(), duration: d(0.9), ease: "power2.inOut", onUpdate: syncFromScale },
+          0,
+        )
+        .to(bubble, { y: baseY - 6 - TUBE_H * usedOf(), duration: d(0.7), ease: "sine.out" }, 0)
+        .to(bubble, { alpha: 0, duration: d(0.7) }, 0)
+        .call(syncFromScale, undefined, d(0.92)),
+    );
+  };
 
   const api: BudgetMeterApi = {
-    consume(reservoir, amount) {
-      const tank = alias[reservoir];
-      // Floor the drawdown at 15%; sinking further rolls a fresh mission
-      // budget so the reservoir never reads permanently spent.
-      const drained = levels[tank] - Math.max(0, Math.min(1, amount));
-      const next = drained < 0.15 ? INITIAL_LOSS_LEVEL : Math.max(0.15, drained);
-      const from = levels[tank];
-      levels[tank] = next;
-      const spec = specs.find((sp) => sp.key === tank)!;
-      readouts[tank].text = `${spec.label} ${pct(next)}`;
-      if (tank === "loss") lossMirror?.(next);
-      const liquid = liquids[tank];
-      const bubble = bubbles[tank];
-      gsap.killTweensOf([liquid.scale, bubble]);
-      bubble.alpha = 0.9;
-      const h = spec.h;
-      track(
-        gsap
-          .timeline()
-          .to(bubble, { y: -10 - h * next, duration: d(0.7), ease: "sine.out" }, 0)
-          .to(bubble, { alpha: 0, duration: d(0.7) }, 0)
-          .fromTo(
-            liquid.scale,
-            { y: from },
-            { y: next, duration: d(0.9), ease: "power2.inOut" },
-            0,
-          ),
-      );
+    consume(points) {
+      // Units are percentage points of the 0..100 maximum. No rollover or
+      // replenish: an exhausted budget stays empty/red until an external
+      // setRemaining/consume moves it back.
+      animateTo(remaining - Math.max(0, points) / 100);
+    },
+    setRemaining(fraction) {
+      animateTo(fraction);
     },
   };
   return api;
 }
 
 // ---------------------------------------------------------------------------
-// 4. Risk scanning station (standard platform + corridor of four arches)
+// 3. RISK GUARDS: four check lamps + one scanning arch
 // ---------------------------------------------------------------------------
+
+/** Guard lamp rows; reason strings map onto the lamp they refuse. */
+const GUARD_LABELS = [
+  "Stop required",
+  "Within loss budget",
+  "Direction allowed",
+  "Exposure allowed",
+];
+const REASON_LAMP: Record<string, number> = {
+  "protection failure": 0,
+  "cumulative loss limit": 1,
+};
 
 function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   const { root } = stationBase(ctx, "riskFortress");
 
   contactShadow(root, 0, 12, 260, 190, 0.25);
-  // Standard booth-family platform, gold-rimmed like the rest of the east
-  // zone. No towers, no crenellations, no moat: the scanning arches below
-  // carry the whole story.
   root.addChild(isoTile(0, 6, 240, 165, PALETTE.structure, 1, PALETTE.yellow));
   root.addChild(isoTile(0, 14, 190, 130, PALETTE.structureLight, 0.5));
-
-  // Low back walls along the platform's north edges; the south face stays
-  // open to the room. Same isoWall family as Permissions.
   root.addChild(
-    isoWall({ x1: -104, y1: 8, x2: 0, y2: -54, h: 30, color: PALETTE.structure, rim: PALETTE.yellow }),
+    isoWall({
+      x1: -104,
+      y1: 8,
+      x2: 0,
+      y2: -54,
+      h: 30,
+      color: PALETTE.structure,
+      rim: PALETTE.yellow,
+    }),
   );
   root.addChild(
-    isoWall({ x1: 0, y1: -54, x2: 104, y2: 8, h: 30, color: PALETTE.structure, rim: PALETTE.yellow }),
+    isoWall({
+      x1: 0,
+      y1: -54,
+      x2: 104,
+      y2: 8,
+      h: 30,
+      color: PALETTE.structure,
+      rim: PALETTE.yellow,
+    }),
   );
-
-  // Two corner posts at the back-wall ends: plain boxes with emissive tips,
-  // the same post family as the Execution gateway's guards.
   for (const px of [-104, 104]) {
     root.addChild(
       isoBox({
@@ -986,71 +595,80 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
     root.addChild(glow(px, -22, 12, PALETTE.yellow, 0.4));
   }
 
-  // Corridor of 4 scanning arches, west to east across the platform: loss
-  // budget, position limit, leverage, exposure cap. A checked order walks
-  // the corridor and stops at the arch it fails.
+  // Guard panel on the back wall: four check lamps with their product labels
+  // as registered detail. Resting state is all-pass, dim.
+  const panel = new Graphics();
+  panel.roundRect(-78, -62, 156, 68, 6);
+  panel.fill({ color: 0x07111f, alpha: 0.88 });
+  panel.roundRect(-78, -62, 156, 68, 6);
+  panel.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.85 });
+  root.addChild(panel);
+  type LampMode = "dim" | "lit" | "blocked" | "warn";
+  const lamps: Graphics[] = [];
+  GUARD_LABELS.forEach((label, i) => {
+    const ly = -50 + i * 15;
+    const lamp = new Graphics();
+    lamp.circle(-64, ly, 4);
+    lamp.fill({ color: 0xffffff, alpha: 0.9 });
+    lamp.tint = PALETTE.healthy;
+    lamp.alpha = 0.4;
+    root.addChild(lamp);
+    lamps.push(lamp);
+    root.addChild(detailText(label, 7.5, PALETTE.ink)).position.set(-54, ly);
+  });
+  const setLamp = (i: number, mode: LampMode): void => {
+    const lamp = lamps[i];
+    gsap.killTweensOf(lamp);
+    lamp.tint =
+      mode === "blocked" ? PALETTE.blocked : mode === "warn" ? PALETTE.warning : PALETTE.healthy;
+    lamp.alpha = mode === "dim" ? 0.4 : 1;
+  };
+  const setAllLamps = (mode: LampMode): void => {
+    for (let i = 0; i < lamps.length; i++) setLamp(i, mode);
+  };
+
+  // One scanning arch mid-corridor (shared language); the checked order walks
+  // the corridor through it. Gold rim keeps it a gate, not decoration.
   const corridorY = 26;
   root.addChild(isoTile(0, corridorY, 236, 40, PALETTE.structureLight, 0.85, PALETTE.yellow));
-  const archXs = [-82, -28, 26, 80];
-  const glows: Container[] = [];
-  const drawGlyph = (kind: number, color: number): Graphics => {
-    const g = new Graphics();
-    if (kind === 0) {
-      // loss budget: coin
-      g.circle(0, 0, 5);
-      g.stroke({ width: 1.5, color });
-      g.circle(0, 0, 2);
-      g.stroke({ width: 1, color });
-    } else if (kind === 1) {
-      // position limit: stack
-      for (let i = -1; i <= 1; i++) {
-        g.roundRect(-5, i * 4 - 1.5, 10, 3, 1);
-        g.fill({ color });
-      }
-    } else if (kind === 2) {
-      // leverage: double chevron up
-      for (const dy of [2, -3]) {
-        g.moveTo(-4, dy + 2);
-        g.lineTo(0, dy - 2);
-        g.lineTo(4, dy + 2);
-        g.stroke({ width: 1.5, color });
-      }
-    } else {
-      // exposure cap: shield
-      g.poly([0, -6, 5, -3, 5, 2, 0, 6, -5, 2, -5, -3]);
-      g.fill({ color });
-    }
-    return g;
-  };
-  archXs.forEach((ax, i) => {
-    const a = arch(ax, corridorY, 56, 46, PALETTE.structureLight, PALETTE.cyan);
-    root.addChild(a);
-    // Crisper gold rim across the arch beam so each arch reads as a gate.
-    root.addChild(
-      edgeStrip(ax - 28, corridorY - 46, ax + 28, corridorY - 46, PALETTE.yellow, 0.9, 1.6),
-    );
-    const g = glow(ax, corridorY - 4, 44, PALETTE.cyan, 0.18);
-    root.addChild(g);
-    glows.push(g);
-    const glyph = new Container();
-    glyph.position.set(ax, corridorY - 54);
-    glyph.addChild(drawGlyph(i, PALETTE.yellow));
-    root.addChild(glyph);
-    if (!ctx.reducedMotion) {
-      track(
-        gsap.to(g, {
-          alpha: 0.3,
-          duration: 3.2 + i * 0.5,
-          yoyo: true,
-          repeat: -1,
-          ease: "sine.inOut",
-          delay: i * 0.6,
-        }),
-      );
-    }
-  });
+  root.addChild(arch(0, corridorY, 56, 46, PALETTE.structureLight, PALETTE.cyan));
+  root.addChild(edgeStrip(-28, corridorY - 46, 28, corridorY - 46, PALETTE.yellow, 0.9, 1.6));
+  const archGlow = glow(0, corridorY - 4, 44, PALETTE.cyan, 0.2);
+  root.addChild(archGlow);
 
-  // Pooled order token.
+  // Capability badges (absorbs permission): quiet hex tokens on the apron.
+  for (const [hx, hy] of [
+    [-56, 70],
+    [-36, 76],
+    [-16, 70],
+    [4, 76],
+  ]) {
+    const hex = new Graphics();
+    hexPath(hex, 5.5);
+    hex.fill({ color: PALETTE.cyan, alpha: 0.3 });
+    hexPath(hex, 5.5);
+    hex.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.7 });
+    hex.position.set(hx, hy);
+    hex.alpha = 0.7;
+    root.addChild(hex);
+  }
+
+  // Verbatim refusal chip (registered detail), hidden until a scan fails.
+  const reasonChip = new Container();
+  reasonChip.position.set(0, 64);
+  const chipBg = new Graphics();
+  chipBg.roundRect(-56, -10, 112, 20, 4);
+  chipBg.fill({ color: PALETTE.space, alpha: 0.88 });
+  chipBg.roundRect(-56, -10, 112, 20, 4);
+  chipBg.stroke({ width: 1.2, color: PALETTE.blocked, alpha: 0.9 });
+  reasonChip.addChild(chipBg);
+  const chipText = detailText("", 7.5, 0xffffff);
+  chipText.anchor.set(0.5);
+  reasonChip.addChild(chipText);
+  reasonChip.alpha = 0;
+  root.addChild(reasonChip);
+
+  // Pooled order token + exit burst + barrier.
   const token = new Container();
   const tokCore = glow(0, 0, 20, PALETTE.cyan, 0.8);
   const tokDot = new Sprite(dotTexture());
@@ -1059,11 +677,11 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   tokDot.height = 10;
   tokDot.tint = 0xffffff;
   token.addChild(tokCore, tokDot);
-  token.position.set(archXs[0] - 36, corridorY - 8);
+  token.position.set(-108, corridorY - 8);
   token.visible = false;
   root.addChild(token);
-
-  // Barrier decal shown at a failed arch.
+  const exitBurst = glow(112, corridorY - 8, 0, PALETTE.healthy, 0.9);
+  root.addChild(exitBurst);
   const barrier = new Graphics();
   barrier.moveTo(-10, -12);
   barrier.lineTo(10, 12);
@@ -1075,104 +693,94 @@ function buildRiskFortress(ctx: DioramaContext): RiskFortressApi {
   barrier.visible = false;
   root.addChild(barrier);
 
-  const exitBurst = glow(112, corridorY - 8, 0, PALETTE.healthy, 0.9);
-  root.addChild(exitBurst);
-
   stationSign(ctx, "riskFortress", 100, PALETTE.yellow);
 
-  let scanTl: gsap.core.Timeline | null = null;
-  const resetScan = (): void => {
+  let scanTl: Killable | null = null;
+  const restore = (): void => {
     scanTl?.kill();
-    gsap.killTweensOf([...glows, token, barrier, exitBurst]);
+    gsap.killTweensOf([token, barrier, exitBurst, reasonChip, archGlow]);
     token.visible = false;
     barrier.visible = false;
     exitBurst.width = 0;
     exitBurst.height = 0;
-    glows.forEach((g) => {
-      g.tint = PALETTE.cyan;
-      g.alpha = 0.18;
-    });
-  };
-
-  const flashArch = (i: number, color: number): void => {
-    const g = glows[i];
-    g.tint = color;
-    track(gsap.to(g, { alpha: 0.8, duration: d(0.12), yoyo: true, repeat: 1 }));
+    archGlow.tint = PALETTE.cyan;
+    archGlow.alpha = 0.2;
+    reasonChip.alpha = 0;
+    setAllLamps("dim");
   };
 
   const api: RiskFortressApi = {
-    runScan(valid, stopAtArch = 3) {
-      resetScan();
-      const stop = valid ? 4 : Math.max(0, Math.min(3, stopAtArch));
+    runScan(pass, reason) {
+      restore();
+      const sc = track(gsap.timeline({ onComplete: restore }));
+      scanTl = sc;
       token.visible = true;
       token.alpha = 1;
-      token.x = archXs[0] - 36;
-      const sc = track(gsap.timeline({ onComplete: resetScan }));
-      scanTl = sc;
-      for (let i = 0; i < stop; i++) {
-        sc.to(token, { x: archXs[i], duration: d(0.26), ease: "none" }).call(flashArch, [
-          i,
-          PALETTE.cyan,
-        ]);
-      }
-      if (valid) {
-        sc.to(token, { x: 108, duration: d(0.28), ease: "none" })
+      token.position.set(-108, corridorY - 8);
+      sc.to(token, { x: 0, duration: d(0.34), ease: "none" }).call(() => {
+        archGlow.tint = PALETTE.cyan;
+        sc.to(archGlow, { alpha: 0.7, duration: d(0.12), yoyo: true, repeat: 1 });
+      });
+      if (pass) {
+        for (let i = 0; i < GUARD_LABELS.length; i++) {
+          sc.call(setLamp, [i, "lit"], `+=${d(0.07)}`);
+        }
+        sc.to(token, { x: 108, duration: d(0.3), ease: "none" })
           .call(() => {
             exitBurst.width = 60;
             exitBurst.height = 60;
             track(gsap.to(exitBurst, { width: 0, height: 0, alpha: 0, duration: d(0.5) }));
           })
-          .to(token, { alpha: 0, duration: d(0.2) }, "<");
-      } else {
-        const i = stop;
-        sc.to(token, { x: archXs[i], duration: d(0.26), ease: "none" }).call(() => {
-          const g = glows[i];
-          barrier.position.set(archXs[i], corridorY - 20);
-          barrier.visible = true;
-          barrier.alpha = 1;
-          barrier.scale.set(0.6);
-          track(
-            gsap
-              .timeline()
-              .to(barrier.scale, { x: 1, y: 1, duration: d(0.2), ease: "back.out(3)" })
-              .to(g, { alpha: 0.85, duration: d(0.18), yoyo: true, repeat: 1 }, 0)
-              .call(() => {
-                g.tint = PALETTE.warning;
-              })
-              .to(g, { alpha: 0.85, duration: d(0.2), yoyo: true, repeat: 2 }, ">")
-              .call(() => {
-                g.tint = PALETTE.blocked;
-              })
-              .to(g, { alpha: 0.4, duration: d(0.3) })
-              .to(barrier, { alpha: 0, duration: d(0.4), delay: d(0.8) }),
-          );
-        });
-        sc.to(token, { x: archXs[i] - 7, duration: d(0.07), yoyo: true, repeat: 3 }).to(token, {
-          alpha: 0,
-          duration: d(0.3),
-          delay: d(1.1),
-        });
+          .to(token, { alpha: 0, duration: d(0.2) }, "<")
+          .to({}, { duration: d(1.2) });
+        return;
       }
+      // Fail: stop just past the arch, refuse at the matching guard, and show
+      // the reason verbatim. Unmapped mission-level reasons warn every lamp.
+      const mapped = reason ? REASON_LAMP[reason] : undefined;
+      const failAt = mapped ?? GUARD_LABELS.length;
+      for (let i = 0; i < failAt; i++) {
+        sc.call(setLamp, [i, "lit"], `+=${d(0.07)}`);
+      }
+      sc.call(() => {
+        if (mapped !== undefined) {
+          setLamp(mapped, "blocked");
+        } else {
+          setAllLamps("warn");
+        }
+        archGlow.tint = PALETTE.blocked;
+        archGlow.alpha = 0.7;
+        barrier.position.set(12, corridorY - 20);
+        barrier.visible = true;
+        barrier.alpha = 1;
+        barrier.scale.set(0.6);
+        track(gsap.to(barrier.scale, { x: 1, y: 1, duration: d(0.2), ease: "back.out(3)" }));
+        chipText.text = (reason ?? "guard refused").slice(0, 26);
+        chipText.tint = mapped !== undefined ? PALETTE.blocked : PALETTE.warning;
+        gsap.fromTo(reasonChip, { alpha: 0.2 }, { alpha: 1, duration: d(0.25) });
+      });
+      sc.to(token, { x: 6, duration: d(0.06), yoyo: true, repeat: 3 })
+        .to(token, { alpha: 0, duration: d(0.3), delay: d(1.0) })
+        .to({}, { duration: d(1.0) });
     },
   };
-  if (!ctx.reducedMotion) {
-    // Occasional demo scan so the anchor is alive between stories.
-    const demo = gsap.timeline({ repeat: -1, repeatDelay: 11 });
-    demo.call(() => api.runScan(true));
-    track(demo);
-  }
   return api;
 }
 
 // ---------------------------------------------------------------------------
-// 5. Protection layer (orbiting position tokens + shield shells)
+// 4. PROTECTION: orbiting position tokens + shield shells + state label
 // ---------------------------------------------------------------------------
+
+const PROTECTION_META: Record<ProtectionState, { label: string; color: number }> = {
+  stop_on_exchange: { label: "Stop on exchange", color: PALETTE.healthy },
+  server_executed: { label: "Server-executed", color: PALETTE.waiting },
+  unprotected: { label: "Unprotected", color: PALETTE.blocked },
+};
 
 function buildProtection(ctx: DioramaContext): ProtectionApi {
   const { root } = stationBase(ctx, "protection");
 
   contactShadow(root, 0, 4, 132, 96);
-  // Ring platform.
   root.addChild(isoTile(0, 0, 132, 96, PALETTE.structure, 1, PALETTE.structureLight));
   const ring = new Graphics();
   ring.ellipse(0, 0, 50, 25);
@@ -1204,10 +812,9 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
     pip.width = 7;
     pip.height = 7;
     pip.tint = PALETTE.orange;
-    // Persistent shield mark: the token's protection state, always readable.
     const shieldMark = new Graphics();
     hexPath(shieldMark, 10);
-    shieldMark.stroke({ width: 1.5, color: PALETTE.healthy, alpha: 0.85 });
+    shieldMark.stroke({ width: 1.5, color: 0xffffff, alpha: 0.85 });
     hexPath(shieldMark, 13);
     shieldMark.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.5 });
     const mark = STATE_MARK[INITIAL_STATES[i]];
@@ -1238,6 +845,35 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
     place();
   });
 
+  // Protection-state label: the registered detail ("Stop on exchange" is the
+  // default success; unprotected is never presented as success).
+  const stateChip = new Container();
+  stateChip.position.set(46, -58);
+  const chipBorder = new Graphics();
+  chipBorder.roundRect(-34, -10, 68, 20, 3);
+  chipBorder.fill({ color: PALETTE.space, alpha: 0.88 });
+  chipBorder.roundRect(-34, -10, 68, 20, 3);
+  chipBorder.stroke({ width: 1.2, color: 0xffffff, alpha: 0.9 });
+  stateChip.addChild(chipBorder);
+  const chipLabel = detailText(PROTECTION_META.stop_on_exchange.label, 6.5, 0xffffff);
+  chipLabel.anchor.set(0.5);
+  stateChip.addChild(chipLabel);
+  root.addChild(stateChip);
+  const statePost = new Graphics();
+  statePost.rect(45, -48, 2, 16);
+  statePost.fill({ color: PALETTE.structureLight });
+  root.addChild(statePost);
+  const applyChip = (state: ProtectionState): void => {
+    const meta = PROTECTION_META[state];
+    chipLabel.text = meta.label;
+    chipLabel.tint = meta.color;
+    chipBorder.tint = meta.color;
+    gsap.killTweensOf(stateChip.scale);
+    stateChip.scale.set(0.82);
+    track(gsap.to(stateChip.scale, { x: 1, y: 1, duration: d(0.3), ease: "back.out(2.4)" }));
+  };
+  applyChip("stop_on_exchange");
+
   // Triple shield shells (pooled container, hidden between pulses).
   const shells = new Container();
   const shellColors = [PALETTE.healthy, PALETTE.waiting, PALETTE.violet];
@@ -1257,7 +893,7 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
 
   stationSign(ctx, "protection", 78);
 
-  let shieldTl: gsap.core.Timeline | null = null;
+  let shieldTl: Killable | null = null;
   const api: ProtectionApi = {
     shieldUp() {
       shieldTl?.kill();
@@ -1278,7 +914,7 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
         }
       }
       target.state = "shielded";
-      target.shieldMark.tint = STATE_MARK.shielded.tint;
+      target.shieldMark.tint = 0xffffff;
       target.frozen = true;
       shells.visible = true;
       shells.alpha = 1;
@@ -1294,12 +930,12 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
             onComplete: () => {
               shells.visible = false;
               target.frozen = false;
+              target.shieldMark.tint = STATE_MARK.shielded.tint;
             },
           })
           .to(shells.scale, { x: 1, y: 1, duration: d(0.4), ease: "back.out(2.4)" })
           .to(pulse, { width: 70, height: 70, duration: d(0.3) }, 0)
           .to(pulse, { alpha: 0, duration: d(0.4) }, "<")
-          // Snap on: quick scale kick after materializing.
           .to(shells.scale, { x: 1.12, y: 1.12, duration: d(0.08), yoyo: true, repeat: 1 })
           .call(() => {
             target.shieldMark.alpha = STATE_MARK.shielded.alpha;
@@ -1308,13 +944,11 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
       );
       shieldTl = sh;
     },
+    setState(state) {
+      applyChip(state);
+    },
   };
 
-  if (!ctx.reducedMotion) {
-    const demo = gsap.timeline({ repeat: -1, repeatDelay: 9 });
-    demo.call(() => api.shieldUp());
-    track(demo);
-  }
   ctx.onCleanup(() => {
     unreg();
   });
@@ -1322,7 +956,7 @@ function buildProtection(ctx: DioramaContext): ProtectionApi {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Signer vault (isolated cutaway chamber; the key never leaves)
+// 5. LOCAL SIGNING: demoted sealed module + signing pulse (never key imagery)
 // ---------------------------------------------------------------------------
 
 function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
@@ -1330,23 +964,23 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
 
   contactShadow(root, -6, 6, 180, 140);
   // Short bridge west toward the risk corridor's exit, so the checked order
-  // walks straight to the vault.
+  // walks straight into the module.
   root.addChild(isoTile(-92, 16, 52, 22, PALETTE.structureLight, 0.6, PALETTE.yellow));
 
-  // Raised floor.
   root.addChild(
     isoBox({ x: 0, y: 0, w: 138, d: 108, h: 12, color: PALETTE.structure, rim: PALETTE.yellow }),
   );
   root.addChild(isoTile(0, -6, 126, 96, PALETTE.structureLight, 0.9, PALETTE.yellow));
 
-  // Thick cutaway walls: full back edges + short front stubs, open front face.
+  // Cutaway walls: full back edges + short front stubs, open front face. The
+  // demoted module keeps the sealed-chamber language but no sentinel mast.
   root.addChild(
     isoWall({
       x1: -62,
       y1: -6,
       x2: 0,
       y2: -56,
-      h: 44,
+      h: 36,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
@@ -1357,7 +991,7 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
       y1: -56,
       x2: 62,
       y2: -6,
-      h: 44,
+      h: 36,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
@@ -1368,7 +1002,7 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
       y1: -6,
       x2: -46,
       y2: 2,
-      h: 30,
+      h: 26,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
@@ -1379,66 +1013,43 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
       y1: 2,
       x2: 62,
       y2: -6,
-      h: 30,
+      h: 26,
       color: PALETTE.structure,
       rim: PALETTE.yellow,
     }),
   );
 
-  // Sentinel mast above the north wall: a taller gold-tipped silhouette
-  // element marking the vault from across the room.
-  const mast = new Graphics();
-  mast.rect(-63, -112, 2, 54);
-  mast.fill({ color: PALETTE.structureLight });
-  mast.rect(-66, -112, 8, 1.4);
-  mast.fill({ color: PALETTE.yellow, alpha: 0.7 });
-  mast.circle(-62, -115, 2.2);
-  mast.fill({ color: PALETTE.yellow, alpha: 0.95 });
-  root.addChild(mast);
-  root.addChild(glow(-62, -115, 12, PALETTE.yellow, 0.3));
-
-  // Interior pedestal with the STATIC key glyph, set into a niche on the
-  // west back wall. Never animated, and never at chamber center: a parked
-  // actor at the anchor must not intersect the key or the diamond frame.
+  // Sealed core: pedestal + hexagonal seal cap, with a quiet cyan seam ring
+  // marking the sealed boundary. No key, seed, or address imagery, ever.
   root.addChild(
     isoCylinder({
-      x: -30,
-      y: -28,
-      r: 8,
-      h: 14,
+      x: 0,
+      y: -20,
+      r: 10,
+      h: 16,
       color: PALETTE.structureLight,
       rim: PALETTE.yellow,
     }),
   );
-  const niche = new Graphics();
-  niche.roundRect(-44, -64, 28, 32, 4);
-  niche.fill({ color: PALETTE.structure, alpha: 0.9 });
-  niche.roundRect(-44, -64, 28, 32, 4);
-  niche.stroke({ width: 1.2, color: PALETTE.yellow, alpha: 0.5 });
-  root.addChild(niche);
-  const key = new Container();
-  key.position.set(-30, -48);
-  const keyG = new Graphics();
-  keyG.circle(-5, 0, 4.5);
-  keyG.stroke({ width: 2, color: PALETTE.yellow });
-  keyG.circle(-5, 0, 1.5);
-  keyG.fill({ color: PALETTE.yellow });
-  keyG.rect(-1, -1.2, 14, 2.4);
-  keyG.fill({ color: PALETTE.yellow });
-  keyG.rect(7, 0, 2, 4);
-  keyG.fill({ color: PALETTE.yellow });
-  keyG.rect(11, 0, 2, 5);
-  keyG.fill({ color: PALETTE.yellow });
-  key.addChild(keyG, glow(0, 0, 30, PALETTE.yellow, 0.45));
-  root.addChild(key);
-  // District heartbeat: the niche light over the key breathes slowly.
-  // The key glyph itself never animates.
-  const vaultPulse = glow(-30, -48, 44, PALETTE.yellow, 0.14);
-  root.addChild(vaultPulse);
+  const sealCap = new Graphics();
+  hexPath(sealCap, 8);
+  sealCap.fill({ color: PALETTE.yellow, alpha: 0.9 });
+  hexPath(sealCap, 8);
+  sealCap.stroke({ width: 1.2, color: PALETTE.surfacePale, alpha: 0.8 });
+  hexPath(sealCap, 4.5);
+  sealCap.stroke({ width: 1, color: PALETTE.structure, alpha: 0.9 });
+  sealCap.position.set(0, -42);
+  root.addChild(sealCap);
+  const seamRing = new Graphics();
+  seamRing.ellipse(0, -20, 16, 8);
+  seamRing.stroke({ width: 1.2, color: PALETTE.cyan, alpha: 0.55 });
+  root.addChild(seamRing);
+  const corePulse = glow(0, -30, 40, PALETTE.yellow, 0.14);
+  root.addChild(corePulse);
   if (!ctx.reducedMotion) {
     track(
-      gsap.to(vaultPulse, {
-        alpha: 0.34,
+      gsap.to(corePulse, {
+        alpha: 0.32,
         duration: 3.4,
         yoyo: true,
         repeat: -1,
@@ -1454,18 +1065,17 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
     track(gsap.to(scanBar, { x: -40, duration: 3.4, yoyo: true, repeat: -1, ease: "sine.inOut" }));
   }
 
-  // Signing flash: vertical beam + expanding ring over the pedestal, pooled.
-  const flashBeam = lightBeam(-30, -28, 10, 22, 50, PALETTE.yellow, 0);
-  const flashRing = glow(-30, -28, 0, PALETTE.yellow, 0.9);
+  // Signing flash: vertical beam + expanding ring over the core, pooled.
+  const flashBeam = lightBeam(0, -20, 10, 22, 50, PALETTE.yellow, 0);
+  const flashRing = glow(0, -30, 0, PALETTE.yellow, 0.9);
   root.addChild(flashBeam, flashRing);
 
-  // Order capsule (pooled).
   const capsule = makeCapsule(PALETTE.waiting);
   root.addChild(capsule);
 
-  stationSign(ctx, "signerVault", 142, PALETTE.yellow);
+  stationSign(ctx, "signerVault", 116, PALETTE.yellow);
 
-  let tl: gsap.core.Timeline | null = null;
+  let tl: Killable | null = null;
   const reset = (): void => {
     tl?.kill();
     gsap.killTweensOf([capsule, capsule.body, flashBeam, flashRing]);
@@ -1487,9 +1097,9 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
       const vt = track(
         gsap
           .timeline({ onComplete: reset })
-          .to(capsule, { x: 0, y: -12, duration: d(0.45), ease: "power1.inOut" })
+          .to(capsule, { x: 0, y: -26, duration: d(0.45), ease: "power1.inOut" })
           .to(capsule, { alpha: 0.25, duration: d(0.12), yoyo: true, repeat: 1 })
-          // The vault signs; the key stays on its pedestal.
+          // The module signs; the seal never opens and nothing leaves it.
           .call(() => {
             track(
               gsap
@@ -1514,23 +1124,23 @@ function buildSignerVault(ctx: DioramaContext): SignerVaultApi {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Execution gateway (guarded terminal dispatching to the exchange booth)
+// 6. EXECUTION: execution-state progression strip dispatching to the venue
 // ---------------------------------------------------------------------------
+
+const EXECUTION_STEPS = [
+  "previewed",
+  "reserved",
+  "signed",
+  "submitted",
+  "accepted",
+  "filled",
+] as const;
 
 function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
   const { root } = stationBase(ctx, "executionGateway");
 
   contactShadow(root, 2, 12, 178, 138);
-  root.addChild(propCrate(-58, 44));
   root.addChild(isoTile(0, 10, 138, 102, PALETTE.structure, 1, PALETTE.structureLight));
-
-  // Two guard posts on the south rim.
-  for (const gx of [-46, 34]) {
-    root.addChild(
-      isoBox({ x: gx, y: 32, w: 22, d: 16, h: 26, color: PALETTE.structure, rim: PALETTE.aqua }),
-    );
-    root.addChild(glow(gx, -2, 16, PALETTE.cyan, 0.5));
-  }
 
   // Dispatch conveyor toward the docked exchange booth, north-west: the
   // signer hands over from the east, the capsule leaves toward the port.
@@ -1551,60 +1161,83 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
   const mouth = arch(-62, -48, 52, 40, PALETTE.structure, PALETTE.aqua);
   root.addChild(mouth);
 
-  // 5-lamp state strip.
-  type GwState = "idle" | "preparing" | "submitted" | "acknowledged" | "failed";
-  const lampColors: Record<GwState, number> = {
-    idle: PALETTE.waiting,
-    preparing: PALETTE.warning,
-    submitted: PALETTE.orange,
-    acknowledged: PALETTE.healthy,
-    failed: PALETTE.blocked,
-  };
-  const lamps: Record<GwState, { dot: Graphics; halo: Container }> = {} as Record<
-    GwState,
-    { dot: Graphics; halo: Container }
-  >;
-  (Object.keys(lampColors) as GwState[]).forEach((st, i) => {
-    const lx = -44 + i * 22;
-    const dot = new Graphics();
-    dot.circle(lx, -56, 4.5);
-    dot.fill({ color: lampColors[st], alpha: 0.25 });
-    dot.circle(lx, -56, 4.5);
-    dot.stroke({ width: 1, color: lampColors[st], alpha: 0.6 });
-    const halo = glow(lx, -56, 22, lampColors[st], 0);
-    root.addChild(halo, dot);
-    lamps[st] = { dot, halo };
+  // Six-segment progression strip: previewed -> filled. Segments up to the
+  // current state are lit; the current one carries a halo. Terminal
+  // alternatives (rejected/cancelled/failed) flash the whole strip blocked.
+  const stripY = -52;
+  const segXs = [-50, -30, -10, 10, 30, 50];
+  const stripLine = new Graphics();
+  stripLine.moveTo(segXs[0], stripY);
+  stripLine.lineTo(segXs[segXs.length - 1], stripY);
+  stripLine.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.3 });
+  root.addChild(stripLine);
+  const segments: Graphics[] = [];
+  const halos: Sprite[] = [];
+  segXs.forEach((sx) => {
+    const seg = new Graphics();
+    seg.roundRect(sx - 5, stripY - 3, 10, 6, 2);
+    seg.fill({ color: 0xffffff, alpha: 0.9 });
+    seg.tint = PALETTE.inkDim;
+    seg.alpha = 0.35;
+    root.addChild(seg);
+    segments.push(seg);
+    const halo = glow(sx, stripY, 18, PALETTE.cyan, 0);
+    root.addChild(halo);
+    halos.push(halo);
   });
+  const stepIdx = (state: ExecutionState): number =>
+    EXECUTION_STEPS.indexOf(state as (typeof EXECUTION_STEPS)[number]);
 
-  // Pooled order capsule + reject bin.
+  // Current-state chip (registered detail) + terminal alternatives line.
+  const stateChip = new Container();
+  stateChip.position.set(4, -28);
+  const chipBg = new Graphics();
+  chipBg.roundRect(-32, -8, 64, 16, 3);
+  chipBg.fill({ color: PALETTE.space, alpha: 0.85 });
+  chipBg.roundRect(-32, -8, 64, 16, 3);
+  chipBg.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.7 });
+  stateChip.addChild(chipBg);
+  const chipLabel = detailText("", 6.5, 0xffffff);
+  chipLabel.anchor.set(0.5);
+  stateChip.addChild(chipLabel);
+  stateChip.alpha = 0;
+  root.addChild(stateChip);
+  const terminalLine = detailText("rejected · cancelled · failed", 5.5, PALETTE.inkDim);
+  terminalLine.anchor.set(0.5);
+  terminalLine.position.set(-30, 38);
+  root.addChild(terminalLine);
+
+  // Reject bin for terminal outcomes.
+  root.addChild(
+    isoBox({
+      x: 36,
+      y: 48,
+      w: 28,
+      d: 20,
+      h: 14,
+      color: PALETTE.structure,
+      rim: PALETTE.blocked,
+      rimAlpha: 0.5,
+    }),
+  );
+
   const capsule = makeCapsule(PALETTE.orange);
   root.addChild(capsule);
-  const bin = isoBox({
-    x: 36,
-    y: 48,
-    w: 28,
-    d: 20,
-    h: 14,
-    color: PALETTE.structure,
-    rim: PALETTE.blocked,
-    rimAlpha: 0.5,
-  });
-  root.addChild(bin);
 
-  // Sign above the booth, clear of the lamp strip and the exchange port.
   stationSign(ctx, "executionGateway", 84, PALETTE.cyan);
 
-  let tl: gsap.core.Timeline | null = null;
-  const setLamps = (active: GwState | null): void => {
-    (Object.keys(lamps) as GwState[]).forEach((st) => {
-      const on = st === active;
-      const l = lamps[st];
-      gsap.killTweensOf([l.dot, l.halo]);
-      l.dot.alpha = on ? 1 : 0.45;
-      l.halo.alpha = on ? 0.7 : 0;
+  let tl: Killable | null = null;
+  const resetStrip = (): void => {
+    segments.forEach((seg) => {
+      gsap.killTweensOf(seg);
+      seg.tint = PALETTE.inkDim;
+      seg.alpha = 0.35;
+    });
+    halos.forEach((h) => {
+      gsap.killTweensOf(h);
+      h.alpha = 0;
     });
   };
-  setLamps("idle");
 
   const resetCapsule = (): void => {
     capsule.visible = false;
@@ -1614,59 +1247,79 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
     capsule.position.set(conv.x1, conv.y1);
   };
 
+  const dropToBin = (gt: gsap.core.Timeline): void => {
+    gt.to(capsule, { alpha: 0.3, duration: d(0.12), yoyo: true, repeat: 3 })
+      .to(capsule, { y: 34, duration: d(0.3), ease: "power1.in" })
+      .to(capsule, { x: 36, y: 46, duration: d(0.25), ease: "power1.in" })
+      .to(capsule, { alpha: 0, duration: d(0.25) });
+  };
+
   const api: ExecutionGatewayApi = {
     setState(state) {
       tl?.kill();
-      gsap.killTweensOf([capsule, capsule.body]);
+      gsap.killTweensOf([capsule, capsule.body, stateChip, stateChip.scale]);
       resetCapsule();
-      setLamps(state === "idle" ? "idle" : state);
+      resetStrip();
+      const terminal = state === "rejected" || state === "cancelled" || state === "failed";
       if (state === "idle") return;
       const gt = track(gsap.timeline());
       tl = gt;
-      if (state === "preparing") {
-        // Capsule assembles at the conveyor start (signer side, east).
-        capsule.visible = true;
-        capsule.scale.set(0);
-        gt.to(capsule.scale, { x: 1, y: 1, duration: d(0.35), ease: "back.out(2)" }).to(capsule, {
-          x: 0,
-          y: -28,
-          duration: d(0.4),
-          ease: "none",
+      if (terminal) {
+        segments.forEach((seg) => {
+          seg.tint = PALETTE.blocked;
+          seg.alpha = 1;
         });
-      } else if (state === "submitted") {
+        chipLabel.text = state;
+        chipLabel.tint = PALETTE.blocked;
+        chipBg.tint = PALETTE.blocked;
+        stateChip.alpha = 1;
+        gt.fromTo(stateChip, { alpha: 0.2 }, { alpha: 1, duration: d(0.25) })
+          .to(stateChip, { alpha: 0, duration: d(0.4), delay: d(1.6) })
+          .call(() => {
+            chipBg.tint = 0xffffff;
+          });
+        capsule.visible = true;
+        capsule.position.set(conv.x1, conv.y1);
+        capsule.body.tint = PALETTE.blocked;
+        dropToBin(gt);
+        return;
+      }
+      const idx = stepIdx(state);
+      for (let i = 0; i <= idx; i++) {
+        segments[i].tint = PALETTE.cyan;
+        segments[i].alpha = 1;
+      }
+      halos[idx].alpha = 0.7;
+      chipLabel.text = state;
+      chipLabel.tint = PALETTE.ink;
+      chipBg.tint = 0xffffff;
+      stateChip.alpha = 1;
+      if (state === "submitted") {
         capsule.visible = true;
         capsule.scale.set(1);
         capsule.position.set(0, -28);
-        gt.to(capsule, { x: conv.x2, y: conv.y2, duration: d(0.5), ease: "power1.in" }).to(capsule, {
-          alpha: 0,
-          duration: d(0.15),
-        });
-      } else if (state === "acknowledged") {
-        // Capsule is gone; green confirmation at the launch mouth.
+        gt.to(capsule, { x: conv.x2, y: conv.y2, duration: d(0.5), ease: "power1.in" }).to(
+          capsule,
+          { alpha: 0, duration: d(0.15) },
+        );
+      } else if (state === "accepted" || state === "filled") {
         const burst = glow(conv.x2, conv.y2 - 2, 0, PALETTE.healthy, 0.9);
         root.addChild(burst);
         gt.fromTo(
           burst,
           { width: 10, height: 10 },
           {
-            width: 56,
-            height: 56,
+            width: state === "filled" ? 72 : 56,
+            height: state === "filled" ? 72 : 56,
             alpha: 0,
             duration: d(0.6),
             onComplete: () => safeDestroy(burst),
           },
         );
       } else {
-        // failed: capsule flashes red at the conveyor start, drops south
-        // clear of the booth, then into the reject bin.
-        capsule.visible = true;
-        capsule.position.set(conv.x1, conv.y1);
-        capsule.body.tint = PALETTE.blocked;
-        gt.to(capsule, { alpha: 0.3, duration: d(0.12), yoyo: true, repeat: 3 })
-          .to(capsule, { y: 34, duration: d(0.3), ease: "power1.in" })
-          .to(capsule, { x: 36, y: 46, duration: d(0.25), ease: "power1.in" })
-          .to(capsule, { alpha: 0, duration: d(0.25) });
+        gt.to({}, { duration: d(0.2) });
       }
+      gt.to(stateChip, { alpha: 0, duration: d(0.4), delay: d(1.4) });
     },
   };
   return api;
@@ -1676,103 +1329,24 @@ function buildExecutionGateway(ctx: DioramaContext): ExecutionGatewayApi {
 // District assembly
 // ---------------------------------------------------------------------------
 
-/**
- * Floor guidance for the pipeline reading order:
- * Approval -> Permissions -> Loss Budget -> Risk -> Protection -> Signer ->
- * Execution. Chevrons mark only the budget-to-risk leg, the one hop with no
- * primary rail; every other leg now duplicates a re-anchored route and
- * stamped chevrons would read as marks wandering beside their rails. One
- * runner light walks the whole sequence. Semantic colors are never used
- * here; this is wayfinding, not state.
- */
-function buildPipelineFlow(ctx: DioramaContext): void {
-  const seq: { x: number; y: number }[] = [
-    STATIONS.approval.anchor,
-    STATIONS.permission.anchor,
-    STATIONS.budgetMeter.anchor,
-    STATIONS.riskFortress.anchor,
-    STATIONS.protection.anchor,
-    STATIONS.signerVault.anchor,
-    STATIONS.executionGateway.anchor,
-  ];
-  /** Leg indices (seq[i] -> seq[i+1]) that keep floor chevrons. */
-  const legsWithFloorChevrons = new Set([2]);
-
-  const chevrons = new Container();
-  for (let g = 0; g < seq.length - 1; g++) {
-    if (!legsWithFloorChevrons.has(g)) continue;
-    const a = seq[g];
-    const b = seq[g + 1];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const angle = Math.atan2(dy, dx);
-    // Start and end inset so chevrons sit between footprints, not under them.
-    const start = 0.34;
-    const end = 0.66;
-    const count = 3;
-    for (let k = 0; k < count; k++) {
-      const t = start + ((end - start) * (k + 0.5)) / count;
-      const mark = new Graphics();
-      mark.poly([5, 0, -2, -4, 0, 0, -2, 4, 5, 0]);
-      mark.fill({ color: PALETTE.cyan, alpha: 0.45 });
-      mark.position.set(a.x + dx * t, a.y + dy * t);
-      mark.rotation = angle;
-      mark.zIndex = Math.max(a.y, b.y) + DEPTH.base - 3;
-      chevrons.addChild(mark);
-    }
-  }
-  ctx.layers.sortable.addChild(chevrons);
-
-  if (ctx.reducedMotion) return;
-  // Runner light: one pooled dot hops the sequence every ~9.5 s. Its depth
-  // follows its position so it never paints behind a station it has passed.
-  const runner = new Sprite(dotTexture());
-  runner.anchor.set(0.5);
-  runner.width = 9;
-  runner.height = 9;
-  runner.tint = PALETTE.cyan;
-  runner.alpha = 0.9;
-  runner.zIndex = seq[0].y + DEPTH.base + 2;
-  ctx.layers.sortable.addChild(runner);
-  const rt = gsap.timeline({
-    repeat: -1,
-    repeatDelay: 4.2,
-    onUpdate: () => {
-      runner.zIndex = runner.y + DEPTH.base + 2;
-    },
-  });
-  for (let g = 0; g < seq.length - 1; g++) {
-    rt.to(runner, { x: seq[g + 1].x, y: seq[g + 1].y, duration: 0.62, ease: "none" }, g * 0.7);
-  }
-  rt.to(runner, { alpha: 0, duration: 0.3 }, (seq.length - 1) * 0.7).set(runner, {
-    x: seq[0].x,
-    y: seq[0].y,
-    alpha: 0.9,
-  });
-  track(rt);
-}
-
 export function buildRiskDistrict(ctx: DioramaContext): void {
   reduced = ctx.reducedMotion;
   killables.length = 0;
-  lossMirror = null;
   for (const key of Object.keys(stationParts)) delete stationParts[key as StationId];
   ctx.onCleanup(() => {
     for (const k of killables) k.kill();
     killables.length = 0;
   });
 
-  buildPipelineFlow(ctx);
-
+  // Each builder's screen copy adopts into the sign registry under its own
+  // station id (see detailText), so the shared tier/focus policy governs it.
   const apis = {
-    approval: buildApproval(ctx),
-    emergencyPanel: buildEmergencyPanel(ctx),
-    permission: buildPermission(ctx),
-    budgetMeter: buildBudgetMeter(ctx),
-    riskFortress: buildRiskFortress(ctx),
-    protection: buildProtection(ctx),
-    signerVault: buildSignerVault(ctx),
-    executionGateway: buildExecutionGateway(ctx),
+    emergencyPanel: buildWithOwner("emergencyPanel", () => buildEmergencyPanel(ctx)),
+    budgetMeter: buildWithOwner("budgetMeter", () => buildBudgetMeter(ctx)),
+    riskFortress: buildWithOwner("riskFortress", () => buildRiskFortress(ctx)),
+    protection: buildWithOwner("protection", () => buildProtection(ctx)),
+    signerVault: buildWithOwner("signerVault", () => buildSignerVault(ctx)),
+    executionGateway: buildWithOwner("executionGateway", () => buildExecutionGateway(ctx)),
   } as const;
 
   for (const id of Object.keys(apis) as StationId[]) {

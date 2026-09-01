@@ -10,12 +10,12 @@
  * state, but acquiring remains the intended discipline.
  *
  * Idle life: when no story owns an agent, the system walks its authored
- * wander loop at a leisurely pace with 0.8-2.4 s pauses and frequent
- * micro-life (weight shift, look-around, expression flicker, blink, an
- * occasional solo comedy beat), all driven from one shared ticker with
- * per-agent schedules from seededRandom. All of that motion is disabled under
- * reducedMotion: agents still walk (idle wandering and story walks alike,
- * at a calmer cadence); only the comedy micro-life is suppressed.
+ * wander loop at a leisurely pace with short pauses and a natural blink, all
+ * driven from one shared ticker with per-agent schedules from seededRandom.
+ * There is no self-triggered comedy: background workers only move with
+ * purpose (wander loops plus story tasking), and expressions change only
+ * through story calls. Under reducedMotion agents still walk (idle wandering
+ * and story walks alike, at a calmer cadence); blinks keep their cadence.
  */
 import { gsap } from "gsap";
 import type { DioramaContext } from "../core/context.js";
@@ -29,7 +29,7 @@ import {
   type AgentMicroLife,
   type Expression,
 } from "./agent.js";
-import { agentFx, createAgentFx } from "./fx.js";
+import { createAgentFx } from "./fx.js";
 
 export interface AgentSystem {
   agents: Map<string, Agent>;
@@ -88,17 +88,13 @@ interface Runtime {
   idle: IdleState;
   waitUntil: number;
   wanderIndex: number;
-  nextLifeAt: number;
   nextBlinkAt: number;
-  lifeRevert: gsap.core.Tween | null;
 }
 
 interface Lock {
   agent: Agent;
   acquiredBy: string;
 }
-
-const IDLE_EXPRESSIONS: Expression[] = ["neutral", "focused", "curious", "satisfied"];
 
 export function createPopulation(ctx: DioramaContext): AgentSystem {
   const agents = new Map<string, Agent>();
@@ -107,7 +103,8 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
   let elapsed = 0;
   let idleLifeEnabled = false;
 
-  // Comic marks / card bursts / rolling props shared by agents and stories.
+  // Comic marks / card bursts / rolling props: installed here, consumed by
+  // story tasking (stories call the fx delegates directly).
   createAgentFx(ctx);
 
   const restingExpression = (def: AgentDef): Expression =>
@@ -134,9 +131,7 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
       idle: "waiting",
       waitUntil: 0,
       wanderIndex: 0,
-      nextLifeAt: 4 + seededRandom(index + 1)() * 6,
       nextBlinkAt: 2 + seededRandom(index + 101)() * 4,
-      lifeRevert: null,
     };
     updateDepth(rt);
     agents.set(def.id, impl);
@@ -147,7 +142,6 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
     for (const rt of runtimes.values()) {
       rt.walk?.kill();
       rt.walkResolve?.();
-      rt.lifeRevert?.kill();
       rt.impl.dispose();
       rt.impl.root.destroy({ children: true });
     }
@@ -275,12 +269,10 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
     const agent = agents.get(id);
     if (!agent || locks.has(id)) return undefined;
     locks.set(id, { agent, acquiredBy: label });
-    // Take the agent out of idle life: cancel its idle walk and micro-life.
+    // Take the agent out of idle life: cancel its idle walk.
     const rt = runtimes.get(id);
     if (rt) {
       rt.walk?.kill();
-      rt.lifeRevert?.kill();
-      rt.lifeRevert = null;
     }
     return agent;
   };
@@ -310,76 +302,19 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
   };
 
   // --- idle life -----------------------------------------------------------
-  const scheduleNextLife = (rt: Runtime): void => {
-    rt.nextLifeAt = elapsed + 3.5 + rt.rng() * 3.5; // average every 3.5-7 s
-  };
-
-  const idleLifeEvent = (rt: Runtime): void => {
-    const roll = rt.rng();
-    const impl = rt.impl;
-    // Occasional solo comedy beat so idle clusters never read frozen.
-    if (rt.idle === "waiting" && roll < 0.15) {
-      if (rt.rng() < 0.5) {
-        impl.react("doubleTake"); // looks around
-      } else {
-        // sneeze: quick squash plus a puff mark over the head
-        impl.react("squash");
-        agentFx.current?.popMarkAt(impl.root.x, impl.root.y - 100, "puff");
-      }
-      scheduleNextLife(rt);
-      return;
-    }
-    if (roll < 0.24) {
-      // expression flicker, then back to resting
-      const expr = IDLE_EXPRESSIONS[Math.floor(rt.rng() * IDLE_EXPRESSIONS.length)];
-      impl.setExpression(expr);
-      rt.lifeRevert?.kill();
-      rt.lifeRevert = gsap.delayedCall(1.2, () => {
-        impl.setExpression(restingExpression(rt.def));
-        rt.lifeRevert = null;
-      });
-    } else if (roll < 0.44) {
-      // look around with a tiny step: flip + curious + weight shift, revert
-      const wasLeft = rt.rng() < 0.5;
-      impl.faceLeft(wasLeft);
-      impl.setExpression("curious");
-      impl.shift();
-      rt.lifeRevert?.kill();
-      rt.lifeRevert = gsap.delayedCall(1.6, () => {
-        impl.setExpression(restingExpression(rt.def));
-        rt.lifeRevert = null;
-      });
-    } else if (roll < 0.6 && rt.idle === "waiting") {
-      // satisfied head-bob laugh
-      impl.laugh();
-      rt.lifeRevert?.kill();
-      rt.lifeRevert = null;
-    } else if (roll < 0.74 && rt.idle === "waiting") {
-      // impatient foot tap
-      impl.tap();
-    } else if (roll < 0.88 && rt.idle === "waiting") {
-      impl.shift(); // weight shift, self-reverting
-    } else if (rt.idle === "waiting") {
-      impl.react("tilt");
-    }
-    scheduleNextLife(rt);
-  };
-
   const startIdleLife = (): void => {
     // Reduced motion keeps locomotion: miniature agents walking between
-    // authored posts is scene content, not a vestibular trigger. Only the
-    // comedy micro-life is suppressed and the cadence calms down.
+    // authored posts is scene content, not a vestibular trigger. There is no
+    // other idle motion to suppress.
     idleLifeEnabled = true;
     for (const rt of runtimes.values()) {
       rt.idle = "waiting";
       // Variant-staggered starts so no district settles into sync.
       rt.waitUntil = elapsed + rt.def.variant * 1.8 + rt.rng() * 0.5;
-      scheduleNextLife(rt);
-      if (ctx.reducedMotion) rt.nextLifeAt = Infinity;
     }
   };
 
-  // One shared ticker drives idle wandering, micro-life and blinks.
+  // One shared ticker drives idle wandering and blinks.
   const unregisterTick = ctx.onTick((_ticker) => {
     const dt = gsap.ticker.deltaRatio(60) / 60;
     elapsed += dt;
@@ -409,9 +344,6 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
             rt.waitUntil = elapsed + (ctx.reducedMotion ? base * 1.8 : base);
           }
         });
-      }
-      if (elapsed >= rt.nextLifeAt && rt.walk === null) {
-        idleLifeEvent(rt);
       }
       if (elapsed >= rt.nextBlinkAt) {
         // Blink cadence jitters per variant so crowds never blink in unison.
@@ -451,8 +383,8 @@ export function createPopulation(ctx: DioramaContext): AgentSystem {
       return out;
     },
   };
-  // The population owns its idle life: wandering starts as soon as the
-  // system exists (pose-only under reduced motion).
+  // The population owns its idle life: purposeful wandering starts as soon
+  // as the system exists (at a calmer cadence under reduced motion).
   startIdleLife();
   return system;
 }
