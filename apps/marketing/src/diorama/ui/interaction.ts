@@ -37,6 +37,11 @@ export interface InteractionDeps {
   infoCard: InfoCard;
   /** Runs a station demo story (Director.runStory); fire-and-forget. */
   onRunStory?: (storyId: string) => void;
+  /** Notified true on station focus and false on every clear path
+   * (Escape, backdrop click, card close, HUD reset). Used for rail dimming. */
+  onFocusChange?: (focused: boolean) => void;
+  /** True while a story is running (Director.isRunning); gates retry clicks. */
+  isStoryActive?: (storyId: string) => boolean;
 }
 
 /** Any pickable station: configured StationDef or the Hyperliquid synthetic. */
@@ -46,12 +51,14 @@ type PickableStation = CardStation & { handle?: StationHandle };
 let activeCard: InfoCard | null = null;
 let activeFocus: ((def: CardStation) => void) | null = null;
 let activeClearHover: (() => void) | null = null;
+let activeFocusChange: ((focused: boolean) => void) | null = null;
 
 /** Shared selection clearing, also usable before interaction is wired. */
 export function clearSelection(): void {
   activeCard?.hide();
   setBannersDim(false);
   activeClearHover?.();
+  activeFocusChange?.(false);
 }
 
 /** Focus a station programmatically (a11y directory, keyboard, stories). */
@@ -384,6 +391,8 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
 
   const maybeRunStory = (def: CardStation): void => {
     if (!def.story || !deps.onRunStory) return;
+    // Already running (e.g. focus auto-ran it): do not silently retry a lock.
+    if (deps.isStoryActive?.(def.story) === true) return;
     const now = performance.now();
     const last = lastStoryRun.get(def.id) ?? -Infinity;
     if (now - last < STORY_DEBOUNCE_MS) return;
@@ -398,11 +407,13 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     deps.camera.focusOn(def.anchor, def.focusZoom ?? 1.35);
     deps.infoCard.show(def, undefined, stationScreen(def.anchor));
     setBannersDim(true);
+    deps.onFocusChange?.(true);
     pulseAt(def.anchor.x, def.anchor.y, def.size, DISTRICTS[def.district].accent);
     playDioramaCue(CUES.select);
     maybeRunStory(def);
   };
   activeFocus = focusStation;
+  activeFocusChange = (focused: boolean): void => deps.onFocusChange?.(focused);
 
   // Canvas-level pointer handling: down records the point, up picks a station
   // when the pointer did not travel (drag threshold) and clears otherwise.
@@ -453,5 +464,6 @@ export function createInteraction(ctx: DioramaContext, deps: InteractionDeps): v
     activeCard = null;
     activeFocus = null;
     activeClearHover = null;
+    activeFocusChange = null;
   });
 }

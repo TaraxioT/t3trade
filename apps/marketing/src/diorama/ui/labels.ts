@@ -31,6 +31,9 @@ export function setBannersDim(dim: boolean): void {
 
 export function buildDistrictBanners(ctx: DioramaContext): void {
   banners.length = 0;
+  // Fresh visits start undimmed even if the previous visit was torn down
+  // while a station was in focus (module state persists across routes).
+  dimmed = false;
 
   for (const def of Object.values(DISTRICTS)) {
     if (def.id === "external") continue; // built by world/hyperliquid.ts
@@ -76,5 +79,6 @@ export function buildDistrictBanners(ctx: DioramaContext): void {
     offZoom();
     for (const banner of banners) gsap.killTweensOf(banner);
     banners.length = 0;
+    dimmed = false;
   });
 }

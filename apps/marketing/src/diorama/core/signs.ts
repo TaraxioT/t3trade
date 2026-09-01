@@ -106,6 +106,17 @@ export function setSignLod(level: SignLodLevel): void {
   }
 }
 
+/**
+ * Empty the sign registry, killing any in-flight LOD tweens first. Repeated
+ * visits at the same LOD tier never trigger the lazy prune in setSignLod, so
+ * destroyed roots accumulate indefinitely; the diorama teardown must call
+ * this explicitly.
+ */
+export function clearSigns(): void {
+  for (const entry of registry) gsap.killTweensOf(entry.root);
+  registry.length = 0;
+}
+
 const signStyle = (fontSize: number, color: number): TextStyle =>
   new TextStyle({
     fontFamily: "'JetBrains Mono', ui-monospace, monospace",

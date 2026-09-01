@@ -12,6 +12,7 @@ import { Viewport } from "pixi-viewport";
 import { createCamera, type Camera } from "./core/camera.js";
 import type { CleanupFn, DioramaContext } from "./core/context.js";
 import { clearRegistry, allStations } from "./core/registry.js";
+import { clearSigns } from "./core/signs.js";
 import { WORLD_HEIGHT, WORLD_WIDTH } from "./config/world.js";
 
 // Lazy tween initialization defers a tween's first read of its target to a
@@ -63,13 +64,8 @@ async function build(host: HTMLElement): Promise<void> {
   // A previous destroy() in this module context paused the global timeline;
   // re-play so a client-routed revisit is never frozen.
   gsap.globalTimeline.play();
-  // Same policy as the page boot: wait for fonts, but not past 2.5 s.
-  await Promise.race([
-    document.fonts.ready.then(() => undefined),
-    new Promise<void>((resolve) => {
-      setTimeout(resolve, 2500);
-    }),
-  ]);
+  // Fonts are settled by the route page before this module is imported, so
+  // there is no font wait here.
 
   // Quality heuristic runs before renderer creation so low mode actually
   // reduces work: no antialias and a tighter resolution cap.
@@ -144,261 +140,296 @@ async function build(host: HTMLElement): Promise<void> {
     screenSize: { w: screenW, h: screenH },
   };
 
-  // Camera owns the viewport; handed to subsystems through this closure.
-  let camera: Camera = createCamera({ app, viewport, host });
-
   // Debug/inspection hook for the environment owner's capture harness. Never
   // used by the page itself; harmless in production.
   let directorRef: import("./systems/director.js").Director | null = null;
   let agentsRef: import("./agents/system.js").AgentSystem | undefined;
-  (window as unknown as { __dioramaDebug?: object }).__dioramaDebug = {
-    focus(x: number, y: number, zoom?: number): void {
-      camera.focusOn({ x, y }, zoom);
-    },
-    camera: () => camera,
-    reset(): void {
-      camera.resetView();
-    },
-    gsap: () => gsap,
-    viewport: () => viewport,
-    stations: () => allStations(),
-    app: () => app,
-    activity(): object {
-      return (
-        directorRef?.activity() ?? { stories: [], moving: 0, reacting: 0, total: 0, districts: {} }
-      );
-    },
-    agents: () => agentsRef,
-  };
-  onCleanup(() => {
-    delete (window as unknown as { __dioramaDebug?: object }).__dioramaDebug;
-  });
+  let simulationRef: import("./systems/simulation.js").Simulation | undefined;
 
-  // Pause rendering and tweens while the tab is hidden.
-  const onVisibility = (): void => {
-    if (document.hidden) {
-      app.ticker.stop();
-      gsap.globalTimeline.pause();
-    } else {
-      app.ticker.start();
-      gsap.globalTimeline.play();
+  /**
+   * Full teardown: unregisters listeners/tickers/cleanups recorded so far and
+   * destroys the renderer. Shared by runtime.destroy() and the bootstrap
+   * failure path below, so a throw mid-build never leaves a half-constructed
+   * canvas bolted to the host.
+   */
+  const teardown = (): void => {
+    // Stop the scheduler first so in-flight stories unwind while the world
+    // still exists; pending waits are cancelled by stop() itself.
+    directorRef?.stop();
+    directorRef = null;
+    // Kill every tween BEFORE any display object is destroyed: Pixi v8
+    // destroy() nulls _position/_scale, and any tween that renders against
+    // a half-destroyed tree throws "Cannot read properties of null". Pause
+    // first so nothing can render mid-clear; no cleanup needs live tweens.
+    gsap.globalTimeline.pause();
+    gsap.globalTimeline.clear();
+    for (const unregister of [...ticks]) unregister();
+    ticks.clear();
+    for (const cleanup of cleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch (e) {
+        warn("cleanup", e);
+      }
+    }
+    clearRegistry();
+    clearSigns();
+    try {
+      viewport.destroy({ children: true, texture: false });
+    } catch (e) {
+      warn("viewport destroy", e);
+    }
+    try {
+      app.destroy(true, { children: true, texture: false });
+    } catch (e) {
+      warn("app destroy", e);
     }
   };
-  document.addEventListener("visibilitychange", onVisibility);
-  onCleanup(() => document.removeEventListener("visibilitychange", onVisibility));
 
-  // Host-driven resize keeps the viewport and ctx.screenSize truthful. The
-  // camera only re-fits when the user has not interacted.
-  const resizeObserver = new ResizeObserver((entries) => {
-    const entry = entries[0];
-    if (!entry) return;
-    const { width, height } = entry.contentRect;
-    if (width <= 0 || height <= 0) return;
-    viewport.resize(width, height);
-    ctx.screenSize.w = width;
-    ctx.screenSize.h = height;
-    camera.resize(width, height);
-  });
-  resizeObserver.observe(host);
-  onCleanup(() => resizeObserver.disconnect());
+  // Everything below can throw (dynamic imports, builders). On failure, tear
+  // down whatever was registered so the host is left clean; initDiorama logs.
+  try {
+    // Camera owns the viewport; handed to subsystems through this closure.
+    const camera: Camera = createCamera({ app, viewport, host });
 
-  // World builders. Each is independent; a failing builder leaves the rest
-  // of the campus standing. Modules load in parallel (dev serves each
-  // separately; serial awaits tripled cold-boot time), then build in order.
-  const [
-    { buildBackdrop },
-    { buildGround },
-    { buildPerimeter },
-    { buildMarketLandscape },
-    { buildHyperliquid },
-    { buildResearchDistrict },
-    { buildCentralDistrict },
-    { buildMcpDistrict },
-    { buildRiskDistrict },
-    { buildOpsDistrict },
-  ] = await Promise.all([
-    import("./world/backdrop.js"),
-    import("./world/ground.js"),
-    import("./world/perimeter.js"),
-    import("./world/marketLandscape.js"),
-    import("./world/hyperliquid.js"),
-    import("./stations/research.js"),
-    import("./stations/central.js"),
-    import("./stations/mcp.js"),
-    import("./stations/risk.js"),
-    import("./stations/ops.js"),
-  ]);
-  guard("backdrop", () => buildBackdrop(ctx));
-  guard("ground", () => buildGround(ctx));
-  guard("perimeter", () => buildPerimeter(ctx));
-  guard("marketLandscape", () => buildMarketLandscape(ctx));
-  guard("hyperliquid", () => buildHyperliquid(ctx));
-  guard("researchDistrict", () => buildResearchDistrict(ctx));
-  guard("centralDistrict", () => buildCentralDistrict(ctx));
-  guard("mcpDistrict", () => buildMcpDistrict(ctx));
-  guard("riskDistrict", () => buildRiskDistrict(ctx));
-  guard("opsDistrict", () => buildOpsDistrict(ctx));
-
-  // Systems (parallel module load, ordered creation: the director needs the
-  // other three).
-  const [
-    { createRailSystem },
-    { createPopulation },
-    { createSimulation },
-    { createDirector },
-    { createAudio },
-  ] = await Promise.all([
-    import("./systems/rails.js"),
-    import("./agents/system.js"),
-    import("./systems/simulation.js"),
-    import("./systems/director.js"),
-    import("./audio.js"),
-  ]);
-  let rails: import("./systems/rails.js").RailSystem | undefined;
-  guard("rails", () => {
-    rails = createRailSystem(ctx);
-  });
-
-  let agents: import("./agents/system.js").AgentSystem | undefined;
-  guard("population", () => {
-    agents = createPopulation(ctx);
-    agentsRef = agents;
-  });
-
-  let simulation: import("./systems/simulation.js").Simulation | undefined;
-  guard("simulation", () => {
-    simulation = createSimulation(ctx);
-  });
-
-  guard("director", () => {
-    if (agents && rails && simulation) {
-      const director = createDirector(ctx, { agents, rails, simulation });
-      directorRef = director;
-      director.start();
-    }
-  });
-
-  let audio: import("./audio.js").AudioController | undefined;
-  guard("audio", () => {
-    audio = createAudio();
-    onCleanup(() => {
-      audio?.destroy();
-      audio = undefined;
-    });
-  });
-
-  // DOM UI. Info card + HUD live in the page host. Both instances own DOM and
-  // listeners without a ctx, so their destroy is registered right here.
-  let clearDioramaSelection: () => void = (): void => {};
-  const [
-    { createInfoCard },
-    { createHud },
-    { buildDistrictBanners },
-    { buildA11y },
-    interactionModule,
-  ] = await Promise.all([
-    import("./ui/infoCard.js"),
-    import("./ui/hud.js"),
-    import("./ui/labels.js"),
-    import("./ui/a11y.js"),
-    import("./ui/interaction.js"),
-  ]);
-  let infoCard: import("./ui/infoCard.js").InfoCard | undefined;
-  guard("infoCard", () => {
-    const cardRoot = host.querySelector<HTMLElement>("[data-diorama-card]");
-    if (cardRoot) {
-      infoCard = createInfoCard(cardRoot, {
-        onAction: (storyId: string) => {
-          void directorRef?.runStory(storyId);
-        },
-      });
-      onCleanup(() => {
-        infoCard?.destroy();
-        infoCard = undefined;
-      });
-    }
-  });
-
-  let hud: import("./ui/hud.js").Hud | undefined;
-  guard("hud", () => {
-    const hudRoot = host.querySelector<HTMLElement>("[data-diorama-hud]");
-    if (hudRoot) {
-      hud = createHud(hudRoot, {
-        onResetView: () => {
-          camera.resetView();
-          clearDioramaSelection();
-        },
-        onToggleSound: (next: boolean) => audio?.setEnabled(next),
-      });
-      onCleanup(() => {
-        hud?.destroy();
-        hud = undefined;
-      });
-    }
-  });
-
-  guard("districtBanners", () => buildDistrictBanners(ctx));
-
-  guard("a11y", () => {
-    buildA11y(ctx, {
-      onFocus: (id) => {
-        // Keyboard focus and pointer selection share focusStationById.
-        void id;
+    (window as unknown as { __dioramaDebug?: object }).__dioramaDebug = {
+      focus(x: number, y: number, zoom?: number): void {
+        camera.focusOn({ x, y }, zoom);
       },
+      camera: () => camera,
+      reset(): void {
+        camera.resetView();
+      },
+      gsap: () => gsap,
+      viewport: () => viewport,
+      stations: () => allStations(),
+      app: () => app,
+      activity(): object {
+        return (
+          directorRef?.activity() ?? { stories: [], moving: 0, reacting: 0, total: 0, districts: {} }
+        );
+      },
+      agents: () => agentsRef,
+      director: () => directorRef,
+      simulation: () => simulationRef,
+    };
+    onCleanup(() => {
+      delete (window as unknown as { __dioramaDebug?: object }).__dioramaDebug;
     });
-  });
 
-  guard("interaction", () => {
-    if (infoCard) {
-      interactionModule.createInteraction(ctx, {
-        camera,
-        infoCard,
-        onRunStory: (storyId: string) => {
-          void directorRef?.runStory(storyId);
+    // Pause rendering and tweens while the tab is hidden.
+    const onVisibility = (): void => {
+      if (document.hidden) {
+        app.ticker.stop();
+        gsap.globalTimeline.pause();
+      } else {
+        app.ticker.start();
+        gsap.globalTimeline.play();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    onCleanup(() => document.removeEventListener("visibilitychange", onVisibility));
+
+    // Host-driven resize keeps ctx.screenSize truthful. The camera owns the
+    // viewport resize (it performs viewport.resize itself, re-derives clamp
+    // bounds, and re-applies default framing when the user has not
+    // interacted), so this observer must NOT call viewport.resize first or
+    // the camera's no-op comparison would silently skip the refit.
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      if (width <= 0 || height <= 0) return;
+      ctx.screenSize.w = width;
+      ctx.screenSize.h = height;
+      camera.resize(width, height);
+    });
+    resizeObserver.observe(host);
+    onCleanup(() => resizeObserver.disconnect());
+
+    // World builders. Each is independent; a failing builder leaves the rest
+    // of the campus standing. Modules load in parallel (dev serves each
+    // separately; serial awaits tripled cold-boot time), then build in order.
+    const [
+      { buildBackdrop },
+      { buildGround },
+      { buildPerimeter },
+      { buildMarketLandscape },
+      { buildHyperliquid },
+      { buildResearchDistrict },
+      { buildCentralDistrict },
+      { buildMcpDistrict },
+      { buildRiskDistrict },
+      { buildOpsDistrict },
+    ] = await Promise.all([
+      import("./world/backdrop.js"),
+      import("./world/ground.js"),
+      import("./world/perimeter.js"),
+      import("./world/marketLandscape.js"),
+      import("./world/hyperliquid.js"),
+      import("./stations/research.js"),
+      import("./stations/central.js"),
+      import("./stations/mcp.js"),
+      import("./stations/risk.js"),
+      import("./stations/ops.js"),
+    ]);
+    guard("backdrop", () => buildBackdrop(ctx));
+    guard("ground", () => buildGround(ctx));
+    guard("perimeter", () => buildPerimeter(ctx));
+    guard("marketLandscape", () => buildMarketLandscape(ctx));
+    guard("hyperliquid", () => buildHyperliquid(ctx));
+    guard("researchDistrict", () => buildResearchDistrict(ctx));
+    guard("centralDistrict", () => buildCentralDistrict(ctx));
+    guard("mcpDistrict", () => buildMcpDistrict(ctx));
+    guard("riskDistrict", () => buildRiskDistrict(ctx));
+    guard("opsDistrict", () => buildOpsDistrict(ctx));
+
+    // Systems (parallel module load, ordered creation: the director needs the
+    // other three).
+    const [
+      { createRailSystem },
+      { createPopulation },
+      { createSimulation },
+      { createDirector },
+      { createAudio },
+    ] = await Promise.all([
+      import("./systems/rails.js"),
+      import("./agents/system.js"),
+      import("./systems/simulation.js"),
+      import("./systems/director.js"),
+      import("./audio.js"),
+    ]);
+    let rails: import("./systems/rails.js").RailSystem | undefined;
+    guard("rails", () => {
+      rails = createRailSystem(ctx);
+    });
+
+    let agents: import("./agents/system.js").AgentSystem | undefined;
+    guard("population", () => {
+      agents = createPopulation(ctx);
+      agentsRef = agents;
+    });
+
+    let simulation: import("./systems/simulation.js").Simulation | undefined;
+    guard("simulation", () => {
+      simulation = createSimulation(ctx);
+      simulationRef = simulation;
+    });
+
+    guard("director", () => {
+      if (agents && rails && simulation) {
+        const director = createDirector(ctx, { agents, rails, simulation });
+        directorRef = director;
+        director.start();
+      }
+    });
+
+    let audio: import("./audio.js").AudioController | undefined;
+    guard("audio", () => {
+      audio = createAudio();
+      onCleanup(() => {
+        audio?.destroy();
+        audio = undefined;
+      });
+    });
+
+    // True while the station's story is running (Director.isRunning); used by
+    // the info card's action button and interaction's retry guard.
+    const isStoryActive = (storyId: string): boolean => directorRef?.isRunning(storyId) ?? false;
+
+    // DOM UI. Info card + HUD live in the page host. Both instances own DOM and
+    // listeners without a ctx, so their destroy is registered right here.
+    let clearDioramaSelection: () => void = (): void => {};
+    const [
+      { createInfoCard },
+      { createHud },
+      { buildDistrictBanners },
+      { buildA11y },
+      interactionModule,
+    ] = await Promise.all([
+      import("./ui/infoCard.js"),
+      import("./ui/hud.js"),
+      import("./ui/labels.js"),
+      import("./ui/a11y.js"),
+      import("./ui/interaction.js"),
+    ]);
+    let infoCard: import("./ui/infoCard.js").InfoCard | undefined;
+    guard("infoCard", () => {
+      const cardRoot = host.querySelector<HTMLElement>("[data-diorama-card]");
+      if (cardRoot) {
+        infoCard = createInfoCard(cardRoot, {
+          onAction: (storyId: string) => {
+            void directorRef?.runStory(storyId);
+          },
+          // The card is created before interaction assigns clearSelection, so
+          // route through the live variable, not its initial empty value.
+          onClose: () => clearDioramaSelection(),
+          isStoryActive,
+        });
+        onCleanup(() => {
+          infoCard?.destroy();
+          infoCard = undefined;
+        });
+      }
+    });
+
+    let hud: import("./ui/hud.js").Hud | undefined;
+    guard("hud", () => {
+      const hudRoot = host.querySelector<HTMLElement>("[data-diorama-hud]");
+      if (hudRoot) {
+        hud = createHud(hudRoot, {
+          onResetView: () => {
+            camera.resetView();
+            clearDioramaSelection();
+          },
+          onToggleSound: (next: boolean) => audio?.setEnabled(next),
+        });
+        onCleanup(() => {
+          hud?.destroy();
+          hud = undefined;
+        });
+      }
+    });
+
+    guard("districtBanners", () => buildDistrictBanners(ctx));
+
+    guard("a11y", () => {
+      buildA11y(ctx, {
+        onFocus: (id) => {
+          // Keyboard focus and pointer selection share focusStationById.
+          void id;
         },
       });
-      clearDioramaSelection = interactionModule.clearSelection;
-    }
-  });
+    });
 
-  runtime = {
-    ctx,
-    camera,
-    destroy(): void {
-      if (!runtime) return;
-      runtime = null;
-      // Stop the scheduler first so in-flight stories unwind while the world
-      // still exists; pending waits are cancelled by stop() itself.
-      directorRef?.stop();
-      directorRef = null;
-      // Kill every tween BEFORE any display object is destroyed: Pixi v8
-      // destroy() nulls _position/_scale, and any tween that renders against
-      // a half-destroyed tree throws "Cannot read properties of null". Pause
-      // first so nothing can render mid-clear; no cleanup needs live tweens.
-      gsap.globalTimeline.pause();
-      gsap.globalTimeline.clear();
-      for (const unregister of [...ticks]) unregister();
-      ticks.clear();
-      for (const cleanup of cleanups.splice(0)) {
-        try {
-          cleanup();
-        } catch (e) {
-          warn("cleanup", e);
-        }
+    guard("interaction", () => {
+      if (infoCard) {
+        interactionModule.createInteraction(ctx, {
+          camera,
+          infoCard,
+          onRunStory: (storyId: string) => {
+            void directorRef?.runStory(storyId);
+          },
+          onFocusChange: (focused: boolean) => rails?.setFocusDim(focused),
+          isStoryActive,
+        });
+        clearDioramaSelection = interactionModule.clearSelection;
       }
-      clearRegistry();
-      try {
-        viewport.destroy({ children: true, texture: false });
-      } catch (e) {
-        warn("viewport destroy", e);
-      }
-      try {
-        app.destroy(true, { children: true, texture: false });
-      } catch (e) {
-        warn("app destroy", e);
-      }
-    },
-  };
+    });
+
+    runtime = {
+      ctx,
+      camera,
+      destroy(): void {
+        if (!runtime) return;
+        runtime = null;
+        teardown();
+      },
+    };
+  } catch (e) {
+    teardown();
+    throw e;
+  }
 }
 
 export function destroyDiorama(): void {

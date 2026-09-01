@@ -46,6 +46,7 @@ import type {
   ReceiptPrinterApi,
   ReconciliationApi,
   RecoveryApi,
+  RefusalBoardApi,
   ReplayChamberApi,
 } from "../stations/ops.js";
 import type { HoloCoreApi, SignalTowerApi, SupervisorApi } from "../stations/central.js";
@@ -126,8 +127,11 @@ function marketLandscape(): MarketLandscapeApi | null {
 
 /**
  * Station-agnostic glow pulse for stations without a frozen animation api.
- * Tweens the registered root's alpha; cleanup is registered with the world.
- * Exported: the director's district heartbeats reuse it.
+ * Tweens the registered root's alpha. Exported: the director's district
+ * heartbeats reuse it. The tween is short-lived and self-terminating; route
+ * teardown's gsap.globalTimeline.clear() is the cleanup, so NO per-call
+ * cleanup is registered (heartbeats fire every few hundred milliseconds and
+ * per-call registrations would grow the cleanup list without bound).
  */
 export function glowPulse(ctx: DioramaContext, id: StationId, dip = 0.5, seconds = 0.9): void {
   const station = getStation(id);
@@ -135,14 +139,13 @@ export function glowPulse(ctx: DioramaContext, id: StationId, dip = 0.5, seconds
     warnOnce(`station not registered: ${id}`);
     return;
   }
-  const tween = gsap.to(station.root, {
+  gsap.to(station.root, {
     alpha: dip,
     duration: seconds / 2,
     yoyo: true,
     repeat: 1,
     ease: "sine.inOut",
   });
-  ctx.onCleanup(() => tween.kill());
 }
 
 /** Walk, or snap into place under reduced motion. No-ops once the director
@@ -195,6 +198,14 @@ function popMark(deps: StoryDeps, agentId: string, kind: "!" | "?" | "stars" | "
 /** Fire a semantic audio cue; a no-op while the visitor keeps sound muted. */
 function cue(name: string): void {
   playDioramaCue(name);
+}
+
+/** Advance the mission phase on the shared simulation AND the board, so the
+ * visible mission board tracks the lifecycle instead of drifting stale. */
+function setMissionPhase(deps: StoryDeps, phase: string): void {
+  if (deps.cancelled()) return;
+  deps.simulation.setPhase(phase);
+  storyApi<MissionBoardApi>("missionBoard")?.setPhase(phase);
 }
 
 /** A named walking point near a station anchor, offset toward the floor. */
@@ -452,6 +463,8 @@ export const STORIES: Story[] = [
       express(d, "gateway-op", "focused");
       await d.beat(300);
       gateway?.setState("submitted");
+      setMissionPhase(d, "Executing");
+      cue("execute");
       await send(d, "exchangeTunnel");
       hyperliquid()?.exchangeEvent("order");
     }),
@@ -490,6 +503,7 @@ export const STORIES: Story[] = [
       await move(d, "recon-1", [near("reconciliationDock", 30, -20)]);
       await send(d, "localStateStream");
       storyApi<Reconciliation>("reconciliationDock")?.compare(true);
+      setMissionPhase(d, "Holding");
       express(d, "recon-1", "satisfied");
       react(d, "recon-1", "hop");
     }),
@@ -500,6 +514,7 @@ export const STORIES: Story[] = [
       express(d, "archivist", "focused");
       // Drawer cycle has no frozen api; station-agnostic glow.
       glowPulse(d.ctx, "auditArchive", 0.45, 1.2);
+      setMissionPhase(d, "Waiting");
       if (d.rng() < 0.5) {
         await d.beat(500);
         storyApi<ReplayChamber>("replayChamber")?.playReceipt();
@@ -535,6 +550,7 @@ export const STORIES: Story[] = [
         // Refusal card travels back from the hub toward the adapter bay.
         await send(d, "hubToAdapterBay", "refusal", { reverse: true });
         d.simulation.refuse("UNAVAILABLE TOOL");
+        storyApi<RefusalBoardApi>("refusalDisplay")?.push("UNAVAILABLE TOOL");
         cue("reject");
         glowPulse(d.ctx, "refusalDisplay", 0.35, 1.2);
         // The outage beat: the caller droops, then the adapter operator comes
@@ -667,25 +683,31 @@ export const STORIES: Story[] = [
     async (d) => {
       const holo = storyApi<HoloCoreApi>("holoCore");
       const tower = storyApi<SignalTower>("signalTower");
-      tower?.pulse("market");
-      cue("warn");
-      express(d, "floor-research", "alarmed");
-      react(d, "floor-research", "startle");
-      popMark(d, "floor-research", "!");
-      // Landscape flips regime; the holo mirrors it.
-      marketLandscape()?.setRegime("turbulent");
-      await move(d, "floor-research", [{ x: 1288, y: 612 }, { x: 1282, y: 660 }]);
-      express(d, "floor-research", "focused");
-      express(d, "floor-analysis", "curious");
-      react(d, "floor-analysis", "tilt");
-      holo?.marketEvent("state");
-      holo?.rotateStrategies();
-      await d.beat(600);
-      // Calm returns.
-      marketLandscape()?.setRegime("rising");
-      holo?.marketEvent("state");
-      express(d, "floor-research", "satisfied");
-      react(d, "floor-analysis", "hop");
+      const priorRegime = marketLandscape()?.regime() ?? "rising";
+      try {
+        tower?.pulse("market");
+        cue("warn");
+        express(d, "floor-research", "alarmed");
+        react(d, "floor-research", "startle");
+        popMark(d, "floor-research", "!");
+        // Landscape flips regime; the holo mirrors it.
+        marketLandscape()?.setRegime("turbulent");
+        await move(d, "floor-research", [{ x: 1288, y: 612 }, { x: 1282, y: 660 }]);
+        express(d, "floor-research", "focused");
+        express(d, "floor-analysis", "curious");
+        react(d, "floor-analysis", "tilt");
+        holo?.marketEvent("state");
+        holo?.rotateStrategies();
+        await d.beat(600);
+        // Calm returns.
+        marketLandscape()?.setRegime("rising");
+        holo?.marketEvent("state");
+        express(d, "floor-research", "satisfied");
+        react(d, "floor-analysis", "hop");
+      } finally {
+        // Interrupt-safe: the landscape never stays turbulent.
+        if (priorRegime !== "turbulent") marketLandscape()?.setRegime(priorRegime);
+      }
     }),
 
   // 27. The supervisor walks the control round: observe, approve, check the panel.
@@ -707,10 +729,11 @@ export const STORIES: Story[] = [
   // 28. COMEDY. Two bots round a console from opposite sides and bump antennae.
   s("s-bump-antennae", "Antennae bump on the north ring", 8, ["floor-research", "floor-analysis"], ["tradingFloor"],
     async (d) => {
-      const meet = { x: 1400, y: 572 };
-      void meet;
-      await move(d, "floor-research", [{ x: 1330, y: 572 }, { x: 1378, y: 570 }]);
-      await move(d, "floor-analysis", [{ x: 1545, y: 610 }, { x: 1455, y: 572 }, { x: 1420, y: 570 }]);
+      // Both approaches run together so the collision reads as an accident.
+      await Promise.all([
+        move(d, "floor-research", [{ x: 1330, y: 572 }, { x: 1378, y: 570 }]),
+        move(d, "floor-analysis", [{ x: 1545, y: 610 }, { x: 1455, y: 572 }, { x: 1420, y: 570 }]),
+      ]);
       // Bump.
       cue("bump");
       react(d, "floor-research", "startle");
@@ -764,18 +787,20 @@ export const STORIES: Story[] = [
     async (d) => {
       cue("cart");
       const cartDone = rollProp(2430, 690, ROLE_COLORS.execution, [{ x: 2330, y: 620 }, { x: 2230, y: 570 }, { x: 2140, y: 605 }, { x: 2205, y: 660 }], 150);
-      void (async () => {
-        await move(d, "schema-librarian", [{ x: 2380, y: 680 }, { x: 2300, y: 635 }, { x: 2235, y: 585 }]);
-        react(d, "schema-librarian", "wobble");
-      })();
-      void (async () => {
-        await move(d, "adapter-op", [{ x: 2470, y: 560 }, { x: 2380, y: 560 }, { x: 2260, y: 575 }]);
-        react(d, "adapter-op", "startle");
-      })();
-      await move(d, "hub-keeper", [{ x: 2230, y: 570 }, { x: 2170, y: 590 }, { x: 2215, y: 655 }]);
+      // All three chases run concurrently with the cart; the story holds its
+      // locks until every branch settles so no agent is released mid-gag.
+      const chases = Promise.all([
+        move(d, "schema-librarian", [{ x: 2380, y: 680 }, { x: 2300, y: 635 }, { x: 2235, y: 585 }]).then(() => {
+          react(d, "schema-librarian", "wobble");
+        }),
+        move(d, "adapter-op", [{ x: 2470, y: 560 }, { x: 2380, y: 560 }, { x: 2260, y: 575 }]).then(() => {
+          react(d, "adapter-op", "startle");
+        }),
+        move(d, "hub-keeper", [{ x: 2230, y: 570 }, { x: 2170, y: 590 }, { x: 2215, y: 655 }]),
+      ]);
+      await Promise.all([cartDone, chases]);
       react(d, "hub-keeper", "squash"); // the catch
       popMark(d, "hub-keeper", "stars");
-      await cartDone;
       cue("bump");
       await d.beat(300);
       react(d, "hub-keeper", "hop");

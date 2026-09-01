@@ -12,16 +12,16 @@ import { dotTexture, glow, lightBeam } from "../core/iso.js";
 import { PALETTE } from "../config/palette.js";
 import { seededRandom } from "../config/world.js";
 
+export type Regime = "calm" | "rising" | "falling" | "turbulent";
+
 export interface MarketLandscapeApi {
   /** Transition the terrain to a named regime. */
-  setRegime(regime: "calm" | "rising" | "falling" | "turbulent"): void;
-  regime(): string;
+  setRegime(regime: Regime): void;
+  regime(): Regime;
 }
 
 /** Populated by buildMarketLandscape; consumed by the director/stories. */
 export const marketLandscape = { api: null as MarketLandscapeApi | null };
-
-type Regime = "calm" | "rising" | "falling" | "turbulent";
 
 const BANDS = 4;
 const POINTS = 19; // 19 top + 19 bottom = 38 polygon points per band

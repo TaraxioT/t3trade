@@ -954,6 +954,10 @@ function buildEnvSwitchboard(ctx: DioramaContext): EnvSwitchboardApi {
 /* ------------------------------------------------------------------ wiring */
 
 export function buildMcpDistrict(ctx: DioramaContext): void {
+  // Module state must not survive a route teardown: a story that left a port
+  // amber/red would degrade the next visit's initial health display.
+  portHealth.fill("green");
+
   buildHub(ctx);
   buildMarketDataTools(ctx);
   buildResearchToolsMcp(ctx);

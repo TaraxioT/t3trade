@@ -160,6 +160,9 @@ import Layout from "../layouts/Layout.astro";
   let disposed = false;
   let started = false;
   let teardown: (() => void) | null = null;
+  // Cancels the pending idle/timeout boot handle if the route goes away
+  // between scheduling and boot.
+  let bootHandle: { cancel: () => void } | null = null;
 
   const boot = (): void => {
     if (disposed || started) return;
@@ -190,28 +193,58 @@ import Layout from "../layouts/Layout.astro";
   const destroy = (): void => {
     if (disposed) return;
     disposed = true;
+    bootHandle?.cancel();
+    bootHandle = null;
     teardown?.();
     teardown = null;
+    removeLifecycleListeners();
   };
 
   const schedule = (): void => {
     if ("requestIdleCallback" in window) {
-      requestIdleCallback(boot, { timeout: 700 });
+      const ric = window.requestIdleCallback(boot, { timeout: 700 });
+      bootHandle = { cancel: () => window.cancelIdleCallback(ric) };
     } else {
-      setTimeout(boot, 150);
+      const tid = setTimeout(boot, 150);
+      bootHandle = { cancel: () => clearTimeout(tid) };
     }
   };
 
-  // Fonts first, but never let a slow font CDN hold the scene hostage: after
-  // 2.5 s the diorama boots anyway (Pixi text falls back and still renders).
-  Promise.race([
-    document.fonts.ready.then(() => undefined),
-    new Promise<void>((resolve) => {
-      setTimeout(resolve, 2500);
-    }),
-  ]).then(schedule);
+  // Fonts first, but never let a slow font CDN hold the scene hostage. This is
+  // the page's single bounded font wait (main.js may race fonts again on its
+  // side; when fonts are already ready we resolve immediately so the two
+  // waits cannot stack into a visible delay). Already-loaded fonts plus a
+  // motion-tolerant viewer mean no extra wait at all.
+  const fontsAlreadyLoaded = document.fonts.status === "loaded";
+  const fontWaitMs =
+    !matchMedia("(prefers-reduced-motion: reduce)").matches && fontsAlreadyLoaded
+      ? 0
+      : 2500;
+  const fontsReady = fontsAlreadyLoaded
+    ? Promise.resolve()
+    : Promise.race([
+        document.fonts.ready.then(() => undefined),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, fontWaitMs);
+        }),
+      ]);
+  fontsReady.then(schedule);
 
-  document.addEventListener("astro:before-swap", destroy);
-  window.addEventListener("pagehide", destroy);
-  window.addEventListener("beforeunload", destroy);
+  // Register the lifecycle teardown listeners once per module instance; the
+  // module persists across client-side routing, so a naive add per visit
+  // would accumulate inert listeners. destroy() removes exactly these.
+  let lifecycleListenersAdded = false;
+  const removeLifecycleListeners = (): void => {
+    if (!lifecycleListenersAdded) return;
+    lifecycleListenersAdded = false;
+    document.removeEventListener("astro:before-swap", destroy);
+    window.removeEventListener("pagehide", destroy);
+    window.removeEventListener("beforeunload", destroy);
+  };
+  if (!lifecycleListenersAdded) {
+    lifecycleListenersAdded = true;
+    document.addEventListener("astro:before-swap", destroy);
+    window.addEventListener("pagehide", destroy);
+    window.addEventListener("beforeunload", destroy);
+  }
 </script>

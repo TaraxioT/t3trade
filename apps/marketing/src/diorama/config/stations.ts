@@ -325,7 +325,7 @@ export const STATIONS: Record<StationId, StationDef> = {
     status: "Standby",
     focusZoom: 1.4,
     story: "s-alert-wake",
-    action: "Send alert",
+    action: "Pulse an alert",
   }),
   eventClock: S({
     id: "eventClock",
@@ -390,7 +390,7 @@ export const STATIONS: Record<StationId, StationDef> = {
     focusZoom: 1.35,
     relation: "Agents → MCP Hub → Tools → Receipts",
     story: "s-tool-refusal",
-    action: "Call a tool port",
+    action: "Demo a tool call",
   }),
   marketDataTools: S({
     id: "marketDataTools",
@@ -561,7 +561,7 @@ export const STATIONS: Record<StationId, StationDef> = {
     focusZoom: 1.4,
     relation: "Risk → Signer → Execution",
     story: "s-signer-pulse",
-    action: "Sign an order",
+    action: "Show local signing",
   }),
   executionGateway: S({
     id: "executionGateway",
@@ -575,7 +575,7 @@ export const STATIONS: Record<StationId, StationDef> = {
     focusZoom: 1.35,
     relation: "Execution → Hyperliquid Testnet",
     story: "s-execute-order",
-    action: "Send an order",
+    action: "Demo the order path",
   }),
 
   stateStore: S({

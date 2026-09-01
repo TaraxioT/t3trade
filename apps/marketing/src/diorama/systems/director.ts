@@ -23,7 +23,7 @@ import type { AgentSystem } from "../agents/system.js";
 import type { RailSystem } from "./rails.js";
 import type { Simulation } from "./simulation.js";
 import type { DistrictId, StationId } from "../config/stations.js";
-import { DISTRICTS, STATIONS } from "../config/stations.js";
+import { STATIONS } from "../config/stations.js";
 import { seededRandom } from "../config/world.js";
 import { COMEDY_POOL, LIFECYCLE_CHAIN, STORY_MAP, TEXTURE_POOL, glowPulse } from "./stories.js";
 
@@ -57,6 +57,8 @@ export interface Director {
   /** Run one story immediately by id (used by interaction/Explore). Bypasses
    * cooldowns but still respects actor and station locks. */
   runStory(id: string): Promise<void>;
+  /** True while the named story currently holds its locks. */
+  isRunning(id: string): boolean;
   /** QA/ debug snapshot of current activity. */
   activity(): ActivitySnapshot;
 }
@@ -85,22 +87,34 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
   let cancelled = false;
   let runningStarted = false;
   let lastComedyAt = 0;
+  /** Incremented by every start(): lane loops capture their generation and
+   * exit when it is stale. Settling waits on stop() wakes old loops, and
+   * without this token a fast start() could un-cancel one into running
+   * alongside the new generation (two spines racing the shared index). */
+  let generation = 0;
 
   const now = (): number => performance.now();
 
-  /** Content wait; resolves immediately once stopped or already elapsed. The
-   * timeout is tracked so stop() can cancel pending waits outright. */
+  /** Pending wait resolvers, so stop() can settle every in-flight story:
+   * resolving the wait lets the story reach its finally block and release
+   * actor and station locks instead of parking forever. */
+  const waiters = new Set<() => void>();
+
+  /** Content wait; resolves immediately once stopped or already elapsed. */
   const wait = (ms: number): Promise<void> =>
     new Promise<void>((resolve) => {
       if (cancelled || ms <= 0) {
         resolve();
         return;
       }
-      const timer = setTimeout(() => {
+      const settle = (): void => {
         timers.delete(timer);
+        waiters.delete(settle);
         resolve();
-      }, ms);
+      };
+      const timer = setTimeout(settle, ms);
       timers.add(timer);
+      waiters.add(settle);
     });
 
   /** Decorative beat: skipped under reduced motion or once stopped. */
@@ -115,7 +129,10 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
 
   const districtsAlive = (): Partial<Record<DistrictId, boolean>> => {
     const alive: Partial<Record<DistrictId, boolean>> = {};
-    const horizon = now() - 9_000;
+    // Heartbeats fire one district per 350-550 ms over seven districts, so a
+    // 5.5 s horizon credits a district only while its pulse is plausibly
+    // still on screen (max cycle ~3.9 s) plus margin.
+    const horizon = now() - 5_500;
     for (const story of running) {
       for (const district of story.districts) alive[district] = true;
     }
@@ -188,23 +205,35 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
     return false;
   };
 
-  /** Spine lane: the lifecycle chain, looping with short gaps. */
-  const spineLoop = async (): Promise<void> => {
-    while (!cancelled) {
-      for (const id of LIFECYCLE_CHAIN) {
-        if (cancelled) return;
-        await runStoryLocked(id);
-        await wait(700 + rng() * 600);
+  /** Spine lane: the lifecycle chain, looping with short gaps. The spine
+   * NEVER skips a beat: when a beat's locks are contended it retries after a
+   * short pause, because the chain's ordering (protection before signing,
+   * order before acknowledgment) is the safety story the diorama tells.
+   * Texture and comedy lanes stay opportunistic and may skip. */
+  const spineLoop = async (gen: number): Promise<void> => {
+    let index = 0;
+    while (!cancelled && gen === generation) {
+      const id = LIFECYCLE_CHAIN[index];
+      const started = await runStoryLocked(id);
+      if (cancelled || gen !== generation) return;
+      if (started) {
+        index = (index + 1) % LIFECYCLE_CHAIN.length;
+        if (index === 0) {
+          // One breath between full lifecycle passes; other lanes keep moving.
+          await wait(2000 + rng() * 2000);
+        } else {
+          await wait(700 + rng() * 600);
+        }
+      } else {
+        await wait(400 + rng() * 500);
       }
-      // One breath between full lifecycle passes; other lanes keep moving.
-      await wait(2000 + rng() * 2000);
     }
   };
 
   /** Texture lane: weighted ambient singles, capped concurrency. */
-  const textureLoop = async (): Promise<void> => {
+  const textureLoop = async (gen: number): Promise<void> => {
     let inFlight = 0;
-    while (!cancelled) {
+    while (!cancelled && gen === generation) {
       if (inFlight < TEXTURE_CONCURRENCY) {
         const promise = launchFrom(TEXTURE_POOL, TEXTURE_COOLDOWN_MS);
         inFlight += 1;
@@ -219,10 +248,10 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
   };
 
   /** Comedy lane: one gag at a time with a global gap and per-gag cooldowns. */
-  const comedyLoop = async (): Promise<void> => {
+  const comedyLoop = async (gen: number): Promise<void> => {
     // Let the campus establish itself for a few seconds before the first gag.
     await wait(4500 + rng() * 2500);
-    while (!cancelled) {
+    while (!cancelled && gen === generation) {
       const at = now();
       if (at - lastComedyAt >= COMEDY_GAP_MS) {
         const launched = await launchFrom(COMEDY_POOL, COMEDY_COOLDOWN_MS);
@@ -247,9 +276,9 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
   const heartbeatOrder = Object.keys(HEARTBEAT_TARGETS) as DistrictId[];
 
   /** Heartbeat lane: cheap staggered pulses so no district goes dark. */
-  const heartbeatLoop = async (): Promise<void> => {
+  const heartbeatLoop = async (gen: number): Promise<void> => {
     let cursor = Math.floor(rng() * heartbeatOrder.length);
-    while (!cancelled) {
+    while (!cancelled && gen === generation) {
       const district = heartbeatOrder[cursor % heartbeatOrder.length];
       cursor += 1;
       const targets = HEARTBEAT_TARGETS[district] ?? [];
@@ -269,23 +298,34 @@ export function createDirector(ctx: DioramaContext, deps: DirectorDeps): Directo
       if (runningStarted) return;
       runningStarted = true;
       cancelled = false;
+      generation += 1;
       // Arrival burst: the spine plus two texture singles immediately; no
       // campus-wide calm after load.
-      void spineLoop();
-      void textureLoop();
-      void comedyLoop();
-      void heartbeatLoop();
+      void spineLoop(generation);
+      void textureLoop(generation);
+      void comedyLoop(generation);
+      void heartbeatLoop(generation);
     },
     stop(): void {
       cancelled = true;
       runningStarted = false;
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
-      running.clear();
-      busyStations.clear();
+      // Settle every pending wait so in-flight stories reach their finally
+      // blocks and release actor and station locks (the cancelled flag makes
+      // their remaining beats no-ops). Observable lock state is NOT cleared
+      // here: the stories' finally blocks own the release.
+      for (const settle of waiters) settle();
+      waiters.clear();
     },
     async runStory(id: string): Promise<void> {
       await runStoryLocked(id);
+    },
+    isRunning(id: string): boolean {
+      for (const story of running) {
+        if (story.id === id) return true;
+      }
+      return false;
     },
     activity(): ActivitySnapshot {
       // The agent system exposes activity counters when the character lane is

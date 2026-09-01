@@ -410,7 +410,9 @@ export function createRailSystem(ctx: DioramaContext): RailSystem {
   const ambientTimers: gsap.core.Tween[] = [];
 
   ctx.onCleanup(() => {
-    for (const a of active) a.tween.kill();
+    // Release every active packet through the normal path so awaiting
+    // stories' handle.done promises settle instead of parking forever.
+    for (const a of [...active]) release(a);
     active.clear();
     for (const t of ambientTimers) t.kill();
     ambientTimers.length = 0;

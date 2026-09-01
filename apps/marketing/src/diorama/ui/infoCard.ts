@@ -33,6 +33,10 @@ export interface InfoCardOptions {
   onAction?: (storyId: string) => void;
   /** Close button: interaction passes clearSelection. */
   onClose?: () => void;
+  /** True while the station's story is already running (Director.isRunning);
+   * the action button renders disabled/busy and click is a no-op. Checked on
+   * card show and on click only; no polling. */
+  isStoryActive?: (storyId: string) => boolean;
 }
 
 const STYLE_ID = "diorama-infocard-style";
@@ -178,6 +182,14 @@ function injectStyles(): void {
   outline:2px solid #34E5E5;
   outline-offset:2px;
 }
+.diorama-card-action-running{
+  opacity:.55;
+  cursor:default;
+}
+.diorama-card-action-running:hover{
+  background:rgba(52,229,229,.12);
+  border-color:rgba(52,229,229,.4);
+}
 @media (max-width:640px){
   .diorama-card-panel{
     max-width:calc(100% - 32px);
@@ -268,9 +280,25 @@ export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): I
   actionBtn.type = "button";
   actionBtn.className = "diorama-card-action";
   actionBtn.hidden = true;
+  /** Story id from the last show(); empty when the card has no action. */
+  const storyActive = (): boolean => {
+    const storyId = actionBtn.dataset.storyId;
+    return storyId !== undefined && opts.isStoryActive?.(storyId) === true;
+  };
+  /** Render the busy/normal action state without claiming completion. */
+  const setActionBusy = (busy: boolean): void => {
+    const label = actionBtn.dataset.actionLabel ?? "";
+    actionBtn.classList.toggle("diorama-card-action-running", busy);
+    actionBtn.setAttribute("aria-disabled", busy ? "true" : "false");
+    actionBtn.setAttribute("aria-label", label);
+    actionBtn.textContent = busy ? `${label} ...` : label;
+  };
   actionBtn.addEventListener("click", () => {
+    if (storyActive()) return;
     const storyId = actionBtn.dataset.storyId;
     if (storyId) opts.onAction?.(storyId);
+    // The just-triggered story is now running; reflect it immediately.
+    setActionBusy(storyActive());
   });
 
   card.append(head, blurb, status, relation, actionBtn);
@@ -301,13 +329,15 @@ export function createInfoCard(root: HTMLElement, opts: InfoCardOptions = {}): I
         });
       }
       if (station.action && station.story) {
-        actionBtn.textContent = station.action;
-        actionBtn.setAttribute("aria-label", station.action);
+        actionBtn.dataset.actionLabel = station.action;
         actionBtn.dataset.storyId = station.story;
         actionBtn.hidden = false;
+        setActionBusy(storyActive());
       } else {
         actionBtn.hidden = true;
         delete actionBtn.dataset.storyId;
+        delete actionBtn.dataset.actionLabel;
+        setActionBusy(false);
       }
       if (stationScreen) setFlippedPosition(stationScreen);
       else setDefaultPosition(narrow.matches);

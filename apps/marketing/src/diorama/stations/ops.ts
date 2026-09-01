@@ -1363,6 +1363,12 @@ function buildResearchOnlyGate(ctx: DioramaContext): void {
 // ===========================================================================
 
 export function buildOpsDistrict(ctx: DioramaContext): void {
+  // Module state must not survive a route teardown: under Astro client-side
+  // routing this module persists, and stale loops/targets would keep firing
+  // closures over destroyed Pixi objects in the next visit's ticker.
+  idleLoops.length = 0;
+  animatedTargets.length = 0;
+
   buildStateStore(ctx);
   buildRailYard(ctx);
   buildReconciliationDock(ctx);
@@ -1391,5 +1397,7 @@ export function buildOpsDistrict(ctx: DioramaContext): void {
 
   ctx.onCleanup(() => {
     for (const target of animatedTargets) gsap.killTweensOf(target);
+    idleLoops.length = 0;
+    animatedTargets.length = 0;
   });
 }

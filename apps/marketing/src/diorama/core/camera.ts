@@ -158,6 +158,27 @@ export function createCamera({ viewport }: CameraParams): Camera {
     }
   };
 
+  /**
+   * The one framing policy shared by initial view, resize refit, and reset:
+   * landscape frames the whole world with the Central Trading Floor lifted
+   * slightly above the viewport center; portrait/narrow (aspect < 0.9) focuses
+   * the Central Trading Floor at fit * 1.35 centered near (1430, 800).
+   */
+  const applyDefaultFraming = (animated: boolean): void => {
+    const aspect = viewport.screenHeight > 0 ? viewport.screenWidth / viewport.screenHeight : 1;
+    const target =
+      aspect > 0 && aspect < PORTRAIT_ASPECT
+        ? { cx: PORTRAIT_FOCUS.cx, cy: PORTRAIT_FOCUS.cy, scale: fitScale() * PORTRAIT_FOCUS.zoom }
+        : { cx: WORLD_WIDTH / 2, cy: 740 + 120, scale: fitScale() };
+    if (animated) {
+      transitionTo(target.cx, target.cy, target.scale, TWEEN_MS);
+    } else {
+      cancelTween();
+      proxy = target;
+      applyProxy();
+    }
+  };
+
   // pixi-viewport emits "moved" for every reposition; the type field
   // discriminates programmatic moves from user input. Wheel smoothing fires
   // "moved" with type "wheel" per animated step, so one gesture cancels once
@@ -190,13 +211,7 @@ export function createCamera({ viewport }: CameraParams): Camera {
   // Floor at fit * 1.35 centered near (1430, 800); zoom min stays at fit so
   // the user can still zoom out to the full world.
   fitWorld(false);
-  const aspect = viewport.screenHeight > 0 ? viewport.screenWidth / viewport.screenHeight : 1;
-  if (aspect > 0 && aspect < PORTRAIT_ASPECT) {
-    proxy = { cx: PORTRAIT_FOCUS.cx, cy: PORTRAIT_FOCUS.cy, scale: fitScale() * PORTRAIT_FOCUS.zoom };
-  } else {
-    proxy = { cx: WORLD_WIDTH / 2, cy: 740 + 120, scale: fitScale() };
-  }
-  applyProxy();
+  applyDefaultFraming(false);
 
   return {
     fitWorld,
@@ -209,7 +224,7 @@ export function createCamera({ viewport }: CameraParams): Camera {
 
     resetView(): void {
       interacted = false;
-      fitWorld(true);
+      applyDefaultFraming(true);
     },
 
     getZoom(): number {
@@ -242,6 +257,9 @@ export function createCamera({ viewport }: CameraParams): Camera {
     },
 
     resize(w: number, h: number): void {
+      // The camera owns the viewport resize: callers hand dimensions here and
+      // nowhere else, so this comparison can never be defeated by an external
+      // viewport.resize having already updated screenWidth/screenHeight.
       // Ignore no-op and mid-tween resizes: hosts commonly emit spurious
       // observations (loader hide, canvas autoDensity writes) and a refit
       // during a focus tween visibly fights the transition.
@@ -253,8 +271,7 @@ export function createCamera({ viewport }: CameraParams): Camera {
       // Only re-frame when the user has not taken control; otherwise let
       // pixi-viewport clamp the existing view into the new bounds.
       if (!interacted && !(tween?.isActive() ?? false)) {
-        proxy = { cx: viewport.center.x, cy: viewport.center.y, scale: fitScale() };
-        applyProxy();
+        applyDefaultFraming(false);
       }
     },
 

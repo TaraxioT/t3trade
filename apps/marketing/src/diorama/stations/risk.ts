@@ -588,7 +588,10 @@ function buildBudgetMeter(ctx: DioramaContext): BudgetMeterApi {
   const api: BudgetMeterApi = {
     consume(reservoir, amount) {
       const tank = alias[reservoir];
-      const next = Math.max(0.04, levels[tank] - Math.max(0, Math.min(1, amount)));
+      // Floor the drawdown at 15%; sinking further rolls a fresh mission
+      // budget so the reservoir never reads permanently spent.
+      const drained = levels[tank] - Math.max(0, Math.min(1, amount));
+      const next = drained < 0.15 ? 0.82 : Math.max(0.15, drained);
       const from = levels[tank];
       levels[tank] = next;
       const liquid = liquids[tank];

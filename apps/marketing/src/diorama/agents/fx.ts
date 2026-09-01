@@ -145,8 +145,9 @@ export function createAgentFx(ctx: DioramaContext): AgentFx {
   const marks: MarkSlot[] = [];
   const cards: CardSlot[] = [];
   const props: PropSlot[] = [];
-  // Active multi-tween arcs (scatter/roll); killed as a group on cleanup.
-  const arcs = new Set<gsap.core.Timeline>();
+  // Active multi-tween arcs (scatter/roll, plus reduced-motion fades); killed
+  // as a group on cleanup, which also settles their pending promises.
+  const arcs = new Set<gsap.core.Tween | gsap.core.Timeline>();
 
   // Pooled glyphs live directly in the sortable layer with a world-y zIndex so
   // they depth-sort with the actors instead of floating above the whole scene.
@@ -208,15 +209,33 @@ export function createAgentFx(ctx: DioramaContext): AgentFx {
   };
 
   const scatterCards = (x: number, y: number, color: number, count: number): Promise<void> => {
-    const n = Math.max(1, Math.min(count, CARD_POOL));
+    // Reserve only currently-hidden card slots: two concurrent bursts must
+    // animate disjoint Graphics instead of overwriting each other's tweens.
+    const freeCards = cards.filter((c) => !c.g.visible).map((c) => c.g);
+    if (freeCards.length === 0) return Promise.resolve();
+    const n = Math.max(1, Math.min(count, freeCards.length));
+    // The promise settles on completion OR kill so an interrupted gag never
+    // parks its awaiting story (whose locks must release in finally).
+    let resolveDone: () => void = (): void => {};
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    let settled = false;
+    const active: Graphics[] = [];
     const tl = gsap.timeline({
-      onComplete: () => arcs.delete(tl),
-      onKill: () => arcs.delete(tl),
+      onComplete: finish,
+      onKill: finish,
     });
     arcs.add(tl);
-    const active: Graphics[] = [];
+    function finish(): void {
+      if (settled) return;
+      settled = true;
+      active.forEach((g) => (g.visible = false));
+      arcs.delete(tl);
+      resolveDone();
+    }
     for (let i = 0; i < n; i++) {
-      const g = cards[i].g;
+      const g = freeCards[i];
       active.push(g);
       g.tint = color;
       g.visible = true;
@@ -234,14 +253,14 @@ export function createAgentFx(ctx: DioramaContext): AgentFx {
       const dist = 18 + rng() * 34;
       const tx = x + Math.cos(angle) * dist;
       const peak = y - 16 - rng() * 20;
-      const settle = y - 2 + (rng() - 0.5) * 6;
+      const settleY = y - 2 + (rng() - 0.5) * 6;
       tl.to(
         g,
         { x: tx, duration: 0.5, ease: "power1.out" },
         0,
       );
       tl.to(g, { y: peak, duration: 0.22, ease: "power1.out" }, 0);
-      tl.to(g, { y: settle, duration: 0.34, ease: "bounce.out" }, 0.22);
+      tl.to(g, { y: settleY, duration: 0.34, ease: "bounce.out" }, 0.22);
       tl.to(g, { rotation: (rng() - 0.5) * 1.2, duration: 0.4, ease: "power1.out" }, 0);
     }
     if (ctx.reducedMotion) {
@@ -262,13 +281,7 @@ export function createAgentFx(ctx: DioramaContext): AgentFx {
         1.5,
       );
     }
-    return new Promise<void>((resolve) => {
-      tl.eventCallback("onComplete", () => {
-        active.forEach((g) => (g.visible = false));
-        arcs.delete(tl);
-        resolve();
-      });
-    });
+    return done;
   };
 
   const rollProp = (
@@ -291,22 +304,48 @@ export function createAgentFx(ctx: DioramaContext): AgentFx {
       const last = points.length > 0 ? points[points.length - 1] : { x, y };
       g.position.set(last.x, last.y);
       return new Promise<void>((resolve) => {
-        gsap.to(g, {
+        // Tracked in arcs so teardown kills it AND settles this promise.
+        let settled = false;
+        const fade = gsap.to(g, {
           alpha: 0,
           duration: 0.5,
           delay: 0.4,
           onComplete: () => {
             g.visible = false;
+            settled = true;
+            arcs.delete(fade);
+            resolve();
+          },
+          onKill: () => {
+            if (settled) return;
+            settled = true;
+            arcs.delete(fade);
+            g.visible = false;
             resolve();
           },
         });
+        arcs.add(fade);
       });
     }
 
     const RADIUS = 7; // glyph radius; rotation = travel / radius
+    // Settles on completion OR kill so an interrupted chase never parks its
+    // awaiting story.
+    let resolveDone: () => void = (): void => {};
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    let settled = false;
+    function finish(): void {
+      if (settled) return;
+      settled = true;
+      g.visible = false;
+      arcs.delete(tl);
+      resolveDone();
+    }
     const tl = gsap.timeline({
-      onComplete: () => arcs.delete(tl),
-      onKill: () => arcs.delete(tl),
+      onComplete: finish,
+      onKill: finish,
     });
     arcs.add(tl);
 
@@ -347,12 +386,7 @@ export function createAgentFx(ctx: DioramaContext): AgentFx {
       g.visible = false;
     });
 
-    return new Promise<void>((resolve) => {
-      tl.eventCallback("onComplete", () => {
-        arcs.delete(tl);
-        resolve();
-      });
-    });
+    return done;
   };
 
   const api: AgentFx = { popMarkAt, scatterCards, rollProp };

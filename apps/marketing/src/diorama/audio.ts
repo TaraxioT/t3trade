@@ -5,7 +5,7 @@
  * without knowing file names. Master volume 0.5. Playback is throttled three
  * ways: per file (150 ms), per category (foley/tool/authority/comic/ui), and
  * a global simultaneous-voice cap so stories cannot stack into noise.
- * Pan support (-1..1) and deterministic rate variation keep repeated cues
+ * Pan support (-1..1), per-instance volume attenuation, and deterministic rate variation keep repeated cues
  * organic without randomness. Lazily preloads on first enable.
  */
 import { Howl, Howler } from "howler";
@@ -100,6 +100,8 @@ const RATE_SPREAD = 0.08;
 export interface PlayOptions {
   /** Stereo pan, -1 (left) to 1 (right). Clamped; 0 is centered. */
   pan?: number;
+  /** Per-instance volume multiplier (0..1) on top of the cue volume. Default 1. */
+  volume?: number;
 }
 
 export interface AudioController {
@@ -128,10 +130,21 @@ export function createAudio(): AudioController {
   let destroyed = false;
   /** Deterministic playback counter driving per-call rate variation. */
   let callCounter = 0;
-  let activeVoices = 0;
   const sounds = new Map<string, Howl>();
+  /** Files whose audio failed to load; playing them would never settle. */
+  const brokenFiles = new Set<string>();
   const lastPlayed = new Map<string, number>();
   const lastCategoryPlay = new Map<CueCategory, number>();
+  /** Live playback ids. Size is the voice count, so it can never drift. */
+  const activeIds = new Map<number, Howl>();
+
+  /** Settle one voice on any terminal path: natural end, stop, or error. */
+  const releaseVoice = (howl: Howl, id: number): void => {
+    // Only release ids we are still tracking; Howler ids can be reused after
+    // a sound ends, so a stale event for a reused id must not free a slot.
+    if (activeIds.get(id) !== howl) return;
+    activeIds.delete(id);
+  };
 
   const preload = (): void => {
     if (loaded) return;
@@ -144,9 +157,16 @@ export function createAudio(): AudioController {
         // Web Audio unlocks on the first user gesture via Howler.ctx.
         html5: false,
       });
-      // Keep the simultaneous-voice count honest as sounds finish.
-      howl.on("end", () => {
-        activeVoices = Math.max(0, activeVoices - 1);
+      // Keep the simultaneous-voice count honest on every settle path.
+      howl.on("end", (id: number) => releaseVoice(howl, id));
+      howl.on("stop", (id: number) => releaseVoice(howl, id));
+      howl.on("playerror", (id: number) => releaseVoice(howl, id));
+      howl.on("loaderror", () => {
+        brokenFiles.add(file);
+        // Any ids still tracked against this howl will never sound.
+        for (const [id, owner] of activeIds) {
+          if (owner === howl) activeIds.delete(id);
+        }
       });
       sounds.set(file, howl);
     }
@@ -166,7 +186,14 @@ export function createAudio(): AudioController {
   const controller: AudioController = {
     setEnabled(on): void {
       enabled = on;
-      if (!on) return;
+      if (!on) {
+        // Immediate silence: stop every live voice now, not just future ones.
+        for (const [id, howl] of activeIds) {
+          howl.stop(id);
+        }
+        activeIds.clear();
+        return;
+      }
       preload();
       // Resume a suspended AudioContext; the HUD click is a valid gesture.
       const ctx = Howler.ctx;
@@ -176,25 +203,32 @@ export function createAudio(): AudioController {
       if (!enabled || destroyed) return;
       const entry = CUE_MAP[cue as Cue];
       if (!entry) return;
+      if (brokenFiles.has(entry.file)) return;
       const now = performance.now();
       const last = lastPlayed.get(entry.file) ?? -Infinity;
       if (now - last < REPLAY_GAP_MS) return;
       const category = CATEGORY_OF[cue as Cue];
       const lastCat = lastCategoryPlay.get(category) ?? -Infinity;
       if (now - lastCat < CATEGORY_COOLDOWN_MS[category]) return;
-      if (activeVoices >= MAX_VOICES) return;
-      lastPlayed.set(entry.file, now);
-      lastCategoryPlay.set(category, now);
+      if (activeIds.size >= MAX_VOICES) return;
       preload();
       const howl = sounds.get(entry.file);
       if (!howl) return;
       const id = howl.play();
-      howl.volume(entry.volume, id);
+      // Cooldowns are committed only once a playback id exists: a failed play
+      // must not buy silence for later attempts.
+      lastPlayed.set(entry.file, now);
+      lastCategoryPlay.set(category, now);
+      const volumeMult =
+        typeof opts?.volume === "number" && Number.isFinite(opts.volume)
+          ? Math.max(0, Math.min(1, opts.volume))
+          : 1;
+      howl.volume(Math.max(0, Math.min(1, entry.volume * volumeMult)), id);
       howl.rate(nextRate(), id);
       if (typeof opts?.pan === "number" && Number.isFinite(opts.pan)) {
         howl.stereo(Math.max(-1, Math.min(1, opts.pan)), id);
       }
-      activeVoices += 1;
+      activeIds.set(id, howl);
     },
     destroy(): void {
       if (destroyed) return;
@@ -204,9 +238,10 @@ export function createAudio(): AudioController {
         howl.unload();
       }
       sounds.clear();
+      brokenFiles.clear();
+      activeIds.clear();
       lastPlayed.clear();
       lastCategoryPlay.clear();
-      activeVoices = 0;
       // Leave Howler.ctx to Howler's own global lifecycle; unloading every
       // Howl is enough for the diorama to stop producing sound.
       if (current === controller) current = null;
