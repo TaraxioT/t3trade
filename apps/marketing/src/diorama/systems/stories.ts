@@ -53,7 +53,6 @@ import type {
 import type {
   EmergencyControlApi,
   HoloCoreApi,
-  HyperliquidVenueApi,
   SignalTowerApi,
   UniswapVenueApi,
 } from "../stations/central.js";
@@ -267,7 +266,6 @@ type ReplayChamber = ReplayChamberApi;
 type SignalTower = SignalTowerApi;
 type EmergencyControl = EmergencyControlApi;
 type UniswapVenue = UniswapVenueApi;
-type HyperliquidVenue = HyperliquidVenueApi;
 
 // ---------------------------------------------------------------------------
 // Story builders
@@ -597,7 +595,7 @@ export const STORIES: Story[] = [
       cue("execute", near("executionGateway"));
       await send(d, "exchangeTunnel");
       hyperliquid()?.exchangeEvent("order");
-      storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("order");
+      storyApi<HoloCoreApi>("holoCore")?.orderLaunched();
     },
   ),
 
@@ -612,7 +610,6 @@ export const STORIES: Story[] = [
       await send(d, "exchangeTunnel", "event", { reverse: true });
       storyApi<ExecutionGateway>("executionGateway")?.setState("acknowledged");
       hyperliquid()?.exchangeEvent("ack");
-      storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("ack");
       storyApi<SignalTower>("signalTower")?.pulse("execution");
     },
   ),
@@ -620,7 +617,7 @@ export const STORIES: Story[] = [
   // 15. The fill returns and the portfolio vault updates.
   s("s-fill-vault", "Fill updates portfolio", 8, [], ["portfolioVault"], async (d) => {
     hyperliquid()?.exchangeEvent("fill");
-    storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("fill");
+    storyApi<HoloCoreApi>("holoCore")?.fillLanded();
     mascotCelebrate();
     await send(d, "exchangeStateReturn");
     // No frozen PortfolioVault api; station-agnostic pulse.
@@ -930,38 +927,36 @@ export const STORIES: Story[] = [
     },
   ),
 
-  // 26b. The venue hosts meet at the mascot: liquidity research on one side,
-  // venue fills on the other, one handshake between them.
+  // 26b. The Uniswap host welcomes a floor analyst at the pavilion: a quote
+  // card changes hands where liquidity research meets the strategy loop,
+  // and the mascot waves from its pad beside them.
   s(
     "s-venue-greet",
-    "Venue hosts meet at the mascot",
-    12,
-    ["uniswap-bot", "hyperliquid-bot"],
-    ["uniswapVenue", "hyperliquidVenue"],
+    "Liquidity desk welcome",
+    11,
+    ["uniswap-bot", "floor-research"],
+    ["uniswapVenue", "tradingFloor"],
     async (d) => {
       const uni = d.cast.get("uniswap-bot");
-      const hl = d.cast.get("hyperliquid-bot");
+      const analyst = d.cast.get("floor-research");
       uni?.carry(0xff007a);
-      hl?.carry(0x97fce4);
       await Promise.all([
-        move(d, "uniswap-bot", [{ x: 1378, y: 782 }]),
-        move(d, "hyperliquid-bot", [{ x: 1482, y: 782 }]),
+        move(d, "uniswap-bot", [{ x: 1330, y: 740 }]),
+        move(d, "floor-research", [{ x: 1262, y: 718 }]),
       ]);
       react(d, "uniswap-bot", "doubleTake");
-      react(d, "hyperliquid-bot", "doubleTake");
+      express(d, "floor-research", "curious");
       await d.beat(300);
-      uni?.carry(null); // cards swapped
-      hl?.carry(null);
-      storyApi<UniswapVenue>("uniswapVenue")?.pulse("pool");
-      storyApi<HyperliquidVenue>("hyperliquidVenue")?.exchangeBeat("fill");
+      uni?.carry(null); // quote card handed over
+      analyst?.carry(0xff007a);
+      storyApi<UniswapVenue>("uniswapVenue")?.pulse("quote");
       react(d, "uniswap-bot", "hop");
-      react(d, "hyperliquid-bot", "hop");
-      mascotCelebrate();
-      cue("celebrate2", { x: 1430, y: 790 });
-      await d.beat(900);
+      mascotHolder.api?.wave();
+      cue("door", near("uniswapVenue"));
+      await d.beat(700);
       await Promise.all([
         move(d, "uniswap-bot", [near("uniswapVenue", 10, 50)]),
-        move(d, "hyperliquid-bot", [near("hyperliquidVenue", -10, 50)]),
+        move(d, "floor-research", [{ x: 1315, y: 620 }]),
       ]);
     },
   ),

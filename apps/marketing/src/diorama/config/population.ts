@@ -98,9 +98,9 @@ export const POPULATION: AgentDef[] = [
     role: "analysis",
     home: "tradingFloor",
     variant: 0.62,
-    // First point is its desk, moved east with the desk clear of the
-    // Hyperliquid pavilion footprint.
-    wander: [p(1662, 652), p(1678, 706), p(1668, 762), p(1618, 812)],
+    // First point is its desk on the east ring, back at its original spot
+    // now that the floor's Hyperliquid pavilion is gone.
+    wander: [p(1590, 640), p(1662, 690), p(1668, 762), p(1618, 812)],
     restingExpression: "focused",
   },
   {
@@ -135,9 +135,9 @@ export const POPULATION: AgentDef[] = [
     wander: [p(1520, 950), p(1556, 920), p(1502, 895), p(1470, 940)],
     restingExpression: "neutral",
   },
-  // Floor venue hosts: branded bots living at the Uniswap and Hyperliquid
-  // pavilions flanking the holo. Loops hug the inner apron south of the
-  // venues, clear of the ring arcs above and the mascot pad between them.
+  // Floor venue host: the branded Uniswap bot lives at its pavilion west of
+  // the holo. Its loop hugs the inner apron south of the venue, clear of the
+  // ring arcs above and the mascot pad to the east.
   {
     id: "uniswap-bot",
     role: "research",
@@ -147,13 +147,15 @@ export const POPULATION: AgentDef[] = [
     wander: [p(1300, 715), p(1330, 745), p(1355, 710)],
     restingExpression: "curious",
   },
+  // The Hyperliquid-themed bot lives where the venue actually is: at the
+  // execution gateway feeding the east tunnel, not on the trading floor.
   {
     id: "hyperliquid-bot",
     role: "execution",
-    home: "hyperliquidVenue",
+    home: "executionGateway",
     variant: 0.61,
     theme: "hyperliquid",
-    wander: [p(1560, 715), p(1530, 745), p(1505, 710)],
+    wander: [p(2402, 1122), p(2440, 1102), p(2470, 1132)],
     restingExpression: "focused",
   },
 

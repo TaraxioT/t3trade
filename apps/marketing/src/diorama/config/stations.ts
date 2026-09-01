@@ -105,7 +105,6 @@ export type StationId =
   | "tradingFloor"
   | "holoCore"
   | "uniswapVenue"
-  | "hyperliquidVenue"
   | "signalTower"
   | "eventClock"
   | "statusMast"
@@ -314,20 +313,6 @@ export const STATIONS: Record<StationId, StationDef> = {
     blurb: "Liquidity research desk: pool depth and quote comparison feed the strategy loop.",
     status: "Pools steady",
     relation: "Research → Uniswap → Strategy",
-    story: "s-venue-greet",
-    action: "Meet the venues",
-  }),
-  hyperliquidVenue: S({
-    id: "hyperliquidVenue",
-    district: "floor",
-    label: "HYPERLIQUID",
-    signSize: "sm",
-    anchor: { x: 1565, y: 665 },
-    size: { w: 120, d: 90 },
-    blurb:
-      "The campus window onto its only execution venue: orders leave through the signer and return as fills.",
-    status: "Testnet target",
-    relation: "Execution Gateway → Hyperliquid → Reconciliation",
     story: "s-venue-greet",
     action: "Meet the venues",
   }),

@@ -1,9 +1,11 @@
 /**
- * Central Trading Floor: circular floor, holographic market core, the Uniswap
- * and Hyperliquid venue pavilions flanking the holo (research and monitoring
- * windows, never exchanges themselves), six agent workstations, signal tower,
- * event clock, status mast, plus the emergency control kiosk at the
- * safety-perimeter seam. Owner: central district worker.
+ * Central Trading Floor: circular floor, holographic market core crowned by
+ * volumetric shafts, the Uniswap liquidity pavilion west of the holo
+ * (research window, never an exchange), six dual-screen agent workstations,
+ * signal tower, event clock, status mast, plus the emergency control kiosk at
+ * the safety-perimeter seam. The exchange itself stays external
+ * (world/hyperliquid.ts beyond the east perimeter). Owner: central district
+ * worker.
  *
  * Depth notes: the floor platform geometry (steps, medallion, ring lights)
  * lives in the ground layer, below every sortable fixture. A single sortable
@@ -74,23 +76,12 @@ export interface UniswapVenueApi {
   pulse(kind: "pool" | "quote"): void;
 }
 
-/**
- * Hyperliquid venue contract (frozen; stories.ts depends on the shape).
- * Registered under station id "hyperliquidVenue". The pavilion mirrors the
- * external exchange's order lifecycle; the exchange itself stays external.
- */
-export interface HyperliquidVenueApi {
-  /** Light the matching slot on the order/fill board. */
-  exchangeBeat(kind: "order" | "ack" | "fill"): void;
-}
-
 const FLOOR = { x: 1430, y: 740 };
 const RNG = seededRandom(0xc3e7411);
 
-/** Brand trims for the venue pavilions; the marks themselves are real
- * Sprite assets, never approximated procedurally. */
+/** Brand trim for the Uniswap pavilion; the mark itself is a real Sprite
+ * asset, never approximated procedurally. */
 const UNISWAP_PINK = 0xff007a;
-const HYPERLIQUID_MINT = 0x97fce4;
 
 /**
  * Floor-wide desk flash set by buildTradingFloor and read by the holo core's
@@ -109,11 +100,14 @@ let statusPauseHook: ((on: boolean) => void) | null = null;
 
 /** Floor desks at the population wander points; roles tint the console trim.
  * The former north pair ceded its latitude to the venue pavilions flanking
- * the holo and moved outward along the ring (WSW / ENE), clear of the
- * pavilion footprints x 1235..1355 and 1505..1625, y 620..710. */
+ * the holo and moved outward along the ring. The east pavilion is gone, so
+ * the analysis desk returns to its wander start (1590, 640) and the east
+ * side of the ring stays an open walkway with a clear sightline to the
+ * signal tower; the west desks stay clear of the Uniswap footprint
+ * (x 1235..1355, y 620..710). */
 const DESKS: { x: number; y: number; role: AgentRole }[] = [
   { x: 1198, y: 652, role: "research" },
-  { x: 1662, y: 652, role: "analysis" },
+  { x: 1590, y: 640, role: "analysis" },
   { x: 1225, y: 830, role: "strategy" },
   { x: 1635, y: 830, role: "execution" },
   { x: 1370, y: 935, role: "operations" },
@@ -157,11 +151,10 @@ function addSign(
 export function buildCentralDistrict(ctx: DioramaContext): void {
   buildTradingFloor(ctx);
   buildHoloCore(ctx);
-  // Venues build after the holo so the equal-zIndex overlap sliver between
-  // the pavilion diamonds and the holo diamond resolves to the holo, keeping
-  // the primary element dominant in pointer picks too.
+  // The Uniswap venue builds after the holo so the equal-zIndex overlap
+  // sliver between the pavilion diamond and the holo diamond resolves to the
+  // holo, keeping the primary element dominant in pointer picks too.
   buildUniswapVenue(ctx);
-  buildHyperliquidVenue(ctx);
   buildSignalTower(ctx);
   buildEventClock(ctx);
   buildStatusMast(ctx);
@@ -245,6 +238,18 @@ function buildTradingFloor(ctx: DioramaContext): void {
   }
   platform.addChild(medallion);
 
+  // Emissive floor pools: the holo's screens and the pavilion's console cast
+  // soft additive light onto the platform so floating fixtures illuminate the
+  // ground they float over. Cyan under the holo (north of center), faint pink
+  // under the Uniswap pavilion (west). Squashed glow ellipses; they breathe
+  // with the floor's shared 8 s tick below.
+  const holoPool = glow(FLOOR.x, FLOOR.y - 52, 350, PALETTE.cyan, 0.13);
+  holoPool.scale.y *= 0.42;
+  platform.addChild(holoPool);
+  const venuePool = glow(STATIONS.uniswapVenue.anchor.x, FLOOR.y - 58, 170, UNISWAP_PINK, 0.08);
+  venuePool.scale.y *= 0.45;
+  platform.addChild(venuePool);
+
   // Walkway chevrons: tiny pale arrows on three spokes pointing at the holo.
   const chevrons = new Graphics();
   for (const i of [0, 3, 5]) {
@@ -325,9 +330,64 @@ function buildTradingFloor(ctx: DioramaContext): void {
     platform.addChild(ring);
   }
 
+  // Tower feed conduit: a dotted floor trace from the east rim of the
+  // platform to the signal tower base, so the tower reads as wired into the
+  // floor instead of floating beyond it. Static dots carry the path; two
+  // additive feed dots drift tower-to-ring (the tower broadcasts, the floor
+  // receives) on a slow loop.
+  const tower = STATIONS.signalTower.anchor;
+  const tdx = tower.x - FLOOR.x;
+  const tdy = tower.y + 8 - FLOOR.y;
+  const tlen = Math.hypot(tdx, tdy) || 1;
+  // Start where the ray toward the tower crosses the rim ellipse (348 x 198):
+  // t solves (t*ux/348)^2 + (t*uy/198)^2 = 1, so the point is (ux*t, uy*t).
+  const rimT = 1 / Math.hypot(tdx / tlen / 348, tdy / tlen / 198);
+  const feedA = {
+    x: FLOOR.x + (tdx / tlen) * rimT,
+    y: FLOOR.y + (tdy / tlen) * rimT,
+  };
+  const feedB = { x: tower.x, y: tower.y + 8 };
+  const conduit = new Graphics();
+  const conduitLen = Math.hypot(feedB.x - feedA.x, feedB.y - feedA.y);
+  const feedDots = conduitLen / 14;
+  for (let i = 0; i <= feedDots; i++) {
+    const t = i / feedDots;
+    conduit.circle(feedA.x + (feedB.x - feedA.x) * t, feedA.y + (feedB.y - feedA.y) * t, 1.7);
+    conduit.fill({ color: PALETTE.cyan, alpha: 0.42 - t * 0.14 });
+  }
+  conduit.blendMode = "add";
+  platform.addChild(conduit);
+  const feedMovers: { mover: Sprite; state: { t: number } }[] = [];
+  if (!ctx.reducedMotion) {
+    for (let i = 0; i < 2; i++) {
+      const mover = glow(feedB.x, feedB.y, 9, PALETTE.cyan, 0.55);
+      platform.addChild(mover);
+      const state = { t: 0 };
+      gsap.fromTo(
+        state,
+        { t: 0 },
+        {
+          t: 1,
+          duration: 3.4,
+          ease: "none",
+          repeat: -1,
+          delay: i * 1.7,
+          onUpdate: () => {
+            mover.position.set(
+              feedB.x + (feedA.x - feedB.x) * state.t,
+              feedB.y + (feedA.y - feedB.y) * state.t,
+            );
+          },
+        },
+      );
+      feedMovers.push({ mover, state });
+    }
+    ctx.onCleanup(() => feedMovers.forEach((f) => gsap.killTweensOf(f.state)));
+  }
+
   // Per-desk feedback flashes driven by holo market events.
   const deskFlashes: Sprite[] = [];
-  for (const desk of DESKS) buildDesk(ctx, desk, deskFlashes);
+  for (const [deskIndex, desk] of DESKS.entries()) buildDesk(ctx, desk, deskIndex, deskFlashes);
   const pulseDesks = (color: number): void => {
     if (ctx.reducedMotion || deskFlashes.length === 0) return;
     for (const flash of deskFlashes) {
@@ -345,6 +405,9 @@ function buildTradingFloor(ctx: DioramaContext): void {
   const dimFloor = (on: boolean): void => {
     for (const [i, light] of chase.entries()) light.alpha = on ? 0.12 : chaseBase[i];
     for (const { ring, base } of pulseRings) ring.alpha = on ? 0.08 : base;
+    // Pools dim with the campus: paused fixtures stop casting light.
+    holoPool.alpha = on ? 0.04 : 0.13;
+    venuePool.alpha = on ? 0.025 : 0.08;
   };
   floorPauseHook = (on: boolean): void => {
     campusPaused = on;
@@ -362,6 +425,10 @@ function buildTradingFloor(ctx: DioramaContext): void {
       for (const [i, { ring, base }] of pulseRings.entries()) {
         ring.alpha = base + 0.18 * (0.5 + 0.5 * Math.sin(phase - i * 0.9));
       }
+      // Pools breathe on the same 8 s family, slightly out of phase so the
+      // floor's light feels like one system, not one strobe.
+      holoPool.alpha = 0.11 + 0.05 * (0.5 + 0.5 * Math.sin(phase * 0.75));
+      venuePool.alpha = 0.065 + 0.03 * (0.5 + 0.5 * Math.sin(phase * 0.5 + 2.1));
       const chasePhase = (time * Math.PI * 2) / 4;
       for (const [i, light] of chase.entries()) {
         light.alpha = 0.18 + 0.55 * Math.max(0, Math.sin(chasePhase - (i / 12) * Math.PI * 2));
@@ -373,12 +440,47 @@ function buildTradingFloor(ctx: DioramaContext): void {
   // name; the open ground south of the platform stays circulation space.
 }
 
+/** Tiny chart glyph inside a workstation screen, varied per desk so the six
+ * consoles read as different jobs: candles, bars, or a line trace. */
+function chartGlyph(kind: "candles" | "bars" | "line", accent: number): Graphics {
+  const g = new Graphics();
+  if (kind === "line") {
+    g.moveTo(-9, 2);
+    g.lineTo(-3, -3);
+    g.lineTo(2, 0);
+    g.lineTo(9, -5);
+    g.stroke({ width: 1.4, color: accent, alpha: 0.95 });
+    g.moveTo(-9, 5);
+    g.lineTo(9, 5);
+    g.stroke({ width: 1, color: accent, alpha: 0.45 });
+    return g;
+  }
+  if (kind === "bars") {
+    for (const [i, h] of [5, 8, 4, 7].entries()) {
+      g.rect(-8 + i * 5.4, 5 - h, 2.6, h);
+      g.fill({ color: accent, alpha: 0.85 });
+    }
+    return g;
+  }
+  for (const [i, up] of [true, false, true].entries()) {
+    const cx = -7 + i * 7;
+    g.moveTo(cx, -6);
+    g.lineTo(cx, 6);
+    g.stroke({ width: 1, color: accent, alpha: 0.7 });
+    g.rect(cx - 1.8, up ? -1 : -4, 3.6, 5);
+    g.fill({ color: accent, alpha: 0.9 });
+  }
+  return g;
+}
+
 /** One open workstation: wide console with role trim, a chair with a tall
- * backrest, a floating role holo pane, and a soft AO ellipse at its root.
- * Pushes a flash glow so market events are felt at the console. */
+ * backrest, two angled screens with varied chart glyphs, a keyboard strip,
+ * one breathing status LED, a floating role holo pane, and a soft AO ellipse
+ * at its root. Pushes a flash glow so market events are felt at the console. */
 function buildDesk(
   ctx: DioramaContext,
   desk: { x: number; y: number; role: AgentRole },
+  deskIndex: number,
   deskFlashes: Sprite[],
 ): void {
   const accent = ROLE_COLORS[desk.role];
@@ -423,28 +525,53 @@ function buildDesk(
   backrest.stroke({ width: 1, color: accent, alpha: 0.6 });
   root.addChild(backrest);
 
-  // Console screen with two data lines in the role tint: sized and weighted
-  // to stay readable at fit zoom.
+  // Keyboard strip on the console's top face, between the front edge and the
+  // screens: reads as a workstation, not a wedge.
+  const keys = new Graphics();
+  keys.roundRect(desk.x - 13, desk.y - 22, 26, 5, 1.5);
+  keys.fill({ color: PALETTE.structureLight, alpha: 0.95 });
+  keys.roundRect(desk.x - 13, desk.y - 22, 26, 5, 1.5);
+  keys.stroke({ width: 1, color: PALETTE.surfacePale, alpha: 0.35 });
+  for (let kx = -9; kx <= 9; kx += 4.5) {
+    keys.moveTo(desk.x + kx, desk.y - 21);
+    keys.lineTo(desk.x + kx, desk.y - 18);
+    keys.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.4 });
+  }
+  root.addChild(keys);
+
+  // Dual angled screens: two small panels tilted toward the core at slightly
+  // different angles, carrying varied chart glyphs per desk. Both live under
+  // one container so the idle shimmer treats them as one console.
+  const GLYPHS = ["candles", "bars", "line"] as const;
+  const mkScreen = (
+    offX: number,
+    offY: number,
+    rot: number,
+    kind: (typeof GLYPHS)[number],
+  ): Container => {
+    const c = new Container();
+    c.position.set(desk.x + offX, desk.y + offY);
+    c.rotation = rot;
+    c.addChild(screenPanel({ x: -12, y: -8, w: 24, h: 16, accent }));
+    c.addChild(chartGlyph(kind, accent));
+    return c;
+  };
+  const screens = new Container();
+  screens.addChild(
+    mkScreen(-13, -37, -0.09, GLYPHS[deskIndex % 3]),
+    mkScreen(13, -40, 0.07, GLYPHS[(deskIndex + 1) % 3]),
+  );
+  root.addChild(screens);
   const trimGlow = glow(desk.x, desk.y - 34, 52, accent, 0.16);
   root.addChild(trimGlow);
-  const screen = screenPanel({
-    x: desk.x - 21,
-    y: desk.y - 48,
-    w: 42,
-    h: 22,
-    accent,
-  });
-  const content = new Graphics();
-  content.moveTo(desk.x - 16, desk.y - 38);
-  content.lineTo(desk.x - 4, desk.y - 44);
-  content.lineTo(desk.x + 5, desk.y - 37);
-  content.lineTo(desk.x + 16, desk.y - 42);
-  content.stroke({ width: 2, color: accent, alpha: 0.95 });
-  content.moveTo(desk.x - 16, desk.y - 32);
-  content.lineTo(desk.x + 16, desk.y - 32);
-  content.stroke({ width: 1.4, color: accent, alpha: 0.5 });
-  screen.addChild(content);
-  root.addChild(screen);
+  // One status LED per console: role-colored, slow breathing, staggered by
+  // desk so the ring's heartbeats desynchronize.
+  const led = glow(desk.x + 26, desk.y - 14, 8, accent, 0.55);
+  root.addChild(led);
+  const ledDot = new Graphics();
+  ledDot.circle(desk.x + 26, desk.y - 14, 1.7);
+  ledDot.fill({ color: accent });
+  root.addChild(ledDot);
   // Dedicated market-event flash above the console: stays dormant so the idle
   // shimmer and trim breathing never fight it.
   const flash = glow(desk.x, desk.y - 38, 46, accent, 0);
@@ -476,15 +603,24 @@ function buildDesk(
       ease: "sine.inOut",
       delay: (desk.x % 7) * 0.4,
     });
-    // Idle telemetry: each desk shimmers and its role trim breathes on its own
-    // clock so the six jobs read as separate live consoles, not one texture.
-    gsap.to(content, {
-      alpha: 0.55,
+    // Idle telemetry: each desk's screens shimmer, its LED and role trim
+    // breathe on their own clocks so the six jobs read as separate live
+    // consoles, not one texture.
+    gsap.to(screens, {
+      alpha: 0.6,
       duration: 2.2 + (desk.x % 5) * 0.35,
       yoyo: true,
       repeat: -1,
       ease: "sine.inOut",
       delay: (desk.y % 7) * 0.35,
+    });
+    gsap.to(led, {
+      alpha: 0.22,
+      duration: 2.6 + (deskIndex % 3) * 0.6,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+      delay: deskIndex * 0.45,
     });
     gsap.to(trimGlow, {
       alpha: 0.32,
@@ -494,7 +630,7 @@ function buildDesk(
       ease: "sine.inOut",
       delay: (desk.y % 5) * 0.5,
     });
-    ctx.onCleanup(() => gsap.killTweensOf([pane, content, trimGlow]));
+    ctx.onCleanup(() => gsap.killTweensOf([pane, screens, trimGlow, led]));
   }
 }
 
@@ -507,23 +643,51 @@ function buildHoloCore(ctx: DioramaContext): void {
   const { x, y } = def.anchor;
   const root = stationRoot(ctx, def, y);
 
-  // Soft AO + pedestal + breathing additive cone carrying the hologram. The
-  // pedestal is two-tier (emitter disc under a short column) so the floor's
-  // primary fixture grounds deliberately now that the platform no longer
-  // buries it.
+  // Soft AO + projection dais + breathing additive cone carrying the
+  // hologram. The dais is two low tiered steps crowned by an emitter ring, so
+  // the floor's primary fixture grounds deliberately and visibly owns the
+  // center of the platform.
   const ao = new Graphics();
-  ao.ellipse(x, y + 8, 34, 14);
-  ao.fill({ color: PALETTE.space, alpha: 0.3 });
+  ao.ellipse(x, y + 8, 46, 18);
+  ao.fill({ color: PALETTE.space, alpha: 0.32 });
   root.addChild(ao);
   root.addChild(
-    isoCylinder({ x, y: y + 7, r: 24, h: 8, color: PALETTE.structure, rim: PALETTE.cyan }),
+    isoCylinder({ x, y: y + 7, r: 36, h: 7, color: PALETTE.structure, rim: PALETTE.cyan }),
   );
   root.addChild(
-    isoCylinder({ x, y: y + 6, r: 14, h: 18, color: PALETTE.structureLight, rim: PALETTE.cyan }),
+    isoCylinder({ x, y: y + 5, r: 22, h: 8, color: PALETTE.structureLight, rim: PALETTE.cyan }),
   );
+  // Emitter ring inset in the upper tier: additive stroke plus small nubs.
+  const emitterY = y - 3;
+  const emitter = new Graphics();
+  emitter.ellipse(x, emitterY, 17, 8.5);
+  emitter.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.85 });
+  emitter.blendMode = "add";
+  root.addChild(emitter);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    root.addChild(glow(x + Math.cos(a) * 17, emitterY + Math.sin(a) * 8.5, 7, PALETTE.cyan, 0.5));
+  }
   root.addChild(glow(x, y - 10, 56, PALETTE.cyan, 0.45));
   const cone = lightBeam(x, y - 12, 120, 34, 118, PALETTE.cyan, 0.4);
   root.addChild(cone);
+
+  // Volumetric shafts: three soft additive beams rising from the emitter ring
+  // past the content stack, so the holo crowns the floor. Low alpha, drawn
+  // behind the stack so the glyphs stay crisp; they breathe on the holo's
+  // existing tick (never a new ticker).
+  const shafts = new Container();
+  shafts.position.set(x, y - 4);
+  for (const s of [
+    { dx: -12, topW: 30, botW: 10, h: 128, rot: -0.055, alpha: 0.1 },
+    { dx: 0, topW: 38, botW: 14, h: 150, rot: 0, alpha: 0.13 },
+    { dx: 12, topW: 30, botW: 10, h: 128, rot: 0.055, alpha: 0.1 },
+  ] as const) {
+    const beam = lightBeam(s.dx, 0, s.topW, s.botW, s.h, PALETTE.cyan, s.alpha);
+    beam.rotation = s.rot;
+    shafts.addChild(beam);
+  }
+  root.addChild(shafts);
 
   // Floating content stack: abstract glyphs, billboard, gently bobbing (6 s).
   const stack = new Container();
@@ -550,31 +714,43 @@ function buildHoloCore(ctx: DioramaContext): void {
   };
   for (let i = 0; i < candleCount; i++) candles.push(nextCandle());
 
+  // Ribbon front plus a dimmer depth twin offset behind it, so the price
+  // ribbon reads as a volumetric slab instead of a flat card. One shared
+  // draw routine refreshes both on each new candle.
+  const ribbonDepth = new Graphics();
+  ribbonDepth.position.set(5, 4);
   const ribbon = new Graphics();
   const ribbonH = 20;
   const ribbonTop = -34;
-  const drawRibbon = (): void => {
-    ribbon.clear();
-    ribbon.roundRect(-62, ribbonTop, 124, ribbonH + 8, 4);
-    ribbon.fill({ color: PALETTE.space, alpha: 0.55 });
-    ribbon.roundRect(-62, ribbonTop, 124, ribbonH + 8, 4);
-    ribbon.stroke({ width: 1, color: PALETTE.cyan, alpha: 0.4 });
+  const drawRibbonInto = (g: Graphics, dim: boolean): void => {
+    const panelA = dim ? 0.2 : 0.55;
+    const frameA = dim ? 0.15 : 0.4;
+    const dataA = dim ? 0.3 : 1;
+    g.clear();
+    g.roundRect(-62, ribbonTop, 124, ribbonH + 8, 4);
+    g.fill({ color: PALETTE.space, alpha: panelA });
+    g.roundRect(-62, ribbonTop, 124, ribbonH + 8, 4);
+    g.stroke({ width: 1, color: PALETTE.cyan, alpha: frameA });
     const yOf = (v: number): number => ribbonTop + 4 + ribbonH - v * ribbonH;
     candles.forEach((k, idx) => {
       const cx = -58 + idx * candleW + candleW / 2;
       const up = k.c >= k.o;
       const col = up ? PALETTE.healthy : PALETTE.blocked;
-      ribbon.moveTo(cx, yOf(Math.min(1, k.h)));
-      ribbon.lineTo(cx, yOf(Math.max(0, k.l)));
-      ribbon.stroke({ width: 1.5, color: col, alpha: 0.95 });
+      g.moveTo(cx, yOf(Math.min(1, k.h)));
+      g.lineTo(cx, yOf(Math.max(0, k.l)));
+      g.stroke({ width: 1.5, color: col, alpha: 0.95 * dataA });
       const top = yOf(Math.max(k.o, k.c));
       const bot = yOf(Math.min(k.o, k.c));
-      ribbon.rect(cx - 2.5, top, 5, Math.max(2, bot - top));
-      ribbon.fill({ color: col, alpha: 1 });
+      g.rect(cx - 2.5, top, 5, Math.max(2, bot - top));
+      g.fill({ color: col, alpha: dataA });
     });
   };
+  const drawRibbon = (): void => {
+    drawRibbonInto(ribbonDepth, true);
+    drawRibbonInto(ribbon, false);
+  };
   drawRibbon();
-  stack.addChild(ribbon);
+  stack.addChild(ribbonDepth, ribbon);
   const lastGlow = glow(0, 0, 10, PALETTE.cyan, 0.7);
   stack.addChild(lastGlow);
 
@@ -690,6 +866,7 @@ function buildHoloCore(ctx: DioramaContext): void {
       const t = now / 1000;
       stack.y = y - 88 + Math.sin(t * Math.PI * 2 * (1 / 6)) * 4;
       cone.alpha = 0.35 + 0.15 * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 4));
+      shafts.alpha = 0.8 + 0.2 * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 7 + 1.3));
       for (const [i, o] of orbiters.entries()) {
         const a = (t * Math.PI * 2) / o.period + i * 2.1;
         o.c.position.set(x + Math.cos(a) * o.r, y - 78 + Math.sin(a) * o.ry);
@@ -711,6 +888,7 @@ function buildHoloCore(ctx: DioramaContext): void {
   } else {
     lastGlow.visible = false;
     cone.alpha = 0.4;
+    shafts.alpha = 1;
     orbiters.forEach((o, i) => {
       const a = 1.2 + i * 2.4;
       o.c.position.set(x + Math.cos(a) * o.r, y - 78 + Math.sin(a) * o.ry);
@@ -838,7 +1016,7 @@ function buildHoloCore(ctx: DioramaContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Venue pavilions (Uniswap research, Hyperliquid execution link)
+// Uniswap liquidity pavilion
 // ---------------------------------------------------------------------------
 
 /** Tiny console readout text; real Pixi text so it stays crisp at zoom. */
@@ -940,8 +1118,9 @@ function buildVenueBooth(
     root.addChild(isoWall({ ...edge, h: 40, color: PALETTE.structure, alpha: 0.96, rim: accent }));
   }
 
-  // Header board crowning the wall corner: real logo plus micro caption.
-  root.addChild(glow(x, y - 88, 64, accent, 0.14));
+  // Header board crowning the wall corner: real logo plus micro caption. The
+  // halo rests faint so it never competes with the holo's crown.
+  root.addChild(glow(x, y - 88, 64, accent, 0.1));
   const board = new Graphics();
   board.roundRect(x - 42, y - 115, 84, 54, 6);
   board.fill({ color: PALETTE.space, alpha: 0.72 });
@@ -985,9 +1164,11 @@ function buildVenueBooth(
 }
 
 /**
- * Uniswap pavilion: liquidity research only. Two pool-depth gauge columns
- * and a two-line quote comparison readout; nothing here routes toward
- * execution. pulse() blips the gauges (pool) or the readout (quote).
+ * Uniswap pavilion: liquidity research only. An AMM constant-product curve
+ * pane with a marker sliding along it, two pool-depth bubble columns that
+ * breathe slowly, and a two-line quote comparison readout; nothing here
+ * routes toward execution. pulse() bounces the bubbles (pool) or slides the
+ * marker and brightens the readout (quote).
  */
 function buildUniswapVenue(ctx: DioramaContext): void {
   const def = STATIONS.uniswapVenue;
@@ -1000,9 +1181,15 @@ function buildUniswapVenue(ctx: DioramaContext): void {
     "/diorama/logos/uniswap.png",
   );
 
-  // Pool-depth gauges: slim columns in front of the back wall with seeded
-  // fill levels; their glows stay dormant until a pool pulse.
+  // Pool-depth bubble columns: the former static gauge fills became columns
+  // of slowly breathing bubbles; the flash halos rest dormant until a pulse.
   const gaugeFlashes: Sprite[] = [];
+  const bubbleCols: Sprite[][] = [];
+  const breathe = (b: Sprite, delay: number): void => {
+    gsap.killTweensOf(b);
+    b.alpha = 0.42;
+    gsap.to(b, { alpha: 0.68, duration: 3.4, yoyo: true, repeat: -1, ease: "sine.inOut", delay });
+  };
   for (const [i, gx] of [x - 33, x + 33].entries()) {
     const level = i === 0 ? 0.62 : 0.47;
     root.addChild(
@@ -1015,24 +1202,91 @@ function buildUniswapVenue(ctx: DioramaContext): void {
         rim: UNISWAP_PINK,
       }),
     );
-    const fill = new Graphics();
-    const top = y - 12 - 24 * level;
-    fill.rect(gx - 3, top, 6, 24 * level);
-    fill.fill({ color: UNISWAP_PINK, alpha: 0.55 });
-    fill.moveTo(gx - 3, top);
-    fill.lineTo(gx + 3, top);
-    fill.stroke({ width: 1.5, color: UNISWAP_PINK, alpha: 0.95 });
+    // Depth ticks along each column keep the gauge reading.
+    const marks = new Graphics();
     for (let t = 1; t <= 3; t++) {
       const ty = y - 12 - 6 * t;
-      fill.moveTo(gx - 7.5, ty);
-      fill.lineTo(gx - 5, ty);
-      fill.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.5 });
+      marks.moveTo(gx - 7.5, ty);
+      marks.lineTo(gx - 5, ty);
+      marks.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.5 });
     }
-    root.addChild(fill);
+    root.addChild(marks);
+    const col: Sprite[] = [];
+    for (let b = 0; b < 3; b++) {
+      const bubble = glow(
+        gx,
+        y - 12 - 24 * level * ((b + 0.8) / 3.1),
+        9 - b * 1.6,
+        UNISWAP_PINK,
+        0.55,
+      );
+      col.push(bubble);
+      root.addChild(bubble);
+      if (!ctx.reducedMotion) breathe(bubble, i * 0.9 + b * 0.55);
+    }
+    bubbleCols.push(col);
     const flash = glow(gx, y - 22, 26, UNISWAP_PINK, 0);
     gaugeFlashes.push(flash);
     root.addChild(flash);
   }
+
+  // AMM constant-product pane floating between the logo board and the
+  // console: a soft x*y=k arc with a marker sliding along it.
+  const amm = new Container();
+  amm.position.set(x, y - 44);
+  const ammW = 46;
+  const ammH = 30;
+  const ammG = new Graphics();
+  ammG.roundRect(-ammW / 2, -ammH / 2, ammW, ammH, 4);
+  ammG.fill({ color: PALETTE.space, alpha: 0.55 });
+  ammG.roundRect(-ammW / 2, -ammH / 2, ammW, ammH, 4);
+  ammG.stroke({ width: 1.2, color: UNISWAP_PINK, alpha: 0.7 });
+  // Axis hints: price against reserve.
+  ammG.moveTo(-ammW / 2 + 6, ammH / 2 - 5);
+  ammG.lineTo(ammW / 2 - 5, ammH / 2 - 5);
+  ammG.moveTo(-ammW / 2 + 6, ammH / 2 - 5);
+  ammG.lineTo(-ammW / 2 + 6, -ammH / 2 + 5);
+  ammG.stroke({ width: 1, color: PALETTE.inkDim, alpha: 0.4 });
+  // The curve: parameter u in [0.35, 1] traces x*y=k (u the reserve share,
+  // 1/u the price it implies), mapped into the pane.
+  const curvePt = (t: number): { px: number; py: number } => {
+    const u = 0.35 + t * 0.65;
+    const ny = (1 / u - 1) / (1 / 0.35 - 1);
+    return {
+      px: -ammW / 2 + 6 + t * (ammW - 12),
+      py: ammH / 2 - 5 - ny * (ammH - 11),
+    };
+  };
+  for (let s = 0; s <= 16; s++) {
+    const p = curvePt(s / 16);
+    if (s === 0) ammG.moveTo(p.px, p.py);
+    else ammG.lineTo(p.px, p.py);
+  }
+  ammG.stroke({ width: 1.5, color: UNISWAP_PINK, alpha: 0.85 });
+  amm.addChild(ammG);
+  const marker = glow(0, 0, 9, UNISWAP_PINK, 0.9);
+  amm.addChild(marker);
+  root.addChild(amm);
+  const markerState = { t: 0.5 };
+  const placeMarker = (): void => {
+    const p = curvePt(markerState.t);
+    marker.position.set(p.px, p.py);
+  };
+  placeMarker();
+  // Ambient drift: the marker explores the curve on a slow yoyo. A quote
+  // pulse interrupts it, slides to the next comparison point, then resumes.
+  const driftMarker = (): void => {
+    gsap.killTweensOf(markerState);
+    gsap.to(markerState, {
+      t: 0.82,
+      duration: 5,
+      yoyo: true,
+      repeat: -1,
+      ease: "sine.inOut",
+      onUpdate: placeMarker,
+    });
+  };
+  if (!ctx.reducedMotion) driftMarker();
 
   // Quote comparison readout: two compared quotes as real text, resting
   // slightly dim so a quote pulse can brighten them.
@@ -1048,10 +1302,35 @@ function buildUniswapVenue(ctx: DioramaContext): void {
   const quoteFlash = glow(x, y - 1, 46, UNISWAP_PINK, 0);
   root.addChild(quoteFlash);
 
+  let quoteSteps = 0;
   const api: UniswapVenueApi = {
     pulse(kind) {
       if (kind === "pool") {
         gaugeFlashes.forEach((g, i) => blip(g, ctx, 0.85, 0, 0.8, i * 0.12));
+        for (const col of bubbleCols) {
+          for (const [bi, b] of col.entries()) {
+            gsap.killTweensOf([b, b.scale]);
+            b.scale.set(1);
+            if (ctx.reducedMotion) {
+              b.alpha = 0.85;
+              gsap.to(b, { alpha: 0.55, duration: 0.4, ease: "power2.out" });
+              continue;
+            }
+            gsap.to(b.scale, {
+              x: 1.6,
+              y: 1.6,
+              duration: 0.24,
+              yoyo: true,
+              repeat: 1,
+              ease: "power2.out",
+              delay: bi * 0.07,
+              onComplete: () => {
+                b.scale.set(1);
+                breathe(b, bi * 0.4);
+              },
+            });
+          }
+        }
         return;
       }
       blip(quoteFlash, ctx, 0.8, 0, 0.6);
@@ -1059,98 +1338,29 @@ function buildUniswapVenue(ctx: DioramaContext): void {
       lineA.alpha = 1;
       lineB.alpha = 1;
       gsap.to([lineA, lineB], { alpha: 0.85, duration: 0.5, ease: "power2.out" });
+      // Slide the marker to the next comparison point along the curve.
+      const targetT = 0.3 + (quoteSteps++ % 3) * 0.25;
+      if (ctx.reducedMotion) {
+        markerState.t = targetT;
+        placeMarker();
+        return;
+      }
+      gsap.killTweensOf(markerState);
+      gsap.to(markerState, {
+        t: targetT,
+        duration: 0.5,
+        ease: "power2.out",
+        onUpdate: placeMarker,
+        onComplete: driftMarker,
+      });
     },
   };
   registerApi(ctx, def.id, api);
-  ctx.onCleanup(() => gsap.killTweensOf([...gaugeFlashes, quoteFlash, lineA, lineB]));
-  addSign(ctx, def, x - 13, 536, UNISWAP_PINK);
-}
-
-/**
- * Hyperliquid pavilion: the campus window onto its only execution venue.
- * A three-slot order/fill board mirrors the external exchange's lifecycle
- * and floor chevrons cue the east tunnel; the exchange itself stays beyond
- * the perimeter. exchangeBeat() lights the matching slot.
- */
-function buildHyperliquidVenue(ctx: DioramaContext): void {
-  const def = STATIONS.hyperliquidVenue;
-  const { x, y } = def.anchor;
-  const { root, screen } = buildVenueBooth(
-    ctx,
-    def,
-    HYPERLIQUID_MINT,
-    "EXECUTION VENUE LINK",
-    "/diorama/logos/hyperliquid.png",
-  );
-
-  // Console readout, honest about the route orders take.
-  const lineA = microText("TESTNET LINK", 6.5, PALETTE.ink);
-  lineA.anchor.set(0, 0.5);
-  lineA.position.set(x - 20, y - 4.5);
-  const lineB = microText("VIA SIGNER", 6.5, PALETTE.inkDim);
-  lineB.anchor.set(0, 0.5);
-  lineB.position.set(x - 20, y + 3.5);
-  screen.addChild(lineA, lineB);
-
-  // Order/fill board: a slim totem east of the console with three lifecycle
-  // slots; pills rest dim and light on their beat.
-  const bx = x + 36;
-  root.addChild(isoBox({ x: bx, y: y + 4, w: 24, d: 13, h: 6, color: PALETTE.structure }));
-  const post = new Graphics();
-  post.rect(bx - 1.5, y - 10, 3, 12);
-  post.fill({ color: PALETTE.structureLight });
-  root.addChild(post);
-  const board = new Graphics();
-  board.roundRect(bx - 18, y - 54, 36, 46, 4);
-  board.fill({ color: PALETTE.space, alpha: 0.72 });
-  board.roundRect(bx - 18, y - 54, 36, 46, 4);
-  board.stroke({ width: 1.5, color: HYPERLIQUID_MINT, alpha: 0.85 });
-  root.addChild(board);
-
-  const SLOT_LABELS = ["ORDER", "ACK", "FILL"] as const;
-  const slotPills: Graphics[] = [];
-  const slotHalos: Sprite[] = [];
-  SLOT_LABELS.forEach((name, i) => {
-    const sy = y - 44 + i * 14;
-    const pill = new Graphics();
-    pill.roundRect(bx - 13, sy, 26, 9, 4.5);
-    pill.fill({ color: HYPERLIQUID_MINT, alpha: 0.9 });
-    pill.alpha = 0.28;
-    root.addChild(pill);
-    slotPills.push(pill);
-    const label = microText(name, 5.5, PALETTE.ink);
-    label.anchor.set(0.5);
-    label.position.set(bx, sy + 4.5);
-    root.addChild(label);
-    const halo = glow(bx, sy + 4.5, 24, HYPERLIQUID_MINT, 0);
-    slotHalos.push(halo);
-    root.addChild(halo);
+  ctx.onCleanup(() => {
+    gsap.killTweensOf([...gaugeFlashes, quoteFlash, lineA, lineB, markerState]);
+    for (const col of bubbleCols) for (const b of col) gsap.killTweensOf([b, b.scale]);
   });
-
-  // Direction cue: three fading floor chevrons east of the booth, pointing
-  // along the order path toward the exchange tunnel.
-  const cue = new Graphics();
-  const dir = 0.14;
-  for (const [i, d] of [8, 20, 32].entries()) {
-    const tx = x + 62 + Math.cos(dir) * d;
-    const ty = y + 24 + Math.sin(dir) * d;
-    cue.moveTo(tx + Math.cos(dir - 2.5) * 7, ty + Math.sin(dir - 2.5) * 7);
-    cue.lineTo(tx, ty);
-    cue.lineTo(tx + Math.cos(dir + 2.5) * 7, ty + Math.sin(dir + 2.5) * 7);
-    cue.stroke({ width: 1.5, color: HYPERLIQUID_MINT, alpha: 0.42 - i * 0.12 });
-  }
-  root.addChild(cue);
-
-  const api: HyperliquidVenueApi = {
-    exchangeBeat(kind) {
-      const i = kind === "order" ? 0 : kind === "ack" ? 1 : 2;
-      blip(slotPills[i], ctx, 1, 0.28, 0.7);
-      blip(slotHalos[i], ctx, 0.8, 0, 0.6);
-    },
-  };
-  registerApi(ctx, def.id, api);
-  ctx.onCleanup(() => gsap.killTweensOf([...slotPills, ...slotHalos]));
-  addSign(ctx, def, x + 35, 536, HYPERLIQUID_MINT);
+  addSign(ctx, def, x - 13, 536, UNISWAP_PINK);
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,60 +1570,74 @@ function buildEventClock(ctx: DioramaContext): void {
   face.position.set(x, y - 84);
   root.addChild(face);
 
-  // Dial plate and static tick marks.
+  // Illuminated radial dial: soft aqua halo, a tick ring with cardinal
+  // emphasis, a slow sweeping phase arc, a counter ring, and an epoch
+  // counter, so the clock reads as a lit instrument instead of empty circles.
+  face.addChild(glow(0, 0, 108, PALETTE.aqua, 0.1));
   const plate = new Graphics();
   plate.circle(0, 0, 42);
-  plate.fill({ color: PALETTE.space, alpha: 0.6 });
+  plate.fill({ color: PALETTE.space, alpha: 0.72 });
   plate.circle(0, 0, 42);
   plate.stroke({ width: 1.5, color: PALETTE.structureLight, alpha: 0.9 });
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
-    plate.moveTo(Math.cos(a) * 37, Math.sin(a) * 37);
+    const cardinal = i % 3 === 0;
+    plate.moveTo(Math.cos(a) * (cardinal ? 34 : 36.5), Math.sin(a) * (cardinal ? 34 : 36.5));
     plate.lineTo(Math.cos(a) * 41, Math.sin(a) * 41);
-    plate.stroke({ width: i % 3 === 0 ? 2 : 1, color: PALETTE.inkDim, alpha: 0.7 });
+    plate.stroke({
+      width: cardinal ? 2.2 : 1,
+      color: cardinal ? PALETTE.ink : PALETTE.inkDim,
+      alpha: cardinal ? 0.9 : 0.5,
+    });
   }
+  plate.circle(0, 0, 2.2);
+  plate.fill({ color: PALETTE.aqua });
   face.addChild(plate);
+  const epoch = microText("EPOCH 41", 5.5, PALETTE.inkDim);
+  epoch.anchor.set(0.5);
+  epoch.position.set(0, 10);
+  face.addChild(epoch);
 
-  // Three rotating arc rings: activity 8 s (inner), lifecycle 24 s, wakes 60 s.
-  const rings: { c: Container; period: number; dir: 1 | -1 }[] = [];
-  const addRing = (r: number, arcs: number, color: number, period: number, dir: 1 | -1): void => {
-    const c = new Container();
-    const g = new Graphics();
-    for (let i = 0; i < arcs; i++) {
-      const start = (i / arcs) * Math.PI * 2 + 0.2;
-      g.arc(0, 0, r, start, start + (Math.PI * 2) / arcs - 0.4);
-      g.stroke({ width: 2, color, alpha: 0.85 });
-    }
-    c.addChild(g);
-    face.addChild(c);
-    rings.push({ c, period, dir });
-  };
-  addRing(16, 3, PALETTE.cyan, 8, 1);
-  addRing(26, 4, PALETTE.blue, 24, -1);
-  addRing(35, 2, PALETTE.aqua, 60, 1);
+  // Slow sweeping phase arc (24 s per revolution) with a bright end dot.
+  const phaseArc = new Container();
+  const arcG = new Graphics();
+  const arcSweep = Math.PI * 2 * (100 / 360);
+  arcG.arc(0, 0, 30, -Math.PI / 2, -Math.PI / 2 + arcSweep);
+  arcG.stroke({ width: 3, color: PALETTE.aqua, alpha: 0.85 });
+  arcG.blendMode = "add";
+  phaseArc.addChild(arcG);
+  phaseArc.addChild(
+    glow(
+      Math.cos(-Math.PI / 2 + arcSweep) * 30,
+      Math.sin(-Math.PI / 2 + arcSweep) * 30,
+      10,
+      PALETTE.aqua,
+      0.7,
+    ),
+  );
+  face.addChild(phaseArc);
 
-  // Sweeping second glint: thin needle crossing all rings. Container, not
-  // Graphics: Pixi v8 marks Graphics allowChildren false and warns on addChild.
-  const glint = new Container();
-  const needle = new Graphics();
-  needle.moveTo(0, 0);
-  needle.lineTo(0, -38);
-  needle.stroke({ width: 1.5, color: PALETTE.surfacePale, alpha: 0.85 });
-  glint.addChild(needle);
-  glint.addChild(glow(0, -38, 10, PALETTE.surfacePale, 0.7));
-  face.addChild(glint);
+  // Thin counter ring rotating against the sweep (60 s), for depth.
+  const counter = new Container();
+  const counterG = new Graphics();
+  for (let i = 0; i < 2; i++) {
+    const start = (i / 2) * Math.PI * 2 + 0.5;
+    counterG.arc(0, 0, 20, start, start + Math.PI - 0.9);
+    counterG.stroke({ width: 1.5, color: PALETTE.cyan, alpha: 0.55 });
+  }
+  counterG.blendMode = "add";
+  counter.addChild(counterG);
+  face.addChild(counter);
 
   if (!ctx.reducedMotion) {
     ctx.onTick(() => {
       const time = performance.now() / 1000;
-      glint.rotation = (time / 60) * Math.PI * 2;
-      for (const r of rings) r.c.rotation = r.dir * ((time / r.period) * Math.PI * 2);
+      phaseArc.rotation = (time / 24) * Math.PI * 2;
+      counter.rotation = -(time / 60) * Math.PI * 2;
     });
   } else {
-    glint.rotation = 0.7;
-    rings[0].c.rotation = 0.4;
-    rings[1].c.rotation = -1.1;
-    rings[2].c.rotation = 2.2;
+    phaseArc.rotation = 0.9;
+    counter.rotation = 2.1;
   }
 
   // Offset right and low: the observability booth sits just west-southwest
@@ -1431,6 +1655,11 @@ function buildStatusMast(ctx: DioramaContext): void {
   const root = stationRoot(ctx, def, y);
   statusPauseHook = null;
 
+  // Grounded contact shadow under the mast base.
+  const mastAo = new Graphics();
+  mastAo.ellipse(x, y + 5, 17, 7);
+  mastAo.fill({ color: PALETTE.space, alpha: 0.3 });
+  root.addChild(mastAo);
   root.addChild(
     isoBox({
       x,

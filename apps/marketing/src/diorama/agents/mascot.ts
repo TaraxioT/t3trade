@@ -1,9 +1,11 @@
 /**
- * Duo mascot: a cheerful unicorn-bot herald for the venue pad on the central
- * floor. Uniswap side = pink horn + mane; Hyperliquid side = mint-to-teal
- * gradient cape + scarf. One character carries both venue languages while the
- * body stays structural blue, so it reads as the same species as the agent
- * cast, just a ~1.6x herald standing on the pad pedestal.
+ * Floor mascot: a dignified unicorn-bot herald for the venue pad on the
+ * central floor. The character keeps the cast anatomy (structural blue body,
+ * CRT face, cyan shoulder light) but reads as the campus's emblem, not
+ * entertainment: a slender silver-blue horn with one soft mint glow at the
+ * tip, a short swept crest in deep structural blue, and a single tailored
+ * deep-teal mantle with a thin restrained pink hem trim (the only pink on
+ * the figure). Accents are strokes and deep tones; nothing glows neon.
  * Owner: mascot/theming worker.
  *
  * Anchor convention matches agent.ts: root.position is the pad anchor on the
@@ -12,11 +14,14 @@
  * small forward bias (+3) so the mascot sorts above the pedestal it stands
  * on while ring bots south of it still pass in front.
  *
- * Motion is fully tween-driven (GSAP timelines, no per-frame redraw loops).
- * Idle life = wave loop + bob + cape sway + blink; under reduced motion the
- * mascot holds one static friendly pose. celebrate()/wave() are
- * interrupt-safe: each kills any live animation, resets to the base pose and
- * restarts cleanly, and every public path guards the destroyed state.
+ * Motion is fully tween-driven (GSAP timelines, no per-frame redraw loops)
+ * and deliberately slow, so the figure reads as a statue that occasionally
+ * moves. Idle life = a graceful wave loop + slow bob + mantle sway + rare
+ * blink; under reduced motion the mascot holds one static composed pose.
+ * celebrate() = a dignified bow + one sparkle + at most one gentle hop;
+ * wave() = one slow regal raise-and-tilt. Both are interrupt-safe: each
+ * kills any live animation, resets to the base pose and restarts cleanly,
+ * and every public path guards the destroyed state.
  */
 import { Container, FillGradient, Graphics } from "pixi.js";
 import { gsap } from "gsap";
@@ -28,9 +33,9 @@ import { THEME_COLORS } from "./agent.js";
 import { agentFx } from "./fx.js";
 
 export interface MascotApi {
-  /** Bounded ~2.7 s hop-and-wave burst with sparkle marks; restarts cleanly. */
+  /** Bounded ~3 s bow, sparkle and one gentle hop; restarts cleanly. */
   celebrate(): void;
-  /** One full friendly wave cycle. */
+  /** One slow regal raise-and-tilt greeting. */
   wave(): void;
 }
 
@@ -44,15 +49,33 @@ const MASCOT_SCALE = 0.88 * 1.6;
 const PEDESTAL_TOP = 6;
 /** Forward depth bias so the mascot sorts above its own pedestal. */
 const DEPTH_BIAS = 3;
-/** Comic-mark origin above the root: clears the horn tip at 2x y -119. */
-const MARK_OFFSET = 128 * MASCOT_SCALE;
+/** Comic-mark origin above the root: clears the horn tip at 2x y -122. */
+const MARK_OFFSET = 132 * MASCOT_SCALE;
+/** Pale silver-blue from the world's pale-surface family (horn material). */
+const SILVER_BLUE = 0xcfe7f2;
+
+/** Point on a quadratic bezier at t; used for the horn's ridge hints. */
+function quadPoint(
+  p0: { x: number; y: number },
+  c: { x: number; y: number },
+  p1: { x: number; y: number },
+  t: number,
+): { x: number; y: number } {
+  const u = 1 - t;
+  return {
+    x: u * u * p0.x + 2 * u * t * c.x + t * t * p1.x,
+    y: u * u * p0.y + 2 * u * t * c.y + t * t * p1.y,
+  };
+}
 
 type MascotExpression = "happy" | "excited";
 
 export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): MascotApi {
   const pink = THEME_COLORS.uniswap;
   const mint = THEME_COLORS.hyperliquid;
-  const teal = shade(mint, -0.4);
+  // Deep teal mantle tones derived from the venue mint: formal wear, not cape.
+  const mantleShoulder = shade(mint, -0.42);
+  const mantleHem = shade(mint, -0.6);
 
   const root = new Container();
   root.label = "mascot";
@@ -95,26 +118,39 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   const legR = makeLeg(1);
   figure.addChild(legL, legR);
 
-  // --- cape (behind everything): mint -> teal gradient, sways from the neck -
+  // --- mantle (behind everything): deep teal, rounded shoulders, gentle arc
+  // hem. Tailored formal drape that sways once slowly; never a flapping cape.
   const capePivot = new Container();
   capePivot.position.set(0, -52);
-  const cape = new Graphics();
-  const capeGradient = new FillGradient({
+  const mantle = new Graphics();
+  const mantleGradient = new FillGradient({
     type: "linear",
     start: { x: 0.5, y: 0 },
     end: { x: 0.5, y: 1 },
     colorStops: [
-      { offset: 0, color: mint },
-      { offset: 1, color: teal },
+      { offset: 0, color: mantleShoulder },
+      { offset: 1, color: mantleHem },
     ],
     textureSpace: "local",
   });
-  // Herald cape: narrow at the shoulders, flaring to a swallowtail hem.
-  cape.poly([-14, 0, 14, 0, 19, 34, 7, 28, 0, 36, -7, 28, -19, 34]);
-  cape.fill(capeGradient);
-  cape.poly([-14, 0, 14, 0, 19, 34, 7, 28, 0, 36, -7, 28, -19, 34]);
-  cape.stroke({ width: 1.2, color: mint, alpha: 0.55 });
-  capePivot.addChild(cape);
+  const drawMantlePath = (): void => {
+    mantle.moveTo(-15, 0);
+    mantle.quadraticCurveTo(-20, 2, -20.5, 10);
+    mantle.quadraticCurveTo(-21, 22, -16, 30);
+    mantle.quadraticCurveTo(0, 34.5, 16, 30);
+    mantle.quadraticCurveTo(21, 22, 20.5, 10);
+    mantle.quadraticCurveTo(20, 2, 15, 0);
+    mantle.closePath();
+  };
+  drawMantlePath();
+  mantle.fill(mantleGradient);
+  drawMantlePath();
+  mantle.stroke({ width: 1, color: shade(mint, -0.55), alpha: 0.6 });
+  // Hem trim: the single restrained pink accent on the whole figure.
+  mantle.moveTo(-16, 30);
+  mantle.quadraticCurveTo(0, 34.5, 16, 30);
+  mantle.stroke({ width: 1.1, color: shade(pink, -0.28), alpha: 0.8 });
+  capePivot.addChild(mantle);
   body.addChild(capePivot);
 
   // --- torso (agent idiom) ---------------------------------------------------
@@ -128,32 +164,23 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   torso.stroke({ width: 1, color: PALETTE.structureLight, alpha: 0.9 });
   body.addChild(torso);
 
-  // Duo chest emblem: the unicorn loop in pink joined to the blob loop in
-  // mint, pinched at the waist. One mark, both venues.
-  for (const [side, color] of [
-    [-1, pink],
-    [1, mint],
-  ] as const) {
-    torso.circle(2.8 * side, -34, 3.4);
-    torso.fill({ color });
+  // Duo chest emblem, restrained: the unicorn loop joined to the venue loop
+  // as two thin mint outlines with a pinch seam. No fills, no glow.
+  for (const side of [-1, 1] as const) {
+    torso.circle(2.9 * side, -34, 3.6);
+    torso.stroke({ width: 1, color: mint, alpha: 0.8 });
   }
-  torso.circle(-2.8, -34, 3.4);
-  torso.stroke({ width: 1, color: shade(pink, 0.45), alpha: 0.85 });
-  torso.circle(2.8, -34, 3.4);
-  torso.stroke({ width: 1, color: shade(mint, -0.35), alpha: 0.85 });
   torso.moveTo(0, -35.6);
   torso.lineTo(0, -32.4);
-  torso.stroke({ width: 1.2, color: shade(mint, -0.35), alpha: 0.9 });
+  torso.stroke({ width: 1, color: mint, alpha: 0.55 });
+  // Mantle clasp on the collar: the mantle itself drapes behind the torso,
+  // so its closure point is drawn in front, at the neck, in silver-blue.
+  torso.circle(0, -51.5, 1.8);
+  torso.fill({ color: SILVER_BLUE });
+  torso.circle(0, -51.5, 1.8);
+  torso.stroke({ width: 0.8, color: shade(SILVER_BLUE, -0.4), alpha: 0.8 });
 
-  // --- scarf: mint neck band with a short tail over the chest ---------------
-  const scarf = new Graphics();
-  scarf.roundRect(-13, -59, 26, 7, 3.5);
-  scarf.fill({ color: mint });
-  scarf.roundRect(7, -53, 6, 13, 3);
-  scarf.fill({ color: shade(mint, -0.12) });
-  body.addChild(scarf);
-
-  // --- arms (agent idiom; the right arm is the waving arm) -------------------
+  // --- arms (agent idiom; the right arm is the greeting arm) -----------------
   const makeArm = (side: -1 | 1): Container => {
     const arm = new Container();
     arm.position.set(19 * side, -50);
@@ -177,7 +204,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   const shoulderGlow = glow(19, -52, 14, PALETTE.cyan, 0.4);
   body.addChild(shoulderGlow, shoulderLight);
 
-  // --- head / display (agent idiom; screen trim in scarf mint) --------------
+  // --- head / display (agent idiom; screen trim in mint) ---------------------
   const head = new Container();
   head.position.set(0, -56);
   const headG = new Graphics();
@@ -188,47 +215,62 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   headG.roundRect(-17, -40, 34, 32, 6);
   headG.fill({ color: PALETTE.space });
   headG.roundRect(-17, -40, 34, 32, 6);
-  headG.stroke({ width: 1.4, color: mint, alpha: 0.9 });
+  headG.stroke({ width: 1.2, color: mint, alpha: 0.75 });
   head.addChild(headG);
 
-  // Herald horn: taller than the agent-theme horn, seated on the forehead
-  // top, leaning forward. Pink silhouette language, one soft glow at the tip.
+  // Herald horn: slender, gently curved, sweeping slightly back. Pale
+  // silver-blue like the world's pale surfaces, one soft mint glow at the
+  // tip. Deliberately not a party-hat cone: longer than wide, no brights.
   const horn = new Graphics();
-  const hornEdge = shade(pink, 0.45);
-  const hornTip = { x: 7.5, y: -63 };
-  horn.moveTo(-2, -47);
-  horn.lineTo(12, -47);
-  horn.lineTo(hornTip.x, hornTip.y);
-  horn.closePath();
-  horn.fill({ color: shade(pink, 0.18) });
-  horn.moveTo(-2, -47);
-  horn.lineTo(12, -47);
-  horn.lineTo(hornTip.x, hornTip.y);
-  horn.closePath();
-  horn.stroke({ width: 1.4, color: hornEdge });
-  for (const t of [0.35, 0.6, 0.8] as const) {
-    const lx = -2 + (hornTip.x + 2) * t;
-    const rx = 12 + (hornTip.x - 12) * t;
-    const yy = -47 + (hornTip.y + 47) * t;
-    horn.moveTo(lx, yy);
-    horn.lineTo(rx, yy);
-    horn.stroke({ width: 1, color: hornEdge, alpha: 0.75 });
+  const hornEdge = shade(SILVER_BLUE, -0.38);
+  const hornBaseFront = { x: 9, y: -46.5 };
+  const hornBaseBack = { x: 1, y: -46.5 };
+  const hornTip = { x: -2.5, y: -66 };
+  const hornFrontCtrl = { x: 8.2, y: -57.5 };
+  const hornBackCtrl = { x: -1.8, y: -56 };
+  const drawHornPath = (): void => {
+    horn.moveTo(hornBaseFront.x, hornBaseFront.y);
+    horn.quadraticCurveTo(hornFrontCtrl.x, hornFrontCtrl.y, hornTip.x, hornTip.y);
+    horn.quadraticCurveTo(hornBackCtrl.x, hornBackCtrl.y, hornBaseBack.x, hornBaseBack.y);
+    horn.closePath();
+  };
+  drawHornPath();
+  horn.fill({ color: SILVER_BLUE });
+  drawHornPath();
+  horn.stroke({ width: 1.1, color: hornEdge });
+  // Two subtle ridge hints so the curve reads as a polished horn, not a spike.
+  for (const t of [0.35, 0.65] as const) {
+    const f = quadPoint(hornBaseFront, hornFrontCtrl, hornTip, t);
+    const b = quadPoint(hornBaseBack, hornBackCtrl, hornTip, t);
+    horn.moveTo(f.x, f.y);
+    horn.lineTo(b.x, b.y);
+    horn.stroke({ width: 0.9, color: hornEdge, alpha: 0.5 });
   }
   head.addChild(horn);
-  head.addChild(glow(hornTip.x, hornTip.y, 26, pink, 0.42));
+  head.addChild(glow(hornTip.x, hornTip.y, 9, mint, 0.3));
 
-  // Mane: a longer herald strip along the back rim, three strands. Kept
-  // between y -40 and -10 where the casing rim is straight/nearly so the
-  // strip stays attached (the rounded corners pull the rim inward past that).
-  const mane = new Graphics();
-  mane.roundRect(-25.5, -40, 6, 30, 3);
-  mane.fill({ color: shade(pink, 0.08) });
-  for (const dx of [-2, 0, 2] as const) {
-    mane.moveTo(-23.5 + dx, -38);
-    mane.quadraticCurveTo(-24.5 + dx, -26, -23.5 + dx, -12);
-    mane.stroke({ width: 1, color: hornEdge, alpha: 0.8 });
-  }
-  head.addChild(mane);
+  // Crest: a short swept crest along the head's top-back in deep structural
+  // blue with a single mint streak. Reads as sculpted headgear, not hair.
+  // The base hugs the rim (~1.5 units inside the casing top, past the point
+  // where the rounded corner starts pulling the rim inward).
+  const crest = new Graphics();
+  const drawCrestPath = (): void => {
+    crest.moveTo(-3, -46.5);
+    crest.quadraticCurveTo(-9, -56.5, -20, -58.5);
+    crest.quadraticCurveTo(-15, -53, -16.5, -46);
+    crest.closePath();
+  };
+  drawCrestPath();
+  crest.fill({ color: PALETTE.structureLight });
+  drawCrestPath();
+  crest.stroke({ width: 1, color: shade(PALETTE.structureLight, 0.3), alpha: 0.7 });
+  crest.moveTo(-5, -47.5);
+  crest.quadraticCurveTo(-9, -55, -17.5, -57);
+  crest.stroke({ width: 1.2, color: mint, alpha: 0.75 });
+  crest.moveTo(-4.2, -47);
+  crest.quadraticCurveTo(-7.5, -53.5, -14.5, -55);
+  crest.stroke({ width: 1, color: shade(PALETTE.structureLight, 0.25), alpha: 0.6 });
+  head.addChild(crest);
 
   // face layer: redrawn only by drawFace; blink scales it (agent idiom).
   const face = new Container();
@@ -240,7 +282,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   const drawFace = (expr: MascotExpression): void => {
     faceG.clear();
     const excited = expr === "excited";
-    const { rx, ry } = excited ? { rx: 6.4, ry: 7.6 } : { rx: 5.4, ry: 6.4 };
+    const { rx, ry } = excited ? { rx: 6, ry: 7 } : { rx: 5.2, ry: 6.1 };
     for (const side of [-1, 1] as const) {
       const cx = 8 * side;
       faceG.ellipse(cx, -27, rx, ry);
@@ -248,14 +290,10 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
       faceG.circle(cx, -27 - 0.4, 2.1);
       faceG.fill({ color: PALETTE.space });
     }
-    if (excited) {
-      faceG.ellipse(0, -14, 3.4, 4);
-      faceG.fill({ color: PALETTE.ink });
-    } else {
-      faceG.moveTo(-8, -13);
-      faceG.quadraticCurveTo(0, -8.8, 8, -13);
-      faceG.stroke({ width: 2.2, color: PALETTE.ink, alpha: 0.95 });
-    }
+    // Calm, slightly smiling by default; a touch more curve when excited.
+    faceG.moveTo(-8, -13);
+    faceG.quadraticCurveTo(0, excited ? -9.4 : -10.4, 8, -13);
+    faceG.stroke({ width: 2, color: PALETTE.ink, alpha: 0.95 });
   };
 
   // -------------------------------------------------------------------------
@@ -264,8 +302,8 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   let disposed = false;
   const alive = (): boolean => !disposed && !root.destroyed;
 
-  /** Resting wave-arm angle; reduced motion holds a friendlier half-raise. */
-  const restArmR = ctx.reducedMotion ? -1.05 : -0.12;
+  /** Resting greeting-arm angle; reduced motion holds a composed half-raise. */
+  const restArmR = ctx.reducedMotion ? -0.6 : -0.12;
 
   let waveLoop: gsap.core.Timeline | null = null;
   let bobTween: gsap.core.Tween | null = null;
@@ -284,6 +322,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     body.y = 0;
     body.rotation = 0;
     figure.scale.set(1);
+    head.rotation = 0;
     armL.rotation = 0.12;
     armR.rotation = restArmR;
     capePivot.rotation = 0;
@@ -302,27 +341,25 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   const startIdle = (): void => {
     if (!alive() || ctx.reducedMotion) return;
     killIdle();
-    // Friendly wave loop: raise, three oscillations, lower, rest (~6 s cycle).
-    waveLoop = gsap.timeline({ repeat: -1, repeatDelay: 3.2 });
-    waveLoop.to(armR, { rotation: -2.1, duration: 0.45, ease: "back.out(1.6)" });
-    waveLoop.to(armR, {
-      rotation: -1.72,
-      duration: 0.42,
-      ease: "sine.inOut",
-      yoyo: true,
-      repeat: 3,
-    });
-    waveLoop.to(armR, { rotation: restArmR, duration: 0.5, ease: "sine.inOut" });
+    // Graceful wave loop: slow raise with a slight head tilt, one gentle
+    // sway, slow lower, long rest (~8 s cycle). Reads as a regal greeting.
+    waveLoop = gsap.timeline({ repeat: -1, repeatDelay: 4.2 });
+    waveLoop.to(armR, { rotation: -1.9, duration: 0.8, ease: "sine.inOut" });
+    waveLoop.to(head, { rotation: 0.07, duration: 0.8, ease: "sine.inOut" }, 0);
+    waveLoop.to(armR, { rotation: -1.66, duration: 1.15, ease: "sine.inOut" });
+    waveLoop.to(armR, { rotation: -1.9, duration: 1.15, ease: "sine.inOut" });
+    waveLoop.to(armR, { rotation: restArmR, duration: 0.9, ease: "sine.inOut" });
+    waveLoop.to(head, { rotation: 0, duration: 0.9, ease: "sine.inOut" }, "<");
     bobTween = gsap.to(body, {
-      y: -3.5,
-      duration: 1.8,
+      y: -2.2,
+      duration: 2.8,
       ease: "sine.inOut",
       yoyo: true,
       repeat: -1,
     });
     capeTween = gsap.to(capePivot, {
-      rotation: 0.055,
-      duration: 2.6,
+      rotation: 0.035,
+      duration: 3.6,
       ease: "sine.inOut",
       yoyo: true,
       repeat: -1,
@@ -342,7 +379,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   const celebrate = (): void => {
     if (!beginAct()) return;
     if (ctx.reducedMotion) {
-      // Single expression brighten + one static mark; no hops, no oscillation.
+      // Single expression brighten + one static mark; no bow, no hop.
       drawFace("excited");
       sparkle();
       burstAnim = gsap.delayedCall(0.9, () => {
@@ -358,26 +395,22 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
         startIdle();
       },
     });
-    tl.call(() => drawFace("excited"));
-    // Hop 1: anticipation dip, jump, land squash with elastic recovery.
-    tl.to(body, { y: 3, duration: 0.08, ease: "sine.in" });
-    tl.to(body, { y: -22, duration: 0.2, ease: "power2.out" });
-    tl.call(sparkle, undefined, "<0.1");
-    tl.to(body, { y: 0, duration: 0.2, ease: "power2.in" });
-    tl.to(figure.scale, { y: 0.87, x: 1.1, duration: 0.08, ease: "power2.out" }, "<");
-    tl.to(figure.scale, { y: 1, x: 1, duration: 0.4, ease: "elastic.out(1.6, 0.45)" });
-    // Fast wave through the recovery beat.
-    tl.to(armR, { rotation: -2.2, duration: 0.22, ease: "back.out(2)" }, "<-0.05");
-    tl.to(armR, { rotation: -1.8, duration: 0.3, ease: "sine.inOut", yoyo: true, repeat: 2 }, "<");
-    tl.to(armR, { rotation: restArmR, duration: 0.3, ease: "sine.inOut" });
-    // Hop 2: smaller echo hop so the burst reads as a double beat.
-    tl.to(body, { y: 2, duration: 0.07, ease: "sine.in" });
-    tl.to(body, { y: -16, duration: 0.18, ease: "power2.out" });
+    // Dignified bow: the body folds forward over the planted feet while the
+    // right arm sweeps across the waist (a presenting gesture, not a wave).
+    tl.to(body, { rotation: 0.24, y: 2.5, duration: 0.55, ease: "power2.inOut" });
+    tl.to(armR, { rotation: 0.62, duration: 0.5, ease: "sine.out" }, "<");
+    tl.to({}, { duration: 0.55 }); // hold the bow
     tl.call(sparkle);
-    tl.to(body, { y: 0, duration: 0.18, ease: "power2.in" });
-    tl.to(figure.scale, { y: 0.9, x: 1.07, duration: 0.07, ease: "power2.out" }, "<");
-    tl.to(figure.scale, { y: 1, x: 1, duration: 0.4, ease: "elastic.out(1.8, 0.4)" });
-    tl.to(armR, { rotation: restArmR, duration: 0.3, ease: "sine.inOut" }, "<");
+    tl.to(body, { rotation: 0, y: 0, duration: 0.6, ease: "power2.inOut" });
+    tl.to(armR, { rotation: restArmR, duration: 0.55, ease: "sine.inOut" }, "<");
+    // One gentle hop only: small anticipation dip, modest rise, soft settle
+    // (sine recovery, no cartoon elastic).
+    tl.to(body, { y: 2, duration: 0.12, ease: "sine.in" });
+    tl.call(() => drawFace("excited"));
+    tl.to(body, { y: -11, duration: 0.28, ease: "power2.out" });
+    tl.to(body, { y: 0, duration: 0.26, ease: "power2.in" });
+    tl.to(figure.scale, { y: 0.93, x: 1.05, duration: 0.08, ease: "power2.out" }, "<");
+    tl.to(figure.scale, { y: 1, x: 1, duration: 0.45, ease: "sine.out" });
     burstAnim = tl;
   };
 
@@ -385,7 +418,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     if (!beginAct()) return;
     if (ctx.reducedMotion) {
       // Static raised-arm pose with a brief hold; self-reverting.
-      armR.rotation = -1.9;
+      armR.rotation = -1.6;
       burstAnim = gsap.delayedCall(0.9, () => {
         burstAnim = null;
         if (alive()) armR.rotation = restArmR;
@@ -398,9 +431,14 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
         startIdle();
       },
     });
-    tl.to(armR, { rotation: -2.15, duration: 0.4, ease: "back.out(1.7)" });
-    tl.to(armR, { rotation: -1.75, duration: 0.38, ease: "sine.inOut", yoyo: true, repeat: 3 });
-    tl.to(armR, { rotation: restArmR, duration: 0.45, ease: "sine.inOut" });
+    // One regal greeting: slow raise with a slight head tilt, one gentle
+    // sway, slow lower.
+    tl.to(armR, { rotation: -1.9, duration: 0.85, ease: "sine.inOut" });
+    tl.to(head, { rotation: 0.07, duration: 0.85, ease: "sine.inOut" }, 0);
+    tl.to(armR, { rotation: -1.66, duration: 1.2, ease: "sine.inOut" });
+    tl.to(armR, { rotation: -1.9, duration: 1.2, ease: "sine.inOut" });
+    tl.to(armR, { rotation: restArmR, duration: 1, ease: "sine.inOut" });
+    tl.to(head, { rotation: 0, duration: 1, ease: "sine.inOut" }, "<");
     burstAnim = tl;
   };
 
@@ -409,12 +447,13 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
   ctx.layers.sortable.addChild(root);
 
   if (ctx.reducedMotion) {
-    // Static friendly pose: arm half-raised in greeting, no loops at all.
+    // Static composed pose: arm in a calm half-raise, no loops at all.
     armR.rotation = restArmR;
   } else {
     startIdle();
-    // Blink cadence independent of bursts so the face never freezes.
-    blinkLoop = gsap.timeline({ repeat: -1, repeatDelay: 3.6 });
+    // Blink cadence independent of bursts so the face never freezes; rare
+    // enough to preserve the statue read.
+    blinkLoop = gsap.timeline({ repeat: -1, repeatDelay: 4.6 });
     blinkLoop.to(face.scale, {
       y: 0.08,
       duration: 0.07,
@@ -429,7 +468,7 @@ export function buildMascot(ctx: DioramaContext, at: { x: number; y: number }): 
     burstAnim?.kill();
     killIdle();
     blinkLoop?.kill();
-    gsap.killTweensOf([body, figure.scale, armL, armR, capePivot, face.scale, legL, legR]);
+    gsap.killTweensOf([body, figure.scale, head, armL, armR, capePivot, face.scale, legL, legR]);
     root.destroy({ children: true });
   });
 
