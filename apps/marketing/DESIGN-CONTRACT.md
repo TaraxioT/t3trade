@@ -76,6 +76,8 @@ Adding a beat re-times the whole story consistently or it is rejected.
 ## Stack rules
 - Astro. No React, no GSAP, no Motion, no animation library. Native CSS
   scroll-driven animations (`animation-timeline: view()` / `scroll()`).
+  The diorama route is the one sanctioned exception; see "Diorama route
+  exception (/diorama)" below.
 - `window.addEventListener("scroll", ...)` is banned. So is any scroll position
   read into JS state.
 - `cssMinify: false` in `astro.config.mjs` is deliberate. The minifier folds
@@ -88,6 +90,22 @@ Adding a beat re-times the whole story consistently or it is rejected.
   the release lookup, the Hyperliquid tape, and the section minimap rail (an
   IntersectionObserver-driven nav; observing sections is not a scroll-position
   read, so the scroll-listener ban still holds).
+
+## Diorama route exception (/diorama)
+The `/diorama` route renders an interactive canvas diorama and is exempt from
+the stack rules above in a contained way:
+
+- It may use PixiJS, pixi-viewport, GSAP, and Howler, loaded exclusively via
+  dynamic import from the diorama route's own module graph.
+- The landing page's shipped JS budget stays byte-identical (under 12 kB
+  gzipped); no pixi, gsap, howler, or pixi-viewport bytes may reach any other
+  route or a shared chunk.
+- Canvas interactions are pointer-driven (pointer, wheel, pinch). The scroll
+  listener ban still applies in full: no `scroll` event listeners anywhere.
+- `prefers-reduced-motion: reduce` lands on a composed, readable campus frame
+  with calmer motion, never a blank canvas.
+- Signage inside the diorama remains real Pixi text, never baked into
+  graphics, so words stay crisp, selectable by tools, and localizable.
 
 ## Working rules
 - Marketing dev server: `pnpm --filter @t3tools/marketing dev --port 4180`.
