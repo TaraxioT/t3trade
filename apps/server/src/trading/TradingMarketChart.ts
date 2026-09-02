@@ -47,6 +47,11 @@ import {
 } from "@t3tools/trading-contracts/thesis";
 import { TradingEventService } from "./TradingEventService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
+import {
+  aggregateDailyBars,
+  aggregationBucketStart,
+  aggregationSourceCeiling,
+} from "./chartAggregation.ts";
 import { archiveDatabasePath } from "./archive/config.ts";
 import { archiveOwnershipRefusal } from "./TradingRuntimeLease.ts";
 import { composeReport, TradingThesisValidationService } from "./TradingThesisValidationService.ts";
@@ -127,6 +132,44 @@ const GATEWAY_INTERVALS = new Set<TradingChartInterval>(["1m", "3m", "5m", "15m"
 const isGatewayInterval = (
   interval: TradingChartInterval,
 ): interval is "1m" | "3m" | "5m" | "15m" | "1h" => GATEWAY_INTERVALS.has(interval);
+
+/**
+ * The chart-only intervals served by folding archived daily bars. Never
+ * requested from the exchange and never stored: the gateway stops at `1h`
+ * (see `GATEWAY_INTERVALS`), so the aggregation path below is their only
+ * source, and an archive that cannot serve them fails the read like every
+ * other archive-only interval.
+ */
+const AGGREGATED_INTERVALS = new Set<TradingChartInterval>(["1w", "1mo"]);
+
+const isAggregatedInterval = (interval: TradingChartInterval): interval is "1w" | "1mo" =>
+  AGGREGATED_INTERVALS.has(interval);
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Fixed range windows: the chart's HISTORY span, resolved from the server's
+ * clock. These names collide with interval names but are not interval widths —
+ * range `1w` is a week of history whatever interval draws it, and range `1m`
+ * is a calendar month of it (not one 1m bar's width). `ytd` and `all` resolve
+ * per read: `ytd` from the current UTC year, `all` from what the archive
+ * actually holds.
+ */
+const RANGE_WINDOW_FROM: Readonly<
+  Record<Exclude<TradingChartRange, "all">, (now: number) => number>
+> = {
+  "1d": (now) => now - DAY_MS,
+  "1w": (now) => now - 7 * DAY_MS,
+  "1m": (now) => now - 30 * DAY_MS,
+  "6m": (now) => now - 183 * DAY_MS,
+  ytd: (now) =>
+    DateTime.makeUnsafe({
+      year: DateTime.toPartsUtc(DateTime.makeUnsafe(now)).year,
+      month: 1,
+      day: 1,
+    }).epochMilliseconds,
+  "1y": (now) => now - 365 * DAY_MS,
+};
 
 /**
  * How far behind "now" the newest archived bar may trail before a latest-bars
@@ -296,7 +339,7 @@ export const makeTradingMarketChart = Effect.gen(function* () {
 
   const read = (input: TradingMarketChartReadInput): Effect.Effect<TradingMarketChartView | null> =>
     Effect.gen(function* () {
-      const { market, interval, maxBars, startTime, endTime } = input;
+      const { market, interval, maxBars, range, startTime, endTime } = input;
       // The read gate: a writer lock nobody can parse is the one archive
       // state where serving data would be serving a guess about who owns the
       // file, so the chart refuses rather than renders. Every other state
@@ -313,8 +356,9 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       // a closed trade and the live chart of the same market/interval are
       // different series, and sharing a cache entry would serve one as the
       // other. `maxBars` is part of it too — a 360-bar read and a 120-bar
-      // read of the same series are different answers.
-      const key = `${market}:${interval}:${maxBars}:${startTime ?? ""}:${endTime ?? ""}`;
+      // read of the same series are different answers — and so is `range`,
+      // which resolves to a different window on the server.
+      const key = `${market}:${interval}:${maxBars}:${startTime ?? ""}:${endTime ?? ""}:${range ?? ""}`;
       const now = yield* Clock.currentTimeMillis;
       const cached = (yield* Ref.get(cache)).get(key);
       if (cached !== undefined && now - cached.readAt < CACHE_WINDOW_MS) return cached.view;
@@ -335,17 +379,46 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       // collector writes followed markets continuously, so a stale tail means
       // it is not recording and the exchange answers instead. `4h`/`1d` have
       // no exchange path here (the gateway stops at `1h`), so for those the
-      // archive is the only source and an empty answer fails the read.
+      // archive is the only source and an empty answer fails the read — and
+      // `1w`/`1mo` are the same, one step removed: they fold the daily record.
       const intervalMillis = INTERVAL_MILLIS[interval];
       const windowed = startTime !== undefined && endTime !== undefined;
-      const windowFrom = windowed ? startTime : now - maxBars * intervalMillis;
+      const aggregated = isAggregatedInterval(interval);
+
+      // A live read's window start: the default latest-bars span, narrowed by
+      // a range when one is named. Ranges resolve HERE because two of them are
+      // unknowable on the client — `ytd` needs the server's clock, and `all`
+      // is defined by what the archive recorded for this market. A windowed
+      // read names its own span and ignores `range` entirely.
+      const defaultFrom = now - maxBars * intervalMillis;
+      const rangeStart =
+        range === undefined || windowed
+          ? null
+          : range === "all"
+            ? (yield* archive.coverage({
+                coin: market,
+                // `all` at 1w/1mo spans what the DAILY record holds — the
+                // aggregation source — not an interval nothing records.
+                interval: aggregated ? "1d" : interval,
+                fromT: 0,
+                toT: now,
+              })).recordingSince
+            : RANGE_WINDOW_FROM[range](now);
+      const windowFrom = windowed ? startTime : (rangeStart ?? defaultFrom);
       const windowTo = windowed ? endTime : now;
+
+      // The source read for a weekly/monthly chart is the DAILY record, from
+      // the window start aligned DOWN to its bucket boundary (so the first
+      // partial bucket is honest), bounded by a ceiling derived from the
+      // output cap. The RPC's bar cap limits OUTPUT buckets and must not clip
+      // the source read: the archive keeps the NEWEST bars when it cuts, so a
+      // prematurely capped read would silently drop the oldest buckets.
       const archived = yield* archive.candlesInWindow({
         coin: market,
-        interval,
-        fromT: windowFrom,
+        interval: aggregated ? "1d" : interval,
+        fromT: aggregated ? aggregationBucketStart(interval, windowFrom) : windowFrom,
         toT: windowTo,
-        maxBars,
+        maxBars: aggregated ? aggregationSourceCeiling(interval, maxBars) : maxBars,
       });
       const newestClose = archived.length > 0 ? archived[archived.length - 1]!.tClose : null;
       const archiveServes =
@@ -354,16 +427,34 @@ export const makeTradingMarketChart = Effect.gen(function* () {
           (newestClose !== null && now - newestClose <= ARCHIVE_FRESH_BARS * intervalMillis));
 
       const history: { candles: ReadonlyArray<TradingChartCandle> } | null = archiveServes
-        ? {
-            candles: archived.map((bar) => ({
-              openTime: bar.t,
-              open: bar.o,
-              high: bar.h,
-              low: bar.l,
-              close: bar.c,
-              volume: bar.v,
-            })),
-          }
+        ? aggregated
+          ? {
+              // The output cap applies to the aggregated buckets, after the
+              // fold — newest buckets win, exactly as the archive's own cap
+              // behaves for stored bars.
+              candles: aggregateDailyBars({
+                bars: archived.map((bar) => ({
+                  t: bar.t,
+                  o: bar.o,
+                  h: bar.h,
+                  l: bar.l,
+                  c: bar.c,
+                  v: bar.v,
+                })),
+                kind: interval,
+                maxBars,
+              }),
+            }
+          : {
+              candles: archived.map((bar) => ({
+                openTime: bar.t,
+                open: bar.o,
+                high: bar.h,
+                low: bar.l,
+                close: bar.c,
+                volume: bar.v,
+              })),
+            }
         : isGatewayInterval(interval)
           ? yield* gateway
               .getMarketHistory({
@@ -406,18 +497,23 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       }
 
       // Coverage and session levels are decoration, never a reason to fail:
-      // both come from the archive alone and degrade to absence.
+      // both come from the archive alone and degrade to absence. A weekly or
+      // monthly chart decorates from the DAILY record's coverage — gaps stay
+      // at daily resolution so a bucket that bridges a known daily gap is
+      // shaded honestly, and nothing here re-times or merges them.
       const coverage = yield* archive.coverage({
         coin: market,
-        interval,
+        interval: aggregated ? "1d" : interval,
         fromT: windowFrom,
         toT: windowTo,
       });
       // "Prior day" and "today" are anchored at now, so a post-mortem window
-      // from last week must not carry them — they would be the wrong day's.
-      const sessionLevels = windowed
-        ? null
-        : toWireSessionLevels(yield* archive.sessionLevels({ coin: market, now }));
+      // from last week must not carry them — they would be the wrong day's —
+      // and a multi-week chart has no single "today" for its context either.
+      const sessionLevels =
+        windowed || aggregated
+          ? null
+          : toWireSessionLevels(yield* archive.sessionLevels({ coin: market, now }));
 
       // The thesis being validated on this market, when there is one. Read
       // last and never allowed to fail the chart: a validation is decoration

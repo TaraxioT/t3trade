@@ -19,6 +19,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
+import type { TradingChartRange } from "@t3tools/contracts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type {
   AgentMarketSnapshot,
@@ -831,4 +832,409 @@ it.effect("derives the thesis's event bands: window overlap, the next date, newe
       ),
     ),
   );
+});
+
+// -- ranges and the chart-only weekly/monthly intervals ------------------------
+//
+// A range names a HISTORY span the server resolves (the client cannot know
+// `ytd`'s clock or `all`'s archive depth), and `1w`/`1mo` are served by folding
+// the archive's daily record — never by asking the exchange. The doubles below
+// mirror the real archive's contract: `candlesInWindow` keeps the NEWEST bars
+// when it must cut, and `coverage` never refuses.
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+/** One recorded daily bar at a UTC calendar day, priced by `price`. */
+interface DailyBarRow {
+  readonly coin: string;
+  readonly interval: string;
+  readonly t: number;
+  readonly tClose: number;
+  readonly o: number;
+  readonly h: number;
+  readonly l: number;
+  readonly c: number;
+  readonly v: number;
+  readonly n: number;
+}
+
+/** Daily bars for every UTC day from `start` (a UTC midnight), one per day. */
+const dailyRun = (start: number, count: number): ReadonlyArray<DailyBarRow> =>
+  Array.from({ length: count }, (_, i) => {
+    const t = start + i * DAY_MS;
+    const price = 100 + i;
+    return {
+      coin: "ETH",
+      interval: "1d",
+      t,
+      tClose: t + DAY_MS - 1,
+      o: price,
+      h: price + 2,
+      l: price - 3,
+      c: price + 1,
+      v: 10,
+      n: 1,
+    };
+  });
+
+interface ChartWindowCall {
+  readonly coin: string;
+  readonly interval: string;
+  readonly fromT: number;
+  readonly toT: number;
+  readonly maxBars: number;
+}
+
+interface ChartCoverageCall {
+  readonly coin: string;
+  readonly interval: string;
+  readonly fromT: number;
+  readonly toT: number;
+}
+
+/**
+ * An archive double that records every call and serves the configured daily
+ * bars with the real service's own semantics: filtered to the asked window,
+ * then cut to the NEWEST `maxBars` when the window holds more.
+ */
+const recordingArchive = (options: {
+  readonly bars: ReadonlyArray<DailyBarRow>;
+  readonly coverage: {
+    recordingSince: number | null;
+    gaps: ReadonlyArray<{ fromT: number; toT: number }>;
+  };
+  /**
+   * Die on session-level reads instead of answering — for the cases that must
+   * not ask (a live 1d read legitimately does; weekly/monthly ones must not).
+   */
+  readonly forbidSessionLevels?: boolean;
+}) => {
+  const windowCalls: Array<ChartWindowCall> = [];
+  const coverageCalls: Array<ChartCoverageCall> = [];
+  const layer = Layer.succeed(TradingMarketArchive, {
+    candlesInWindow: (input: ChartWindowCall) => {
+      windowCalls.push(input);
+      const inWindow = options.bars.filter((bar) => bar.t >= input.fromT && bar.t <= input.toT);
+      return Effect.succeed(
+        inWindow.length <= input.maxBars
+          ? inWindow
+          : inWindow.slice(inWindow.length - input.maxBars),
+      );
+    },
+    coverage: (input: ChartCoverageCall) => {
+      coverageCalls.push(input);
+      return Effect.succeed(options.coverage);
+    },
+    sessionLevels:
+      options.forbidSessionLevels === true
+        ? () => Effect.die("these reads must not ask for session levels")
+        : () => Effect.succeed({ status: "unavailable" as const, reason: "no rows" }),
+  } as unknown as (typeof TradingMarketArchive)["Service"]);
+  return { layer, windowCalls, coverageCalls };
+};
+
+/** The chart layer on the stub gateway plus a case-specific archive double. */
+const withArchive = (archiveLayer: Layer.Layer<TradingMarketArchive>) =>
+  Effect.provide(
+    Layer.merge(
+      TradingMarketChartLive.pipe(
+        Layer.provide(Layer.mergeAll(stubGateway, archiveLayer, noValidations)),
+        Layer.provideMerge(TradingEventServiceLive),
+        Layer.provideMerge(NodeSqliteClient.layerMemory()),
+        Layer.provideMerge(NodeServices.layer),
+      ),
+      TestClock.layer(),
+    ),
+  );
+
+it.effect(
+  "a 1w read folds the daily record into Monday buckets without touching the exchange",
+  () => {
+    // Wednesday, 10 March 2027, 12:00 UTC. Range 1m reaches back to Monday 8
+    // February (30 days), and the running week holds Mon-Wed of 8-10 March.
+    const now = Date.UTC(2027, 2, 10, 12);
+    const feb8 = Date.UTC(2027, 1, 8);
+    const knownGap = { fromT: Date.UTC(2027, 1, 16), toT: Date.UTC(2027, 1, 17) };
+    const archive = recordingArchive({
+      bars: dailyRun(feb8, 31),
+      coverage: { recordingSince: feb8, gaps: [knownGap] },
+      forbidSessionLevels: true,
+    });
+
+    return Effect.gen(function* () {
+      snapshotRead = Effect.succeed(snapshot);
+      historyRead = Effect.succeed(history);
+      historyCalls = 0;
+      yield* TestClock.adjust(Duration.millis(now));
+
+      const chart = yield* TradingMarketChart;
+      const view = yield* chart.read({ market: "ETH", interval: "1w", maxBars: 8, range: "1m" });
+
+      assert.isNotNull(view);
+      assert.equal(historyCalls, 0, "a weekly chart never reaches the exchange");
+      // The source read is the DAILY record: window start aligned down to its
+      // Monday, bounded by the derived ceiling — never the output cap.
+      assert.deepEqual(archive.windowCalls, [
+        {
+          coin: "ETH",
+          interval: "1d",
+          fromT: feb8,
+          toT: now,
+          maxBars: (8 + 1) * 7 + 1,
+        },
+      ]);
+      assert.equal(view?.interval, "1w");
+      // Five buckets: Feb 8, Feb 15, Feb 22, Mar 1, and the running week Mar 8.
+      assert.deepEqual(
+        view?.candles.map((candle) => candle.openTime),
+        [
+          feb8,
+          Date.UTC(2027, 1, 15),
+          Date.UTC(2027, 1, 22),
+          Date.UTC(2027, 2, 1),
+          Date.UTC(2027, 2, 8),
+        ],
+      );
+      // First bucket folds its seven days: first open, max high, min low, last
+      // close, summed volume (daily prices are 100, 101, … 106).
+      assert.deepEqual(view?.candles[0], {
+        openTime: feb8,
+        open: 100,
+        high: 108,
+        low: 97,
+        close: 107,
+        volume: 70,
+      });
+      // The running week holds only its three closed days so far.
+      assert.deepEqual(view?.candles[4], {
+        openTime: Date.UTC(2027, 2, 8),
+        open: 128,
+        high: 132,
+        low: 125,
+        close: 131,
+        volume: 30,
+      });
+      // The daily record's coverage decorates the view unchanged: the gap keeps
+      // its daily bounds, and recordingSince says when the daily record began.
+      assert.equal(view?.recordingSince, feb8);
+      assert.deepEqual(view?.gaps, [knownGap]);
+      assert.equal(
+        archive.coverageCalls.every((call) => call.interval === "1d"),
+        true,
+      );
+      assert.equal(view?.sessionLevels, undefined);
+    }).pipe(withArchive(archive.layer));
+  },
+);
+
+it.effect("a 1mo read buckets on calendar months and caps output after aggregation", () => {
+  // Same Wednesday. Range 6m reaches back to Tue 8 Sep 2026 12:00, which the
+  // monthly alignment takes down to 1 September — an honest partial bucket.
+  const now = Date.UTC(2027, 2, 10, 12);
+  const archive = recordingArchive({
+    bars: dailyRun(Date.UTC(2026, 8, 7), 185),
+    coverage: { recordingSince: Date.UTC(2026, 8, 7), gaps: [] },
+    forbidSessionLevels: true,
+  });
+
+  return Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    historyCalls = 0;
+    yield* TestClock.adjust(Duration.millis(now));
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({ market: "ETH", interval: "1mo", maxBars: 12, range: "6m" });
+
+    assert.isNotNull(view);
+    assert.equal(historyCalls, 0, "a monthly chart never reaches the exchange");
+    assert.deepEqual(
+      archive.windowCalls.map((call) => ({ interval: call.interval, maxBars: call.maxBars })),
+      [{ interval: "1d", maxBars: (12 + 1) * 31 + 1 }],
+    );
+    // Sep (partial, from the aligned Monday the 7th) through the running March.
+    assert.deepEqual(
+      view?.candles.map((candle) => candle.openTime),
+      [
+        Date.UTC(2026, 8, 1),
+        Date.UTC(2026, 9, 1),
+        Date.UTC(2026, 10, 1),
+        Date.UTC(2026, 11, 1),
+        Date.UTC(2027, 0, 1),
+        Date.UTC(2027, 1, 1),
+        Date.UTC(2027, 2, 1),
+      ],
+    );
+    // February folds exactly its 28 days (Feb 1 is the run's 147th bar).
+    assert.deepEqual(view?.candles[5], {
+      openTime: Date.UTC(2027, 1, 1),
+      open: 247,
+      high: 276,
+      low: 244,
+      close: 275,
+      volume: 280,
+    });
+
+    // maxBars 3: the source ceiling shrinks, and the OUTPUT cap then keeps the
+    // newest three months — the oldest are dropped after aggregation.
+    const capped = yield* chart.read({ market: "ETH", interval: "1mo", maxBars: 3, range: "6m" });
+    assert.deepEqual(
+      capped?.candles.map((candle) => candle.openTime),
+      [Date.UTC(2027, 0, 1), Date.UTC(2027, 1, 1), Date.UTC(2027, 2, 1)],
+    );
+  }).pipe(withArchive(archive.layer));
+});
+
+it.effect("resolves each range to its server-side window start", () => {
+  const now = Date.UTC(2027, 2, 10, 12);
+  const coverage = {
+    recordingSince: null as number | null,
+    gaps: [] as ReadonlyArray<{ fromT: number; toT: number }>,
+  };
+  const archive = recordingArchive({ bars: dailyRun(Date.UTC(2026, 8, 7), 185), coverage });
+
+  return Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    historyCalls = 0;
+    yield* TestClock.adjust(Duration.millis(now));
+
+    const chart = yield* TradingMarketChart;
+    const fromTOf = (range?: TradingChartRange) =>
+      chart
+        .read({
+          market: "ETH",
+          interval: "1d",
+          maxBars: 30,
+          ...(range !== undefined ? { range } : {}),
+        })
+        .pipe(
+          Effect.tap((view) => Effect.sync(() => assert.isNotNull(view))),
+          Effect.map(() => archive.windowCalls[archive.windowCalls.length - 1]?.fromT),
+        );
+
+    assert.equal(yield* fromTOf("1w"), now - 7 * DAY_MS);
+    assert.equal(yield* fromTOf("1m"), now - 30 * DAY_MS);
+    assert.equal(yield* fromTOf("6m"), now - 183 * DAY_MS);
+    assert.equal(yield* fromTOf("1y"), now - 365 * DAY_MS);
+    // ytd is 00:00:00 UTC of the current year, not a rolling 12 months.
+    assert.equal(yield* fromTOf("ytd"), Date.UTC(2027, 0, 1));
+    // No range: the latest-bars default, as before.
+    assert.equal(yield* fromTOf(), now - 30 * DAY_MS);
+
+    // `all` is the archive's oldest bar for the market, asked of coverage.
+    coverage.recordingSince = Date.UTC(2026, 8, 7);
+    assert.equal(yield* fromTOf("all"), Date.UTC(2026, 8, 7));
+    assert.equal(
+      archive.coverageCalls.some((call) => call.fromT === 0 && call.interval === "1d"),
+      true,
+      "`all` resolves from a whole-history coverage read",
+    );
+    // Nothing recorded yet: `all` falls back to the default window. The cache
+    // window must close first — the previous `all` answer is still being
+    // served, which is the service's contract, not a bug.
+    coverage.recordingSince = null;
+    yield* TestClock.adjust(Duration.seconds(6));
+    assert.equal(yield* fromTOf("all"), now + 6_000 - 30 * DAY_MS);
+  }).pipe(withArchive(archive.layer));
+});
+
+it.effect("a windowed read ignores range entirely", () => {
+  const now = Date.UTC(2027, 2, 10, 12);
+  const archive = recordingArchive({
+    bars: dailyRun(Date.UTC(2026, 8, 7), 185),
+    coverage: { recordingSince: Date.UTC(2026, 8, 7), gaps: [] },
+  });
+
+  return Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    historyCalls = 0;
+    yield* TestClock.adjust(Duration.millis(now));
+
+    const chart = yield* TradingMarketChart;
+    const view = yield* chart.read({
+      market: "ETH",
+      interval: "1d",
+      maxBars: 30,
+      range: "all",
+      startTime: Date.UTC(2027, 1, 1),
+      endTime: Date.UTC(2027, 1, 28, 23, 59),
+    });
+
+    assert.isNotNull(view);
+    assert.deepEqual(
+      archive.windowCalls.map((call) => [call.fromT, call.toT]),
+      [[Date.UTC(2027, 1, 1), Date.UTC(2027, 1, 28, 23, 59)]],
+    );
+    // No whole-history coverage resolution happened: the only coverage call is
+    // the decoration, clipped to the caller's own window.
+    assert.deepEqual(
+      archive.coverageCalls.map((call) => call.fromT),
+      [Date.UTC(2027, 1, 1)],
+    );
+  }).pipe(withArchive(archive.layer));
+});
+
+it.effect("a weekly read with no usable daily record fails without reaching the exchange", () => {
+  const now = Date.UTC(2027, 2, 10, 12);
+  // No bars at all, and bars ending in early January: 1w freshness allows
+  // three weekly intervals of trail (21 days), so a two-month-old tail must
+  // not serve. Neither case has an exchange path to fall back to.
+  const archives = [
+    recordingArchive({ bars: [], coverage: { recordingSince: null, gaps: [] } }),
+    recordingArchive({
+      bars: dailyRun(Date.UTC(2027, 0, 1), 5),
+      coverage: { recordingSince: Date.UTC(2027, 0, 1), gaps: [] },
+    }),
+  ];
+  const exercise = (archiveLayer: Layer.Layer<TradingMarketArchive>) =>
+    Effect.gen(function* () {
+      snapshotRead = Effect.succeed(snapshot);
+      historyRead = Effect.succeed(history);
+      historyCalls = 0;
+      yield* TestClock.adjust(Duration.millis(now));
+      const chart = yield* TradingMarketChart;
+      const view = yield* chart.read({ market: "ETH", interval: "1w", maxBars: 120, range: "1y" });
+      assert.equal(view, null);
+      assert.equal(historyCalls, 0, "1w has no exchange path to fall back to");
+    }).pipe(withArchive(archiveLayer));
+
+  // Each case carries its own layer (and its own cache), so run them one
+  // after the other inside one self-provided effect per case.
+  return Effect.gen(function* () {
+    for (const archive of archives) {
+      yield* exercise(archive.layer);
+    }
+  });
+});
+
+it.effect("the cache key separates ranges", () => {
+  const now = Date.UTC(2027, 2, 10, 12);
+  const archive = recordingArchive({
+    bars: dailyRun(Date.UTC(2026, 8, 7), 185),
+    coverage: { recordingSince: Date.UTC(2026, 8, 7), gaps: [] },
+  });
+
+  return Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    yield* TestClock.adjust(Duration.millis(now));
+
+    const chart = yield* TradingMarketChart;
+    const read = (range: "1d" | "1w") =>
+      chart.read({ market: "ETH", interval: "1d", maxBars: 30, range });
+
+    assert.isNotNull(yield* read("1d"));
+    assert.isNotNull(yield* read("1w"));
+    // Same range again, same tick: served from its own cache entry, not the
+    // other range's, and without a fresh archive read.
+    assert.isNotNull(yield* read("1w"));
+
+    assert.equal(archive.windowCalls.length, 2);
+    assert.deepEqual(
+      archive.windowCalls.map((call) => call.fromT),
+      [now - DAY_MS, now - 7 * DAY_MS],
+    );
+  }).pipe(withArchive(archive.layer));
 });
