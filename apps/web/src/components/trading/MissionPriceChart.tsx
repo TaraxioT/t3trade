@@ -55,6 +55,7 @@ import {
   medianBarInterval,
   type ChartCondition,
   type ChartLevel,
+  type ChartResearchMarkerInput,
   type ChartStudyOverlayInput,
   type ChartTimeBandInput,
   type ChartLevelKind,
@@ -177,6 +178,17 @@ interface MissionPriceChartProps {
    * render at whatever interval the chart is on.
    */
   readonly eventBands?: ReadonlyArray<ChartTimeBandInput>;
+  /**
+   * Researched event occurrences from the thread's active scene, drawn on the
+   * live price graph at their exact saved instants.
+   *
+   * The scene-derived seam, separate from `eventBands` above (which belongs to
+   * a validation's thesis calendar): a research marker carries its own
+   * provenance (label, source URL, coverage) and is never styled as a fill,
+   * order, or execution. Rendered by the unified-graph work; the geometry
+   * contract is `ChartResearchMarkerInput`.
+   */
+  readonly researchMarkers?: ReadonlyArray<ChartResearchMarkerInput>;
   /**
    * One historical study's overlay on this window: the activation the study
    * anchored on, the measured entry and exit with their prices, and the
