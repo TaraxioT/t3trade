@@ -6,19 +6,30 @@
  * The same claim the hypothesis service makes, made the same way: this
  * depends on `SqlClient` and `Crypto` and nothing else. No execution service
  * is in its dependency set, so no expression here could reach an order even
- * by accident. It writes `trading_event_sets` and
- * `trading_event_occurrences`, two tables no projection that reports real
- * money reads.
+ * by accident. It writes `trading_event_sets`,
+ * `trading_event_occurrences` and `trading_event_confirmations`, three
+ * research tables no projection that reports real money reads.
  *
  * ## The dates are somebody's claim, not a fetch
  *
  * This service never reaches the network. The occurrences arrive already
- * researched, each with its source, and the two refusals that matter most
- * here are the ones that keep the calendar honest: an occurrence with no
- * source is refused, and an occurrence that ends before it starts is refused.
- * `record` on an existing name replaces the whole occurrence list, which is
- * the correction path: a wrong date is fixed by re-recording the set, not by
- * appending a second version of the same event.
+ * researched, each with its source and its time precision, and the refusals
+ * that matter most here are the ones that keep the calendar honest: an
+ * occurrence with no source is refused, and an occurrence that ends before
+ * it starts is refused. `record` on an existing name replaces the whole
+ * occurrence list, which is the correction path: a wrong date is fixed by
+ * re-recording the set, not by appending a second version of the same event.
+ *
+ * ## The read-back confirmation
+ *
+ * A bulk record is a transcription, and transcription errors are silent: a
+ * reordered row, a slipped timestamp, a swapped source all decode as
+ * perfectly good dates. `previewConfirmation` persists the digest of the
+ * exact payload that was read back to the caller, scoped to the calling
+ * thread; `consumeConfirmation` refuses any write that cannot present that
+ * digest again, unchanged. The digest is SHA-256 over the pure canonical
+ * serialization the contracts module exports, so the server never invents
+ * its own notion of "the same payload".
  *
  * @module TradingEventService
  */
@@ -26,13 +37,16 @@ import { Context, Effect } from "effect";
 import * as Crypto from "effect/Crypto";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { createHash } from "node:crypto";
 
 import {
   EVENT_SET_MAX_OCCURRENCES,
+  serializeEventConfirmationPayload,
   validateEventOccurrence,
   type EventSetAuthor,
   type TradingEventOccurrence,
   type TradingEventSet,
+  type TradingEventTimePrecision,
 } from "@t3tools/trading-contracts/eventSets";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
@@ -50,6 +64,24 @@ export interface EventSetSummary {
 
 export type EventWriteResult =
   | { readonly outcome: "ok"; readonly set: TradingEventSet }
+  | { readonly outcome: "refused"; readonly reason: string };
+
+/**
+ * What a read-back confirmation is taken over: the thread it is scoped to, the
+ * action that will consume it (`add` carries no name, so its canonical name is
+ * the empty string), and the ordered occurrences. The serialization itself is
+ * the pure function the contracts module exports; this is its input shape.
+ */
+export interface EventConfirmationPayload {
+  readonly threadId: string;
+  readonly action: "record" | "add";
+  readonly name: string;
+  readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
+}
+
+/** The read-back gate's verdict: consumed, or the refusal naming the rule. */
+export type EventConfirmationResult =
+  | { readonly outcome: "ok" }
   | { readonly outcome: "refused"; readonly reason: string };
 
 export interface TradingEventServiceShape {
@@ -75,6 +107,28 @@ export interface TradingEventServiceShape {
     readonly author: EventSetAuthor;
     readonly now: number;
   }) => Effect.Effect<EventWriteResult, PersistenceSqlError>;
+
+  /**
+   * Arm a read-back confirmation: hash the exact payload the caller was shown
+   * and persist the digest as pending, scoped to this thread. A second preview
+   * of the same payload re-arms it (a fresh confirmation cycle).
+   */
+  readonly previewConfirmation: (
+    input: EventConfirmationPayload & { readonly now: number },
+  ) => Effect.Effect<{ readonly digest: string }, PersistenceSqlError>;
+
+  /**
+   * The read-back gate for `record`/`add` with `requireReadBack`: the
+   * presented digest must be this thread's, still pending, and must equal the
+   * digest of THIS request's payload. Ok consumes the confirmation; every
+   * other outcome is a refusal naming the broken rule and the next call.
+   */
+  readonly consumeConfirmation: (
+    input: EventConfirmationPayload & {
+      readonly confirmationDigest: string;
+      readonly now: number;
+    },
+  ) => Effect.Effect<EventConfirmationResult, PersistenceSqlError>;
 
   /** Active sets, newest first, with their counts and next upcoming end. */
   readonly list: (input: {
@@ -150,18 +204,58 @@ interface OccurrenceRow {
   readonly event_set_id: string;
   readonly start_at: number;
   readonly end_at: number;
+  /**
+   * Null on every row written before migration 092: those decode with
+   * `timePrecision` ABSENT, never re-derived from the timestamps.
+   */
+  readonly time_precision: string | null;
   readonly label: string | null;
   readonly source: string;
   readonly author: string;
   readonly created_at: number;
 }
 
-const toOccurrence = (row: OccurrenceRow): TradingEventOccurrence => ({
-  startAt: row.start_at,
-  endAt: row.end_at,
-  ...(row.label === null ? {} : { label: row.label }),
-  source: row.source,
-});
+interface ConfirmationRow {
+  readonly thread_id: string;
+  readonly digest: string;
+  readonly status: string;
+  readonly created_at: number;
+  readonly consumed_at: number | null;
+}
+
+/** The confirmation a payload's canonical serialization hashes to. */
+const digestOf = (input: {
+  readonly threadId: string;
+  readonly action: "record" | "add";
+  readonly name: string;
+  readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
+}): string =>
+  createHash("sha256").update(serializeEventConfirmationPayload(input), "utf8").digest("hex");
+
+/**
+ * The stored precision, narrowed to the union the schema speaks. NULL (every
+ * legacy row) is `undefined`: the field decodes ABSENT. A non-null value the
+ * union does not know violates the column's CHECK constraint — only manual
+ * corruption could produce one — and dies loudly rather than hiding as
+ * "absent", which would re-introduce exactly the ambiguity the column exists
+ * to remove.
+ */
+const readTimePrecision = (value: string | null): TradingEventTimePrecision | undefined => {
+  if (value === null) return undefined;
+  if (value === "instant" || value === "window" || value === "date") return value;
+  throw new Error(`unknown time_precision "${value}" in trading_event_occurrences`);
+};
+
+const toOccurrence = (row: OccurrenceRow): TradingEventOccurrence => {
+  const timePrecision = readTimePrecision(row.time_precision);
+  return {
+    startAt: row.start_at,
+    endAt: row.end_at,
+    ...(timePrecision === undefined ? {} : { timePrecision }),
+    ...(row.label === null ? {} : { label: row.label }),
+    source: row.source,
+  };
+};
 
 /** Every occurrence refusal names which one, so the caller can fix that one. */
 const validateAll = (occurrences: ReadonlyArray<TradingEventOccurrence>): string | null => {
@@ -236,13 +330,82 @@ export const makeTradingEventService = Effect.gen(function* () {
     Effect.forEach(occurrences, (occurrence) =>
       sql`
         INSERT INTO trading_event_occurrences (
-          event_set_id, start_at, end_at, label, source, author, created_at
+          event_set_id, start_at, end_at, time_precision, label, source, author, created_at
         ) VALUES (
           ${eventSetId}, ${occurrence.startAt}, ${occurrence.endAt},
-          ${occurrence.label ?? null}, ${occurrence.source}, ${author}, ${now}
+          ${occurrence.timePrecision ?? null}, ${occurrence.label ?? null},
+          ${occurrence.source}, ${author}, ${now}
         )
       `.pipe(Effect.mapError(sqlFail("insert.occurrence"))),
     );
+
+  /**
+   * Arm a read-back confirmation: persist the digest of this exact payload as
+   * pending, scoped to the calling thread. A preview of a payload already
+   * confirmed (pending or consumed) re-arms it — each preview is a fresh
+   * confirmation cycle — so the upsert resets status rather than failing.
+   */
+  const previewConfirmation: TradingEventServiceShape["previewConfirmation"] = (input) =>
+    Effect.gen(function* () {
+      const digest = digestOf(input);
+      yield* sql`
+        INSERT INTO trading_event_confirmations (thread_id, digest, status, created_at, consumed_at)
+        VALUES (${input.threadId}, ${digest}, 'pending', ${input.now}, NULL)
+        ON CONFLICT (thread_id, digest) DO UPDATE SET
+          status = 'pending', created_at = excluded.created_at, consumed_at = NULL
+      `.pipe(Effect.mapError(sqlFail("previewConfirmation")));
+      return { digest };
+    });
+
+  /**
+   * The read-back gate for `record`/`add` with `requireReadBack`. The lookup
+   * is by the digest the call PRESENTED, so the refusal can name which rule
+   * broke: no row at all means this thread never previewed that digest (an
+   * unknown digest, or one read back in another conversation); a consumed row
+   * is a replay; a pending row whose digest is not this request's own is a
+   * payload that changed after the read-back. Only the exact digest, in its
+   * own thread, still pending, consumes.
+   */
+  const consumeConfirmation: TradingEventServiceShape["consumeConfirmation"] = (input) =>
+    Effect.gen(function* () {
+      const expected = digestOf(input);
+      const rows = yield* sql<ConfirmationRow>`
+        SELECT thread_id, digest, status, created_at, consumed_at
+        FROM trading_event_confirmations
+        WHERE thread_id = ${input.threadId} AND digest = ${input.confirmationDigest}
+      `.pipe(Effect.mapError(sqlFail("consumeConfirmation.lookup")));
+      const row = rows[0] ?? null;
+      if (row === null) {
+        return {
+          outcome: "refused",
+          reason:
+            "that confirmationDigest matches no read-back confirmation for this thread: " +
+            "preview the dates in this thread first, then pass the digest that preview returned",
+        } as const;
+      }
+      if (row.status === "consumed") {
+        return {
+          outcome: "refused",
+          reason:
+            "that read-back confirmation was already consumed by an earlier record: " +
+            "replaying it confirms nothing. Preview the dates again for a fresh confirmation",
+        } as const;
+      }
+      if (input.confirmationDigest !== expected) {
+        return {
+          outcome: "refused",
+          reason:
+            "the dates changed since the read-back this digest came from: " +
+            "a read-back confirms the exact payload it previewed. Preview the changed dates again",
+        } as const;
+      }
+      yield* sql`
+        UPDATE trading_event_confirmations
+        SET status = 'consumed', consumed_at = ${input.now}
+        WHERE thread_id = ${input.threadId} AND digest = ${input.confirmationDigest}
+      `.pipe(Effect.mapError(sqlFail("consumeConfirmation.consume")));
+      return { outcome: "ok" } as const;
+    });
 
   const record: TradingEventServiceShape["record"] = (input) =>
     Effect.gen(function* () {
@@ -451,6 +614,8 @@ export const makeTradingEventService = Effect.gen(function* () {
   return {
     record,
     add,
+    previewConfirmation,
+    consumeConfirmation,
     list,
     show,
     retire,

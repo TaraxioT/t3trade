@@ -93,11 +93,35 @@ export const EVENT_STUDY_ENTRY_BASIS_PHRASES: Readonly<Record<EventStudyEntryBas
 };
 
 /**
+ * What the recorded timestamps actually claim about the event's time.
+ *
+ * - `instant`: the event happened at one exact moment (`startAt === endAt`),
+ *   the shape a protocol-activation timestamp demands.
+ * - `window`: the event ran from one exact moment to another, both supplied.
+ * - `date`: the research established whole days, nothing finer. The span is
+ *   the UTC midnights around those days, and no consumer may read it as a
+ *   claim about a time of day.
+ *
+ * Optional because every row recorded before the field existed is a span the
+ * old parser produced, and those rows decode with the field ABSENT rather
+ * than re-derived: a consumer reading them sees "recorded as a span", never a
+ * precision nobody declared at the time.
+ */
+export const TradingEventTimePrecision = Schema.Literals(["instant", "window", "date"]);
+export type TradingEventTimePrecision = typeof TradingEventTimePrecision.Type;
+
+/**
  * One dated occurrence of the event, in UTC milliseconds.
  *
  * `startAt` and `endAt` make a multi-day event one occurrence rather than
  * several: a conference is the whole span, and "after Devcon" means after the
  * LAST day, which is why every consumer anchors on `endAt`.
+ *
+ * `timePrecision` says what those numbers claim (see
+ * {@link TradingEventTimePrecision}). It is written by the parser for every
+ * new occurrence and left absent for legacy rows; it is never guessed back
+ * from the numbers, because a midnight-aligned window and a date span are
+ * indistinguishable from the timestamps alone.
  *
  * `source` is where the date came from: a URL the agent can cite back, or the
  * words "user provided" when the user dictated the date. Required and
@@ -107,6 +131,7 @@ export const EVENT_STUDY_ENTRY_BASIS_PHRASES: Readonly<Record<EventStudyEntryBas
 export const TradingEventOccurrence = Schema.Struct({
   startAt: UnixMillis,
   endAt: UnixMillis,
+  timePrecision: Schema.optional(TradingEventTimePrecision),
   label: Schema.optional(Schema.String),
   source: Schema.String,
 });
@@ -144,6 +169,9 @@ export type EventSetAuthor = typeof EventSetAuthor.Type;
 export function validateEventOccurrence(occurrence: TradingEventOccurrence): string | null {
   if (occurrence.endAt < occurrence.startAt) {
     return "endAt is before startAt: an occurrence cannot end before it begins";
+  }
+  if (occurrence.timePrecision === "instant" && occurrence.startAt !== occurrence.endAt) {
+    return "an instant occurrence must start and end at the same moment";
   }
   if (occurrence.source.trim().length === 0) {
     return 'source cannot be empty: name the URL or say "user provided", never record a date you cannot check';
@@ -678,6 +706,7 @@ export type TradingEventSetSummary = typeof TradingEventSetSummary.Type;
 export const TRADING_EVENTS_TOOL = "trading_events";
 
 export const TradingEventsAction = Schema.Literals([
+  "preview",
   "record",
   "add",
   "list",
@@ -689,21 +718,31 @@ export type TradingEventsAction = typeof TradingEventsAction.Type;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
+/** Whether an ISO string names whole days only (YYYY-MM-DD), no time of day. */
+const isDateOnly = (text: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(text.trim());
+
 /**
  * One occurrence as the tool takes it: ISO strings, per the wire contract.
  *
- * A date-only string means 00:00 UTC; a date-only `end` means the exclusive
- * next midnight; a missing `end` means the start day's exclusive midnight, so
- * "after Devcon" means after the LAST day and a multi-day event is one
- * occurrence, anchored on its end.
+ * A date-only `start`/`end` pair is DATE precision: whole UTC days, with a
+ * date-only `end` meaning that day too (a multi-day conference is ONE
+ * occurrence spanning through its last day) and a missing `end` meaning the
+ * start day alone.
  *
- * An instantaneous event (a protocol upgrade activation) is the other honest
- * shape: record `start` and `end` as the SAME ISO instant, and the study
- * anchors on that exact moment.
+ * A timed `start` is an exact instant and refuses to guess anything: it needs
+ * a timed `end` of its own — the same instant for an instantaneous activation
+ * (a protocol upgrade switching on), a later one for a window — because the
+ * old behavior of padding a lone timed start to a day it did not span wrote
+ * spans the research never established.
+ *
+ * `precision` declares which of those the caller means. It is optional
+ * (the shapes above decide), and a declaration the shapes contradict is a
+ * refusal rather than a silent reinterpretation.
  */
 export const TradingEventsOccurrenceInput = Schema.Struct({
   start: Schema.String,
   end: Schema.optional(Schema.String),
+  precision: Schema.optional(TradingEventTimePrecision),
   label: Schema.optional(Schema.String),
   source: Schema.String,
 });
@@ -711,7 +750,7 @@ export type TradingEventsOccurrenceInput = typeof TradingEventsOccurrenceInput.T
 
 /** The instant an ISO string names, treating a date-only string as UTC midnight. */
 const parseInstant = (text: string): number | null => {
-  const iso = /^\d{4}-\d{2}-\d{2}$/.exec(text.trim()) ? `${text.trim()}T00:00:00Z` : text.trim();
+  const iso = isDateOnly(text) ? `${text.trim()}T00:00:00Z` : text.trim();
   const parsed = Date.parse(iso);
   return Number.isNaN(parsed) ? null : parsed;
 };
@@ -720,31 +759,100 @@ const parseInstant = (text: string): number | null => {
  * Tool input to domain occurrence, or the refusal naming which one broke.
  *
  * Pure, and the only place the ISO conventions live: every caller that reads
- * tool input goes through here, so "date-only means midnight UTC" means one
- * thing rather than one thing per caller.
+ * tool input goes through here, so "date-only means whole UTC days" means one
+ * thing rather than one thing per caller. The three precision kinds:
+ *
+ * - date-only start → `date`: startAt is that day's 00:00 UTC, endAt is the
+ *   exclusive next midnight of the date-only `end` when there is one,
+ *   otherwise of the start day itself.
+ * - timed start + timed end → `instant` when equal, `window` when the end is
+ *   later. A timed start with no end REFUSES rather than inventing a day, and
+ *   a date-only end beside a timed start refuses as ambiguous; the mixed
+ *   date-only/timed pairing likewise refuses in the other direction.
+ * - a declared `precision` the shapes contradict refuses, naming the fix.
  */
 export function parseTradingEventsOccurrence(
   input: TradingEventsOccurrenceInput,
 ): { readonly occurrence: TradingEventOccurrence } | { readonly reason: string } {
+  const startIsDateOnly = isDateOnly(input.start);
+  if (startIsDateOnly && (input.precision === "instant" || input.precision === "window")) {
+    return {
+      reason:
+        "a date-only start cannot claim an exact instant — record the timed activation instant, or keep date precision",
+    };
+  }
+  if (!startIsDateOnly && input.precision === "date") {
+    return { reason: "a timed instant cannot claim date precision" };
+  }
+
   const startAt = parseInstant(input.start);
   if (startAt === null) {
     return { reason: `start "${input.start}" is not an ISO date` };
   }
-  let endAt: number;
-  if (input.end === undefined) {
-    // The start day's exclusive midnight: the whole day, whatever time it began.
-    endAt = Math.floor(startAt / DAY_MS) * DAY_MS + DAY_MS;
-  } else {
-    const parsedEnd = parseInstant(input.end);
-    if (parsedEnd === null) {
-      return { reason: `end "${input.end}" is not an ISO date` };
+
+  if (startIsDateOnly) {
+    let endAt: number;
+    if (input.end === undefined) {
+      // The start day's exclusive midnight: the whole day, whatever time it began.
+      endAt = startAt + DAY_MS;
+    } else {
+      if (!isDateOnly(input.end)) {
+        return {
+          reason:
+            "end must be a date-only date when start is date-only; a timed end pairs with a timed start",
+        };
+      }
+      const parsedEnd = parseInstant(input.end);
+      if (parsedEnd === null) {
+        return { reason: `end "${input.end}" is not an ISO date` };
+      }
+      // The end day's exclusive midnight, so "after Devcon" stays after the
+      // LAST day of a multi-day date range recorded as one occurrence.
+      endAt = parsedEnd + DAY_MS;
     }
-    endAt = /^\d{4}-\d{2}-\d{2}$/.test(input.end.trim()) ? parsedEnd + DAY_MS : parsedEnd;
+    return {
+      occurrence: {
+        startAt,
+        endAt,
+        timePrecision: "date",
+        ...(input.label === undefined ? {} : { label: input.label }),
+        source: input.source,
+      },
+    };
+  }
+
+  // A timed start is an exact claim, so it refuses to invent anything: no
+  // fabricated day for a missing end, no ambiguous date-only end.
+  if (input.end === undefined) {
+    return {
+      reason:
+        "a timed start with no end cannot invent a duration — give the end instant, or use a date-only start for date precision",
+    };
+  }
+  if (isDateOnly(input.end)) {
+    return {
+      reason:
+        "end must be a timed instant when start is timed; a date-only end pairs with a date-only start",
+    };
+  }
+  const endAt = parseInstant(input.end);
+  if (endAt === null) {
+    return { reason: `end "${input.end}" is not an ISO date` };
+  }
+  const shape: TradingEventTimePrecision = endAt === startAt ? "instant" : "window";
+  if (input.precision !== undefined && input.precision !== shape) {
+    return {
+      reason:
+        input.precision === "instant"
+          ? 'declared precision "instant" does not match the span: start and end are different instants'
+          : 'declared precision "window" does not match the span: start and end are the same instant',
+    };
   }
   return {
     occurrence: {
       startAt,
       endAt,
+      timePrecision: shape,
       ...(input.label === undefined ? {} : { label: input.label }),
       source: input.source,
     },
@@ -755,13 +863,20 @@ export const TradingEventsInput = Schema.Struct({
   /** Attribution, never authority: an event set takes no mission state. */
   missionId: Schema.optional(Schema.String),
   action: Schema.optional(TradingEventsAction),
-  /** Required by everything except `record` and `list`. */
+  /** Required by everything except `record`, `preview` and `list`. */
   eventSetId: Schema.optional(Schema.String),
-  /** Required by `record`. */
+  /** Required by `record`, and by `preview` when the preview is for a record. */
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
-  /** Required by `record` and `add`: the dated occurrences with their sources. */
+  /** Required by `record`, `add` and `preview`: the dated occurrences with their sources. */
   occurrences: Schema.optional(Schema.Array(TradingEventsOccurrenceInput)),
+  /**
+   * Requires the read-back protocol on `record`/`add`: the payload must match
+   * the pending confirmation a `preview` persisted for this thread, by digest.
+   */
+  requireReadBack: Schema.optional(Schema.Boolean),
+  /** The digest a `preview` returned; required when `requireReadBack` is true. */
+  confirmationDigest: Schema.optional(Schema.String),
   /** Required by `study`: the market whose archived bars answer it. */
   market: Schema.optional(TradingMarket),
   interval: Schema.optional(BacktestInterval),
@@ -780,6 +895,10 @@ export const TradingEventsResult = Schema.Struct({
   eventSet: Schema.optional(TradingEventSet),
   /** Set by `list`. */
   eventSets: Schema.optional(Schema.Array(TradingEventSetSummary)),
+  /** Set by `preview`: the ordered normalized occurrences it read back. */
+  occurrences: Schema.optional(Schema.Array(TradingEventOccurrence)),
+  /** Set by `preview`: the digest that confirms this exact payload. */
+  confirmationDigest: Schema.optional(Schema.String),
   /** Set by `study`, with the composed honesty sentence in `verdict`. */
   study: Schema.optional(EventStudyReport),
   /** What the call did, in one sentence the model can relay. */
@@ -792,16 +911,49 @@ export const TradingEventsResult = Schema.Struct({
 export type TradingEventsResult = typeof TradingEventsResult.Type;
 
 /**
+ * The canonical serialization a read-back confirmation digest is taken over.
+ *
+ * Pure, deterministic, and boring on purpose: a fixed-shape array (never an
+ * object, whose key order a serializer could reorder) holding the version
+ * tag, the thread the confirmation is scoped to, the action that will consume
+ * it, the name it will record (`""` for `add`, which carries none), and the
+ * occurrences IN ORDER — each as [startAt, endAt, timePrecision, label,
+ * source], absent optionals as `""`. The server hashes this string; anything
+ * that changes one field changes the string, which changes the digest.
+ */
+export function serializeEventConfirmationPayload(input: {
+  readonly threadId: string;
+  readonly action: "record" | "add";
+  readonly name: string;
+  readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
+}): string {
+  return JSON.stringify([
+    "trading_events.readback.v1",
+    input.threadId,
+    input.action,
+    input.name,
+    input.occurrences.map((occurrence) => [
+      occurrence.startAt,
+      occurrence.endAt,
+      occurrence.timePrecision ?? "",
+      occurrence.label ?? "",
+      occurrence.source,
+    ]),
+  ]);
+}
+
+/**
  * The vocabulary, served to the call that asked. Composed from the constants
  * that enforce it, the same discipline the backtest menu follows, so a cap
  * moved here changes the sentence without anybody remembering to.
  */
 export function renderTradingEventsMenu(): string {
   return [
-    "record {name, description?, occurrences: [{start, end?, label?, source}]} creates the set or fully replaces its dates (case-insensitive name, a retired set revives); re-recording is the correction path",
-    `dates are ISO; date-only means UTC midnight, a date-only end means the next midnight, a missing end means the start day's end; an instantaneous event (an upgrade activation) records start and end as the same instant; every occurrence carries exactly one source (the URL, or "user provided"), never several URLs joined into one string, at most ${EVENT_SET_MAX_OCCURRENCES} a set`,
-    "add {eventSetId, occurrences} appends; show {eventSetId}; retire {eventSetId} takes the set out of new theses but keeps evaluating saved ones; list",
-    `study {eventSetId, market, interval?, horizonBars?, entryBasis?} measures the forward return after each occurrence against an every-bar baseline over the same horizon, entryBasis first_closed_bar_after_event (${EVENT_STUDY_ENTRY_BASIS_PHRASES.first_closed_bar_after_event}, the default) or first_bar_open_after_event, horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS} up to ${EVENT_STUDY_MAX_HORIZON_BARS}; no fees, no sizing, occurrences outside archived history are reported rather than dropped`,
-    "theses anchor with operand {source: event, eventSetId, label}: bars since the most recent ended occurrence; profit simulation stays trading_backtest's job",
+    "preview {name?, occurrences: [{start, end?, precision?, label?, source}]} reads them back with a confirmationDigest; a name previews a record, no name an add",
+    "record {name, description?, occurrences} creates or replaces a set's dates (case-insensitive name, retired revives, re-recording corrects); add {eventSetId, occurrences} appends, show/retire {eventSetId}, list",
+    "dates are UTC ISO: date-only start/end is date precision (whole days; a missing end spans the start day, a date-only end through that day); a timed start is exact and needs its timed end: same instant is an activation, later a window; a timed start with no end is refused, not padded; declared precision (instant/window/date) contradictions refuse",
+    `one source per occurrence (the URL, or "user provided"), never several joined, ${EVENT_SET_MAX_OCCURRENCES} max a set; record/add take requireReadBack: true and the preview's confirmationDigest`,
+    `study {eventSetId, market, interval?, horizonBars?, entryBasis?} measures per-occurrence forward return vs an every-bar baseline, entryBasis first_closed_bar_after_event (default) or first_bar_open_after_event, horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS} max ${EVENT_STUDY_MAX_HORIZON_BARS}, interval 1m 3m 5m 15m 1h 4h 1d: a four-week daily study is interval 1d, horizonBars 28; pick the coarsest interval covering the window; no fees, no sizing, uncovered occurrences are reported, not dropped`,
+    "theses anchor with operand {source: event, eventSetId, label}: bars since the most recent ended occurrence; profit simulation is trading_backtest's",
   ].join(" · ");
 }

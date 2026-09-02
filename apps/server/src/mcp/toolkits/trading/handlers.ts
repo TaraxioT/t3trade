@@ -3961,13 +3961,64 @@ export const handlers = {
       };
 
       switch (input.action) {
-        case "record": {
-          if (input.name === undefined) return yield* refuse("record needs a name");
+        case "preview": {
           if (input.occurrences === undefined) {
-            return yield* refuse("record needs occurrences: [{start, end?, label?, source}]");
+            return yield* refuse(
+              "preview needs occurrences: [{start, end?, precision?, label?, source}]",
+            );
           }
           const parsed = parseAll(input.occurrences);
           if ("reason" in parsed) return yield* refuse(parsed.reason);
+          // The shape says which write this preview precedes: a name previews
+          // a record, no name previews an add (which carries none to confirm).
+          const action = input.name === undefined ? "add" : "record";
+          const { digest } = yield* eventService
+            .previewConfirmation({
+              threadId,
+              action,
+              name: (input.name ?? "").trim(),
+              occurrences: parsed.occurrences,
+              now,
+            })
+            .pipe(Effect.orDie);
+          return eventsResult({
+            occurrences: parsed.occurrences,
+            confirmationDigest: digest,
+            outcome:
+              `${parsed.occurrences.length} occurrence(s) parsed and read back in order. ` +
+              `Call ${action} with requireReadBack: true and this confirmationDigest to write ` +
+              "exactly these dates; any change to them needs a fresh preview",
+          });
+        }
+
+        case "record": {
+          if (input.name === undefined) return yield* refuse("record needs a name");
+          if (input.occurrences === undefined) {
+            return yield* refuse(
+              "record needs occurrences: [{start, end?, precision?, label?, source}]",
+            );
+          }
+          const parsed = parseAll(input.occurrences);
+          if ("reason" in parsed) return yield* refuse(parsed.reason);
+          if (input.requireReadBack === true) {
+            if (input.confirmationDigest === undefined) {
+              return yield* refuse(
+                "requireReadBack is true but no confirmationDigest came with it: " +
+                  "preview the dates first and pass the confirmationDigest that preview returned",
+              );
+            }
+            const confirmed = yield* eventService
+              .consumeConfirmation({
+                threadId,
+                action: "record",
+                name: input.name.trim(),
+                occurrences: parsed.occurrences,
+                confirmationDigest: input.confirmationDigest,
+                now,
+              })
+              .pipe(Effect.orDie);
+            if (confirmed.outcome === "refused") return yield* refuse(confirmed.reason);
+          }
           const written = yield* eventService
             .record({
               name: input.name,
@@ -3994,10 +4045,32 @@ export const handlers = {
         case "add": {
           if (input.eventSetId === undefined) return yield* refuse("add needs an eventSetId");
           if (input.occurrences === undefined) {
-            return yield* refuse("add needs occurrences: [{start, end?, label?, source}]");
+            return yield* refuse(
+              "add needs occurrences: [{start, end?, precision?, label?, source}]",
+            );
           }
           const parsed = parseAll(input.occurrences);
           if ("reason" in parsed) return yield* refuse(parsed.reason);
+          if (input.requireReadBack === true) {
+            if (input.confirmationDigest === undefined) {
+              return yield* refuse(
+                "requireReadBack is true but no confirmationDigest came with it: " +
+                  "preview the dates first and pass the confirmationDigest that preview returned",
+              );
+            }
+            // add carries no name to confirm, so the canonical name is empty.
+            const confirmed = yield* eventService
+              .consumeConfirmation({
+                threadId,
+                action: "add",
+                name: "",
+                occurrences: parsed.occurrences,
+                confirmationDigest: input.confirmationDigest,
+                now,
+              })
+              .pipe(Effect.orDie);
+            if (confirmed.outcome === "refused") return yield* refuse(confirmed.reason);
+          }
           const written = yield* eventService
             .add({ eventSetId: input.eventSetId, occurrences: parsed.occurrences, author, now })
             .pipe(Effect.orDie);

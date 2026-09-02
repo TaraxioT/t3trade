@@ -38,6 +38,59 @@ two web addresses joined together renders as one broken link.
 Dates that have not happened yet are first class. Recording next year's Devcon
 before it happens is the point, not a mistake.
 
+## Get the timing exactly right
+
+A date is exact, and the record says which kind of exact it was given. There
+are three kinds, and every occurrence written now carries one:
+
+A date is a date. When the research established whole days — the conference
+ran November 12 through 15 — that is one occurrence spanning those UTC days
+and nothing finer. Nobody pretended to know what time of day it started.
+
+An instant is an instant. A network upgrade that switched on at 06:42:42 UTC
+is recorded as that exact second: the same moment for its start and its end,
+and the study anchors on the second it activated, never on a day it did not
+span.
+
+A window is a window. An event that began at one known time and ended at
+another is recorded with both times.
+
+The tool refuses to guess in between. A time of day with no end is refused
+rather than padded out to whatever day it happens to sit in: that padding is
+how twenty fork activations once became twenty invented 24-hour spans, and a
+study anchored on those inherited the invention. If you know the moment, give
+the moment; if you only know the day, give the day and it is recorded as a
+day. A date paired with a time, or a claimed precision the dates contradict,
+is refused with the reason rather than quietly reinterpreted. Everything is
+UTC, and a time is never converted to or from your local clock.
+
+Sets recorded before these distinctions existed are still there and still
+work. Their occurrences were written as spans, and that is what they say they
+are: they carry no timing claim, and nothing guesses one back from the
+numbers after the fact.
+
+## Read it back before it is written
+
+Recording twenty dates in one call is a transcription, and transcription
+errors are silent: a row swapped, a digit slipped, one source pasted over
+another all decode as perfectly good dates. A bulk record can be asked to
+prove it transcribed cleanly.
+
+The agent previews first. It calls the tool with the dates it is about to
+record, and the answer reads the parsed dates back in order — each with its
+timing, its label, and its source — plus a confirmation digest: a
+fingerprint of exactly that list, in that order. Then the record call carries
+that digest and `requireReadBack: true`, and it writes only if the dates are
+the very ones that were read back. If anything moved — an occurrence
+reordered, a timestamp nudged, a source, a label, or the set's name changed —
+the call is refused and told to preview again. The digest works only in the
+conversation that previewed it, and only once: replaying a confirmation the
+record already used is refused too.
+
+None of this is required. A plain record works the way it always has; the
+read-back is there for the moment when twenty dates, one call, and nobody
+checking is exactly the risk.
+
 ## Ask what price actually did
 
 > Study that on ETH, daily bars, over the thirty bars after each one.

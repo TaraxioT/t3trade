@@ -18,6 +18,7 @@ import {
   parseTradingEventsOccurrence,
   renderTradingEventsMenu,
   runEventStudy,
+  serializeEventConfirmationPayload,
   validateEventOccurrence,
   type TradingEventOccurrence,
 } from "./eventSets.ts";
@@ -539,6 +540,17 @@ describe("the caps and the occurrence validator", () => {
     expect(validateEventOccurrence(occurrence(100, 100))).toBeNull();
   });
 
+  it("refuses an occurrence claiming instant precision with unequal ends", () => {
+    expect(
+      validateEventOccurrence({ ...occurrence(100, 101), timePrecision: "instant" }),
+    ).toContain("must start and end at the same moment");
+    expect(
+      validateEventOccurrence({ ...occurrence(100, 100), timePrecision: "instant" }),
+    ).toBeNull();
+    // Absent precision is a legacy row, never re-derived: unequal ends are fine.
+    expect(validateEventOccurrence(occurrence(100, 101))).toBeNull();
+  });
+
   it("refuses an occurrence with no source", () => {
     expect(validateEventOccurrence({ startAt: 0, endAt: 1, source: "  " })).toContain(
       "source cannot be empty",
@@ -548,44 +560,34 @@ describe("the caps and the occurrence validator", () => {
 });
 
 describe("the tool's ISO conventions", () => {
-  const parse = (input: { start: string; end?: string; label?: string; source: string }) =>
-    parseTradingEventsOccurrence(input);
+  const parse = (input: {
+    start: string;
+    end?: string;
+    precision?: "instant" | "window" | "date";
+    label?: string;
+    source: string;
+  }) => parseTradingEventsOccurrence(input);
 
-  it("reads a date-only start as UTC midnight, ending at the next one", () => {
+  it("reads a date-only start as a date-precision span of that whole UTC day", () => {
     const parsed = parse({ start: "2024-11-12", source: "url" });
     if (!("occurrence" in parsed)) return;
     expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T00:00:00Z"));
     // The whole day, exclusively: after Devcon means after the LAST day.
     expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-13T00:00:00Z"));
+    expect(parsed.occurrence.timePrecision).toBe("date");
   });
 
   it("a date-only end is the exclusive next midnight of THAT day", () => {
     const parsed = parse({ start: "2024-11-12", end: "2024-11-15", source: "url" });
     if (!("occurrence" in parsed)) return;
     expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-16T00:00:00Z"));
+    expect(parsed.occurrence.timePrecision).toBe("date");
   });
 
-  it("a timed start with no end still ends at its day's exclusive midnight", () => {
-    const parsed = parse({ start: "2024-11-12T09:30:00Z", source: "url" });
-    if (!("occurrence" in parsed)) return;
-    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T09:30:00Z"));
-    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-13T00:00:00Z"));
-  });
-
-  it("a timed end is the instant it names", () => {
-    const parsed = parse({
-      start: "2024-11-12T09:00:00Z",
-      end: "2024-11-12T18:00:00Z",
-      source: "u",
-    });
-    if (!("occurrence" in parsed)) return;
-    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-12T18:00:00Z"));
-  });
-
-  it("an instantaneous event records start and end as the exact same instant", () => {
+  it("a timed start with equal timed ends is an instant, preserved exactly", () => {
     // A protocol activation is a moment, not a day: recording it with equal
-    // timed strings must preserve both instants exactly, never widen the
-    // span to a whole day the way a missing end would.
+    // timed strings must preserve both instants exactly and claim instant
+    // precision, never widen the span to a day it did not span.
     const parsed = parse({
       start: "2022-09-15T06:42:42Z",
       end: "2022-09-15T06:42:42Z",
@@ -594,6 +596,119 @@ describe("the tool's ISO conventions", () => {
     if (!("occurrence" in parsed)) return;
     expect(parsed.occurrence.startAt).toBe(Date.parse("2022-09-15T06:42:42Z"));
     expect(parsed.occurrence.endAt).toBe(parsed.occurrence.startAt);
+    expect(parsed.occurrence.timePrecision).toBe("instant");
+  });
+
+  it("a timed start with a later timed end is a window", () => {
+    const parsed = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T18:00:00Z",
+      source: "u",
+    });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T09:00:00Z"));
+    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-12T18:00:00Z"));
+    expect(parsed.occurrence.timePrecision).toBe("window");
+  });
+
+  it("preserves the exact UTC milliseconds of a timed instant", () => {
+    const parsed = parse({
+      start: "2024-11-12T09:30:00.250Z",
+      end: "2024-11-12T09:30:00.250Z",
+      source: "u",
+    });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T09:30:00.250Z"));
+    expect(parsed.occurrence.endAt).toBe(parsed.occurrence.startAt);
+  });
+
+  it("refuses a timed start with no end rather than inventing a day", () => {
+    // The fabrication this model replaces: a lone timed start used to be
+    // padded to its day's midnight, writing a span the research never gave.
+    const parsed = parse({ start: "2024-11-12T09:30:00Z", source: "url" });
+    if ("reason" in parsed) {
+      expect(parsed.reason).toContain("a timed start with no end cannot invent a duration");
+      expect(parsed.reason).toContain("use a date-only start for date precision");
+    }
+  });
+
+  it("refuses a date-only end beside a timed start as ambiguous", () => {
+    const parsed = parse({ start: "2024-11-12T09:00:00Z", end: "2024-11-15", source: "url" });
+    if ("reason" in parsed) {
+      expect(parsed.reason).toContain("end must be a timed instant when start is timed");
+      expect(parsed.reason).toContain("a date-only end pairs with a date-only start");
+    }
+  });
+
+  it("refuses a timed end beside a date-only start as ambiguous", () => {
+    const parsed = parse({ start: "2024-11-12", end: "2024-11-15T09:00:00Z", source: "url" });
+    if ("reason" in parsed) {
+      expect(parsed.reason).toContain("end must be a date-only date when start is date-only");
+      expect(parsed.reason).toContain("a timed end pairs with a timed start");
+    }
+  });
+
+  it("refuses a date-only start that claims instant or window precision", () => {
+    for (const precision of ["instant", "window"] as const) {
+      const parsed = parse({ start: "2024-11-12", precision, source: "url" });
+      if ("reason" in parsed) {
+        expect(parsed.reason).toContain("a date-only start cannot claim an exact instant");
+        expect(parsed.reason).toContain(
+          "record the timed activation instant, or keep date precision",
+        );
+      }
+    }
+  });
+
+  it("refuses a timed start that claims date precision", () => {
+    const parsed = parse({
+      start: "2022-09-15T06:42:42Z",
+      end: "2022-09-15T06:42:42Z",
+      precision: "date",
+      source: "url",
+    });
+    if ("reason" in parsed)
+      expect(parsed.reason).toContain("a timed instant cannot claim date precision");
+  });
+
+  it("refuses a declared precision the timed shapes contradict", () => {
+    const notInstant = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T18:00:00Z",
+      precision: "instant",
+      source: "u",
+    });
+    if ("reason" in notInstant) {
+      expect(notInstant.reason).toContain('declared precision "instant" does not match the span');
+    }
+    const notWindow = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T09:00:00Z",
+      precision: "window",
+      source: "u",
+    });
+    if ("reason" in notWindow) {
+      expect(notWindow.reason).toContain('declared precision "window" does not match the span');
+    }
+  });
+
+  it("accepts a declared precision the shapes agree with", () => {
+    const date = parse({ start: "2024-11-12", precision: "date", source: "url" });
+    if ("occurrence" in date) expect(date.occurrence.timePrecision).toBe("date");
+    const instant = parse({
+      start: "2022-09-15T06:42:42Z",
+      end: "2022-09-15T06:42:42Z",
+      precision: "instant",
+      source: "url",
+    });
+    if ("occurrence" in instant) expect(instant.occurrence.timePrecision).toBe("instant");
+    const window = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T18:00:00Z",
+      precision: "window",
+      source: "url",
+    });
+    if ("occurrence" in window) expect(window.occurrence.timePrecision).toBe("window");
   });
 
   it("refuses a string that is not a date, naming the field", () => {
@@ -601,6 +716,85 @@ describe("the tool's ISO conventions", () => {
     if ("reason" in bad) expect(bad.reason).toContain("start");
     const badEnd = parse({ start: "2024-11-12", end: "soon after", source: "url" });
     if ("reason" in badEnd) expect(badEnd.reason).toContain("end");
+  });
+});
+
+describe("the read-back confirmation payload", () => {
+  const payload = {
+    threadId: "thread-1",
+    action: "record" as const,
+    name: "Devcon",
+    occurrences: [
+      { startAt: 0, endAt: 0, timePrecision: "instant" as const, source: "https://a.dev" },
+      {
+        startAt: 86_400_000,
+        endAt: 3 * 86_400_000,
+        timePrecision: "date" as const,
+        label: "SEA",
+        source: "https://b.dev",
+      },
+    ],
+  };
+
+  it("serializes the same payload to the same string, order included", () => {
+    expect(serializeEventConfirmationPayload(payload)).toBe(
+      serializeEventConfirmationPayload(payload),
+    );
+    // Order is part of the payload: the same rows in the other order differ.
+    const reordered = {
+      ...payload,
+      occurrences: [...payload.occurrences].reverse(),
+    };
+    expect(serializeEventConfirmationPayload(reordered)).not.toBe(
+      serializeEventConfirmationPayload(payload),
+    );
+  });
+
+  it("changes when anything it covers changes", () => {
+    const base = serializeEventConfirmationPayload(payload);
+    expect(serializeEventConfirmationPayload({ ...payload, threadId: "thread-2" })).not.toBe(base);
+    expect(serializeEventConfirmationPayload({ ...payload, action: "add" })).not.toBe(base);
+    expect(serializeEventConfirmationPayload({ ...payload, name: "Breakpoint" })).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row) => ({ ...row, startAt: row.startAt + 1 })),
+      }),
+    ).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row, i) =>
+          i === 0 ? { ...row, timePrecision: "window" as const } : row,
+        ),
+      }),
+    ).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row, i) =>
+          i === 1 ? { ...row, label: "Bogota" } : row,
+        ),
+      }),
+    ).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row, i) =>
+          i === 0 ? { ...row, source: "user provided" } : row,
+        ),
+      }),
+    ).not.toBe(base);
+    // Absent optionals serialize as "" and stay stable.
+    const legacy = {
+      threadId: "thread-1",
+      action: "add" as const,
+      name: "",
+      occurrences: [{ startAt: 0, endAt: 1, source: "u" }],
+    };
+    expect(serializeEventConfirmationPayload(legacy)).toBe(
+      serializeEventConfirmationPayload(legacy),
+    );
   });
 });
 
@@ -739,11 +933,30 @@ describe("the study's read window", () => {
 });
 
 describe("the menus teach the conventions the parser enforces", () => {
-  it("the events menu states the instant rule and the single-source rule", () => {
+  it("the events menu states the timing, single-source, and read-back rules", () => {
     const menu = renderTradingEventsMenu();
-    expect(menu).toContain("start and end as the same instant");
-    expect(menu).toContain("never several URLs joined into one");
+    // Tight enough to serve as a menu: the look menu's 1,500-char budget is
+    // the discipline here too.
+    expect(menu.length).toBeLessThan(1_500);
+    // The timing model: date precision spans, the instant rule, the refusal
+    // that replaced the +24h fabrication.
+    expect(menu).toContain("date precision");
+    expect(menu).toContain("same instant is an activation");
+    expect(menu).toContain("a timed start with no end is refused");
+    expect(menu).toContain("instant/window/date");
+    expect(menu).toContain("UTC ISO");
+    // One source, never several.
+    expect(menu).toContain("one source per occurrence");
+    expect(menu).toContain("never several joined");
+    // The read-back protocol.
+    expect(menu).toContain("preview");
+    expect(menu).toContain("requireReadBack");
+    expect(menu).toContain("confirmationDigest");
+    // The study conventions another caller needs verbatim.
     expect(menu).toContain("entryBasis");
     expect(menu).toContain("first_closed_bar_after_event");
+    expect(menu).toContain("interval 1m 3m 5m 15m 1h 4h 1d");
+    expect(menu).toContain("a four-week daily study is interval 1d, horizonBars 28");
+    expect(menu).toContain("coarsest interval");
   });
 });

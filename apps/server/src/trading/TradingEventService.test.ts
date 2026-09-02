@@ -11,9 +11,11 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { createHash } from "node:crypto";
 
 import {
   EVENT_SET_MAX_OCCURRENCES,
+  serializeEventConfirmationPayload,
   type TradingEventOccurrence,
 } from "@t3tools/trading-contracts/eventSets";
 
@@ -36,6 +38,7 @@ const migrated = Effect.gen(function* () {
   yield* runMigrations({});
   yield* sql`DELETE FROM trading_event_sets`;
   yield* sql`DELETE FROM trading_event_occurrences`;
+  yield* sql`DELETE FROM trading_event_confirmations`;
 });
 
 const occurrence = (startAt: number, endAt = startAt): TradingEventOccurrence => ({
@@ -44,6 +47,15 @@ const occurrence = (startAt: number, endAt = startAt): TradingEventOccurrence =>
   label: "the date",
   source: "https://example.com/dates",
 });
+
+/** The digest the server should produce, computed the pure way. */
+const expectedDigest = (input: {
+  readonly threadId: string;
+  readonly action: "record" | "add";
+  readonly name: string;
+  readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
+}): string =>
+  createHash("sha256").update(serializeEventConfirmationPayload(input), "utf8").digest("hex");
 
 const recorded = Effect.fn("recorded")(function* (name: string, starts: ReadonlyArray<number>) {
   const service = yield* TradingEventService;
@@ -229,6 +241,321 @@ layer("TradingEventService", (it) => {
       assert.equal(devcon?.nextUpcomingEndAt, null);
       assert.equal(breakpoint?.nextUpcomingEndAt, START + 5 * DAY + DAY);
       assert.equal(breakpoint?.occurrenceCount, 2);
+    }),
+  );
+
+  it.effect("persists the time precision of every occurrence and reads it back", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingEventService;
+      const written = yield* service.record({
+        name: "Ethereum forks",
+        occurrences: [
+          { startAt: START, endAt: START, timePrecision: "instant", source: "https://e.org/1" },
+          {
+            startAt: START + DAY,
+            endAt: START + 2 * DAY,
+            timePrecision: "date",
+            label: "a conference",
+            source: "https://e.org/2",
+          },
+          {
+            startAt: START + 3 * DAY,
+            endAt: START + 3 * DAY + 60_000,
+            timePrecision: "window",
+            source: "https://e.org/3",
+          },
+        ],
+        threadId: "thread-1",
+        author: "agent",
+        now: START,
+      });
+      assert.equal(written.outcome, "ok");
+      if (written.outcome !== "ok") return;
+
+      const shown = yield* service.show(written.set.eventSetId);
+      if (shown === null) return yield* Effect.die("set vanished");
+      assert.deepEqual(shown.occurrences[0], {
+        startAt: START,
+        endAt: START,
+        timePrecision: "instant",
+        source: "https://e.org/1",
+      });
+      assert.equal(shown.occurrences[1]?.timePrecision, "date");
+      assert.equal(shown.occurrences[1]?.label, "a conference");
+      assert.equal(shown.occurrences[2]?.timePrecision, "window");
+    }),
+  );
+
+  it.effect("decodes legacy rows with the precision ABSENT, never re-derived", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingEventService;
+      // A row written before migration 092: no time_precision. Its span is a
+      // whole UTC day, exactly the shape a re-derivation would mislabel.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_event_sets (
+          event_set_id, thread_id, name, description, retired_at, created_at, updated_at
+        ) VALUES ('legacy-set', 'thread-1', 'Legacy', NULL, NULL, ${START}, ${START})
+      `;
+      yield* sql`
+        INSERT INTO trading_event_occurrences (
+          event_set_id, start_at, end_at, time_precision, label, source, author, created_at
+        ) VALUES ('legacy-set', ${START}, ${START + DAY}, NULL, NULL, 'https://old.example', 'agent', ${START})
+      `;
+
+      const shown = yield* service.show("legacy-set");
+      assert.isDefined(shown);
+      const row = shown?.occurrences[0];
+      assert.isDefined(row);
+      // ABSENT, not undefined-by-a-different-path and not guessed "date".
+      assert.notProperty(row, "timePrecision");
+    }),
+  );
+
+  it.effect("previewConfirmation digests the pure canonical payload, scoped per thread", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingEventService;
+      const occurrences = [
+        {
+          startAt: START,
+          endAt: START,
+          timePrecision: "instant" as const,
+          source: "https://e.org/1",
+        },
+      ];
+      const { digest } = yield* service.previewConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        now: START,
+      });
+      assert.equal(
+        digest,
+        expectedDigest({ threadId: "thread-1", action: "record", name: "Forks", occurrences }),
+      );
+      // The same payload in another thread is another confirmation.
+      const { digest: other } = yield* service.previewConfirmation({
+        threadId: "thread-2",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        now: START,
+      });
+      assert.notEqual(digest, other);
+    }),
+  );
+
+  it.effect("consumeConfirmation accepts the exact payload and consumes it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingEventService;
+      const occurrences = [
+        {
+          startAt: START,
+          endAt: START,
+          timePrecision: "instant" as const,
+          source: "https://e.org/1",
+        },
+        {
+          startAt: START + DAY,
+          endAt: START + 2 * DAY,
+          timePrecision: "date" as const,
+          label: "first",
+          source: "https://e.org/2",
+        },
+      ];
+      const { digest } = yield* service.previewConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        now: START,
+      });
+
+      const ok = yield* service.consumeConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        confirmationDigest: digest,
+        now: START + 1,
+      });
+      assert.equal(ok.outcome, "ok");
+
+      // Consumed: the same call again is a replay, named as one.
+      const replay = yield* service.consumeConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        confirmationDigest: digest,
+        now: START + 2,
+      });
+      assert.equal(replay.outcome, "refused");
+      if (replay.outcome === "refused") assert.include(replay.reason, "already consumed");
+
+      // A fresh preview re-arms the same digest.
+      yield* service.previewConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        now: START + 3,
+      });
+      const reArmed = yield* service.consumeConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        confirmationDigest: digest,
+        now: START + 4,
+      });
+      assert.equal(reArmed.outcome, "ok");
+    }),
+  );
+
+  it.effect("consumeConfirmation refuses a payload that changed since the read-back", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingEventService;
+      const first = {
+        startAt: START,
+        endAt: START,
+        timePrecision: "instant" as const,
+        label: "the merge",
+        source: "https://e.org/1",
+      };
+      const second = {
+        startAt: START + DAY,
+        endAt: START + 2 * DAY,
+        timePrecision: "date" as const,
+        label: "shapella",
+        source: "https://e.org/2",
+      };
+      const base = { threadId: "thread-1", action: "record" as const, name: "Forks" };
+      const { digest } = yield* service.previewConfirmation({
+        ...base,
+        occurrences: [first, second],
+        now: START,
+      });
+
+      // Reordered.
+      const reordered = yield* service.consumeConfirmation({
+        ...base,
+        occurrences: [second, first],
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(reordered.outcome, "refused");
+      if (reordered.outcome === "refused") assert.include(reordered.reason, "dates changed");
+
+      // Re-timed.
+      const retimed = yield* service.consumeConfirmation({
+        ...base,
+        occurrences: [{ ...first, endAt: first.startAt + 1 }, second],
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(retimed.outcome, "refused");
+
+      // Re-sourced.
+      const resourced = yield* service.consumeConfirmation({
+        ...base,
+        occurrences: [{ ...first, source: "user provided" }, second],
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(resourced.outcome, "refused");
+
+      // Re-labeled.
+      const relabeled = yield* service.consumeConfirmation({
+        ...base,
+        occurrences: [{ ...first, label: "the Merge" }, second],
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(relabeled.outcome, "refused");
+
+      // Renamed.
+      const renamed = yield* service.consumeConfirmation({
+        ...base,
+        name: "Ethereum forks",
+        occurrences: [first, second],
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(renamed.outcome, "refused");
+
+      // Nothing above consumed the confirmation: the exact payload still can.
+      const exact = yield* service.consumeConfirmation({
+        ...base,
+        occurrences: [first, second],
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(exact.outcome, "ok");
+    }),
+  );
+
+  it.effect("consumeConfirmation refuses unknown digests and other threads' confirmations", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingEventService;
+      const occurrences = [
+        {
+          startAt: START,
+          endAt: START,
+          timePrecision: "instant" as const,
+          source: "https://e.org/1",
+        },
+      ];
+      const { digest } = yield* service.previewConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        now: START,
+      });
+
+      const unknown = yield* service.consumeConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        confirmationDigest: "0".repeat(64),
+        now: START,
+      });
+      assert.equal(unknown.outcome, "refused");
+      if (unknown.outcome === "refused")
+        assert.include(unknown.reason, "matches no read-back confirmation for this thread");
+
+      // The right digest, but read back in another conversation.
+      const crossThread = yield* service.consumeConfirmation({
+        threadId: "thread-2",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(crossThread.outcome, "refused");
+      if (crossThread.outcome === "refused")
+        assert.include(crossThread.reason, "no read-back confirmation for this thread");
+
+      // Still pending in its own thread: nobody else spent it.
+      const own = yield* service.consumeConfirmation({
+        threadId: "thread-1",
+        action: "record",
+        name: "Forks",
+        occurrences,
+        confirmationDigest: digest,
+        now: START,
+      });
+      assert.equal(own.outcome, "ok");
     }),
   );
 });
