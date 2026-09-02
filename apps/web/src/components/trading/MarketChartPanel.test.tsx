@@ -8,7 +8,7 @@
  * that owns them.
  */
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { MarketChartPanel } from "./MarketChartPanel";
 
@@ -350,5 +350,168 @@ describe("MarketChartPanel: one shared stage for every state", () => {
     mocks.chartState = before;
     expect(markup).toContain('data-testid="market-chart-stage"');
     expect(markup).toContain("Not enough 5 min bars recorded for ETH yet.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the reserved left label lane
+// ---------------------------------------------------------------------------
+//
+// The seam above stubs MissionPriceChart to pin the panel's prop hand-off;
+// the lane is the chart's own geometry, so these render the REAL chart (the
+// module mock does not reach a vi.importActual reference) and pin what the
+// reader actually gets: an empty lane the plot never enters, labels that sit
+// inside it on theme-aware backing, grid ticks subordinate to named levels,
+// and an honest "+N" disclosure when the lane folds a level away.
+
+describe("MarketChartPanel: the reserved left label lane", () => {
+  const Minute = 60_000;
+  const T0 = 1_710_000_000_000;
+
+  // 48 one-minute candles in a ~[89, 111] band: enough texture that the plot
+  // has a left edge worth reserving, and a domain that keeps every session
+  // level below inside it.
+  const LANE_CANDLES = Array.from({ length: 48 }, (_, i) => ({
+    openTime: T0 + i * Minute,
+    open: 100 + (i % 8),
+    high: 104 + (i % 8),
+    low: 96 - (i % 8),
+    close: 100 + ((i + 3) % 8),
+    volume: 1,
+    trades: 1,
+  }));
+
+  // Seven named levels inside the domain. vwap and the day's open sit a hair
+  // apart (one label, one disclosure entry); the rest keep clear of the round
+  // numbers so the grid keeps at least one tick of its own.
+  const SESSION_LEVELS = {
+    priorDayHigh: 111.3,
+    priorDayLow: 88.9,
+    priorDayClose: 96,
+    todayOpen: 101.6,
+    todayHigh: 108.8,
+    todayLow: 91.8,
+    vwap: 101.65,
+  };
+
+  let RealChart: typeof import("./MissionPriceChart").MissionPriceChart;
+  beforeAll(async () => {
+    ({ MissionPriceChart: RealChart } = await vi.importActual("./MissionPriceChart"));
+  });
+
+  const renderChart = (wrapped: boolean): string =>
+    renderToStaticMarkup(
+      wrapped ? (
+        <div className="dark">
+          <RealChart
+            candles={LANE_CANDLES}
+            entryPrice={null}
+            stopPrice={null}
+            targetPrice={null}
+            liquidationPrice={null}
+            entryTime={null}
+            markPrice={null}
+            pnlSign={null}
+            nowMillis={T0 + 47 * Minute + 30_000}
+            sessionLevels={SESSION_LEVELS}
+          />
+        </div>
+      ) : (
+        <RealChart
+          candles={LANE_CANDLES}
+          entryPrice={null}
+          stopPrice={null}
+          targetPrice={null}
+          liquidationPrice={null}
+          entryTime={null}
+          markPrice={null}
+          pnlSign={null}
+          nowMillis={T0 + 47 * Minute + 30_000}
+          sessionLevels={SESSION_LEVELS}
+        />
+      ),
+    );
+
+  it("reserves the lane strip and renders both label kinds inside it", () => {
+    const markup = renderChart(false);
+    expect(markup).toContain('data-testid="mission-chart-left-lane"');
+    expect(markup).toContain('style="width:9.6%"');
+    const sessionLabels = markup.match(/data-testid="market-chart-session-label"/g) ?? [];
+    const gridLabels = markup.match(/data-testid="mission-chart-grid-label"/g) ?? [];
+    expect(sessionLabels.length).toBeGreaterThan(0);
+    expect(gridLabels.length).toBeGreaterThan(0);
+    // Right-aligned against the plot edge from inside the strip — the lane
+    // holds them by construction, and the old in-plot anchor is gone.
+    const firstLabel = markup.match(/<span[^>]*mission-chart-grid-label[^>]*>/)?.[0] ?? "";
+    expect(firstLabel).toContain("right-[3px]");
+    expect(firstLabel).toContain("mission-lane-label");
+    expect(firstLabel).not.toContain("left-1.5");
+  });
+
+  it("keeps the plot out of the lane: rules and candle bodies start at its edge", () => {
+    const markup = renderChart(false);
+    // The clip that holds the series at the plot's left edge.
+    expect(markup).toMatch(/<clipPath[^>]*><rect x="96"/);
+    // Every session rule starts exactly at the lane's far edge.
+    const sessionRules = markup.match(/<line[^>]*market-chart-session-\w+[^>]*>/g) ?? [];
+    expect(sessionRules.length).toBe(7);
+    for (const rule of sessionRules) {
+      expect(rule).toContain('x1="96"');
+    }
+    // Candle bodies sit at their own times; the window-edge bar alone may
+    // touch the clip, so no body starts left of the lane's edge minus that
+    // bar's half width.
+    const candlesGroup = markup.match(/data-testid="mission-chart-candles"[\s\S]*?<\/g>/)?.[0];
+    expect(candlesGroup).toBeDefined();
+    const bodyXs = [...(candlesGroup?.matchAll(/<rect x="([0-9.]+)"/g) ?? [])].map((m) =>
+      Number(m[1]),
+    );
+    expect(bodyXs.length).toBeGreaterThan(0);
+    for (const x of bodyXs) {
+      expect(x).toBeGreaterThanOrEqual(90);
+    }
+  });
+
+  it("discloses folded levels instead of dropping them, and stays readable without sight", () => {
+    const markup = renderChart(false);
+    // vwap and the day's open are one label; the grid's 90 and 110 were boxed
+    // between named levels with nowhere legible to go. All three are counted
+    // and NAMED — never silently dropped.
+    const disclosure = markup.match(/<span[^>]*mission-chart-lane-overflow[^>]*>/)?.[0] ?? "";
+    expect(disclosure).toContain('role="note"');
+    expect(disclosure).toContain('tabindex="0"');
+    expect(disclosure).toContain("3 more levels not shown: d op 101.6, 110, 90");
+    expect(markup).toContain("+3");
+    // The one accessible summary carries every level — placed or folded.
+    const summary = markup.match(/<span[^>]*mission-chart-lane-summary[^>]*>[^<]*/)?.[0] ?? "";
+    expect(summary).toContain("Left price axis:");
+    expect(summary).toContain("pd hi 111.3");
+    expect(summary).toContain("vwap 101.65");
+    expect(summary).toContain("d op 101.6");
+    expect(summary).toContain("3 more levels not shown");
+  });
+
+  it("keeps named levels visually stronger than grid ticks, both above the contrast floor", () => {
+    const markup = renderChart(false);
+    const sessionLabel = markup.match(/<span[^>]*market-chart-session-label[^>]*>/)?.[0] ?? "";
+    const gridLabel = markup.match(/<span[^>]*mission-chart-grid-label[^>]*>/)?.[0] ?? "";
+    // Full-strength ink and weight for the named level; the muted token at
+    // FULL opacity for the tick — any alpha on it drops below the 4.5 floor
+    // the panel's own CSS documents.
+    expect(sessionLabel).toContain("text-foreground");
+    expect(sessionLabel).toContain("font-medium");
+    expect(gridLabel).toContain("text-muted-foreground");
+    expect(markup).not.toContain("text-muted-foreground/80");
+  });
+
+  it("renders the same lane inside the dark theme's wrapper", () => {
+    const markup = renderChart(true);
+    expect(markup).toContain('class="dark"');
+    expect(markup).toContain('data-testid="mission-chart-left-lane"');
+    expect(markup).toContain('data-testid="market-chart-session-label"');
+    // The theme-aware material is the token-backed class, shared by every
+    // lane label whatever theme wraps the chart.
+    const labels = markup.match(/<span[^>]*mission-lane-label[^>]*>/g) ?? [];
+    expect(labels.length).toBeGreaterThan(0);
   });
 });
