@@ -88,6 +88,51 @@ Use `vp i` to install and `vp run dev` to start server and web. Read actual port
 
 For tailnet sharing, use `vp run dev --share` and hand the user the complete pairing URL including its one-time token. Do not assemble Tailscale routing manually or consume a pairing URL meant for someone else.
 
+## ZCode subagent workflow
+
+Project-owned ZCode custom subagents live in `.zcode/agents`; user-level profiles live
+in `~/.zcode/agents`. ZCode Settings currently manages only the user-level Beta, so
+edit these workspace profiles as Markdown files. They inherit this workspace
+`AGENTS.md` by default, but profile edits only load in a new ZCode session. Use the
+built-in `Explore` role for read-only codebase discovery; do not recreate or override
+ZCode's reserved `general-purpose` or `Explore` names. The profiles below force
+background execution, so dispatch independent work together and consume results as
+they return.
+
+The installed reusable profiles are:
+
+| Profile                      | Use it for                                                                       | Boundary                                                                |
+| ---------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `implementation-worker`      | One independently editable implementation slice                                  | One writer per file; no shared runtime unless explicitly assigned       |
+| `focused-verifier`           | Focused tests, typechecks, lint, and acceptance checks                           | Independent and read-only; never repairs its own findings               |
+| `change-reviewer`            | Diff review for correctness, regressions, and test gaps                          | Read-only; reports actionable findings with file and line evidence      |
+| `documentation-researcher`   | Current official library, SDK, API, CLI, or cloud documentation                  | Read-only; separates sourced facts from inference                       |
+| `t3-app-tester`              | Integrated T3 Trade web testing with `test-t3-app`                               | Sole owner of one retained isolated stack, state directory, and browser |
+| `t3-trading-safety-reviewer` | Trading execution, accounting, signer, reconciliation, and protection invariants | Read-only; testnet-only; never weakens a guard                          |
+| `t3-contract-auditor`        | Wire/shared-contract producer-consumer coverage                                  | Read-only; checks every active boundary and reverse action              |
+| `t3-relay-inspector`         | Relay diagnosis across repo, host, and Cloudflare                                | Read-only unless production mutation is separately authorized           |
+
+Choose specialists by the work, not by habit. A normal development loop is:
+
+1. Use one or more built-in `Explore` workers in parallel for wide discovery when the
+   call chain or impact surface is unknown.
+2. Give each `implementation-worker` a self-contained prompt and exclusive file or
+   module ownership. Never assign two writers to the same file in one batch.
+3. Name exactly one `t3-app-tester` when the app must run. No other worker may start a
+   dev stack, drive its browser, consume its pairing URL, or write its SQLite state.
+4. Run independent review and verification after implementation. Use
+   `t3-trading-safety-reviewer` or `t3-contract-auditor` in addition to
+   `change-reviewer` when those boundaries are affected.
+5. Return failures to the original implementer when practical; it already holds the
+   relevant context. Re-run the independent verifier after the repair.
+
+Every delegation prompt must include the exact checkout, a bounded mission, original
+acceptance criteria, owned files, allowed side effects, relevant commands or skills,
+a progress artifact path, and the required evidence. Parallelize independent reads and
+disjoint writes; serialize dependent work and all access to singleton resources.
+Subagent reports are claims until the coordinator or an independent verifier checks
+them against the repository and artifacts.
+
 ## Verification
 
 Use the `test-t3-app` skill for every user-visible web change. It defines the required isolated state, pairing, controlled-browser, server-retention, and teardown workflow. Reuse one dev server, state directory, and authenticated browser for the full iteration. Do not launch competing stacks from subagents.
