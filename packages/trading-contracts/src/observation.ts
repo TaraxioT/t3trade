@@ -202,13 +202,27 @@ export const TRADING_LOOK_MAX_EVENTS = 20;
 /** What a bare `events` key serves: the recent tail, uncapped by the caller. */
 export const TRADING_LOOK_DEFAULT_EVENTS = 5;
 
-const TRADING_LOOK_INTERVALS: ReadonlyArray<TradingTimeframe> = ["1m", "3m", "5m", "15m", "1h"];
+/**
+ * The candle intervals a `candles:<interval>:<n>` fetch accepts. Live look
+ * stops at 1h — coarser history is the event study's job, not the look's
+ * (the two grammars deliberately differ). Exported so the menu and the tests
+ * quote the parser's own set.
+ */
+export const TRADING_LOOK_INTERVALS: ReadonlyArray<TradingTimeframe> = [
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "1h",
+];
 
 /**
  * The menu the catalog call returns — `trading_look` with no `fetch` and no
  * (plan 38 §2.3 rule 3). `key=chars` entries, the four archive keys
  * starred, and one legend clause. No descriptions, no prose beyond the legend:
- * the model budgets its own context off this blob (rule 1).
+ * the model budgets its own context off this blob (rule 1). Parameterized
+ * entries carry their parser-enforced bounds inline, so the one catalog call
+ * is also the only call needed to compose a legal key.
  */
 export function renderTradingLookMenu(): string {
   const entries = TRADING_LOOK_CATALOG.map((entry) => {
@@ -230,18 +244,23 @@ export function renderTradingLookMenu(): string {
   );
 }
 
-/** The rendered form of a parameterized key's parameter part. */
+/**
+ * The rendered form of a parameterized key's parameter part, with the bound
+ * the parser enforces. Composed from the same constants
+ * `parseTradingLookFetchKey` refuses by, so the menu, the refusals, and the
+ * parser can never quote different numbers.
+ */
 function paramSuffix(key: string): string {
   const entry = TRADING_LOOK_CATALOG.find((candidate) => candidate.key === key);
   switch (entry?.parameterized) {
     case "<interval>:<n>":
-      return ":tf:n";
+      return `:tf:n[${TRADING_LOOK_INTERVALS.join("|")};n≤${TRADING_LOOK_MAX_BARS}]`;
     case "<W>":
-      return ":d";
+      return `:W[days 1-${TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS}]`;
     case "<spec>":
       return ":spec";
     default:
-      return ":n";
+      return `:n[1-${key === "events" ? TRADING_LOOK_MAX_EVENTS : TRADING_LOOK_MAX_ARCHIVE_ROWS}]`;
   }
 }
 

@@ -151,7 +151,7 @@ const dependencies = [
 
 export const TradingLookTool = Tool.make("trading_look", {
   description:
-    "The one read. `fetch[]` names catalog keys at published sizes — snapshot, book, microstructure, candles:tf:n, indicators:spec (ema20 rsi14 atr14 macd bollinger20), volatility(_htf), structure (scored `candidates[]`), structure_brief, levels, position (flat is size 0), position_costs, orders, account, plan, watches, events, journal, trades, calibration, plan_history, cost (context, never a gate), funding/oi/book/scan archive keys. Menu: trading_look({})",
+    "The one read. `fetch[]` names catalog keys at published sizes — snapshot, book, microstructure, candles:tf:n (tf 1m|3m|5m|15m|1h, n≤200, one tf per call; e.g. candles:1h:200), indicators:spec (ema20 rsi14 atr14 macd bollinger20), volatility(_htf), structure (scored `candidates[]`), structure_brief, levels, position (flat is size 0), position_costs, orders, account, plan, watches, events:n (n≤20), journal, trades, calibration, plan_history, cost (context, never a gate), archive keys funding_stats:W (days 1-30), funding_series:n / oi_premium:n / book_history:n (n≤200), scan. Unsure of a key or its grammar: call the menu once — trading_look({}) — never guess.",
   parameters: TradingLookInput,
   success: TradingObservation,
   failure: TradingToolRejectedError,
@@ -316,7 +316,7 @@ export const TradingHypothesisTool = Tool.make("trading_hypothesis", {
 
 export const TradingEventsTool = Tool.make("trading_events", {
   description:
-    "The external calendar a thesis anchors on. record {name, occurrences:[{start, end?, label?, source}]} stores dates you researched in this chat, each with one source URL, never several joined or invented; fetches nothing. An instantaneous event uses the same instant for start and end. add, list, show, retire. study {eventSetId, market, interval?, horizonBars?, entryBasis?} reports per-occurrence forward returns vs an every-bar baseline, and how many the archive can see. Menu: trading_events({})",
+    'The external calendar a thesis anchors on. record {name, occurrences:[{start, end?, label?, source}]} stores dates you researched in this chat, each with one source URL, never several joined or invented; fetches nothing. An instantaneous event uses the same instant for start and end; a date-only source keeps date precision — never invent a midnight or a 24h span. add, list, show, retire. study {eventSetId, market, interval?, horizonBars?, entryBasis?} reads the archive: interval 1m|3m|5m|15m|1h|4h|1d, horizonBars 1..500 (default 30); a four-week daily study is {interval: "1d", horizonBars: 28}. Pick the coarsest interval that covers the horizon: finer intervals start later in the archive. Reports per-occurrence forward returns vs an every-bar baseline, and how many the archive can see. Menu: trading_events({})',
   parameters: TradingEventsInput,
   success: TradingEventsResult,
   failure: TradingToolRejectedError,
