@@ -117,6 +117,46 @@ of a silent filter is the most misleading number a study could produce, so the
 verdict says something like "1 of 2 occurrences fall inside archived data" and
 never claims more than that.
 
+## The lowest point, not just the ending
+
+> What was the lowest ETH got in the four weeks after each fork, and what
+> would a $2,000 short have made?
+
+That question is not about the close thirty days later. It is about the path
+in between, and a terminal return cannot answer it. Say "lowest point" (or
+highest) and the study measures a second thing: for every covered occurrence,
+the lowest low — or highest high — after the entry, inside the horizon, with
+the moment it printed. Both numbers ride the same row, always: the excursion
+to that extreme, and the plain close-to-close return, because the honest way
+to read a best point is right next to what holding to the end actually did.
+
+The dollar figures are arithmetic on those percentages, and they say so. Each
+event is illustrated on the full amount independently — one fork, one $2,000,
+never a running balance that compounds one event into the next. There are no
+fees, no funding, no slippage, no liquidation, and two figures, never one:
+what a short closed at the lowest point would have made, labelled
+hindsight-perfect, because nobody knew the lowest point in advance and nobody
+exits every window at its best tick; and what closing at the horizon's end
+would have made. A short profits when price falls, loses when it rises, and
+the signs you see follow that rule exactly.
+
+An occurrence the archive cannot reach gets no extremum, only its reason, the
+same as always: an invented low is worse than none.
+
+## Why the four-week study is daily bars
+
+The archive does not start everywhere at once. The fine intervals — one
+minute, fifteen minutes, four hours — begin recording later than the daily
+ones, so a study that asks for 4h bars about events from before the 4h
+recorder began can only shrug at them: uncovered, with the reason. The same
+events on daily bars are covered and measured.
+
+That is why a four-week study is interval "1d", horizonBars 28: twenty-eight
+daily bars are twenty-eight whole days, and the daily archive reaches furthest
+back. Ask for the coarsest interval that covers your horizon, and the study
+will see the most events it possibly can. The verdict tells you how many it
+saw, and the rest are listed, not lost.
+
 ## Anchor an idea on it
 
 Once the dates are recorded, they become part of the rule vocabulary:
@@ -144,6 +184,14 @@ Ask for the study and it does not stay a paragraph. Say:
 > Study that on ETH, daily bars, over the thirty bars after each one, and put
 > it on the graph.
 
+Putting it on the graph is one call: publish. It measures the set and
+publishes the scene in the same breath — there is no second step to forget,
+and the scene it hands back, with its id, is the proof it is shown. A study
+that was only run stays text in the conversation; its answer even ends by
+naming the publish call, so the last sentence points at the graph. And if a
+publish fails, it fails out loud: the answer is a refusal with the reason,
+never a picture that did not happen.
+
 Publishing does not take the graph over. It stays on Live, and the study's
 occurrences arrive right there: each one a named marker at the exact instant
 it happened — an upgrade that switched on at one moment is a vertical rule at
@@ -170,7 +218,14 @@ switching views changes the picture, never the layout. In Calendar, one
 occurrence at a time fills the chart — the activation as a named vertical rule
 at the instant it happened, the entry and the exit as markers pinned to the
 exact prices they were measured at, the signed return drawn between them, and
-the source the date came from, one link each. The other occurrences, the
+the source the date came from, one link each. In the inspector, each
+occurrence's row says when it happened and what kind of when that is — an
+exact instant, an exact window, a whole day, or a span recorded before those
+distinctions existed, which says exactly that and nothing finer. A
+lowest-point study adds its own line per occurrence: the entry, the named
+extreme ("lowest low") with its date, the excursion and the terminal return
+each beside its money figure on the notional, and under the notional control
+the one assumptions sentence those figures ride. The other occurrences, the
 study's fine print, and its provenance scroll in the inspector below the
 chart, so reading them never pushes the graph around. These markers are
 historical measurements, not trades: nothing filled, nothing ordered, and the

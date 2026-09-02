@@ -304,16 +304,25 @@ it("keeps every description on a budget", () => {
   // already spent the call the bound was meant to save. The two rewritten
   // descriptions measure 664 and 821 chars; the raise is their difference
   // (531) plus deliberate headroom, not a widening until it fitted.
-  expect(total, "total description chars must stay under 7,000").toBeLessThan(7_000);
+  //
+  // Raised from 7,000 to 7,250 when `trading_events` and `trading_chart`
+  // began teaching the path_extrema study metric (metric/direction/priceField
+  // and the lowest-low excursion, hindsight-perfect) and the publication
+  // continuation: the mission those sentences answer is a study that escaped
+  // to shell math because the tool never said what it could measure. The
+  // landed grammar text stays intact; the raise carries only the new
+  // sentences (events 821 -> 1,120, chart 507 -> 675).
+  expect(total, "total description chars must stay under 7,250").toBeLessThan(7_250);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;
     // `trading_events` carries the study grammar (interval set, horizonBars
-    // bound, the four-week example) and `trading_look` the fetch grammar, so
-    // they are the longest descriptions in the set. 900 leaves edit headroom,
-    // not room for a new field glossary.
-    expect(len, `${tool.name} description is ${len} chars, must be <= 900`).toBeLessThanOrEqual(
-      900,
+    // bound, the four-week example, the path_extrema metric fields) and
+    // `trading_look` the fetch grammar, so they are the longest descriptions
+    // in the set. 1,150 leaves edit headroom, not room for a new field
+    // glossary; it moved from 900 when the metric fields landed.
+    expect(len, `${tool.name} description is ${len} chars, must be <= 1,150`).toBeLessThanOrEqual(
+      1_150,
     );
   }
 });

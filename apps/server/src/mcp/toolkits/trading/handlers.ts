@@ -166,6 +166,7 @@ import {
   eventStudyReadWindow,
   parseTradingEventsOccurrence,
   renderTradingEventsMenu,
+  resolveEventStudyMetric,
   runEventStudy,
   type TradingEventsResult,
   type TradingEventsOccurrenceInput,
@@ -4137,6 +4138,16 @@ export const handlers = {
           const badHorizon = checkEventStudy({ horizonBars });
           if (badHorizon !== null) return yield* refuse(badHorizon);
           const entryBasis = input.entryBasis ?? EVENT_STUDY_DEFAULT_ENTRY_BASIS;
+          // The metric resolves exactly as the publish action resolves it:
+          // one pure resolver, so a published scene is the same study this
+          // action described, and a contradictory direction/price field pair
+          // refuses before a bar is read.
+          const resolvedMetric = resolveEventStudyMetric({
+            metric: input.metric,
+            direction: input.direction,
+            priceField: input.priceField,
+          });
+          if ("reason" in resolvedMetric) return yield* refuse(resolvedMetric.reason);
 
           // The TradingBacktestService read pattern, in miniature: probe what
           // the archive holds, refuse a window too large to walk before the
@@ -4229,13 +4240,29 @@ export const handlers = {
             horizonBars,
             entryBasis,
             now,
+            ...(resolvedMetric.metric === "path_extrema"
+              ? {
+                  metric: "path_extrema" as const,
+                  direction: resolvedMetric.direction,
+                  priceField: resolvedMetric.priceField,
+                }
+              : {}),
           });
           // The basis is part of the answer: a close-to-close number and an
           // open-entry number answer different questions, and the model
-          // narrates the one that was actually measured.
+          // narrates the one that was actually measured. The metric phrase
+          // says what the extrema are (and that they are hindsight-perfect),
+          // and the closing sentence names the only path to "shown": a study
+          // that stays a tool result was never on the graph.
+          const metricSentence =
+            resolvedMetric.metric === "path_extrema"
+              ? ` Metric: path extrema for a ${resolvedMetric.direction} on the ${resolvedMetric.priceField} — the excursion to that extremum is hindsight-perfect (maximum favorable excursion after entry), not a realizable result.`
+              : "";
           return eventsResult({
             study,
-            outcome: `${study.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.`,
+            outcome:
+              `${study.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence} ` +
+              "To show this on the graph, call trading_chart publish_event_study with the same parameters.",
           });
         }
       }
@@ -4310,6 +4337,14 @@ export const handlers = {
           const badHorizon = checkEventStudy({ horizonBars });
           if (badHorizon !== null) return yield* refuse(badHorizon);
           const entryBasis = input.entryBasis ?? EVENT_STUDY_DEFAULT_ENTRY_BASIS;
+          // The same resolver as the events study action, so a published
+          // scene is the same study the study action described.
+          const resolvedMetric = resolveEventStudyMetric({
+            metric: input.metric,
+            direction: input.direction,
+            priceField: input.priceField,
+          });
+          if ("reason" in resolvedMetric) return yield* refuse(resolvedMetric.reason);
           const interval = (input.interval ?? "1d") as ArchiveInterval;
           const width = INTERVAL_MS[interval];
           if (width === undefined) {
@@ -4394,6 +4429,13 @@ export const handlers = {
             horizonBars,
             entryBasis,
             now,
+            ...(resolvedMetric.metric === "path_extrema"
+              ? {
+                  metric: "path_extrema" as const,
+                  direction: resolvedMetric.direction,
+                  priceField: resolvedMetric.priceField,
+                }
+              : {}),
           });
           const servedFromT = candles[0]?.openTime ?? now;
           const servedToT = candles[candles.length - 1]?.openTime ?? now;
@@ -4411,10 +4453,13 @@ export const handlers = {
           // The windows the client fetches per occurrence: the event span
           // plus the measured horizon, so Calendar mode draws each occurrence
           // with its own entry and exit bars without shipping years of bars.
+          // Each carries the occurrence's own time precision so the graph
+          // never guesses a moment the source never established.
           const occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow> = report.rows.map(
             (row) => ({
               startAt: row.startAt,
               endAt: row.endAt,
+              ...(row.timePrecision === undefined ? {} : { timePrecision: row.timePrecision }),
               ...(row.label === undefined ? {} : { label: row.label }),
               source: row.source,
               covered: row.covered,
@@ -4422,9 +4467,13 @@ export const handlers = {
               ...(row.exitTime === undefined ? {} : { exitTime: row.exitTime }),
             }),
           );
+          const metricTitleSuffix =
+            resolvedMetric.metric === "path_extrema"
+              ? `, ${resolvedMetric.direction} path extrema`
+              : "";
           const title =
             input.title ??
-            `${set.name} on ${input.market}, ${interval} bars, ${horizonBars} forward`;
+            `${set.name} on ${input.market}, ${interval} bars, ${horizonBars} forward${metricTitleSuffix}`;
           const published = yield* scenes
             .publish({
               threadId,
@@ -4438,6 +4487,17 @@ export const handlers = {
                 document: {
                   priceSource: "hyperliquid",
                   entryBasis,
+                  // The metric is part of the recipe and always recorded: a
+                  // path_extrema scene's extrema and excursion aggregates read
+                  // as nothing without it. Scenes persisted before metrics
+                  // existed decode as forward_return via the schema default.
+                  metric: resolvedMetric.metric,
+                  ...(resolvedMetric.metric === "path_extrema"
+                    ? {
+                        direction: resolvedMetric.direction,
+                        priceField: resolvedMetric.priceField,
+                      }
+                    : {}),
                   ...(input.illustrativeNotionalUsd === undefined
                     ? {}
                     : { illustrativeNotionalUsd: input.illustrativeNotionalUsd }),
@@ -4463,10 +4523,14 @@ export const handlers = {
           if (published.outcome === "refused") return yield* refuse(published.reason);
           const scene = yield* withReferenceStatus(published.scene);
           const coveredWindows = occurrenceWindows.filter((w) => w.covered).length;
+          const metricSentence =
+            resolvedMetric.metric === "path_extrema"
+              ? ` Metric: path extrema for a ${resolvedMetric.direction} on the ${resolvedMetric.priceField} — the excursion is hindsight-perfect (maximum favorable excursion after entry), not a realizable result.`
+              : "";
           return chartResult({
             scene,
             outcome:
-              `${report.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}. ` +
+              `${report.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence} ` +
               `Shown on graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
               `calendar and event-aligned views above this chat. ${RESEARCH_DISCLAIMER}`,
           });

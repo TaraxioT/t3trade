@@ -456,6 +456,93 @@ export function historicalGrossChangeLabel(notionalUsd: number): string {
   return `historical gross change on ${fmtUsd(notionalUsd)}, before costs`;
 }
 
+// ---------------------------------------------------------------------------
+// the path_extrema metric: hypothetical PnL is display arithmetic, nothing more
+// ---------------------------------------------------------------------------
+
+/**
+ * The assumptions line that rides a path_extrema scene's money figures: each
+ * event is illustrated on the full notional INDEPENDENTLY (no compounding, no
+ * reuse across events), gross of every cost, and the hindsight-perfect figure
+ * is the maximum favorable excursion after entry — the best the path offered,
+ * never a strategy result anyone could have realized.
+ */
+export const PATH_EXTREMA_ASSUMPTIONS_SENTENCE =
+  "hypothetical illustration: each event gets the full notional independently (never compounded or reused), gross — no fees, funding, slippage or liquidation; the hindsight-perfect figure is the maximum favorable excursion after entry, not a realizable strategy result";
+
+/**
+ * The fixed-horizon close PnL on one event's notional: sign-correct for the
+ * direction, so a SHORT profits when price falls (a negative measured return
+ * negates into positive money) and loses when it rises. Pure display
+ * arithmetic on the row's measured terminal returnPct — the notional is the
+ * reader's current illustration, never an allocated position.
+ */
+export function fixedHorizonPnlUsd(input: {
+  readonly notionalUsd: number;
+  readonly returnPct: number;
+  readonly direction: "short" | "long";
+}): number {
+  return (
+    (input.notionalUsd * (input.direction === "short" ? -input.returnPct : input.returnPct)) / 100
+  );
+}
+
+/**
+ * The hindsight-perfect PnL at the extremum on one event's notional: the
+ * excursion is long-convention signed like returnPct, so a short negates it
+ * too. This is the maximum favorable excursion — the best point the path
+ * reached after entry — and every figure it produces must ride
+ * {@link PATH_EXTREMA_ASSUMPTIONS_SENTENCE}: nobody could have known the
+ * extremum in advance, and nobody exits every window at its best tick.
+ */
+export function hindsightPerfectPnlUsd(input: {
+  readonly notionalUsd: number;
+  readonly excursionReturnPct: number;
+  readonly direction: "short" | "long";
+}): number {
+  return (
+    (input.notionalUsd *
+      (input.direction === "short" ? -input.excursionReturnPct : input.excursionReturnPct)) /
+    100
+  );
+}
+
+/** The extremum in the reader's words: a short reads the low, a long the high. */
+export function extremumPhrase(priceField: "low" | "high"): string {
+  return priceField === "low" ? "lowest low" : "highest high";
+}
+
+/**
+ * What one occurrence's timestamps claim, as a phrase the panel can put
+ * beside the time. Legacy rows carry no claim and say exactly that — "recorded
+ * as a span" — rather than a precision nobody declared at the time, and a
+ * date never reads as a midnight it did not establish.
+ */
+export function occurrencePrecisionPhrase(
+  precision: "instant" | "window" | "date" | undefined,
+): string {
+  switch (precision) {
+    case "instant":
+      return "exact instant";
+    case "window":
+      return "exact window";
+    case "date":
+      return "date precision (whole days, no time of day claimed)";
+    default:
+      return "recorded as a span";
+  }
+}
+
+/**
+ * The metric a scene's numbers were measured on; scenes persisted before
+ * metrics existed are forward_return and never reinterpreted.
+ */
+export function payloadStudyMetric(payload: {
+  readonly metric?: "forward_return" | "path_extrema" | undefined;
+}): "forward_return" | "path_extrema" {
+  return payload.metric ?? "forward_return";
+}
+
 /**
  * The calendar chart's study overlay for one occurrence, derived from the
  * server-composed deterministic layers rather than rebuilt from the row: the

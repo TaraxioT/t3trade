@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
-import type { EventStudyReport } from "./eventSets.ts";
+import type { EventStudyReport, EventStudyRow } from "./eventSets.ts";
 
 import {
   EventStudyScenePayload,
@@ -247,8 +247,9 @@ describe("the model never writes computed values or rendering instructions", () 
 
 describe("calculation versions and menu", () => {
   it("pins one version per engine and names every action in the menu", () => {
-    // Bumped when the study gained an explicit entry basis.
-    expect(RESEARCH_CALCULATION_VERSIONS.eventStudy).toBe("event-study-2");
+    // Bumped when the study gained an explicit entry basis, then again when
+    // it gained the path_extrema metric and occurrence time precision.
+    expect(RESEARCH_CALCULATION_VERSIONS.eventStudy).toBe("event-study-3");
     const menu = renderTradingChartMenu();
     for (const action of [
       "publish_event_study",
@@ -260,6 +261,11 @@ describe("calculation versions and menu", () => {
     ]) {
       expect(menu).toContain(action);
     }
+    // The metric fields ride the publish call shape.
+    expect(menu).toContain("metric?");
+    expect(menu).toContain("direction?");
+    expect(menu).toContain("priceField?");
+    expect(menu).toContain("path_extrema");
   });
 
   it("shows the publish call shape the model must use, including the basis and the notional", () => {
@@ -271,5 +277,161 @@ describe("calculation versions and menu", () => {
     // show afterwards, and the menu says so next to the shape it shows.
     expect(menu).toContain("no follow-up show call");
     expect(menu).toContain("show {sceneId}");
+  });
+});
+
+describe("the path_extrema recipe and its decode compatibility", () => {
+  const decode = Schema.decodeUnknownSync(EventStudyScenePayload);
+
+  it("persists the metric, direction and price field, and its report's extrema ride the rows", () => {
+    const decoded = decode({
+      ...payloadBeforeBasis,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      priceField: "low",
+      illustrativeNotionalUsd: 2000,
+      report: {
+        ...report,
+        metric: "path_extrema",
+        meanExcursionPct: -12.5,
+        excursionBeyondTerminalPercent: 100,
+        rows: report.rows.map((row) => ({
+          ...row,
+          extremumTime: row.entryTime,
+          extremumPrice: 87.5,
+          excursionReturnPct: -12.5,
+        })),
+      },
+    });
+    expect(decoded.metric).toBe("path_extrema");
+    expect(decoded.direction).toBe("short");
+    expect(decoded.priceField).toBe("low");
+    expect(decoded.report.metric).toBe("path_extrema");
+    expect(decoded.report.meanExcursionPct).toBe(-12.5);
+    expect(decoded.report.excursionBeyondTerminalPercent).toBe(100);
+    expect(decoded.report.rows[0]?.extremumPrice).toBe(87.5);
+    expect(decoded.report.rows[0]?.excursionReturnPct).toBe(-12.5);
+  });
+
+  it("decodes an old event-study-2 payload as a forward_return study of spans", () => {
+    // A scene persisted before metrics or time precision existed: no metric,
+    // no direction, no extrema, no precision on any row or window. It must
+    // decode with defaults, never be reinterpreted as extrema it never held.
+    const decoded = decode(payloadBeforeBasis);
+    expect(decoded.metric).toBe("forward_return");
+    expect(decoded.direction).toBeUndefined();
+    expect(decoded.priceField).toBeUndefined();
+    expect(decoded.report.metric).toBeUndefined();
+    expect(decoded.report.meanExcursionPct).toBeUndefined();
+    expect(decoded.occurrenceWindows).toEqual([]);
+    for (const row of decoded.report.rows) {
+      expect(row.extremumTime).toBeUndefined();
+      expect(row.extremumPrice).toBeUndefined();
+      expect(row.excursionReturnPct).toBeUndefined();
+      expect(row.timePrecision).toBeUndefined();
+    }
+  });
+
+  it("carries each occurrence's time precision into the windows", () => {
+    const decoded = decode({
+      ...payloadBeforeBasis,
+      occurrenceWindows: [
+        {
+          startAt: NOW,
+          endAt: NOW,
+          timePrecision: "instant",
+          source: "https://example.com/i",
+          covered: true,
+          entryTime: NOW,
+          exitTime: NOW + 30 * DAY,
+        },
+        {
+          startAt: NOW + DAY,
+          endAt: NOW + 2 * DAY,
+          timePrecision: "date",
+          source: "https://example.com/d",
+          covered: false,
+        },
+      ],
+    });
+    expect(decoded.occurrenceWindows.map((window) => window.timePrecision)).toEqual([
+      "instant",
+      "date",
+    ]);
+  });
+});
+
+describe("composeEventStudyScene and time precision", () => {
+  it("an instant occurrence emits no zero-width event_span; its entry marker carries the moment", () => {
+    const scene = composeEventStudyScene({
+      ...payload,
+      report: {
+        ...report,
+        rows: [
+          {
+            ...(report.rows[0] as EventStudyRow),
+            startAt: NOW,
+            endAt: NOW,
+            timePrecision: "instant",
+            covered: true,
+            entryTime: NOW,
+            entryPrice: 100,
+            exitTime: NOW + 30 * DAY,
+            exitPrice: 110,
+            returnPct: 10,
+          } as never,
+        ],
+      },
+    });
+    const spans = scene.deterministic.filter((layer) => layer.kind === "event_span");
+    expect(spans).toHaveLength(0);
+    const entry = scene.deterministic.find(
+      (layer) => layer.kind === "study_entry" && layer.occurrenceIndex === 0,
+    );
+    expect(entry).toMatchObject({ kind: "study_entry", at: NOW, price: 100 });
+    // The source still rides the scene even when the span does not.
+    expect(scene.sources).toContain("https://example.com/0");
+  });
+
+  it("a date-precision occurrence keeps its day span; a legacy span with no precision claim keeps its band", () => {
+    const scene = composeEventStudyScene({
+      ...payload,
+      report: {
+        ...report,
+        rows: [
+          // Date precision: a whole UTC day, band stays, precision rides the
+          // payload's windows for the presenter to label.
+          {
+            ...(report.rows[0] as EventStudyRow),
+            timePrecision: "date",
+          } as never,
+          // Legacy: no precision claimed, a genuine multi-day span.
+          {
+            ...(report.rows[1] as EventStudyRow),
+            timePrecision: undefined,
+          } as never,
+        ],
+      },
+    });
+    const spans = scene.deterministic.filter((layer) => layer.kind === "event_span");
+    expect(spans).toHaveLength(2);
+    // Even a legacy zero-width span keeps its band: the rule names instants
+    // by their CLAIMED precision, never by guessing from the timestamps.
+    const zeroWidth = composeEventStudyScene({
+      ...payload,
+      report: {
+        ...report,
+        rows: [
+          {
+            ...(report.rows[0] as EventStudyRow),
+            startAt: NOW,
+            endAt: NOW,
+            timePrecision: undefined,
+          } as never,
+        ],
+      },
+    });
+    expect(zeroWidth.deterministic.filter((layer) => layer.kind === "event_span")).toHaveLength(1);
   });
 });

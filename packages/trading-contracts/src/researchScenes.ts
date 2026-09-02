@@ -47,12 +47,16 @@ import * as Schema from "effect/Schema";
 
 import { BacktestInterval, TradingThesis } from "./thesis.ts";
 import {
+  EventStudyDirection,
   EventStudyEntryBasis,
+  EventStudyMetric,
+  EventStudyPriceField,
   EventStudyReport,
   EVENT_STUDY_DEFAULT_ENTRY_BASIS,
   EVENT_STUDY_DEFAULT_HORIZON_BARS,
   EVENT_STUDY_ENTRY_BASIS_PHRASES,
   EVENT_STUDY_MAX_HORIZON_BARS,
+  TradingEventTimePrecision,
 } from "./eventSets.ts";
 import { TradingMarket, UnixMillis } from "./primitives.ts";
 
@@ -106,7 +110,11 @@ export const RESEARCH_CALCULATION_VERSIONS = {
   // Bumped to -2 when the study gained an explicit entry basis: scenes
   // computed before the field exist decode as the open basis and keep the
   // numbers they were computed with.
-  eventStudy: "event-study-2",
+  // Bumped to -3 when the study gained the path_extrema metric (per-row
+  // extrema and excursion aggregates) and occurrence time precision: scenes
+  // computed before both decode as forward_return studies of spans, exactly
+  // what they were.
+  eventStudy: "event-study-3",
   strategyReplay: "backtest-replay-1",
   annotation: "annotation-1",
 } as const;
@@ -130,6 +138,14 @@ export type ResearchArchiveBounds = typeof ResearchArchiveBounds.Type;
 export const ResearchOccurrenceWindow = Schema.Struct({
   startAt: UnixMillis,
   endAt: UnixMillis,
+  /**
+   * What the occurrence's timestamps claim (instant/window/date), carried from
+   * the occurrence so the graph never guesses a moment a date-only source
+   * never established. Absent on windows recorded before the field existed:
+   * those occurrences were recorded as spans, and presenters read exactly
+   * that, never a fabricated midnight certainty.
+   */
+  timePrecision: Schema.optional(TradingEventTimePrecision),
   label: Schema.optional(Schema.String),
   source: Schema.String,
   covered: Schema.Boolean,
@@ -166,6 +182,21 @@ export const EventStudyScenePayload = Schema.Struct({
   entryBasis: EventStudyEntryBasis.pipe(
     Schema.withDecodingDefault(Effect.succeed("first_bar_open_after_event")),
   ),
+  /**
+   * The metric the study measured. Part of the recipe like the basis: a
+   * path_extrema report's extrema and excursion aggregates read as nothing at
+   * all without it. Decodes as `forward_return` when absent, because scenes
+   * persisted before metrics existed were forward-return studies and must
+   * never be reinterpreted. The per-row extrema live on the report's own rows
+   * (`extremumTime`/`extremumPrice`/`excursionReturnPct`); no USD figure is
+   * persisted — every notional-derived number is presentation-layer
+   * arithmetic on the current notional, labelled as such where it renders.
+   */
+  metric: EventStudyMetric.pipe(Schema.withDecodingDefault(Effect.succeed("forward_return"))),
+  /** Present when metric is path_extrema: the side whose favorable excursion the extrema measure. */
+  direction: Schema.optional(EventStudyDirection),
+  /** Present when metric is path_extrema: the price field the extrema read (low for a short, high for a long). */
+  priceField: Schema.optional(EventStudyPriceField),
   /** The archive window the recipe asked about, before coverage answered. */
   requestedFromT: Schema.optional(Schema.Number),
   requestedToT: Schema.optional(Schema.Number),
@@ -394,19 +425,30 @@ export function validateTradingChartScene(scene: TradingChartScene): string | nu
  * pure: spans, entries, exits, and return spans straight off the report the
  * engine produced. The aggregate and baseline ride the scene as `line`
  * layers when present; occurrences without a measurement contribute their
- * span and source only, never a fabricated return.
+ * span and source only, never a fabricated return. An instantaneous
+ * activation contributes no event_span at all — its entry marker carries the
+ * instant, and a zero-width band would claim a span that does not exist.
  */
 export function composeEventStudyScene(payload: EventStudyScenePayload): TradingChartScene {
   const deterministic: Array<DeterministicSceneLayer> = [];
   const sources = new Set<string>();
   payload.report.rows.forEach((row, index) => {
-    deterministic.push({
-      kind: "event_span",
-      startAt: row.startAt,
-      endAt: row.endAt,
-      label: row.label ?? `occurrence ${index + 1}`,
-      occurrenceIndex: index,
-    });
+    // An instantaneous activation (timePrecision "instant", start equal to
+    // end) draws no zero-width event_span band: a band with no width is a
+    // claim about a span that does not exist, and the study's entry marker
+    // already carries the instant. Real windows — and date-precision days,
+    // whose span is the whole UTC day — keep their bands; only the LABEL
+    // distinguishes date precision, and that is the presenter's to say.
+    const instant = row.timePrecision === "instant" && row.startAt === row.endAt;
+    if (!instant) {
+      deterministic.push({
+        kind: "event_span",
+        startAt: row.startAt,
+        endAt: row.endAt,
+        label: row.label ?? `occurrence ${index + 1}`,
+        occurrenceIndex: index,
+      });
+    }
     sources.add(row.source);
     if (row.covered && row.entryTime !== undefined && row.entryPrice !== undefined) {
       deterministic.push({
@@ -530,6 +572,18 @@ export const TradingChartInput = Schema.Struct({
    * {@link EVENT_STUDY_DEFAULT_ENTRY_BASIS}; the menu spells both values out.
    */
   entryBasis: Schema.optional(EventStudyEntryBasis),
+  /**
+   * The study metric to publish: forward_return (default) or path_extrema
+   * (with `direction`, and optional `priceField`), resolved by
+   * {@link resolveEventStudyMetric} exactly as the trading_events study
+   * action resolves them, so a published scene is the same study the study
+   * action described.
+   */
+  metric: Schema.optional(EventStudyMetric),
+  /** path_extrema only: the side whose favorable excursion is measured. */
+  direction: Schema.optional(EventStudyDirection),
+  /** path_extrema only: overrides the extremum price field (low for short, high for long). */
+  priceField: Schema.optional(EventStudyPriceField),
   at: Schema.optional(Schema.String),
   text: Schema.optional(Schema.String),
   /** clear with no sceneId clears the thread's scenes. */
@@ -552,8 +606,9 @@ export type TradingChartResult = typeof TradingChartResult.Type;
  */
 export function renderTradingChartMenu(): string {
   return [
-    "publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, illustrativeNotionalUsd?, title?} measures the set on the archive " +
-      `(horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS}, entry basis ${EVENT_STUDY_DEFAULT_ENTRY_BASIS}: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[EVENT_STUDY_DEFAULT_ENTRY_BASIS]}) ` +
+    "publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?, direction?, priceField?, illustrativeNotionalUsd?, title?} measures the set on the archive " +
+      `(horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS}, entry basis ${EVENT_STUDY_DEFAULT_ENTRY_BASIS}: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[EVENT_STUDY_DEFAULT_ENTRY_BASIS]}` +
+      "; metric path_extrema {direction short|long} publishes the post-entry extremum (a short's lowest low) and its excursion beside the terminal return, hindsight-perfect and labelled) " +
       "and puts the study on this thread's graph: calendar windows, aligned traces, coverage and sources; publishing itself returns the scene on the graph, no follow-up show call",
     "publish_strategy_replay {thesis | hypothesisId, title?} runs one cost-aware backtest and pins its trades and verdict to the graph",
     "annotate {market, at, text} pins one authored note to a moment; it renders labelled as authored, never as a computed layer",

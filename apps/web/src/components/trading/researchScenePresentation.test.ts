@@ -10,15 +10,21 @@ import {
   BASELINE_UNAVAILABLE_SENTENCE,
   baselineReference,
   describeHorizon,
+  extremumPhrase,
+  fixedHorizonPnlUsd,
   fmtUsd,
   grossChangeUsd,
+  hindsightPerfectPnlUsd,
   historicalGrossChangeLabel,
   nextGraphViewMode,
   DERIVED_VS_AUTHORED_SENTENCE,
   liveResearchMarkers,
   MARKER_LEGEND_SENTENCE,
+  occurrencePrecisionPhrase,
   occurrenceStudyOverlay,
+  PATH_EXTREMA_ASSUMPTIONS_SENTENCE,
   payloadEntryBasis,
+  payloadStudyMetric,
   provenanceTrailLine,
   occurrenceWindow,
   researchMarkerAccessibleName,
@@ -693,5 +699,99 @@ describe("activeGraphScenes", () => {
 
   it("hands an empty graph back when everything was cleared or superseded", () => {
     expect(activeGraphScenes([sceneWith("cleared"), sceneWith("superseded")])).toEqual([]);
+  });
+});
+
+describe("the hypothetical PnL of a path_extrema study (USD 2,000 short)", () => {
+  const NOTIONAL = 2_000;
+
+  it("a short profits when price falls and loses when it rises; a long is the mirror", () => {
+    // Fall 10%: the short's money is the negated measured return.
+    expect(fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: -10, direction: "short" })).toBe(
+      200,
+    );
+    // Rise 10%: the same short loses.
+    expect(fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: 10, direction: "short" })).toBe(
+      -200,
+    );
+    // A long rides the sign as measured.
+    expect(fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: 10, direction: "long" })).toBe(
+      200,
+    );
+  });
+
+  it("the hindsight-perfect figure negates the long-convention excursion for a short", () => {
+    // The excursion to the lowest low is long-convention negative for a
+    // short's favorable move: -25% becomes +$500 at the extremum.
+    expect(
+      hindsightPerfectPnlUsd({
+        notionalUsd: NOTIONAL,
+        excursionReturnPct: -25,
+        direction: "short",
+      }),
+    ).toBe(500);
+    // An extremum ABOVE the entry (the price never dipped below it) is a loss
+    // at that exit for a short: the arithmetic stays honest in both signs.
+    expect(
+      hindsightPerfectPnlUsd({ notionalUsd: NOTIONAL, excursionReturnPct: 5, direction: "short" }),
+    ).toBe(-100);
+    expect(
+      hindsightPerfectPnlUsd({ notionalUsd: NOTIONAL, excursionReturnPct: 25, direction: "long" }),
+    ).toBe(500);
+  });
+
+  it("two events are illustrated independently: the second never compounds on the first", () => {
+    // Event 1 falls 10% (excursion -25%), event 2 falls 5% (excursion -12%).
+    // Independent allocation means each event's money comes from the SAME
+    // $2,000: $500/$200 and $240/$100 — never $500 then $240 on $2,200.
+    const event1 = {
+      fixed: fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: -10, direction: "short" }),
+      hindsight: hindsightPerfectPnlUsd({
+        notionalUsd: NOTIONAL,
+        excursionReturnPct: -25,
+        direction: "short",
+      }),
+    };
+    const event2 = {
+      fixed: fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: -5, direction: "short" }),
+      hindsight: hindsightPerfectPnlUsd({
+        notionalUsd: NOTIONAL,
+        excursionReturnPct: -12,
+        direction: "short",
+      }),
+    };
+    expect(event1).toEqual({ fixed: 200, hindsight: 500 });
+    expect(event2).toEqual({ fixed: 100, hindsight: 240 });
+  });
+
+  it("the assumptions line names independence, gross, and hindsight-perfect in one breath", () => {
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("independently");
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("never compounded or reused");
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain(
+      "no fees, funding, slippage or liquidation",
+    );
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("maximum favorable excursion");
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("not a realizable strategy result");
+  });
+});
+
+describe("precision phrases and the extremum's name", () => {
+  it("says what each precision claims, and 'recorded as a span' for legacy rows", () => {
+    expect(occurrencePrecisionPhrase("instant")).toBe("exact instant");
+    expect(occurrencePrecisionPhrase("window")).toBe("exact window");
+    expect(occurrencePrecisionPhrase("date")).toContain("date precision");
+    // The frozen legacy phrase, verbatim: a span, with no precision claimed.
+    expect(occurrencePrecisionPhrase(undefined)).toBe("recorded as a span");
+  });
+
+  it("names the extremum a short reads and the one a long reads", () => {
+    expect(extremumPhrase("low")).toBe("lowest low");
+    expect(extremumPhrase("high")).toBe("highest high");
+  });
+
+  it("reads a scene's metric, with pre-metric scenes as forward_return", () => {
+    expect(payloadStudyMetric({ metric: "path_extrema" })).toBe("path_extrema");
+    expect(payloadStudyMetric({ metric: "forward_return" })).toBe("forward_return");
+    expect(payloadStudyMetric({})).toBe("forward_return");
   });
 });

@@ -44,12 +44,18 @@ import {
   baselineReference,
   DERIVED_VS_AUTHORED_SENTENCE,
   describeHorizon,
+  extremumPhrase,
+  fixedHorizonPnlUsd,
   fmtUsd,
   grossChangeUsd,
+  hindsightPerfectPnlUsd,
   historicalGrossChangeLabel,
   MARKER_LEGEND_SENTENCE,
+  occurrencePrecisionPhrase,
   occurrenceStudyOverlay,
+  PATH_EXTREMA_ASSUMPTIONS_SENTENCE,
   payloadEntryBasis,
+  payloadStudyMetric,
   provenanceTrailLine,
   studyExplanationLines,
   studyWindowMaxBars,
@@ -129,10 +135,27 @@ function OccurrenceChart(props: {
       },
     ];
   }, [props.occurrence, props.intervalMs]);
-  const studyOverlay = useMemo(
-    () => occurrenceStudyOverlay(props.layers, props.occurrenceIndex, props.horizonBars),
-    [props.layers, props.occurrenceIndex, props.horizonBars],
-  );
+  const studyOverlay = useMemo(() => {
+    const overlay = occurrenceStudyOverlay(props.layers, props.occurrenceIndex, props.horizonBars);
+    // An instantaneous activation has no event_span band — the composer
+    // refuses zero-width spans — so its named rule comes from the occurrence
+    // window itself, at the exact instant it claims. The label is the
+    // occurrence's own, never a number re-derived here.
+    if (
+      overlay.activation === null &&
+      props.occurrence.timePrecision === "instant" &&
+      props.occurrence.startAt === props.occurrence.endAt
+    ) {
+      return {
+        ...overlay,
+        activation: {
+          at: props.occurrence.endAt,
+          label: props.occurrence.label ?? `occurrence ${props.occurrenceIndex + 1}`,
+        },
+      };
+    }
+    return overlay;
+  }, [props.layers, props.occurrenceIndex, props.horizonBars, props.occurrence]);
 
   // Last good view on a transient read failure, labelled stale: the window
   // did not stop existing because a request failed, and a reader
@@ -216,6 +239,72 @@ function ReturnRow(props: { readonly returnPct: number | undefined; readonly not
   );
 }
 
+/** One covered occurrence row of the report, as the panel reads it. */
+type StudyRow = EventStudyScenePayload["report"]["rows"][number];
+
+/** Plain price display, the register the rest of the panel uses. */
+const fmtPrice = (value: number): string =>
+  value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+
+/**
+ * The path_extrema scene's per-occurrence detail, one row: the entry, the
+ * named extremum with its date, the MFE excursion beside the hindsight-perfect
+ * money at that extremum, and the terminal return beside the fixed-horizon
+ * close money — both figures sign-correct for the direction and labelled
+ * gross, with the full assumptions sentence riding once under the notional
+ * input. Both numbers are always shown together because the honest reading of
+ * a hindsight-perfect excursion is only ever next to what holding to the
+ * horizon actually did.
+ */
+function PathExtremumRow(props: {
+  readonly row: StudyRow;
+  readonly notional: number;
+  readonly direction: "short" | "long";
+  readonly priceField: "low" | "high";
+}) {
+  const { row, notional, direction, priceField } = props;
+  if (
+    !row.covered ||
+    row.entryPrice === undefined ||
+    row.extremumPrice === undefined ||
+    row.extremumTime === undefined ||
+    row.excursionReturnPct === undefined ||
+    row.returnPct === undefined
+  ) {
+    // A covered row of a path_extrema study always carries the full set; if a
+    // future shape ever does not, the terminal return alone still tells the
+    // truth rather than rendering a half-invented extremum.
+    return <ReturnRow returnPct={row.returnPct} notional={notional} />;
+  }
+  const hindsight = hindsightPerfectPnlUsd({
+    notionalUsd: notional,
+    excursionReturnPct: row.excursionReturnPct,
+    direction,
+  });
+  const fixed = fixedHorizonPnlUsd({ notionalUsd: notional, returnPct: row.returnPct, direction });
+  const tone = (value: number): string =>
+    value >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400";
+  return (
+    <span
+      className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
+      data-testid="research-extremum-row"
+    >
+      <span className="text-muted-foreground">entry {fmtPrice(row.entryPrice)}</span>
+      <span>
+        {extremumPhrase(priceField)} {fmtPrice(row.extremumPrice)} on{" "}
+        {new Date(row.extremumTime).toISOString().slice(0, 10)}
+      </span>
+      <span className={tone(hindsight)}>
+        MFE excursion {fmtPct(row.excursionReturnPct)} ({fmtUsd(hindsight)} hindsight-perfect at the{" "}
+        {extremumPhrase(priceField)}, gross)
+      </span>
+      <span className={tone(fixed)}>
+        terminal {fmtPct(row.returnPct)} ({fmtUsd(fixed)} at the horizon close, gross)
+      </span>
+    </span>
+  );
+}
+
 /**
  * The calendar view of one event study, split across the graph's fixed
  * geometry: the stage holds the ONE selected occurrence where it happened;
@@ -245,6 +334,16 @@ function EventStudyBody(props: {
     row === undefined
       ? null
       : windowFor({ ...row, covered: row.covered }, report.horizonMs, intervalMs);
+  // The path_extrema context: only a scene measured on that metric carries a
+  // direction (and its price field), and every money figure below is signed
+  // by it. Old scenes decode as forward_return and keep their plain rows.
+  const pathExtrema =
+    payloadStudyMetric(payload) === "path_extrema"
+      ? {
+          direction: (payload.direction ?? "short") as "short" | "long",
+          priceField: (payload.priceField ?? "low") as "low" | "high",
+        }
+      : null;
 
   return (
     <>
@@ -307,6 +406,16 @@ function EventStudyBody(props: {
           />
           <span className="text-muted-foreground">{PER_NOTIONAL_ILLUSTRATION_LABEL}</span>
         </div>
+        {/* The assumptions line every hypothetical PnL figure rides: one
+            sentence per scene, beside the notional those figures share. */}
+        {pathExtrema !== null ? (
+          <div
+            className="mt-1 text-[10px] leading-snug text-muted-foreground"
+            data-testid="research-extrema-assumptions"
+          >
+            {PATH_EXTREMA_ASSUMPTIONS_SENTENCE}
+          </div>
+        ) : null}
         {/* Occurrence navigation: years-apart events are not one unreadable
             chart. Prev/next and the rows below move the measured window that
             fills the stage; the aligned summary is one tab away and never
@@ -356,7 +465,14 @@ function EventStudyBody(props: {
         </div>
         <ul className="mt-1 flex flex-col gap-1">
           {report.rows.map((candidate, index) => {
-            const when = new Date(candidate.startAt).toISOString().slice(0, 10);
+            // The time with its precision: an exact instant or window shows
+            // the minute, a date (or a legacy span) the day, and the phrase
+            // beside it says which claim the timestamps make.
+            const iso = new Date(candidate.startAt).toISOString();
+            const when =
+              candidate.timePrecision === "instant" || candidate.timePrecision === "window"
+                ? iso.slice(0, 16)
+                : iso.slice(0, 10);
             return (
               <li
                 key={`${candidate.startAt}:${index}`}
@@ -373,9 +489,21 @@ function EventStudyBody(props: {
                   {candidate.label ?? `occurrence ${index + 1}`}
                   <span className="ml-2 font-normal text-muted-foreground">{when}</span>
                 </button>
+                <span className="text-[10px] text-muted-foreground">
+                  {occurrencePrecisionPhrase(candidate.timePrecision)}
+                </span>
                 {candidate.covered ? (
                   <>
-                    <ReturnRow returnPct={candidate.returnPct} notional={notional} />
+                    {pathExtrema === null ? (
+                      <ReturnRow returnPct={candidate.returnPct} notional={notional} />
+                    ) : (
+                      <PathExtremumRow
+                        row={candidate}
+                        notional={notional}
+                        direction={pathExtrema.direction}
+                        priceField={pathExtrema.priceField}
+                      />
+                    )}
                     {candidate.truncated ? (
                       <span className="text-xs text-amber-600 dark:text-amber-400">
                         truncated at {candidate.barsCovered} bars

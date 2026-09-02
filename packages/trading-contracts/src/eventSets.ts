@@ -93,6 +93,88 @@ export const EVENT_STUDY_ENTRY_BASIS_PHRASES: Readonly<Record<EventStudyEntryBas
 };
 
 /**
+ * What a study measures besides the terminal close return.
+ *
+ * - `forward_return`: the original metric. Entry to the horizon's final close,
+ *   one number per occurrence.
+ * - `path_extrema`: what happened INSIDE the window, for the question a fixed
+ *   horizon cannot answer ("where was the lowest point in the four weeks after
+ *   each fork"). Every covered row additionally carries the path extremum
+ *   after the defined entry within the horizon — the minimum low for a short,
+ *   the maximum high for a long — beside the terminal return, which stays on
+ *   the row unchanged. The excursion is descriptive: it is the maximum
+ *   favorable excursion after entry, never a realizable strategy result, and
+ *   every surface that shows it says so.
+ */
+export const EventStudyMetric = Schema.Literals(["forward_return", "path_extrema"]);
+export type EventStudyMetric = typeof EventStudyMetric.Type;
+
+/** The side whose favorable excursion a `path_extrema` study measures. */
+export const EventStudyDirection = Schema.Literals(["short", "long"]);
+export type EventStudyDirection = typeof EventStudyDirection.Type;
+
+/** The bar price an extremum is read from: the low for a short, the high for a long. */
+export const EventStudyPriceField = Schema.Literals(["low", "high"]);
+export type EventStudyPriceField = typeof EventStudyPriceField.Type;
+
+/** The metric a study runs when the call does not name one. */
+export const EVENT_STUDY_DEFAULT_METRIC: EventStudyMetric = "forward_return";
+
+/** The resolved study metric: defaults applied, contradictions impossible. */
+export type ResolvedEventStudyMetric =
+  | { readonly metric: "forward_return" }
+  | {
+      readonly metric: "path_extrema";
+      readonly direction: EventStudyDirection;
+      readonly priceField: EventStudyPriceField;
+    };
+
+/**
+ * Resolve a study call's metric fields, or refuse. Pure, and the one place the
+ * defaults live so the two tool boundaries (`trading_events` study and
+ * `trading_chart` publish) resolve identically: the metric defaults to
+ * {@link EVENT_STUDY_DEFAULT_METRIC}; `direction` and `priceField` are
+ * path_extrema's own (a direction on a forward-return study is a mistake that
+ * would silently do nothing, so it is refused, not ignored); path_extrema
+ * needs a direction; the price field defaults to the low for a short and the
+ * high for a long, and a pair that contradicts itself refuses.
+ */
+export function resolveEventStudyMetric(input: {
+  readonly metric?: EventStudyMetric | undefined;
+  readonly direction?: EventStudyDirection | undefined;
+  readonly priceField?: EventStudyPriceField | undefined;
+}): ResolvedEventStudyMetric | { readonly reason: string } {
+  const metric = input.metric ?? EVENT_STUDY_DEFAULT_METRIC;
+  if (metric === "forward_return") {
+    if (input.direction !== undefined || input.priceField !== undefined) {
+      return {
+        reason:
+          "direction and priceField apply only to the path_extrema metric; drop them, or name metric: path_extrema",
+      };
+    }
+    return { metric };
+  }
+  if (input.direction === undefined) {
+    return {
+      reason:
+        "the path_extrema metric needs a direction: short (its excursion is the lowest low) or long (the highest high)",
+    };
+  }
+  const priceField = input.priceField ?? (input.direction === "short" ? "low" : "high");
+  if (
+    (input.direction === "short" && priceField === "high") ||
+    (input.direction === "long" && priceField === "low")
+  ) {
+    return {
+      reason:
+        `priceField ${priceField} contradicts direction ${input.direction}: ` +
+        "a short's excursion is measured on the low, a long's on the high",
+    };
+  }
+  return { metric, direction: input.direction, priceField };
+}
+
+/**
  * What the recorded timestamps actually claim about the event's time.
  *
  * - `instant`: the event happened at one exact moment (`startAt === endAt`),
@@ -275,6 +357,13 @@ export function eventStudyReadWindow(
 export const EventStudyRow = Schema.Struct({
   startAt: UnixMillis,
   endAt: UnixMillis,
+  /**
+   * What the occurrence's timestamps claim (see
+   * {@link TradingEventTimePrecision}), copied from the occurrence so consumers
+   * of a row or its window never guess. Absent on rows recorded before the
+   * field existed: a span, with no precision claimed.
+   */
+  timePrecision: Schema.optional(TradingEventTimePrecision),
   /** The occurrence's own label, when it carries one. */
   label: Schema.optional(Schema.String),
   /** Where the date came from, so the row can be checked. */
@@ -291,6 +380,24 @@ export const EventStudyRow = Schema.Struct({
    * study takes no view on side; a short reads the same number negated.
    */
   returnPct: Schema.optional(Schema.Number),
+  /**
+   * Present on covered rows of a `path_extrema` study: the open time of the
+   * bar holding the path extremum after the defined entry within the horizon
+   * (the bars actually covered, when the window truncated). The open time, not
+   * a moment inside the bar: the low printed somewhere in that bar, and the
+   * row claims the bar, never a millisecond it cannot know.
+   */
+  extremumTime: Schema.optional(UnixMillis),
+  /** Present with `extremumTime`: the extremum price (a short's lowest low, a long's highest high). */
+  extremumPrice: Schema.optional(Schema.Number),
+  /**
+   * Present with `extremumTime`: the excursion to the extremum, signed in the
+   * LONG convention like `returnPct` — (extremum - entry) / entry as a
+   * percentage. A short's favorable excursion is the NEGATIVE of this number.
+   * The terminal `returnPct` is computed separately and both are always
+   * present on a covered path_extrema row.
+   */
+  excursionReturnPct: Schema.optional(Schema.Number),
   /** True when the window ran out before the horizon did. */
   truncated: Schema.Boolean,
   /** Bars actually measured, horizonBars when not truncated. */
@@ -313,6 +420,12 @@ export const EventStudyBaseline = Schema.Struct({
 export type EventStudyBaseline = typeof EventStudyBaseline.Type;
 
 export const EventStudyReport = Schema.Struct({
+  /**
+   * The metric this report measured. Absent on reports computed before metrics
+   * existed: those are forward_return, and decode without the field rather
+   * than being reinterpreted.
+   */
+  metric: Schema.optional(EventStudyMetric),
   horizonBars: Schema.Number,
   /** The horizon in wall-clock time, for the surfaces that say it in words. */
   horizonMs: Schema.Number,
@@ -325,6 +438,19 @@ export const EventStudyReport = Schema.Struct({
   hitRatePercent: Schema.NullOr(Schema.Number),
   bestReturnPct: Schema.NullOr(Schema.Number),
   worstReturnPct: Schema.NullOr(Schema.Number),
+  /**
+   * Present on path_extrema reports: the mean excursion, in the long
+   * convention like the rows. Null when nothing was covered. A maximum
+   * favorable excursion is a description of the path, never a realizable
+   * return, and no aggregate may present it as one.
+   */
+  meanExcursionPct: Schema.optional(Schema.NullOr(Schema.Number)),
+  /**
+   * Present on path_extrema reports: the share of covered rows whose excursion
+   * MAGNITUDE exceeds its terminal return magnitude — how often the path went
+   * further than it ended, in percent. Null when nothing was covered.
+   */
+  excursionBeyondTerminalPercent: Schema.optional(Schema.NullOr(Schema.Number)),
   /** Null when the served window is shorter than the horizon. */
   baseline: Schema.NullOr(EventStudyBaseline),
   rows: Schema.Array(EventStudyRow),
@@ -361,6 +487,32 @@ export function checkEventStudy(input: { readonly horizonBars: number }): string
 }
 
 /**
+ * The extremum of `priceField` over bars `fromIndex..toIndex` inclusive, with
+ * the bar holding it. Null when the range holds no bar. Ties keep the EARLIEST
+ * bar: the first time the path reached its extreme is the honest answer to
+ * "when was the lowest point".
+ */
+function extremumOver(
+  candles: ReadonlyArray<MarketCandle>,
+  fromIndex: number,
+  toIndex: number,
+  priceField: EventStudyPriceField,
+): { readonly openTime: number; readonly price: number } | null {
+  let bestTime: number | undefined;
+  let bestPrice = 0;
+  for (let index = fromIndex; index <= toIndex; index += 1) {
+    const bar = candles[index];
+    if (bar === undefined) continue;
+    const price = priceField === "low" ? bar.low : bar.high;
+    if (bestTime === undefined || (priceField === "low" ? price < bestPrice : price > bestPrice)) {
+      bestTime = bar.openTime;
+      bestPrice = price;
+    }
+  }
+  return bestTime === undefined ? null : { openTime: bestTime, price: bestPrice };
+}
+
+/**
  * The descriptive claim, measured directly.
  *
  * Per occurrence, on the open basis: entry is the open of the first candle
@@ -374,12 +526,24 @@ export function checkEventStudy(input: { readonly horizonBars: number }): string
  * computed over the survivors of a silent filter is the most misleading
  * number this module could produce.
  *
+ * With `metric: "path_extrema"` every covered row additionally carries the
+ * path extremum after the defined entry within the horizon — the minimum low
+ * for a short, the maximum high for a long, over the bars actually measured
+ * (a truncated window measures the bars it got) — as `extremumTime`,
+ * `extremumPrice` and `excursionReturnPct` (long convention, like
+ * `returnPct`). The terminal `returnPct` is computed separately and both stay
+ * on the row. No USD figure is computed here: notional arithmetic is
+ * presentation-layer, gross by construction, and never part of the report.
+ *
  * `candles` is oldest first. Assumes `checkEventStudy` passed. `entryBasis`
  * defaults to the open basis so pre-existing pure callers keep their
  * behavior; the tool boundary resolves the default explicitly. `now`, when
  * provided, is what "closed" means: on the close basis a candidate entry bar
  * whose close time is still in the future has no close price to enter on,
  * and the row says so rather than reading a forming bar's provisional close.
+ * The metric defaults to forward_return; a path_extrema call with no
+ * direction is treated as a short on the low (the tool boundary refuses that
+ * call before it reaches here, so the pure engine stays total).
  */
 export function runEventStudy(input: {
   readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
@@ -387,12 +551,23 @@ export function runEventStudy(input: {
   readonly intervalMs: number;
   readonly horizonBars: number;
   readonly entryBasis?: EventStudyEntryBasis;
+  readonly metric?: EventStudyMetric;
+  /** Read when metric is path_extrema; defaults to a short. */
+  readonly direction?: EventStudyDirection;
+  /** Read when metric is path_extrema; defaults to the direction's own field. */
+  readonly priceField?: EventStudyPriceField;
   readonly now?: number;
 }): EventStudyReport {
   const { occurrences, candles, intervalMs, horizonBars } = input;
   const basis = input.entryBasis ?? "first_bar_open_after_event";
+  const metric = input.metric ?? EVENT_STUDY_DEFAULT_METRIC;
+  const direction = input.direction ?? "short";
+  const priceField = input.priceField ?? (direction === "short" ? "low" : "high");
   const rows: Array<EventStudyRow> = [];
   const rawReturns: Array<number> = [];
+  // Long-convention excursion and terminal return per covered row, unrounded:
+  // the aggregates come from measured values, not display-rounded rows.
+  const rawExtremes: Array<{ readonly excursion: number; readonly terminal: number }> = [];
 
   const firstOpen = candles[0]?.openTime;
   const lastOpen = candles.length === 0 ? undefined : candles[candles.length - 1]?.openTime;
@@ -407,6 +582,9 @@ export function runEventStudy(input: {
       | "exitTime"
       | "exitPrice"
       | "returnPct"
+      | "extremumTime"
+      | "extremumPrice"
+      | "excursionReturnPct"
       | "truncated"
       | "barsCovered"
     >,
@@ -420,6 +598,9 @@ export function runEventStudy(input: {
     exitTime: undefined,
     exitPrice: undefined,
     returnPct: undefined,
+    extremumTime: undefined,
+    extremumPrice: undefined,
+    excursionReturnPct: undefined,
     truncated: false,
     barsCovered: undefined,
   });
@@ -428,7 +609,10 @@ export function runEventStudy(input: {
     const base = {
       startAt: occurrence.startAt,
       endAt: occurrence.endAt,
-      label: occurrence.label,
+      ...(occurrence.timePrecision === undefined
+        ? {}
+        : { timePrecision: occurrence.timePrecision }),
+      ...(occurrence.label === undefined ? {} : { label: occurrence.label }),
       source: occurrence.source,
     };
     if (firstOpen === undefined || lastOpen === undefined) {
@@ -521,6 +705,15 @@ export function runEventStudy(input: {
       const truncated = exitIndex < exitWanted;
       const returnPct = ((exitBar.close - entryBar.close) / entryBar.close) * 100;
       rawReturns.push(returnPct);
+      // The extremum over the entry..exit bars actually served: when the
+      // window truncated, the bars it got are what the path did.
+      const extremum =
+        metric === "path_extrema" ? extremumOver(candles, entryIndex, exitIndex, priceField) : null;
+      const excursionPct =
+        extremum === null ? null : ((extremum.price - entryBar.close) / entryBar.close) * 100;
+      if (extremum !== null && excursionPct !== null) {
+        rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+      }
       rows.push({
         ...base,
         covered: true,
@@ -530,6 +723,13 @@ export function runEventStudy(input: {
         exitTime: exitBar.closeTime,
         exitPrice: exitBar.close,
         returnPct: round2(returnPct),
+        ...(extremum === null || excursionPct === null
+          ? {}
+          : {
+              extremumTime: extremum.openTime,
+              extremumPrice: extremum.price,
+              excursionReturnPct: round2(excursionPct),
+            }),
         truncated,
         barsCovered: exitIndex - entryIndex,
       });
@@ -579,6 +779,15 @@ export function runEventStudy(input: {
     const truncated = exitIndex < exitWanted;
     const returnPct = ((exitBar.close - entryBar.open) / entryBar.open) * 100;
     rawReturns.push(returnPct);
+    // Same rule as the close basis: the extremum over the bars actually
+    // measured, entry bar included — its low can sit below its own open.
+    const extremum =
+      metric === "path_extrema" ? extremumOver(candles, entryIndex, exitIndex, priceField) : null;
+    const excursionPct =
+      extremum === null ? null : ((extremum.price - entryBar.open) / entryBar.open) * 100;
+    if (extremum !== null && excursionPct !== null) {
+      rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+    }
     rows.push({
       ...base,
       covered: true,
@@ -588,6 +797,13 @@ export function runEventStudy(input: {
       exitTime: exitBar.closeTime,
       exitPrice: exitBar.close,
       returnPct: round2(returnPct),
+      ...(extremum === null || excursionPct === null
+        ? {}
+        : {
+            extremumTime: extremum.openTime,
+            extremumPrice: extremum.price,
+            excursionReturnPct: round2(excursionPct),
+          }),
       truncated,
       barsCovered: exitIndex - entryIndex + 1,
     });
@@ -636,9 +852,35 @@ export function runEventStudy(input: {
     returns.length === 0
       ? null
       : round2((returns.filter((value) => value > 0).length / returns.length) * 100);
+  // The path_extrema aggregates: minimal and honest. The mean excursion is
+  // long-convention like the rows, and the beyond-terminal share says how
+  // often the path ran further than it ended — both descriptions of what
+  // happened, never a realizable return.
+  const extremaAggregate =
+    metric === "path_extrema"
+      ? {
+          metric,
+          meanExcursionPct:
+            rawExtremes.length === 0
+              ? null
+              : round2(
+                  rawExtremes.reduce((sum, pair) => sum + pair.excursion, 0) / rawExtremes.length,
+                ),
+          excursionBeyondTerminalPercent:
+            rawExtremes.length === 0
+              ? null
+              : round2(
+                  (rawExtremes.filter((pair) => Math.abs(pair.excursion) > Math.abs(pair.terminal))
+                    .length /
+                    rawExtremes.length) *
+                    100,
+                ),
+        }
+      : {};
   const verdict = composeVerdict({ n, nCovered, mean, horizonBars, baseline });
 
   return {
+    ...extremaAggregate,
     horizonBars,
     horizonMs: horizonBars * intervalMs,
     n,
@@ -887,6 +1129,18 @@ export const TradingEventsInput = Schema.Struct({
    * {@link EVENT_STUDY_DEFAULT_ENTRY_BASIS}; the menu spells both values out.
    */
   entryBasis: Schema.optional(EventStudyEntryBasis),
+  /**
+   * What the study measures besides the terminal close return. Defaults to
+   * {@link EVENT_STUDY_DEFAULT_METRIC}; `direction` (required) and
+   * `priceField` (optional, the direction's own by default) apply only to
+   * path_extrema, and a contradictory pair is refused by
+   * {@link resolveEventStudyMetric} before a bar is read.
+   */
+  metric: Schema.optional(EventStudyMetric),
+  /** path_extrema only: the side whose favorable excursion is measured. */
+  direction: Schema.optional(EventStudyDirection),
+  /** path_extrema only: overrides the extremum price field (low for short, high for long). */
+  priceField: Schema.optional(EventStudyPriceField),
 });
 export type TradingEventsInput = typeof TradingEventsInput.Type;
 
@@ -953,7 +1207,7 @@ export function renderTradingEventsMenu(): string {
     "record {name, description?, occurrences} creates or replaces a set's dates (case-insensitive name, retired revives, re-recording corrects); add {eventSetId, occurrences} appends, show/retire {eventSetId}, list",
     "dates are UTC ISO: date-only start/end is date precision (whole days; a missing end spans the start day, a date-only end through that day); a timed start is exact and needs its timed end: same instant is an activation, later a window; a timed start with no end is refused, not padded; declared precision (instant/window/date) contradictions refuse",
     `one source per occurrence (the URL, or "user provided"), never several joined, ${EVENT_SET_MAX_OCCURRENCES} max a set; record/add take requireReadBack: true and the preview's confirmationDigest`,
-    `study {eventSetId, market, interval?, horizonBars?, entryBasis?} measures per-occurrence forward return vs an every-bar baseline, entryBasis first_closed_bar_after_event (default) or first_bar_open_after_event, horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS} max ${EVENT_STUDY_MAX_HORIZON_BARS}, interval 1m 3m 5m 15m 1h 4h 1d: a four-week daily study is interval 1d, horizonBars 28; pick the coarsest interval covering the window; no fees, no sizing, uncovered occurrences are reported, not dropped`,
+    `study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?} measures per-occurrence forward return vs an every-bar baseline, entryBasis first_closed_bar_after_event (default), interval 1m 3m 5m 15m 1h 4h 1d: a four-week daily study is interval 1d, horizonBars 28; coarsest interval covering the window; metric path_extrema {direction} adds the post-entry extremum and excursion, hindsight-perfect; uncovered occurrences reported, not dropped`,
     "theses anchor with operand {source: event, eventSetId, label}: bars since the most recent ended occurrence; profit simulation is trading_backtest's",
   ].join(" · ");
 }

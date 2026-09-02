@@ -338,3 +338,172 @@ describe("ResearchScenePanel: loading, empty and error states keep the panel's s
     expect(markup).toBe("");
   });
 });
+
+describe("ResearchScenePanel: a path_extrema scene (USD 2,000 short)", () => {
+  // The frozen-mission shape: a $2,000 short per fork, lowest low after the
+  // entry, hindsight-perfect beside the fixed-horizon close. Extremum 25%
+  // below the entry (long-convention -25), terminal -10%.
+  const extremumRow = (startAt: number, label: string, precision?: string) => ({
+    startAt,
+    endAt: startAt,
+    ...(precision === undefined ? {} : { timePrecision: precision }),
+    label,
+    source: "https://example.org/fork",
+    covered: true,
+    reason: undefined,
+    entryTime: startAt + DAY - 1,
+    entryPrice: 4_000,
+    exitTime: startAt + 29 * DAY,
+    exitPrice: 3_600,
+    returnPct: -10,
+    extremumTime: startAt + 9 * DAY,
+    extremumPrice: 3_000,
+    excursionReturnPct: -25,
+    truncated: false,
+    barsCovered: 28,
+  });
+
+  const extremaRows = [
+    extremumRow(T0, "Dencun", "instant"),
+    extremumRow(T1, "Pectra", "date"),
+    {
+      ...extremumRow(T1 + 100 * DAY, "Old fork"),
+      // Legacy row: no precision claim, uncovered — reason rides, no numbers.
+      covered: false,
+      reason: "before the archived window: the bar it would have entered on is not recorded",
+      entryTime: undefined,
+      entryPrice: undefined,
+      exitTime: undefined,
+      exitPrice: undefined,
+      returnPct: undefined,
+      extremumTime: undefined,
+      extremumPrice: undefined,
+      excursionReturnPct: undefined,
+      barsCovered: undefined,
+    },
+  ];
+
+  const markup = renderToStaticMarkup(
+    <ResearchScenePanel
+      environmentId={"env" as never}
+      scenes={[
+        {
+          sceneId: "scene-extrema",
+          threadId: "thread-1",
+          status: "active",
+          referenceStatus: "ok",
+          kind: "event_study",
+          title: "ETH forks on ETH, 1d bars, 28 forward, short path extrema",
+          createdAt: T0,
+          updatedAt: T0,
+          calculationVersion: "event-study-3",
+          disclaimer: "Historical research. No order placed. Not a forecast.",
+          eventStudy: {
+            priceSource: "hyperliquid",
+            entryBasis: "first_closed_bar_after_event",
+            metric: "path_extrema",
+            direction: "short",
+            priceField: "low",
+            illustrativeNotionalUsd: 2_000,
+            requestedFromT: T0,
+            requestedToT: T1 + 29 * DAY,
+            eventSetId: "set-1",
+            eventSetName: "ETH forks",
+            market: "ETH",
+            interval: "1d",
+            horizonBars: 28,
+            report: {
+              metric: "path_extrema",
+              horizonBars: 28,
+              horizonMs: 28 * DAY,
+              n: 3,
+              nCovered: 2,
+              meanReturnPct: -10,
+              medianReturnPct: -10,
+              hitRatePercent: 0,
+              bestReturnPct: -10,
+              worstReturnPct: -10,
+              meanExcursionPct: -25,
+              excursionBeyondTerminalPercent: 100,
+              baseline: { samples: 40, meanReturnPct: 1, medianReturnPct: 1 },
+              rows: extremaRows,
+              verdict: "2 of 3 occurrences fall inside archived data.",
+            },
+            occurrenceWindows: extremaRows,
+            archiveBounds: { recordingSince: T0 - 400 * DAY, fromT: T0, toT: T1 + 29 * DAY },
+          },
+          scene: {
+            sceneId: "scene-extrema",
+            kind: "event_study",
+            viewport: { kind: "event_aligned", anchorAt: T0 },
+            // The composed layers of an instant-only scene: no event_span at
+            // all (the composer refuses zero-width spans for instants), so
+            // the named activation rule must come from the occurrence window.
+            deterministic: [
+              { kind: "study_entry", at: T0 + DAY - 1, price: 4_000, occurrenceIndex: 0 },
+              { kind: "study_exit", at: T0 + 29 * DAY, price: 3_600, occurrenceIndex: 0 },
+              {
+                kind: "return_span",
+                fromT: T0 + DAY - 1,
+                toT: T0 + 29 * DAY,
+                returnPct: -10,
+                occurrenceIndex: 0,
+              },
+            ] as never,
+            authored: [],
+            sources: ["https://example.org/fork"],
+            disclaimer: "Historical research. No order placed. Not a forecast.",
+          },
+        } as never,
+      ]}
+      loading={false}
+      error={null}
+      mode="calendar"
+      prefill={null}
+    />,
+  );
+
+  it("shows the named extremum, the entry, and both labeled money figures per occurrence", () => {
+    expect(markup).toContain('data-testid="research-extremum-row"');
+    expect(markup).toContain("entry 4,000");
+    expect(markup).toContain("lowest low 3,000");
+    // Hindsight-perfect at the extremum: 2000 * 25% = $500, a profit because
+    // price fell and the scene is a short.
+    expect(markup).toContain("$500");
+    expect(markup).toContain("hindsight-perfect at the lowest low, gross");
+    // Fixed-horizon close: 2000 * 10% = $200, same direction honesty.
+    expect(markup).toContain("$200");
+    expect(markup).toContain("at the horizon close, gross");
+    expect(markup).toContain("MFE excursion -25.00%");
+    expect(markup).toContain("terminal -10.00%");
+  });
+
+  it("rides the assumptions sentence once, beside the shared notional", () => {
+    expect(markup).toContain('data-testid="research-extrema-assumptions"');
+    expect(markup).toContain("never compounded or reused");
+    expect(markup).toContain("maximum favorable excursion");
+    expect(markup).toContain("not a realizable strategy result");
+    expect(markup).toContain("per-notional illustration, gross, no fees");
+  });
+
+  it("labels each occurrence's time with its precision, never a guessed one", () => {
+    // An instant shows the minute and says "exact instant".
+    expect(markup).toContain("exact instant");
+    // A date-precision occurrence says what it claims.
+    expect(markup).toContain("date precision (whole days, no time of day claimed)");
+    // A legacy row with no claim reads "recorded as a span".
+    expect(markup).toContain("recorded as a span");
+  });
+
+  it("keeps the uncovered occurrence's reason instead of any invented extremum", () => {
+    expect(markup).toContain("before the archived window");
+  });
+
+  it("draws the instant's named activation rule from the window when no span layer exists", () => {
+    // The composer emits no zero-width event_span for an instant, so the
+    // stage's named rule comes from the occurrence window itself: the rule
+    // draws, with the occurrence's own name on it.
+    expect(markup).toContain('data-testid="research-study-activation"');
+    expect(markup).toContain("Dencun");
+  });
+});
