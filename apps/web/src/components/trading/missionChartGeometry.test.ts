@@ -14,18 +14,29 @@ import {
   MIN_CANDLES_FOR_SVG,
   MIN_VISIBLE_BARS,
   PLOT_WIDTH,
+  RESEARCH_LABEL_ROW_STEP,
+  RESEARCH_MARKER_NOTE,
   computeChartGeometry,
   clusterConditions,
   dedupeConditions,
+  formatGridPrice,
+  formatUtcInstant,
+  gridPriceDecimals,
+  gridTickTarget,
+  isHttpSourceUrl,
   MIN_EVENT_BAND_WIDTH,
+  type ChartResearchMarkerInput,
   type ChartStudyOverlayInput,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
   findLevelAtPrice,
   layoutGutterLabels,
+  layoutLeftAxisLabels,
   medianBarInterval,
+  researchMarkerAriaLabel,
   selectVisibleCandles,
+  type LeftAxisLabelEntry,
 } from "./missionChartGeometry";
 
 // ---------------------------------------------------------------------------
@@ -2133,5 +2144,381 @@ describe("computeChartGeometry: the study overlay", () => {
     });
     expect(geometry?.studyOverlay?.entry).toBeNull();
     expect(geometry?.studyOverlay?.returnSpan).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the unified left-axis lane
+// ---------------------------------------------------------------------------
+//
+// What was broken: the grid prices and the session levels were placed by two
+// independent passes, each internally consistent, printing on top of each
+// other at the same left edge. What is pinned here is the ONE pass that
+// replaces them: separation always holds, priority decides who moves, a
+// label that cannot be placed is suppressed (never overlapped, and never its
+// rule), duplicate visible text collapses, and nudging stays bounded.
+
+describe("layoutLeftAxisLabels", () => {
+  const frameHeight = 160;
+  const minSeparation = 12; // a 10px line plus leading, at a 1:1 frame
+  const layout = (entries: ReadonlyArray<LeftAxisLabelEntry>) =>
+    layoutLeftAxisLabels({
+      entries,
+      frameHeight,
+      minSeparation,
+      maxNudge: minSeparation,
+    });
+
+  const pairwiseSeparation = (ys: ReadonlyArray<number>): number => {
+    let smallest = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < ys.length; i += 1) {
+      smallest = Math.min(smallest, ys[i]! - ys[i - 1]!);
+    }
+    return smallest;
+  };
+
+  it("holds the screenshot's density: 5 grid ticks and 7 session levels in 160 units", () => {
+    // The collision the screenshot showed: a full grid plus every session
+    // level fighting for one left edge. Whatever survives must be legible.
+    const result = layout([
+      // 7 session levels, several nearly coincident.
+      { id: "session-pdh", text: "pd hi 2,461", y: 12, priority: 1 },
+      { id: "session-vwap", text: "vwap 2,431", y: 31, priority: 1 },
+      { id: "session-do", text: "d op 2,431", y: 32, priority: 1 },
+      { id: "session-dh", text: "d hi 2,437", y: 40, priority: 1 },
+      { id: "session-dl", text: "d lo 2,404", y: 96, priority: 1 },
+      { id: "session-pdc", text: "pd cl 2,419", y: 118, priority: 1 },
+      { id: "session-pdl", text: "pd lo 2,384", y: 149, priority: 1 },
+      // 5 ordinary grid ticks.
+      { id: "grid-a", text: "2,380", y: 8, priority: 2 },
+      { id: "grid-b", text: "2,400", y: 44, priority: 2 },
+      { id: "grid-c", text: "2,420", y: 80, priority: 2 },
+      { id: "grid-d", text: "2,440", y: 116, priority: 2 },
+      { id: "grid-e", text: "2,460", y: 152, priority: 2 },
+    ]);
+
+    const ys = result.placed.map((placement) => placement.y);
+    expect(ys.length).toBeGreaterThan(0);
+    expect(pairwiseSeparation([...ys].sort((a, b) => a - b))).toBeGreaterThanOrEqual(
+      minSeparation - 1e-6,
+    );
+    // At this density something has to give, and what gives is the grid:
+    // ticks are suppressed rather than overlapped or moved onto a session.
+    expect(result.placed.some((placement) => placement.id.startsWith("grid-"))).toBe(true);
+    expect(result.suppressed.size).toBeGreaterThan(0);
+    for (const placement of result.placed) {
+      expect(placement.y).toBeGreaterThanOrEqual(minSeparation / 2);
+      expect(placement.y).toBeLessThanOrEqual(frameHeight - minSeparation / 2);
+    }
+  });
+
+  it("keeps every placed label within one nudge of its own rule", () => {
+    const entries: LeftAxisLabelEntry[] = [
+      { id: "session-a", text: "a", y: 60, priority: 1 },
+      { id: "session-b", text: "b", y: 62, priority: 1 },
+      { id: "grid-a", text: "1", y: 61, priority: 2 },
+      { id: "grid-b", text: "2", y: 130, priority: 2 },
+    ];
+    const result = layout(entries);
+    const trueY = new Map(entries.map((entry) => [entry.id, entry.y]));
+    for (const placement of result.placed) {
+      expect(Math.abs(placement.y - trueY.get(placement.id)!)).toBeLessThanOrEqual(
+        minSeparation + 1e-6,
+      );
+    }
+  });
+
+  it("holds the priority order: drag readout > session level > grid tick", () => {
+    // Three labels within a hair of each other: the dragged price keeps its
+    // exact y, the session level moves clear, the grid tick is suppressed.
+    const result = layout([
+      { id: "drag-readout", text: "2,420.25", y: 80, priority: 0 },
+      { id: "session-vwap", text: "vwap 2,420.5", y: 82, priority: 1 },
+      { id: "grid-a", text: "2,420", y: 84, priority: 2 },
+    ]);
+    expect(result.placed.find((placement) => placement.id === "drag-readout")?.y).toBe(80);
+    const session = result.placed.find((placement) => placement.id === "session-vwap");
+    expect(session).toBeDefined();
+    expect(Math.abs(session!.y - 80)).toBeGreaterThanOrEqual(minSeparation - 1e-6);
+    // The tick cannot be placed legibly even after nudging: hidden, not
+    // overlapped — and its rule is the renderer's business, untouched.
+    expect(result.suppressed.has("grid-a")).toBe(true);
+    expect(result.placed.find((placement) => placement.id === "grid-a")).toBeUndefined();
+  });
+
+  it("lets the session level keep its true y while the grid tick nudges clear", () => {
+    const result = layout([
+      { id: "session-pdc", text: "pd cl 2,419", y: 40, priority: 1 },
+      { id: "grid-a", text: "2,420", y: 42, priority: 2 },
+    ]);
+    expect(result.placed.find((placement) => placement.id === "session-pdc")?.y).toBe(40);
+    const grid = result.placed.find((placement) => placement.id === "grid-a");
+    expect(grid).toBeDefined();
+    expect(grid!.y - 40).toBeGreaterThanOrEqual(minSeparation - 1e-6);
+  });
+
+  it("suppresses a tick boxed between two levels rather than overlapping either", () => {
+    const result = layout([
+      { id: "session-a", text: "a", y: 40, priority: 1 },
+      { id: "session-b", text: "b", y: 52, priority: 1 },
+      { id: "grid-a", text: "1", y: 46, priority: 2 },
+    ]);
+    // Both levels hold their ground exactly a separation apart; the tick in
+    // the gap has nowhere legible to go within its nudge.
+    expect(result.placed.find((placement) => placement.id === "session-a")?.y).toBe(40);
+    expect(result.placed.find((placement) => placement.id === "session-b")?.y).toBe(52);
+    expect(result.suppressed.has("grid-a")).toBe(true);
+  });
+
+  it("deduplicates equal or near-equal visible text into one label", () => {
+    // Two ticks whose formatted prices print identically are one fact.
+    const sameText = layout([
+      { id: "grid-a", text: "2,420", y: 40, priority: 2 },
+      { id: "grid-b", text: "2,420", y: 40.5, priority: 2 },
+    ]);
+    expect(sameText.placed).toHaveLength(1);
+    expect(sameText.placed[0]!.y).toBe(40);
+    expect(sameText.suppressed.has("grid-b")).toBe(true);
+
+    // The more important entry's position wins the shared text.
+    const crossKind = layout([
+      { id: "session-pdc", text: "2,420", y: 40, priority: 1 },
+      { id: "grid-a", text: "2,420", y: 41, priority: 2 },
+    ]);
+    expect(crossKind.placed).toHaveLength(1);
+    expect(crossKind.placed[0]!.id).toBe("session-pdc");
+    expect(crossKind.suppressed.has("grid-a")).toBe(true);
+  });
+
+  it("leaves an empty lane empty", () => {
+    const result = layout([]);
+    expect(result.placed).toEqual([]);
+    expect(result.suppressed.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// grid precision and tick count
+// ---------------------------------------------------------------------------
+
+describe("gridPriceDecimals", () => {
+  it("picks the coarsest decimals the tick spacing supports", () => {
+    expect(gridPriceDecimals(50)).toBe(0);
+    expect(gridPriceDecimals(10)).toBe(0);
+    expect(gridPriceDecimals(2.5)).toBe(1);
+    expect(gridPriceDecimals(0.5)).toBe(1);
+    expect(gridPriceDecimals(0.25)).toBe(2);
+    expect(gridPriceDecimals(0.01)).toBe(2);
+    expect(gridPriceDecimals(0.000002)).toBe(6);
+  });
+
+  it("falls back to two decimals for a step it cannot read", () => {
+    expect(gridPriceDecimals(0)).toBe(2);
+    expect(gridPriceDecimals(-1)).toBe(2);
+    expect(gridPriceDecimals(Number.NaN)).toBe(2);
+  });
+});
+
+describe("formatGridPrice", () => {
+  // The grouping separator follows the runtime locale; the precision must not.
+  it("prints each spacing at its own precision, without mixing", () => {
+    expect(formatGridPrice(2420, 0)).toMatch(/2[.,]420$/);
+    expect(formatGridPrice(2420.5, 1)).toMatch(/2[.,]420\.5$/);
+    expect(formatGridPrice(2420.51, 2)).toMatch(/2[.,]420\.51$/);
+    expect(formatGridPrice(2420.5, 1)).not.toContain("51");
+  });
+});
+
+describe("gridTickTarget", () => {
+  it("reduces the tick count on narrow frames before any type shrinks", () => {
+    // The font sizes are constants of the chart (10px/9px); the ONLY lever
+    // the measured width pulls is how many rules are drawn.
+    expect(gridTickTarget(900)).toBe(4);
+    expect(gridTickTarget(560)).toBe(4);
+    expect(gridTickTarget(559)).toBe(3);
+    expect(gridTickTarget(360)).toBe(3);
+    expect(gridTickTarget(359)).toBe(2);
+  });
+
+  it("defaults to the full count unmeasured", () => {
+    expect(gridTickTarget(0)).toBe(4);
+    expect(gridTickTarget(Number.NaN)).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// research markers
+// ---------------------------------------------------------------------------
+//
+// One researched event occurrence from a published scene, placed on the time
+// axis: an instantaneous activation is a rule at its EXACT saved millisecond
+// (never moved for collisions — only labels stack), a genuine span is a band,
+// an uncovered occurrence draws nothing at all, and an upcoming one follows
+// the bounded future-gutter policy.
+
+describe("computeChartGeometry: research markers", () => {
+  const base = 1_700_000_000_000;
+  const candles = fiveWalkingCandles();
+  // Five candles spaced a minute apart, no clock: the whole plot spans the
+  // four minutes from the first open to the last.
+  const first = base;
+  const last = base + 4 * 60_000;
+
+  const markerInput = (overrides: Partial<ChartResearchMarkerInput>): ChartResearchMarkerInput => ({
+    key: "research-1",
+    label: "Dencun",
+    startAt: base + 120_000,
+    endAt: base + 120_000,
+    sourceUrl: "https://ethereum.org/en/roadmap/dencun",
+    covered: true,
+    upcoming: false,
+    ...overrides,
+  });
+
+  const geometryWith = (
+    markers: ReadonlyArray<ChartResearchMarkerInput>,
+    extra: { readonly nowMillis?: number } = {},
+  ) =>
+    computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+      researchMarkers: markers,
+      ...extra,
+    });
+
+  it("rules an instantaneous occurrence at the exact millisecond it saved", () => {
+    const geometry = geometryWith([markerInput({})]);
+    expect(geometry?.researchMarkers).toHaveLength(1);
+    const marker = geometry?.researchMarkers[0];
+    expect(marker?.span).toBe(false);
+    // The rule's x is the projection of the instant itself — to the exact
+    // float, never rounded to a bar or nudged for collisions.
+    expect(marker?.x1).toBe(geometry!.xForTime(base + 120_000));
+    expect(marker?.x2).toBe(marker?.x1);
+  });
+
+  it("bands a genuine span across its own start and end", () => {
+    const geometry = geometryWith([markerInput({ startAt: base + 60_000, endAt: base + 150_000 })]);
+    const marker = geometry?.researchMarkers[0];
+    expect(marker?.span).toBe(true);
+    expect(marker?.x1).toBeCloseTo(geometry!.xForTime(base + 60_000), 5);
+    expect(marker?.x2).toBeCloseTo(geometry!.xForTime(base + 150_000), 5);
+    expect(marker!.x2 - marker!.x1).toBeGreaterThanOrEqual(MIN_EVENT_BAND_WIDTH);
+  });
+
+  it("draws nothing for an uncovered occurrence — no rule, no band, no left-edge pin", () => {
+    const geometry = geometryWith([
+      markerInput({ covered: false, startAt: base + 60_000, endAt: base + 150_000 }),
+    ]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+  });
+
+  it("drops an occurrence from before the window like an old fill", () => {
+    const geometry = geometryWith([markerInput({ startAt: first - 1, endAt: first - 1 })]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+  });
+
+  it("clamps an upcoming occurrence into the future gutter, never beyond it", () => {
+    const nowMillis = last;
+    const geometry = geometryWith(
+      [
+        // Far beyond the gutter: pinned at its far edge, visibly.
+        markerInput({ startAt: base + 30 * 60_000, endAt: base + 31 * 60_000, upcoming: true }),
+      ],
+      { nowMillis },
+    );
+    const marker = geometry?.researchMarkers[0];
+    expect(marker).toBeDefined();
+    expect(marker?.upcoming).toBe(true);
+    expect(marker?.x1).toBeGreaterThanOrEqual(geometry?.nowX ?? 0);
+    expect(marker?.x1).toBeLessThanOrEqual(PLOT_WIDTH);
+    // Pinned at the gutter's far edge, the visible-minimum floor must not
+    // push the band past the plot and into the price gutter.
+    expect(marker?.x2).toBeLessThanOrEqual(PLOT_WIDTH);
+    expect(marker!.x2 - marker!.x1).toBeGreaterThanOrEqual(MIN_EVENT_BAND_WIDTH);
+  });
+
+  it("draws no upcoming occurrence without a clock — there is no gutter to hold it", () => {
+    const geometry = geometryWith([markerInput({ upcoming: true })]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+  });
+
+  it("stacks the labels of close occurrences in rows while the rules keep their x", () => {
+    // Two activations seconds apart: their labels cannot share one row, but
+    // neither rule moves a hair.
+    const nearA = base + 120_000;
+    const nearB = base + 125_000;
+    const geometry = geometryWith([
+      markerInput({ key: "a", startAt: nearA, endAt: nearA }),
+      markerInput({ key: "b", startAt: nearB, endAt: nearB }),
+    ]);
+    const a = geometry?.researchMarkers.find((marker) => marker.key === "a");
+    const b = geometry?.researchMarkers.find((marker) => marker.key === "b");
+    expect(a?.x1).toBe(geometry!.xForTime(nearA));
+    expect(b?.x1).toBe(geometry!.xForTime(nearB));
+    expect(Math.abs(b!.labelY - a!.labelY)).toBeGreaterThanOrEqual(RESEARCH_LABEL_ROW_STEP);
+
+    // Far apart, the labels share the first row.
+    const apart = geometryWith([
+      markerInput({ key: "a", startAt: base + 60_000, endAt: base + 60_000 }),
+      markerInput({ key: "b", startAt: base + 180_000, endAt: base + 180_000 }),
+    ]);
+    const apartA = apart?.researchMarkers.find((marker) => marker.key === "a");
+    const apartB = apart?.researchMarkers.find((marker) => marker.key === "b");
+    expect(apartA?.labelY).toBe(apartB?.labelY);
+  });
+
+  it("keeps every field the renderer labels the occurrence by", () => {
+    const geometry = geometryWith([markerInput({})]);
+    const marker = geometry?.researchMarkers[0];
+    expect(marker?.key).toBe("research-1");
+    expect(marker?.label).toBe("Dencun");
+    expect(marker?.sourceUrl).toBe("https://ethereum.org/en/roadmap/dencun");
+  });
+});
+
+describe("research marker disclosure", () => {
+  // 2024-03-13 13:00:00 UTC — the instant the Dencun example names.
+  const dencun = 1_710_334_800_000;
+
+  it("formats the exact UTC date and time", () => {
+    expect(formatUtcInstant(dencun)).toBe("2024-03-13 13:00 UTC");
+    expect(formatUtcInstant(dencun + 15_000)).toBe("2024-03-13 13:00:15 UTC");
+    expect(formatUtcInstant(Number.NaN)).toBe("");
+  });
+
+  it("accepts only http(s) sources as links", () => {
+    expect(isHttpSourceUrl("https://ethereum.org/en/roadmap/dencun")).toBe(true);
+    expect(isHttpSourceUrl("http://example.com")).toBe(true);
+    expect(isHttpSourceUrl("ipfs://bafy...")).toBe(false);
+    expect(isHttpSourceUrl("javascript:alert(1)")).toBe(false);
+    expect(isHttpSourceUrl("")).toBe(false);
+  });
+
+  it("carries the name, the exact instant, the not-a-trade wording, and the source", () => {
+    const label = researchMarkerAriaLabel({
+      label: "Dencun",
+      startAt: dencun,
+      sourceUrl: "https://ethereum.org/en/roadmap/dencun",
+    });
+    expect(label).toContain("Dencun");
+    expect(label).toContain("2024-03-13 13:00 UTC");
+    expect(label).toContain(RESEARCH_MARKER_NOTE);
+    expect(label).toContain("https://ethereum.org/en/roadmap/dencun");
+  });
+
+  it("omits a non-http source rather than linking it", () => {
+    const label = researchMarkerAriaLabel({
+      label: "Dencun",
+      startAt: dencun,
+      sourceUrl: "ipfs://bafy...",
+    });
+    expect(label).toContain("Dencun");
+    expect(label).not.toContain("ipfs");
   });
 });

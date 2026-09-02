@@ -38,7 +38,7 @@ import type {
   TradingChartThesis,
 } from "@t3tools/contracts";
 
-import { coverageBands, layoutSessionLabelYs, sessionLevelLines } from "./marketChartOverlays";
+import { coverageBands, sessionLevelLines } from "./marketChartOverlays";
 import { thesisChartConditions, thesisChartMarkers, thesisChartZones } from "./thesisChartMarkers";
 import { useMissionChartMode } from "./missionChartModeStore";
 import { isMomentSelected, useMissionSelection } from "./missionSelectionStore";
@@ -50,9 +50,17 @@ import {
   FUTURE_GUTTER_RATIO,
   LABEL_GUTTER_WIDTH,
   PLOT_WIDTH,
+  RESEARCH_MARKER_NOTE,
   computeChartGeometry,
   findLevelAtPrice,
+  formatGridPrice,
+  formatUtcInstant,
+  gridPriceDecimals,
+  gridTickTarget,
+  isHttpSourceUrl,
+  layoutLeftAxisLabels,
   medianBarInterval,
+  researchMarkerAriaLabel,
   type ChartCondition,
   type ChartLevel,
   type ChartResearchMarkerInput,
@@ -63,6 +71,7 @@ import {
   type ChartZoneInput,
   type ChartZoneTone,
   type GutterTag,
+  type LeftAxisLabelEntry,
 } from "./missionChartGeometry";
 import { formatPrice, type ChartFillKind, type ChartFillMarker } from "./tradingPresentation";
 
@@ -643,6 +652,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     zones,
     thesis,
     eventBands,
+    researchMarkers,
     studyOverlay,
     onAskAboutMarker,
     draggableKinds,
@@ -663,6 +673,33 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     readonly price: number;
   } | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
+  // The frame's measured size, rounded to whole pixels so ordinary layout
+  // jitter never re-renders for it. Two axis decisions read it: the grid's
+  // tick count (a narrow frame draws fewer rules, never smaller type) and the
+  // left-axis lane's label separation (a 10px line is more viewBox units on a
+  // short frame than a tall one). Measured by ResizeObserver — it fires on
+  // real resizes only, so nothing here animates or repaints continuously.
+  const [frameSize, setFrameSize] = useState<{
+    readonly width: number;
+    readonly height: number;
+  } | null>(null);
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (frame === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (box === undefined) return;
+      const width = Math.round(box.width);
+      const height = Math.round(box.height);
+      setFrameSize((previous) =>
+        previous !== null && previous.width === width && previous.height === height
+          ? previous
+          : { width, height },
+      );
+    });
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
   // The draw-in dash is stripped once the intro has played. Left on, the
   // polyline keeps `stroke-dasharray: 1` against a `pathLength` that
   // re-normalises every time the points change — and on a line that updates
@@ -701,6 +738,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // thing that says which moment one of them is is its own sentence, and the
   // only place there is room for that sentence is a tooltip.
   const [hoveredPastKey, setHoveredPastKey] = useState<string | null>(null);
+  // Which research marker's detail is open. Static reveal — hover, focus, or
+  // click all open it, and nothing about it animates.
+  const [openResearchKey, setOpenResearchKey] = useState<string | null>(null);
 
   // Candles or the close line (final-form phase 6). One persisted preference
   // shared by every mounted chart, so the live panel and the review read the
@@ -803,6 +843,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(timeMarkers === undefined ? {} : { timeMarkers }),
     ...(pastMarkers === undefined ? {} : { pastMarkers }),
     ...(eventBands === undefined ? {} : { eventBands }),
+    ...(researchMarkers === undefined ? {} : { researchMarkers }),
     ...(studyOverlay === undefined ? {} : { studyOverlay }),
   });
 
@@ -884,7 +925,17 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     [...geometry.preEntryPoints, ...geometry.postEntryPoints],
     CHART_VIEWBOX_HEIGHT,
   );
-  const gridPrices = gridPricesFor(geometry.domainMin, geometry.domainMax, 4);
+  // The grid scale: how many rules the frame can carry (fewer on a narrow
+  // frame — the type never shrinks below its 10px), and the coarsest decimals
+  // the step spacing supports, so "2,420" and "2,420.51" are not mixed
+  // without need.
+  const gridTargetLines = gridTickTarget(frameSize?.width ?? 0);
+  const gridPrices = gridPricesFor(geometry.domainMin, geometry.domainMax, gridTargetLines);
+  const gridStep =
+    gridPrices.length >= 2
+      ? gridPrices[1]! - gridPrices[0]!
+      : (geometry.domainMax - geometry.domainMin) / Math.max(2, gridTargetLines);
+  const gridDecimals = gridPriceDecimals(gridStep);
 
   // Final-form phase 6 overlays, all prop-gated: a mission chart passes none
   // of them and renders exactly as before.
@@ -895,13 +946,63 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     timeEnd: geometry.timeEnd,
   });
   const sessionLines = sessionLevelLines(sessionLevels, geometry.domainMin, geometry.domainMax);
-  // The labels folded apart: two session levels a few cents apart keep their
-  // rules at the true prices, but their one-line labels must not print on top
-  // of each other.
-  const sessionLabelYs = layoutSessionLabelYs(
-    sessionLines.map((line) => ({ key: line.key, y: geometry.yForPrice(line.price) })),
-    CHART_VIEWBOX_HEIGHT,
-  );
+
+  // --- the unified left-axis lane ------------------------------------------
+  //
+  // ONE collision pass over every label the left axis draws — grid prices,
+  // session levels, and (while a drag is live) the dragged-price readout.
+  // The two independent placements this replaces each kept their own kind
+  // apart while printing the two kinds on top of each other at the same left
+  // edge. Rules keep their exact y; only labels nudge, within a bounded
+  // distance, and a label that cannot be placed legibly is suppressed —
+  // never the rule it names.
+  //
+  // The lane's priorities, most important first: the dragged price (what the
+  // operator is stating right now), the named session levels, the ordinary
+  // grid ticks.
+  const leftAxisEntries: LeftAxisLabelEntry[] = [];
+  if (drag !== null) {
+    leftAxisEntries.push({
+      id: "drag-readout",
+      text: formatPrice(drag.price),
+      y: geometry.yForPrice(drag.price),
+      priority: 0,
+    });
+  }
+  for (const line of sessionLines) {
+    leftAxisEntries.push({
+      id: `session-${line.key}`,
+      text: `${line.label} ${formatPrice(line.price)}`,
+      y: geometry.yForPrice(line.price),
+      priority: 1,
+    });
+  }
+  for (const price of gridPrices) {
+    leftAxisEntries.push({
+      id: `grid-${price}`,
+      text: formatGridPrice(price, gridDecimals),
+      y: geometry.yForPrice(price),
+      priority: 2,
+    });
+  }
+  // The separation is derived from the rendered font: the lane's largest
+  // text is 10px, plus a hair of leading, expressed in viewBox units through
+  // the frame's measured height. Unmeasured, one viewBox unit is assumed to
+  // be one pixel — the ratio the chart's ~160px panels render at.
+  const viewBoxUnitsPerPx =
+    frameSize !== null && frameSize.height > 0 ? CHART_VIEWBOX_HEIGHT / frameSize.height : 1;
+  const leftAxisMinSeparation = 12 * viewBoxUnitsPerPx;
+  const leftAxis = layoutLeftAxisLabels({
+    entries: leftAxisEntries,
+    frameHeight: CHART_VIEWBOX_HEIGHT,
+    minSeparation: leftAxisMinSeparation,
+    maxNudge: leftAxisMinSeparation,
+  });
+  const leftAxisEntryById = new Map(leftAxisEntries.map((entry) => [entry.id, entry]));
+  const leftAxisY = (id: string): number | null => {
+    if (leftAxis.suppressed.has(id)) return null;
+    return leftAxis.placed.find((placement) => placement.id === id)?.y ?? null;
+  };
   const maxVolume =
     showVolume === true ? candles.reduce((max, candle) => Math.max(max, candle.volume), 0) : 0;
   const volumeByOpenTime =
@@ -1235,6 +1336,67 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             />
           </g>
         ))}
+
+        {/* Research occurrence markers (the scene's events, at their exact
+            saved instants): a dotted vertical rule for an instantaneous
+            occurrence — never moved for collisions, only its label stacks —
+            and a washed band with dotted edges for a genuine span. The same
+            muted register the thesis calendar's bands use, but told apart by
+            the dotted edges on BOTH sides and by nothing that ever reads as
+            a fill, order, or execution. The upcoming occurrence draws in the
+            lighter wash, like the calendar's upcoming band. */}
+        {geometry.researchMarkers.map((marker) =>
+          marker.span ? (
+            <g key={`research-${marker.key}`} data-testid={`research-marker-${marker.key}`}>
+              <rect
+                x={marker.x1}
+                y={0}
+                width={marker.x2 - marker.x1}
+                height={CHART_VIEWBOX_HEIGHT}
+                fill={
+                  marker.upcoming
+                    ? "color-mix(in oklab, var(--color-muted-foreground) 6%, transparent)"
+                    : "color-mix(in oklab, var(--color-muted-foreground) 9%, transparent)"
+                }
+                stroke="none"
+              />
+              {[marker.x1, marker.x2].map((edge, index) => (
+                <line
+                  key={`research-edge-${index}`}
+                  x1={edge}
+                  y1={0}
+                  x2={edge}
+                  y2={CHART_VIEWBOX_HEIGHT}
+                  stroke={
+                    marker.upcoming
+                      ? "color-mix(in oklab, var(--color-muted-foreground) 30%, transparent)"
+                      : "color-mix(in oklab, var(--color-muted-foreground) 45%, transparent)"
+                  }
+                  strokeWidth={1}
+                  strokeDasharray="2 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+            </g>
+          ) : (
+            <line
+              key={`research-${marker.key}`}
+              data-testid={`research-marker-${marker.key}`}
+              x1={marker.x1}
+              y1={0}
+              x2={marker.x1}
+              y2={CHART_VIEWBOX_HEIGHT}
+              stroke={
+                marker.upcoming
+                  ? "color-mix(in oklab, var(--color-muted-foreground) 30%, transparent)"
+                  : "color-mix(in oklab, var(--color-muted-foreground) 45%, transparent)"
+              }
+              strokeWidth={1}
+              strokeDasharray="2 4"
+              vectorEffect="non-scaling-stroke"
+            />
+          ),
+        )}
 
         {/* The research study overlay: a named activation rule, the measured
             entry and exit, and the signed return between them. Measurements
@@ -1769,6 +1931,130 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             the chip's own level, wherever its label was laid out. */}
       </svg>
 
+      {/* The research markers' labels, stacked by the geometry's collision
+          pass when two occurrences sit close on the axis — the RULES keep
+          their true x, only the labels stack downward in rows. HTML rather
+          than SVG text so nothing stretches, with a background so a label
+          reads over candles. */}
+      {geometry.researchMarkers.map((marker) => (
+        <span
+          key={`research-label-${marker.key}`}
+          data-testid={`research-marker-label-${marker.key}`}
+          className={cn(
+            "pointer-events-none absolute bg-background/70 px-[2px] font-mono text-[9px] leading-none",
+            marker.upcoming ? "text-muted-foreground/70" : "text-muted-foreground",
+          )}
+          style={{
+            left: `${(marker.x1 / CHART_VIEWBOX_WIDTH) * 100}%`,
+            top: `${(marker.labelY / CHART_VIEWBOX_HEIGHT) * 100}%`,
+            maxWidth: `calc(${((CHART_VIEWBOX_WIDTH - marker.x1) / CHART_VIEWBOX_WIDTH) * 100}% - 4px)`,
+          }}
+        >
+          <span className="block truncate">{marker.label}</span>
+        </span>
+      ))}
+
+      {/* One focusable strip per research occurrence: the whole column at its
+          rule (or across its band), through which hover, focus, or click
+          opens the occurrence's detail. The strip carries the full facts in
+          its aria-label — name, exact UTC instant, the not-a-trade wording,
+          the source — and the detail adds the source as a real link. Nothing
+          here animates. Rendered BEFORE the grab strips so a draggable
+          level's hit area keeps priority over the research column. */}
+      {geometry.researchMarkers.map((marker) => {
+        // An instantaneous rule gets a hit column centred on it; a span
+        // covers its band. Both at least wide enough to hit.
+        const stripWidthUnits = marker.span ? Math.max(marker.x2 - marker.x1, 12) : 12;
+        const stripLeftUnits = Math.max(
+          0,
+          marker.span ? marker.x1 : marker.x1 - stripWidthUnits / 2,
+        );
+        const stripLeftPx =
+          (stripLeftUnits / CHART_VIEWBOX_WIDTH) * (frameSize?.width ?? CHART_VIEWBOX_WIDTH);
+        // Keep the detail card inside the frame however far right the
+        // occurrence sits: shifted left of its own strip when that is what it
+        // takes, but never past the frame's left edge. Unmeasured, the 8px
+        // offset is close enough for the first paint.
+        const detailLeftPx =
+          frameSize === null
+            ? 8
+            : Math.max(-stripLeftPx, Math.min(8, frameSize.width - 236 - stripLeftPx));
+        const open = openResearchKey === marker.key;
+        return (
+          <div
+            key={`research-hit-${marker.key}`}
+            className="absolute inset-y-0"
+            style={{
+              left: `${(stripLeftUnits / CHART_VIEWBOX_WIDTH) * 100}%`,
+              width: `${(stripWidthUnits / CHART_VIEWBOX_WIDTH) * 100}%`,
+            }}
+            // Hover AND focus live on the WRAPPER: the detail card and its
+            // source link are siblings of the strip inside it, so entering
+            // them must not read as leaving the occurrence — focus events
+            // bubble, and the relatedTarget check then keeps the card open
+            // while its link holds focus. No z-index here either — the drag
+            // strips below are later siblings and must keep winning the hit
+            // test over a research column; the open detail card carries its
+            // own z.
+            onMouseEnter={() => setOpenResearchKey(marker.key)}
+            onMouseLeave={() =>
+              setOpenResearchKey((current) => (current === marker.key ? null : current))
+            }
+            onFocus={() => setOpenResearchKey(marker.key)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setOpenResearchKey((current) => (current === marker.key ? null : current));
+              }
+            }}
+          >
+            <span
+              data-testid={`research-marker-hit-${marker.key}`}
+              role="note"
+              tabIndex={0}
+              aria-label={researchMarkerAriaLabel(marker)}
+              className={cn(
+                "absolute inset-0 block cursor-default outline-none focus-visible:bg-foreground/10",
+                open && "bg-foreground/5",
+              )}
+              onClick={() => setOpenResearchKey(marker.key)}
+            />
+            {open ? (
+              <span
+                data-testid={`research-marker-detail-${marker.key}`}
+                className="absolute top-2 z-20 block w-56 rounded-sm border border-border/60 bg-background/95 px-2 py-1.5 backdrop-blur-sm"
+                style={{ left: `${detailLeftPx}px` }}
+              >
+                <span className="block font-mono text-[10px] leading-tight text-foreground">
+                  {marker.label}
+                  {marker.upcoming ? (
+                    <span className="text-muted-foreground"> · upcoming</span>
+                  ) : null}
+                </span>
+                <span className="mt-0.5 block font-mono text-[9px] leading-tight text-muted-foreground">
+                  {marker.span
+                    ? `${formatUtcInstant(marker.startAt)} → ${formatUtcInstant(marker.endAt)}`
+                    : formatUtcInstant(marker.startAt)}
+                </span>
+                <span className="mt-0.5 block text-[9px] leading-tight text-muted-foreground">
+                  {RESEARCH_MARKER_NOTE}
+                </span>
+                {isHttpSourceUrl(marker.sourceUrl) ? (
+                  <a
+                    href={marker.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid={`research-marker-source-${marker.key}`}
+                    className="mt-0.5 block truncate text-[9px] leading-tight text-info underline underline-offset-2"
+                  >
+                    {marker.sourceUrl}
+                  </a>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+
       {/* The grab strips. HTML rather than SVG because a stretched plot makes
           a thin SVG hit area unusably narrow at some widths and enormous at
           others; a percentage-positioned strip is the same eight pixels tall
@@ -1799,7 +2085,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
 
       {/* The dragged price, and what it would plan to lose. Follows the
           pointer, because a readout the operator has to look away to read is a
-          readout they will not read while dragging. */}
+          readout they will not read while dragging. It joins the left-axis
+          lane's collision pass as the lane's top priority, so it never stacks
+          a grid number on itself. */}
       {drag === null ? null : (
         <span
           data-testid="mission-chart-drag-readout"
@@ -1808,7 +2096,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           // is dragging relative to.
           className="pointer-events-none absolute left-1 -translate-y-1/2 rounded-sm bg-background/90 px-1 py-0.5 font-mono text-[10.5px] tabular-nums"
           style={{
-            top: `${(geometry.yForPrice(drag.price) / CHART_VIEWBOX_HEIGHT) * 100}%`,
+            top: `${((leftAxisY("drag-readout") ?? geometry.yForPrice(drag.price)) / CHART_VIEWBOX_HEIGHT) * 100}%`,
             color: levelInkColor(drag.kind),
           }}
         >
@@ -2160,38 +2448,40 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         ) : null}
       </div>
 
-      {/* The grid's own prices, sitting just above their rules at the left of
-          the plot. The Stocks app puts this scale on the right; here the right
-          is the level gutter — entry, stop, target, the mark — and a price
-          scale interleaved with those would be two columns of numbers meaning
-          different things. The left of the plot is empty ground. */}
-      {gridPrices.map((price) => (
-        <span
-          key={`grid-label-${price}`}
-          className="pointer-events-none absolute left-1.5 -translate-y-full pb-0.5 font-mono text-[10px] leading-none tabular-nums text-muted-foreground"
-          style={{ top: `${(geometry.yForPrice(price) / CHART_VIEWBOX_HEIGHT) * 100}%` }}
-          aria-hidden="true"
-        >
-          {formatPrice(price)}
-        </span>
-      ))}
-
-      {/* The session rules' labels (phase 6): tiny, muted, at the left end of
-          their rule, under it so they never sit on the grid labels above.
-          Docked at the folded y, so two levels a few cents apart still print
-          as two readable lines; the rules stay at their true prices. */}
-      {sessionLines.map((line) => (
-        <span
-          key={`session-label-${line.key}`}
-          className="pointer-events-none absolute left-1.5 pt-0.5 font-mono text-[9px] leading-none tabular-nums text-muted-foreground/80"
-          style={{
-            top: `${((sessionLabelYs.get(line.key) ?? geometry.yForPrice(line.price)) / CHART_VIEWBOX_HEIGHT) * 100}%`,
-          }}
-          aria-hidden="true"
-        >
-          {line.label} {formatPrice(line.price)}
-        </span>
-      ))}
+      {/* The reserved left-axis lane: ONE placement shared by the grid
+          prices, the session levels, and (while live) the dragged price —
+          the collision-aware pass in the geometry module decides what sits
+          where, what nudged, and what was suppressed because it could not be
+          read. The Stocks app puts this scale on the right; here the right is
+          the level gutter, and the left of the plot is the scale's ground.
+          Every label centres on its placed y with the same alignment, and
+          carries a background so it reads over candles and volume instead of
+          printing illegibly through them. A rule whose label was suppressed
+          keeps drawing — the pass hides labels, never rules. */}
+      {leftAxis.placed.map((placement) => {
+        const entry = leftAxisEntryById.get(placement.id);
+        if (entry === undefined) return null;
+        // The dragged price has its own element below, with the ink and the
+        // risk figure; the lane only decides where it sits.
+        if (placement.id === "drag-readout") return null;
+        const isSession = placement.id.startsWith("session-");
+        return (
+          <span
+            key={placement.id}
+            data-testid={isSession ? "market-chart-session-label" : "mission-chart-grid-label"}
+            className={cn(
+              "pointer-events-none absolute left-1.5 -translate-y-1/2 bg-background/70 px-[2px] font-mono leading-none tabular-nums",
+              isSession
+                ? "text-[9px] text-muted-foreground/80"
+                : "text-[10px] text-muted-foreground",
+            )}
+            style={{ top: `${(placement.y / CHART_VIEWBOX_HEIGHT) * 100}%` }}
+            aria-hidden="true"
+          >
+            {entry.text}
+          </span>
+        );
+      })}
 
       {/* The arm-at-price chip (phase 6): docked in the gutter at the pointer's
           own price while the affordance is on. Clicking it arms a notify watch
