@@ -6,23 +6,30 @@ import {
   aggregateAlignedTrace,
   alignedTracePoints,
   askAboutOccurrenceSentence,
+  BASELINE_REFERENCE_LABEL,
+  BASELINE_UNAVAILABLE_SENTENCE,
+  baselineReference,
   describeHorizon,
   fmtUsd,
   grossChangeUsd,
   historicalGrossChangeLabel,
   nextGraphViewMode,
   DERIVED_VS_AUTHORED_SENTENCE,
+  liveResearchMarkers,
   MARKER_LEGEND_SENTENCE,
   occurrenceStudyOverlay,
   payloadEntryBasis,
   provenanceTrailLine,
   occurrenceWindow,
-  resolveInitialGraphMode,
+  researchMarkerAccessibleName,
+  sceneAutoFitDecision,
+  sceneAutoFitRecommendation,
   studyExplanationLines,
   studyRuleSentence,
   studyWindowMaxBars,
   STUDY_RULE_SENTENCE,
   turnIntoStrategySentence,
+  uncoveredOccurrenceNotes,
   validateForwardSentence,
 } from "./researchScenePresentation.ts";
 import { EVENT_STUDY_MAX_HORIZON_BARS } from "@t3tools/trading-contracts/eventSets";
@@ -140,21 +147,22 @@ describe("describeHorizon", () => {
   });
 });
 
-describe("resolveInitialGraphMode", () => {
-  it("lands on calendar when research exists, live otherwise", () => {
-    expect(resolveInitialGraphMode(undefined)).toBe("live");
-    expect(resolveInitialGraphMode({ sceneId: "s" } as never)).toBe("calendar");
-  });
-});
-
 describe("nextGraphViewMode (thread-scoped mode-switch state)", () => {
-  it("auto-selects Calendar exactly once, when the first scene arrives on Live", () => {
+  it("a scene arriving never moves the view: publication is Live-first", () => {
+    // The old behavior jumped Live to Calendar on arrival; the unified graph
+    // keeps the reader wherever they are and decorates Live instead.
     expect(
       nextGraphViewMode({ current: "live", hasScenes: true, previouslyHadScenes: false }),
+    ).toBe("live");
+    expect(
+      nextGraphViewMode({ current: "calendar", hasScenes: true, previouslyHadScenes: false }),
     ).toBe("calendar");
+    expect(
+      nextGraphViewMode({ current: "aligned", hasScenes: true, previouslyHadScenes: false }),
+    ).toBe("aligned");
   });
 
-  it("never moves a user who has already chosen: their mode is stickier than the data", () => {
+  it("never moves a reader who already has scenes, whichever mode they chose", () => {
     for (const current of ["live", "calendar", "aligned"] as const) {
       expect(nextGraphViewMode({ current, hasScenes: true, previouslyHadScenes: true })).toBe(
         current,
@@ -172,14 +180,217 @@ describe("nextGraphViewMode (thread-scoped mode-switch state)", () => {
       );
     }
   });
+});
 
-  it("auto-selects again only after a full clear-then-publish cycle", () => {
-    // scenes -> none -> scenes: the arrival is new again, so Calendar wins
-    // from Live, and a user who rode through in Live keeps Live only while
-    // scenes persisted.
-    expect(
-      nextGraphViewMode({ current: "live", hasScenes: true, previouslyHadScenes: false }),
-    ).toBe("calendar");
+describe("liveResearchMarkers (the live graph's scene decoration)", () => {
+  const NOW = 1_800_000_000_000;
+  const RULE_AT = NOW - 40 * DAY; // instantaneous activation, in the past
+  const SPAN_START = NOW - 200 * DAY;
+  const SPAN_END = NOW - 197 * DAY; // a true multi-day span
+  const UPCOMING = NOW + 30 * DAY;
+
+  const scene = {
+    sceneId: "scene-9",
+    eventStudy: {
+      eventSetName: "ETH upgrades",
+      occurrenceWindows: [
+        {
+          startAt: SPAN_START,
+          endAt: SPAN_END,
+          label: "Devcon",
+          source: "https://e.org/devcon",
+          covered: true,
+          entryTime: SPAN_END,
+          exitTime: SPAN_END + 30 * DAY,
+        },
+        {
+          startAt: RULE_AT,
+          endAt: RULE_AT,
+          label: undefined,
+          source: "https://e.org/dencun",
+          covered: true,
+          entryTime: RULE_AT,
+          exitTime: RULE_AT + 30 * DAY,
+        },
+        {
+          startAt: UPCOMING,
+          endAt: UPCOMING + 3 * DAY,
+          label: "Futurera",
+          source: "https://e.org/next",
+          covered: false,
+        },
+        {
+          startAt: NOW - 3_000 * DAY,
+          endAt: NOW - 3_000 * DAY,
+          label: "Frontier",
+          source: "https://e.org/old",
+          covered: false,
+        },
+      ],
+    },
+  } as never;
+
+  const markers = liveResearchMarkers(scene, NOW);
+
+  it("derives one marker per occurrence, keyed by scene and exact startAt", () => {
+    expect(markers.map((marker) => marker.key)).toEqual([
+      `scene-9:${SPAN_START}`,
+      `scene-9:${RULE_AT}`,
+      `scene-9:${UPCOMING}`,
+      `scene-9:${NOW - 3_000 * DAY}`,
+    ]);
+  });
+
+  it("an exact occurrence keeps its exact millisecond; a true span keeps both instants", () => {
+    const rule = markers[1];
+    expect(rule?.startAt).toBe(RULE_AT);
+    expect(rule?.endAt).toBe(RULE_AT);
+    const span = markers[0];
+    expect(span?.startAt).toBe(SPAN_START);
+    expect(span?.endAt).toBe(SPAN_END);
+  });
+
+  it("labels fall back to the event set's name, carry the source, and flag coverage and upcoming", () => {
+    expect(markers[1]?.label).toBe("ETH upgrades");
+    expect(markers[0]?.label).toBe("Devcon");
+    for (const marker of markers) {
+      expect(marker.sourceUrl.startsWith("https://e.org/")).toBe(true);
+    }
+    expect(markers[2]?.upcoming).toBe(true);
+    expect(markers[0]?.upcoming).toBe(false);
+    expect(markers[2]?.covered).toBe(false);
+    expect(markers[0]?.covered).toBe(true);
+  });
+
+  it("a scene without an event study decorates nothing", () => {
+    expect(liveResearchMarkers({ sceneId: "s" }, NOW)).toEqual([]);
+  });
+
+  it("the accessible name says label, exact UTC instant, meaning and source", () => {
+    const name = researchMarkerAccessibleName({
+      key: "k",
+      label: "Dencun",
+      startAt: RULE_AT,
+      endAt: RULE_AT,
+      sourceUrl: "https://e.org/dencun",
+      covered: true,
+      upcoming: false,
+    });
+    expect(name).toContain("Dencun");
+    expect(name).toContain(new Date(RULE_AT).toISOString());
+    expect(name).toContain("historical counterfactual measurement, not a fill");
+    expect(name).toContain("https://e.org/dencun");
+    const spanName = researchMarkerAccessibleName({
+      key: "k2",
+      label: "Devcon",
+      startAt: SPAN_START,
+      endAt: SPAN_END,
+      sourceUrl: "https://e.org/devcon",
+      covered: true,
+      upcoming: false,
+    });
+    expect(spanName).toContain(`from ${new Date(SPAN_START).toISOString()}`);
+    expect(spanName).toContain(`to ${new Date(SPAN_END).toISOString()}`);
+  });
+
+  it("uncovered occurrences become coverage notes, never fake edge markers", () => {
+    const notes = uncoveredOccurrenceNotes(scene, NOW);
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain("Futurera");
+    expect(notes[0]).toContain("has not happened yet");
+    expect(notes[1]).toContain("Frontier");
+    expect(notes[1]).toContain(new Date(NOW - 3_000 * DAY).toISOString().slice(0, 10));
+    expect(notes[1]).toContain("predates recorded data");
+    // Covered occurrences say nothing: they draw, they do not explain.
+    expect(uncoveredOccurrenceNotes({}, NOW)).toEqual([]);
+  });
+});
+
+describe("sceneAutoFitRecommendation and its once-per-scene gate", () => {
+  const NOW = Date.UTC(2024, 8, 15); // mid-September 2024: ytd spans ~258 days
+
+  const windows = (starts: ReadonlyArray<number>, covered = true) =>
+    starts.map((startAt) => ({ startAt, endAt: startAt, covered }));
+
+  it("the Ethereum-style multi-year scene recommends all with 1 week bars", () => {
+    // Three upgrades spread over three years: nothing fixed holds them.
+    const recommendation = sceneAutoFitRecommendation(
+      windows([NOW - 3 * 365 * DAY, NOW - 2 * 365 * DAY, NOW - 200 * DAY]),
+      NOW,
+    );
+    expect(recommendation.range).toBe("all");
+    expect(recommendation.interval).toBe("1w");
+  });
+
+  it("a recent scene fits the smallest range that holds it, on study-fit bars", () => {
+    const recommendation = sceneAutoFitRecommendation(windows([NOW - 90 * DAY]), NOW);
+    expect(recommendation.range).toBe("6m");
+    // event_study_fit keeps 6m on weekly bars where browsing would use 1d.
+    expect(recommendation.interval).toBe("1w");
+  });
+
+  it("occurrences the archive never reached do not stretch the fit", () => {
+    // One covered recent occurrence plus one from before recording began:
+    // the uncovered one can never draw, so the fit stays on the drawable one.
+    const recommendation = sceneAutoFitRecommendation(
+      [
+        { startAt: NOW - 60 * DAY, endAt: NOW - 60 * DAY, covered: true },
+        { startAt: NOW - 2_000 * DAY, endAt: NOW - 2_000 * DAY, covered: false },
+      ],
+      NOW,
+    );
+    expect(recommendation.range).toBe("6m");
+  });
+
+  it("with nothing drawable, the whole set decides and the fit lands on all", () => {
+    const recommendation = sceneAutoFitRecommendation(
+      windows([NOW - 400 * DAY, NOW - 800 * DAY], false),
+      NOW,
+    );
+    expect(recommendation.range).toBe("all");
+    expect(recommendation.interval).toBe("1w");
+  });
+
+  it("applies once per active scene id and never twice for the same one", () => {
+    const scene = {
+      sceneId: "scene-1",
+      eventStudy: { occurrenceWindows: windows([NOW - 3 * 365 * DAY]) },
+    } as never;
+    const first = sceneAutoFitDecision(new Set(), scene, NOW);
+    expect(first.apply).toBe(true);
+    expect(first.recommendation).toEqual({ range: "all", interval: "1w" });
+    expect(first.appliedSceneIds.has("scene-1")).toBe(true);
+    // The second call — the next poll, the next refresh — must not move it.
+    const second = sceneAutoFitDecision(first.appliedSceneIds, scene, NOW);
+    expect(second.apply).toBe(false);
+    expect(second.appliedSceneIds).toBe(first.appliedSceneIds);
+    // A NEW scene id (the superseding publish) gets its own one fit.
+    const successor = {
+      sceneId: "scene-2",
+      eventStudy: { occurrenceWindows: windows([NOW - 3 * 365 * DAY]) },
+    } as never;
+    const third = sceneAutoFitDecision(first.appliedSceneIds, successor, NOW);
+    expect(third.apply).toBe(true);
+  });
+
+  it("a scene with no event study never fits anything", () => {
+    const decision = sceneAutoFitDecision(new Set(), { sceneId: "s" }, NOW);
+    expect(decision.apply).toBe(false);
+  });
+});
+
+describe("baselineReference (the event-aligned comparison's drawn reference)", () => {
+  it("is the baseline mean as one labelled level", () => {
+    expect(baselineReference({ meanReturnPct: 1.1 })).toEqual({
+      valuePct: 1.1,
+      label: BASELINE_REFERENCE_LABEL,
+    });
+    expect(BASELINE_REFERENCE_LABEL).toBe("Baseline mean");
+  });
+
+  it("is null when the report holds no baseline: nothing may draw in its place", () => {
+    expect(baselineReference(null)).toBeNull();
+    expect(BASELINE_UNAVAILABLE_SENTENCE).toBe("Baseline unavailable for this served window");
   });
 });
 
@@ -399,7 +610,7 @@ describe("prefill sentences", () => {
 });
 
 describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
-  const DAY_1D = DAY;
+  const DAY1D = DAY;
 
   it("a long-horizon scene derives more than 360 bars: the entry must survive the read", () => {
     // A 500-bar horizon on a one-day event window: the window read keeps the
@@ -407,9 +618,9 @@ describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
     // context drops the oldest bars — the entry. 360 would truncate it.
     const bars = studyWindowMaxBars({
       startAt: NOW,
-      endAt: NOW + DAY_1D,
+      endAt: NOW + DAY1D,
       horizonBars: EVENT_STUDY_MAX_HORIZON_BARS,
-      intervalMs: DAY_1D,
+      intervalMs: DAY1D,
     });
     expect(bars).toBeGreaterThan(360);
     expect(bars).toBeLessThanOrEqual(STUDY_CHART_MAX_WINDOW_BARS);
@@ -420,9 +631,9 @@ describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
   it("a small horizon asks only for what its window spans", () => {
     const bars = studyWindowMaxBars({
       startAt: NOW,
-      endAt: NOW + DAY_1D,
+      endAt: NOW + DAY1D,
       horizonBars: 30,
-      intervalMs: DAY_1D,
+      intervalMs: DAY1D,
     });
     expect(bars).toBe(30 + 1 + 12);
   });
@@ -436,9 +647,9 @@ describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
     const windowBars = spanBars + horizonBars + 2 * OCCURRENCE_CONTEXT_BARS; // the pads occurrenceWindow spans
     const asked = studyWindowMaxBars({
       startAt: NOW,
-      endAt: NOW + spanBars * DAY_1D,
+      endAt: NOW + spanBars * DAY1D,
       horizonBars,
-      intervalMs: DAY_1D,
+      intervalMs: DAY1D,
     });
     expect(asked).toBe(windowBars);
     expect(asked).toBeGreaterThanOrEqual(spanBars + horizonBars);

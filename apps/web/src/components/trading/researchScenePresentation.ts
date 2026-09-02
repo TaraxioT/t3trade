@@ -16,9 +16,17 @@ import type {
   ResearchSceneView,
   TradingChartCandleLike,
 } from "./researchSceneViewTypes.ts";
+import type { ResearchOccurrenceWindow } from "@t3tools/contracts";
+import type { ChartResearchMarkerInput } from "./missionChartGeometry.ts";
 import type { EventStudyEntryBasis } from "@t3tools/trading-contracts/eventSets";
 import { EVENT_STUDY_ENTRY_BASIS_PHRASES } from "@t3tools/trading-contracts/eventSets";
-import { STUDY_CHART_CONTEXT_BARS, STUDY_CHART_MAX_WINDOW_BARS } from "@t3tools/contracts";
+import {
+  STUDY_CHART_CONTEXT_BARS,
+  STUDY_CHART_MAX_WINDOW_BARS,
+  type TradingChartInterval,
+  type TradingChartRange,
+} from "@t3tools/contracts";
+import { autoInterval, sceneAutoFit } from "../../lib/tradingChartRangePolicy";
 
 /**
  * Bars of context either side of a measured occurrence window. Aliased off
@@ -44,34 +52,210 @@ export function activeGraphScenes(
 }
 
 /**
- * The initial mode when a thread holds scenes: calendar shows each measured
- * window where it happened, which is the honest first answer to "did ETH
- * rise after Devcon". Aligned is one click away and Live never moves.
- */
-export function resolveInitialGraphMode(scene: ResearchSceneView | undefined): GraphViewMode {
-  return scene === undefined ? "live" : "calendar";
-}
-
-/**
  * The mode-switch decision when the thread's scene set changes, extracted so
- * the sticky-Live rule is testable: a scene ARRIVING while Live is showing
- * selects Calendar once (the useful first view of new research), and only
- * then. Once the user has chosen any mode, later scene churn never moves
- * them: their choice is stickier than the data. Scenes disappearing entirely
- * hand the graph back to Live, because Calendar and Aligned have nothing to
- * show without them.
+ * the Live-first rule is testable: a scene ARRIVING never moves the graph.
+ * The study is published onto Live — named markers at their exact instants,
+ * one auto-fit of the range — and Calendar and Event aligned stay one click
+ * away. Scenes disappearing entirely hand the graph back to Live, because
+ * Calendar and Aligned have nothing to show without them.
  */
 export function nextGraphViewMode(input: {
   readonly current: GraphViewMode;
   readonly hasScenes: boolean;
   readonly previouslyHadScenes: boolean;
 }): GraphViewMode {
-  if (!input.hasScenes) return "live";
-  if (input.previouslyHadScenes) return input.current;
-  // Scenes just arrived. Auto-select Calendar only from Live: a user who is
-  // somehow already in a research mode (impossible without scenes, but total
-  // is total) stays put.
-  return input.current === "live" ? "calendar" : input.current;
+  // Scenes just arrived: keep whatever the reader is looking at, Live
+  // included. Research decorates the live graph; it does not take it over.
+  if (input.hasScenes) return input.current;
+  // Scenes vanished (cleared, or the thread's last scene was superseded away):
+  // the research modes have nothing to render, so the graph comes home.
+  return "live";
+}
+
+/** The label on the event-aligned stage's baseline reference line. */
+export const BASELINE_REFERENCE_LABEL = "Baseline mean";
+
+/** The exact sentence the aligned stage shows when the report holds no baseline. */
+export const BASELINE_UNAVAILABLE_SENTENCE = "Baseline unavailable for this served window";
+
+/** The dashed reference the aggregate comparison draws, when there is one to draw. */
+export interface BaselineReference {
+  readonly valuePct: number;
+  readonly label: string;
+}
+
+/**
+ * The baseline mean as a drawn reference: one horizontal level across the
+ * horizon axis, labelled as the baseline. Null when the report holds no
+ * baseline (the served window was shorter than the horizon) — and then
+ * NOTHING may draw in its place, because a made-up level would read as a
+ * measurement.
+ */
+export function baselineReference(
+  baseline: { readonly meanReturnPct: number } | null,
+): BaselineReference | null {
+  return baseline === null
+    ? null
+    : { valuePct: baseline.meanReturnPct, label: BASELINE_REFERENCE_LABEL };
+}
+
+/**
+ * The scene-derived markers the LIVE graph draws, one per occurrence window at
+ * its exact saved instants. An instantaneous activation (`startAt === endAt`)
+ * becomes a rule at that millisecond; a true span becomes a band; an
+ * occurrence after `now` is flagged `upcoming` so the renderer can place it in
+ * the future gutter. Uncovered occurrences are still handed over — coverage is
+ * the renderer's to say, never a reason to silently drop a recorded fact.
+ */
+export function liveResearchMarkers(
+  scene: {
+    readonly sceneId: string;
+    readonly eventStudy?:
+      | {
+          readonly eventSetName: string;
+          readonly occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow>;
+        }
+      | undefined;
+  },
+  now: number,
+): ReadonlyArray<ChartResearchMarkerInput> {
+  const study = scene.eventStudy;
+  if (study === undefined) return [];
+  return study.occurrenceWindows.map((window) => ({
+    key: `${scene.sceneId}:${window.startAt}`,
+    label: window.label ?? study.eventSetName,
+    startAt: window.startAt,
+    endAt: window.endAt,
+    sourceUrl: window.source,
+    covered: window.covered,
+    upcoming: window.endAt > now,
+  }));
+}
+
+/**
+ * The accessible name of one research marker: its label, the exact UTC
+ * instant(s), what it means (a historical counterfactual measurement, never a
+ * fill — or an expectation, for an upcoming occurrence), and the authoritative
+ * source the date came from. Composed here so the derivation and the renderer
+ * cannot disagree about what a marker claims.
+ */
+export function researchMarkerAccessibleName(marker: ChartResearchMarkerInput): string {
+  const coverage = marker.covered ? "" : ", not covered by recorded data";
+  const when =
+    marker.startAt === marker.endAt
+      ? `at ${new Date(marker.startAt).toISOString()}`
+      : `from ${new Date(marker.startAt).toISOString()} to ${new Date(marker.endAt).toISOString()}`;
+  const meaning = marker.upcoming
+    ? "upcoming researched occurrence"
+    : "historical counterfactual measurement, not a fill";
+  return `${marker.label} ${when}${coverage}: ${meaning}; source ${marker.sourceUrl}`;
+}
+
+/**
+ * Short coverage notes for occurrences the archive never reached, rendered as
+ * text under the chart — an occurrence older than the recording start cannot
+ * be drawn at the left edge without inventing a position, so it says so
+ * instead. A future occurrence is likewise named as not having happened yet.
+ */
+export function uncoveredOccurrenceNotes(
+  scene: {
+    readonly eventStudy?:
+      | {
+          readonly eventSetName: string;
+          readonly occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow>;
+        }
+      | undefined;
+  },
+  now: number,
+): ReadonlyArray<string> {
+  const study = scene.eventStudy;
+  if (study === undefined) return [];
+  const notes: Array<string> = [];
+  for (const window of study.occurrenceWindows) {
+    if (window.covered) continue;
+    const label = window.label ?? study.eventSetName;
+    const date = new Date(window.startAt).toISOString().slice(0, 10);
+    notes.push(
+      window.endAt > now
+        ? `${label} (${date}) has not happened yet`
+        : `${label} (${date}) predates recorded data`,
+    );
+  }
+  return notes;
+}
+
+/** The range/bars pair a scene's arrival fits the live graph to, once. */
+export interface SceneAutoFitRecommendation {
+  readonly range: TradingChartRange;
+  readonly interval: TradingChartInterval;
+}
+
+/**
+ * The one-time range recommendation for a newly active event-study scene,
+ * pure over dates: the smallest fixed range that holds every occurrence the
+ * graph can actually draw (covered ones inside the archive, upcoming ones in
+ * the future gutter), `all` when none does. An occurrence the archive never
+ * reached can never draw, so it must not stretch the fit; but when nothing is
+ * drawable the whole set decides, because `all` plus the coverage note is the
+ * honest frame for it.
+ */
+export function sceneAutoFitRecommendation(
+  occurrenceWindows: ReadonlyArray<{
+    readonly startAt: number;
+    readonly endAt: number;
+    readonly covered: boolean;
+  }>,
+  now: number,
+): SceneAutoFitRecommendation {
+  const relevant = occurrenceWindows.filter((window) => window.covered || window.endAt > now);
+  const source = relevant.length > 0 ? relevant : occurrenceWindows;
+  const earliest = source.length > 0 ? Math.min(...source.map((w) => w.startAt)) : now;
+  const latest = relevant.length > 0 ? Math.max(...relevant.map((w) => w.endAt)) : now;
+  const range = sceneAutoFit(earliest, latest, now);
+  return { range, interval: autoInterval(range, "event_study_fit") };
+}
+
+/** The once-per-scene gate around {@link sceneAutoFitRecommendation}. */
+export interface SceneAutoFitDecision {
+  readonly apply: boolean;
+  /** The set to keep in the caller's ref: the applied ids, this one included. */
+  readonly appliedSceneIds: ReadonlySet<string>;
+  readonly recommendation?: SceneAutoFitRecommendation;
+}
+
+/**
+ * Whether a scene's auto-fit should be applied NOW: once per active scene id,
+ * ever. Publishing a new scene supersedes the old one, so each new id gets
+ * its one fit; polls and refreshes of the same scene never move the range
+ * again, and a user's own choice after any fit is stickier than the data.
+ */
+export function sceneAutoFitDecision(
+  appliedSceneIds: ReadonlySet<string>,
+  scene: {
+    readonly sceneId: string;
+    readonly eventStudy?:
+      | {
+          readonly occurrenceWindows: ReadonlyArray<{
+            readonly startAt: number;
+            readonly endAt: number;
+            readonly covered: boolean;
+          }>;
+        }
+      | undefined;
+  },
+  now: number,
+): SceneAutoFitDecision {
+  const windows = scene.eventStudy?.occurrenceWindows;
+  if (windows === undefined || appliedSceneIds.has(scene.sceneId)) {
+    return { apply: false, appliedSceneIds };
+  }
+  const applied = new Set(appliedSceneIds);
+  applied.add(scene.sceneId);
+  return {
+    apply: true,
+    appliedSceneIds: applied,
+    recommendation: sceneAutoFitRecommendation(windows, now),
+  };
 }
 
 export interface AlignedPoint {

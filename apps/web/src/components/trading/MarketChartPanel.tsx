@@ -1,39 +1,63 @@
 /**
- * MarketChartPanel (final-form phase 6): the chart of any followed market —
- * no mission required.
+ * MarketChartPanel (unified graph): the chart of any followed market — no
+ * mission required — and, when it is docked in a thread, the research the
+ * conversation published onto it.
  *
- * The server entitles the read off the follow set (watchlist, positions,
- * armed watches, recent chart opens), so this panel simply asks for the
- * series and renders it through the same `MissionPriceChart` the mission
- * panels use, with the phase-6 overlays that only make sense here: a
- * timeframe selector over the archive's interval set, a volume underlay,
- * session-level rules, and coverage shading for the stretches the archive
- * never recorded.
+ * Two controls own the live read, deliberately separate. Range says how much
+ * history; Bars says how wide each bar is. The server resolves a range to a
+ * window (`all` is everything the archive recorded — only it knows that
+ * span), so the client never computes windows; it sends
+ * `{interval, range, maxBars}` and the pure policy module
+ * (`tradingChartRangePolicy`) decides which requests are even servable.
  *
- * The one interaction it adds is arm-at-price: hovering the plot docks a
- * chip in the gutter at the pointer's price, and clicking it arms a notify
- * watch there — above/below by where the price sits relative to the mark.
- * The chip goes through the same `armTradingWatch` RPC the alert panel's
- * form uses, so the armed watch shows up in that panel's list immediately.
+ * Publication is Live-first. A newly published event study does NOT take the
+ * graph over: it stays on Live, its occurrences arrive as named markers at
+ * their exact instants, and the range auto-fits ONCE per scene id so the
+ * markers land somewhere visible. Afterwards the reader's own Range, Bars and
+ * view choices are stickier than the data — polls and scene refreshes never
+ * move them — until the thread's scenes vanish entirely, when the graph comes
+ * home to Live.
  *
- * That interaction is optional, because it only makes sense where the armed
- * watch can then be seen. The trade home has the alert panel next to it and
- * keeps the chip; the thread panel has no alert list, so arming there would
- * put a watch somewhere the operator cannot read it back. `armable={false}`
- * takes the chip and its hint off — one prop rather than a second chart.
+ * One outer frame serves every view: header and tabs, the Range rail, and one
+ * plot stage that Live, Calendar and Event aligned share, so switching views
+ * is a change of content, never a change of geometry. Research detail
+ * (explanations, occurrence navigation, provenance) scrolls inside the fixed
+ * viewport in its inspector rather than growing the frame.
+ *
+ * The one chart interaction stays as it was: hovering the plot docks a chip
+ * in the gutter at the pointer's price, and clicking it arms a notify watch
+ * there — through the same `armTradingWatch` RPC the alert panel's form uses.
+ * `armable={false}` takes the chip and its hint off, because the thread panel
+ * has no alert list to read the armed watch back from.
  *
  * No clock of its own: the chart poll lives in `useTradingMarketChart`, and
  * nothing here animates continuously.
  *
  * @module MarketChartPanel
  */
-import type { EnvironmentId, ScopedThreadRef, TradingArmWatchInput } from "@t3tools/contracts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  EnvironmentId,
+  ScopedThreadRef,
+  TradingArmWatchInput,
+  TradingChartRange,
+} from "@t3tools/contracts";
+import { STUDY_CHART_MAX_WINDOW_BARS } from "@t3tools/contracts";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { refreshTradingWatches } from "../../lib/tradingAccountState";
 import { useComposerPrefill } from "./composerPrefill";
 import { ThesisChartBadgeLine, askAboutPaperMarker } from "./ThesisChartBadgeLine";
 import { useTradingMarketChart, type ChartInterval } from "../../lib/tradingMarketChartState";
+import {
+  MENU_INTERVALS,
+  RANGES,
+  RANGE_LABELS,
+  intervalMenuLabel,
+  promoteAllToMonthly,
+  rangeMaxBars,
+  resolveBars,
+  resolvedBarsLabel,
+} from "../../lib/tradingChartRangePolicy";
 import { cn } from "../../lib/utils";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -44,11 +68,17 @@ import { MissionPriceChart } from "./MissionPriceChart";
 import { describeControlFailure } from "./useMissionControls";
 import { analystMarketPrompt, useAskAnalyst } from "./useTradingThreadLaunch";
 import { ResearchScenePanel } from "./ResearchScenePanel";
-import { nextGraphViewMode } from "./researchScenePresentation.ts";
+import {
+  liveResearchMarkers,
+  nextGraphViewMode,
+  sceneAutoFitDecision,
+  uncoveredOccurrenceNotes,
+  type GraphViewMode,
+} from "./researchScenePresentation.ts";
 import { useTradingResearchScenes } from "../../lib/tradingResearchScenesState";
 
-/** The intervals offered, in axis order — the archive's own set. */
-const INTERVALS: ReadonlyArray<ChartInterval> = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"];
+/** The graph's three views, in tab order. Live is first and is the home. */
+const VIEW_MODES: ReadonlyArray<GraphViewMode> = ["live", "calendar", "aligned"];
 
 /** What the last arm-at-price click came to. */
 type ArmStatus =
@@ -64,23 +94,43 @@ export function MarketChartPanel({
 }: {
   environmentId: EnvironmentId;
   asset: string;
-  /** Sizing for the chart frame itself, e.g. the trade home's height class. */
+  /**
+   * Sizing for the one shared plot stage, e.g. the trade home's height class.
+   * When absent the stage uses the unified graph's own viewport sizing
+   * (`trading-graph-viewport`).
+   */
   className?: string;
   /** Whether hovering the plot offers the arm-at-price chip. */
   armable?: boolean;
   /**
    * The thread this chart is docked in, when it is docked in one.
    *
-   * Only the chat affordances read it: clicking the validation badge or one of
-   * its paper markers writes a question into that thread's composer. Absent on
-   * the trade home, where there is no conversation to put a sentence into, and
-   * then those affordances are plain text rather than buttons that do nothing.
+   * Only the chat affordances and the research scenes read it: a chart docked
+   * in a thread shows the calendar and event-aligned views of that thread's
+   * published studies, and clicking a validation badge or one of its paper
+   * markers writes a question into that thread's composer. Absent on the
+   * trade home, where there is no conversation to put a sentence into and the
+   * chart stays live-first with no research modes at all.
    */
   threadRef?: ScopedThreadRef | undefined;
 }) {
-  const [interval, setChartInterval] = useState<ChartInterval>("5m");
-  const [view, setView] = useState<"live" | "calendar" | "aligned">("live");
-  const chart = useTradingMarketChart(environmentId, asset, interval, { enabled: true });
+  // Range and Bars are two states because they are two questions: how much
+  // history, and how wide each bar is. `bars === null` is Auto.
+  const [range, setRange] = useState<TradingChartRange>("1d");
+  const [bars, setBars] = useState<ChartInterval | null>(null);
+  const [view, setView] = useState<GraphViewMode>("live");
+
+  // The policy clock is per mount, not per poll: range arithmetic (YTD spans,
+  // servability, bar budgets) moves on calendar scales, and a mount-stable
+  // value keeps the read's atom identity stable across polls instead of
+  // re-keying it every fifteen seconds.
+  const policyNow = useMemo(() => Date.now(), []);
+  const resolved = resolveBars(range, bars, policyNow);
+  const chart = useTradingMarketChart(environmentId, asset, resolved.interval, {
+    enabled: true,
+    range,
+    maxBars: rangeMaxBars(range, resolved.interval, policyNow),
+  });
   // Research scenes belong to the conversation: only a chart docked in a
   // thread reads them, and the trade home's chart stays live-first with no
   // research modes at all. Loading follows the dock, not the current view —
@@ -112,6 +162,17 @@ export function MarketChartPanel({
   // and the markers are read-only. @see composerPrefill
   const prefill = useComposerPrefill(threadRef ?? null);
 
+  // The thread's active event-study scene: what the live graph decorates
+  // itself with and what the research views open on. The scenes hook already
+  // keeps only active scenes, so a cleared or superseded scene vanishes here
+  // and its markers leave the graph with it.
+  const activeScenes = scenes.scenes ?? [];
+  const activeStudyScene = useMemo(
+    () => activeScenes.find((scene) => scene.eventStudy !== undefined) ?? null,
+    [activeScenes],
+  );
+  const hasScenes = activeScenes.length > 0;
+
   const armAtPrice = (price: number) => {
     if (isArming || data === null) return;
     const direction: "above" | "below" = price >= data.markPrice ? "above" : "below";
@@ -141,127 +202,260 @@ export function MarketChartPanel({
     });
   };
 
-  const hasScenes = (scenes.scenes?.length ?? 0) > 0;
-  // Live is the default and stays first. A published study adds Calendar and
-  // Event aligned beside it, one click away, only in a thread, and returning
-  // to Live never clears the artifact behind them.
-  const showLive = view === "live" || !hasScenes;
-  // A scene arriving while Live is showing selects the useful first view
-  // once; the user's own Live choice afterwards is sticky.
-  const scenesCountRef = useRef(hasScenes);
+  // --- Live-first publication -------------------------------------------------
+  //
+  // A scene arriving never moves the view (the reader stays wherever they
+  // are, Live included); the thread's scenes vanishing entirely hand the
+  // graph back to Live, because Calendar and Event aligned have nothing to
+  // show without them. The decision is pure (`nextGraphViewMode`) so the
+  // stickiness is testable without a running effect loop.
+  const hadScenesRef = useRef(hasScenes);
   useEffect(() => {
     setView((current) =>
-      nextGraphViewMode({ current, hasScenes, previouslyHadScenes: scenesCountRef.current }),
+      nextGraphViewMode({ current, hasScenes, previouslyHadScenes: hadScenesRef.current }),
     );
-    scenesCountRef.current = hasScenes;
+    hadScenesRef.current = hasScenes;
   }, [hasScenes]);
+
+  // One-time auto-fit per active scene id: when the thread's active
+  // event-study scene CHANGES, fit the range once so the study's occurrences
+  // land inside the window. The gate is a ref of applied ids around the pure
+  // decision, so polls and refreshes of the same scene never move the range
+  // again, and a scene that comes back (re-shown, superseded) does not
+  // re-fit.
+  const appliedAutoFitRef = useRef<ReadonlySet<string>>(new Set());
+  // The all + 1w fit can outrun the bar budget once the archive's own
+  // recording start is known — only the response can say. When the fit chose
+  // all + 1w, this holds the scene id whose response may still promote to
+  // monthly bars; the reader moving Range or Bars cancels it.
+  const pendingPromotionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeStudyScene === null) return;
+    const decision = sceneAutoFitDecision(appliedAutoFitRef.current, activeStudyScene, Date.now());
+    if (!decision.apply || decision.recommendation === undefined) return;
+    appliedAutoFitRef.current = decision.appliedSceneIds;
+    setRange(decision.recommendation.range);
+    setBars(decision.recommendation.interval);
+    pendingPromotionRef.current =
+      decision.recommendation.range === "all" && decision.recommendation.interval === "1w"
+        ? activeStudyScene.sceneId
+        : null;
+  }, [activeStudyScene]);
+  useEffect(() => {
+    const recordingSince = data?.recordingSince;
+    const sceneId = pendingPromotionRef.current;
+    if (recordingSince === undefined || sceneId === null) return;
+    // The reader moved on from the fitted pair: promotion is moot, drop it.
+    if (range !== "all" || bars !== "1w") {
+      pendingPromotionRef.current = null;
+      return;
+    }
+    if (!promoteAllToMonthly(recordingSince, Date.now(), STUDY_CHART_MAX_WINDOW_BARS)) return;
+    pendingPromotionRef.current = null;
+    setBars("1mo");
+  }, [data, range, bars]);
+
+  // The live graph's scene decoration: named markers at their exact instants
+  // (an instantaneous activation a rule, a true span a band, an upcoming
+  // occurrence in the future gutter) and a coverage note for occurrences the
+  // archive never reached — text, never a fake edge marker.
+  const researchMarkers = useMemo(
+    () => (activeStudyScene === null ? [] : liveResearchMarkers(activeStudyScene, nowMillis)),
+    [activeStudyScene, nowMillis],
+  );
+  const coverageNotes = useMemo(
+    () => (activeStudyScene === null ? [] : uncoveredOccurrenceNotes(activeStudyScene, nowMillis)),
+    [activeStudyScene, nowMillis],
+  );
+
+  // The resolved bars text says what the graph is actually drawing, including
+  // the cases where Auto made the decision: a manual choice that cannot serve
+  // the range falls back and says so, rather than silently requesting an
+  // impossible combination.
+  const resolvedBarsText =
+    resolved.mode === "manual"
+      ? resolvedBarsLabel(resolved.interval)
+      : resolved.mode === "auto"
+        ? `Auto: ${resolvedBarsLabel(resolved.interval)}`
+        : `Auto: ${resolvedBarsLabel(resolved.interval)} (${intervalMenuLabel(bars ?? resolved.interval)} not servable on this range)`;
+
+  const moveView = (delta: number) => {
+    const index = VIEW_MODES.indexOf(view);
+    const next = VIEW_MODES[(index + delta + VIEW_MODES.length) % VIEW_MODES.length];
+    // VIEW_MODES covers every GraphViewMode, so the fallback is unreachable;
+    // it exists because indexed access is `| undefined` to the typechecker.
+    setView(next ?? view);
+  };
+  const onViewKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveView(1);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveView(-1);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-1">
       {hasScenes ? (
         <div
           className="flex items-center gap-1 px-1 text-[10.5px]"
-          role="group"
+          role="tablist"
           aria-label="Chart view"
         >
-          {(["live", "calendar", "aligned"] as const).map((option) => (
+          {VIEW_MODES.map((option) => (
             <button
               key={option}
               type="button"
+              role="tab"
+              aria-selected={view === option}
+              tabIndex={view === option ? 0 : -1}
               data-testid={`market-chart-view-${option}`}
               className={cn(
                 "cursor-pointer rounded px-2 py-0.5 transition-colors",
-                (option === "live" ? showLive : view === option)
+                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1",
+                view === option
                   ? "bg-accent font-medium text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
               onClick={() => setView(option)}
+              onKeyDown={onViewKeyDown}
             >
               {option === "live" ? "Live" : option === "calendar" ? "Calendar" : "Event aligned"}
             </button>
           ))}
           <span className="text-muted-foreground/70">
-            {scenes.scenes?.length === 1
+            {activeScenes.length === 1
               ? "1 published scene"
-              : `${scenes.scenes?.length ?? 0} published scenes`}
+              : `${activeScenes.length} published scenes`}
           </span>
         </div>
       ) : null}
-      {!showLive ? (
-        <ResearchScenePanel
-          environmentId={environmentId}
-          scenes={scenes.scenes ?? []}
-          loading={scenes.isLoading}
-          error={scenes.error}
-          mode={view === "aligned" ? "aligned" : "calendar"}
-          onModeChange={(next) => setView(next)}
-          prefill={prefill}
-        />
-      ) : data !== null && data.candles.length >= 2 ? (
-        <MissionPriceChart
-          candles={data.candles}
-          entryPrice={null}
-          stopPrice={null}
-          targetPrice={null}
-          liquidationPrice={null}
-          entryTime={null}
-          markPrice={data.markPrice}
-          pnlSign={null}
-          showVolume
-          {...(data.sessionLevels === undefined ? {} : { sessionLevels: data.sessionLevels })}
-          {...(data.recordingSince === undefined ? {} : { recordingSince: data.recordingSince })}
-          {...(data.gaps === undefined ? {} : { gaps: data.gaps })}
-          {...(thesis === null ? {} : { thesis })}
-          {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
-          nowMillis={nowMillis}
-          {...(prefill === null || thesis === null
-            ? {}
-            : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
-          {...(armable ? { onArmAtPrice: armAtPrice } : {})}
-          {...(className === undefined ? {} : { className })}
-        />
-      ) : chart.error === null && data === null ? (
-        // Switching timeframe re-reads the series under a new key, so `data`
-        // is null again for that beat. A skeleton at the chart's own height is
-        // what says so: the previous interval's candles left up would be a
-        // picture of bars the selector no longer names.
-        <Skeleton className={cn("w-full", className)} data-testid="market-chart-skeleton" />
-      ) : (
-        <div
-          className={cn(
-            "flex items-center justify-center rounded-md border border-border/60 px-6 text-center text-sm text-muted-foreground",
-            className,
-          )}
-        >
-          {chart.error !== null
-            ? "Chart unavailable"
-            : `Not enough ${interval} bars recorded for ${asset} yet.`}
-        </div>
-      )}
-      <ThesisChartBadgeLine thesis={thesis} prefill={showLive ? prefill : null} />
-      <div className="flex items-center gap-2 px-1">
+      {/* The Range rail and the Bars menu: two controls, two vocabularies.
+          Range labels stay short (1D…All); Bars labels are always spelled out
+          (1 min…1 month), so no two buttons can be read as the same thing. */}
+      <div className="flex flex-wrap items-center gap-2 px-1">
         <div
           className="flex overflow-hidden rounded-md border border-border/60 font-mono text-[10.5px] leading-none"
           role="group"
-          aria-label="Chart timeframe"
+          aria-label="Chart range"
         >
-          {INTERVALS.map((option) => (
+          {RANGES.map((option) => (
             <button
               key={option}
               type="button"
-              data-testid={`market-chart-interval-${option}`}
+              data-testid={`market-chart-range-${option}`}
+              aria-pressed={option === range}
               className={cn(
                 "cursor-pointer px-1.5 py-1 transition-colors",
-                option === interval
+                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1",
+                option === range
                   ? "bg-accent font-medium text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
-              onClick={() => setChartInterval(option)}
+              onClick={() => setRange(option)}
             >
-              {option}
+              {RANGE_LABELS[option]}
             </button>
           ))}
         </div>
+        <select
+          aria-label="Chart bars"
+          data-testid="market-chart-bars"
+          className="rounded-md border border-border/60 bg-transparent px-1 py-0.5 font-mono text-[10.5px]"
+          value={resolved.mode === "manual" && bars !== null ? bars : "auto"}
+          onChange={(event) =>
+            setBars(event.target.value === "auto" ? null : (event.target.value as ChartInterval))
+          }
+        >
+          <option value="auto" data-testid="market-chart-bars-auto">
+            Auto
+          </option>
+          {MENU_INTERVALS.map((option) => (
+            <option key={option} value={option} data-testid={`market-chart-bars-${option}`}>
+              {intervalMenuLabel(option)}
+            </option>
+          ))}
+        </select>
+        <span
+          className="font-mono text-[10.5px] tabular-nums text-muted-foreground"
+          data-testid="market-chart-resolved-bars"
+        >
+          {resolvedBarsText}
+        </span>
+      </div>
+      {/* The one shared plot stage. Same frame, same header, same rail for
+          Live, Calendar and Event aligned; the content changes, the geometry
+          never does. `className` is the caller's sizing; without it the
+          unified viewport sizing applies. */}
+      <div
+        className={cn("relative flex min-h-0 flex-col", className ?? "trading-graph-viewport")}
+        data-testid="market-chart-stage"
+      >
+        {hasScenes && view !== "live" ? (
+          <ResearchScenePanel
+            environmentId={environmentId}
+            scenes={activeScenes}
+            loading={scenes.isLoading}
+            error={scenes.error}
+            mode={view === "aligned" ? "aligned" : "calendar"}
+            prefill={prefill}
+          />
+        ) : data !== null && data.candles.length >= 2 ? (
+          <>
+            <MissionPriceChart
+              candles={data.candles}
+              entryPrice={null}
+              stopPrice={null}
+              targetPrice={null}
+              liquidationPrice={null}
+              entryTime={null}
+              markPrice={data.markPrice}
+              pnlSign={null}
+              showVolume
+              {...(data.sessionLevels === undefined ? {} : { sessionLevels: data.sessionLevels })}
+              {...(data.recordingSince === undefined
+                ? {}
+                : { recordingSince: data.recordingSince })}
+              {...(data.gaps === undefined ? {} : { gaps: data.gaps })}
+              {...(thesis === null ? {} : { thesis })}
+              {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
+              nowMillis={nowMillis}
+              {...(researchMarkers.length === 0 ? {} : { researchMarkers })}
+              {...(prefill === null || thesis === null
+                ? {}
+                : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
+              {...(armable ? { onArmAtPrice: armAtPrice } : {})}
+            />
+            {coverageNotes.length > 0 ? (
+              <div
+                className="px-1 pt-0.5 text-[10px] text-muted-foreground"
+                data-testid="market-chart-coverage-notes"
+              >
+                {coverageNotes.join(" · ")}
+              </div>
+            ) : null}
+          </>
+        ) : chart.error === null && data === null ? (
+          // Switching range or bars re-reads the series under a new key, so
+          // `data` is null again for that beat. A skeleton inside the stage
+          // says so in the same geometry: the previous bars left up would be a
+          // picture the controls no longer name.
+          <Skeleton
+            className={cn("w-full flex-1", className === undefined ? "min-h-24" : "")}
+            data-testid="market-chart-skeleton"
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center rounded-md border border-border/60 px-6 text-center text-sm text-muted-foreground">
+            {chart.error !== null
+              ? "Chart unavailable"
+              : `Not enough ${resolvedBarsLabel(resolved.interval)} recorded for ${asset} yet.`}
+          </div>
+        )}
+      </div>
+      <ThesisChartBadgeLine thesis={thesis} prefill={view === "live" ? prefill : null} />
+      <div className="flex items-center gap-2 px-1">
         <Button
           size="xs"
           variant="ghost"

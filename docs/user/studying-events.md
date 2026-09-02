@@ -91,34 +91,61 @@ Ask for the study and it does not stay a paragraph. Say:
 > Study that on ETH, daily bars, over the thirty bars after each one, and put
 > it on the graph.
 
-The graph above the conversation offers Live, Calendar, and Event aligned
-views. In Calendar, every occurrence gets its own window: the activation as a
-named vertical rule at the instant it happened, the entry and the exit as
-markers pinned to the exact prices they were measured at, the signed return
-drawn between them, and the source the date came from, one link each. These
-markers are historical measurements, not trades: nothing filled, nothing
-ordered, and the label beside them says so. An occurrence the recorded history
-cannot reach says why instead of quietly disappearing, and one that ran out of
-bars before the horizon says that too.
+Publishing does not take the graph over. It stays on Live, and the study's
+occurrences arrive right there: each one a named marker at the exact instant
+it happened — an upgrade that switched on at one moment is a vertical rule at
+that exact millisecond, with its name and UTC time, and the one link the date
+is authoritatively stated at; a multi-day event is a band across its span. The
+next upcoming date stands in the space to the right of now, waiting. Once, the
+graph fits itself so the study is actually in view — a study whose
+occurrences run back years resolves to the All range on 1 week bars (and steps
+up to 1 month bars when the archive holds more weeks than the chart has room
+for) — and then it never moves your range again. If an occurrence is older
+than your recorded history, it says so in a note under the chart instead of
+drawing a marker where no data exists.
 
-In Event aligned, every measured occurrence is rebased to its own entry, so
-the question changes from what happened next to whether the shapes resemble
-each other. The count, the baseline over the same horizon, the requested and
-served windows, the recording start and every gap sit beside the picture, with
-a dollar figure beside the traces by default: an illustration on a $1,000
-notional you can change, and any money figure is labelled as the historical
-gross change on that notional, before costs. It is never shown as profit,
-never as a balance.
+The Range control and the Bars control are separate, because "how much
+history" and "how wide is each bar" are different questions: pick 1Y of
+history and let the bars be automatic, or name the bars yourself — 1 min
+through 1 month, spelled out. A bar width that cannot honestly serve the
+range you picked (one week of history on one-week bars is a single bar) falls
+back to automatic and says so beside the chart. The label there always names
+what is actually drawn.
+
+The graph offers Live, Calendar, and Event aligned as tabs over one frame:
+switching views changes the picture, never the layout. In Calendar, one
+occurrence at a time fills the chart — the activation as a named vertical rule
+at the instant it happened, the entry and the exit as markers pinned to the
+exact prices they were measured at, the signed return drawn between them, and
+the source the date came from, one link each. The other occurrences, the
+study's fine print, and its provenance scroll in the inspector below the
+chart, so reading them never pushes the graph around. These markers are
+historical measurements, not trades: nothing filled, nothing ordered, and the
+label beside them says so. An occurrence the recorded history cannot reach
+says why instead of quietly disappearing, and one that ran out of bars before
+the horizon says that too.
+
+In Event aligned, the aggregate comes first: the mean event path across every
+measured occurrence, drawn heavy, against a dashed Baseline mean reference
+line — what the same horizon did at every bar of the window, not just after
+the event. Event mean, baseline mean, and the difference between them are
+labelled beside the picture, with the horizon and how many occurrences were
+covered; the baseline's own median and sample count stay in the detail text,
+with the caveat that its windows overlap, which makes it a center-of-mass
+comparison, not a significance test. When the served window was too short to
+measure a baseline at all, the graph says "Baseline unavailable for this
+served window" and draws nothing in its place. Each occurrence's rebased
+trace — every path as a percentage of its own entry — sits in the inspector,
+so you can ask whether the shapes resemble each other. A dollar figure rides
+the traces by default: an illustration on a $1,000 notional you can change,
+and any money figure is labelled as the historical gross change on that
+notional, before costs. It is never shown as profit, never as a balance.
 
 Every scene carries the same line: historical research, no order placed, not
 a forecast. Seeing the study needs nothing armed and nothing funded. You can
 ask for a cost-aware backtest or a separate forward validation when either
 answers your next question. Neither places an order; execution still requires
 its own explicit ask and the normal protections.
-
-On the live chart, the occurrences draw as vertical bands behind the price,
-on every timeframe, with the next upcoming date visible in the space to the
-right of now.
 
 ## What to keep in mind
 

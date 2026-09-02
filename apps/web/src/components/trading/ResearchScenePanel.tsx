@@ -9,6 +9,13 @@
  * display arithmetic on those numbers (a per-notional illustration, and
  * rebasing a path to its entry), and both say so.
  *
+ * The panel lives inside the graph's one fixed plot stage. Its upper half is
+ * the picture — Calendar shows the ONE selected occurrence where it happened;
+ * Event aligned shows the aggregate comparison against its baseline first —
+ * and everything explanatory (honesty lines, occurrence navigation, sources,
+ * provenance) scrolls inside the stage in the inspector, so opening research
+ * never changes the graph's geometry.
+ *
  * Static SVG only, no animation: research is a document, not a dashboard.
  *
  * @module ResearchScenePanel
@@ -32,7 +39,11 @@ import {
   aggregateAlignedTrace,
   alignedTracePoints,
   askAboutOccurrenceSentence,
+  BASELINE_REFERENCE_LABEL,
+  BASELINE_UNAVAILABLE_SENTENCE,
+  baselineReference,
   DERIVED_VS_AUTHORED_SENTENCE,
+  describeHorizon,
   fmtUsd,
   grossChangeUsd,
   historicalGrossChangeLabel,
@@ -140,12 +151,7 @@ function OccurrenceChart(props: {
     );
   }
   if (effective === null) {
-    return (
-      <div
-        className="h-[120px] motion-safe:animate-pulse rounded bg-muted/40"
-        data-testid="research-occurrence-loading"
-      />
-    );
+    return <div className="h-full min-h-24 motion-safe:animate-pulse rounded bg-muted/40" />;
   }
   return (
     <>
@@ -181,7 +187,7 @@ function OccurrenceChart(props: {
           pnlSign={null}
           markMotion="static"
           showVolume={false}
-          className="h-[120px]"
+          className="h-full min-h-24"
         />
       )}
     </>
@@ -210,6 +216,13 @@ function ReturnRow(props: { readonly returnPct: number | undefined; readonly not
   );
 }
 
+/**
+ * The calendar view of one event study, split across the graph's fixed
+ * geometry: the stage holds the ONE selected occurrence where it happened;
+ * the inspector holds everything explanatory — the honesty block, the
+ * notional illustration, occurrence navigation and the per-occurrence rows
+ * with their sources.
+ */
 function EventStudyBody(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
@@ -227,163 +240,165 @@ function EventStudyBody(props: {
   const intervalMs = report.horizonMs / report.horizonBars;
   const rows = report.rows;
   const safeSelected = Math.min(selected, Math.max(0, rows.length - 1));
+  const row = rows[safeSelected];
+  const window =
+    row === undefined
+      ? null
+      : windowFor({ ...row, covered: row.covered }, report.horizonMs, intervalMs);
 
   return (
-    <div className="flex flex-col gap-2">
-      {/* The honesty block: every line a reader needs before trusting a
-          number, straight from the pure module so the renderer cannot drop
-          one quietly. */}
+    <>
+      {/* The stage: one occurrence, where it happened. */}
+      <div className="flex min-h-0 flex-[3] flex-col" data-testid="research-calendar-stage">
+        {row === undefined ? (
+          <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
+            this study holds no occurrences
+          </div>
+        ) : window === null ? (
+          <div
+            className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground"
+            data-testid="research-occurrence-unmeasured"
+          >
+            {row.label ?? `occurrence ${safeSelected + 1}`} was not measured: {row.reason}
+          </div>
+        ) : (
+          <OccurrenceChart
+            environmentId={props.environmentId}
+            market={payload.market}
+            interval={payload.interval as ChartInterval}
+            window={window}
+            occurrence={{ ...row, covered: row.covered }}
+            horizonBars={report.horizonBars}
+            intervalMs={intervalMs}
+            layers={props.layers}
+            occurrenceIndex={safeSelected}
+          />
+        )}
+      </div>
+      {/* The inspector: everything explanatory scrolls, the frame never grows. */}
       <div
-        className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-muted-foreground"
-        data-testid="research-explanation"
+        className="trading-graph-inspector min-h-0 flex-[2] overflow-y-auto border-t border-border/60 pt-1"
+        data-testid="research-inspector"
       >
-        {studyExplanationLines(payload).map((line) => (
-          <span key={line}>{line}</span>
-        ))}
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <label className="text-muted-foreground" htmlFor="research-notional">
-          Illustrate per
-        </label>
-        <input
-          id="research-notional"
-          type="number"
-          min={1}
-          value={notional}
-          onChange={(event) =>
-            setNotional(Math.max(1, Number(event.target.value) || NOTIONAL_DEFAULT))
-          }
-          className="w-24 rounded border bg-transparent px-1 py-0.5"
-        />
-        <span className="text-muted-foreground">{PER_NOTIONAL_ILLUSTRATION_LABEL}</span>
-      </div>
-      {/* Occurrence navigation: years-apart events are not one unreadable
-          chart. Prev/next moves the measured window; the aligned summary is
-          one tab away and never lost. */}
-      <div className="flex items-center gap-2 text-xs" data-testid="research-occurrence-nav">
-        <button
-          type="button"
-          className="rounded border border-border/60 px-2 py-0.5 disabled:opacity-40"
-          disabled={safeSelected === 0}
-          onClick={() => setSelected(Math.max(0, safeSelected - 1))}
-          aria-label="Previous occurrence"
+        {/* The honesty block: every line a reader needs before trusting a
+            number, straight from the pure module so the renderer cannot drop
+            one quietly. */}
+        <div
+          className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-muted-foreground"
+          data-testid="research-explanation"
         >
-          ←
-        </button>
-        <span className="text-muted-foreground">
-          occurrence {rows.length === 0 ? 0 : safeSelected + 1} of {rows.length}
-        </span>
-        <button
-          type="button"
-          className="rounded border border-border/60 px-2 py-0.5 disabled:opacity-40"
-          disabled={safeSelected >= rows.length - 1}
-          onClick={() => setSelected(Math.min(rows.length - 1, safeSelected + 1))}
-          aria-label="Next occurrence"
-        >
-          →
-        </button>
-        {rows[safeSelected] !== undefined && props.prefill !== null ? (
+          {studyExplanationLines(payload).map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+          <label className="text-muted-foreground" htmlFor="research-notional">
+            Illustrate per
+          </label>
+          <input
+            id="research-notional"
+            type="number"
+            min={1}
+            value={notional}
+            onChange={(event) =>
+              setNotional(Math.max(1, Number(event.target.value) || NOTIONAL_DEFAULT))
+            }
+            className="w-24 rounded border bg-transparent px-1 py-0.5"
+          />
+          <span className="text-muted-foreground">{PER_NOTIONAL_ILLUSTRATION_LABEL}</span>
+        </div>
+        {/* Occurrence navigation: years-apart events are not one unreadable
+            chart. Prev/next and the rows below move the measured window that
+            fills the stage; the aligned summary is one tab away and never
+            lost. */}
+        <div className="mt-1 flex items-center gap-2 text-xs" data-testid="research-occurrence-nav">
           <button
             type="button"
-            className="rounded border border-border/60 px-2 py-0.5 text-muted-foreground hover:text-foreground"
-            data-testid={`research-ask-${safeSelected}`}
-            onClick={() =>
-              props.prefill?.(
-                askAboutOccurrenceSentence({
-                  sceneId: props.sceneId,
-                  market: payload.market,
-                  label: rows[safeSelected]?.label ?? `occurrence ${safeSelected + 1}`,
-                  dateIso: new Date(rows[safeSelected]?.startAt ?? 0).toISOString().slice(0, 10),
-                  returnPct: rows[safeSelected]?.returnPct,
-                }),
-              )
-            }
+            className="rounded border border-border/60 px-2 py-0.5 disabled:opacity-40"
+            disabled={safeSelected === 0}
+            onClick={() => setSelected(Math.max(0, safeSelected - 1))}
+            aria-label="Previous occurrence"
           >
-            Ask about this
+            ←
           </button>
-        ) : null}
-      </div>
-      <ol className="flex flex-col gap-3">
-        {report.rows.map((row, index) => {
-          const window = windowFor({ ...row, covered: row.covered }, report.horizonMs, intervalMs);
-          const when = new Date(row.startAt).toISOString().slice(0, 10);
-          return (
-            <li
-              key={`${row.startAt}:${index}`}
-              className={`rounded border p-2 ${index === safeSelected ? "border-foreground/40" : "border-border/60"}`}
-              data-testid="research-occurrence"
+          <span className="text-muted-foreground">
+            occurrence {rows.length === 0 ? 0 : safeSelected + 1} of {rows.length}
+          </span>
+          <button
+            type="button"
+            className="rounded border border-border/60 px-2 py-0.5 disabled:opacity-40"
+            disabled={safeSelected >= rows.length - 1}
+            onClick={() => setSelected(Math.min(rows.length - 1, safeSelected + 1))}
+            aria-label="Next occurrence"
+          >
+            →
+          </button>
+          {row !== undefined && props.prefill !== null ? (
+            <button
+              type="button"
+              className="rounded border border-border/60 px-2 py-0.5 text-muted-foreground hover:text-foreground"
+              data-testid={`research-ask-${safeSelected}`}
+              onClick={() =>
+                props.prefill?.(
+                  askAboutOccurrenceSentence({
+                    sceneId: props.sceneId,
+                    market: payload.market,
+                    label: row.label ?? `occurrence ${safeSelected + 1}`,
+                    dateIso: new Date(row.startAt).toISOString().slice(0, 10),
+                    returnPct: row.returnPct,
+                  }),
+                )
+              }
             >
-              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                <div className="text-sm font-medium">
-                  {row.label ?? `occurrence ${index + 1}`}
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">{when}</span>
-                </div>
-                <div className="text-sm">
-                  {row.covered ? (
-                    <>
-                      <ReturnRow returnPct={row.returnPct} notional={notional} />
-                      {row.truncated ? (
-                        <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
-                          truncated at {row.barsCovered} bars
-                        </span>
-                      ) : null}
-                    </>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">
-                      not measured: {row.reason}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+              Ask about this
+            </button>
+          ) : null}
+        </div>
+        <ul className="mt-1 flex flex-col gap-1">
+          {report.rows.map((candidate, index) => {
+            const when = new Date(candidate.startAt).toISOString().slice(0, 10);
+            return (
+              <li
+                key={`${candidate.startAt}:${index}`}
+                className={`flex flex-wrap items-baseline gap-x-3 gap-y-0.5 rounded border px-2 py-1 text-xs ${
+                  index === safeSelected ? "border-foreground/40" : "border-border/60"
+                }`}
+                data-testid="research-occurrence"
+              >
+                <button
+                  type="button"
+                  className="cursor-pointer font-medium"
+                  onClick={() => setSelected(index)}
+                >
+                  {candidate.label ?? `occurrence ${index + 1}`}
+                  <span className="ml-2 font-normal text-muted-foreground">{when}</span>
+                </button>
+                {candidate.covered ? (
+                  <>
+                    <ReturnRow returnPct={candidate.returnPct} notional={notional} />
+                    {candidate.truncated ? (
+                      <span className="text-xs text-amber-600 dark:text-amber-400">
+                        truncated at {candidate.barsCovered} bars
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">not measured: {candidate.reason}</span>
+                )}
                 <a
                   className="text-sky-600 underline decoration-dotted dark:text-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
-                  href={row.source.startsWith("http") ? row.source : undefined}
+                  href={candidate.source.startsWith("http") ? candidate.source : undefined}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  source: {row.source}
+                  source: {candidate.source}
                 </a>
-                {props.prefill === null ? null : (
-                  <button
-                    type="button"
-                    className="text-muted-foreground underline decoration-dotted hover:text-foreground"
-                    onClick={() =>
-                      props.prefill?.(
-                        askAboutOccurrenceSentence({
-                          sceneId: props.sceneId,
-                          market: payload.market,
-                          label: row.label ?? `occurrence ${index + 1}`,
-                          dateIso: when,
-                          returnPct: row.returnPct,
-                        }),
-                      )
-                    }
-                  >
-                    ask about this occurrence
-                  </button>
-                )}
-              </div>
-              {window !== null ? (
-                <div className="mt-2">
-                  <OccurrenceChart
-                    environmentId={props.environmentId}
-                    market={payload.market}
-                    interval={payload.interval as ChartInterval}
-                    window={window}
-                    occurrence={{ ...row, covered: row.covered }}
-                    horizonBars={report.horizonBars}
-                    intervalMs={intervalMs}
-                    layers={props.layers}
-                    occurrenceIndex={index}
-                  />
-                </div>
-              ) : null}
-            </li>
-          );
-        })}
-      </ol>
-    </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </>
   );
 }
 
@@ -437,19 +452,29 @@ function AlignedTrace(props: {
 
 /**
  * One aligned trace, or the aggregate: x is bars since entry, y is percent
- * change from the measured entry (the dashed line is zero change, not an
- * index level, because the axis is a change). The aggregate draws heavier.
+ * change from the measured entry. The dashed line at zero is labelled as
+ * exactly that (zero change), and the optional `reference` draws the study's
+ * baseline as a second, differently-dashed horizontal line with its own
+ * label — two flat lines that never get to be mistaken for each other. The
+ * aggregate draws heavier.
  */
 function TraceSvg(props: {
   readonly trace: ReadonlyArray<{ readonly barsSinceEntry: number; readonly changePct: number }>;
   readonly horizonBars: number;
   readonly emphasis: boolean;
   readonly neutral?: boolean;
+  readonly reference?: { readonly valuePct: number; readonly label: string } | null;
 }) {
   const width = 240;
   const height = 60;
   const step = width / Math.max(1, props.horizonBars);
-  const ys = [0, ...props.trace.map((point) => point.changePct)];
+  const ys = [
+    0,
+    ...props.trace.map((point) => point.changePct),
+    ...(props.reference === null || props.reference === undefined
+      ? []
+      : [props.reference.valuePct]),
+  ];
   const lo = Math.min(...ys);
   const hi = Math.max(...ys);
   const scaleY = (value: number) =>
@@ -470,16 +495,51 @@ function TraceSvg(props: {
       ? "text-emerald-500"
       : "text-red-500";
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-[60px] w-full" role="img">
-      <line
-        x1="0"
-        x2={width}
-        y1={scaleY(0)}
-        y2={scaleY(0)}
-        stroke="currentColor"
-        strokeDasharray="2 3"
-        className="text-muted-foreground/40"
-      />
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-full min-h-[60px] w-full" role="img">
+      {/* Zero change, said out loud: a flat dashed line beside a baseline
+          reference is only honest when each names itself. */}
+      <g data-testid="research-zero-line">
+        <line
+          x1="0"
+          x2={width}
+          y1={scaleY(0)}
+          y2={scaleY(0)}
+          stroke="currentColor"
+          strokeDasharray="2 3"
+          className="text-muted-foreground/40"
+        />
+        <text
+          x={width - 1}
+          y={scaleY(0) - 1.5}
+          textAnchor="end"
+          fontSize="7"
+          className="fill-muted-foreground"
+        >
+          zero change
+        </text>
+      </g>
+      {props.reference === null || props.reference === undefined ? null : (
+        <g data-testid="research-baseline-reference">
+          <line
+            x1="0"
+            x2={width}
+            y1={scaleY(props.reference.valuePct)}
+            y2={scaleY(props.reference.valuePct)}
+            stroke="currentColor"
+            strokeDasharray="6 3"
+            className="text-muted-foreground"
+          />
+          <text
+            x={1}
+            y={scaleY(props.reference.valuePct) - 1.5}
+            textAnchor="start"
+            fontSize="7"
+            className="fill-muted-foreground"
+          >
+            {props.reference.label}
+          </text>
+        </g>
+      )}
       <path
         d={path}
         fill="none"
@@ -491,6 +551,12 @@ function TraceSvg(props: {
   );
 }
 
+/**
+ * The event-aligned view of one event study across the graph's fixed
+ * geometry: the stage holds the aggregate comparison FIRST — the mean event
+ * path against its baseline reference — and the inspector holds the
+ * per-occurrence traces and the small-sample honesty.
+ */
 function EventAlignedBody(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
@@ -500,88 +566,141 @@ function EventAlignedBody(props: {
   const covered = payload.occurrenceWindows.filter(
     (window): window is CoveredOccurrenceWindow => window.covered && window.entryTime !== undefined,
   );
+  const baseline = payload.report.baseline;
   return (
-    <div className="flex flex-col gap-2">
-      <div className="text-xs text-muted-foreground">
-        {covered.length} trace(s) rebased to their measured entry (dashed line = zero change). Bars
-        since the entry run left to right for {payload.horizonBars} bars; each path is that
-        occurrence's archived closes as a percentage of its entry. The heavier line is the mean
-        across occurrences.
-      </div>
-      {/* Small n is the first thing a reader must know: a mean of two shapes
-          is a description, not evidence, and the label says so at a glance. */}
-      <div
-        className="text-xs font-medium text-amber-600 dark:text-amber-400"
-        data-testid="research-aligned-smalln"
-      >
-        n = {covered.length} occurrence{covered.length === 1 ? "" : "s"}
-        {covered.length > 0 && covered.length < 5
-          ? " (a small sample: descriptive, not evidence)"
-          : ""}
-      </div>
-      <ol className="flex flex-col gap-2">
-        {covered.map((window, index) => (
-          <li
-            key={`${window.startAt}:${index}`}
-            className="flex items-center gap-3"
-            data-testid="research-aligned-trace"
-          >
-            <div className="w-28 shrink-0 text-xs">
-              <div className="font-medium">{window.label ?? `occurrence ${index + 1}`}</div>
-              <div className="text-muted-foreground">
-                {new Date(window.startAt).toISOString().slice(0, 10)}
-              </div>
+    <>
+      {/* The stage: the aggregate comparison, first. */}
+      <div className="flex min-h-0 flex-[3] flex-col gap-1" data-testid="research-aligned-stage">
+        {covered.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
+            No covered occurrences to align. The calendar view says why each one was not measured.
+          </div>
+        ) : (
+          <>
+            {/* The comparison's own numbers, from the report: what the event
+                did, what the same horizon did everywhere else, and the
+                difference — labelled as derived, never as significance. */}
+            <div
+              className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs"
+              data-testid="research-baseline-summary"
+            >
+              <span className="font-medium">Event mean {fmtPct(payload.report.meanReturnPct)}</span>
+              {baseline === null ? (
+                <span className="text-muted-foreground" data-testid="research-baseline-unavailable">
+                  {BASELINE_UNAVAILABLE_SENTENCE}
+                </span>
+              ) : (
+                <>
+                  <span data-testid="research-baseline-mean">
+                    {BASELINE_REFERENCE_LABEL} {fmtPct(baseline.meanReturnPct)}
+                  </span>
+                  <span
+                    className="text-muted-foreground"
+                    data-testid="research-baseline-difference"
+                  >
+                    event minus baseline{" "}
+                    {payload.report.meanReturnPct === null
+                      ? "-"
+                      : fmtPct(payload.report.meanReturnPct - baseline.meanReturnPct)}
+                  </span>
+                </>
+              )}
+              <span className="text-muted-foreground">
+                {describeHorizon(payload.report.horizonBars, payload.report.horizonMs)}
+              </span>
+              <span className="text-muted-foreground">
+                {covered.length} covered occurrence{covered.length === 1 ? "" : "s"}
+              </span>
             </div>
-            <div className="min-w-0 flex-1">
-              <AlignedTrace
+            <div className="min-h-0 flex-1" data-testid="research-aggregate">
+              <AggregateTrace
                 environmentId={props.environmentId}
-                market={payload.market}
-                interval={payload.interval as ChartInterval}
-                intervalMs={payload.report.horizonMs / payload.report.horizonBars}
-                occurrence={window}
-                horizonBars={payload.horizonBars}
-                entryBasis={entryBasis}
+                payload={payload}
+                covered={covered}
+                reference={baselineReference(baseline)}
               />
             </div>
-          </li>
-        ))}
-      </ol>
-      {covered.length > 1 ? (
+          </>
+        )}
+      </div>
+      {/* The inspector: the study's detail text, per-occurrence shapes, and
+          the honesty lines — including the baseline's own numbers (median,
+          samples, the overlapping-windows caveat), which live in detail text
+          rather than on the stage. */}
+      <div
+        className="trading-graph-inspector min-h-0 flex-[2] overflow-y-auto border-t border-border/60 pt-1"
+        data-testid="research-inspector"
+      >
         <div
-          className="flex items-center gap-3 border-t border-border/60 pt-2"
-          data-testid="research-aggregate"
+          className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-muted-foreground"
+          data-testid="research-explanation"
         >
-          <div className="w-28 shrink-0 text-xs font-medium">
-            aggregate (mean of {covered.length})
-          </div>
-          <div className="min-w-0 flex-1">
-            <AggregateTrace
-              environmentId={props.environmentId}
-              payload={payload}
-              covered={covered}
-            />
-          </div>
+          {studyExplanationLines(payload).map((line) => (
+            <span key={line}>{line}</span>
+          ))}
         </div>
-      ) : null}
-      {covered.length === 0 ? (
-        <div className="rounded border border-border/60 p-2 text-xs text-muted-foreground">
-          No covered occurrences to align. The calendar view says why each one was not measured.
+        <div className="mt-1 text-xs text-muted-foreground">
+          {covered.length} trace(s) rebased to their measured entry. Bars since the entry run left
+          to right for {payload.horizonBars} bars; each path is that occurrence's archived closes as
+          a percentage of its entry. The heavier line in the stage is the mean across occurrences;
+          the dashed line here is zero change.
         </div>
-      ) : null}
-    </div>
+        {/* Small n is the first thing a reader must know: a mean of two shapes
+            is a description, not evidence, and the label says so at a glance. */}
+        <div
+          className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400"
+          data-testid="research-aligned-smalln"
+        >
+          n = {covered.length} occurrence{covered.length === 1 ? "" : "s"}
+          {covered.length > 0 && covered.length < 5
+            ? " (a small sample: descriptive, not evidence)"
+            : ""}
+        </div>
+        <ol className="mt-1 flex flex-col gap-2">
+          {covered.map((window, index) => (
+            <li
+              key={`${window.startAt}:${index}`}
+              className="flex items-center gap-3"
+              data-testid="research-aligned-trace"
+            >
+              <div className="w-28 shrink-0 text-xs">
+                <div className="font-medium">{window.label ?? `occurrence ${index + 1}`}</div>
+                <div className="text-muted-foreground">
+                  {new Date(window.startAt).toISOString().slice(0, 10)}
+                </div>
+              </div>
+              <div className="min-w-0 flex-1">
+                <AlignedTrace
+                  environmentId={props.environmentId}
+                  market={payload.market}
+                  interval={payload.interval as ChartInterval}
+                  intervalMs={payload.report.horizonMs / payload.report.horizonBars}
+                  occurrence={window}
+                  horizonBars={payload.horizonBars}
+                  entryBasis={entryBasis}
+                />
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </>
   );
 }
 
 /**
  * The aggregate trace: each covered occurrence's window is fetched by its
  * own hook in a child (rules of hooks), the pure module rebases it, and the
- * parent draws the mean path heavier once every child has answered. Display
- * arithmetic on server bars; per-occurrence numbers are never recomputed.
+ * parent draws the mean path heavier once every child has answered — beside
+ * the baseline reference when the report holds one, and never a line that
+ * could be mistaken for one when it does not. Display arithmetic on server
+ * bars; per-occurrence numbers are never recomputed.
  */
 function AggregateTrace(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
   readonly covered: ReadonlyArray<ResearchOccurrenceWindow>;
+  readonly reference: { readonly valuePct: number; readonly label: string } | null;
 }) {
   const intervalMs = props.payload.report.horizonMs / props.payload.report.horizonBars;
   const entryBasis = payloadEntryBasis(props.payload);
@@ -616,11 +735,16 @@ function AggregateTrace(props: {
         />
       ))}
       {!ready ? (
-        <div className="h-[60px] motion-safe:animate-pulse rounded bg-muted/40" />
+        <div className="h-full min-h-24 motion-safe:animate-pulse rounded bg-muted/40" />
       ) : aggregate.points.length < 2 ? (
         <div className="text-xs text-muted-foreground">not enough bars to aggregate</div>
       ) : (
-        <TraceSvg trace={aggregate.points} horizonBars={props.payload.horizonBars} emphasis />
+        <TraceSvg
+          trace={aggregate.points}
+          horizonBars={props.payload.horizonBars}
+          emphasis
+          reference={props.reference}
+        />
       )}
     </>
   );
@@ -684,7 +808,12 @@ function StrategyReplayBody(props: {
     upcoming: false,
   }));
   return (
-    <div className="flex flex-col gap-2">
+    // A replay is a document, not a stage/inspector split: it scrolls inside
+    // the fixed viewport instead of growing it.
+    <div
+      className="trading-graph-inspector flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto"
+      data-testid="research-inspector"
+    >
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>{trades.length} trade(s) shown</span>
         <span>win rate {payload.winRatePercent}%</span>
@@ -775,19 +904,19 @@ function ReplayWindowChart(props: {
 }
 
 /**
- * The published scenes of one thread, with the calendar and event-aligned
- * views. Rendered inside the thread's market card below the live chart, so
- * the live chart stays first and research never decorates another thread's
- * graph.
+ * The published scenes of one thread, rendered inside the graph's one fixed
+ * plot stage: the mode tabs live on the outer graph (this panel receives the
+ * mode), the picture fills the stage's upper half, and everything
+ * explanatory scrolls in the inspector below it. Research never expands the
+ * outer frame.
  */
 export function ResearchScenePanel(props: {
   readonly environmentId: EnvironmentId;
   readonly scenes: ReadonlyArray<ResearchSceneView>;
   readonly loading: boolean;
   readonly error: string | null;
-  /** The research mode the outer graph controls own (Live lives outside). */
+  /** The research mode the outer graph's tabs selected (Live lives outside). */
   readonly mode: "calendar" | "aligned";
-  readonly onModeChange: (mode: "calendar" | "aligned") => void;
   /** The thread composer prefill; null on the trade home (no conversation). */
   readonly prefill: ((sentence: string) => void) | null;
 }) {
@@ -801,10 +930,12 @@ export function ResearchScenePanel(props: {
     if (sceneIndex >= props.scenes.length) setSceneIndex(0);
   }, [props.scenes.length, sceneIndex]);
 
+  // The error, loading and empty states keep the panel's shape: a message
+  // where the content would sit, never a different frame.
   if (props.error !== null) {
     return (
       <div
-        className="rounded border border-border/60 p-2 text-xs text-muted-foreground"
+        className="flex flex-1 items-center justify-center rounded border border-border/60 p-2 text-center text-xs text-muted-foreground"
         data-testid="research-scenes-error"
       >
         research scenes unavailable: {props.error}
@@ -815,7 +946,7 @@ export function ResearchScenePanel(props: {
     if (props.loading) {
       return (
         <div
-          className="h-6 motion-safe:animate-pulse rounded bg-muted/40"
+          className="h-full min-h-24 motion-safe:animate-pulse rounded bg-muted/40"
           data-testid="research-scenes-loading"
         />
       );
@@ -824,10 +955,7 @@ export function ResearchScenePanel(props: {
   }
 
   return (
-    <section
-      className="mt-2 rounded border border-border/60 p-2"
-      data-testid="research-scene-panel"
-    >
+    <section className="flex h-full min-h-0 flex-col gap-1" data-testid="research-scene-panel">
       <header className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {props.scenes.length > 1 ? (
@@ -846,21 +974,6 @@ export function ResearchScenePanel(props: {
           ) : (
             <h3 className="truncate text-sm font-medium">{scene.title}</h3>
           )}
-          {scene.eventStudy !== undefined ? (
-            <div className="flex gap-1 text-xs">
-              {(["calendar", "aligned"] as const).map((candidate) => (
-                <button
-                  key={candidate}
-                  type="button"
-                  className={`rounded px-2 py-0.5 ${props.mode === candidate ? "bg-muted font-medium" : "text-muted-foreground"}`}
-                  onClick={() => props.onModeChange(candidate)}
-                  data-testid={`research-mode-${candidate}`}
-                >
-                  {candidate === "calendar" ? "Calendar" : "Event aligned"}
-                </button>
-              ))}
-            </div>
-          ) : null}
           {scene.referenceStatus === "retired" ? (
             <span
               className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
@@ -878,7 +991,9 @@ export function ResearchScenePanel(props: {
           {RESEARCH_DISCLAIMER}
         </span>
       </header>
-      <div className="mt-2">
+      {/* Stage content and inspector share the fixed viewport; the mode is
+          the outer graph's tab, never a second switcher here. */}
+      <div className="flex min-h-0 flex-1 flex-col" data-testid="research-scene-body">
         {scene.eventStudy !== undefined ? (
           props.mode === "calendar" ? (
             // Keyed by scene id so a newly published scene (with its own
@@ -898,7 +1013,10 @@ export function ResearchScenePanel(props: {
         ) : scene.strategyReplay !== undefined ? (
           <StrategyReplayBody environmentId={props.environmentId} payload={scene.strategyReplay} />
         ) : scene.annotation !== undefined ? (
-          <div className="text-sm">
+          <div
+            className="trading-graph-inspector flex min-h-0 flex-1 flex-col overflow-y-auto text-sm"
+            data-testid="research-inspector"
+          >
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
               model note
             </span>{" "}
@@ -909,7 +1027,7 @@ export function ResearchScenePanel(props: {
             </div>
           </div>
         ) : (
-          <div className="text-xs text-muted-foreground">
+          <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
             this scene predates the current format and no longer renders
           </div>
         )}
@@ -918,7 +1036,7 @@ export function ResearchScenePanel(props: {
           the graph shows research, and research distinguishes its numbers
           from its prose. The next-step controls are prefills only; nothing
           here plans, arms, or trades on click. */}
-      <footer className="mt-2 flex flex-col gap-1 border-t border-border/60 pt-2">
+      <footer className="flex flex-col gap-1 border-t border-border/60 pt-1">
         {scene.eventStudy !== undefined ? (
           <span className="text-[10px] text-muted-foreground" data-testid="research-provenance">
             {provenanceTrailLine(scene.eventStudy)}
