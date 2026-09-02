@@ -50,6 +50,7 @@ import {
   TradingManualCloseInput,
   TradingManualCloseResult,
   TradingChartInterval,
+  TradingChartRange,
   TradingMarketChartView,
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
@@ -724,6 +725,14 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
 export const OrchestrationGetTradingMarketChartInput = Schema.Struct({
   market: TrimmedNonEmptyString,
   interval: TradingChartInterval,
+  /**
+   * How much history to serve, resolved to a window by the server. `all`
+   * means everything the archive recorded for the market — the client cannot
+   * know that span, so it cannot compute it. Only honoured on a live read
+   * (no `startTime`/`endTime`); a windowed post-mortem read names its own
+   * span. Absent means the latest bars up to the cap, as before.
+   */
+  range: Schema.optional(TradingChartRange),
   startTime: Schema.optional(Schema.Number),
   endTime: Schema.optional(Schema.Number),
   maxBars: Schema.optional(PositiveInt),

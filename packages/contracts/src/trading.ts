@@ -208,9 +208,54 @@ export const TradingChartGap = Schema.Struct({
 });
 export type TradingChartGap = typeof TradingChartGap.Type;
 
-/** Candle intervals the chart RPC serves — the archive's own interval set. */
-export const TradingChartInterval = Schema.Literals(["1m", "3m", "5m", "15m", "1h", "4h", "1d"]);
+/**
+ * Candle intervals the chart RPC serves. `1m`–`1d` are the archive's own
+ * interval set; `1w` and `1mo` are chart-only intervals the server derives
+ * from archived `1d` bars (week buckets start Monday 00:00 UTC, month buckets
+ * are UTC calendar months). They are never recorded, never requested from the
+ * exchange gateway, and never valid wherever a strategy, backtest, watch, or
+ * event-study recipe names its interval — those use `BacktestInterval` /
+ * `BarInterval`, which stay closed at `1d`.
+ */
+export const TradingChartInterval = Schema.Literals([
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "1h",
+  "4h",
+  "1d",
+  "1w",
+  "1mo",
+]);
 export type TradingChartInterval = typeof TradingChartInterval.Type;
+
+/**
+ * How much history the chart asks for, independent of the candle interval.
+ * The chart request carries a range and an interval as two separate choices;
+ * the server resolves a range to a window (`all` means everything the archive
+ * actually recorded for that market, not what the exchange happens to serve).
+ */
+export const TradingChartRange = Schema.Literals(["1d", "1w", "1m", "6m", "ytd", "1y", "all"]);
+export type TradingChartRange = typeof TradingChartRange.Type;
+
+/**
+ * Millis per chart interval. `1mo` is the nominal 30-day month, for duration
+ * arithmetic only (servability checks, bar-count estimates): real monthly
+ * candles are bucketed on UTC calendar-month boundaries server-side, never on
+ * this number.
+ */
+export const TRADING_CHART_INTERVAL_MILLIS: Record<TradingChartInterval, number> = {
+  "1m": 60_000,
+  "3m": 3 * 60_000,
+  "5m": 5 * 60_000,
+  "15m": 15 * 60_000,
+  "1h": 60 * 60_000,
+  "4h": 4 * 60 * 60_000,
+  "1d": 24 * 60 * 60_000,
+  "1w": 7 * 24 * 60 * 60_000,
+  "1mo": 30 * 24 * 60 * 60_000,
+};
 
 /**
  * One paper trade drawn on the market chart.

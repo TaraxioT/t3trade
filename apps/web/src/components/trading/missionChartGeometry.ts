@@ -541,6 +541,32 @@ export interface ChartTimeBand {
 export const MIN_EVENT_BAND_WIDTH = 3;
 
 /**
+ * One researched event occurrence from a published scene, drawn on the live
+ * price graph at its exact saved instant.
+ *
+ * The scene-derived seam into the chart, deliberately separate from
+ * `ChartTimeBandInput` (the thesis `eventBands` the calendar of a validation
+ * uses): a research marker is a fact about a wall-clock moment with its own
+ * provenance, not a trade and not part of any thesis. `startAt === endAt`
+ * means an instantaneous activation (a network upgrade) and draws a vertical
+ * rule at the exact millisecond; a genuine multi-instant span draws a band.
+ * `covered` false means the occurrence predates the recorded archive — the
+ * chart must say so, never invent a position at the left edge. `upcoming`
+ * places the next future occurrence in the existing bounded future gutter.
+ */
+export interface ChartResearchMarkerInput {
+  readonly key: string;
+  /** The saved occurrence label, e.g. "Dencun". */
+  readonly label: string;
+  readonly startAt: number;
+  readonly endAt: number;
+  /** The occurrence's single authoritative source URL, linked in the detail. */
+  readonly sourceUrl: string;
+  readonly covered: boolean;
+  readonly upcoming: boolean;
+}
+
+/**
  * One historical study's overlay on a research window: the activation the
  * study anchored on, the measured entry and exit, and the signed return
  * between them.

@@ -34,6 +34,7 @@ import type {
   TradingChartCandle,
   TradingChartEventBand,
   TradingChartInterval,
+  TradingChartRange,
   TradingChartSessionLevels,
   TradingChartThesis,
   TradingMarketChartView,
@@ -62,6 +63,12 @@ export interface TradingMarketChartReadInput {
   readonly market: string;
   readonly interval: TradingChartInterval;
   readonly maxBars: number;
+  /**
+   * How much history to serve, resolved to a window here because `all` is
+   * defined by what the archive recorded, which only the server knows.
+   * Ignored on a windowed read (`startTime`/`endTime` name their own span).
+   */
+  readonly range?: TradingChartRange;
   /** Epoch millis bounding the candle window; omitted means the latest bars. */
   readonly startTime?: number;
   readonly endTime?: number;
@@ -108,6 +115,10 @@ const INTERVAL_MILLIS: Record<TradingChartInterval, number> = {
   "1h": 60 * 60_000,
   "4h": 4 * 60 * 60_000,
   "1d": 24 * 60 * 60_000,
+  // Chart-only intervals, derived from archived 1d bars — see the aggregation
+  // module. Durations here are bucket widths for window arithmetic only.
+  "1w": 7 * 24 * 60 * 60_000,
+  "1mo": 30 * 24 * 60 * 60_000,
 };
 
 /** The intervals the exchange gateway can serve; `4h`/`1d` are archive-only. */
