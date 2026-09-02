@@ -825,9 +825,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   /* Mirror the run-context strip above the composer. These surfaces deliberately
      own no card fill or border themselves: a masked pseudo-element draws the
      same inset glass, 16px outer corners, quiet outline, and open attachment
-     seam as the strip below. */
+     seam as the strip below. The market drawer is the same material once more:
+     the thread's chart docked as the topmost attachment inside the composer's
+     glass shell, never a floating card of its own. */
   .chat-composer-drawer-surface,
-  .chat-composer-top-drawer {
+  .chat-composer-top-drawer,
+  .chat-composer-market-drawer {
     --chat-composer-attachment-overlap: calc(1rem + 1px);
     --chat-composer-attached-surface: var(--chat-composer-glass-surface, var(--card));
     --chat-composer-attached-outline: var(
@@ -871,18 +874,21 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .chat-composer-drawer-attached,
-  .chat-composer-top-drawer {
+  .chat-composer-top-drawer,
+  .chat-composer-market-drawer {
     padding-bottom: var(--chat-composer-attachment-overlap);
   }
 
   [data-chat-composer-form="true"],
   .chat-composer-drawer-slot,
-  .chat-composer-top-drawer {
+  .chat-composer-top-drawer,
+  .chat-composer-market-drawer {
     --chat-composer-drawer-inset: 1.375rem;
   }
 
   .chat-composer-drawer-slot,
-  .chat-composer-top-drawer {
+  .chat-composer-top-drawer,
+  .chat-composer-market-drawer {
     --chat-composer-attachment-overlap: calc(1rem + 1px);
     width: calc(100% - var(--chat-composer-drawer-inset) - var(--chat-composer-drawer-inset));
     max-width: calc(48rem - var(--chat-composer-drawer-inset) - var(--chat-composer-drawer-inset));
@@ -890,7 +896,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     margin-bottom: calc(-1 * var(--chat-composer-attachment-overlap));
   }
 
-  :is(.chat-composer-drawer-surface, .chat-composer-top-drawer)::before {
+  :is(
+    .chat-composer-drawer-surface,
+    .chat-composer-top-drawer,
+    .chat-composer-market-drawer
+  )::before {
     pointer-events: none;
     position: absolute;
     z-index: -1;
@@ -950,6 +960,28 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   :is(.chat-composer-drawer-surface, .chat-composer-top-drawer)[data-variant="warning"] {
     --chat-composer-attached-outline: color-mix(in srgb, var(--warning) 28%, transparent);
     --chat-composer-attached-tint: color-mix(in srgb, var(--warning) 8%, transparent);
+  }
+
+  /* The trading graph's one viewport height, wherever a graph is docked — the
+     thread drawer, the mission panel, research — so the market reads the same
+     size in every surface that shows it. Compact below the sm breakpoint,
+     where the composer column is the whole screen and 36vh of it is too much
+     chart. */
+  .trading-graph-viewport {
+    height: clamp(200px, 30vh, 280px);
+  }
+
+  @media (min-width: 40rem) {
+    .trading-graph-viewport {
+      height: clamp(240px, 36vh, 360px);
+    }
+  }
+
+  /* An inspector pane that scrolls inside the fixed graph viewport instead of
+     pushing the composer it is attached to. */
+  .trading-graph-inspector {
+    overflow-y: auto;
+    min-height: 0;
   }
 
   .chat-composer-glass-shell {

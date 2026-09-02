@@ -6872,11 +6872,12 @@ function ChatViewContent(props: ChatViewProps) {
       />
     );
 
-  // The market itself: the chart and what is on it, docked above the composer
-  // inside the composer's own overlay, so the timeline's end inset already
-  // accounts for it and the card can never cover the conversation. Absent in
-  // the draft hero state, where the composer is centred and there is no thread
-  // for a market to belong to yet.
+  // The market itself: the chart and what is on it, attached inside the
+  // composer's glass shell as its topmost drawer — still inside the
+  // composer's own overlay, so the timeline's end inset already accounts for
+  // it and the graph can never cover the conversation. Absent in the draft
+  // hero state, where the composer is centred and there is no thread for a
+  // market to belong to yet.
   const threadMarketCard =
     threadMarket === null || isDraftHeroState ? null : (
       <ThreadMarketCard
@@ -6894,8 +6895,13 @@ function ChatViewContent(props: ChatViewProps) {
     setDragActive: setIsWorkspaceFileDragActive,
     addFiles: (files) => composerRef.current?.addDroppedFiles(files),
   });
+  // The market drawer counts as an attachment too: when it is docked, the
+  // composer switches to split surfaces and inline badges exactly as it does
+  // for banners and the sync pill.
   const externalComposerDrawerAttached =
-    composerBannerItems.length > 0 || Boolean(threadSyncPhase && !activeEnvironmentUnavailable);
+    composerBannerItems.length > 0 ||
+    Boolean(threadSyncPhase && !activeEnvironmentUnavailable) ||
+    threadMarketCard !== null;
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
@@ -7106,10 +7112,7 @@ function ChatViewContent(props: ChatViewProps) {
                       <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                     </div>
                   ) : (
-                    <>
-                      {threadMarketCard}
-                      <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
-                    </>
+                    <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
@@ -7129,6 +7132,10 @@ function ChatViewContent(props: ChatViewProps) {
                         showComposerContextStrip && "chat-composer-glass-shell-with-context",
                       )}
                     >
+                      {/* The market graph is the shell's topmost attachment:
+                          banners and the sync pill stay above the shell, this
+                          drawer docks inside it, above the composer host. */}
+                      {threadMarketCard}
                       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
