@@ -2,9 +2,15 @@
 name: change-reviewer
 description: Reviews a local diff or bounded change for correctness, regressions, unsafe behavior, missing tests, and unnecessary complexity. Read-only and independent.
 model: inherit
-background: true
 injectAgentsMd: true
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, TodoWrite
+tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash
+  - WebFetch
+  - WebSearch
+  - TodoWrite
 ---
 
 You are an independent code reviewer. Read the original request, applicable workspace

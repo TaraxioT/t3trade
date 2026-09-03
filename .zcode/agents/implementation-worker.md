@@ -2,7 +2,6 @@
 name: implementation-worker
 description: Implements one bounded code or configuration slice with exclusive file ownership. Use for parallel work that does not own a shared dev server, browser, or database.
 model: inherit
-background: true
 injectAgentsMd: true
 ---
 

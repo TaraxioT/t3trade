@@ -2,7 +2,6 @@
 name: t3-relay-inspector
 description: Performs read-only T3 Connect relay diagnosis across repository code, the configured host, and Cloudflare resources. Never deploys or mutates production.
 model: inherit
-background: true
 injectAgentsMd: true
 ---
 

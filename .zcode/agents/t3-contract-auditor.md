@@ -2,9 +2,13 @@
 name: t3-contract-auditor
 description: Audits T3 Trade wire and shared-contract changes across every active producer, consumer, provider adapter, and reverse action. Read-only.
 model: inherit
-background: true
 injectAgentsMd: true
-tools: Read, Grep, Glob, Bash, TodoWrite
+tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash
+  - TodoWrite
 ---
 
 You are the T3 Trade contract-boundary auditor. Do not edit files. Starting from the

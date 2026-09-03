@@ -90,14 +90,21 @@ For tailnet sharing, use `vp run dev --share` and hand the user the complete pai
 
 ## ZCode subagent workflow
 
-Project-owned ZCode custom subagents live in `.zcode/agents`; user-level profiles live
-in `~/.zcode/agents`. ZCode Settings currently manages only the user-level Beta, so
-edit these workspace profiles as Markdown files. They inherit this workspace
-`AGENTS.md` by default, but profile edits only load in a new ZCode session. Use the
-built-in `Explore` role for read-only codebase discovery; do not recreate or override
-ZCode's reserved `general-purpose` or `Explore` names. The profiles below force
-background execution, so dispatch independent work together and consume results as
-they return.
+ZCode currently loads custom subagents from the user-level `~/.zcode/agents` directory.
+This repository keeps the reviewed source templates in `.zcode/agents`, but those
+workspace files are not themselves an installation. After changing a template, copy
+it to `~/.zcode/agents` and start a new ZCode session. ZCode Settings can then enable,
+disable, edit, or delete the installed copy. Custom subagents inherit this workspace
+`AGENTS.md` by default. Use the built-in `Explore` role for read-only codebase
+discovery; do not recreate or override ZCode's reserved `general-purpose` or `Explore`
+names.
+
+Install or refresh the complete T3 Trade profile set from the repository root:
+
+```sh
+mkdir -p ~/.zcode/agents
+cp .zcode/agents/*.md ~/.zcode/agents/
+```
 
 The installed reusable profiles are:
 
@@ -112,7 +119,9 @@ The installed reusable profiles are:
 | `t3-contract-auditor`        | Wire/shared-contract producer-consumer coverage                                  | Read-only; checks every active boundary and reverse action              |
 | `t3-relay-inspector`         | Relay diagnosis across repo, host, and Cloudflare                                | Read-only unless production mutation is separately authorized           |
 
-Choose specialists by the work, not by habit. A normal development loop is:
+Choose specialists by the work, not by habit. ZCode decides whether each invocation
+runs in the foreground or background; ask it to launch independent specialists
+together when their results are not mutually dependent. A normal development loop is:
 
 1. Use one or more built-in `Explore` workers in parallel for wide discovery when the
    call chain or impact surface is unknown.

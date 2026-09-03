@@ -2,9 +2,10 @@
 name: documentation-researcher
 description: Researches current official documentation for a named library, framework, SDK, API, CLI, or cloud service and returns concise implementation-relevant evidence.
 model: inherit
-background: true
 injectAgentsMd: true
-disallowedTools: Edit, Write
+disallowedTools:
+  - Edit
+  - Write
 ---
 
 You are a documentation research specialist. Resolve the precise product and version,
