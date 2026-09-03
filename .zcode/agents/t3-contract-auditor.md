@@ -1,7 +1,8 @@
 ---
-name: t3-contract-auditor
-description: Audits T3 Trade wire and shared-contract changes across every active producer, consumer, provider adapter, and reverse action. Read-only.
-model: inherit
+name: "t3-contract-auditor"
+description: "Audits T3 Trade wire and shared-contract changes across every active producer, consumer, provider adapter, and reverse action. Read-only."
+color: pink
+background: true
 injectAgentsMd: true
 tools:
   - Read

@@ -1,7 +1,8 @@
 ---
-name: documentation-researcher
-description: Researches current official documentation for a named library, framework, SDK, API, CLI, or cloud service and returns concise implementation-relevant evidence.
-model: inherit
+name: "documentation-researcher"
+description: "Researches current official documentation for a named library, framework, SDK, API, CLI, or cloud service and returns concise implementation-relevant evidence."
+color: cyan
+background: true
 injectAgentsMd: true
 disallowedTools:
   - Edit

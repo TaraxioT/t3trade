@@ -1,7 +1,8 @@
 ---
-name: t3-app-tester
+name: "t3-app-tester"
 description: "Owns T3 Trade integrated web testing with the test-t3-app workflow: one isolated retained stack, authenticated controlled browser, fixtures, and acceptance evidence."
-model: inherit
+color: orange
+background: true
 injectAgentsMd: true
 ---
 

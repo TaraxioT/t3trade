@@ -1,7 +1,8 @@
 ---
-name: change-reviewer
-description: Reviews a local diff or bounded change for correctness, regressions, unsafe behavior, missing tests, and unnecessary complexity. Read-only and independent.
-model: inherit
+name: "change-reviewer"
+description: "Reviews a local diff or bounded change for correctness, regressions, unsafe behavior, missing tests, and unnecessary complexity. Read-only and independent."
+color: purple
+background: true
 injectAgentsMd: true
 tools:
   - Read

@@ -1,7 +1,8 @@
 ---
-name: focused-verifier
-description: Independently verifies a finished change with focused tests, typechecks, lint, and source inspection. Never repairs or edits the implementation.
-model: inherit
+name: "focused-verifier"
+description: "Independently verifies a finished change with focused tests, typechecks, lint, and source inspection. Never repairs or edits the implementation."
+color: green
+background: true
 injectAgentsMd: true
 tools:
   - Read
