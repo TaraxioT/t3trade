@@ -90,21 +90,23 @@ For tailnet sharing, use `vp run dev --share` and hand the user the complete pai
 
 ## ZCode subagent workflow
 
-ZCode currently loads custom subagents from the user-level `~/.zcode/agents` directory.
-This repository keeps the reviewed source templates in `.zcode/agents`, but those
-workspace files are not themselves an installation. After changing a template, copy
-it to `~/.zcode/agents` as a regular file, use the refresh button in Settings >
-Subagents, and start a new ZCode task. ZCode's discovery does not follow symlinks.
-ZCode Settings can then enable, disable, edit, or delete the installed copy. Custom
-subagents inherit this workspace `AGENTS.md` and the current model by default. Use the
-built-in `Explore` role for read-only codebase discovery; do not recreate or override
-ZCode's reserved `general-purpose` or `Explore` names.
+ZCode loads user profiles from `~/.zcode/agents` and workspace profiles from
+`.zcode/agents`. Do not keep an installed profile under both roots: ZCode gives the
+workspace copy precedence by name, then hides that copy when Settings is filtered to
+User. This repository therefore keeps reviewed, non-discoverable source templates in
+`.zcode/agent-templates`. After changing a template, copy it to `~/.zcode/agents` as
+a regular file, use the refresh button in Settings > Subagents, and start a new ZCode
+task. ZCode's discovery does not follow symlinks. ZCode Settings can then enable,
+disable, edit, or delete the installed copy. Custom subagents inherit this workspace
+`AGENTS.md` and the current model by default. Use the built-in `Explore` role for
+read-only codebase discovery; do not recreate or override ZCode's reserved
+`general-purpose` or `Explore` names.
 
 Install or refresh the complete T3 Trade profile set from the repository root:
 
 ```sh
 mkdir -p ~/.zcode/agents
-cp .zcode/agents/*.md ~/.zcode/agents/
+cp .zcode/agent-templates/*.md ~/.zcode/agents/
 ```
 
 The installed reusable profiles are:
