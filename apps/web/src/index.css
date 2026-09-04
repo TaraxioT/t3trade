@@ -965,15 +965,17 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   /* The trading graph's one viewport height, wherever a graph is docked — the
      thread drawer, the mission panel, research — so the market reads the same
      size in every surface that shows it. Compact below the sm breakpoint,
-     where the composer column is the whole screen and 36vh of it is too much
-     chart. */
+     where the composer column is the whole screen and that much of it is too
+     much chart. The desktop tier carries the research inspector: its split
+     stage/inspector body needs the extra height so a study's occurrence rows
+     are visible beside the chart instead of below an internal scroll fold. */
   .trading-graph-viewport {
     height: clamp(200px, 30vh, 280px);
   }
 
   @media (min-width: 40rem) {
     .trading-graph-viewport {
-      height: clamp(240px, 36vh, 360px);
+      height: clamp(300px, 46vh, 470px);
     }
   }
 

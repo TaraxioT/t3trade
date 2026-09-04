@@ -234,6 +234,19 @@ describe("ResearchScenePanel: calendar mode", () => {
     expect(markup).toContain("occurrence 1 of 3");
   });
 
+  it("compacts the honesty block: coverage and horizon stay visible, the full lines sit in a closed disclosure", () => {
+    // The two load-bearing facts render outside the disclosure, so they are
+    // on the inspector's first screen however long the fine print is.
+    expect(markup).toContain('data-testid="research-explanation-summary"');
+    expect(markup).toContain("2 of 3 occurrences fall inside archived data");
+    expect(markup).toContain("horizon 30 bars (30 days) on 1d bars");
+    // The full block is still in the markup, inside a details element that
+    // defaults closed: nothing was dropped to save space.
+    expect(markup).toContain("<details");
+    expect(markup).toContain('data-testid="research-explanation"');
+    expect(markup).toContain("not a significance test");
+  });
+
   it("renders one source link per occurrence, the row's own URL", () => {
     expect(markup).toContain("https://example.org/activation");
     expect(markup).toContain("https://example.org/next");

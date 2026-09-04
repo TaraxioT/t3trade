@@ -183,7 +183,7 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     );
     // The frozen graph viewport contract other surfaces consume.
     expect(compact).toContain(".trading-graph-viewport{");
-    expect(compact).toContain("clamp(240px,36vh,360px)");
+    expect(compact).toContain("clamp(300px,46vh,470px)");
     expect(compact).toContain("clamp(200px,30vh,280px)");
     expect(compact).toContain(".trading-graph-inspector{");
   });

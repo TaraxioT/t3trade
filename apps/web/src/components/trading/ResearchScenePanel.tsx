@@ -9,12 +9,13 @@
  * display arithmetic on those numbers (a per-notional illustration, and
  * rebasing a path to its entry), and both say so.
  *
- * The panel lives inside the graph's one fixed plot stage. Its upper half is
+ * The panel lives inside the graph's one fixed plot stage. Its upper part is
  * the picture — Calendar shows the ONE selected occurrence where it happened;
  * Event aligned shows the aggregate comparison against its baseline first —
- * and everything explanatory (honesty lines, occurrence navigation, sources,
- * provenance) scrolls inside the stage in the inspector, so opening research
- * never changes the graph's geometry.
+ * and the larger lower part is the inspector, where the per-occurrence data
+ * (returns, sources, traces) leads and the full honesty block sits one
+ * disclosure away, so opening research never changes the graph's geometry and
+ * never buries the study's own rows below the fold.
  *
  * Static SVG only, no animation: research is a document, not a dashboard.
  *
@@ -72,6 +73,39 @@ const CONTEXT_BARS = STUDY_CHART_CONTEXT_BARS;
 
 const fmtPct = (value: number | null | undefined): string =>
   value === null || value === undefined ? "-" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+
+/**
+ * The honesty block, compacted for the fixed viewport: the two lines a reader
+ * needs before trusting any number (coverage and horizon) stay visible, and
+ * every full line sits one disclosure away. Nothing is dropped — the details
+ * element keeps the whole block in the DOM — but the fine print no longer
+ * pushes the per-occurrence data below the inspector's fold.
+ */
+function StudyExplanation(props: { readonly payload: EventStudyScenePayload }) {
+  const lines = studyExplanationLines(props.payload);
+  return (
+    <div data-testid="research-explanation-block">
+      <div
+        className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground"
+        data-testid="research-explanation-summary"
+      >
+        <span>{lines[0]}</span>
+        <span>{lines[1]}</span>
+      </div>
+      <details className="mt-0.5 text-xs text-muted-foreground">
+        <summary className="cursor-pointer text-[11px]">study details</summary>
+        <div
+          className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1"
+          data-testid="research-explanation"
+        >
+          {lines.map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
 
 /** The bars the fetch window spans: event span plus horizon plus context. */
 function windowFor(
@@ -348,7 +382,7 @@ function EventStudyBody(props: {
   return (
     <>
       {/* The stage: one occurrence, where it happened. */}
-      <div className="flex min-h-0 flex-[3] flex-col" data-testid="research-calendar-stage">
+      <div className="flex min-h-0 flex-[2] flex-col" data-testid="research-calendar-stage">
         {row === undefined ? (
           <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
             this study holds no occurrences
@@ -374,22 +408,15 @@ function EventStudyBody(props: {
           />
         )}
       </div>
-      {/* The inspector: everything explanatory scrolls, the frame never grows. */}
+      {/* The inspector: everything explanatory scrolls, the frame never grows.
+          Data before fine print: the compacted honesty summary, the notional
+          and the occurrence rows lead; the full honesty block is the
+          disclosure at the end. */}
       <div
-        className="trading-graph-inspector min-h-0 flex-[2] overflow-y-auto border-t border-border/60 pt-1"
+        className="trading-graph-inspector min-h-0 flex-[3] overflow-y-auto border-t border-border/60 pt-1"
         data-testid="research-inspector"
       >
-        {/* The honesty block: every line a reader needs before trusting a
-            number, straight from the pure module so the renderer cannot drop
-            one quietly. */}
-        <div
-          className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-muted-foreground"
-          data-testid="research-explanation"
-        >
-          {studyExplanationLines(payload).map((line) => (
-            <span key={line}>{line}</span>
-          ))}
-        </div>
+        <StudyExplanation payload={payload} />
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
           <label className="text-muted-foreground" htmlFor="research-notional">
             Illustrate per
@@ -463,7 +490,7 @@ function EventStudyBody(props: {
             </button>
           ) : null}
         </div>
-        <ul className="mt-1 flex flex-col gap-1">
+        <ul className="mt-1 flex flex-col gap-0.5">
           {report.rows.map((candidate, index) => {
             // The time with its precision: an exact instant or window shows
             // the minute, a date (or a legacy span) the day, and the phrase
@@ -476,7 +503,7 @@ function EventStudyBody(props: {
             return (
               <li
                 key={`${candidate.startAt}:${index}`}
-                className={`flex flex-wrap items-baseline gap-x-3 gap-y-0.5 rounded border px-2 py-1 text-xs ${
+                className={`flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded border px-1.5 py-0.5 text-xs ${
                   index === safeSelected ? "border-foreground/40" : "border-border/60"
                 }`}
                 data-testid="research-occurrence"
@@ -519,7 +546,7 @@ function EventStudyBody(props: {
                   target="_blank"
                   rel="noreferrer"
                 >
-                  source: {candidate.source}
+                  source
                 </a>
               </li>
             );
@@ -565,7 +592,7 @@ function AlignedTrace(props: {
     poll: false,
   });
   if (data === null) {
-    return <div className="h-[60px] motion-safe:animate-pulse rounded bg-muted/40" />;
+    return <div className="h-[48px] motion-safe:animate-pulse rounded bg-muted/40" />;
   }
   const trace = alignedTracePoints({
     candles: data.candles,
@@ -594,7 +621,9 @@ function TraceSvg(props: {
   readonly reference?: { readonly valuePct: number; readonly label: string } | null;
 }) {
   const width = 240;
-  const height = 60;
+  // Traces are compact by design: two ride side by side in the inspector's
+  // grid on a desktop-wide drawer, so their height is the grid row's budget.
+  const height = 48;
   const step = width / Math.max(1, props.horizonBars);
   const ys = [
     0,
@@ -623,7 +652,7 @@ function TraceSvg(props: {
       ? "text-emerald-500"
       : "text-red-500";
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-full min-h-[60px] w-full" role="img">
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-full min-h-[48px] w-full" role="img">
       {/* Zero change, said out loud: a flat dashed line beside a baseline
           reference is only honest when each names itself. */}
       <g data-testid="research-zero-line">
@@ -698,7 +727,7 @@ function EventAlignedBody(props: {
   return (
     <>
       {/* The stage: the aggregate comparison, first. */}
-      <div className="flex min-h-0 flex-[3] flex-col gap-1" data-testid="research-aligned-stage">
+      <div className="flex min-h-0 flex-[2] flex-col gap-1" data-testid="research-aligned-stage">
         {covered.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
             No covered occurrences to align. The calendar view says why each one was not measured.
@@ -754,24 +783,16 @@ function EventAlignedBody(props: {
       {/* The inspector: the study's detail text, per-occurrence shapes, and
           the honesty lines — including the baseline's own numbers (median,
           samples, the overlapping-windows caveat), which live in detail text
-          rather than on the stage. */}
+          rather than on the stage. Traces flow two per row on a desktop-wide
+          drawer so six occurrences do not become six screens of scrolling. */}
       <div
-        className="trading-graph-inspector min-h-0 flex-[2] overflow-y-auto border-t border-border/60 pt-1"
+        className="trading-graph-inspector min-h-0 flex-[3] overflow-y-auto border-t border-border/60 pt-1"
         data-testid="research-inspector"
       >
-        <div
-          className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-muted-foreground"
-          data-testid="research-explanation"
-        >
-          {studyExplanationLines(payload).map((line) => (
-            <span key={line}>{line}</span>
-          ))}
-        </div>
+        <StudyExplanation payload={payload} />
         <div className="mt-1 text-xs text-muted-foreground">
-          {covered.length} trace(s) rebased to their measured entry. Bars since the entry run left
-          to right for {payload.horizonBars} bars; each path is that occurrence's archived closes as
-          a percentage of its entry. The heavier line in the stage is the mean across occurrences;
-          the dashed line here is zero change.
+          {covered.length} trace(s) rebased to their measured entry; the heavier line above is the
+          mean across occurrences, the dashed line is zero change.
         </div>
         {/* Small n is the first thing a reader must know: a mean of two shapes
             is a description, not evidence, and the label says so at a glance. */}
@@ -784,18 +805,18 @@ function EventAlignedBody(props: {
             ? " (a small sample: descriptive, not evidence)"
             : ""}
         </div>
-        <ol className="mt-1 flex flex-col gap-2">
+        <ol className="mt-1 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
           {covered.map((window, index) => (
             <li
               key={`${window.startAt}:${index}`}
-              className="flex items-center gap-3"
+              className="flex flex-col gap-0.5"
               data-testid="research-aligned-trace"
             >
-              <div className="w-28 shrink-0 text-xs">
-                <div className="font-medium">{window.label ?? `occurrence ${index + 1}`}</div>
-                <div className="text-muted-foreground">
+              <div className="flex items-baseline gap-2 text-xs">
+                <span className="font-medium">{window.label ?? `occurrence ${index + 1}`}</span>
+                <span className="text-muted-foreground">
                   {new Date(window.startAt).toISOString().slice(0, 10)}
-                </div>
+                </span>
               </div>
               <div className="min-w-0 flex-1">
                 <AlignedTrace
