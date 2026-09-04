@@ -30,7 +30,6 @@ dist-electron/
 .electron-runtime/
 .showcase/
 apps/mobile/.showcase/
-artifacts/app-store/screenshots/
 .github/pr-assets/
 native/**/target/
 node_modules/
@@ -42,8 +41,10 @@ node_modules/
 # local working files, not part of the product tree
 .claude/
 .plans/
-artifacts/reports/
-artifacts/t3-trade-report/
+# The whole artifacts/ tree is local agent working material (reports, prompts,
+# worker evidence, diorama shots). Nothing under it is tracked; ignoring the
+# root keeps `git status` clean without piecemeal subpath rules.
+/artifacts/
 # Plan documents and investigation evidence live at the repo root while they
 # are being worked. They are notes, not product, and a `git add -A` during a
 # sync swept a dozen of them into a merge commit before CI's formatter caught
@@ -55,7 +56,6 @@ artifacts/t3-trade-report/
 # Agent briefs. Same reason, plus these name the fork's own relay and
 # environment hostnames, and this repository is public.
 /glm-*.md
-artifacts/investigations/
 
 # T3 Trade themed assets & backups
 assets/themed-t3trade/
