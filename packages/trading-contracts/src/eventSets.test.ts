@@ -20,6 +20,7 @@ import {
   resolveEventStudyMetric,
   runEventStudy,
   serializeEventConfirmationPayload,
+  serializeEventSetContent,
   validateEventOccurrence,
   type TradingEventOccurrence,
 } from "./eventSets.ts";
@@ -1360,6 +1361,186 @@ describe("storage artifacts are normalized; market data is never fabricated", ()
   });
 });
 
+describe("a hit rate needs a recorded threshold", () => {
+  const wickBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  // Two shorts on a 2-bar close-basis horizon from bars 1 and 4: row 1 dips
+  // to 80 (excursion (80-101)/101 = -20.79%), row 2 dips to 90 ((90-100)/100
+  // = -10%). A -15% threshold hits row 1 only, and the matched every-bar
+  // baseline counts the same question over every complete window.
+  const candles = [
+    wickBar(0, 100, 102, 99, 101),
+    wickBar(1, 101, 103, 98, 101),
+    wickBar(2, 100, 102, 80, 95),
+    wickBar(3, 100, 102, 97, 100),
+    wickBar(4, 100, 102, 99, 100),
+    wickBar(5, 100, 102, 90, 97),
+    wickBar(6, 100, 102, 96, 98),
+  ];
+
+  it("counts hits over complete horizons and reports the threshold verbatim", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000), occurrence(0, 4 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+    });
+    expect(study.excursionThresholdPct).toBe(-15);
+    expect(study.rows.map((row) => row.excursionReturnPct)).toEqual([-20.79, -10]);
+    expect(study.thresholdHitCount).toBe(1);
+    expect(study.thresholdDenominator).toBe(2);
+    expect(study.thresholdHitRatePercent).toBe(50);
+    expect(study.thresholdChosenAfterResults).toBeUndefined();
+    // The matched baseline: every complete window's own post-entry dip,
+    // counted against the same threshold. Hand-checked windows (close basis,
+    // entry bar i, post-entry bars i+1..i+2): entry 101 → low 80 hits;
+    // entry 101 → low 80 hits; entry 95 → low 97 adverse; entry 100 → low 90
+    // misses (-10%); entry 100 → low 90 misses → 2 of 5 = 40%.
+    expect(study.baseline?.excursionThresholdHitRatePercent).toBe(40);
+    expect(study.verdict).toContain("threshold was met by 1 of 2 complete horizons");
+    expect(study.verdict).toContain("against 40% of the same every-bar windows");
+  });
+
+  it("records a threshold chosen after the results as such", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+      thresholdChosenAfterResults: true,
+    });
+    expect(study.thresholdChosenAfterResults).toBe(true);
+  });
+
+  it("without a threshold there is no hit count to misread, only the distribution", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000), occurrence(0, 4 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(study.excursionThresholdPct).toBeUndefined();
+    expect(study.thresholdHitCount).toBeUndefined();
+    expect(study.thresholdHitRatePercent).toBeUndefined();
+    expect(study.baseline?.excursionThresholdHitRatePercent).toBeUndefined();
+    // The distribution itself is fully present on the rows.
+    expect(study.rows.every((row) => row.excursionReturnPct !== undefined)).toBe(true);
+  });
+
+  it("a zero-complete-horizon study reports a null threshold rate, not zero", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 6 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+    });
+    expect(study.thresholdDenominator).toBe(0);
+    expect(study.thresholdHitRatePercent).toBeNull();
+  });
+
+  it("the resolver refuses thresholds that do not belong or do not parse", () => {
+    const onForwardReturn = resolveEventStudyMetric({
+      excursionThresholdPct: -15,
+    });
+    expect("reason" in onForwardReturn && onForwardReturn.reason).toContain(
+      "excursionThresholdPct applies only to the path_extrema metric",
+    );
+    const zero = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: 0,
+    });
+    expect("reason" in zero && zero.reason).toContain("finite nonzero percentage");
+    const adverseShort = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: 15,
+    });
+    expect("reason" in adverseShort && adverseShort.reason).toContain("reads adverse for a short");
+    const adverseLong = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "long",
+      excursionThresholdPct: -15,
+    });
+    expect("reason" in adverseLong && adverseLong.reason).toContain("reads adverse for a long");
+    const sound = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+    });
+    expect(sound).toEqual({
+      metric: "path_extrema",
+      direction: "short",
+      priceField: "low",
+      excursionThresholdPct: -15,
+    });
+  });
+});
+
+describe("a set's content identity is serializable", () => {
+  it("the same content serializes identically; any amendment changes it", () => {
+    const set = {
+      name: "Ethereum upgrades",
+      occurrences: [
+        {
+          startAt: Date.parse("2022-09-15T06:42:42Z"),
+          endAt: Date.parse("2022-09-15T06:42:42Z"),
+          timePrecision: "instant" as const,
+          label: "The Merge",
+          source: "https://blog.ethereum.org",
+        },
+      ],
+    };
+    const base = serializeEventSetContent(set);
+    expect(serializeEventSetContent(set)).toBe(base);
+    expect(
+      serializeEventSetContent({
+        ...set,
+        occurrences: [...set.occurrences, { startAt: 0, endAt: 1, source: "https://b.dev" }],
+      }),
+    ).not.toBe(base);
+    expect(serializeEventSetContent({ ...set, name: "Renamed" })).not.toBe(base);
+    const merge = set.occurrences[0] as TradingEventOccurrence;
+    expect(
+      serializeEventSetContent({
+        ...set,
+        occurrences: [{ ...merge, source: "https://eips.ethereum.org" }],
+      }),
+    ).not.toBe(base);
+  });
+});
+
 describe("the metric resolver: one rule for both tool boundaries", () => {
   it("defaults to forward_return and resolves path_extrema's own defaults", () => {
     expect(resolveEventStudyMetric({})).toEqual({ metric: "forward_return" });
@@ -1815,8 +1996,11 @@ describe("the menus teach the conventions the parser enforces", () => {
   it("the events menu states the timing, single-source, and read-back rules", () => {
     const menu = renderTradingEventsMenu();
     // Tight enough to serve as a menu: the look menu's 1,500-char budget is
-    // the discipline here too.
-    expect(menu.length).toBeLessThan(1_500);
+    // the discipline here too, raised once to 2,000 when the menu gained the
+    // threshold-honesty and no-hindsight-exit rules the study's semantics
+    // require it to teach — bounded growth for required vocabulary, not an
+    // open cap.
+    expect(menu.length).toBeLessThan(2_000);
     // The timing model: date precision spans, the instant rule, the refusal
     // that replaced the +24h fabrication.
     expect(menu).toContain("date precision");

@@ -206,6 +206,15 @@ export const EventStudyScenePayload = Schema.Struct({
   direction: Schema.optional(EventStudyDirection),
   /** Present when metric is path_extrema: the price field the extrema read (low for a short, high for a long). */
   priceField: Schema.optional(EventStudyPriceField),
+  /**
+   * Present when the recipe recorded an excursion threshold (path_extrema
+   * only): part of the RECIPE like the metric, because a scene whose report
+   * carries a hit rate must show the number the hits were counted against,
+   * in the long convention, beside it.
+   */
+  excursionThresholdPct: Schema.optional(Schema.Number),
+  /** Recorded verbatim when the threshold was chosen after seeing the study's results. */
+  thresholdChosenAfterResults: Schema.optional(Schema.Boolean),
   /** The archive window the recipe asked about, before coverage answered. */
   requestedFromT: Schema.optional(Schema.Number),
   requestedToT: Schema.optional(Schema.Number),
@@ -593,6 +602,17 @@ export const TradingChartInput = Schema.Struct({
   direction: Schema.optional(EventStudyDirection),
   /** path_extrema only: overrides the extremum price field (low for short, high for long). */
   priceField: Schema.optional(EventStudyPriceField),
+  /**
+   * path_extrema only: an explicitly recorded excursion threshold (long
+   * convention, negative for a short's dip), resolved by
+   * {@link resolveEventStudyMetric} exactly as the trading_events study
+   * action resolves it. Without one the scene shows each excursion and no hit
+   * rate; with one the threshold rides the recipe and the report counts hits
+   * over complete horizons against a matched every-bar baseline.
+   */
+  excursionThresholdPct: Schema.optional(Schema.Number),
+  /** Record true when the threshold was chosen after seeing the study's results. */
+  thresholdChosenAfterResults: Schema.optional(Schema.Boolean),
   at: Schema.optional(Schema.String),
   text: Schema.optional(Schema.String),
   /** clear with no sceneId clears the thread's scenes. */
@@ -615,9 +635,9 @@ export type TradingChartResult = typeof TradingChartResult.Type;
  */
 export function renderTradingChartMenu(): string {
   return [
-    "publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?, direction?, priceField?, illustrativeNotionalUsd?, title?} measures the set on the archive " +
+    "publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?, direction?, priceField?, excursionThresholdPct?, illustrativeNotionalUsd?, title?} measures the set on the archive " +
       `(horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS}, entry basis ${EVENT_STUDY_DEFAULT_ENTRY_BASIS}: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[EVENT_STUDY_DEFAULT_ENTRY_BASIS]}` +
-      "; metric path_extrema {direction short|long} publishes the post-entry extremum (a short's lowest low) and its excursion beside the terminal return, hindsight-perfect and labelled) " +
+      "; metric path_extrema {direction} publishes the post-entry extremum (a short's lowest low) and its excursion beside the terminal return, hindsight-perfect and labelled; excursionThresholdPct (negative for a short's dip) publishes the hit count over complete horizons with its matched every-bar baseline) " +
       "and puts the study on this thread's graph: calendar windows, aligned traces, coverage and sources; publishing itself returns the scene on the graph, no follow-up show call",
     "publish_strategy_replay {thesis | hypothesisId, title?} runs one cost-aware backtest and pins its trades and verdict to the graph",
     "annotate {market, at, text} pins one authored note to a moment; it renders labelled as authored, never as a computed layer",

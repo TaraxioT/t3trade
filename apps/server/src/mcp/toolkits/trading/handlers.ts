@@ -4146,6 +4146,7 @@ export const handlers = {
             metric: input.metric,
             direction: input.direction,
             priceField: input.priceField,
+            excursionThresholdPct: input.excursionThresholdPct,
           });
           if ("reason" in resolvedMetric) return yield* refuse(resolvedMetric.reason);
 
@@ -4245,6 +4246,14 @@ export const handlers = {
                   metric: "path_extrema" as const,
                   direction: resolvedMetric.direction,
                   priceField: resolvedMetric.priceField,
+                  ...(resolvedMetric.excursionThresholdPct === undefined
+                    ? {}
+                    : {
+                        excursionThresholdPct: resolvedMetric.excursionThresholdPct,
+                        ...(input.thresholdChosenAfterResults === true
+                          ? { thresholdChosenAfterResults: true as const }
+                          : {}),
+                      }),
                 }
               : {}),
           });
@@ -4343,6 +4352,7 @@ export const handlers = {
             metric: input.metric,
             direction: input.direction,
             priceField: input.priceField,
+            excursionThresholdPct: input.excursionThresholdPct,
           });
           if ("reason" in resolvedMetric) return yield* refuse(resolvedMetric.reason);
           const interval = (input.interval ?? "1d") as ArchiveInterval;
@@ -4434,6 +4444,14 @@ export const handlers = {
                   metric: "path_extrema" as const,
                   direction: resolvedMetric.direction,
                   priceField: resolvedMetric.priceField,
+                  ...(resolvedMetric.excursionThresholdPct === undefined
+                    ? {}
+                    : {
+                        excursionThresholdPct: resolvedMetric.excursionThresholdPct,
+                        ...(input.thresholdChosenAfterResults === true
+                          ? { thresholdChosenAfterResults: true as const }
+                          : {}),
+                      }),
                 }
               : {}),
           });
@@ -4469,7 +4487,10 @@ export const handlers = {
           );
           const metricTitleSuffix =
             resolvedMetric.metric === "path_extrema"
-              ? `, ${resolvedMetric.direction} path extrema`
+              ? `, ${resolvedMetric.direction} path extrema` +
+                (resolvedMetric.excursionThresholdPct === undefined
+                  ? ""
+                  : `, threshold ${resolvedMetric.excursionThresholdPct}%`)
               : "";
           const title =
             input.title ??
@@ -4496,6 +4517,14 @@ export const handlers = {
                     ? {
                         direction: resolvedMetric.direction,
                         priceField: resolvedMetric.priceField,
+                        ...(resolvedMetric.excursionThresholdPct === undefined
+                          ? {}
+                          : {
+                              excursionThresholdPct: resolvedMetric.excursionThresholdPct,
+                              ...(input.thresholdChosenAfterResults === true
+                                ? { thresholdChosenAfterResults: true as const }
+                                : {}),
+                            }),
                       }
                     : {}),
                   ...(input.illustrativeNotionalUsd === undefined

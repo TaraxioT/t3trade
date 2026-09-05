@@ -287,6 +287,41 @@ ask for a cost-aware backtest or a separate forward validation when either
 answers your next question. Neither places an order; execution still requires
 its own explicit ask and the normal protections.
 
+## A number needs its threshold
+
+"Did ETH dip massively after each upgrade?" hides a number inside an
+adjective, and the study refuses to pick that number for you. Without a
+recorded threshold, the tool reports each occurrence's measured excursion —
+the distribution — and no hit rate at all, and the honest next step is to
+agree on the number out loud: twenty percent? fifteen? Once a threshold is
+recorded it travels with the results: the percentage itself (negative for a
+dip, positive for a spike), the hit count, the denominator — complete
+horizons only, because a window that ran out of bars is not evidence either
+way — and, when the threshold was picked only after the results were already
+on screen, that fact too, recorded rather than implied. A threshold chosen
+after seeing the numbers is a legitimate question to explore; it is just not
+a pre-registered expectation, and the report says which it was.
+
+If you ask whether the dips were unusual for the market, the comparison is
+matched: the same excursion, measured over every bar of the window, counted
+against the same threshold. A dip frequency is never read against terminal
+returns — that is a different question with a different label, and both stay
+labelled.
+
+## Turn it into an idea, honestly
+
+The moment a study becomes a strategy, the hindsight has to leave. "Short to
+the lowest point" cannot be an exit rule: nobody knows the lowest point in
+advance, and the tool will refuse to build a rule around it. To take an
+event study into a backtest or a forward validation, name a prospective exit
+— a stop, a target, or a bar limit — and the idea keeps its event anchor (it
+still knows which calendar it was born from) while the exits become rules a
+real position could have followed. The per-notional figures along the way
+were illustrations on each event independently: one thousand dollars per
+event, never a running balance, never a portfolio return, and never a
+forecast. A cost-aware replay is where execution realism begins, and it is a
+separate question with its own numbers.
+
 ## What to keep in mind
 
 A handful of occurrences is a small sample, and the study says so rather than

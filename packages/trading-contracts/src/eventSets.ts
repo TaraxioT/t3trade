@@ -127,6 +127,13 @@ export type ResolvedEventStudyMetric =
       readonly metric: "path_extrema";
       readonly direction: EventStudyDirection;
       readonly priceField: EventStudyPriceField;
+      /**
+       * Present when the recipe recorded an excursion threshold: the only
+       * form in which a "did it dip massively" question may become a hit
+       * rate. Long convention like `excursionReturnPct` (a short's dip
+       * threshold is negative), compared against complete rows only.
+       */
+      readonly excursionThresholdPct?: number;
     };
 
 /**
@@ -138,11 +145,22 @@ export type ResolvedEventStudyMetric =
  * would silently do nothing, so it is refused, not ignored); path_extrema
  * needs a direction; the price field defaults to the low for a short and the
  * high for a long, and a pair that contradicts itself refuses.
+ *
+ * An excursion threshold is the one way a "did it dip massively" question
+ * becomes a countable hit rate, so it is validated here too rather than
+ * anywhere a caller might forget: it applies only to path_extrema, it is a
+ * finite nonzero percentage in the same long convention as
+ * `excursionReturnPct` (a short's dip threshold is negative), a threshold on
+ * a forward-return study is refused rather than silently ignored, and an
+ * adverse sign for the chosen direction is refused rather than counted as
+ * zero hits. The resolver returns the threshold it validated so every
+ * surface reports the same number the hits were counted against.
  */
 export function resolveEventStudyMetric(input: {
   readonly metric?: EventStudyMetric | undefined;
   readonly direction?: EventStudyDirection | undefined;
   readonly priceField?: EventStudyPriceField | undefined;
+  readonly excursionThresholdPct?: number | undefined;
 }): ResolvedEventStudyMetric | { readonly reason: string } {
   const metric = input.metric ?? EVENT_STUDY_DEFAULT_METRIC;
   if (metric === "forward_return") {
@@ -150,6 +168,12 @@ export function resolveEventStudyMetric(input: {
       return {
         reason:
           "direction and priceField apply only to the path_extrema metric; drop them, or name metric: path_extrema",
+      };
+    }
+    if (input.excursionThresholdPct !== undefined) {
+      return {
+        reason:
+          "excursionThresholdPct applies only to the path_extrema metric; a hit rate needs the excursion it counts, so name metric: path_extrema with a direction",
       };
     }
     return { metric };
@@ -169,6 +193,30 @@ export function resolveEventStudyMetric(input: {
       reason:
         `priceField ${priceField} contradicts direction ${input.direction}: ` +
         "a short's excursion is measured on the low, a long's on the high",
+    };
+  }
+  if (input.excursionThresholdPct !== undefined) {
+    if (!Number.isFinite(input.excursionThresholdPct) || input.excursionThresholdPct === 0) {
+      return {
+        reason:
+          "excursionThresholdPct is a finite nonzero percentage in the long convention (a short's dip threshold is negative, a long's spike threshold positive)",
+      };
+    }
+    const adverse =
+      (input.direction === "short" && input.excursionThresholdPct > 0) ||
+      (input.direction === "long" && input.excursionThresholdPct < 0);
+    if (adverse) {
+      return {
+        reason:
+          `excursionThresholdPct ${input.excursionThresholdPct} reads adverse for a ${input.direction}: ` +
+          "the threshold counts the direction's favorable excursions, so a short's is negative and a long's positive",
+      };
+    }
+    return {
+      metric,
+      direction: input.direction,
+      priceField,
+      excursionThresholdPct: input.excursionThresholdPct,
     };
   }
   return { metric, direction: input.direction, priceField };
@@ -428,6 +476,15 @@ export const EventStudyBaseline = Schema.Struct({
   samples: Schema.Number,
   meanReturnPct: Schema.Number,
   medianReturnPct: Schema.Number,
+  /**
+   * Present when the recipe recorded an excursion threshold: the share of the
+   * same complete, unbroken every-bar windows whose post-entry excursion met
+   * the threshold, measured with the same entry convention, extremum range
+   * and sign convention as the rows. A matched downside-excursion comparison,
+   * never a terminal-return one wearing its name; the terminal figures above
+   * stay separately labelled whatever else is present.
+   */
+  excursionThresholdHitRatePercent: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 export type EventStudyBaseline = typeof EventStudyBaseline.Type;
 
@@ -484,6 +541,28 @@ export const EventStudyReport = Schema.Struct({
    * further than it ended, in percent. Null when nothing was covered.
    */
   excursionBeyondTerminalPercent: Schema.optional(Schema.NullOr(Schema.Number)),
+  /**
+   * Present when the recipe recorded an excursion threshold (path_extrema
+   * only): the percentage itself, verbatim, in the long convention. A hit
+   * rate is only honest when the number it counted against rides with it.
+   */
+  excursionThresholdPct: Schema.optional(Schema.Number),
+  /** Complete rows whose excursion met the recorded threshold. */
+  thresholdHitCount: Schema.optional(Schema.Number),
+  /**
+   * The hit rate's denominator: COMPLETE rows only. A truncated or uncovered
+   * row is not evidence either way about a full-horizon dip.
+   */
+  thresholdDenominator: Schema.optional(Schema.Number),
+  /** thresholdHitCount / thresholdDenominator as a percentage, null when the denominator is 0. */
+  thresholdHitRatePercent: Schema.optional(Schema.NullOr(Schema.Number)),
+  /**
+   * Recorded verbatim from the recipe when true: the threshold was chosen
+   * AFTER seeing the study's results, which makes any hit rate in-sample
+   * exploration rather than a pre-registered expectation. Never inferred,
+   * never defaulted.
+   */
+  thresholdChosenAfterResults: Schema.optional(Schema.Boolean),
   /** Null when the served window is shorter than the horizon. */
   baseline: Schema.NullOr(EventStudyBaseline),
   rows: Schema.Array(EventStudyRow),
@@ -660,6 +739,16 @@ export function runEventStudy(input: {
   readonly direction?: EventStudyDirection;
   /** Read when metric is path_extrema; defaults to the direction's own field. */
   readonly priceField?: EventStudyPriceField;
+  /**
+   * Read when metric is path_extrema: an explicitly recorded excursion
+   * threshold, long convention. Without one the study reports each row's
+   * excursion (the distribution) and NO hit count — "massive" is a number the
+   * caller names, never one the engine picks. With one, hits are counted over
+   * complete rows only and the threshold rides the report verbatim.
+   */
+  readonly excursionThresholdPct?: number;
+  /** Recorded verbatim on the report when true (see the schema field). */
+  readonly thresholdChosenAfterResults?: boolean;
   readonly now?: number;
 }): EventStudyReport {
   const { occurrences, intervalMs, horizonBars } = input;
@@ -693,6 +782,18 @@ export function runEventStudy(input: {
   const rawExtremes: Array<{ readonly excursion: number; readonly terminal: number }> = [];
   let nComplete = 0;
   let nPartial = 0;
+  // Hits against the recorded threshold, counted only where the excursion and
+  // the terminal return were both complete. `met` shares the excursion's own
+  // sign convention: a short's dip threshold is negative and met at or below,
+  // a long's spike threshold positive and met at or above.
+  const threshold = input.excursionThresholdPct;
+  const thresholdMet = (excursion: number): boolean =>
+    threshold === undefined
+      ? false
+      : threshold < 0
+        ? excursion <= threshold
+        : excursion >= threshold;
+  let thresholdHits = 0;
 
   const firstOpen = candles[0]?.openTime;
   const lastBar = candles.length === 0 ? undefined : candles[candles.length - 1];
@@ -851,6 +952,7 @@ export function runEventStudy(input: {
         rawReturns.push(returnPct);
         if (extremum !== null && excursionPct !== null) {
           rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+          if (threshold !== undefined && thresholdMet(excursionPct)) thresholdHits += 1;
         }
       }
       rows.push({
@@ -945,6 +1047,7 @@ export function runEventStudy(input: {
       rawReturns.push(returnPct);
       if (extremum !== null && excursionPct !== null) {
         rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+        if (threshold !== undefined && thresholdMet(excursionPct)) thresholdHits += 1;
       }
     }
     rows.push({
@@ -988,6 +1091,13 @@ export function runEventStudy(input: {
   // of as one.
   const samples: Array<number> = [];
   const exitOffset = basis === "first_closed_bar_after_event" ? horizonBars : horizonBars - 1;
+  // A threshold on the rows demands a MATCHED comparison on the baseline: the
+  // share of the same windows whose own post-entry excursion met the same
+  // threshold, measured with the rows' own extremum range and entry price.
+  // Without this, a dip frequency would be read against terminal returns —
+  // a different question wearing the baseline's name.
+  let baselineThresholdHits = 0;
+  let baselineThresholdWindows = 0;
   for (let index = 0; index < candles.length; index += 1) {
     if ((runs[index] ?? 1) - 1 < exitOffset) continue;
     const entryBar = candles[index];
@@ -996,9 +1106,27 @@ export function runEventStudy(input: {
     if (basis === "first_closed_bar_after_event") {
       if (!(entryBar.close > 0)) continue;
       samples.push(((exitBar.close - entryBar.close) / entryBar.close) * 100);
+      if (threshold !== undefined && metric === "path_extrema") {
+        const extremum = extremumOver(candles, index + 1, index + exitOffset, priceField);
+        if (extremum !== null) {
+          baselineThresholdWindows += 1;
+          if (thresholdMet(((extremum.price - entryBar.close) / entryBar.close) * 100)) {
+            baselineThresholdHits += 1;
+          }
+        }
+      }
     } else {
       if (!(entryBar.open > 0)) continue;
       samples.push(((exitBar.close - entryBar.open) / entryBar.open) * 100);
+      if (threshold !== undefined && metric === "path_extrema") {
+        const extremum = extremumOver(candles, index, index + exitOffset, priceField);
+        if (extremum !== null) {
+          baselineThresholdWindows += 1;
+          if (thresholdMet(((extremum.price - entryBar.open) / entryBar.open) * 100)) {
+            baselineThresholdHits += 1;
+          }
+        }
+      }
     }
   }
   const baseline =
@@ -1008,6 +1136,14 @@ export function runEventStudy(input: {
           samples: samples.length,
           meanReturnPct: round2(samples.reduce((sum, value) => sum + value, 0) / samples.length),
           medianReturnPct: round2(medianOf(samples)),
+          ...(threshold !== undefined && metric === "path_extrema"
+            ? {
+                excursionThresholdHitRatePercent:
+                  baselineThresholdWindows === 0
+                    ? null
+                    : round2((baselineThresholdHits / baselineThresholdWindows) * 100),
+              }
+            : {}),
         };
 
   const n = rows.length;
@@ -1041,10 +1177,44 @@ export function runEventStudy(input: {
                 ),
         }
       : {};
-  const verdict = composeVerdict({ n, nCovered, nComplete, mean, horizonBars, baseline });
+  // The threshold block, when the recipe recorded one: the number verbatim,
+  // the count, the denominator, the rate, and whether the number was picked
+  // after the results were already visible. All of it or none of it — a hit
+  // rate without its threshold or its denominator is the inadmissible number.
+  const thresholdAggregate =
+    threshold !== undefined && metric === "path_extrema"
+      ? {
+          excursionThresholdPct: threshold,
+          thresholdHitCount: thresholdHits,
+          thresholdDenominator: nComplete,
+          thresholdHitRatePercent:
+            nComplete === 0 ? null : round2((thresholdHits / nComplete) * 100),
+          ...(input.thresholdChosenAfterResults === true
+            ? { thresholdChosenAfterResults: true as const }
+            : {}),
+        }
+      : {};
+  const verdict = composeVerdict({
+    n,
+    nCovered,
+    nComplete,
+    mean,
+    horizonBars,
+    baseline,
+    ...(threshold !== undefined && metric === "path_extrema"
+      ? {
+          threshold: {
+            pct: threshold,
+            hits: thresholdHits,
+            denominator: nComplete,
+          },
+        }
+      : {}),
+  });
 
   return {
     ...extremaAggregate,
+    ...thresholdAggregate,
     horizonBars,
     horizonMs: horizonBars * intervalMs,
     n,
@@ -1080,6 +1250,11 @@ function composeVerdict(input: {
   readonly mean: number | null;
   readonly horizonBars: number;
   readonly baseline: EventStudyBaseline | null;
+  readonly threshold?: {
+    readonly pct: number;
+    readonly hits: number;
+    readonly denominator: number;
+  };
 }): string {
   const noun = input.n === 1 ? "occurrence" : "occurrences";
   const verb = input.n === 1 ? "falls" : "fall";
@@ -1103,7 +1278,17 @@ function composeVerdict(input: {
     input.baseline === null
       ? ""
       : `, against a baseline of ${input.baseline.meanReturnPct}% over the same horizon sampled at every archived bar`;
-  return `${coverage}${completeClause}. Mean forward return ${round2(input.mean)}% over ${input.horizonBars} bars${against}. ${honesty}`;
+  // The threshold sentence states its own denominator and its own comparison;
+  // "3 of 5" must never compress into a bare percentage, and a threshold
+  // picked after the results says so inside the sentence itself.
+  const thresholdSentence =
+    input.threshold === undefined
+      ? ""
+      : ` The recorded ${input.threshold.pct}% excursion threshold was met by ${input.threshold.hits} of ${input.threshold.denominator} complete horizons` +
+        (input.baseline?.excursionThresholdHitRatePercent == null
+          ? ""
+          : `, against ${input.baseline.excursionThresholdHitRatePercent}% of the same every-bar windows`);
+  return `${coverage}${completeClause}. Mean forward return ${round2(input.mean)}% over ${input.horizonBars} bars${against}.${thresholdSentence} ${honesty}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,6 +1503,21 @@ export const TradingEventsInput = Schema.Struct({
   direction: Schema.optional(EventStudyDirection),
   /** path_extrema only: overrides the extremum price field (low for short, high for long). */
   priceField: Schema.optional(EventStudyPriceField),
+  /**
+   * path_extrema only: an explicitly recorded excursion threshold, in the
+   * long convention (a short's dip threshold is negative). Without one the
+   * study reports each occurrence's excursion and no hit rate — the caller
+   * names what "massive" means, never the engine. With one, the report
+   * carries the threshold verbatim, the hit count, the complete-horizon
+   * denominator, and a matched every-bar baseline hit rate.
+   */
+  excursionThresholdPct: Schema.optional(Schema.Number),
+  /**
+   * Record `true` when the threshold was chosen after the study's results
+   * were already visible: the hit rate is then in-sample exploration, and the
+   * report says so rather than letting the number pass as pre-registered.
+   */
+  thresholdChosenAfterResults: Schema.optional(Schema.Boolean),
 });
 export type TradingEventsInput = typeof TradingEventsInput.Type;
 
@@ -1374,6 +1574,38 @@ export function serializeEventConfirmationPayload(input: {
 }
 
 /**
+ * The canonical serialization an event set's CONTENT identity is taken over.
+ *
+ * A set's id is stable while its occurrences are corrected and amended, so an
+ * id alone cannot say which dates a saved evaluation actually ran on. This is
+ * the content half of the identity: the set's name and its occurrences in
+ * order — each as [startAt, endAt, timePrecision, label, source] — under a
+ * version tag, in the same fixed-shape style as
+ * {@link serializeEventConfirmationPayload}. Hash it (the server uses
+ * sha256 over the utf8 string) and a hypothesis, validation or scene that
+ * referenced the set can pin what it saw: a later calendar edit changes the
+ * digest, which is exactly the moment a saved run must say "the calendar
+ * changed since this was computed" instead of silently meaning something
+ * else.
+ */
+export function serializeEventSetContent(set: {
+  readonly name: string;
+  readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
+}): string {
+  return JSON.stringify([
+    "trading_events.content.v1",
+    set.name,
+    set.occurrences.map((occurrence) => [
+      occurrence.startAt,
+      occurrence.endAt,
+      occurrence.timePrecision ?? "",
+      occurrence.label ?? "",
+      occurrence.source,
+    ]),
+  ]);
+}
+
+/**
  * The vocabulary, served to the call that asked. Composed from the constants
  * that enforce it, the same discipline the backtest menu follows, so a cap
  * moved here changes the sentence without anybody remembering to.
@@ -1385,6 +1617,8 @@ export function renderTradingEventsMenu(): string {
     "dates are UTC ISO: date-only start/end is date precision (whole days; a missing end spans the start day, a date-only end through that day); a timed start is exact and needs its timed end: same instant is an activation, later a window; a timed start with no end is refused, not padded; declared precision (instant/window/date) contradictions refuse",
     `one source per occurrence (the URL, or "user provided"), never several joined, ${EVENT_SET_MAX_OCCURRENCES} max a set; record/add take requireReadBack: true and the preview's confirmationDigest`,
     `study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?} measures per-occurrence forward return vs an every-bar baseline, entryBasis first_closed_bar_after_event (default), interval 1m 3m 5m 15m 1h 4h 1d: a four-week daily study is interval 1d, horizonBars 28; coarsest interval covering the window; metric path_extrema {direction} adds the post-entry extremum and excursion, hindsight-perfect; uncovered occurrences reported, not dropped`,
+    `a hit rate needs a recorded excursionThresholdPct (negative for a short's dip, long convention): without one, present each occurrence's excursion and ask; with one, hits are counted over complete horizons against a matched every-bar baseline, and thresholdChosenAfterResults: true is recorded when the number was picked after seeing results`,
+    `a lowest/highest-point exit is hindsight, never a rule: backtesting or validating an event idea needs a prospective exit (stop, target, or maxHoldBars)`,
     "theses anchor with operand {source: event, eventSetId, label}: bars since the most recent ended occurrence; profit simulation is trading_backtest's",
   ].join(" · ");
 }
