@@ -1238,3 +1238,143 @@ it.effect("the cache key separates ranges", () => {
     );
   }).pipe(withArchive(archive.layer));
 });
+
+// -- a dead snapshot API must not take the archive's candles down with it ------
+//
+// The series is the read; the live quote decorates the header. When the quote
+// read fails, the candles still render — beside the last quote the exchange
+// actually confirmed, marked `stale` with that quote's own `observedAt`. What
+// is never allowed is the other direction: a mark invented from a candle
+// close, which arm-at-price would read as live and point the wrong way.
+
+/** An archive serving a mutable set of 1m bars; reads of it are windowed. */
+interface MutableMinuteBar {
+  readonly t: number;
+  readonly tClose: number;
+  readonly o: number;
+  readonly h: number;
+  readonly l: number;
+  readonly c: number;
+  readonly v: number;
+  readonly n: number;
+}
+const mutableArchive = (bars: Array<MutableMinuteBar>) => {
+  const layer = Layer.succeed(TradingMarketArchive, {
+    candlesInWindow: () => Effect.succeed(bars),
+    coverage: () => Effect.succeed({ recordingSince: bars[0]?.t ?? null, gaps: [] }),
+    sessionLevels: () => Effect.die("windowed reads must not ask for session levels"),
+  } as unknown as (typeof TradingMarketArchive)["Service"]);
+  return layer;
+};
+
+const minuteBar = (t: number, close: number): MutableMinuteBar => ({
+  t,
+  tClose: t + 60_000 - 1,
+  o: close - 1,
+  h: close + 1,
+  l: close - 2,
+  c: close,
+  v: 10,
+  n: 5,
+});
+
+it.effect(
+  "serves fresh archived candles with the last confirmed quote when the snapshot is down",
+  () => {
+    const bars: Array<MutableMinuteBar> = [minuteBar(1_000, 10), minuteBar(61_000, 11)];
+    return Effect.gen(function* () {
+      snapshotRead = Effect.succeed(snapshot);
+      historyRead = Effect.succeed(history);
+      snapshotCalls = 0;
+
+      const chart = yield* TradingMarketChart;
+      const window = {
+        market: "ETH",
+        interval: "1m" as const,
+        maxBars: 10,
+        startTime: 1_000,
+        endTime: 200_000,
+      };
+      const good = yield* chart.read(window);
+      assert.isNotNull(good);
+      assert.isUndefined(good?.stale, "a fresh quote is not marked stale");
+      assert.equal(good?.candles.length, 2);
+
+      // Past the TTL, the snapshot API now down, and the archive holding one
+      // more closed bar than it did on the first read.
+      yield* TestClock.adjust(Duration.seconds(6));
+      snapshotRead = Effect.fail("snapshot unreachable");
+      snapshotCalls = 0;
+      bars.push(minuteBar(121_000, 12));
+
+      const served = yield* chart.read(window);
+      assert.isNotNull(served, "a held archive window renders without a live snapshot");
+      // The candles are the FRESH archive read, not the cached two.
+      assert.deepEqual(
+        served?.candles.map((bar) => bar.close),
+        [10, 11, 12],
+      );
+      // The quote is the last one the exchange confirmed — never a close.
+      assert.equal(served?.markPrice, snapshot.markPrice);
+      assert.equal(served?.change24hPercent, snapshot.change24hPercent);
+      assert.equal(served?.fundingRate8h, snapshot.fundingRate8h);
+      assert.equal(served?.observedAt, good?.observedAt);
+      assert.equal(served?.stale, true);
+
+      // The degraded view was not cached: an immediate re-read retries the
+      // snapshot rather than serving the hybrid as if it were confirmed.
+      const again = yield* chart.read(window);
+      assert.isNotNull(again);
+      assert.equal(again?.stale, true);
+      assert.isAtLeast(snapshotCalls, 2, "a degraded read is never written to cache");
+    }).pipe(withArchive(mutableArchive(bars)));
+  },
+);
+
+it.effect(
+  "refuses rather than inventing a quote when the snapshot is down and nothing was confirmed",
+  () => {
+    const bars: Array<MutableMinuteBar> = [minuteBar(1_000, 10), minuteBar(61_000, 11)];
+    return Effect.gen(function* () {
+      snapshotRead = Effect.fail("snapshot unreachable");
+      historyRead = Effect.succeed(history);
+      snapshotCalls = 0;
+
+      const chart = yield* TradingMarketChart;
+      const window = {
+        market: "ETH",
+        interval: "1m" as const,
+        maxBars: 10,
+        startTime: 1_000,
+        endTime: 200_000,
+      };
+      // The archive holds the whole window, but the wire's quote fields are
+      // required numbers and no exchange ever confirmed one, so the read is
+      // an explicit failure instead of a made-up mark.
+      assert.equal(yield* chart.read(window), null);
+      assert.equal(yield* chart.read(window), null);
+      assert.isAtLeast(snapshotCalls, 2, "nothing was cached to serve instead");
+    }).pipe(withArchive(mutableArchive(bars)));
+  },
+);
+
+it.effect("yields null when the snapshot, the archive and the exchange are all down", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.fail("snapshot unreachable");
+    historyRead = Effect.fail("history unreachable");
+    const chart = yield* TradingMarketChart;
+
+    assert.equal(yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 }), null);
+    // The windowed shape fails the same way: no series anywhere, no quote.
+    assert.equal(
+      yield* chart.read({
+        market: "ETH",
+        interval: "1m",
+        maxBars: 100,
+        startTime: 1_000,
+        endTime: 2_000,
+      }),
+      null,
+    );
+  }).pipe(testLayer()),
+);

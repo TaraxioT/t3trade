@@ -14,12 +14,19 @@
  * that window. The TTL stays well under the candle poll so a polling client
  * still sees a fresh series each time, while concurrent clients share one read.
  *
- * A failed read never invents a chart. If either the snapshot or the history
- * call fails, the last good view is served again for a few minutes, marked
- * `stale`, and nothing new is written to cache; past that window, or with no
- * cache at all, the read yields `null` and the RPC fails. Blanking the whole
- * surface for one transient exchange hiccup is worse for an operator making an
- * exit decision than a chart a few seconds behind that says so.
+ * A failed read never invents a chart. The price series and the live quote are
+ * resolved independently: the series is the read, the quote decorates its
+ * header, so a window the archive holds never fails to render merely because
+ * the snapshot API is down. When the quote read fails, the last confirmed
+ * quote is served for a few minutes beside FRESH candles, marked `stale` (its
+ * `observedAt` says when the exchange last confirmed those figures); past that
+ * window, or with no confirmed quote at all, the read yields `null` and the RPC
+ * fails rather than inventing a mark. The same stale-then-null rule covers a
+ * failed history read, and nothing new is written to cache on a degraded read.
+ * Blanking the whole surface for one transient exchange hiccup is worse for an
+ * operator making an exit decision than a chart a few seconds behind that says
+ * so — but a mark synthesized from a historic close would arm watches on a
+ * price the exchange never quoted, so absence stays absence.
  *
  * @module TradingMarketChart
  */
@@ -363,14 +370,6 @@ export const makeTradingMarketChart = Effect.gen(function* () {
       const cached = (yield* Ref.get(cache)).get(key);
       if (cached !== undefined && now - cached.readAt < CACHE_WINDOW_MS) return cached.view;
 
-      // Both reads degrade to null on failure; if either yields null the whole
-      // read yields null and nothing is cached (a half-populated chart lies).
-      const snapshot = yield* gateway.getMarketSnapshot(market).pipe(
-        Effect.tapError((cause) =>
-          Effect.logDebug("trading chart snapshot read failed", { market, cause }),
-        ),
-        Effect.orElseSucceed(() => null),
-      );
       // The archive is asked first for BOTH shapes of read. A windowed read is
       // the post-mortem chart of a finished trade, and the exchange serves
       // roughly the most recent 5,000 bars and nothing older — the archive is
@@ -483,10 +482,10 @@ export const makeTradingMarketChart = Effect.gen(function* () {
                 Effect.orElseSucceed(() => null),
               )
           : null;
-      if (snapshot === null || history === null) {
-        // Serve the last good view rather than blanking the surface. Only the
-        // freshness claim changes — everything drawn is what the exchange last
-        // actually confirmed.
+      if (history === null) {
+        // No series anywhere: serve the last good view rather than blanking
+        // the surface. Only the freshness claim changes — everything drawn is
+        // what the exchange last actually confirmed.
         if (cached === undefined || now - cached.readAt > STALE_WINDOW_MS) return null;
         yield* Effect.logDebug("trading chart served stale", {
           market,
@@ -526,7 +525,10 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         ? null
         : yield* readThesis(market, interval, windowFrom, windowTo, now);
 
-      const view: TradingMarketChartView = {
+      // Everything the series and its decorations say, before any quote is
+      // attached. This is the part an unavailable snapshot must never take
+      // down: the candles, coverage and bands are facts about history.
+      const body = {
         market,
         interval,
         candles: history.candles,
@@ -535,6 +537,51 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         ...(sessionLevels === null ? {} : { sessionLevels }),
         ...(coverage.recordingSince === null ? {} : { recordingSince: coverage.recordingSince }),
         ...(coverage.gaps.length === 0 ? {} : { gaps: coverage.gaps }),
+      };
+
+      // The live quote, fetched only once a series exists to decorate. It
+      // degrades to null on failure, and null is an answer: nothing below
+      // invents a mark from a candle close, because the header figures arm
+      // watches (arm-at-price reads `markPrice` to pick a direction) and a
+      // synthesized mark would point them the wrong way.
+      const snapshot = yield* gateway.getMarketSnapshot(market).pipe(
+        Effect.tapError((cause) =>
+          Effect.logDebug("trading chart snapshot read failed", { market, cause }),
+        ),
+        Effect.orElseSucceed(() => null),
+      );
+
+      if (snapshot === null) {
+        // The snapshot is down but the series served. The header carries the
+        // LAST quote the exchange actually confirmed, marked `stale` with its
+        // own `observedAt`, next to candles that are fresh; nothing is cached,
+        // so the degraded quote can never outlive its label.
+        if (cached === undefined || now - cached.readAt > STALE_WINDOW_MS) {
+          yield* Effect.logDebug("trading chart refused: no live quote and no confirmed quote", {
+            market,
+            interval,
+          });
+          return null;
+        }
+        yield* Effect.logDebug("trading chart served fresh history with last confirmed quote", {
+          market,
+          interval,
+          quoteAgeMillis: now - cached.readAt,
+        });
+        return {
+          ...body,
+          markPrice: cached.view.markPrice,
+          change24hPercent: cached.view.change24hPercent,
+          fundingRate8h: cached.view.fundingRate8h,
+          openInterest: cached.view.openInterest,
+          dayVolumeUsd: cached.view.dayVolumeUsd,
+          observedAt: cached.view.observedAt,
+          stale: true,
+        };
+      }
+
+      const view: TradingMarketChartView = {
+        ...body,
         markPrice: snapshot.markPrice,
         change24hPercent: snapshot.change24hPercent,
         fundingRate8h: snapshot.fundingRate8h,
