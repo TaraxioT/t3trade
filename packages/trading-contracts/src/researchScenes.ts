@@ -114,7 +114,16 @@ export const RESEARCH_CALCULATION_VERSIONS = {
   // extrema and excursion aggregates) and occurrence time precision: scenes
   // computed before both decode as forward_return studies of spans, exactly
   // what they were.
-  eventStudy: "event-study-3",
+  // Bumped to -4 when the study's time and coverage semantics were repaired:
+  // close-basis extrema no longer include the pre-entry candle, a missing
+  // expected entry bar refuses instead of shifting entry, horizons run over
+  // unbroken grid runs (interior gaps truncate, they never stretch), one
+  // as-of cutoff excludes forming bars from exits/extrema/baseline, and the
+  // aggregates are over complete horizons only. Scenes computed at -3 and
+  // earlier are preserved verbatim, decode as what they were, and surface as
+  // legacy calculations requiring recomputation; republishing the same recipe
+  // writes a NEW scene row at -4 rather than restamping the old one.
+  eventStudy: "event-study-4",
   strategyReplay: "backtest-replay-1",
   annotation: "annotation-1",
 } as const;

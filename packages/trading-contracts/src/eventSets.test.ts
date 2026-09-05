@@ -592,10 +592,13 @@ describe("the path_extrema metric", () => {
     expect((study.rows[0]?.exitTime as number) - (study.rows[0]?.entryTime as number)).toBe(
       28 * DAY,
     );
-    // The extremum rides the same window: the first lowest low is the entry
-    // bar's own 98 (every bar dips there), at the entry bar's open.
+    // The extremum starts AFTER the entry bar on the close basis: the entry
+    // price is the entry bar's close, a price that existed only once that bar
+    // had elapsed, so the bar's own 98 wick printed before the entry and
+    // cannot be a post-entry extreme. Every bar dips to 98, so the earliest
+    // ELIGIBLE bar (the one after entry) wins the tie.
     expect(study.rows[0]?.extremumPrice).toBe(98);
-    expect(study.rows[0]?.extremumTime).toBe(2 * DAY);
+    expect(study.rows[0]?.extremumTime).toBe(3 * DAY);
   });
 
   it("a short reads the minimum LOW over the entry..exit bars, on each basis", () => {
@@ -721,11 +724,13 @@ describe("the path_extrema metric", () => {
     expect(study.rows[0]?.extremumTime).toBe(0);
   });
 
-  it("reports the excursion aggregates, and never invents them on a forward-return study", () => {
+  it("reports the excursion aggregates over complete horizons only, and never invents them on a forward-return study", () => {
     // Two shorts on a 3-bar open-basis horizon: row 1 (from bar 0) covers
     // bars 0..2, dips to bar 2's low 80 (-20%) and closes at 90 (-10%); row 2
     // (from bar 3) truncates to bars 3..4, dips only to 99 (-1%) and closes at
-    // 95 (-5%) — the path went LESS far than it ended.
+    // 95 (-5%) — the path went LESS far than it ended. The truncated row keeps
+    // its numbers for inspection but leaves the aggregates: one complete
+    // horizon carries the mean, and the counts say which is which.
     const candles = [
       wickBar(0, 100, 102, 99, 100),
       wickBar(1, 100, 102, 99, 90),
@@ -742,8 +747,12 @@ describe("the path_extrema metric", () => {
       direction: "short",
     });
     expect(study.rows.map((row) => row.excursionReturnPct)).toEqual([-20, -1]);
-    expect(study.meanExcursionPct).toBe(-10.5);
-    expect(study.excursionBeyondTerminalPercent).toBe(50);
+    expect(study.rows.map((row) => row.truncated)).toEqual([false, true]);
+    expect(study.nComplete).toBe(1);
+    expect(study.nPartial).toBe(1);
+    expect(study.nUnavailable).toBe(0);
+    expect(study.meanExcursionPct).toBe(-20);
+    expect(study.excursionBeyondTerminalPercent).toBe(100);
     expect(study.metric).toBe("path_extrema");
 
     // The default study stays exactly what it was: no metric, no extrema, no
@@ -867,6 +876,487 @@ describe("a 1d archive reaches events a 4h archive cannot", () => {
     expect(fourHourStudy.rows[0]?.covered).toBe(false);
     expect(fourHourStudy.rows[0]?.reason).toContain("before the archived window");
     expect(fourHourStudy.rows[0]?.extremumPrice).toBeUndefined();
+  });
+});
+
+describe("the pre-entry wick never counts on the close basis", () => {
+  /** A wick bar, named high and low independent of open and close. */
+  const wickBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("a short's excursion reads only post-entry lows: −5%, never the pre-entry −50%", () => {
+    // Activation midway through bar 3. Bar 3's low 50 printed before the
+    // close that IS the entry, so it is pre-entry; the eligible lows after
+    // entry bottom at 95. Hand arithmetic: (95 − 100) / 100 = −5%.
+    const candles = [
+      wickBar(0, 100, 102, 99, 101),
+      wickBar(1, 101, 103, 98, 102),
+      wickBar(2, 102, 104, 97, 103),
+      wickBar(3, 103, 120, 50, 100),
+      wickBar(4, 100, 101, 95, 100),
+      wickBar(5, 100, 101, 96, 99),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    const row = study.rows[0];
+    expect(row?.covered).toBe(true);
+    expect(row?.entryPrice).toBe(100);
+    expect(row?.extremumPrice).toBe(95);
+    expect(row?.extremumTime).toBe(4 * MINUTE);
+    expect(row?.excursionReturnPct).toBe(-5);
+  });
+
+  it("the long/high symmetry: a pre-entry spike to 200 never counts", () => {
+    // Same shape, mirrored: bar 3's high 200 elapsed before the entry close,
+    // post-entry highs peak at 150. (150 − 100) / 100 = +50%, never +100%.
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 102, 98, 101),
+      wickBar(2, 100, 103, 97, 102),
+      wickBar(3, 102, 200, 90, 100),
+      wickBar(4, 100, 150, 99, 110),
+      wickBar(5, 110, 140, 99, 120),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "long",
+    });
+    const row = study.rows[0];
+    expect(row?.extremumPrice).toBe(150);
+    expect(row?.extremumTime).toBe(4 * MINUTE);
+    expect(row?.excursionReturnPct).toBe(50);
+  });
+
+  it("an all-unfavorable path reports the adverse excursion without inventing a gain", () => {
+    // A short whose path only rises: every post-entry low sits above the
+    // entry, so the excursion is adverse (positive in the long convention)
+    // and no surface may clamp it into a profit. Lows 102 then 101 → the
+    // lowest post-entry low is 101 → (101 − 100) / 100 = +1%.
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+      wickBar(3, 100, 120, 99, 100),
+      wickBar(4, 100, 110, 102, 105),
+      wickBar(5, 105, 112, 101, 108),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    const row = study.rows[0];
+    expect(row?.extremumPrice).toBe(101);
+    expect(row?.excursionReturnPct).toBe(1);
+    expect(study.meanExcursionPct).toBe(1);
+  });
+
+  it("the terminal bar's extreme is eligible on both bases", () => {
+    // The lowest post-entry low lands on the exit bar itself: the exit bar
+    // elapsed within the horizon, so its wick counts on either basis.
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+      wickBar(3, 100, 101, 99, 100),
+      wickBar(4, 100, 101, 92, 100),
+    ];
+    const close = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(close.rows[0]?.extremumPrice).toBe(92);
+    expect(close.rows[0]?.extremumTime).toBe(4 * MINUTE);
+    const open = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(open.rows[0]?.extremumPrice).toBe(92);
+    expect(open.rows[0]?.extremumTime).toBe(4 * MINUTE);
+  });
+});
+
+describe("expected entry slots, grid runs, and one as-of cutoff", () => {
+  const wickBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("a missing intrabar activation bar is missing data, not a shift to the next candle", () => {
+    // The activation lands inside bar 3's slot and bar 3 is absent. The first
+    // archived close after it is bar 4's, but entering there would silently
+    // move the declared entry — the row refuses.
+    const gappy = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+      // bar 3 missing: the slot the activation's entry close belongs to.
+      wickBar(4, 100, 101, 99, 104),
+      wickBar(5, 100, 101, 99, 105),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.covered).toBe(false);
+    expect(study.rows[0]?.reason).toContain("recording gap covers the 1 bar(s)");
+    expect(study.rows[0]?.reason).toContain("close");
+    expect(study.meanReturnPct).toBeNull();
+  });
+
+  it("an interior gap truncates the horizon at the gap instead of stretching it", () => {
+    // Entry bar 2, horizon 3 wants bar 5's close over an unbroken grid; bar 4
+    // is missing, so the run ends at bar 3. The row measures one interval,
+    // says why, and leaves the aggregates.
+    const gappy = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 101),
+      wickBar(2, 100, 101, 99, 102),
+      wickBar(3, 100, 101, 99, 103),
+      // bar 4 missing.
+      wickBar(5, 100, 101, 99, 105),
+      wickBar(6, 100, 101, 99, 106),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    const row = study.rows[0];
+    expect(row?.covered).toBe(true);
+    expect(row?.truncated).toBe(true);
+    expect(row?.truncationReason).toContain("internal recording gap");
+    expect(row?.barsCovered).toBe(1);
+    expect(row?.exitPrice).toBe(103);
+    expect(study.nComplete).toBe(0);
+    expect(study.nPartial).toBe(1);
+    expect(study.meanReturnPct).toBeNull();
+    // Bridging the gap would have reported bar 5's close (105) as a 3-bar
+    // exit; the honest row stops at bar 3.
+  });
+
+  it("a missing terminal exit slot with later data is a gap truncation too", () => {
+    // Entry bar 2, horizon 3 wants bar 5; bars 3 and 4 exist, bar 5 is
+    // missing, bar 6 exists. The exit slot is not reachable over an unbroken
+    // grid, and the data after the gap cannot stand in for it.
+    const gappy = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 102),
+      wickBar(3, 100, 101, 99, 103),
+      wickBar(4, 100, 101, 99, 104),
+      // bar 5 missing: the declared exit slot.
+      wickBar(6, 100, 101, 99, 106),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    const row = study.rows[0];
+    expect(row?.covered).toBe(true);
+    expect(row?.truncated).toBe(true);
+    expect(row?.truncationReason).toContain("internal recording gap");
+    expect(row?.barsCovered).toBe(2);
+    expect(row?.exitPrice).toBe(104);
+  });
+
+  it("an incomplete tail truncates with the tail reason", () => {
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.truncated).toBe(true);
+    expect(study.rows[0]?.truncationReason).toContain("archived data ends");
+    expect(study.rows[0]?.barsCovered).toBe(1);
+  });
+
+  it("one as-of cutoff: a forming bar cannot change entries, exits, extrema or baseline", () => {
+    // Six closed bars and a forming seventh whose wild low would win any
+    // extremum it touched. `now` sits at bar 5's close, so bar 6 is excluded
+    // everywhere: the row's extremum stays bar 4's 95, and a horizon that
+    // wanted bar 6 truncates at bar 5 rather than reading the forming close.
+    const closed = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 96, 100),
+      wickBar(3, 100, 101, 99, 100),
+      wickBar(4, 100, 101, 95, 100),
+      wickBar(5, 100, 101, 97, 100),
+    ];
+    const forming = wickBar(6, 100, 101, 10, 93);
+    const now = 6 * MINUTE - 1; // bar 5's closing millisecond
+    const complete = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000)],
+      candles: [...closed, forming],
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      now,
+    });
+    // Entry bar 1 (contains the activation), horizon 3 wants bar 4: complete,
+    // and the extremum over bars 2..4 is bar 4's 95 — the forming low 10
+    // never entered the measurement.
+    expect(complete.rows[0]?.truncated).toBe(false);
+    expect(complete.rows[0]?.extremumPrice).toBe(95);
+    expect(complete.rows[0]?.extremumTime).toBe(4 * MINUTE);
+    expect(complete.baseline?.samples).toBe(3); // windows 0..3, 1..4, 2..5 of the closed grid
+
+    // An exit slot that lands on the forming bar truncates at the cutoff
+    // instead of reading the forming close: entry bar 3, horizon 3 wants bar
+    // 6 (forming) → the row measures bars 4..5 and says the data ends.
+    const exitOnForming = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles: [...closed, forming],
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+      now,
+    });
+    expect(exitOnForming.rows[0]?.truncated).toBe(true);
+    expect(exitOnForming.rows[0]?.truncationReason).toContain("archived data ends");
+    expect(exitOnForming.rows[0]?.exitPrice).toBe(100);
+    expect(exitOnForming.rows[0]?.exitTime).toBe(6 * MINUTE - 1);
+    expect(exitOnForming.nPartial).toBe(1);
+    expect(exitOnForming.meanReturnPct).toBeNull();
+  });
+});
+
+describe("complete horizons carry the aggregates (partial rows stay for inspection)", () => {
+  /** A bar at 1m cadence, open 100 and close named. */
+  const closeBar = (index: number, close: number): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open: 100,
+      high: Math.max(100, close),
+      low: Math.min(100, close),
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("a mixed complete/partial report aggregates the complete row only", () => {
+    // Closes: [100, 100, 105, 110, 100, 100, 100, 103]. Occurrence A ends at
+    // bar 1's open: entry close 100, horizon 2 exits at bar 3's close 110 →
+    // +10%, complete. Occurrence B ends at bar 6's open: entry close 100,
+    // horizon 2 wants bar 8 — only bar 7 exists → +3% over ONE interval,
+    // partial. Every aggregate comes from A alone, and the counts are
+    // unambiguous: 2 recorded, 2 covered, 1 complete, 1 partial, 0 unavailable.
+    const candles = [100, 100, 105, 110, 100, 100, 100, 103].map((close, index) =>
+      closeBar(index, close),
+    );
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE), occurrence(0, 6 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.n).toBe(2);
+    expect(study.nCovered).toBe(2);
+    expect(study.nComplete).toBe(1);
+    expect(study.nPartial).toBe(1);
+    expect(study.nUnavailable).toBe(0);
+    expect(study.rows.map((row) => row.returnPct)).toEqual([10, 3]);
+    expect(study.meanReturnPct).toBe(10);
+    expect(study.medianReturnPct).toBe(10);
+    expect(study.hitRatePercent).toBe(100);
+    expect(study.bestReturnPct).toBe(10);
+    expect(study.worstReturnPct).toBe(10);
+    expect(study.verdict).toContain("1 of those completed the full 2-bar horizon");
+  });
+
+  it("an all-partial study reports no full-horizon mean, never a partial-window number", () => {
+    const candles = [100, 100, 104].map((close, index) => closeBar(index, close));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.nCovered).toBe(1);
+    expect(study.nComplete).toBe(0);
+    expect(study.nPartial).toBe(1);
+    expect(study.meanReturnPct).toBeNull();
+    expect(study.medianReturnPct).toBeNull();
+    expect(study.hitRatePercent).toBeNull();
+    expect(study.bestReturnPct).toBeNull();
+    expect(study.worstReturnPct).toBeNull();
+    expect(study.verdict).toContain("no full-horizon return exists to aggregate");
+  });
+
+  it("an all-unavailable study is not a zero return", () => {
+    const candles = [100, 100].map((close, index) => closeBar(index, close));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, -10 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.nUnavailable).toBe(1);
+    expect(study.meanReturnPct).toBeNull();
+    expect(study.hitRatePercent).toBeNull();
+  });
+});
+
+describe("the baseline asks the same question of the same kind of window", () => {
+  const closeBar = (index: number, close: number): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open: 100,
+      high: Math.max(100, close),
+      low: Math.min(100, close),
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("samples only unbroken windows: a gap that would bridge a sample excludes it", () => {
+    // Five slots with bar 2 missing (0,1,3,4,5): a horizon-2 close-to-close
+    // sample needs three contiguous bars, so only the 3..5 run qualifies —
+    // one sample, and the 0→(would-be)3 window never bridges the gap.
+    const candles = [0, 1, 3, 4, 5].map((index) => closeBar(index, 100 + index));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.baseline?.samples).toBe(1);
+    // The one sample: entry close 103 (bar 3) → exit close 105 (bar 5).
+    expect(study.baseline?.meanReturnPct).toBe(1.94);
+  });
+
+  it("reports no baseline at all when no complete window exists", () => {
+    const candles = [0, 1, 2].map((index) => closeBar(index, 100));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.baseline).toBeNull();
+  });
+});
+
+describe("storage artifacts are normalized; market data is never fabricated", () => {
+  const closeBar = (index: number, close: number): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open: 100,
+      high: Math.max(100, close),
+      low: Math.min(100, close),
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("duplicated and out-of-order rows measure identically to the sorted unique grid", () => {
+    const grid = [100, 100, 105, 110, 100].map((close, index) => closeBar(index, close));
+    const shuffled = [
+      grid[3] as MarketCandle,
+      grid[0] as MarketCandle,
+      grid[3] as MarketCandle,
+      grid[4] as MarketCandle,
+      grid[1] as MarketCandle,
+      grid[2] as MarketCandle,
+    ];
+    const tidy = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles: grid,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    const messy = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles: shuffled,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(messy.rows[0]?.covered).toBe(true);
+    expect(messy.rows[0]?.returnPct).toBe(tidy.rows[0]?.returnPct);
+    expect(messy.rows[0]?.exitTime).toBe(tidy.rows[0]?.exitTime);
+    expect(messy.baseline).toEqual(tidy.baseline);
+    expect(messy.nComplete).toBe(tidy.nComplete);
   });
 });
 

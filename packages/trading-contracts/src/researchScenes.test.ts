@@ -247,9 +247,10 @@ describe("the model never writes computed values or rendering instructions", () 
 
 describe("calculation versions and menu", () => {
   it("pins one version per engine and names every action in the menu", () => {
-    // Bumped when the study gained an explicit entry basis, then again when
-    // it gained the path_extrema metric and occurrence time precision.
-    expect(RESEARCH_CALCULATION_VERSIONS.eventStudy).toBe("event-study-3");
+    // Bumped when the study gained an explicit entry basis, again when it
+    // gained the path_extrema metric and occurrence time precision, and again
+    // when the time and coverage semantics were repaired.
+    expect(RESEARCH_CALCULATION_VERSIONS.eventStudy).toBe("event-study-4");
     const menu = renderTradingChartMenu();
     for (const action of [
       "publish_event_study",

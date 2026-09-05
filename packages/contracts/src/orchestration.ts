@@ -89,6 +89,7 @@ export type {
 } from "@t3tools/trading-contracts/researchScenes";
 export {
   PER_NOTIONAL_ILLUSTRATION_LABEL,
+  RESEARCH_CALCULATION_VERSIONS,
   RESEARCH_DISCLAIMER,
   STUDY_CHART_CONTEXT_BARS,
   STUDY_CHART_MAX_WINDOW_BARS,

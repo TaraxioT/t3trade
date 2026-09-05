@@ -21,6 +21,7 @@ import type { ChartResearchMarkerInput } from "./missionChartGeometry.ts";
 import type { EventStudyEntryBasis } from "@t3tools/trading-contracts/eventSets";
 import { EVENT_STUDY_ENTRY_BASIS_PHRASES } from "@t3tools/trading-contracts/eventSets";
 import {
+  RESEARCH_CALCULATION_VERSIONS,
   STUDY_CHART_CONTEXT_BARS,
   STUDY_CHART_MAX_WINDOW_BARS,
   type TradingChartInterval,
@@ -376,15 +377,40 @@ export function payloadEntryBasis(payload: EventStudyScenePayload): EventStudyEn
 const fmtDate = (t: number): string => new Date(t).toISOString().slice(0, 16);
 
 /**
+ * Whether a scene's numbers were computed by the current study engine. A
+ * scene persisted at an older calculation version keeps its recorded numbers
+ * forever — they are what was measured then — but it must say it predates the
+ * current semantics rather than passing them off as current, and the fix is
+ * republishing the same recipe (which writes a new scene row), never silently
+ * restamping the old one.
+ */
+export function isLegacyEventStudyScene(payload: EventStudyScenePayload): boolean {
+  return (
+    payload.report.nComplete === undefined ||
+    (payload as { calculationVersion?: string }).calculationVersion !==
+      RESEARCH_CALCULATION_VERSIONS.eventStudy
+  );
+}
+
+/**
  * The honesty block under the graph: every line a reader needs before
  * trusting a number, as data so the renderer cannot drop one quietly.
- * Baseline wording never claims significance.
+ * Baseline wording never claims significance. A legacy-calculation scene
+ * says so on the first line that could otherwise read as current numbers.
  */
-export function studyExplanationLines(payload: EventStudyScenePayload): ReadonlyArray<string> {
+export function studyExplanationLines(
+  payload: EventStudyScenePayload & { readonly calculationVersion?: string },
+): ReadonlyArray<string> {
   const { report } = payload;
   const basis = payloadEntryBasis(payload);
   const lines = [
     `${report.nCovered} of ${report.n} occurrences fall inside archived data`,
+    ...(report.nComplete === undefined
+      ? []
+      : [
+          `${report.nComplete} completed the full horizon, ${report.nPartial ?? 0} truncated, ` +
+            `${report.nUnavailable ?? report.n - report.nCovered} not measurable; aggregates are over complete horizons only`,
+        ]),
     `horizon ${describeHorizon(report.horizonBars, report.horizonMs)} on ${payload.interval} bars`,
     `entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[basis]}`,
     studyRuleSentence(basis),
@@ -392,6 +418,16 @@ export function studyExplanationLines(payload: EventStudyScenePayload): Readonly
       `hit rate ${report.hitRatePercent === null ? "-" : `${report.hitRatePercent}%`}, ` +
       `best ${fmtPct(report.bestReturnPct)}, worst ${fmtPct(report.worstReturnPct)}`,
   ];
+  if (
+    payload.calculationVersion !== undefined &&
+    payload.calculationVersion !== RESEARCH_CALCULATION_VERSIONS.eventStudy
+  ) {
+    lines.push(
+      `computed at calculation version ${payload.calculationVersion}, older than the current ` +
+        `${RESEARCH_CALCULATION_VERSIONS.eventStudy}: the entry-extremum, gap, cutoff and completeness semantics ` +
+        "have since been repaired — republish the same recipe to recompute",
+    );
+  }
   lines.push(
     report.baseline === null
       ? "no baseline: the served window is shorter than the horizon"

@@ -382,14 +382,26 @@ export const EventStudyRow = Schema.Struct({
   returnPct: Schema.optional(Schema.Number),
   /**
    * Present on covered rows of a `path_extrema` study: the open time of the
-   * bar holding the path extremum after the defined entry within the horizon
-   * (the bars actually covered, when the window truncated). The open time, not
-   * a moment inside the bar: the low printed somewhere in that bar, and the
-   * row claims the bar, never a millisecond it cannot know.
+   * bar holding the path extremum after the defined entry within the measured
+   * window (the bars actually covered, when the window truncated). After the
+   * entry means after it on the entry basis: on the close basis the entry
+   * bar's own wick elapsed before the entry price existed and never counts;
+   * on the open basis the entry bar counts, its open being the entry. The
+   * open time, not a moment inside the bar: the low printed somewhere in
+   * that bar, and the row claims the bar, never a millisecond it cannot
+   * know.
    */
   extremumTime: Schema.optional(UnixMillis),
   /** Present with `extremumTime`: the extremum price (a short's lowest low, a long's highest high). */
   extremumPrice: Schema.optional(Schema.Number),
+  /**
+   * Present on truncated rows: why the measured window stopped short of the
+   * horizon — an internal recording gap in the grid, or the archived data
+   * simply ending. The two read differently (a data defect versus the present
+   * catching up), and a surface may say which. Absent on complete rows and on
+   * rows computed before the distinction existed.
+   */
+  truncationReason: Schema.optional(Schema.String),
   /**
    * Present with `extremumTime`: the excursion to the extremum, signed in the
    * LONG convention like `returnPct` — (extremum - entry) / entry as a
@@ -431,7 +443,28 @@ export const EventStudyReport = Schema.Struct({
   horizonMs: Schema.Number,
   n: Schema.Number,
   nCovered: Schema.Number,
-  /** Null when nothing was covered. Never guessed, never zero. */
+  /**
+   * Covered rows that measured the FULL horizon on an unbroken grid. The
+   * primary aggregates (mean, median, hit rate, best/worst, extrema, the
+   * baseline comparison) are over these rows only. Absent on reports computed
+   * before the completeness split: those reports mixed partial rows into
+   * their means, and they decode as legacy numbers rather than being
+   * reinterpreted under the repaired policy.
+   */
+  nComplete: Schema.optional(Schema.Number),
+  /**
+   * Covered rows whose measured window stopped short of the horizon. Retained
+   * on the report for inspection; excluded from every aggregate. Absent on
+   * legacy reports.
+   */
+  nPartial: Schema.optional(Schema.Number),
+  /** Rows the archive could not measure at all (n − nCovered). Absent on legacy reports. */
+  nUnavailable: Schema.optional(Schema.Number),
+  /**
+   * Null when no row completed the full horizon. Never guessed, never zero:
+   * an all-partial or all-unavailable study has no full-horizon mean, and
+   * reporting 0% would be the one number worse than none.
+   */
   meanReturnPct: Schema.NullOr(Schema.Number),
   medianReturnPct: Schema.NullOr(Schema.Number),
   /** Share of covered occurrences with a return above zero. */
@@ -513,37 +546,108 @@ function extremumOver(
 }
 
 /**
+ * The first grid slot whose close time is strictly after `endAt`.
+ *
+ * The archive stamps a bar's close as its LAST millisecond (open + interval −
+ * 1, Hyperliquid's own `T` column carried through unchanged), so the first
+ * close strictly after an instant normally belongs to the slot `endAt` falls
+ * inside — except when `endAt` is itself a bar's closing millisecond, where
+ * the strictly greater close belongs to the NEXT slot. Every close-basis
+ * boundary here derives from that convention, and the equality cases (an end
+ * exactly at a bar's open, exactly at its close, mid-bar) are pinned by tests
+ * so the arithmetic cannot drift from the stamps it serves.
+ */
+function firstCloseAfterSlot(endAt: number, intervalMs: number): number {
+  return Math.floor((endAt + 1) / intervalMs) * intervalMs;
+}
+
+/** The first grid slot at or after `endAt`: the open basis's entry slot. */
+function firstOpenAtOrAfterSlot(endAt: number, intervalMs: number): number {
+  return Math.ceil(endAt / intervalMs) * intervalMs;
+}
+
+/**
+ * Length of the contiguous grid run starting at each bar: how many bars from
+ * that index onward each sit exactly one interval after the one before. A
+ * horizon is a span of INTERVALS, not a row count — with an interior gap, the
+ * bar N rows later is more than N intervals later, and a "thirty-day" claim
+ * made over such rows would silently stretch. Exit search, extrema, and
+ * baseline samples all walk these runs and never bridge a gap with rows from
+ * beyond it.
+ */
+function contiguousRunLengths(
+  candles: ReadonlyArray<MarketCandle>,
+  intervalMs: number,
+): Array<number> {
+  const runs = new Array<number>(candles.length).fill(1);
+  for (let index = candles.length - 2; index >= 0; index -= 1) {
+    const bar = candles[index];
+    const next = candles[index + 1];
+    if (bar !== undefined && next !== undefined && next.openTime - bar.openTime === intervalMs) {
+      runs[index] = (runs[index + 1] as number) + 1;
+    }
+  }
+  return runs;
+}
+
+/**
  * The descriptive claim, measured directly.
  *
  * Per occurrence, on the open basis: entry is the open of the first candle
  * whose open time is at or after `endAt`, exit is the close `horizonBars - 1`
- * bars later. On the close basis: entry is the close of the first candle
- * whose close time is strictly after `endAt`, exit is the close a full
- * `horizonBars` bar intervals later, truncated at the last served close when
- * the window runs out first. Occurrences the archive cannot see (they
+ * bar intervals later. On the close basis: entry is the close of the first
+ * candle whose close time is strictly after `endAt` (a bar containing an
+ * intrabar activation closes after the activation), exit is the close a full
+ * `horizonBars` bar intervals later. Occurrences the archive cannot see (they
  * predate it, have not happened yet, or sit behind a recording gap) are
  * reported as uncovered with their reason, never silently dropped: a mean
  * computed over the survivors of a silent filter is the most misleading
  * number this module could produce.
  *
- * With `metric: "path_extrema"` every covered row additionally carries the
- * path extremum after the defined entry within the horizon — the minimum low
- * for a short, the maximum high for a long, over the bars actually measured
- * (a truncated window measures the bars it got) — as `extremumTime`,
- * `extremumPrice` and `excursionReturnPct` (long convention, like
- * `returnPct`). The terminal `returnPct` is computed separately and both stay
- * on the row. No USD figure is computed here: notional arithmetic is
- * presentation-layer, gross by construction, and never part of the report.
+ * Four rules keep the numbers honest, and each is a defect this engine used
+ * to carry:
  *
- * `candles` is oldest first. Assumes `checkEventStudy` passed. `entryBasis`
- * defaults to the open basis so pre-existing pure callers keep their
- * behavior; the tool boundary resolves the default explicitly. `now`, when
- * provided, is what "closed" means: on the close basis a candidate entry bar
- * whose close time is still in the future has no close price to enter on,
- * and the row says so rather than reading a forming bar's provisional close.
- * The metric defaults to forward_return; a path_extrema call with no
- * direction is treated as a short on the low (the tool boundary refuses that
- * call before it reaches here, so the pure engine stays total).
+ * - **Expected slots, not nearest rows.** The entry bar is identified by grid
+ *   arithmetic from the archive's close-stamp convention. When the bar
+ *   occupying that slot is absent, the row is uncovered ("a recording gap
+ *   covers…"), never shifted to a later candle: a missing entry candle is
+ *   missing data, not permission to measure from somewhere else.
+ * - **Intervals, not row counts.** The horizon runs over a contiguous grid
+ *   run. An interior gap truncates the row at the gap — `truncated` with a
+ *   `truncationReason` naming it — rather than letting later rows stretch a
+ *   nominal thirty days into more.
+ * - **One as-of cutoff.** `now`, when provided, is the single line nothing
+ *   forming may cross: candles whose close time is still in the future are
+ *   excluded before any measurement, so no entry, exit, extremum or baseline
+ *   sample can read a mutable provisional price. (Forming bars stay in the
+ *   archive for the live chart; they only stop existing here.)
+ * - **Complete horizons carry the aggregates.** Partial rows keep their
+ *   measured numbers for inspection but are excluded from the mean, median,
+ *   hit rate, best/worst, extrema aggregates, and the baseline comparison,
+ *   which itself only samples complete, unbroken windows on the same entry
+ *   convention and cutoff. `nComplete`/`nPartial`/`nUnavailable` give every
+ *   surface the same unambiguous denominators.
+ *
+ * With `metric: "path_extrema"` every covered row additionally carries the
+ * path extremum after entry within the measured window — the minimum low for
+ * a short, the maximum high for a long — as `extremumTime`, `extremumPrice`
+ * and `excursionReturnPct` (long convention, like `returnPct`). On the close
+ * basis the extremum range starts AFTER the entry bar: the entry price is
+ * that bar's close, a price that existed only once the bar had elapsed, so
+ * the bar's own wick printed before the entry and cannot be a post-entry
+ * extreme. On the open basis the entry bar counts, its open being the entry.
+ * No USD figure is computed here: notional arithmetic is presentation-layer,
+ * gross by construction, and never part of the report.
+ *
+ * `candles` is oldest first; duplicated or out-of-order rows are normalized
+ * (sorted, duplicate open slots dropped) because they are storage artifacts,
+ * not market data — but no candle is ever fabricated to fill a gap. Assumes
+ * `checkEventStudy` passed. `entryBasis` defaults to the open basis so
+ * pre-existing pure callers keep their behavior; the tool boundary resolves
+ * the default explicitly. The metric defaults to forward_return; a
+ * path_extrema call with no direction is treated as a short on the low (the
+ * tool boundary refuses that call before it reaches here, so the pure engine
+ * stays total).
  */
 export function runEventStudy(input: {
   readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
@@ -558,19 +662,40 @@ export function runEventStudy(input: {
   readonly priceField?: EventStudyPriceField;
   readonly now?: number;
 }): EventStudyReport {
-  const { occurrences, candles, intervalMs, horizonBars } = input;
+  const { occurrences, intervalMs, horizonBars } = input;
   const basis = input.entryBasis ?? "first_bar_open_after_event";
   const metric = input.metric ?? EVENT_STUDY_DEFAULT_METRIC;
   const direction = input.direction ?? "short";
   const priceField = input.priceField ?? (direction === "short" ? "low" : "high");
+
+  // One normalization, then one cutoff, before anything is measured. A
+  // duplicated open slot is a write artifact, not two bars: the first row
+  // wins. `now`, when provided, is what "closed" means — a bar whose close is
+  // still in the future is forming, and nothing below may read it.
+  const sorted = [...input.candles].sort((a, b) => a.openTime - b.openTime);
+  const deduped: Array<MarketCandle> = [];
+  for (const candle of sorted) {
+    const previous = deduped[deduped.length - 1];
+    if (previous !== undefined && previous.openTime === candle.openTime) continue;
+    deduped.push(candle);
+  }
+  const candles =
+    input.now === undefined
+      ? deduped
+      : deduped.filter((candle) => candle.closeTime <= (input.now as number));
+  const runs = contiguousRunLengths(candles, intervalMs);
+
   const rows: Array<EventStudyRow> = [];
+  // Long-convention returns and extrema of COMPLETE rows, unrounded: the
+  // aggregates come from measured values, not display-rounded rows, and never
+  // from partial windows.
   const rawReturns: Array<number> = [];
-  // Long-convention excursion and terminal return per covered row, unrounded:
-  // the aggregates come from measured values, not display-rounded rows.
   const rawExtremes: Array<{ readonly excursion: number; readonly terminal: number }> = [];
+  let nComplete = 0;
+  let nPartial = 0;
 
   const firstOpen = candles[0]?.openTime;
-  const lastOpen = candles.length === 0 ? undefined : candles[candles.length - 1]?.openTime;
+  const lastBar = candles.length === 0 ? undefined : candles[candles.length - 1];
 
   const uncovered = (
     base: Omit<
@@ -586,6 +711,7 @@ export function runEventStudy(input: {
       | "extremumPrice"
       | "excursionReturnPct"
       | "truncated"
+      | "truncationReason"
       | "barsCovered"
     >,
     reason: string,
@@ -602,6 +728,7 @@ export function runEventStudy(input: {
     extremumPrice: undefined,
     excursionReturnPct: undefined,
     truncated: false,
+    truncationReason: undefined,
     barsCovered: undefined,
   });
 
@@ -615,22 +742,13 @@ export function runEventStudy(input: {
       ...(occurrence.label === undefined ? {} : { label: occurrence.label }),
       source: occurrence.source,
     };
-    if (firstOpen === undefined || lastOpen === undefined) {
+    if (firstOpen === undefined || lastBar === undefined) {
       rows.push(
         uncovered(
           base,
           "the archive holds no bars for this market, so there is nothing to measure against",
         ),
       );
-      continue;
-    }
-    // The open basis calls an occurrence future when it ends after the last
-    // archived OPEN. The close basis cannot use that line: an activation
-    // inside the newest bar has already happened, and the honest reason is
-    // that its entry close has not formed yet, so its future test waits until
-    // the search below finds no archived close after the event at all.
-    if (basis === "first_bar_open_after_event" && occurrence.endAt > lastOpen) {
-      rows.push(uncovered(base, "still in the future: it ends after the last archived bar"));
       continue;
     }
     if (occurrence.endAt < firstOpen) {
@@ -654,25 +772,28 @@ export function runEventStudy(input: {
         else lo = mid + 1;
       }
       const entryIndex = lo;
-      const exitWanted = entryIndex + horizonBars;
-      const exitIndex = Math.min(exitWanted, candles.length - 1);
       const entryBar = candles[entryIndex];
-      const exitBar = candles[exitIndex];
       if (entryBar === undefined || !(entryBar.close > 0)) {
-        rows.push(uncovered(base, "still in the future: it ends after the last archived bar"));
+        // No archived close sits after the end. Either the event is genuinely
+        // in the future, or it ended at or after the last closed bar's close
+        // and the bar that would carry the first post-event close is still
+        // forming — the row says which, and reads no provisional price.
+        rows.push(
+          uncovered(
+            base,
+            input.now !== undefined && occurrence.endAt <= input.now
+              ? "the first bar after this event has not closed yet, so there is no closed price to enter on"
+              : "still in the future: it ends after the last archived bar",
+          ),
+        );
         continue;
       }
-      // A recording gap would otherwise pass silently: the first close after
-      // the end would sit whole intervals later, and measuring from it would
-      // present a much later candle as the entry. The boundary mirrors the
-      // open basis: a candidate at most one interval late (the event ended
-      // inside the missing bar's slot) still measures, a full missing
-      // interval or more refuses. When the entry bar is present its open is
-      // never later than the event, so this fires only on genuinely absent
-      // bars.
-      const entryGapMs = entryBar.openTime - occurrence.endAt;
-      if (entryGapMs >= intervalMs) {
-        const missingBars = Math.floor(entryGapMs / intervalMs);
+      // The entry bar is a specific grid slot. When the slot's bar is absent
+      // the search lands on a later candle, and entering there would silently
+      // shift the declared entry — the row refuses instead.
+      const expectedEntryOpen = firstCloseAfterSlot(occurrence.endAt, intervalMs);
+      if (entryBar.openTime !== expectedEntryOpen) {
+        const missingBars = Math.round((entryBar.openTime - expectedEntryOpen) / intervalMs);
         rows.push(
           uncovered(
             base,
@@ -682,37 +803,55 @@ export function runEventStudy(input: {
         );
         continue;
       }
-      if (input.now !== undefined && entryBar.closeTime > input.now) {
-        rows.push(
-          uncovered(
-            base,
-            "the first bar after this event has not closed yet, so there is no closed price to enter on",
-          ),
-        );
-        continue;
-      }
+      const runLength = runs[entryIndex] ?? 1;
+      const available = runLength - 1;
       // Not one close-to-close interval exists: a zero-interval "return" of
       // 0% would be the most misleading number a covered row could carry.
-      if (exitIndex <= entryIndex || exitBar === undefined) {
+      if (available < 1) {
+        const nextPresent = candles[entryIndex + 1];
+        const missingBars =
+          nextPresent === undefined
+            ? 0
+            : Math.round((nextPresent.openTime - (entryBar.openTime + intervalMs)) / intervalMs) +
+              1;
         rows.push(
           uncovered(
             base,
-            "the archive holds no bar after this event's entry bar yet, so not one close-to-close interval could be measured",
+            nextPresent === undefined
+              ? "the archive holds no bar after this event's entry bar yet, so not one close-to-close interval could be measured"
+              : `a recording gap covers the ${missingBars} bar(s) right after this event ended, so not one close-to-close interval could be measured`,
           ),
         );
         continue;
       }
-      const truncated = exitIndex < exitWanted;
+      // The exit is `horizonBars` INTERVALS of contiguous grid after the
+      // entry bar; the run stops at whichever runs out first — the horizon,
+      // a gap, or the data's edge.
+      const exitOffset = horizonBars;
+      const exitIndex = entryIndex + Math.min(exitOffset, available);
+      const exitBar = candles[exitIndex] as MarketCandle;
+      const truncated = available < exitOffset;
+      const truncationReason =
+        entryIndex + runLength === candles.length
+          ? "the archived data ends before the horizon does"
+          : "an internal recording gap ends the measured grid before the horizon does";
       const returnPct = ((exitBar.close - entryBar.close) / entryBar.close) * 100;
-      rawReturns.push(returnPct);
-      // The extremum over the entry..exit bars actually served: when the
-      // window truncated, the bars it got are what the path did.
+      // The extremum starts AFTER the entry bar: the entry price is that
+      // bar's close, so the bar's own wick elapsed before the entry existed.
       const extremum =
-        metric === "path_extrema" ? extremumOver(candles, entryIndex, exitIndex, priceField) : null;
+        metric === "path_extrema"
+          ? extremumOver(candles, entryIndex + 1, exitIndex, priceField)
+          : null;
       const excursionPct =
         extremum === null ? null : ((extremum.price - entryBar.close) / entryBar.close) * 100;
-      if (extremum !== null && excursionPct !== null) {
-        rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+      if (truncated) {
+        nPartial += 1;
+      } else {
+        nComplete += 1;
+        rawReturns.push(returnPct);
+        if (extremum !== null && excursionPct !== null) {
+          rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+        }
       }
       rows.push({
         ...base,
@@ -731,6 +870,7 @@ export function runEventStudy(input: {
               excursionReturnPct: round2(excursionPct),
             }),
         truncated,
+        ...(truncated ? { truncationReason } : {}),
         barsCovered: exitIndex - entryIndex,
       });
       continue;
@@ -739,6 +879,17 @@ export function runEventStudy(input: {
     // The first bar at or after the end. Binary search: the window can be
     // thousands of bars and the occurrences are few, but the shape is the same
     // one the funding lookup uses.
+    if (occurrence.endAt > lastBar.openTime) {
+      rows.push(
+        uncovered(
+          base,
+          input.now !== undefined && occurrence.endAt <= input.now
+            ? "the first bar at or after this event has not closed yet, so there is no final close to measure from"
+            : "still in the future: it ends after the last archived bar",
+        ),
+      );
+      continue;
+    }
     let lo = 0;
     let hi = candles.length;
     while (lo < hi) {
@@ -747,26 +898,16 @@ export function runEventStudy(input: {
       else lo = mid + 1;
     }
     const entryIndex = lo;
-    const exitWanted = entryIndex + horizonBars - 1;
-    const exitIndex = Math.min(exitWanted, candles.length - 1);
     const entryBar = candles[entryIndex];
-    const exitBar = candles[exitIndex];
-    if (entryBar === undefined || exitBar === undefined || !(entryBar.open > 0)) {
+    if (entryBar === undefined || !(entryBar.open > 0)) {
       rows.push(uncovered(base, "the archived window holds no bar at or after the event ended"));
       continue;
     }
-    // A recording gap across the event's end would otherwise pass silently:
-    // the first bar at or after `endAt` would sit whole intervals later, and
-    // measuring from it would present a much later candle as the event entry.
-    // An occurrence whose entry region is missing is uncovered, the same as
-    // one the window never held at all.
-    //
-    // A first bar exactly one interval after the event ended means the bar at
-    // the event boundary is missing. Measuring from the next bar would shift
-    // the declared entry silently, so the boundary is inclusive.
-    const entryGapMs = entryBar.openTime - occurrence.endAt;
-    if (entryGapMs >= intervalMs) {
-      const missingBars = Math.floor(entryGapMs / intervalMs);
+    // Same rule as the close basis: the entry is a specific grid slot, and a
+    // absent slot bar is a recording gap, not a nudge to the next candle.
+    const expectedEntryOpen = firstOpenAtOrAfterSlot(occurrence.endAt, intervalMs);
+    if (entryBar.openTime !== expectedEntryOpen) {
+      const missingBars = Math.round((entryBar.openTime - expectedEntryOpen) / intervalMs);
       rows.push(
         uncovered(
           base,
@@ -776,17 +917,35 @@ export function runEventStudy(input: {
       );
       continue;
     }
-    const truncated = exitIndex < exitWanted;
+    const runLength = runs[entryIndex] ?? 1;
+    const available = runLength - 1;
+    const exitOffset = horizonBars - 1;
+    const exitIndex = entryIndex + Math.min(exitOffset, available);
+    const exitBar = candles[exitIndex];
+    if (exitBar === undefined) {
+      rows.push(uncovered(base, "the archived window holds no bar at or after the event ended"));
+      continue;
+    }
+    const truncated = available < exitOffset;
+    const truncationReason =
+      entryIndex + runLength === candles.length
+        ? "the archived data ends before the horizon does"
+        : "an internal recording gap ends the measured grid before the horizon does";
     const returnPct = ((exitBar.close - entryBar.open) / entryBar.open) * 100;
-    rawReturns.push(returnPct);
-    // Same rule as the close basis: the extremum over the bars actually
-    // measured, entry bar included — its low can sit below its own open.
+    // The entry bar counts here: the entry is its OPEN, so the rest of that
+    // bar — including its own wick — happened after the entry.
     const extremum =
       metric === "path_extrema" ? extremumOver(candles, entryIndex, exitIndex, priceField) : null;
     const excursionPct =
       extremum === null ? null : ((extremum.price - entryBar.open) / entryBar.open) * 100;
-    if (extremum !== null && excursionPct !== null) {
-      rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+    if (truncated) {
+      nPartial += 1;
+    } else {
+      nComplete += 1;
+      rawReturns.push(returnPct);
+      if (extremum !== null && excursionPct !== null) {
+        rawExtremes.push({ excursion: excursionPct, terminal: returnPct });
+      }
     }
     rows.push({
       ...base,
@@ -805,27 +964,32 @@ export function runEventStudy(input: {
             excursionReturnPct: round2(excursionPct),
           }),
       truncated,
+      ...(truncated ? { truncationReason } : {}),
       barsCovered: exitIndex - entryIndex + 1,
     });
   }
 
   const covered = rows.filter((row) => row.covered);
-  // Aggregate from the measured values, not the display-rounded rows. Early
-  // rounding can move the reported center by a basis point on a small set.
+  // Aggregates from the measured values of COMPLETE rows, not the
+  // display-rounded rows and never the partial ones. Early rounding can move
+  // the reported center by a basis point on a small set; a partial row can
+  // move it by a whole regime.
   const returns = rawReturns;
   const mean =
     returns.length === 0 ? null : returns.reduce((sum, value) => sum + value, 0) / returns.length;
 
-  // Sampled at every bar the horizon fits behind, on the same basis the
-  // occurrences were measured: open-to-close over the horizon's bars on the
-  // open basis, close-to-close a horizon of intervals apart on the close
-  // basis. Rolling windows overlap, so consecutive samples share bars and the
-  // baseline understates the variance of a single horizon-length return; it
-  // is a center-of-mass comparison, not a significance test, and is never
-  // spoken of as one.
+  // Sampled at every bar holding a complete, unbroken horizon window, on the
+  // same basis, cutoff and continuity policy the occurrences were measured
+  // with: open-to-close over the horizon's bars on the open basis,
+  // close-to-close a horizon of intervals apart on the close basis. Rolling
+  // windows overlap, so consecutive samples share bars and the baseline
+  // understates the variance of a single horizon-length return; it is a
+  // center-of-mass comparison, not a significance test, and is never spoken
+  // of as one.
   const samples: Array<number> = [];
   const exitOffset = basis === "first_closed_bar_after_event" ? horizonBars : horizonBars - 1;
-  for (let index = 0; index + exitOffset <= candles.length - 1; index += 1) {
+  for (let index = 0; index < candles.length; index += 1) {
+    if ((runs[index] ?? 1) - 1 < exitOffset) continue;
     const entryBar = candles[index];
     const exitBar = candles[index + exitOffset];
     if (entryBar === undefined || exitBar === undefined) continue;
@@ -852,10 +1016,10 @@ export function runEventStudy(input: {
     returns.length === 0
       ? null
       : round2((returns.filter((value) => value > 0).length / returns.length) * 100);
-  // The path_extrema aggregates: minimal and honest. The mean excursion is
-  // long-convention like the rows, and the beyond-terminal share says how
-  // often the path ran further than it ended — both descriptions of what
-  // happened, never a realizable return.
+  // The path_extrema aggregates: minimal and honest, and over complete rows
+  // only. The mean excursion is long-convention like the rows, and the
+  // beyond-terminal share says how often the path ran further than it ended —
+  // both descriptions of what happened, never a realizable return.
   const extremaAggregate =
     metric === "path_extrema"
       ? {
@@ -877,7 +1041,7 @@ export function runEventStudy(input: {
                 ),
         }
       : {};
-  const verdict = composeVerdict({ n, nCovered, mean, horizonBars, baseline });
+  const verdict = composeVerdict({ n, nCovered, nComplete, mean, horizonBars, baseline });
 
   return {
     ...extremaAggregate,
@@ -885,6 +1049,9 @@ export function runEventStudy(input: {
     horizonMs: horizonBars * intervalMs,
     n,
     nCovered,
+    nComplete,
+    nPartial,
+    nUnavailable: n - nCovered,
     meanReturnPct: mean === null ? null : round2(mean),
     medianReturnPct: returns.length === 0 ? null : round2(medianOf(returns)),
     hitRatePercent,
@@ -900,13 +1067,16 @@ export function runEventStudy(input: {
  * The one sentence that travels with the numbers.
  *
  * Coverage comes first because it is the thing the reader has to know before
- * any mean means anything, and the closing clause is fixed: a handful of
- * occurrences measured over one window is a description of what happened, and
- * the sentence must never drift into sounding like evidence.
+ * any mean means anything, and completeness second for the same reason: a
+ * mean over complete horizons beside truncated rows is only honest when the
+ * sentence says which rows carry it. The closing clause is fixed: a handful
+ * of occurrences measured over one window is a description of what happened,
+ * and the sentence must never drift into sounding like evidence.
  */
 function composeVerdict(input: {
   readonly n: number;
   readonly nCovered: number;
+  readonly nComplete: number;
   readonly mean: number | null;
   readonly horizonBars: number;
   readonly baseline: EventStudyBaseline | null;
@@ -919,14 +1089,21 @@ function composeVerdict(input: {
   if (input.n === 0) {
     return `The set holds no occurrences yet, so there is nothing to study. ${honesty}`;
   }
-  if (input.nCovered === 0 || input.mean === null) {
+  if (input.nCovered === 0) {
     return `${coverage}, so there is nothing to measure. ${honesty}`;
+  }
+  const completeClause =
+    input.nComplete === input.nCovered
+      ? ""
+      : `; ${input.nComplete} of those completed the full ${input.horizonBars}-bar horizon, and every aggregate here is over complete horizons only`;
+  if (input.mean === null) {
+    return `${coverage}${completeClause}, so no full-horizon return exists to aggregate. ${honesty}`;
   }
   const against =
     input.baseline === null
       ? ""
       : `, against a baseline of ${input.baseline.meanReturnPct}% over the same horizon sampled at every archived bar`;
-  return `${coverage}. Mean forward return ${round2(input.mean)}% over ${input.horizonBars} bars${against}. ${honesty}`;
+  return `${coverage}${completeClause}. Mean forward return ${round2(input.mean)}% over ${input.horizonBars} bars${against}. ${honesty}`;
 }
 
 // ---------------------------------------------------------------------------

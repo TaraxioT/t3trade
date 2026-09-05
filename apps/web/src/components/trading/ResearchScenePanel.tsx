@@ -81,8 +81,16 @@ const fmtPct = (value: number | null | undefined): string =>
  * element keeps the whole block in the DOM — but the fine print no longer
  * pushes the per-occurrence data below the inspector's fold.
  */
-function StudyExplanation(props: { readonly payload: EventStudyScenePayload }) {
-  const lines = studyExplanationLines(props.payload);
+function StudyExplanation(props: {
+  readonly payload: EventStudyScenePayload;
+  /** The scene row's calculation version, so a legacy scene says it is legacy. */
+  readonly calculationVersion?: string | undefined;
+}) {
+  const lines = studyExplanationLines(
+    props.calculationVersion === undefined
+      ? props.payload
+      : { ...props.payload, calculationVersion: props.calculationVersion },
+  );
   return (
     <div data-testid="research-explanation-block">
       <div
@@ -350,6 +358,8 @@ function EventStudyBody(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
   readonly sceneId: string;
+  /** The scene row's calculation version, so legacy scenes can say so. */
+  readonly calculationVersion?: string | undefined;
   /** The server-composed deterministic layers of this scene, when it has them. */
   readonly layers: ReadonlyArray<DeterministicSceneLayer>;
   readonly prefill: ((sentence: string) => void) | null;
@@ -416,7 +426,7 @@ function EventStudyBody(props: {
         className="trading-graph-inspector min-h-0 flex-[3] overflow-y-auto border-t border-border/60 pt-1"
         data-testid="research-inspector"
       >
-        <StudyExplanation payload={payload} />
+        <StudyExplanation payload={payload} calculationVersion={props.calculationVersion} />
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
           <label className="text-muted-foreground" htmlFor="research-notional">
             Illustrate per
@@ -717,6 +727,8 @@ function TraceSvg(props: {
 function EventAlignedBody(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
+  /** The scene row's calculation version, so legacy scenes can say so. */
+  readonly calculationVersion?: string | undefined;
 }) {
   const { payload } = props;
   const entryBasis = payloadEntryBasis(payload);
@@ -789,7 +801,7 @@ function EventAlignedBody(props: {
         className="trading-graph-inspector min-h-0 flex-[3] overflow-y-auto border-t border-border/60 pt-1"
         data-testid="research-inspector"
       >
-        <StudyExplanation payload={payload} />
+        <StudyExplanation payload={payload} calculationVersion={props.calculationVersion} />
         <div className="mt-1 text-xs text-muted-foreground">
           {covered.length} trace(s) rebased to their measured entry; the heavier line above is the
           mean across occurrences, the dashed line is zero change.
@@ -1153,11 +1165,16 @@ export function ResearchScenePanel(props: {
               environmentId={props.environmentId}
               payload={scene.eventStudy}
               sceneId={scene.sceneId}
+              calculationVersion={scene.calculationVersion}
               layers={scene.scene?.deterministic ?? []}
               prefill={props.prefill}
             />
           ) : (
-            <EventAlignedBody environmentId={props.environmentId} payload={scene.eventStudy} />
+            <EventAlignedBody
+              environmentId={props.environmentId}
+              payload={scene.eventStudy}
+              calculationVersion={scene.calculationVersion}
+            />
           )
         ) : scene.strategyReplay !== undefined ? (
           <StrategyReplayBody environmentId={props.environmentId} payload={scene.strategyReplay} />

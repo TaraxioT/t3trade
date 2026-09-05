@@ -50,6 +50,24 @@ const DAY = 24 * 60 * 60 * 1_000;
 const debugJson = (value: unknown): string =>
   Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(value);
 
+/**
+ * Drops keys whose value is undefined, recursively: the tool result carries
+ * explicit undefined optionals while the persisted scene's report crossed a
+ * serialization that omits them, and parity is about the values a reader
+ * sees, not key presence.
+ */
+const withoutUndefinedKeys = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(withoutUndefinedKeys);
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) out[key] = withoutUndefinedKeys(item);
+    }
+    return out;
+  }
+  return value;
+};
+
 it.live("a small study reads its bounded window over a much larger archive", () => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-events-study-"));
   const archivePath = NodePath.join(dir, "market-archive.sqlite");
@@ -405,7 +423,7 @@ it.live(
       const scene = "scene" in result ? result.scene : undefined;
       assert.isDefined(scene, `the scene published: ${debugJson(result)}`);
       if (scene === undefined) return;
-      assert.equal(scene.calculationVersion, "event-study-3");
+      assert.equal(scene.calculationVersion, "event-study-4");
       assert.equal(scene.calculationVersion, RESEARCH_CALCULATION_VERSIONS.eventStudy);
       const study = scene.eventStudy;
       assert.isDefined(study);
@@ -444,6 +462,124 @@ it.live(
             Layer.provideMerge(memory),
             Layer.provideMerge(NodeServices.layer),
           ),
+          threadMarketRecorder,
+          replayPathStubs,
+        ),
+      ),
+      Effect.onExit(() =>
+        Effect.sync(() => {
+          if (previousHome === undefined) {
+            delete process.env["T3CODE_HOME"];
+          } else {
+            process.env["T3CODE_HOME"] = previousHome;
+          }
+          NodeFS.rmSync(dir, { recursive: true, force: true });
+        }),
+      ),
+    );
+  },
+);
+
+it.live(
+  "study and publish_event_study report identical rows and statistics for identical input",
+  () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-events-study-"));
+    const nowDay = Math.floor(Date.now() / DAY) * DAY;
+    // One covered occurrence with a distinctive post-entry dip, one future
+    // occurrence the archive cannot measure yet: both surfaces must report the
+    // same covered row, the same uncovered row with its reason, and the same
+    // aggregates for the same parameters.
+    const archivePath = seedExtremaArchive(dir, nowDay, [{ back: 12, low: 60 }]);
+    const hydrationPath = NodePath.join(dir, "queue.json");
+
+    const previousHome = process.env["T3CODE_HOME"];
+    process.env["T3CODE_HOME"] = NodePath.join(dir, "home");
+
+    return Effect.gen(function* () {
+      yield* runMigrations({});
+      const events = yield* TradingEventService;
+      const recorded = yield* events.record({
+        name: "Parity days",
+        occurrences: [
+          {
+            startAt: nowDay - 16 * DAY,
+            endAt: nowDay - 15 * DAY,
+            source: "https://example.com/covered",
+          },
+          {
+            startAt: nowDay + 10 * DAY,
+            endAt: nowDay + 11 * DAY,
+            source: "https://example.com/future",
+          },
+        ],
+        threadId: "thread-study-parity",
+        author: "agent",
+        now: Date.now(),
+      });
+      assert.equal(recorded.outcome, "ok");
+      const eventSetId = recorded.outcome === "ok" ? recorded.set.eventSetId : "";
+
+      const studyParams = {
+        eventSetId,
+        market: "ETH",
+        interval: "1d",
+        horizonBars: 5,
+        metric: "path_extrema",
+        direction: "short",
+      } as const;
+
+      const studied = yield* handlers.trading_events({ action: "study", ...studyParams });
+      const published = yield* handlers.trading_chart({
+        action: "publish_event_study",
+        ...studyParams,
+      });
+
+      const study = "study" in studied ? studied.study : undefined;
+      const scene = "scene" in published ? published.scene : undefined;
+      assert.isDefined(study, `the study ran: ${debugJson(studied)}`);
+      assert.isDefined(scene, `the scene published: ${debugJson(published)}`);
+      if (study === undefined || scene === undefined) return;
+      assert.equal(scene.calculationVersion, RESEARCH_CALCULATION_VERSIONS.eventStudy);
+      // The same engine, the same window, the same cutoff: the tool result and
+      // the persisted scene carry one report, never two answers that drift. The
+      // scene's report crossed persistence, which omits undefined optionals the
+      // engine sets explicitly; normalizing both sides compares the report the
+      // reader sees, not key presence.
+      assert.deepStrictEqual(
+        withoutUndefinedKeys(scene.eventStudy?.report),
+        withoutUndefinedKeys(study),
+      );
+      // Both surfaces saw the same rows: one covered with its extremum, one
+      // future with its reason — the counts agree with the denominators.
+      assert.equal(study.n, 2);
+      assert.equal(study.nCovered, 1);
+      assert.equal(study.nComplete, 1);
+      assert.equal(study.nUnavailable, 1);
+      assert.equal(
+        study.rows[1]?.reason,
+        "still in the future: it ends after the last archived bar",
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(
+            TradingMarketArchive,
+            makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath),
+          ),
+          Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScopeFor("parity")),
+          (() => {
+            const memory = NodeSqliteClient.layerMemory();
+            return Layer.mergeAll(
+              TradingEventServiceLive.pipe(
+                Layer.provideMerge(memory),
+                Layer.provideMerge(NodeServices.layer),
+              ),
+              TradingResearchSceneServiceLive.pipe(
+                Layer.provideMerge(memory),
+                Layer.provideMerge(NodeServices.layer),
+              ),
+            );
+          })(),
           threadMarketRecorder,
           replayPathStubs,
         ),

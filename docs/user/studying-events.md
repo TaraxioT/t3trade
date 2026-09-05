@@ -108,14 +108,38 @@ instead enter on the open of the first bar at or after the event ended, the
 older convention; whichever basis a study used is recorded with it, and an
 older study keeps explaining itself in its own terms.
 
+The horizon is a span of bar intervals on an unbroken grid, never a row count.
+Three rules follow from that, and each is the study refusing to invent a
+number:
+
+- The entry bar is a specific bar. If the archive is missing the bar the entry
+  belongs to, the occurrence is reported as behind a recording gap — never
+  measured from a later candle that would silently move the entry.
+- A gap in the middle of a horizon truncates the measurement at the gap. The
+  row keeps what it could measure, says it was cut short and why, and does not
+  stretch a "thirty days" over later bars that are more than thirty days away.
+- Nothing forming is read. The study measures as of a cutoff: a bar that has
+  not closed yet has provisional prices, and no entry, exit, extreme, or
+  baseline number may depend on a price that can still change.
+
+And one more split, because a partial window answers a different question than
+a complete one. Rows are counted three ways — covered occurrences that
+measured the full horizon, covered occurrences whose window stopped short, and
+occurrences the archive could not measure at all — and the mean, median, hit
+rate, best and worst come from complete horizons only. A truncated row keeps
+its numbers for inspection; it never quietly joins a mean of full-horizon
+measurements, and a study where nothing completed reports no mean at all
+rather than a number over a shorter window.
+
 Two honesties are built in. No fees, no stops, no position: this is a
 description of what happened, and anything about what you could have made is a
 backtest's job, which you can run on the same idea. And coverage is stated
-plainly: an occurrence older than your recorded history, or still in the
-future, is listed as such rather than quietly dropped. A mean of the survivors
-of a silent filter is the most misleading number a study could produce, so the
-verdict says something like "1 of 2 occurrences fall inside archived data" and
-never claims more than that.
+plainly: an occurrence older than your recorded history, still in the future,
+or behind a gap is listed as such rather than quietly dropped. A mean of the
+survivors of a silent filter is the most misleading number a study could
+produce, so the verdict says something like "1 of 2 occurrences fall inside
+archived data; 1 of those completed the full 30-bar horizon" and never claims
+more than that.
 
 ## The lowest point, not just the ending
 
@@ -126,9 +150,17 @@ That question is not about the close thirty days later. It is about the path
 in between, and a terminal return cannot answer it. Say "lowest point" (or
 highest) and the study measures a second thing: for every covered occurrence,
 the lowest low — or highest high — after the entry, inside the horizon, with
-the moment it printed. Both numbers ride the same row, always: the excursion
-to that extreme, and the plain close-to-close return, because the honest way
-to read a best point is right next to what holding to the end actually did.
+the moment it printed. After the entry means after it on the entry basis: on
+the default close basis, the entry price is the entry bar's close, so that
+bar's own wick printed before the entry existed and never counts — only bars
+that closed after the entry do. On the open basis the entry bar counts, its
+open being the entry. The moment is the bar, too: a low prints somewhere
+inside its candle, and the study claims the bar, never a tick it cannot know.
+Both numbers ride the same row, always: the excursion to that extreme, and the
+plain close-to-close return, because the honest way to read a best point is
+right next to what holding to the end actually did. An excursion can be
+adverse — a short whose price only rose reads a positive (money-losing)
+excursion exactly as measured, never clamped into a gain.
 
 The dollar figures are arithmetic on those percentages, and they say so. Each
 event is illustrated on the full amount independently — one fork, one $2,000,
@@ -260,6 +292,12 @@ its own explicit ask and the normal protections.
 A handful of occurrences is a small sample, and the study says so rather than
 dressing it up. The numbers are worth having; they are just not evidence, and
 the sentence with them never claims otherwise.
+
+Scenes computed before the study's time and coverage semantics were repaired
+are still there and still render the numbers they were computed with — but
+they say which calculation version they predate, and the honest way to bring
+one current is to publish the same recipe again, which writes a new scene.
+Nothing is silently recalculated under an old scene's name.
 
 The calendar is yours, not the market's. If a date is wrong, the study is
 wrong, which is why every occurrence carries its source and re-recording the
