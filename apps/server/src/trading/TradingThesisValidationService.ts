@@ -740,23 +740,17 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       if (width === undefined) return quiet;
 
       const warmup = forwardWarmupBars(validation.thesis);
-      // Reach back far enough for every indicator to converge before the first
-      // bar this pass will actually evaluate — which on the first pass is the
-      // bar the validation was armed on, not the live edge.
+      // The validation's own deadline caps evaluation, not the delivery
+      // clock: a sweep hours or days late evaluates only bars that CLOSED by
+      // expiresAt, so processing time never extends the declared window and a
+      // candle straddling the deadline is never read on provisional numbers.
+      const deadline = Math.min(now, validation.expiresAt);
+      // Reach back far enough for every indicator to converge before the
+      // first bar the pass will actually evaluate — which on the first pass is
+      // the bar the validation was armed on, not the live edge.
       const evaluateFrom = validation.lastBarTime ?? validation.armedAt;
       const fromT = evaluateFrom - warmup * width;
-      const rows = yield* archive
-        .candlesInWindow({
-          coin: validation.asset,
-          interval,
-          fromT,
-          toT: now,
-          maxBars: warmup + MAX_CATCHUP_BARS,
-        })
-        .pipe(Effect.mapError(sqlFail("advance.candles")));
-      if (rows.length === 0) return quiet;
 
-      const candles = rows.map(toCandle);
       // Only fetched when a rule actually reads it. A funding operand has to
       // resolve through the SAME stepwise lookup the batch engine uses, or a
       // validation would disagree with the backtest that armed it on the one
@@ -766,14 +760,10 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
             .fundingInWindow({
               coin: validation.asset,
               fromT,
-              toT: now,
+              toT: deadline,
             })
             .pipe(Effect.mapError(sqlFail("advance.funding")))
         : [];
-      // Only bars that have closed. The archiver can store a forming bar, and
-      // a rule read on one fires on numbers that are still moving.
-      const closed = candles.filter((candle) => candle.closeTime <= now);
-      if (closed.length === 0) return quiet;
 
       // The event calendar is re-read on EVERY sweep, not frozen at arm time:
       // a future occurrence is the whole point of arming early (the operand
@@ -788,19 +778,10 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         eventOccurrences = yield* loaded;
       }
 
-      // Bars this validation has not evaluated yet. On the first pass that is
-      // every closed bar since it was armed: a bar that closed between arming
-      // and the first delivery is one the thesis was live for, and skipping it
-      // would quietly shorten the window the report is computed over.
-      const lastSeen = validation.lastBarTime;
-      const firstUnseen = closed.findIndex((candle) =>
-        lastSeen === null ? candle.openTime >= validation.armedAt : candle.openTime > lastSeen,
-      );
-      if (firstUnseen < 0) return quiet;
-
       let state = validation.state;
       let barsWatched = validation.barsWatched;
-      let lastBarTime = lastSeen;
+      let lastBarTime = validation.lastBarTime;
+      let processedAny = false;
 
       // Every ledger effect of every processed bar, plus the checkpoint, in
       // ONE transaction: a fill insert without its checkpoint is the exact
@@ -828,28 +809,61 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
               );
             }
 
-            for (let index = Math.max(firstUnseen, 0); index < closed.length; index += 1) {
-              const bar = closed[index] as MarketCandle;
-              const window = closed.slice(0, index + 1);
-              // The trade id is DERIVED from the validation and the bar its
-              // entry fills on, not minted: a crash between the fill insert and
-              // the checkpoint replays the same bar, and the same bar must
-              // produce the same id or the retry would mint a second logical
-              // fill. `INSERT ... ON CONFLICT DO NOTHING` makes the replay a
-              // no-op instead of a duplicate.
-              const tradeId = `${validation.id}:${bar.openTime}`;
-              const step = stepForward({
-                thesis: validation.thesis,
-                candles: window,
-                state,
-                notionalUsd: validation.notionalUsd,
-                nextTradeId: tradeId,
-                funding: signalFunding,
-                eventOccurrences,
-              });
+            // Catch-up pages: OLDEST unseen bars first, bounded per read,
+            // resuming from the checkpoint. A newest-keeping capped read
+            // would silently skip every bar older than the cap on an outage
+            // longer than the budget — the bars the run was armed to watch.
+            // A full page may leave more behind it, so the loop continues
+            // from just past the page's last bar until a short page says the
+            // read reached the deadline. Bars the archive never recorded are
+            // simply absent: the checkpoint marks the last bar PROCESSED, and
+            // nothing jumps a gap it cannot see.
+            for (;;) {
+              const rows = yield* archive
+                .candlesInWindow({
+                  coin: validation.asset,
+                  interval,
+                  fromT:
+                    (lastBarTime ?? evaluateFrom) +
+                    (lastBarTime === null ? 0 : width) -
+                    warmup * width,
+                  toT: deadline,
+                  maxBars: warmup + MAX_CATCHUP_BARS,
+                  keep: "oldest",
+                })
+                .pipe(Effect.mapError(sqlFail("advance.candles")));
+              // Only bars that have closed by the deadline. The archiver can
+              // store a forming bar, and a rule read on one fires on numbers
+              // that are still moving.
+              const closed = rows.map(toCandle).filter((candle) => candle.closeTime <= deadline);
+              const firstUnseen = closed.findIndex((candle) =>
+                lastBarTime === null
+                  ? candle.openTime >= validation.armedAt
+                  : candle.openTime > lastBarTime,
+              );
+              if (firstUnseen < 0) break;
+              for (let index = firstUnseen; index < closed.length; index += 1) {
+                const bar = closed[index] as MarketCandle;
+                const window = closed.slice(0, index + 1);
+                // The trade id is DERIVED from the validation and the bar its
+                // entry fills on, not minted: a crash between the fill insert and
+                // the checkpoint replays the same bar, and the same bar must
+                // produce the same id or the retry would mint a second logical
+                // fill. `INSERT ... ON CONFLICT DO NOTHING` makes the replay a
+                // no-op instead of a duplicate.
+                const tradeId = `${validation.id}:${bar.openTime}`;
+                const step = stepForward({
+                  thesis: validation.thesis,
+                  candles: window,
+                  state,
+                  notionalUsd: validation.notionalUsd,
+                  nextTradeId: tradeId,
+                  funding: signalFunding,
+                  eventOccurrences,
+                });
 
-              if (step.entered !== null) {
-                yield* sql`
+                if (step.entered !== null) {
+                  yield* sql`
                 INSERT INTO trading_thesis_paper_fills (
                   paper_trade_id, validation_id, entry_time, entry_price, signal_time,
                   stop_price, target_price, exit_time, exit_price, exit_reason,
@@ -864,49 +878,62 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
                 )
                 ON CONFLICT(paper_trade_id) DO NOTHING
               `.pipe(Effect.mapError(sqlFail("advance.enter")));
-                events.push({
-                  kind: "paper_entry",
-                  line: describePaperEntry({
-                    market: validation.asset,
-                    direction: validation.thesis.side,
-                    price: round4(step.entered.entryPrice),
-                  }),
-                });
+                  events.push({
+                    kind: "paper_entry",
+                    line: describePaperEntry({
+                      market: validation.asset,
+                      direction: validation.thesis.side,
+                      price: round4(step.entered.entryPrice),
+                    }),
+                  });
+                }
+
+                // One bar can close TWO trades (a pending exit at the open plus a
+                // same-bar stop on a position entered at that same open). Every
+                // settlement is persisted, in the causal order the engine
+                // produced; dropping all but the last was the ledger defect.
+                for (const exit of step.exits) {
+                  const netUsd = yield* settleFill({
+                    validation,
+                    tradeId: exit.tradeId,
+                    entryTime: exit.entryTime,
+                    entryPrice: exit.entryPrice,
+                    exitTime: exit.exitTime,
+                    exitPrice: exit.exitPrice,
+                    exitReason: exit.exitReason,
+                    barsHeld: exit.barsHeld,
+                    adverseExcursionUsd: exit.adverseExcursionUsd,
+                    now,
+                  });
+                  events.push({
+                    kind: "paper_exit",
+                    line: describePaperExit({
+                      market: validation.asset,
+                      direction: validation.thesis.side,
+                      price: round4(exit.exitPrice),
+                      netUsd,
+                      reason: exit.exitReason,
+                    }),
+                  });
+                }
+
+                state = step.state;
+                barsWatched += 1;
+                lastBarTime = bar.openTime;
+                processedAny = true;
               }
 
-              // One bar can close TWO trades (a pending exit at the open plus a
-              // same-bar stop on a position entered at that same open). Every
-              // settlement is persisted, in the causal order the engine
-              // produced; dropping all but the last was the ledger defect.
-              for (const exit of step.exits) {
-                const netUsd = yield* settleFill({
-                  validation,
-                  tradeId: exit.tradeId,
-                  entryTime: exit.entryTime,
-                  entryPrice: exit.entryPrice,
-                  exitTime: exit.exitTime,
-                  exitPrice: exit.exitPrice,
-                  exitReason: exit.exitReason,
-                  barsHeld: exit.barsHeld,
-                  adverseExcursionUsd: exit.adverseExcursionUsd,
-                  now,
-                });
-                events.push({
-                  kind: "paper_exit",
-                  line: describePaperExit({
-                    market: validation.asset,
-                    direction: validation.thesis.side,
-                    price: round4(exit.exitPrice),
-                    netUsd,
-                    reason: exit.exitReason,
-                  }),
-                });
-              }
-
-              state = step.state;
-              barsWatched += 1;
-              lastBarTime = bar.openTime;
+              // A short page means the read reached the deadline: caught up.
+              // A full page may hold more unseen bars beyond it, so the loop
+              // continues with a fromT derived from the advanced
+              // `lastBarTime`. Termination is structural: any page that does
+              // not break here processed at least one bar (firstUnseen >= 0),
+              // which advances the checkpoint by at least one slot, so the
+              // next read starts strictly later — no page can repeat.
+              if (closed.length < warmup + MAX_CATCHUP_BARS) break;
             }
+
+            if (!processedAny) return;
 
             // The open position's running bar count and excursion live on its
             // own ledger row, so the report reads one place for it.
@@ -932,6 +959,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.mapError(sqlFail("advance.transaction")));
+      if (!processedAny) return quiet;
 
       // The verdict, taken after the writes above so it reads the same ledger
       // the next `report` will. A validation whose label has never been
@@ -1050,7 +1078,16 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         // nothing: "the window closed and here is what it showed" is the whole
         // point of having watched. Composed against the ENDED row so the batch
         // reports the same verdict the final report does.
+        //
+        // An open paper position at expiry is NOT force-closed: there is no
+        // fill to invent and no intra-candle deadline price to read. It stays
+        // an open row the report counts as unclosed exposure, and the expiry
+        // line says so rather than letting a missing settlement read as none.
         const ended = yield* get(row.validation_id);
+        const openAtExpiry =
+          ended === null
+            ? false
+            : (yield* trades(ended.id)).some((trade) => trade.exitTime === null);
         const batch =
           ended === null
             ? null
@@ -1059,7 +1096,11 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
                 advanced,
                 extra: {
                   kind: "expiry",
-                  line: `validation window closed after ${ended.barsWatched} bars`,
+                  line:
+                    `validation window closed after ${ended.barsWatched} bars` +
+                    (openAtExpiry
+                      ? "; one paper position is still open — unclosed exposure, not a settled outcome"
+                      : ""),
                 },
                 now: input.now,
               });
