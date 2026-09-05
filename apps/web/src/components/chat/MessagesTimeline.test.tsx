@@ -1312,5 +1312,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("lucide-x");
     expect(markup).toContain('aria-label="Tool call failed"');
+    // The failure is not icon-only: a failed row's own text carries the
+    // destructive tone, so a failing command cannot read as a passing one.
+    expect(markup).toContain("font-medium text-destructive");
   });
 });
