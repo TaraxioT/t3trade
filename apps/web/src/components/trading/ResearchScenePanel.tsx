@@ -24,6 +24,7 @@
 import type { EnvironmentId, ResearchSceneView, TradingMarketChartView } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { Button } from "../ui/button";
 import { MissionPriceChart } from "./MissionPriceChart";
 import type { ChartInterval, ChartWindow } from "../../lib/tradingMarketChartState";
 import { useTradingMarketChart } from "../../lib/tradingMarketChartState";
@@ -1074,6 +1075,15 @@ function ReplayWindowChart(props: {
 export function ResearchScenePanel(props: {
   readonly environmentId: EnvironmentId;
   readonly scenes: ReadonlyArray<ResearchSceneView>;
+  /** The identity-keyed selection the outer graph owns; null falls back to the first scene. */
+  readonly selectedSceneId: string | null;
+  readonly onSelectScene: (sceneId: string) => void;
+  /**
+   * The explicit open/focus intent: select by identity, switch the outer
+   * graph to the framing view, and re-fit. Publication made a scene active;
+   * only this is the ask to SEE it.
+   */
+  readonly onOpenScene: (sceneId: string) => void;
   readonly loading: boolean;
   readonly error: string | null;
   /** The research mode the outer graph's tabs selected (Live lives outside). */
@@ -1081,15 +1091,17 @@ export function ResearchScenePanel(props: {
   /** The thread composer prefill; null on the trade home (no conversation). */
   readonly prefill: ((sentence: string) => void) | null;
 }) {
-  const [sceneIndex, setSceneIndex] = useState(0);
-  const scene = props.scenes[Math.min(sceneIndex, Math.max(0, props.scenes.length - 1))];
+  // Selection is keyed by scene ID, never array position: the server's
+  // newest-first order can change between polls, and an index would silently
+  // point at another scene. The parent owns the id; the local state exists
+  // only for the parent-less fallback (direct render sites under 1 scene).
+  const scene =
+    props.scenes.find((candidate) => candidate.sceneId === props.selectedSceneId) ??
+    props.scenes[0];
+  const sceneId = scene?.sceneId ?? null;
   // A const binding keeps the `eventStudy` narrowing inside the click
   // handlers below, where a property access on `scene` would lose it.
   const study = scene?.eventStudy;
-
-  useEffect(() => {
-    if (sceneIndex >= props.scenes.length) setSceneIndex(0);
-  }, [props.scenes.length, sceneIndex]);
 
   // The error, loading and empty states keep the panel's shape: a message
   // where the content would sit, never a different frame.
@@ -1123,17 +1135,28 @@ export function ResearchScenePanel(props: {
             <select
               aria-label="Research scene"
               className="max-w-56 truncate rounded border bg-transparent px-1 py-0.5 text-xs"
-              value={sceneIndex}
-              onChange={(event) => setSceneIndex(Number(event.target.value))}
+              value={sceneId ?? undefined}
+              onChange={(event) => props.onSelectScene(event.target.value)}
             >
-              {props.scenes.map((candidate, index) => (
-                <option key={candidate.sceneId} value={index}>
+              {props.scenes.map((candidate) => (
+                <option key={candidate.sceneId} value={candidate.sceneId}>
                   {candidate.title}
                 </option>
               ))}
             </select>
           ) : (
             <h3 className="truncate text-sm font-medium">{scene.title}</h3>
+          )}
+          {sceneId === null ? null : (
+            <Button
+              size="xs"
+              variant="ghost"
+              className="h-6 px-2 text-[10.5px]"
+              data-testid="research-open-scene"
+              onClick={() => props.onOpenScene(sceneId)}
+            >
+              Open on graph
+            </Button>
           )}
           {scene.referenceStatus === "retired" ? (
             <span
@@ -1144,6 +1167,14 @@ export function ResearchScenePanel(props: {
               numbers describe what was archived then
             </span>
           ) : null}
+          {scene.sceneError === undefined ? null : (
+            <span
+              className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
+              data-testid="research-scene-error"
+            >
+              this scene's markers were not composed: {scene.sceneError}
+            </span>
+          )}
         </div>
         <span
           className="text-[10px] uppercase tracking-wide text-muted-foreground"

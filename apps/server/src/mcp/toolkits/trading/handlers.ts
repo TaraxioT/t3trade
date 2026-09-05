@@ -4558,10 +4558,22 @@ export const handlers = {
               : "";
           return chartResult({
             scene,
+            // Publication proves the record was saved and made active, never
+            // that a viewport moved: the open action is the direct path to
+            // seeing it, and the sentence stops at what actually happened.
+            open: {
+              kind: "open_scene",
+              sceneId: scene.sceneId,
+              threadId,
+              market: input.market,
+              view: "calendar",
+              label: "Open on graph",
+            },
             outcome:
               `${report.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence} ` +
-              `Shown on graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
-              `calendar and event-aligned views above this chat. ${RESEARCH_DISCLAIMER}`,
+              `Published to this thread's graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
+              "calendar and event-aligned views — press Open on graph to focus it. " +
+              `${RESEARCH_DISCLAIMER}`,
           });
         }
 
@@ -4666,10 +4678,20 @@ export const handlers = {
             })
             .pipe(Effect.orDie);
           if (published.outcome === "refused") return yield* refuse(published.reason);
+          const pinnedScene = yield* withReferenceStatus(published.scene);
           return chartResult({
-            scene: published.scene,
+            scene: pinnedScene,
+            open: {
+              kind: "open_scene",
+              sceneId: pinnedScene.sceneId,
+              threadId,
+              market: input.market,
+              view: "live",
+              label: "Open on graph",
+            },
             outcome:
-              "The note is pinned to the graph with an authored-note label; it is not a computed layer.",
+              "The note is pinned to this thread's graph with an authored-note label; it is not a " +
+              "computed layer — press Open on graph to see it on Live",
           });
         }
 
@@ -4684,7 +4706,34 @@ export const handlers = {
             return yield* refuse("no scene of this chat with that id");
           }
           const scene = yield* withReferenceStatus(shown);
-          return chartResult({ scene, outcome: scene.title });
+          // `show` reads; it recomputes nothing and creates nothing. A
+          // superseded or cleared row is history and says so, and the open
+          // action is the same navigation affordance publication carries —
+          // reading a record back was never the same thing as seeing it.
+          const marketOf =
+            scene.eventStudy?.market ??
+            scene.strategyReplay?.thesis.market ??
+            scene.annotation?.market;
+          const view = scene.annotation === undefined ? "calendar" : "live";
+          return chartResult({
+            scene,
+            ...(marketOf === undefined
+              ? {}
+              : {
+                  open: {
+                    kind: "open_scene",
+                    sceneId: scene.sceneId,
+                    threadId,
+                    market: marketOf,
+                    view,
+                    label: "Open on graph",
+                  },
+                }),
+            outcome:
+              scene.status === "active"
+                ? `${scene.title} — read back; press Open on graph to focus it`
+                : `${scene.title} — history (${scene.status}); press Open on graph to view it as it was recorded`,
+          });
         }
 
         case "list": {

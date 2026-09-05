@@ -444,7 +444,11 @@ it.live(
       // suite; this proves the published view carries composed layers at all).
       assert.isDefined(scene.scene);
       const outcome = "outcome" in result ? result.outcome : undefined;
-      assert.include(outcome ?? "", "Shown on graph");
+      assert.include(outcome ?? "", "Published to this thread's graph");
+      assert.include(outcome ?? "", "Open on graph");
+      // The open action names the exact scene the reader can focus: the
+      // bridge from "a record exists" to "I am looking at it".
+      assert.isDefined("open" in result ? result.open : undefined);
       assert.include(outcome ?? "", "hindsight-perfect");
     }).pipe(
       Effect.provide(

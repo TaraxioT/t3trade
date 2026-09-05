@@ -166,16 +166,30 @@ vi.mock("./useTradingThreadLaunch", () => ({
   analystMarketPrompt: (asset: string) => asset,
 }));
 
-const render = (threaded: boolean, className?: string) =>
+const render = (threaded: boolean, className?: string, asset = "ETH") =>
   renderToStaticMarkup(
     <MarketChartPanel
       environmentId={"env" as never}
-      asset="ETH"
+      asset={asset}
       armable={false}
       {...(className === undefined ? {} : { className })}
       {...(threaded ? { threadRef: { threadId: "thread-1" } as never } : {})}
     />,
   );
+
+// A study of ANOTHER market: same thread, same everything, different asset.
+// A thread that studied ETH must not paint ETH's measurements on SOL bars.
+const SCENE_RECORD = SCENE as Record<string, unknown>;
+const FOREIGN_SCENE = {
+  ...SCENE_RECORD,
+  sceneId: "scene-sol",
+  title: "Breakpoints on SOL, 1d bars, 30 forward",
+  eventStudy: {
+    ...(SCENE_RECORD["eventStudy"] as Record<string, unknown>),
+    market: "SOL",
+    eventSetName: "Breakpoints",
+  },
+} as never;
 
 describe("MarketChartPanel: Range and Bars as two controls", () => {
   const markup = render(false);
@@ -252,20 +266,18 @@ describe("MarketChartPanel: Live-first publication", () => {
 
   it("hands the active scene's occurrences to the chart at their exact instants", () => {
     const stub = markup.match(/data-research-markers="([^"]*)"/)?.[1] ?? "";
-    const markers = JSON.parse(stub.replace(/&quot;/g, '"').replace(/&amp;/g, "&")) as Array<
-      Record<string, unknown>
-    >;
-    expect(markers).toHaveLength(4);
-    // An exact occurrence becomes a rule at its exact millisecond.
-    expect(markers[1]).toEqual({
-      key: `scene-1:${RULE_AT}`,
-      label: "ETH upgrades",
-      startAt: RULE_AT,
-      endAt: RULE_AT,
-      sourceUrl: "https://example.org/dencun",
-      covered: true,
-      upcoming: false,
-    });
+    const markers = JSON.parse(stub.replace(/&quot;/g, '"').replace(/&amp;/g, "&")) as Array<{
+      key?: string;
+      label?: string;
+      startAt?: number;
+      endAt?: number;
+      covered?: boolean;
+      upcoming?: boolean;
+      sourceUrl?: string;
+    }>;
+    // Four occurrences plus the measured entry and exit of each COVERED one:
+    // "plot my entries and exits" is answerable on Live, not only in Calendar.
+    expect(markers).toHaveLength(8);
     // A true span keeps both instants.
     expect(markers[0]).toMatchObject({
       key: `scene-1:${SPAN_START}`,
@@ -274,10 +286,52 @@ describe("MarketChartPanel: Live-first publication", () => {
       endAt: SPAN_END,
       covered: true,
     });
+    // The covered occurrences' measured entries and exits draw as point rules
+    // at the instants the study measured — never for an uncovered one.
+    expect(markers[1]).toMatchObject({
+      key: `scene-1:${SPAN_START}:entry`,
+      label: "Devcon entry",
+      startAt: SPAN_END,
+      endAt: SPAN_END,
+      covered: true,
+      upcoming: false,
+    });
+    expect(markers[2]).toMatchObject({
+      key: `scene-1:${SPAN_START}:exit`,
+      label: "Devcon exit",
+      startAt: SPAN_END + 30 * DAY,
+      endAt: SPAN_END + 30 * DAY,
+      covered: true,
+    });
+    // An exact occurrence becomes a rule at its exact millisecond.
+    expect(markers[3]).toEqual({
+      key: `scene-1:${RULE_AT}`,
+      label: "ETH upgrades",
+      startAt: RULE_AT,
+      endAt: RULE_AT,
+      sourceUrl: "https://example.org/dencun",
+      covered: true,
+      upcoming: false,
+    });
+    expect(markers[4]).toMatchObject({
+      key: `scene-1:${RULE_AT}:entry`,
+      label: "ETH upgrades entry",
+      startAt: RULE_AT,
+      endAt: RULE_AT,
+    });
+    expect(markers[5]).toMatchObject({
+      key: `scene-1:${RULE_AT}:exit`,
+      label: "ETH upgrades exit",
+      startAt: RULE_AT + 30 * DAY,
+      endAt: RULE_AT + 30 * DAY,
+    });
     // The pre-archive and upcoming occurrences ride along with their flags;
-    // coverage is the renderer's to say, never a reason to drop a fact.
-    expect(markers[2]).toMatchObject({ covered: false, upcoming: false });
-    expect(markers[3]).toMatchObject({ covered: false, upcoming: true });
+    // coverage is the renderer's to say, never a reason to drop a fact — and
+    // they contribute no entry/exit geometry, because none was measured.
+    expect(markers[6]).toMatchObject({ covered: false, upcoming: false });
+    expect(markers[7]).toMatchObject({ covered: false, upcoming: true });
+    expect(markers.filter((marker) => marker.key?.endsWith(":entry"))).toHaveLength(2);
+    expect(markers.filter((marker) => marker.key?.endsWith(":exit"))).toHaveLength(2);
   });
 
   it("uncovered occurrences become a coverage note under the chart, not fake edge markers", () => {
@@ -513,5 +567,35 @@ describe("MarketChartPanel: the reserved left label lane", () => {
     // lane label whatever theme wraps the chart.
     const labels = markup.match(/<span[^>]*mission-lane-label[^>]*>/g) ?? [];
     expect(labels.length).toBeGreaterThan(0);
+  });
+});
+
+describe("MarketChartPanel: selection is the panel's market, keyed by identity", () => {
+  it("a study of another market never decorates this market's bars", () => {
+    mocks.scenesState = [FOREIGN_SCENE];
+    const markup = render(true);
+    // No research tabs, no scene count, no markers: the scene belongs to SOL.
+    expect(markup).not.toContain('role="tablist"');
+    expect(markup).not.toContain("published scene");
+    expect(markup.match(/data-research-markers="([^"]*)"/)?.[1]).toBe("");
+    mocks.scenesState = [SCENE];
+  });
+
+  it("the scene picker and the Open on graph action are identity-keyed affordances", () => {
+    mocks.scenesState = [SCENE, FOREIGN_SCENE];
+    const markup = render(true, undefined, "ETH");
+    // The picker lists only this market's scenes; the open action is present.
+    expect(markup).toContain('data-testid="market-chart-scene-select"');
+    expect(markup).toContain('data-testid="market-chart-open-scene"');
+    expect(markup).toContain("Open on graph");
+    expect(markup).toContain("ETH upgrades on ETH");
+    expect(markup).not.toContain("Breakpoints on SOL");
+    // Only the market's own study decorates Live.
+    const stub = markup.match(/data-research-markers="([^"]*)"/)?.[1] ?? "";
+    const markers = JSON.parse(stub.replace(/&quot;/g, '"').replace(/&amp;/g, "&")) as Array<{
+      key?: string;
+    }>;
+    expect(markers.every((marker) => String(marker.key).startsWith("scene-1:"))).toBe(true);
+    mocks.scenesState = [SCENE];
   });
 });

@@ -274,9 +274,12 @@ describe("calculation versions and menu", () => {
     for (const field of ["entryBasis", "illustrativeNotionalUsd", "first_closed_bar_after_event"]) {
       expect(menu).toContain(field);
     }
-    // Publishing returns the scene on the graph: the model must not call
-    // show afterwards, and the menu says so next to the shape it shows.
-    expect(menu).toContain("no follow-up show call");
+    // Publishing saves and activates the scene and returns it with an open
+    // action: no follow-up show call is needed to read it back, and the menu
+    // states the publication/visibility split the action carries.
+    expect(menu).toContain("publishing saves and activates the scene");
+    expect(menu).toContain("open action that focuses it");
+    expect(menu).toContain("never that the user's graph visibly changed");
     expect(menu).toContain("show {sceneId}");
   });
 });

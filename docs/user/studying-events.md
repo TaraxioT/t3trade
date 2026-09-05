@@ -217,8 +217,11 @@ Ask for the study and it does not stay a paragraph. Say:
 > it on the graph.
 
 Putting it on the graph is one call: publish. It measures the set and
-publishes the scene in the same breath — there is no second step to forget,
-and the scene it hands back, with its id, is the proof it is shown. A study
+publishes the scene in the same breath — and hands back an Open on graph
+action with the exact scene it created. Publishing is a record becoming
+active, not your screen changing: the scene is saved for the thread, and
+pressing Open on graph (or the picker above the chart) selects it, switches
+to the view that frames its markers, and fits the window to them. A study
 that was only run stays text in the conversation; its answer even ends by
 naming the publish call, so the last sentence points at the graph. And if a
 publish fails, it fails out loud: the answer is a refusal with the reason,
@@ -228,14 +231,20 @@ Publishing does not take the graph over. It stays on Live, and the study's
 occurrences arrive right there: each one a named marker at the exact instant
 it happened — an upgrade that switched on at one moment is a vertical rule at
 that exact millisecond, with its name and UTC time, and the one link the date
-is authoritatively stated at; a multi-day event is a band across its span. The
-next upcoming date stands in the space to the right of now, waiting. Once, the
-graph fits itself so the study is actually in view — a study whose
-occurrences run back years resolves to the All range on 1 week bars (and steps
-up to 1 month bars when the archive holds more weeks than the chart has room
-for) — and then it never moves your range again. If an occurrence is older
-than your recorded history, it says so in a note under the chart instead of
-drawing a marker where no data exists.
+is authoritatively stated at; a multi-day event is a band across its span —
+and beside each measured occurrence, a rule at its measured entry and another
+at its exit, so "plot my entries and exits" is answered on Live itself. The
+next upcoming date stands in the space to the right of now, waiting. A
+published scene decorates only the market it was measured on: a thread that
+studied ETH will not paint ETH's markers on another market's bars, and the
+graph's scene picker lists only the market's own scenes. Once, the graph fits
+itself so the study is actually in view — a study whose occurrences run back
+years resolves to the All range on 1 week bars (and steps up to 1 month bars
+when the archive holds more weeks than the chart has room for) — and then it
+never moves your range again, unless you press Open on graph for that scene,
+which is an explicit ask and may re-fit. If an occurrence is older than your
+recorded history, it says so in a note under the chart instead of drawing a
+marker where no data exists.
 
 The Range control and the Bars control are separate, because "how much
 history" and "how wide is each bar" are different questions: pick 1Y of

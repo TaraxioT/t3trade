@@ -101,12 +101,37 @@ export function baselineReference(
 }
 
 /**
- * The scene-derived markers the LIVE graph draws, one per occurrence window at
- * its exact saved instants. An instantaneous activation (`startAt === endAt`)
- * becomes a rule at that millisecond; a true span becomes a band; an
- * occurrence after `now` is flagged `upcoming` so the renderer can place it in
- * the future gutter. Uncovered occurrences are still handed over — coverage is
- * the renderer's to say, never a reason to silently drop a recorded fact.
+ * The market one scene belongs to, from whichever payload carries it. A scene
+ * is thread-scoped, but the graph that draws it is a market's: selection
+ * filters by this so one market's bars never carry another market's markers.
+ */
+export function sceneMarketOf(scene: {
+  readonly eventStudy?: { readonly market: string } | undefined;
+  readonly strategyReplay?: { readonly thesis: { readonly market: string } } | undefined;
+  readonly annotation?: { readonly market: string } | undefined;
+}): string | null {
+  return (
+    scene.eventStudy?.market ??
+    scene.strategyReplay?.thesis.market ??
+    scene.annotation?.market ??
+    null
+  );
+}
+
+/**
+ * The scene-derived markers the LIVE graph draws. Every occurrence window is
+ * drawn at its exact saved instants: an instantaneous activation
+ * (`startAt === endAt`) becomes a rule at that millisecond; a true span becomes
+ * a band; an occurrence after `now` is flagged `upcoming` so the renderer can
+ * place it in the future gutter. Uncovered occurrences are still handed over —
+ * coverage is the renderer's to say, never a reason to silently drop a
+ * recorded fact.
+ *
+ * A covered occurrence ALSO draws its measured entry and exit as point rules
+ * at the instants the study measured: "plot my entries and exits" is answerable
+ * on Live, not only inside the Calendar view. They are labelled as the study's
+ * own measurements (the accessible name says counterfactual, never a fill) and
+ * never drawn for a window the study could not measure.
  */
 export function liveResearchMarkers(
   scene: {
@@ -122,15 +147,41 @@ export function liveResearchMarkers(
 ): ReadonlyArray<ChartResearchMarkerInput> {
   const study = scene.eventStudy;
   if (study === undefined) return [];
-  return study.occurrenceWindows.map((window) => ({
-    key: `${scene.sceneId}:${window.startAt}`,
-    label: window.label ?? study.eventSetName,
-    startAt: window.startAt,
-    endAt: window.endAt,
-    sourceUrl: window.source,
-    covered: window.covered,
-    upcoming: window.endAt > now,
-  }));
+  const markers: Array<ChartResearchMarkerInput> = [];
+  for (const window of study.occurrenceWindows) {
+    const name = window.label ?? study.eventSetName;
+    markers.push({
+      key: `${scene.sceneId}:${window.startAt}`,
+      label: name,
+      startAt: window.startAt,
+      endAt: window.endAt,
+      sourceUrl: window.source,
+      covered: window.covered,
+      upcoming: window.endAt > now,
+    });
+    if (!window.covered || window.entryTime === undefined || window.exitTime === undefined) {
+      continue;
+    }
+    markers.push({
+      key: `${scene.sceneId}:${window.startAt}:entry`,
+      label: `${name} entry`,
+      startAt: window.entryTime,
+      endAt: window.entryTime,
+      sourceUrl: window.source,
+      covered: true,
+      upcoming: false,
+    });
+    markers.push({
+      key: `${scene.sceneId}:${window.startAt}:exit`,
+      label: `${name} exit`,
+      startAt: window.exitTime,
+      endAt: window.exitTime,
+      sourceUrl: window.source,
+      covered: true,
+      upcoming: false,
+    });
+  }
+  return markers;
 }
 
 /**

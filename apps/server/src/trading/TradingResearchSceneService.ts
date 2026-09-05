@@ -121,7 +121,9 @@ export const composeSceneViews = (input: {
             : set.retiredAt === null
               ? ("ok" as const)
               : ("retired" as const),
-        ...(invalid === null ? { scene: composed } : {}),
+        // A refused composition keeps the honest numbers and says why the
+        // layers are absent, rather than promising markers nothing will draw.
+        ...(invalid === null ? { scene: composed } : { sceneError: invalid }),
       };
     });
   });

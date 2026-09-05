@@ -148,6 +148,9 @@ const renderPanel = (
 ) =>
   renderToStaticMarkup(
     <ResearchScenePanel
+      selectedSceneId={null}
+      onSelectScene={() => {}}
+      onOpenScene={() => {}}
       environmentId={"env" as never}
       scenes={[
         {
@@ -311,6 +314,9 @@ describe("ResearchScenePanel: loading, empty and error states keep the panel's s
   it("renders the error sentence, not a panel, when scenes fail to load", () => {
     const markup = renderToStaticMarkup(
       <ResearchScenePanel
+        selectedSceneId={null}
+        onSelectScene={() => {}}
+        onOpenScene={() => {}}
         environmentId={"env" as never}
         scenes={[]}
         loading={false}
@@ -326,6 +332,9 @@ describe("ResearchScenePanel: loading, empty and error states keep the panel's s
   it("renders a loading placeholder while the first read is in flight", () => {
     const markup = renderToStaticMarkup(
       <ResearchScenePanel
+        selectedSceneId={null}
+        onSelectScene={() => {}}
+        onOpenScene={() => {}}
         environmentId={"env" as never}
         scenes={[]}
         loading={true}
@@ -340,6 +349,9 @@ describe("ResearchScenePanel: loading, empty and error states keep the panel's s
   it("renders nothing when the thread holds no scenes", () => {
     const markup = renderToStaticMarkup(
       <ResearchScenePanel
+        selectedSceneId={null}
+        onSelectScene={() => {}}
+        onOpenScene={() => {}}
         environmentId={"env" as never}
         scenes={[]}
         loading={false}
@@ -398,6 +410,9 @@ describe("ResearchScenePanel: a path_extrema scene (USD 2,000 short)", () => {
 
   const markup = renderToStaticMarkup(
     <ResearchScenePanel
+      selectedSceneId={null}
+      onSelectScene={() => {}}
+      onOpenScene={() => {}}
       environmentId={"env" as never}
       scenes={[
         {

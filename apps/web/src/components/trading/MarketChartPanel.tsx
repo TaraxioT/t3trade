@@ -72,6 +72,7 @@ import {
   liveResearchMarkers,
   nextGraphViewMode,
   sceneAutoFitDecision,
+  sceneMarketOf,
   uncoveredOccurrenceNotes,
   type GraphViewMode,
 } from "./researchScenePresentation.ts";
@@ -162,16 +163,70 @@ export function MarketChartPanel({
   // and the markers are read-only. @see composerPrefill
   const prefill = useComposerPrefill(threadRef ?? null);
 
-  // The thread's active event-study scene: what the live graph decorates
-  // itself with and what the research views open on. The scenes hook already
-  // keeps only active scenes, so a cleared or superseded scene vanishes here
-  // and its markers leave the graph with it.
+  // The thread's active scenes, filtered to THIS panel's market before
+  // anything draws. A scene belongs to the market it was measured on: without
+  // the filter, a thread that studied ETH would draw its markers on BTC bars
+  // — foreign geometry at honest-looking positions. Selection is keyed by
+  // scene ID, never array position: the server's newest-first order can
+  // change between polls, and an index would silently point at another scene.
+  // The scenes hook already keeps only active scenes, so a cleared or
+  // superseded scene vanishes here and its markers leave the graph with it.
   const activeScenes = scenes.scenes ?? [];
-  const activeStudyScene = useMemo(
-    () => activeScenes.find((scene) => scene.eventStudy !== undefined) ?? null,
-    [activeScenes],
+  const marketScenes = useMemo(
+    () =>
+      activeScenes.filter(
+        (scene) => (sceneMarketOf(scene) ?? "").toUpperCase() === asset.toUpperCase(),
+      ),
+    [activeScenes, asset],
   );
-  const hasScenes = activeScenes.length > 0;
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  // One-time auto-fit per active scene id (declared here because the market
+  // and environment resets below clear it). The gate is a ref of applied ids
+  // around the pure decision, so polls and refreshes of the same scene never
+  // move the range again.
+  const appliedAutoFitRef = useRef<ReadonlySet<string>>(new Set());
+  // The all + 1w fit can outrun the bar budget once the archive's own
+  // recording start is known — only the response can say. When the fit chose
+  // all + 1w, this holds the scene id whose response may still promote to
+  // monthly bars; the reader moving Range or Bars cancels it.
+  const pendingPromotionRef = useRef<string | null>(null);
+  // A market or environment switch invalidates a prior selection and every
+  // fit already applied: fits are per market context, and a scene id selected
+  // under another asset is not this asset's scene even if the thread holds it.
+  useEffect(() => {
+    setSelectedSceneId(null);
+    appliedAutoFitRef.current = new Set();
+    pendingPromotionRef.current = null;
+  }, [asset, environmentId]);
+  const marketStudyScenes = useMemo(
+    () => marketScenes.filter((scene) => scene.eventStudy !== undefined),
+    [marketScenes],
+  );
+  const activeStudyScene = useMemo(() => {
+    const selected = marketStudyScenes.find((scene) => scene.sceneId === selectedSceneId);
+    return selected ?? marketStudyScenes[0] ?? null;
+  }, [marketStudyScenes, selectedSceneId]);
+  const hasScenes = marketScenes.length > 0;
+  const selectedScene = useMemo(
+    () =>
+      marketScenes.find((scene) => scene.sceneId === selectedSceneId) ?? marketScenes[0] ?? null,
+    [marketScenes, selectedSceneId],
+  );
+
+  // The explicit open/focus intent: publication made the scene active, and
+  // THIS is the user's ask to see it — refresh first so a scene published
+  // moments ago is in hand, select it by identity, switch to the view that
+  // frames its markers, and clear its fit gate so opening re-frames even a
+  // scene that had auto-fitted before. It never recomputes or duplicates the
+  // scene; it navigates to what is already there.
+  const openScene = (sceneId: string) => {
+    scenes.refresh();
+    setSelectedSceneId(sceneId);
+    setView("calendar");
+    const nextApplied = new Set(appliedAutoFitRef.current);
+    nextApplied.delete(sceneId);
+    appliedAutoFitRef.current = nextApplied;
+  };
 
   const armAtPrice = (price: number) => {
     if (isArming || data === null) return;
@@ -217,18 +272,9 @@ export function MarketChartPanel({
     hadScenesRef.current = hasScenes;
   }, [hasScenes]);
 
-  // One-time auto-fit per active scene id: when the thread's active
-  // event-study scene CHANGES, fit the range once so the study's occurrences
-  // land inside the window. The gate is a ref of applied ids around the pure
-  // decision, so polls and refreshes of the same scene never move the range
-  // again, and a scene that comes back (re-shown, superseded) does not
-  // re-fit.
-  const appliedAutoFitRef = useRef<ReadonlySet<string>>(new Set());
-  // The all + 1w fit can outrun the bar budget once the archive's own
-  // recording start is known — only the response can say. When the fit chose
-  // all + 1w, this holds the scene id whose response may still promote to
-  // monthly bars; the reader moving Range or Bars cancels it.
-  const pendingPromotionRef = useRef<string | null>(null);
+  // When the selected event-study scene changes, fit the range once so the
+  // study's occurrences land inside the window (see the gate above; a scene
+  // that comes back does not re-fit unless the reader explicitly opens it).
   useEffect(() => {
     if (activeStudyScene === null) return;
     const decision = sceneAutoFitDecision(appliedAutoFitRef.current, activeStudyScene, Date.now());
@@ -319,17 +365,46 @@ export function MarketChartPanel({
                   ? "bg-accent font-medium text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
-              onClick={() => setView(option)}
+              onClick={() => {
+                setView(option);
+                if (option !== "live") scenes.refresh();
+              }}
               onKeyDown={onViewKeyDown}
             >
               {option === "live" ? "Live" : option === "calendar" ? "Calendar" : "Event aligned"}
             </button>
           ))}
           <span className="text-muted-foreground/70">
-            {activeScenes.length === 1
+            {marketScenes.length === 1
               ? "1 published scene"
-              : `${activeScenes.length} published scenes`}
+              : `${marketScenes.length} published scene(s) on ${asset}`}
           </span>
+          {selectedScene === null ? null : (
+            <span className="ml-auto flex items-center gap-1">
+              <select
+                aria-label="Research scene"
+                data-testid="market-chart-scene-select"
+                className="max-w-56 truncate rounded-md border border-border/60 bg-transparent px-1 py-0.5 font-mono text-[10.5px]"
+                value={selectedScene.sceneId}
+                onChange={(event) => setSelectedSceneId(event.target.value)}
+              >
+                {marketScenes.map((scene) => (
+                  <option key={scene.sceneId} value={scene.sceneId}>
+                    {scene.title}
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="xs"
+                variant="ghost"
+                className="h-6 px-2 text-[10.5px]"
+                data-testid="market-chart-open-scene"
+                onClick={() => openScene(selectedScene.sceneId)}
+              >
+                Open on graph
+              </Button>
+            </span>
+          )}
         </div>
       ) : null}
       {/* The Range rail and the Bars menu: two controls, two vocabularies.
@@ -396,7 +471,10 @@ export function MarketChartPanel({
         {hasScenes && view !== "live" ? (
           <ResearchScenePanel
             environmentId={environmentId}
-            scenes={activeScenes}
+            scenes={marketScenes}
+            selectedSceneId={selectedScene?.sceneId ?? null}
+            onSelectScene={setSelectedSceneId}
+            onOpenScene={openScene}
             loading={scenes.isLoading}
             error={scenes.error}
             mode={view === "aligned" ? "aligned" : "calendar"}

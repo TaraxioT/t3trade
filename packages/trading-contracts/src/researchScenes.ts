@@ -535,6 +535,14 @@ export const ResearchSceneView = Schema.Struct({
   disclaimer: Schema.Literal(RESEARCH_DISCLAIMER),
   /** The server-composed layers and viewport the graph renders, when the kind has a composer. */
   scene: Schema.optional(TradingChartScene),
+  /**
+   * Present when composition was attempted and REFUSED (over the caps, or a
+   * payload the composer could not honor): the numbers stay honest on the
+   * view, but the deterministic layers are absent and the reason rides here
+   * instead of the scene silently promising markers it cannot draw. Absent
+   * otherwise — including on views written before the field existed.
+   */
+  sceneError: Schema.optional(Schema.String),
   eventStudy: Schema.optional(EventStudyScenePayload),
   strategyReplay: Schema.optional(StrategyReplayScenePayload),
   annotation: Schema.optional(AnnotationScenePayload),
@@ -619,9 +627,40 @@ export const TradingChartInput = Schema.Struct({
 });
 export type TradingChartInput = typeof TradingChartInput.Type;
 
+/**
+ * The navigation affordance a chart result carries: an explicit, narrowly
+ * scoped open/focus intent for one scene. Publishing and `show` are reads
+ * that change no graph state server-side — a scene row becoming active is a
+ * record, not a viewport — so the direct path to SEEING a scene is this
+ * action, rendered as a control the user can press. It names the exact scene
+ * identity (scene id, thread, market) and the view that frames its markers,
+ * so a client cannot accidentally draw one thread's scene on another
+ * market's bars.
+ */
+export const OpenSceneAction = Schema.Struct({
+  kind: Schema.Literal("open_scene"),
+  sceneId: Schema.String,
+  threadId: Schema.String,
+  market: TradingMarket,
+  /** The view that frames this scene's markers: calendar for studies and replays, live for annotations. */
+  view: Schema.Literals(["live", "calendar", "event_aligned"]),
+  /** Present when the intent is to frame one occurrence's window (calendar view). */
+  occurrenceIndex: Schema.optional(Schema.Number),
+  /** The control's own words, fixed here so no surface invents a promise. */
+  label: Schema.Literal("Open on graph"),
+});
+export type OpenSceneAction = typeof OpenSceneAction.Type;
+
 export const TradingChartResult = Schema.Struct({
   scene: Schema.optional(ResearchSceneView),
   scenes: Schema.optional(Schema.Array(ResearchSceneView)),
+  /**
+   * Present on `publish_*` and `show` results: the open/focus affordance for
+   * the exact scene this call produced or read. Publication proves a record
+   * was saved and made active, never that a viewport changed; this action is
+   * the honest bridge between the two.
+   */
+  open: Schema.optional(OpenSceneAction),
   outcome: Schema.optional(Schema.String),
   refused: Schema.optional(Schema.String),
   menu: Schema.optional(Schema.String),
@@ -638,10 +677,10 @@ export function renderTradingChartMenu(): string {
     "publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?, direction?, priceField?, excursionThresholdPct?, illustrativeNotionalUsd?, title?} measures the set on the archive " +
       `(horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS}, entry basis ${EVENT_STUDY_DEFAULT_ENTRY_BASIS}: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[EVENT_STUDY_DEFAULT_ENTRY_BASIS]}` +
       "; metric path_extrema {direction} publishes the post-entry extremum (a short's lowest low) and its excursion beside the terminal return, hindsight-perfect and labelled; excursionThresholdPct (negative for a short's dip) publishes the hit count over complete horizons with its matched every-bar baseline) " +
-      "and puts the study on this thread's graph: calendar windows, aligned traces, coverage and sources; publishing itself returns the scene on the graph, no follow-up show call",
+      "and puts the study on this thread's graph: calendar windows, aligned traces, coverage and sources; publishing saves and activates the scene — the result carries an open action that focuses it, and only the user pressing it (or opening the graph) makes it seen",
     "publish_strategy_replay {thesis | hypothesisId, title?} runs one cost-aware backtest and pins its trades and verdict to the graph",
     "annotate {market, at, text} pins one authored note to a moment; it renders labelled as authored, never as a computed layer",
-    `show {sceneId}; list; clear {sceneId?} (no sceneId clears this thread's scenes, at most ${RESEARCH_SCENES_MAX_PER_THREAD} scenes a thread)`,
-    "scenes are research: they place no order, arm no validation, and say so beside every number",
+    `show {sceneId} reads one scene back (history included, labelled as history); list; clear {sceneId?} (no sceneId clears this thread's scenes, at most ${RESEARCH_SCENES_MAX_PER_THREAD} scenes a thread)`,
+    "scenes are research: they place no order, arm no validation, and say so beside every number; a returned sceneId proves the scene was saved and made active — never that the user's graph visibly changed, so never claim shown without the open action used or the user confirming",
   ].join(" · ");
 }

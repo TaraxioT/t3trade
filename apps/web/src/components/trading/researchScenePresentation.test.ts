@@ -238,17 +238,21 @@ describe("liveResearchMarkers (the live graph's scene decoration)", () => {
 
   const markers = liveResearchMarkers(scene, NOW);
 
-  it("derives one marker per occurrence, keyed by scene and exact startAt", () => {
+  it("derives one marker per occurrence, plus entry and exit points for the covered ones", () => {
     expect(markers.map((marker) => marker.key)).toEqual([
       `scene-9:${SPAN_START}`,
+      `scene-9:${SPAN_START}:entry`,
+      `scene-9:${SPAN_START}:exit`,
       `scene-9:${RULE_AT}`,
+      `scene-9:${RULE_AT}:entry`,
+      `scene-9:${RULE_AT}:exit`,
       `scene-9:${UPCOMING}`,
       `scene-9:${NOW - 3_000 * DAY}`,
     ]);
   });
 
   it("an exact occurrence keeps its exact millisecond; a true span keeps both instants", () => {
-    const rule = markers[1];
+    const rule = markers[3];
     expect(rule?.startAt).toBe(RULE_AT);
     expect(rule?.endAt).toBe(RULE_AT);
     const span = markers[0];
@@ -256,15 +260,36 @@ describe("liveResearchMarkers (the live graph's scene decoration)", () => {
     expect(span?.endAt).toBe(SPAN_END);
   });
 
+  it("a covered occurrence's measured entry and exit draw as point rules at their instants", () => {
+    expect(markers[1]).toMatchObject({
+      key: `scene-9:${SPAN_START}:entry`,
+      label: "Devcon entry",
+      startAt: SPAN_END,
+      endAt: SPAN_END,
+      covered: true,
+      upcoming: false,
+    });
+    expect(markers[2]).toMatchObject({
+      key: `scene-9:${SPAN_START}:exit`,
+      label: "Devcon exit",
+      startAt: SPAN_END + 30 * DAY,
+      endAt: SPAN_END + 30 * DAY,
+      covered: true,
+    });
+    // Uncovered occurrences contribute no measured geometry: there is none.
+    expect(markers.filter((marker) => marker.key.endsWith(":entry"))).toHaveLength(2);
+    expect(markers.filter((marker) => marker.key.endsWith(":exit"))).toHaveLength(2);
+  });
+
   it("labels fall back to the event set's name, carry the source, and flag coverage and upcoming", () => {
-    expect(markers[1]?.label).toBe("ETH upgrades");
+    expect(markers[3]?.label).toBe("ETH upgrades");
     expect(markers[0]?.label).toBe("Devcon");
     for (const marker of markers) {
       expect(marker.sourceUrl.startsWith("https://e.org/")).toBe(true);
     }
-    expect(markers[2]?.upcoming).toBe(true);
+    expect(markers[6]?.upcoming).toBe(true);
     expect(markers[0]?.upcoming).toBe(false);
-    expect(markers[2]?.covered).toBe(false);
+    expect(markers[6]?.covered).toBe(false);
     expect(markers[0]?.covered).toBe(true);
   });
 
