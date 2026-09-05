@@ -246,13 +246,15 @@ which is an explicit ask and may re-fit. If an occurrence is older than your
 recorded history, it says so in a note under the chart instead of drawing a
 marker where no data exists.
 
-The Range control and the Bars control are separate, because "how much
-history" and "how wide is each bar" are different questions: pick 1Y of
-history and let the bars be automatic, or name the bars yourself — 1 min
-through 1 month, spelled out. A bar width that cannot honestly serve the
-range you picked (one week of history on one-week bars is a single bar) falls
-back to automatic and says so beside the chart. The label there always names
-what is actually drawn.
+The Range control and the Bars control belong to Live, because "how much
+history" and "how wide is each bar" are questions about the live read: pick
+1Y of history and let the bars be automatic, or name the bars yourself — 1
+min through 1 month, spelled out. Calendar and Event aligned draw recipes
+the server measured, so they state their interval and horizon read-only
+instead — the controls never appear to recalculate something no press can.
+A bar width that cannot honestly serve the range you picked (one week of
+history on one-week bars is a single bar) falls back to automatic and says
+so beside the chart, and the label always names what is actually drawn.
 
 The graph offers Live, Calendar, and Event aligned as tabs over one frame:
 switching views changes the picture, never the layout. In Calendar, one
@@ -330,6 +332,58 @@ were illustrations on each event independently: one thousand dollars per
 event, never a running balance, never a portfolio return, and never a
 forecast. A cost-aware replay is where execution realism begins, and it is a
 separate question with its own numbers.
+
+## What ships, and where it is pinned
+
+The compact matrix of what the feature actually does, each row tied to the
+behavior and the focused tests that pin it:
+
+| Capability                   | What ships                                                                                                 | Pinned by                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Event recording & precision  | UTC ISO dates; instant/window/date precision; one source per occurrence; read-back digest                  | `eventSets.test.ts` (ISO conventions, validator)                        |
+| Study measurement            | Entry by grid slot, unbroken-grid horizons, one as-of cutoff, complete-only aggregates                     | `eventSets.test.ts` (close basis, gaps, cutoff, counts)                 |
+| Notional illustration        | Per-event gross arithmetic on the chosen notional; hindsight and terminal side by side                     | `researchScenePresentation.test.ts` (USD helpers), panel tests          |
+| Threshold hit rates          | Only with a recorded `excursionThresholdPct`; matched every-bar baseline; chosen-after-results flag        | `eventSets.test.ts` (threshold block)                                   |
+| Graph open/selection         | Publish saves and activates; Open on graph navigates; scenes market-filtered, identity-keyed               | `MarketChartPanel.test.tsx`, `handlers.events-study.test.ts` (parity)   |
+| Calendar markers             | Activation, measured entry, extremum bar, terminal exit per occurrence; coincident points named            | `ResearchScenePanel.test.tsx`, `missionChartGeometry.test.ts`           |
+| Aligned comparison           | Identity-keyed traces, explicit failed/empty outcomes, varying contribution disclosed                      | `ResearchScenePanel.test.tsx`                                           |
+| Deterministic replay         | Closed-bar cutoff, funding through the settled close, gap-through stop fills, causal re-entry              | `backtest.test.ts`, `forward.test.ts`, `TradingBacktestService.test.ts` |
+| Forward validation lifecycle | Atomic ledger + checkpoint, derived fill identity, chronological catch-up, expiry at the declared deadline | `TradingThesisValidationService.test.ts` (durability, catch-up)         |
+| Testnet execution            | Separately authorized; research places no order and arms nothing                                           | service boundary tests (paper/real separation)                          |
+
+The honest noes, stated once here rather than scattered: a scene id does not
+prove visible rendering (press Open on graph); a candle low is a bar, not a
+tick; a partial horizon is not a complete 30-day outcome and never enters a
+mean; a study is not a strategy; a tracking band is a heuristic, not a
+computed sampling distribution.
+
+## Finding your way back
+
+To locate a scene: the graph's scene picker (above the chart, on every view)
+lists this thread's scenes for the market shown; Open on graph selects it,
+switches to its framing view and fits its markers. To inspect coverage: the
+study's rows carry complete, truncated, and unmeasured counts, and the note
+under Live names each unmeasured occurrence with the engine's own reason — a
+gap reads as a gap, not as "predates data". To retry unavailable data: the
+stale notice over a kept picture has a retry; a publish that failed says so
+as a refusal. To recognize stale or legacy results: scenes computed at an
+older calculation version say so in their details, and republishing the same
+recipe recomputes into a new scene — nothing is silently restamped. To
+inspect replay trades: the replay scene lists every visible trade's side,
+both prices, reason and net, with bounded navigation over the rest. To pause
+or end a paper validation: `trading_validate` pause/resume/end — bars under
+a pause are excluded and the report says so.
+
+## The short path this feature is for
+
+Research a sourced event set (official sources, verified activation times,
+one source per date) → study it (complete and uncovered rows, both stated) →
+see it (Open on graph: corrected entries, extrema and terminal endpoints,
+each labelled for what it is) → if it is interesting, name a prospective
+exit and take it to a cost-aware replay → optionally arm a forward paper
+validation and let the clock answer. Every step works without a signer;
+execution on the testnet exchange is a separate, explicit ask with its own
+protections, and nothing in this path can place an order.
 
 ## What to keep in mind
 
