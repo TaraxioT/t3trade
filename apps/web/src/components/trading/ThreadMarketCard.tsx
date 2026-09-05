@@ -261,9 +261,13 @@ export function ThreadMarketCard({
       </button>
       {/* Unmounted rather than hidden while folded: see the module note. The
           cap is on the drawer, so a mission with a long ledger scrolls inside
-          it instead of pushing the composer down the column. */}
+          it instead of pushing the composer down the column. The x axis is
+          CLIPPED, not auto: `overflow-y-auto` alone computes overflow-x to
+          auto, and a stray horizontal trackpad swipe then scrolls the drawer
+          sideways and cuts the left edge off every line in it with no way
+          back. Nothing in the drawer is meant to pan horizontally. */}
       {isOpen ? (
-        <div className={cn("max-h-[46vh] overflow-y-auto pt-1")}>
+        <div className={cn("max-h-[46vh] overflow-x-clip overflow-y-auto pt-1")}>
           {mission === null ? (
             <UnboundMarketBody
               environmentId={environmentId}

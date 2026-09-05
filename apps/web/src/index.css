@@ -966,24 +966,29 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
      thread drawer, the mission panel, research — so the market reads the same
      size in every surface that shows it. Compact below the sm breakpoint,
      where the composer column is the whole screen and that much of it is too
-     much chart. The desktop tier carries the research inspector: its split
-     stage/inspector body needs the extra height so a study's occurrence rows
-     are visible beside the chart instead of below an internal scroll fold. */
+     much chart. This fixed tier is LIVE's chart. The research views cannot
+     take it too: they render inside the market drawer's capped body beside
+     the tab row, recipe line and footer, and a second fixed 46vh there
+     double-books the drawer's own cap — the study crushes to slivers and the
+     drawer grows nested scrollbars. Research stages instead guarantee their
+     chart a band and let the explanatory content extend the drawer's single
+     vertical scroll. */
   .trading-graph-viewport {
     height: clamp(200px, 30vh, 280px);
+  }
+
+  .trading-graph-viewport-research {
+    min-height: clamp(160px, 22vh, 240px);
   }
 
   @media (min-width: 40rem) {
     .trading-graph-viewport {
       height: clamp(300px, 46vh, 470px);
     }
-  }
 
-  /* An inspector pane that scrolls inside the fixed graph viewport instead of
-     pushing the composer it is attached to. */
-  .trading-graph-inspector {
-    overflow-y: auto;
-    min-height: 0;
+    .trading-graph-viewport-research {
+      min-height: clamp(200px, 26vh, 300px);
+    }
   }
 
   .chat-composer-glass-shell {

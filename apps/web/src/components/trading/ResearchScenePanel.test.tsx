@@ -73,6 +73,9 @@ const rows = [
 
 const payload = (
   baseline: { samples: number; meanReturnPct: number; medianReturnPct: number } | null,
+  rowsOverride?: typeof rows,
+  n?: number,
+  nCovered?: number,
 ) =>
   ({
     priceSource: "hyperliquid",
@@ -88,18 +91,18 @@ const payload = (
     report: {
       horizonBars: 30,
       horizonMs: 30 * DAY,
-      n: 3,
-      nCovered: 2,
+      n: n ?? 3,
+      nCovered: nCovered ?? 2,
       meanReturnPct: -3,
       medianReturnPct: -3,
       hitRatePercent: 33.33,
       bestReturnPct: 4,
       worstReturnPct: -10,
       baseline,
-      rows,
+      rows: rowsOverride ?? rows,
       verdict: "2 of 3 occurrences fall inside archived data.",
     },
-    occurrenceWindows: rows,
+    occurrenceWindows: rowsOverride ?? rows,
     archiveBounds: { recordingSince: T0 - 400 * DAY, fromT: T0, toT: T1 + 31 * DAY },
   }) as never;
 
@@ -136,7 +139,9 @@ const deterministic = [
     label: "Futurera",
     occurrenceIndex: 2,
   },
-] as never;
+  // Loosely typed on purpose: the scene fixture below is cast whole, and the
+  // selection-default tests remap `occurrenceIndex` over this array.
+] as unknown as ReadonlyArray<{ [key: string]: unknown }>;
 
 const renderPanel = (
   mode: "calendar" | "aligned",
@@ -145,6 +150,14 @@ const renderPanel = (
     meanReturnPct: 1,
     medianReturnPct: 1,
   },
+  /** Row and layer overrides for the selection-default tests; identity-keyed
+   * fixtures stay untouched by default. */
+  overrides: {
+    rows?: typeof rows;
+    deterministic?: ReadonlyArray<{ [key: string]: unknown }>;
+    n?: number;
+    nCovered?: number;
+  } = {},
 ) =>
   renderToStaticMarkup(
     <ResearchScenePanel
@@ -168,12 +181,12 @@ const renderPanel = (
             sceneId: "scene-1",
             kind: "event_study",
             viewport: { kind: "event_aligned", anchorAt: T0 },
-            deterministic,
+            deterministic: overrides.deterministic ?? deterministic,
             authored: [],
             sources: ["https://example.org/activation"],
             disclaimer: "Historical research. No order placed. Not a forecast.",
           },
-          eventStudy: payload(baseline),
+          eventStudy: payload(baseline, overrides.rows, overrides.n, overrides.nCovered),
         } as never,
       ]}
       loading={false}
@@ -258,6 +271,54 @@ describe("ResearchScenePanel: calendar mode", () => {
   it("adds no baseline price line to Calendar: a return baseline is not a price level", () => {
     expect(markup).not.toContain('data-testid="research-baseline-reference"');
     expect(markup).not.toContain("Baseline mean");
+  });
+});
+
+describe("ResearchScenePanel: calendar first open", () => {
+  // The production shape that forced this test: the study's FIRST row is an
+  // unmeasured occurrence ("before the archived window"), while measured rows
+  // exist further down. Index 0 as the default showed one "was not measured"
+  // sentence where a chart belongs; the first open must land on the first
+  // MEASURED occurrence, with every row still one click away.
+  const unmeasuredFirst = [
+    {
+      startAt: T0 - 200 * DAY,
+      endAt: T0 - 200 * DAY,
+      label: "Frontier",
+      source: "https://example.org/before-archive",
+      covered: false,
+      reason: "before the archived window: the bar it would have entered on was never recorded",
+      entryTime: undefined,
+      entryPrice: undefined,
+      exitTime: undefined,
+      exitPrice: undefined,
+      returnPct: undefined,
+      truncated: false,
+      barsCovered: undefined,
+    },
+    ...rows,
+  ];
+  const layersShifted = deterministic.map((layer) => ({
+    ...layer,
+    occurrenceIndex: (layer.occurrenceIndex as number) + 1,
+  }));
+  const markup = renderPanel("calendar", undefined, {
+    rows: unmeasuredFirst,
+    deterministic: layersShifted,
+    n: 4,
+    nCovered: 2,
+  });
+
+  it("defaults the stage to the first measured occurrence, not the first row", () => {
+    expect(markup).toContain("occurrence 2 of 4");
+    // The stage fallback sentence for an unmeasured row must not be the first
+    // thing a reader sees.
+    expect(markup).not.toContain("was not measured:");
+  });
+
+  it("keeps every unmeasured row's reason reachable in the inspector list", () => {
+    expect(markup).toContain("not measured:");
+    expect(markup).toContain("Frontier");
   });
 });
 

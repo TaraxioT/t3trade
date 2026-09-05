@@ -346,7 +346,7 @@ export function MarketChartPanel({
     <div className="flex flex-col gap-1">
       {hasScenes ? (
         <div
-          className="flex items-center gap-1 px-1 text-[10.5px]"
+          className="flex min-w-0 flex-wrap items-center gap-1 px-1 text-[10.5px]"
           role="tablist"
           aria-label="Chart view"
         >
@@ -359,7 +359,7 @@ export function MarketChartPanel({
               tabIndex={view === option ? 0 : -1}
               data-testid={`market-chart-view-${option}`}
               className={cn(
-                "cursor-pointer rounded px-2 py-0.5 transition-colors",
+                "shrink-0 cursor-pointer whitespace-nowrap rounded px-2 py-0.5 transition-colors",
                 "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1",
                 view === option
                   ? "bg-accent font-medium text-foreground"
@@ -374,17 +374,17 @@ export function MarketChartPanel({
               {option === "live" ? "Live" : option === "calendar" ? "Calendar" : "Event aligned"}
             </button>
           ))}
-          <span className="text-muted-foreground/70">
+          <span className="shrink-0 whitespace-nowrap text-muted-foreground/70">
             {marketScenes.length === 1
               ? "1 published scene"
               : `${marketScenes.length} published scene(s) on ${asset}`}
           </span>
           {selectedScene === null ? null : (
-            <span className="ml-auto flex items-center gap-1">
+            <span className="ml-auto flex min-w-0 items-center gap-1">
               <select
                 aria-label="Research scene"
                 data-testid="market-chart-scene-select"
-                className="max-w-56 truncate rounded-md border border-border/60 bg-transparent px-1 py-0.5 font-mono text-[10.5px]"
+                className="min-w-0 max-w-48 truncate rounded-md border border-border/60 bg-transparent px-1 py-0.5 font-mono text-[10.5px]"
                 value={selectedScene.sceneId}
                 onChange={(event) => setSelectedSceneId(event.target.value)}
               >
@@ -397,7 +397,7 @@ export function MarketChartPanel({
               <Button
                 size="xs"
                 variant="ghost"
-                className="h-6 px-2 text-[10.5px]"
+                className="h-6 shrink-0 whitespace-nowrap px-2 text-[10.5px]"
                 data-testid="market-chart-open-scene"
                 onClick={() => openScene(selectedScene.sceneId)}
               >
@@ -488,10 +488,17 @@ export function MarketChartPanel({
       )}
       {/* The one shared plot stage. Same frame, same header, same rail for
           Live, Calendar and Event aligned; the content changes, the geometry
-          never does. `className` is the caller's sizing; without it the
-          unified viewport sizing applies. */}
+          never does. `className` is the caller's sizing; without it Live takes
+          the unified fixed viewport, while the research views take the
+          research floor instead — their explanatory content extends the
+          drawer's one scroll rather than fighting its cap for a second fixed
+          height. */}
       <div
-        className={cn("relative flex min-h-0 flex-col", className ?? "trading-graph-viewport")}
+        className={cn(
+          "relative flex min-h-0 flex-col",
+          className ??
+            (view === "live" ? "trading-graph-viewport" : "trading-graph-viewport-research"),
+        )}
         data-testid="market-chart-stage"
       >
         {hasScenes && view !== "live" ? (

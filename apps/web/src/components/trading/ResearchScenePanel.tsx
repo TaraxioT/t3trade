@@ -451,7 +451,15 @@ function EventStudyBody(props: {
   const [notional, setNotional] = useState(
     props.payload.illustrativeNotionalUsd ?? NOTIONAL_DEFAULT,
   );
-  const [selected, setSelected] = useState(0);
+  // First open lands on the first occurrence the study actually MEASURED —
+  // `windowFor` needs an entry time, and index 0 can be an unmeasured row
+  // whose whole stage would be one "was not measured" sentence where a chart
+  // belongs. The inspector's rows still carry every unmeasured reason; only
+  // the default is chosen, and every row stays one click away.
+  const [selected, setSelected] = useState(() => {
+    const firstMeasured = props.payload.report.rows.findIndex((row) => row.entryTime !== undefined);
+    return firstMeasured === -1 ? 0 : firstMeasured;
+  });
   const { payload } = props;
   const { report } = payload;
   const intervalMs = report.horizonMs / report.horizonBars;
@@ -483,8 +491,11 @@ function EventStudyBody(props: {
 
   return (
     <>
-      {/* The stage: one occurrence, where it happened. */}
-      <div className="flex min-h-0 flex-[2] flex-col" data-testid="research-calendar-stage">
+      {/* The stage: one occurrence, where it happened. A definite height of
+          its own — the OccurrenceChart fills it — so the flowing inspector
+          below can extend the drawer's single scroll instead of splitting a
+          fixed frame into slivers. */}
+      <div className="flex h-48 shrink-0 flex-col sm:h-56" data-testid="research-calendar-stage">
         {row === undefined ? (
           <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
             this study holds no occurrences
@@ -517,14 +528,12 @@ function EventStudyBody(props: {
           />
         )}
       </div>
-      {/* The inspector: everything explanatory scrolls, the frame never grows.
-          Data before fine print: the compacted honesty summary, the notional
-          and the occurrence rows lead; the full honesty block is the
-          disclosure at the end. */}
-      <div
-        className="trading-graph-inspector min-h-0 flex-[3] overflow-y-auto border-t border-border/60 pt-1"
-        data-testid="research-inspector"
-      >
+      {/* The inspector: everything explanatory flows in the drawer's one
+          scroll — no second scroll fold inside the frame. Data before fine
+          print: the compacted honesty summary, the notional and the
+          occurrence rows lead; the full honesty block is the disclosure at
+          the end. */}
+      <div className="border-t border-border/60 pt-1" data-testid="research-inspector">
         <StudyExplanation payload={payload} calculationVersion={props.calculationVersion} />
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
           <label className="text-muted-foreground" htmlFor="research-notional">
@@ -920,9 +929,9 @@ function EventAlignedBody(props: {
   return (
     <>
       {/* The stage: the aggregate comparison, first. */}
-      <div className="flex min-h-0 flex-[2] flex-col gap-1" data-testid="research-aligned-stage">
+      <div className="flex flex-col gap-1" data-testid="research-aligned-stage">
         {covered.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
+          <div className="flex min-h-24 flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
             No covered occurrences to align. The calendar view says why each one was not measured.
           </div>
         ) : (
@@ -962,7 +971,10 @@ function EventAlignedBody(props: {
                 {covered.length} covered occurrence{covered.length === 1 ? "" : "s"}
               </span>
             </div>
-            <div className="min-h-0 flex-1" data-testid="research-aggregate">
+            {/* The aggregate's own band: a definite height the TraceSvg fills,
+                so the primary comparison is a chart, not a 48-unit sliver
+                whose labels ride the line they name. */}
+            <div className="h-40" data-testid="research-aggregate">
               <AggregateTrace
                 environmentId={props.environmentId}
                 payload={payload}
@@ -977,11 +989,9 @@ function EventAlignedBody(props: {
           the honesty lines — including the baseline's own numbers (median,
           samples, the overlapping-windows caveat), which live in detail text
           rather than on the stage. Traces flow two per row on a desktop-wide
-          drawer so six occurrences do not become six screens of scrolling. */}
-      <div
-        className="trading-graph-inspector min-h-0 flex-[3] overflow-y-auto border-t border-border/60 pt-1"
-        data-testid="research-inspector"
-      >
+          drawer so six occurrences do not become six screens of scrolling,
+          and the whole list rides the drawer's one scroll. */}
+      <div className="border-t border-border/60 pt-1" data-testid="research-inspector">
         <StudyExplanation payload={payload} calculationVersion={props.calculationVersion} />
         <div className="mt-1 text-xs text-muted-foreground">
           {covered.length} trace(s) rebased to their measured entry; the heavier line above is the
@@ -1250,12 +1260,9 @@ function StrategyReplayBody(props: {
     ];
   });
   return (
-    // A replay is a document, not a stage/inspector split: it scrolls inside
-    // the fixed viewport instead of growing it.
-    <div
-      className="trading-graph-inspector flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto"
-      data-testid="research-inspector"
-    >
+    // A replay is a document: it flows in the drawer's one scroll, its chart
+    // carrying its own fixed height.
+    <div className="flex flex-col gap-2" data-testid="research-inspector">
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>{payload.tradesTaken} trade(s) taken</span>
         <span>win rate {payload.winRatePercent}%</span>
@@ -1389,11 +1396,12 @@ function ReplayWindowChart(props: {
 }
 
 /**
- * The published scenes of one thread, rendered inside the graph's one fixed
- * plot stage: the mode tabs live on the outer graph (this panel receives the
- * mode), the picture fills the stage's upper half, and everything
- * explanatory scrolls in the inspector below it. Research never expands the
- * outer frame.
+ * The published scenes of one thread, rendered inside the graph's one plot
+ * stage: the mode tabs live on the outer graph (this panel receives the
+ * mode), the picture takes a definite band at the top, and everything
+ * explanatory flows after it. The panel holds no scroller of its own: the
+ * market drawer's capped body is the one vertical scroll research reads in,
+ * so a study never buries its occurrence rows under a second fold.
  */
 export function ResearchScenePanel(props: {
   readonly environmentId: EnvironmentId;
@@ -1475,7 +1483,7 @@ export function ResearchScenePanel(props: {
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col gap-1" data-testid="research-scene-panel">
+    <section className="flex min-h-0 flex-col gap-1" data-testid="research-scene-panel">
       <header className="flex flex-wrap items-center justify-between gap-2">
         {staleNotice}
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1558,10 +1566,7 @@ export function ResearchScenePanel(props: {
         ) : scene.strategyReplay !== undefined ? (
           <StrategyReplayBody environmentId={props.environmentId} payload={scene.strategyReplay} />
         ) : scene.annotation !== undefined ? (
-          <div
-            className="trading-graph-inspector flex min-h-0 flex-1 flex-col overflow-y-auto text-sm"
-            data-testid="research-inspector"
-          >
+          <div className="flex flex-col text-sm" data-testid="research-inspector">
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
               model note
             </span>{" "}
