@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  alignedExtremumMark,
   OCCURRENCE_CONTEXT_BARS,
   activeGraphScenes,
   aggregateAlignedTrace,
@@ -10,7 +11,11 @@ import {
   BASELINE_UNAVAILABLE_SENTENCE,
   baselineReference,
   describeHorizon,
+  extremumBarPhrase,
+  extremumCoincidenceSentence,
   extremumPhrase,
+  extremumRuleLabel,
+  extremumRuleMarker,
   fixedHorizonPnlUsd,
   fmtUsd,
   grossChangeUsd,
@@ -27,6 +32,11 @@ import {
   payloadStudyMetric,
   provenanceTrailLine,
   occurrenceWindow,
+  REPLAY_MARKER_WINDOW,
+  replayEntryBandLabel,
+  replayEntryRuleLabel,
+  replayExitRuleLabel,
+  replayShowingSentence,
   researchMarkerAccessibleName,
   sceneAutoFitDecision,
   sceneAutoFitRecommendation,
@@ -563,12 +573,82 @@ describe("occurrenceStudyOverlay (the calendar chart's semantic layers)", () => 
     const overlay = occurrenceStudyOverlay(layers, 0, 30);
     expect(overlay.activation).toEqual({ at: 1, label: "Merge / Paris" });
     expect(overlay.entry).toEqual({ at: 101, price: 1470.12, label: "study entry" });
-    expect(overlay.exit).toEqual({ at: 801, price: 1552.3, label: "study exit after 30 bars" });
+    expect(overlay.exit).toEqual({
+      at: 801,
+      price: 1552.3,
+      label: "study exit: terminal close after 30 bars",
+    });
     expect(overlay.returnPct).toBe(5.59);
   });
 
-  it("carries the horizon in the exit label, whatever the horizon was", () => {
-    expect(occurrenceStudyOverlay(layers, 0, 7).exit?.label).toBe("study exit after 7 bars");
+  it("the exit label names the terminal close — the horizon's endpoint, never an extremum", () => {
+    // "Study exit" always means the fixed-horizon terminal close; the label
+    // says so, because a path_extrema scene draws a DIFFERENT artifact (the
+    // hindsight extremum) beside it and the two must never read as one.
+    expect(occurrenceStudyOverlay(layers, 0, 7).exit?.label).toBe(
+      "study exit: terminal close after 7 bars",
+    );
+  });
+
+  it("a truncated row's exit label states the window that was actually measured", () => {
+    const overlay = occurrenceStudyOverlay(layers, 0, 30, {
+      row: { covered: true, truncated: true, barsCovered: 18 },
+      priceField: "low",
+      interval: "1d",
+    });
+    expect(overlay.exit?.label).toBe("study exit: terminal close after 18 bars (truncated)");
+    // A complete row states the full horizon.
+    const complete = occurrenceStudyOverlay(layers, 0, 30, {
+      row: { covered: true, truncated: false, barsCovered: 30 },
+      priceField: "low",
+      interval: "1d",
+    });
+    expect(complete.exit?.label).toBe("study exit: terminal close after 30 bars");
+  });
+
+  it("derives the hindsight extremum from the SAME report row, beside the terminal close", () => {
+    const extremumAt = Date.UTC(2024, 10, 12); // 2024-11-12, a 1d bar open
+    const overlay = occurrenceStudyOverlay(layers, 0, 30, {
+      row: {
+        covered: true,
+        truncated: false,
+        barsCovered: 30,
+        extremumTime: extremumAt,
+        extremumPrice: 2_942.6,
+      },
+      priceField: "low",
+      interval: "1d",
+    });
+    // Both artifacts present, each with its own time and price: the extremum
+    // never replaces or folds into the exit.
+    expect(overlay.exit).toEqual({
+      at: 801,
+      price: 1552.3,
+      label: "study exit: terminal close after 30 bars",
+    });
+    expect(overlay.extremum).toEqual({
+      at: extremumAt,
+      price: 2_942.6,
+      label: "lowest low of the 1d bar opening 2024-11-12",
+    });
+  });
+
+  it("an uncovered row, a row without an extremum, or no row at all: extremum null", () => {
+    expect(
+      occurrenceStudyOverlay(layers, 0, 30, {
+        row: { covered: false, truncated: false },
+        priceField: "low",
+        interval: "1d",
+      }).extremum,
+    ).toBeNull();
+    expect(
+      occurrenceStudyOverlay(layers, 0, 30, {
+        row: { covered: true, truncated: false },
+        priceField: "low",
+        interval: "1d",
+      }).extremum,
+    ).toBeNull();
+    expect(occurrenceStudyOverlay(layers, 0, 30).extremum).toBeNull();
   });
 
   it("leaves absent pieces null for an unmeasured occurrence: no invented marker", () => {
@@ -577,6 +657,7 @@ describe("occurrenceStudyOverlay (the calendar chart's semantic layers)", () => 
     expect(overlay.entry).toBeNull();
     expect(overlay.exit).toBeNull();
     expect(overlay.returnPct).toBeNull();
+    expect(overlay.extremum).toBeNull();
   });
 
   it("returns all-null for an occurrence the scene holds nothing for", () => {
@@ -585,7 +666,57 @@ describe("occurrenceStudyOverlay (the calendar chart's semantic layers)", () => 
       entry: null,
       exit: null,
       returnPct: null,
+      extremum: null,
     });
+  });
+});
+
+describe("the hindsight extremum's words and chart marker", () => {
+  const extremumAt = Date.UTC(2024, 4, 1); // 2024-05-01, a 1d bar open
+
+  it("claims the BAR, never an instant inside it, and names the interval", () => {
+    expect(extremumBarPhrase("low", "1d", extremumAt)).toBe(
+      "lowest low of the 1d bar opening 2024-05-01",
+    );
+    expect(extremumBarPhrase("high", "4h", extremumAt)).toBe(
+      "highest high of the 4h bar opening 2024-05-01",
+    );
+    // Never "at <instant>": the row records the bar's open time only.
+    expect(extremumBarPhrase("low", "1d", extremumAt)).not.toContain(" at ");
+  });
+
+  it("the rule label carries the hindsight claim and the measured price together", () => {
+    expect(
+      extremumRuleLabel({ priceField: "low", interval: "1d", at: extremumAt, price: 2_942.6 }),
+    ).toBe("lowest low (hindsight) 2,942.6 of the 1d bar opening 2024-05-01");
+  });
+
+  it("the marker keys by scene and occurrence, rules at the bar's open, covered, sourced", () => {
+    const marker = extremumRuleMarker({
+      sceneId: "scene-7",
+      occurrenceIndex: 2,
+      at: extremumAt,
+      price: 2_942.6,
+      priceField: "low",
+      interval: "1d",
+      source: "https://example.org/fork",
+    });
+    expect(marker).toEqual({
+      key: "scene-7:extremum:2",
+      label: "lowest low (hindsight) 2,942.6 of the 1d bar opening 2024-05-01",
+      startAt: extremumAt,
+      endAt: extremumAt,
+      sourceUrl: "https://example.org/fork",
+      covered: true,
+      upcoming: false,
+    });
+  });
+
+  it("the coincidence sentence says both markers draw when extremum and exit share a bar", () => {
+    const sentence = extremumCoincidenceSentence("low", "1d", extremumAt);
+    expect(sentence).toContain("lowest low of the 1d bar opening 2024-05-01");
+    expect(sentence).toContain("terminal close");
+    expect(sentence).toContain("both markers draw");
   });
 });
 
@@ -818,5 +949,105 @@ describe("precision phrases and the extremum's name", () => {
     expect(payloadStudyMetric({ metric: "path_extrema" })).toBe("path_extrema");
     expect(payloadStudyMetric({ metric: "forward_return" })).toBe("forward_return");
     expect(payloadStudyMetric({})).toBe("forward_return");
+  });
+});
+
+describe("alignedExtremumMark (the requested extreme on the aligned stage)", () => {
+  const ENTRY = NOW; // the entry bar opens here on the open basis
+
+  it("places the extremum at its bar offset, valued by the row's measured excursion", () => {
+    // 9 bars after the entry bar's open, on the open basis: bar 9 of the run.
+    const mark = alignedExtremumMark({
+      row: { extremumTime: ENTRY + 9 * DAY, excursionReturnPct: -25 },
+      entryTime: ENTRY,
+      entryBasis: "first_bar_open_after_event",
+      intervalMs: DAY,
+      lastBar: 30,
+    });
+    expect(mark).toEqual({ barsSinceEntry: 9, changePct: -25 });
+  });
+
+  it("on the close basis, bar 0 is the entry bar's OPEN, one interval before the entry close", () => {
+    // The entry time is the entry bar's CLOSE on the close basis; the bar that
+    // opened one interval earlier is bar 0 of the trace.
+    const entryClose = ENTRY + DAY; // a close stamped at the next bar's open
+    const mark = alignedExtremumMark({
+      row: { extremumTime: ENTRY, excursionReturnPct: -10 },
+      entryTime: entryClose,
+      entryBasis: "first_closed_bar_after_event",
+      intervalMs: DAY,
+      lastBar: 30,
+    });
+    expect(mark).toEqual({ barsSinceEntry: 0, changePct: -10 });
+  });
+
+  it("refuses a bar outside the measured run or a row without an extremum", () => {
+    const common = {
+      entryTime: ENTRY,
+      entryBasis: "first_bar_open_after_event" as const,
+      intervalMs: DAY,
+      lastBar: 30,
+    };
+    // Before the entry bar: the repaired engine never records one, and the
+    // mark never invents a bar the trace does not hold.
+    expect(
+      alignedExtremumMark({
+        ...common,
+        row: { extremumTime: ENTRY - DAY, excursionReturnPct: -5 },
+      }),
+    ).toBeNull();
+    // Past the horizon's last bar.
+    expect(
+      alignedExtremumMark({
+        ...common,
+        row: { extremumTime: ENTRY + 31 * DAY, excursionReturnPct: -5 },
+      }),
+    ).toBeNull();
+    // No extremum recorded at all.
+    expect(alignedExtremumMark({ ...common, row: {} })).toBeNull();
+  });
+});
+
+describe("strategy replay labels and the showing line", () => {
+  const trade = {
+    entryTime: NOW,
+    entryPrice: 61_234.5,
+    exitTime: NOW + 3 * DAY,
+    exitPrice: 59_001.2,
+    exitReason: "stop",
+    netUsd: -42.1,
+  };
+
+  it("labels the entry with the trade number, the thesis side, and the entry price", () => {
+    expect(replayEntryRuleLabel(trade, 2, "long")).toBe("t3 entry · long · 61,234.5");
+    expect(replayEntryBandLabel(2)).toBe("t3 entry");
+  });
+
+  it("labels the exit with its price, its reason, and the net after every cost", () => {
+    expect(replayExitRuleLabel(trade, 2)).toBe("t3 exit · 59,001.2 · stop · net -$42.1");
+    const win = { ...trade, exitPrice: 64_120, exitReason: "target", netUsd: 301.2 };
+    expect(replayExitRuleLabel(win, 0)).toBe("t1 exit · 64,120 · target · net $301.2");
+  });
+
+  it("keeps taken, persisted and drawn counts distinct in the showing line", () => {
+    // 187 taken by the backtest, 200 persisted: the line says both, and the
+    // drawn slice is a third number that navigation moves.
+    expect(replayShowingSentence({ fromIndex: 0, drawn: 10, persisted: 187, taken: 187 })).toBe(
+      "showing trades 1–10 of 187 taken",
+    );
+    expect(replayShowingSentence({ fromIndex: 180, drawn: 7, persisted: 187, taken: 187 })).toBe(
+      "showing trades 181–187 of 187 taken",
+    );
+    expect(replayShowingSentence({ fromIndex: 0, drawn: 10, persisted: 200, taken: 351 })).toBe(
+      "showing trades 1–10 of 351 taken; the scene persists the first 200",
+    );
+    // No trades at all: zero, never a fabricated 1–0.
+    expect(replayShowingSentence({ fromIndex: 0, drawn: 0, persisted: 0, taken: 0 })).toBe(
+      "showing trades 0–0 of 0 taken",
+    );
+  });
+
+  it("the display cap is a window over the persisted trades, never the trades themselves", () => {
+    expect(REPLAY_MARKER_WINDOW).toBe(10);
   });
 });

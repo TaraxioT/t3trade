@@ -2123,19 +2123,62 @@ describe("computeChartGeometry: the study overlay", () => {
     expect(geometry?.studyOverlay?.entry).not.toBeNull();
   });
 
-  it("clamps a marker past the right edge to the plot's edge, keeping its true price", () => {
-    // The close basis's exit is the exit bar's close, which lands after the
-    // last open the axis ends on: pinned at the edge, price untouched.
+  it("drops a marker beyond the loaded window rather than pinning it at the edge", () => {
+    // An exit a full bar PAST the last bar's close is beyond the loaded
+    // window: drawing it clamped onto the right edge would claim it happened
+    // there. It must not draw at all — and a missing end draws no connector.
     const geometry = geometryWith({
       activation: { at: base + 30_000, label: "Dencun" },
       entry: { at: base + 60_000, price: 100, label: "study entry" },
-      exit: { at: last + 60_000, price: 104, label: "study exit after 30 bars" },
+      exit: {
+        at: last + 2 * 60_000,
+        price: 104,
+        label: "study exit: terminal close after 30 bars",
+      },
+      returnPct: 4,
+    });
+    expect(geometry?.studyOverlay?.exit).toBeNull();
+    expect(geometry?.studyOverlay?.returnSpan).toBeNull();
+    // The entry, inside the window, still draws.
+    expect(geometry?.studyOverlay?.entry).not.toBeNull();
+  });
+
+  it("keeps a close-basis stamp of the final loaded bar, clamped at most one bar", () => {
+    // The close basis stamps the exit at the exit bar's CLOSE, which lands
+    // after the last open the axis ends on. The bar is loaded, so the marker
+    // draws — its x pinned at the plot edge, at most one bar of overhang,
+    // never a whole window of false time.
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Dencun" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: { at: last + 60_000, price: 104, label: "study exit: terminal close after 30 bars" },
       returnPct: 4,
     });
     const exit = geometry?.studyOverlay?.exit;
     expect(exit?.x).toBe(PLOT_WIDTH);
     expect(exit?.price).toBe(104);
     expect(exit?.y).toBeCloseTo(geometry!.yForPrice(104), 8);
+    expect(exit?.priceClipped).toBe(false);
+  });
+
+  it("flags a price outside the y-domain instead of silently moving it onto the axis", () => {
+    // A measured price beyond the candle domain is kept verbatim in `price`
+    // while the dot is clamped inside the frame — and `priceClipped` says the
+    // drawn y is not the measured price, so no axis position is implied.
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Dencun" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: {
+        at: base + 3 * 60_000,
+        price: 10_000,
+        label: "study exit: terminal close after 30 bars",
+      },
+      returnPct: 4,
+    });
+    const exit = geometry?.studyOverlay?.exit;
+    expect(exit?.price).toBe(10_000);
+    expect(exit?.priceClipped).toBe(true);
+    expect(exit?.y).toBe(0);
   });
 
   it("draws no connector when one end of the study is missing", () => {
@@ -2667,6 +2710,17 @@ describe("computeChartGeometry: research markers", () => {
   it("drops an occurrence from before the window like an old fill", () => {
     const geometry = geometryWith([markerInput({ startAt: first - 1, endAt: first - 1 })]);
     expect(geometry?.researchMarkers).toHaveLength(0);
+  });
+
+  it("drops a covered instant past the axis end instead of pinning it at the edge", () => {
+    // Without a clock the axis ends at the last loaded bar: an instant beyond
+    // it is outside the loaded window, and clamping its x onto the right edge
+    // would draw it at a time it did not happen at. Left of the window is
+    // dropped; right of it must be too.
+    const geometry = geometryWith([markerInput({ startAt: last + 60_000, endAt: last + 60_000 })]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+    // One still inside the window keeps drawing.
+    expect(geometryWith([markerInput({})])?.researchMarkers).toHaveLength(1);
   });
 
   it("clamps an upcoming occurrence into the future gutter, never beyond it", () => {

@@ -779,6 +779,14 @@ export interface ChartStudyOverlay {
     readonly label: string;
     readonly x: number;
     readonly y: number;
+    /**
+     * True when the measured price fell outside the y-domain and the drawn y
+     * was clamped onto the frame: the `price` field keeps the measurement, and
+     * this flag says the dot's position is a courtesy, not that price — so the
+     * placed marker can never silently claim an axis position it did not
+     * measure.
+     */
+    readonly priceClipped: boolean;
   } | null;
   readonly exit: {
     readonly at: number;
@@ -786,6 +794,8 @@ export interface ChartStudyOverlay {
     readonly label: string;
     readonly x: number;
     readonly y: number;
+    /** @see ChartStudyOverlay.entry.priceClipped */
+    readonly priceClipped: boolean;
   } | null;
   /** The connector between placed entry and exit points, when both placed. */
   readonly returnSpan: {
@@ -2053,9 +2063,13 @@ function placeResearchMarkers(input: {
       placed.push({ ...marker, span: true, x1, x2 });
     } else {
       const raw = input.xForTime(marker.startAt);
-      if (raw < input.plotLeft) continue;
-      const x = clamp(raw, input.plotLeft, input.nowX);
-      placed.push({ ...marker, span: false, x1: x, x2: x });
+      // Both ends of the visible time domain are validated before anything
+      // draws: an instant whose x falls past the axis end is beyond the loaded
+      // window, and pinning it at the edge would give it a time it did not
+      // happen at. (With a clock the bound is `now`; a covered occurrence is
+      // always in the past, so only the no-clock case ever reaches the drop.)
+      if (raw < input.plotLeft || raw > input.nowX) continue;
+      placed.push({ ...marker, span: false, x1: raw, x2: raw });
     }
   }
 
@@ -2427,6 +2441,16 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   // inside the frame) but drawn as its own vocabulary by the renderer. The
   // entry and exit prices come from bars inside the window, so their y is
   // clamped only for the same off-frame courtesy the mark gets.
+  //
+  // The drawable time domain is the span of the LOADED bars, both ends
+  // validated: a point before the first candle has no honest x, and a point
+  // past the last bar's close is beyond the loaded window — pinning either at
+  // an edge would draw it at a time it did not happen at. The one deliberate
+  // grace is the final bar's own close: without a clock the axis ends at the
+  // last open, but a close-basis exit is stamped at that bar's close and its
+  // bar IS loaded, so the domain runs one interval past the axis end and the
+  // pixel clamp absorbs at most that one bar of overhang.
+  const visibleTimeEnd = hasClock ? timeEnd : lastCandleTime + barIntervalMillis;
   const studyInput = input.studyOverlay ?? null;
   let studyOverlay: ChartStudyOverlay | null = null;
   if (studyInput !== null) {
@@ -2441,14 +2465,16 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
         : null;
     const placeStudyPoint = (
       point: { readonly at: number; readonly price: number; readonly label: string } | null,
-    ) =>
-      point !== null && point.at >= timeStart
-        ? {
-            ...point,
-            x: clamp(xForTime(point.at), plotLeft, PLOT_WIDTH),
-            y: clamp(yForPrice(point.price), 0, CHART_VIEWBOX_HEIGHT),
-          }
-        : null;
+    ) => {
+      if (point === null || point.at < timeStart || point.at > visibleTimeEnd) return null;
+      const rawY = yForPrice(point.price);
+      return {
+        ...point,
+        x: clamp(xForTime(point.at), plotLeft, PLOT_WIDTH),
+        y: clamp(rawY, 0, CHART_VIEWBOX_HEIGHT),
+        priceClipped: rawY < 0 || rawY > CHART_VIEWBOX_HEIGHT,
+      };
+    };
     const entry = placeStudyPoint(studyInput.entry);
     const exit = placeStudyPoint(studyInput.exit);
     const returnSpan =

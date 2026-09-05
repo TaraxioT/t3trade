@@ -39,6 +39,7 @@ import {
 } from "@t3tools/contracts";
 import {
   aggregateAlignedTrace,
+  alignedExtremumMark,
   alignedTracePoints,
   askAboutOccurrenceSentence,
   BASELINE_REFERENCE_LABEL,
@@ -46,12 +47,17 @@ import {
   baselineReference,
   DERIVED_VS_AUTHORED_SENTENCE,
   describeHorizon,
+  extremumBarPhrase,
+  extremumCoincidenceSentence,
   extremumPhrase,
+  extremumRuleMarker,
   fixedHorizonPnlUsd,
+  fmtPrice,
   fmtUsd,
   grossChangeUsd,
   hindsightPerfectPnlUsd,
   historicalGrossChangeLabel,
+  isLegacyEventStudyScene,
   MARKER_LEGEND_SENTENCE,
   occurrencePrecisionPhrase,
   occurrenceStudyOverlay,
@@ -59,12 +65,18 @@ import {
   payloadEntryBasis,
   payloadStudyMetric,
   provenanceTrailLine,
+  REPLAY_MARKER_WINDOW,
+  replayEntryBandLabel,
+  replayEntryRuleLabel,
+  replayExitRuleLabel,
+  replayShowingSentence,
   studyExplanationLines,
   studyWindowMaxBars,
   turnIntoStrategySentence,
   validateForwardSentence,
 } from "./researchScenePresentation.ts";
 import type { DeterministicSceneLayer } from "@t3tools/contracts";
+import type { ChartResearchMarkerInput } from "./missionChartGeometry.ts";
 import type { EventStudyEntryBasis } from "@t3tools/trading-contracts/eventSets";
 
 const NOTIONAL_DEFAULT = 1_000;
@@ -135,6 +147,12 @@ function windowFor(
  * to their own prices, and the signed return drawn between them. The layers
  * come from the scene's deterministic half, never rebuilt here, so the chart
  * cannot downgrade a study into three anonymous bands.
+ *
+ * On a path_extrema occurrence measured by the current engine, the hindsight
+ * extremum ALSO draws — a dotted rule at the extremum bar's open time with
+ * its price, derived from the same report row the layers were composed from.
+ * It is a different artifact from the terminal close, and the two stay
+ * separate markers even when they land on the same bar.
  */
 function OccurrenceChart(props: {
   readonly environmentId: EnvironmentId;
@@ -146,6 +164,18 @@ function OccurrenceChart(props: {
   readonly intervalMs: number;
   readonly layers: ReadonlyArray<DeterministicSceneLayer>;
   readonly occurrenceIndex: number;
+  readonly sceneId: string;
+  /** The selected report row, for the pieces the deterministic layers do not carry. */
+  readonly row: StudyRow;
+  /**
+   * The path_extrema context, only on scenes measured by the current engine:
+   * legacy scenes keep their recorded numbers and their legacy line, never a
+   * newly-corrected extremum marker.
+   */
+  readonly extremumContext: {
+    readonly priceField: "low" | "high";
+    readonly interval: string;
+  } | null;
 }) {
   const { data, error, stale } = useTradingMarketChart(
     props.environmentId,
@@ -179,26 +209,72 @@ function OccurrenceChart(props: {
     ];
   }, [props.occurrence, props.intervalMs]);
   const studyOverlay = useMemo(() => {
-    const overlay = occurrenceStudyOverlay(props.layers, props.occurrenceIndex, props.horizonBars);
+    // The row rides every call so the exit label can state what the window
+    // actually measured (the full horizon, or its truncation); the extremum
+    // piece additionally requires the current-engine context — a legacy
+    // scene's rows keep their numbers in the inspector, never a
+    // newly-corrected hindsight marker on the chart.
+    const overlay = occurrenceStudyOverlay(props.layers, props.occurrenceIndex, props.horizonBars, {
+      row: props.row,
+      priceField: props.extremumContext?.priceField ?? "low",
+      interval: props.extremumContext?.interval ?? props.interval,
+    });
+    const gated = props.extremumContext === null ? { ...overlay, extremum: null } : overlay;
     // An instantaneous activation has no event_span band — the composer
     // refuses zero-width spans — so its named rule comes from the occurrence
     // window itself, at the exact instant it claims. The label is the
     // occurrence's own, never a number re-derived here.
     if (
-      overlay.activation === null &&
+      gated.activation === null &&
       props.occurrence.timePrecision === "instant" &&
       props.occurrence.startAt === props.occurrence.endAt
     ) {
       return {
-        ...overlay,
+        ...gated,
         activation: {
           at: props.occurrence.endAt,
           label: props.occurrence.label ?? `occurrence ${props.occurrenceIndex + 1}`,
         },
       };
     }
-    return overlay;
-  }, [props.layers, props.occurrenceIndex, props.horizonBars, props.occurrence]);
+    return gated;
+  }, [
+    props.layers,
+    props.occurrenceIndex,
+    props.horizonBars,
+    props.occurrence,
+    props.row,
+    props.extremumContext,
+    props.interval,
+  ]);
+  // The extremum rule: same report row as the exit square, its own marker.
+  // Out of the loaded window the geometry drops it honestly rather than
+  // pinning it at an edge.
+  const extremumMarker: ChartResearchMarkerInput | null =
+    studyOverlay.extremum === null
+      ? null
+      : extremumRuleMarker({
+          sceneId: props.sceneId,
+          occurrenceIndex: props.occurrenceIndex,
+          at: studyOverlay.extremum.at,
+          price: studyOverlay.extremum.price,
+          priceField: props.extremumContext?.priceField ?? "low",
+          interval: props.extremumContext?.interval ?? props.interval,
+          source: props.row.source,
+        });
+  // Coincidence never swallows a marker: when the extremum bar IS the exit
+  // bar, the sentence says both draw there, each with its own price.
+  const coincidence =
+    extremumMarker !== null &&
+    studyOverlay.exit !== null &&
+    studyOverlay.extremum !== null &&
+    studyOverlay.extremum.at === studyOverlay.exit.at
+      ? extremumCoincidenceSentence(
+          props.extremumContext?.priceField ?? "low",
+          props.extremumContext?.interval ?? props.interval,
+          studyOverlay.extremum.at,
+        )
+      : null;
 
   // Last good view on a transient read failure, labelled stale: the window
   // did not stop existing because a request failed, and a reader
@@ -241,6 +317,7 @@ function OccurrenceChart(props: {
         <MissionPriceChart
           candles={effective.candles}
           eventBands={bands}
+          researchMarkers={extremumMarker === null ? [] : [extremumMarker]}
           studyOverlay={studyOverlay}
           // A research window carries no position: every execution marker is
           // explicitly null so the chart cannot inherit a stale one.
@@ -255,6 +332,14 @@ function OccurrenceChart(props: {
           showVolume={false}
           className="h-full min-h-24"
         />
+      )}
+      {coincidence === null ? null : (
+        <div
+          className="px-1 text-[10px] text-muted-foreground"
+          data-testid="research-extremum-coincident"
+        >
+          {coincidence}
+        </div>
       )}
     </>
   );
@@ -285,10 +370,6 @@ function ReturnRow(props: { readonly returnPct: number | undefined; readonly not
 /** One covered occurrence row of the report, as the panel reads it. */
 type StudyRow = EventStudyScenePayload["report"]["rows"][number];
 
-/** Plain price display, the register the rest of the panel uses. */
-const fmtPrice = (value: number): string =>
-  value.toLocaleString("en-US", { maximumFractionDigits: 2 });
-
 /**
  * The path_extrema scene's per-occurrence detail, one row: the entry, the
  * named extremum with its date, the MFE excursion beside the hindsight-perfect
@@ -304,8 +385,9 @@ function PathExtremumRow(props: {
   readonly notional: number;
   readonly direction: "short" | "long";
   readonly priceField: "low" | "high";
+  readonly interval: string;
 }) {
-  const { row, notional, direction, priceField } = props;
+  const { row, notional, direction, priceField, interval } = props;
   if (
     !row.covered ||
     row.entryPrice === undefined ||
@@ -333,9 +415,10 @@ function PathExtremumRow(props: {
       data-testid="research-extremum-row"
     >
       <span className="text-muted-foreground">entry {fmtPrice(row.entryPrice)}</span>
+      {/* The extremum claims its BAR, never an instant: the row records the
+          bar's open time, and the phrase says exactly that. */}
       <span>
-        {extremumPhrase(priceField)} {fmtPrice(row.extremumPrice)} on{" "}
-        {new Date(row.extremumTime).toISOString().slice(0, 10)}
+        {extremumBarPhrase(priceField, interval, row.extremumTime)}: {fmtPrice(row.extremumPrice)}
       </span>
       <span className={tone(hindsight)}>
         MFE excursion {fmtPct(row.excursionReturnPct)} ({fmtUsd(hindsight)} hindsight-perfect at the{" "}
@@ -389,6 +472,14 @@ function EventStudyBody(props: {
           priceField: (payload.priceField ?? "low") as "low" | "high",
         }
       : null;
+  // The hindsight-extremum marker draws only where the CURRENT engine
+  // measured the row: a legacy-calculation scene keeps its recorded numbers
+  // (the inspector rows and the legacy line) and must not pass them off as
+  // newly-corrected geometry. The row itself still rides every overlay call
+  // so the exit label states the truth about the window that was measured.
+  const drawExtremum =
+    pathExtrema !== null &&
+    !isLegacyEventStudyScene({ ...payload, calculationVersion: props.calculationVersion });
 
   return (
     <>
@@ -416,6 +507,13 @@ function EventStudyBody(props: {
             intervalMs={intervalMs}
             layers={props.layers}
             occurrenceIndex={safeSelected}
+            sceneId={props.sceneId}
+            row={row}
+            extremumContext={
+              drawExtremum && pathExtrema !== null
+                ? { priceField: pathExtrema.priceField, interval: payload.interval }
+                : null
+            }
           />
         )}
       </div>
@@ -540,6 +638,7 @@ function EventStudyBody(props: {
                         notional={notional}
                         direction={pathExtrema.direction}
                         priceField={pathExtrema.priceField}
+                        interval={payload.interval}
                       />
                     )}
                     {candidate.truncated ? (
@@ -586,6 +685,13 @@ function AlignedTrace(props: {
   readonly occurrence: CoveredOccurrenceWindow;
   readonly horizonBars: number;
   readonly entryBasis: EventStudyEntryBasis;
+  /**
+   * The row's hindsight extremum as a mark on the trace, only on current-engine
+   * path_extrema scenes: the requested extreme beside the horizon's terminal
+   * close, both labelled, neither drawn as the other.
+   */
+  readonly extremumMark: { readonly barsSinceEntry: number; readonly changePct: number } | null;
+  readonly extremumPhraseText: string | null;
 }) {
   // The close basis anchors on the entry bar's CLOSE, so its read starts one
   // bar earlier to include that bar and carries one more bar of horizon.
@@ -613,7 +719,15 @@ function AlignedTrace(props: {
     entryBasis: props.entryBasis,
   });
   if (trace.length < 2) return null;
-  return <TraceSvg trace={trace} horizonBars={props.horizonBars} emphasis={false} />;
+  return (
+    <TraceSvg
+      trace={trace}
+      horizonBars={props.horizonBars}
+      emphasis={false}
+      extremumMark={props.extremumMark}
+      extremumLabel={props.extremumPhraseText}
+    />
+  );
 }
 
 /**
@@ -623,6 +737,12 @@ function AlignedTrace(props: {
  * baseline as a second, differently-dashed horizontal line with its own
  * label — two flat lines that never get to be mistaken for each other. The
  * aggregate draws heavier.
+ *
+ * On a path_extrema trace the two artifacts of the question are marked where
+ * they land: a ring at the row's hindsight extremum (its excursion, in the
+ * trace's own long-convention percent) and a square at the terminal close —
+ * the horizon's end. The excursion joins the y-range so the ring never clips,
+ * and each mark names itself in a title, so coincidence never swallows one.
  */
 function TraceSvg(props: {
   readonly trace: ReadonlyArray<{ readonly barsSinceEntry: number; readonly changePct: number }>;
@@ -630,18 +750,23 @@ function TraceSvg(props: {
   readonly emphasis: boolean;
   readonly neutral?: boolean;
   readonly reference?: { readonly valuePct: number; readonly label: string } | null;
+  readonly extremumMark?: { readonly barsSinceEntry: number; readonly changePct: number } | null;
+  readonly extremumLabel?: string | null;
 }) {
   const width = 240;
   // Traces are compact by design: two ride side by side in the inspector's
   // grid on a desktop-wide drawer, so their height is the grid row's budget.
   const height = 48;
   const step = width / Math.max(1, props.horizonBars);
+  const extremum =
+    props.extremumMark === undefined || props.extremumMark === null ? null : props.extremumMark;
   const ys = [
     0,
     ...props.trace.map((point) => point.changePct),
     ...(props.reference === null || props.reference === undefined
       ? []
       : [props.reference.valuePct]),
+    ...(extremum === null ? [] : [extremum.changePct]),
   ];
   const lo = Math.min(...ys);
   const hi = Math.max(...ys);
@@ -715,6 +840,46 @@ function TraceSvg(props: {
         className={tone}
         stroke="currentColor"
       />
+      {extremum === null ? null : (
+        <g data-testid="research-trace-extremum">
+          <circle
+            cx={(extremum.barsSinceEntry * step).toFixed(1)}
+            cy={scaleY(extremum.changePct)}
+            r={3}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            className="text-muted-foreground"
+          >
+            {/* The row's hindsight extremum, its bar offset and its measured
+                excursion: the requested extreme, not the terminal close. A
+                single template string because <title> takes text, not nodes. */}
+            <title>{`${
+              props.extremumLabel ?? "extremum"
+            } (hindsight) at bar ${extremum.barsSinceEntry} of ${
+              props.horizonBars
+            }, excursion ${extremum.changePct.toFixed(2)}%`}</title>
+          </circle>
+        </g>
+      )}
+      <g data-testid="research-trace-terminal">
+        <rect
+          x={last.barsSinceEntry * step - 2.5}
+          y={scaleY(last.changePct) - 2.5}
+          width={5}
+          height={5}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          className="text-muted-foreground"
+        >
+          {/* The terminal close at the horizon's end — the study exit's own
+              artifact on the aligned stage, distinct from the ring above. */}
+          <title>{`terminal close at the horizon, bar ${last.barsSinceEntry} of ${
+            props.horizonBars
+          }, ${last.changePct.toFixed(2)}%`}</title>
+        </rect>
+      </g>
     </svg>
   );
 }
@@ -733,10 +898,25 @@ function EventAlignedBody(props: {
 }) {
   const { payload } = props;
   const entryBasis = payloadEntryBasis(payload);
-  const covered = payload.occurrenceWindows.filter(
-    (window): window is CoveredOccurrenceWindow => window.covered && window.entryTime !== undefined,
-  );
+  // Occurrence windows and report rows are parallel arrays (the server maps
+  // one from the other), so each covered window carries its own row into the
+  // aligned view — the extremum the row measured, never a re-derivation.
+  const covered = payload.occurrenceWindows
+    .map((window, index) => ({ window, row: payload.report.rows[index] }))
+    .filter(
+      (pair): pair is { window: CoveredOccurrenceWindow; row: StudyRow } =>
+        pair.window.covered && pair.window.entryTime !== undefined,
+    );
   const baseline = payload.report.baseline;
+  const intervalMs = payload.report.horizonMs / payload.report.horizonBars;
+  // The extremum ring draws only on current-engine path_extrema scenes: the
+  // requested extreme marked beside the horizon's terminal close, and legacy
+  // numbers kept as recorded rather than masquerading as corrected geometry.
+  const extremumScene =
+    payloadStudyMetric(payload) === "path_extrema" &&
+    !isLegacyEventStudyScene({ ...payload, calculationVersion: props.calculationVersion });
+  const extremumPhraseText =
+    extremumScene && payload.priceField !== undefined ? extremumPhrase(payload.priceField) : null;
   return (
     <>
       {/* The stage: the aggregate comparison, first. */}
@@ -819,7 +999,7 @@ function EventAlignedBody(props: {
             : ""}
         </div>
         <ol className="mt-1 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-          {covered.map((window, index) => (
+          {covered.map(({ window, row }, index) => (
             <li
               key={`${window.startAt}:${index}`}
               className="flex flex-col gap-0.5"
@@ -836,10 +1016,22 @@ function EventAlignedBody(props: {
                   environmentId={props.environmentId}
                   market={payload.market}
                   interval={payload.interval as ChartInterval}
-                  intervalMs={payload.report.horizonMs / payload.report.horizonBars}
+                  intervalMs={intervalMs}
                   occurrence={window}
                   horizonBars={payload.horizonBars}
                   entryBasis={entryBasis}
+                  extremumMark={
+                    extremumScene
+                      ? alignedExtremumMark({
+                          row,
+                          entryTime: window.entryTime,
+                          entryBasis,
+                          intervalMs,
+                          lastBar: payload.horizonBars,
+                        })
+                      : null
+                  }
+                  extremumPhraseText={extremumPhraseText}
                 />
               </div>
             </li>
@@ -861,7 +1053,7 @@ function EventAlignedBody(props: {
 function AggregateTrace(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
-  readonly covered: ReadonlyArray<ResearchOccurrenceWindow>;
+  readonly covered: ReadonlyArray<{ readonly window: ResearchOccurrenceWindow }>;
   readonly reference: { readonly valuePct: number; readonly label: string } | null;
 }) {
   const intervalMs = props.payload.report.horizonMs / props.payload.report.horizonBars;
@@ -876,7 +1068,7 @@ function AggregateTrace(props: {
   const aggregate = aggregateAlignedTrace(collected);
   return (
     <>
-      {props.covered.map((window, index) => (
+      {props.covered.map(({ window }, index) => (
         <AggregateTraceFetch
           key={`${window.startAt}:${index}`}
           environmentId={props.environmentId}
@@ -953,22 +1145,65 @@ function AggregateTraceFetch(props: {
   return null;
 }
 
+/**
+ * The strategy replay, drawn as complete trade geometry: every VISIBLE trade
+ * renders both of its markers — an entry (a wash band plus a rule labelled
+ * with the thesis's side and the entry price) and an exit (its own rule with
+ * the exit price, the exit reason and the net result). The display window is
+ * capped, so a long run stays readable; the showing line keeps the taken
+ * count, the persisted count and the drawn slice distinct, and bounded
+ * navigation reaches the omitted trades. The thesis is single-sided, so its
+ * side is every trade's side — a record, never an inference from prices.
+ */
 function StrategyReplayBody(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: StrategyReplayScenePayload;
 }) {
   const { payload } = props;
   const trades = payload.trades;
-  const first = trades[0]?.entryTime ?? payload.archiveBounds.fromT;
-  const last = trades[trades.length - 1]?.exitTime ?? payload.archiveBounds.toT;
+  const side = payload.thesis.side;
+  const [offset, setOffset] = useState(0);
+  // Bounded navigation: the window moves in fixed steps and can never leave
+  // [0, persisted − window], so the omitted trades are reachable, not lost.
+  const maxOffset = Math.max(0, trades.length - REPLAY_MARKER_WINDOW);
+  const safeOffset = Math.min(offset, maxOffset);
+  const visible = trades.slice(safeOffset, safeOffset + REPLAY_MARKER_WINDOW);
+  const first = visible[0]?.entryTime ?? payload.archiveBounds.fromT;
+  const last =
+    visible[visible.length - 1]?.exitTime ??
+    trades[trades.length - 1]?.exitTime ??
+    payload.archiveBounds.toT;
   const window: ChartWindow = { startTime: first - 6 * 60_000, endTime: last + 6 * 60_000 };
-  const bands = trades.map((trade, index) => ({
-    key: `trade:${index}:${trade.entryTime}`,
-    label: `t${index + 1}`,
+  const bands = visible.map((trade, i) => ({
+    key: `trade:${safeOffset + i}:entry:${trade.entryTime}`,
+    label: replayEntryBandLabel(safeOffset + i),
     startAt: trade.entryTime,
     endAt: trade.entryTime,
     upcoming: false,
   }));
+  const markers: ReadonlyArray<ChartResearchMarkerInput> = visible.flatMap((trade, i) => {
+    const index = safeOffset + i;
+    return [
+      {
+        key: `trade:${index}:entry:${trade.entryTime}`,
+        label: replayEntryRuleLabel(trade, index, side),
+        startAt: trade.entryTime,
+        endAt: trade.entryTime,
+        sourceUrl: "",
+        covered: true,
+        upcoming: false,
+      },
+      {
+        key: `trade:${index}:exit:${trade.exitTime}`,
+        label: replayExitRuleLabel(trade, index),
+        startAt: trade.exitTime,
+        endAt: trade.exitTime,
+        sourceUrl: "",
+        covered: true,
+        upcoming: false,
+      },
+    ];
+  });
   return (
     // A replay is a document, not a stage/inspector split: it scrolls inside
     // the fixed viewport instead of growing it.
@@ -977,24 +1212,64 @@ function StrategyReplayBody(props: {
       data-testid="research-inspector"
     >
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <span>{trades.length} trade(s) shown</span>
+        <span>{payload.tradesTaken} trade(s) taken</span>
         <span>win rate {payload.winRatePercent}%</span>
         <span>expectancy {fmtUsd(payload.expectancyUsd)} per trade after fees and funding</span>
         <span>total fees {fmtUsd(payload.totalFeesUsd)}</span>
       </div>
       <div className="text-sm">{payload.verdictReason}</div>
+      <div className="flex items-center gap-2 text-xs" data-testid="research-replay-nav">
+        <button
+          type="button"
+          className="rounded border border-border/60 px-2 py-0.5 disabled:opacity-40"
+          disabled={safeOffset === 0}
+          onClick={() => setOffset(Math.max(0, safeOffset - REPLAY_MARKER_WINDOW))}
+          aria-label="Previous trades"
+        >
+          ←
+        </button>
+        <span className="text-muted-foreground" data-testid="research-replay-showing">
+          {replayShowingSentence({
+            fromIndex: safeOffset,
+            drawn: visible.length,
+            persisted: trades.length,
+            taken: payload.tradesTaken,
+          })}
+        </span>
+        <button
+          type="button"
+          className="rounded border border-border/60 px-2 py-0.5 disabled:opacity-40"
+          disabled={safeOffset >= maxOffset}
+          onClick={() => setOffset(Math.min(maxOffset, safeOffset + REPLAY_MARKER_WINDOW))}
+          aria-label="Next trades"
+        >
+          →
+        </button>
+      </div>
       <ReplayWindowChart
         environmentId={props.environmentId}
         market={payload.thesis.market}
         interval={payload.interval as ChartInterval}
         window={window}
         bands={bands}
+        markers={markers}
       />
       <ol className="flex flex-col gap-1 text-xs">
-        {trades.map((trade, index) => (
-          <li key={`${trade.entryTime}:${index}`} className="flex flex-wrap gap-x-3">
+        {visible.map((trade, i) => (
+          <li
+            key={`${trade.entryTime}:${safeOffset + i}`}
+            data-testid="research-replay-trade"
+            className="flex flex-wrap items-baseline gap-x-3"
+          >
             <span className="text-muted-foreground">
-              {new Date(trade.entryTime).toISOString().slice(0, 16)}
+              t{safeOffset + i + 1} {side}
+            </span>
+            <span>
+              {new Date(trade.entryTime).toISOString().slice(0, 16)} →{" "}
+              {new Date(trade.exitTime).toISOString().slice(0, 16)}
+            </span>
+            <span>
+              entry {fmtPrice(trade.entryPrice)} → exit {fmtPrice(trade.exitPrice)}
             </span>
             <span
               className={
@@ -1003,7 +1278,7 @@ function StrategyReplayBody(props: {
                   : "text-red-600 dark:text-red-400"
               }
             >
-              {fmtUsd(trade.netUsd)}
+              {fmtUsd(trade.netUsd)} net
             </span>
             <span className="text-muted-foreground">{trade.exitReason}</span>
           </li>
@@ -1025,6 +1300,7 @@ function ReplayWindowChart(props: {
     endAt: number;
     upcoming: boolean;
   }>;
+  readonly markers: ReadonlyArray<ChartResearchMarkerInput>;
 }) {
   const { data, error } = useTradingMarketChart(props.environmentId, props.market, props.interval, {
     enabled: true,
@@ -1049,8 +1325,10 @@ function ReplayWindowChart(props: {
     <MissionPriceChart
       candles={data.candles}
       eventBands={props.bands}
-      // Replay markers arrive as event bands; the execution-price rails are
-      // not this scene's to draw, so they are null, not absent.
+      researchMarkers={props.markers}
+      // Replay trades draw as bands and research rules — counterfactual
+      // measurements of a backtest, never fills; the execution-price rails
+      // are not this scene's to draw, so they are null, not absent.
       entryPrice={null}
       stopPrice={null}
       targetPrice={null}

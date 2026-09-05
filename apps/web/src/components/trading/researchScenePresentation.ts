@@ -361,6 +361,40 @@ export function alignedTracePoints(input: {
 }
 
 /**
+ * Where a row's hindsight extremum lands on its own aligned trace: x is the
+ * extremum bar's offset from the entry bar (the entry bar's OPEN, whichever
+ * basis anchored the entry), y is the row's measured excursion — the same
+ * long-convention percentage the trace's closes are plotted in, so the mark
+ * sits at the path's extreme, below the close line for a short's low. Null
+ * when the row holds no extremum or its bar falls outside the measured run:
+ * the aligned view never invents a bar the trace does not hold.
+ */
+export function alignedExtremumMark(input: {
+  readonly row: {
+    readonly extremumTime?: number | undefined;
+    readonly excursionReturnPct?: number | undefined;
+  };
+  readonly entryTime: number;
+  readonly entryBasis: EventStudyEntryBasis;
+  readonly intervalMs: number;
+  /** The trace's own last barsSinceEntry; the mark may not claim past it. */
+  readonly lastBar: number;
+}): { readonly barsSinceEntry: number; readonly changePct: number } | null {
+  const at = input.row.extremumTime;
+  const excursion = input.row.excursionReturnPct;
+  if (at === undefined || excursion === undefined || input.intervalMs <= 0) return null;
+  // The close basis anchors the entry at the entry bar's CLOSE, so that bar's
+  // open — bar 0 of the trace — sits one full interval before the entry time.
+  const entryBarOpen =
+    input.entryBasis === "first_closed_bar_after_event"
+      ? input.entryTime - input.intervalMs
+      : input.entryTime;
+  const bars = Math.round((at - entryBarOpen) / input.intervalMs);
+  if (bars < 0 || bars > input.lastBar) return null;
+  return { barsSinceEntry: bars, changePct: excursion };
+}
+
+/**
  * The aggregate trace: the mean change per bar offset across covered
  * occurrences, reported with the count it averaged. Distinct by construction
  * (the graph draws it heavier), and honest about small n by carrying n.
@@ -435,7 +469,9 @@ const fmtDate = (t: number): string => new Date(t).toISOString().slice(0, 16);
  * republishing the same recipe (which writes a new scene row), never silently
  * restamping the old one.
  */
-export function isLegacyEventStudyScene(payload: EventStudyScenePayload): boolean {
+export function isLegacyEventStudyScene(
+  payload: EventStudyScenePayload & { readonly calculationVersion?: string | undefined },
+): boolean {
   return (
     payload.report.nComplete === undefined ||
     (payload as { calculationVersion?: string }).calculationVersion !==
@@ -525,6 +561,10 @@ const fmtPct = (value: number | null | undefined): string =>
 /** USD with a sign only when negative, the register the panel has always used. */
 export const fmtUsd = (value: number): string =>
   `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+
+/** Plain price display, the register the panel's figures use. */
+export const fmtPrice = (value: number): string =>
+  value.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
 /**
  * The signed money figure an event study's percentage maps onto: display
@@ -637,27 +677,66 @@ export function payloadStudyMetric(payload: {
  * label), the measured entry and exit with their prices, and the signed
  * return between them. Null fields mean the scene holds no such layer, and
  * the chart draws nothing for them rather than inventing a position.
+ *
+ * `extremum` is the one piece the deterministic vocabulary does not carry
+ * (the composer emits no extremum layer), so it is derived here from the SAME
+ * report row the layers were composed from — and only when the caller passes
+ * that row. It is the hindsight extremum of a path_extrema occurrence: a
+ * different artifact from the fixed-horizon terminal close, drawn beside it
+ * and labelled as what it is, never folded into the exit.
  */
 export interface OccurrenceStudyOverlay {
   readonly activation: { readonly at: number; readonly label: string } | null;
   readonly entry: { readonly at: number; readonly price: number; readonly label: string } | null;
   readonly exit: { readonly at: number; readonly price: number; readonly label: string } | null;
   readonly returnPct: number | null;
+  readonly extremum: { readonly at: number; readonly price: number; readonly label: string } | null;
 }
 
 /**
- * The horizon rides the exit marker's label because it is the one number a
- * reader needs to tell a horizon-30 exit from a truncated one.
+ * The report-row context the overlay's row-derived pieces need: the row its
+ * layers were composed from, and the path_extrema recipe (price field and
+ * interval) that names what the extremum measured.
+ */
+export interface OccurrenceStudyRowContext {
+  readonly row: {
+    readonly covered: boolean;
+    readonly truncated: boolean;
+    readonly barsCovered?: number | undefined;
+    readonly extremumTime?: number | undefined;
+    readonly extremumPrice?: number | undefined;
+  };
+  readonly priceField: "low" | "high";
+  readonly interval: string;
+}
+
+/**
+ * The horizon and the measured window's end ride the exit marker's label,
+ * because the exit always MEANS the terminal close of what was measured: the
+ * full horizon's close, or — on a truncated row — the close of the last bar
+ * the window actually reached, said as exactly that.
+ */
+function terminalCloseLabel(horizonBars: number, row: OccurrenceStudyRowContext["row"]): string {
+  const truncated = row.truncated && row.barsCovered !== undefined;
+  const bars = truncated ? row.barsCovered! : horizonBars;
+  return `study exit: terminal close after ${bars} bars${truncated ? " (truncated)" : ""}`;
+}
+
+/**
+ * The overlay for one occurrence: layer-bound pieces from the composed scene,
+ * plus the row-derived extremum when its context was passed.
  */
 export function occurrenceStudyOverlay(
   layers: ReadonlyArray<DeterministicSceneLayer>,
   occurrenceIndex: number,
   horizonBars: number,
+  rowContext?: OccurrenceStudyRowContext,
 ): OccurrenceStudyOverlay {
   let activation: OccurrenceStudyOverlay["activation"] = null;
   let entry: OccurrenceStudyOverlay["entry"] = null;
   let exit: OccurrenceStudyOverlay["exit"] = null;
   let returnPct: number | null = null;
+  let extremum: OccurrenceStudyOverlay["extremum"] = null;
   for (const layer of layers) {
     if (layer.kind === "event_span" && layer.occurrenceIndex === occurrenceIndex) {
       // An instantaneous activation (start equal to end) is the rule; a
@@ -666,12 +745,106 @@ export function occurrenceStudyOverlay(
     } else if (layer.kind === "study_entry" && layer.occurrenceIndex === occurrenceIndex) {
       entry = { at: layer.at, price: layer.price, label: "study entry" };
     } else if (layer.kind === "study_exit" && layer.occurrenceIndex === occurrenceIndex) {
-      exit = { at: layer.at, price: layer.price, label: `study exit after ${horizonBars} bars` };
+      exit = {
+        at: layer.at,
+        price: layer.price,
+        label:
+          rowContext === undefined
+            ? `study exit: terminal close after ${horizonBars} bars`
+            : terminalCloseLabel(horizonBars, rowContext.row),
+      };
     } else if (layer.kind === "return_span" && layer.occurrenceIndex === occurrenceIndex) {
       returnPct = layer.returnPct;
     }
   }
-  return { activation, entry, exit, returnPct };
+  if (
+    rowContext !== undefined &&
+    rowContext.row.covered &&
+    rowContext.row.extremumTime !== undefined &&
+    rowContext.row.extremumPrice !== undefined
+  ) {
+    extremum = {
+      at: rowContext.row.extremumTime,
+      price: rowContext.row.extremumPrice,
+      label: extremumBarPhrase(
+        rowContext.priceField,
+        rowContext.interval,
+        rowContext.row.extremumTime,
+      ),
+    };
+  }
+  return { activation, entry, exit, returnPct, extremum };
+}
+
+/**
+ * The extremum's time is the OPEN time of the bar that holds it: the row
+ * claims the bar, never a millisecond inside it, and the phrase says so —
+ * "lowest low of the 1d bar opening 2024-05-01" — never "at" an instant.
+ */
+export function extremumBarPhrase(
+  priceField: "low" | "high",
+  interval: string,
+  at: number,
+): string {
+  return `${extremumPhrase(priceField)} of the ${interval} bar opening ${new Date(at)
+    .toISOString()
+    .slice(0, 10)}`;
+}
+
+/**
+ * The label the chart's extremum rule carries: the hindsight claim and the
+ * measured price in one line, beside — never instead of — the terminal close
+ * marker's own price.
+ */
+export function extremumRuleLabel(input: {
+  readonly priceField: "low" | "high";
+  readonly interval: string;
+  readonly at: number;
+  readonly price: number;
+}): string {
+  return `${extremumPhrase(input.priceField)} (hindsight) ${fmtPrice(input.price)} of the ${
+    input.interval
+  } bar opening ${new Date(input.at).toISOString().slice(0, 10)}`;
+}
+
+/**
+ * The hindsight extremum as a chart research marker: a dotted rule at the
+ * extremum bar's open time, carrying the phrase, the price and the row's
+ * source. Distinct by construction from the study exit's square — the two
+ * artifacts a path_extrema question mixes up.
+ */
+export function extremumRuleMarker(input: {
+  readonly sceneId: string;
+  readonly occurrenceIndex: number;
+  readonly at: number;
+  readonly price: number;
+  readonly priceField: "low" | "high";
+  readonly interval: string;
+  readonly source: string;
+}): ChartResearchMarkerInput {
+  return {
+    key: `${input.sceneId}:extremum:${input.occurrenceIndex}`,
+    label: extremumRuleLabel(input),
+    startAt: input.at,
+    endAt: input.at,
+    sourceUrl: input.source,
+    covered: true,
+    upcoming: false,
+  };
+}
+
+/**
+ * The line the calendar stage adds when the extremum bar and the terminal
+ * close bar are the SAME bar: both markers still draw (the rule through the
+ * square, each with its own label and price), and the sentence says so
+ * instead of letting one visually swallow the other.
+ */
+export function extremumCoincidenceSentence(
+  priceField: "low" | "high",
+  interval: string,
+  at: number,
+): string {
+  return `the ${extremumBarPhrase(priceField, interval, at)} shares its bar with the terminal close: both markers draw there — the rule is the extremum, the square is the horizon's exit`;
 }
 
 /**
@@ -737,4 +910,70 @@ export function turnIntoStrategySentence(market: string, setName: string): strin
 
 export function validateForwardSentence(market: string, setName: string): string {
   return `Validate the "${setName}" idea on ${market} forward on paper. This is my explicit ask for a paper validation: arm one, nothing live.`;
+}
+
+// ---------------------------------------------------------------------------
+// strategy replay: every visible trade draws its entry AND its exit
+// ---------------------------------------------------------------------------
+
+/**
+ * How many replay trades draw on the chart and list at once. A display cap
+ * only: the full counts (taken by the backtest, persisted on the scene) stay
+ * in the showing line beside it, and bounded navigation reaches the rest.
+ */
+export const REPLAY_MARKER_WINDOW = 10;
+
+/** The structural shape of one persisted replay trade the labels read. */
+export interface ReplayTradeLike {
+  readonly entryPrice: number;
+  readonly exitPrice: number;
+  readonly exitReason: string;
+  readonly netUsd: number;
+}
+
+/**
+ * The entry rule's label: the trade's number, the thesis's side (one replay
+ * runs one single-sided thesis, so the side is the thesis's own record, never
+ * an inference from prices), and the measured entry price.
+ */
+export function replayEntryRuleLabel(
+  trade: ReplayTradeLike,
+  index: number,
+  side: "long" | "short",
+): string {
+  return `t${index + 1} entry · ${side} · ${fmtPrice(trade.entryPrice)}`;
+}
+
+/**
+ * The exit rule's label: the exit price, the exit reason, and the net result
+ * after every fee and funding payment — the trade's complete outcome, beside
+ * its entry marker rather than in place of it.
+ */
+export function replayExitRuleLabel(trade: ReplayTradeLike, index: number): string {
+  return `t${index + 1} exit · ${fmtPrice(trade.exitPrice)} · ${trade.exitReason} · net ${fmtUsd(
+    trade.netUsd,
+  )}`;
+}
+
+/** The entry band's label: the trade's own number, on the wash behind the rule. */
+export function replayEntryBandLabel(index: number): string {
+  return `t${index + 1} entry`;
+}
+
+/**
+ * The navigation line over a replay's windowed trades, keeping three counts
+ * distinct: the trades the backtest took, the trades the scene persisted
+ * (capped at persistence, not at display), and the slice currently drawn.
+ */
+export function replayShowingSentence(input: {
+  readonly fromIndex: number;
+  readonly drawn: number;
+  readonly persisted: number;
+  readonly taken: number;
+}): string {
+  const first = input.persisted === 0 ? 0 : input.fromIndex + 1;
+  const last = input.fromIndex + input.drawn;
+  const persistedNote =
+    input.taken > input.persisted ? `; the scene persists the first ${input.persisted}` : "";
+  return `showing trades ${first}–${last} of ${input.taken} taken${persistedNote}`;
 }
