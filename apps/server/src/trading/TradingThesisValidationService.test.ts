@@ -20,6 +20,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import type { BacktestCoverage, BacktestStats } from "@t3tools/trading-contracts/backtest";
 import { MIN_REPLAY_SETUPS } from "@t3tools/trading-contracts/replay";
 import type { TradingThesis } from "@t3tools/trading-contracts/thesis";
 
@@ -677,6 +678,196 @@ layer("TradingThesisValidationService", (it) => {
       assert.equal(refused.outcome, "refused");
       if (refused.outcome === "refused") assert.include(refused.reason, "no active event set");
     }),
+  );
+
+  // ---------------------------------------------------------------------
+  // baseline provenance and gating (the E1 repair)
+  // ---------------------------------------------------------------------
+
+  /** A baseline the backtest could grade, with the fields anything reads set. */
+  const baselineStats = (over: Partial<Record<string, number>>) =>
+    ({
+      setupsFound: 40,
+      tradesTaken: 40,
+      setupsUnpriced: 0,
+      wins: 20,
+      losses: 20,
+      breakEven: 0,
+      winRatePercent: 50,
+      averageWinUsd: 4,
+      averageLossUsd: -3,
+      expectancyUsd: 500,
+      totalGrossUsd: 40,
+      totalFeesUsd: 15,
+      totalFundingUsd: 0,
+      totalNetUsd: 500 * 40,
+      maxDrawdownUsd: 8,
+      timeInMarketPercent: 20,
+      buyAndHoldNetUsd: 0,
+      buyAndHoldReturnPercent: 0,
+      ...over,
+    }) as BacktestStats;
+
+  const servedCoverage = (over: Partial<Record<string, unknown>> = {}) =>
+    ({
+      requestedFromT: START,
+      requestedToT: START + DAY,
+      servedFromT: START,
+      servedToT: START + DAY,
+      barsServed: 288,
+      gaps: [],
+      recordingSince: START,
+      fundingServed: false,
+      ...over,
+    }) as BacktestCoverage;
+
+  it.effect("keeps the run reference a baseline was recorded with", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({
+        id: armed.validation.id,
+        baseline: baselineStats({}),
+        source: {
+          runId: "run-1",
+          digest: "abc123",
+          computedAt: START,
+          coverage: servedCoverage(),
+        },
+      });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      assert.equal(report?.baselineSource?.runId, "run-1");
+      assert.equal(report?.baselineSource?.digest, "abc123");
+      assert.equal(report?.baselineSource?.computedAt, START);
+      assert.equal(report?.baselineSource?.coverage?.barsServed, 288);
+      assert.equal(report?.calculationVersion, "forward-1");
+      // The baseline is gradeable, so the comparison happens.
+      assert.equal(report?.baselineExpectancyUsd, 500);
+      assert.notEqual(report?.comparison, "no_baseline");
+    }),
+  );
+
+  it.effect("a baseline written the legacy way decodes with no source and still compares", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({ id: armed.validation.id, baseline: baselineStats({}) });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      // No provenance was recorded, so none is reported — the field is
+      // absent rather than nulled or guessed.
+      assert.isUndefined(report?.baselineSource);
+      assert.equal(report?.baselineExpectancyUsd, 500);
+      assert.notEqual(report?.comparison, "no_baseline");
+    }),
+  );
+
+  it.effect("refuses a zero-trade baseline as a comparison, never better than backtest", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({
+        id: armed.validation.id,
+        baseline: baselineStats({ tradesTaken: 0, expectancyUsd: 0 }),
+      });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      assert.isAtLeast(report?.stats.tradesTaken ?? 0, MIN_REPLAY_SETUPS);
+      assert.notEqual(report?.comparison, "better_than_backtest");
+      assert.equal(report?.comparison, "no_baseline");
+      assert.include(report?.verdictReason ?? "", "took only 0 trades");
+    }),
+  );
+
+  it.effect("refuses a baseline whose window was mostly missing", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({
+        id: armed.validation.id,
+        baseline: baselineStats({}),
+        source: {
+          runId: "run-2",
+          digest: "def456",
+          computedAt: START,
+          // The archive served only a sliver of the requested day.
+          coverage: servedCoverage({ servedToT: START + 2 * 60 * MINUTE, barsServed: 24 }),
+        },
+      });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      assert.equal(report?.comparison, "no_baseline");
+      assert.include(report?.verdictReason ?? "", "served too little");
+    }),
+  );
+
+  it.effect(
+    "an event-anchored run whose next occurrence is ahead reads as waiting, not failing",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const service = yield* TradingThesisValidationService;
+        const events = yield* TradingEventService;
+
+        const recorded = yield* events.record({
+          name: "the unlock",
+          occurrences: [
+            {
+              startAt: START + 40 * DAY,
+              endAt: START + 40 * DAY + 60 * MINUTE,
+              source: "user provided",
+            },
+          ],
+          threadId: "thread-events",
+          author: "agent",
+          now: START,
+        });
+        assert.equal(recorded.outcome, "ok");
+        if (recorded.outcome !== "ok") return;
+
+        const anchored: TradingThesis = {
+          ...thesis,
+          entry: {
+            predicates: [
+              {
+                left: { source: "event", eventSetId: recorded.set.eventSetId, label: "the unlock" },
+                comparator: "below",
+                right: { source: "constant", value: 30 },
+              },
+            ],
+          },
+        };
+        const armed = yield* service.arm({ thesis: anchored, durationMs: 14 * DAY, now: START });
+        assert.equal(armed.outcome, "armed");
+        if (armed.outcome !== "armed") return;
+
+        yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+        const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+        assert.isNotNull(report);
+        assert.equal(report?.stats.tradesTaken, 0, "no occurrence ended, so nothing could fire");
+        assert.include(report?.verdictReason ?? "", "waiting, not failing");
+      }),
   );
 });
 

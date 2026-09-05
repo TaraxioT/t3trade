@@ -9,16 +9,21 @@
  * batch engine has already walked, and the two trade lists are compared whole.
  */
 import { describe, expect, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 
 import { runBacktest, type BacktestCosts, type BacktestCoverage } from "./backtest.ts";
 import {
+  baselineCoverageIncomplete,
   EMPTY_FORWARD_STATE,
+  FORWARD_CALCULATION_VERSION,
   FORWARD_TRACKING_BAND,
   forwardWarmupBars,
   isForwardInterval,
   forwardEndSummary,
+  ForwardReport,
   judgeForward,
   renderForwardMenu,
+  serializeForwardBaselineContent,
   stepForward,
   type ForwardState,
 } from "./forward.ts";
@@ -498,6 +503,319 @@ describe("judgeForward", () => {
     });
     expect(judged.verdictReason).toContain("paused");
     expect(judged.verdictReason).toContain("still open");
+  });
+
+  // ---------------------------------------------------------------------
+  // the E1 repair: the baseline's own sample and coverage gate the
+  // comparison, a heuristic band is called one, and a losing baseline is
+  // never worded or read as success.
+  // ---------------------------------------------------------------------
+
+  it("refuses a zero-trade baseline as a comparison rather than calling the run better", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: MIN_REPLAY_SETUPS, expectancyUsd: 5 }),
+      baselineExpectancyUsd: 0,
+      baselineTradesTaken: 0,
+      barsWatched: 9_000,
+      hasOpenTrade: false,
+      status: "armed",
+    });
+    expect(judged.comparison).not.toBe("better_than_backtest");
+    expect(judged.comparison).toBe("no_baseline");
+    expect(judged.verdictReason).toContain("took only 0 trades");
+  });
+
+  it("refuses a baseline under the sample floor the same way", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: MIN_REPLAY_SETUPS, expectancyUsd: 5 }),
+      baselineExpectancyUsd: 1,
+      baselineTradesTaken: MIN_REPLAY_SETUPS - 1,
+      barsWatched: 9_000,
+      hasOpenTrade: false,
+      status: "armed",
+    });
+    expect(judged.comparison).toBe("no_baseline");
+    expect(judged.verdictReason).toContain(`under the ${MIN_REPLAY_SETUPS} a comparison needs`);
+  });
+
+  it("refuses a baseline whose window was served too incompletely", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: MIN_REPLAY_SETUPS, expectancyUsd: 5 }),
+      baselineExpectancyUsd: 1,
+      baselineTradesTaken: 100,
+      barsWatched: 9_000,
+      hasOpenTrade: false,
+      status: "armed",
+      baselineCoverage: {
+        requestedFromT: 0,
+        requestedToT: 1_000,
+        servedFromT: 0,
+        servedToT: 200,
+        barsServed: 200,
+        gaps: [],
+        recordingSince: 0,
+        fundingServed: false,
+      },
+    });
+    expect(judged.comparison).toBe("no_baseline");
+    expect(judged.verdictReason).toContain("served too little");
+  });
+
+  it("compares normally against a gradeable baseline whose coverage was recorded", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: MIN_REPLAY_SETUPS, expectancyUsd: 1.2 }),
+      baselineExpectancyUsd: 1,
+      baselineTradesTaken: 100,
+      barsWatched: 9_000,
+      hasOpenTrade: false,
+      status: "armed",
+      baselineCoverage: {
+        requestedFromT: 0,
+        requestedToT: 1_000,
+        servedFromT: 0,
+        servedToT: 1_000,
+        barsServed: 1_000,
+        gaps: [],
+        recordingSince: 0,
+        fundingServed: false,
+      },
+    });
+    expect(judged.comparison).toBe("tracking");
+  });
+
+  it("calls the tracking band a heuristic, never the noise of this sample", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: MIN_REPLAY_SETUPS, expectancyUsd: 1.2 }),
+      baselineExpectancyUsd: 1,
+      baselineTradesTaken: 100,
+      barsWatched: 9_000,
+      hasOpenTrade: false,
+      status: "armed",
+    });
+    expect(judged.verdictReason).toContain("heuristic");
+    expect(judged.verdictReason).toContain("not a computed sampling distribution");
+    expect(judged.verdictReason).not.toContain("noise of this sample");
+  });
+
+  it("does not word tracking a losing baseline as success", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: MIN_REPLAY_SETUPS, expectancyUsd: -2.05 }),
+      baselineExpectancyUsd: -2,
+      baselineTradesTaken: 100,
+      barsWatched: 9_000,
+      hasOpenTrade: false,
+      status: "armed",
+    });
+    expect(judged.comparison).toBe("tracking");
+    expect(judged.verdictReason).toContain("Both figures lose money after fees");
+    expect(judged.verdictReason).toContain("replication, not a result");
+  });
+
+  it("notes when a run better than its baseline still loses money", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: MIN_REPLAY_SETUPS, expectancyUsd: -1 }),
+      baselineExpectancyUsd: -5,
+      baselineTradesTaken: 100,
+      barsWatched: 9_000,
+      hasOpenTrade: false,
+      status: "armed",
+    });
+    expect(judged.comparison).toBe("better_than_backtest");
+    expect(judged.verdictReason).toContain("still loses money after fees");
+  });
+
+  it("says waiting, not failing, for an event-anchored run whose next occurrence is ahead", () => {
+    const judged = judgeForward({
+      stats: stats({ tradesTaken: 0 }),
+      baselineExpectancyUsd: null,
+      baselineTradesTaken: null,
+      barsWatched: 500,
+      hasOpenTrade: false,
+      status: "armed",
+      awaitingEvent: true,
+    });
+    expect(judged.comparison).toBe("too_few_trades");
+    expect(judged.verdictReason).toContain("waiting, not failing");
+  });
+});
+
+describe("baseline provenance (the E1 repair)", () => {
+  const stats = (over: Partial<Record<string, number>>) =>
+    ({
+      setupsFound: 0,
+      tradesTaken: 30,
+      setupsUnpriced: 0,
+      wins: 0,
+      losses: 0,
+      breakEven: 0,
+      winRatePercent: 0,
+      averageWinUsd: 0,
+      averageLossUsd: 0,
+      expectancyUsd: 0,
+      totalGrossUsd: 0,
+      totalFeesUsd: 0,
+      totalFundingUsd: 0,
+      totalNetUsd: 0,
+      maxDrawdownUsd: 0,
+      timeInMarketPercent: 0,
+      buyAndHoldNetUsd: 0,
+      buyAndHoldReturnPercent: 0,
+      ...over,
+    }) as never;
+
+  const thesis = {
+    market: "ETH",
+    interval: "1m",
+    side: "long",
+    entry: {
+      predicates: [
+        {
+          left: { source: "price" },
+          comparator: "above",
+          right: { source: "constant", value: 100 },
+        },
+      ],
+    },
+    exits: { maxHoldBars: 5 },
+  } as never;
+
+  /** A report as this build composes it, minus the fields under test. */
+  const report = (extra: Record<string, unknown> = {}) => ({
+    validationId: "v1",
+    thesis,
+    headline: "h",
+    status: "armed",
+    armedAt: 0,
+    expiresAt: 1,
+    endedAt: null,
+    endReason: null,
+    notionalUsd: 1_000,
+    barsWatched: 10,
+    stats: stats({}),
+    openTrade: null,
+    baselineExpectancyUsd: null,
+    baselineWinRatePercent: null,
+    baselineTradesTaken: null,
+    comparison: "too_few_trades",
+    verdictReason: "r",
+    paperOnly: true,
+    ...extra,
+  });
+
+  it("decodes a report written before provenance fields existed, lacking them", () => {
+    const decoded = Schema.decodeUnknownSync(ForwardReport)(report());
+    // Absent, not null and not defaulted: a legacy record explicitly has no
+    // provenance, and a surface says "not recorded" rather than showing a
+    // fabricated one.
+    expect(decoded.calculationVersion).toBeUndefined();
+    expect(decoded.baselineSource).toBeUndefined();
+  });
+
+  it("round-trips a report carrying its baseline source and calculation version", () => {
+    const decoded = Schema.decodeUnknownSync(ForwardReport)(
+      report({
+        calculationVersion: FORWARD_CALCULATION_VERSION,
+        baselineSource: {
+          runId: "run-1",
+          digest: "d1",
+          computedAt: 123,
+          coverage: {
+            requestedFromT: 0,
+            requestedToT: 100,
+            servedFromT: 0,
+            servedToT: 100,
+            barsServed: 100,
+            gaps: [],
+            recordingSince: 0,
+            fundingServed: false,
+          },
+          eventSetContentDigests: [{ eventSetId: "s1", digest: "abc" }],
+        },
+      }),
+    );
+    expect(decoded.calculationVersion).toBe(FORWARD_CALCULATION_VERSION);
+    expect(decoded.baselineSource?.runId).toBe("run-1");
+    expect(decoded.baselineSource?.coverage?.barsServed).toBe(100);
+    expect(decoded.baselineSource?.eventSetContentDigests?.[0]?.digest).toBe("abc");
+  });
+
+  it("serializes baseline content canonically: key order is free, a changed figure is not", () => {
+    const base = {
+      thesis,
+      notionalUsd: 1_000,
+      costs: { takerFeeBpsPerSide: 5, slippageBpsPerSide: 1, slippageSource: "assumed" },
+      coverage: {
+        requestedFromT: 0,
+        requestedToT: 100,
+        servedFromT: 0,
+        servedToT: 100,
+        barsServed: 100,
+        gaps: [],
+        recordingSince: 0,
+        fundingServed: false,
+      },
+      stats: stats({ expectancyUsd: 1.5 }),
+      verdict: "positive_after_fees",
+    };
+    // The same content with every key written in a different order, and an
+    // optional spelled as undefined rather than left out.
+    const reordered = {
+      verdict: base.verdict,
+      stats: base.stats,
+      coverage: {
+        fundingServed: false,
+        recordingSince: 0,
+        gaps: [],
+        barsServed: 100,
+        servedToT: 100,
+        servedFromT: 0,
+        requestedToT: 100,
+        requestedFromT: 0,
+      },
+      costs: { slippageSource: "assumed", slippageBpsPerSide: 1, takerFeeBpsPerSide: 5 },
+      notionalUsd: base.notionalUsd,
+      thesis: base.thesis,
+    };
+    expect(serializeForwardBaselineContent({ report: reordered })).toBe(
+      serializeForwardBaselineContent({ report: base }),
+    );
+    const amended = { ...base, stats: stats({ expectancyUsd: 1.6 }) };
+    expect(serializeForwardBaselineContent({ report: amended })).not.toBe(
+      serializeForwardBaselineContent({ report: base }),
+    );
+  });
+
+  it("marks a baseline window incomplete when nothing was served or a majority is missing", () => {
+    const complete = {
+      requestedFromT: 0,
+      requestedToT: 1_000,
+      servedFromT: 0,
+      servedToT: 1_000,
+      barsServed: 1_000,
+      gaps: [],
+      recordingSince: 0,
+      fundingServed: false,
+    } satisfies BacktestCoverage;
+    expect(baselineCoverageIncomplete(complete)).toBe(false);
+    expect(baselineCoverageIncomplete({ ...complete, servedFromT: null, servedToT: null })).toBe(
+      true,
+    );
+    // 300 of 1000 missing at the tail, plus a 200 gap: exactly half the
+    // window missing still compares; more than half does not.
+    expect(
+      baselineCoverageIncomplete({
+        ...complete,
+        servedToT: 700,
+        gaps: [{ fromT: 300, toT: 500 }],
+      }),
+    ).toBe(false);
+    expect(
+      baselineCoverageIncomplete({
+        ...complete,
+        servedToT: 700,
+        gaps: [{ fromT: 300, toT: 600 }],
+      }),
+    ).toBe(true);
   });
 });
 

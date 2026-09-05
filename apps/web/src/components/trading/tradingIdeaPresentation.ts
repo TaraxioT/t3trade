@@ -77,6 +77,12 @@ function plural(count: number, unit: string): string {
  */
 export function ideaRowView(row: TradingIdeaRow, now: number): IdeaRowView {
   const comparison = describeComparison(row.comparison, "short");
+  // The row carries no baseline figure, so "tracking" is judged against what
+  // the row does carry: the forward expectancy itself. Tracking while the
+  // paper ledger loses money is replication rather than success, and a green
+  // chip over a negative expectancy would say otherwise.
+  const trackingWhileLosing =
+    row.comparison === "tracking" && row.expectancyUsd !== null && row.expectancyUsd < 0;
   return {
     id: row.id,
     title: row.title,
@@ -101,7 +107,7 @@ export function ideaRowView(row: TradingIdeaRow, now: number): IdeaRowView {
         ? "no paper trades yet"
         : `${row.trades} paper ${row.trades === 1 ? "trade" : "trades"}`,
     comparisonLabel: comparison.label,
-    comparisonTone: comparison.tone,
+    comparisonTone: trackingWhileLosing ? "neutral" : comparison.tone,
     threadId: row.threadId,
   };
 }

@@ -44,7 +44,11 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import type { BacktestCosts, BacktestStats } from "@t3tools/trading-contracts/backtest";
+import type {
+  BacktestCosts,
+  BacktestCoverage,
+  BacktestStats,
+} from "@t3tools/trading-contracts/backtest";
 import {
   BACKTEST_FALLBACK_SLIPPAGE_BPS_PER_SIDE,
   BACKTEST_TAKER_FEE_BPS_PER_SIDE,
@@ -52,6 +56,7 @@ import {
 } from "@t3tools/trading-contracts/backtest";
 import {
   EMPTY_FORWARD_STATE,
+  FORWARD_CALCULATION_VERSION,
   FORWARD_INTERVALS,
   forwardWarmupBars,
   isForwardInterval,
@@ -60,6 +65,8 @@ import {
   MIN_VALIDATION_MS,
   settledAsBacktestTrade,
   stepForward,
+  type EventSetContentDigest,
+  type ForwardBaselineSource,
   type ForwardReport,
   type ForwardState,
   type PaperTrade,
@@ -73,6 +80,7 @@ import {
   type ValidationEventKind,
 } from "@t3tools/trading-contracts/forward";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
+import { MIN_REPLAY_SETUPS } from "@t3tools/trading-contracts/replay";
 import {
   describeThesis,
   thesisEventSets,
@@ -132,6 +140,13 @@ export interface ThesisValidation {
   readonly notionalUsd: number;
   readonly costs: BacktestCosts;
   readonly baseline: BacktestStats | null;
+  /**
+   * Identity of the backtest the baseline figures came from, when it was
+   * recorded with one. Null on baselines written before provenance was kept —
+   * and on every legacy row — because absence is the honest reading there,
+   * not a reconstructed guess.
+   */
+  readonly baselineSource: ForwardBaselineSource | null;
   readonly barsWatched: number;
   readonly state: ForwardState;
   readonly lastBarTime: number | null;
@@ -240,10 +255,25 @@ export interface TradingThesisValidationServiceShape {
    * pulling it in here would put a second dependency on a service whose short
    * dependency list is the claim that it cannot trade. The caller runs the
    * backtest and hands the figures over.
+   *
+   * `source` names the backtest they came from — the recorded run's id, a
+   * digest pinning its content, when it ran, and what its window served. It
+   * is optional only for legacy callers; a baseline written without it
+   * decodes with no provenance rather than a fabricated one, and the report
+   * comparison gates on the coverage it carries.
    */
   readonly setBaseline: (input: {
     readonly id: string;
     readonly baseline: BacktestStats;
+    readonly source?:
+      | {
+          readonly runId: string | null;
+          readonly digest: string | null;
+          readonly computedAt: number;
+          readonly coverage?: BacktestCoverage | undefined;
+          readonly eventSetContentDigests?: ReadonlyArray<EventSetContentDigest> | undefined;
+        }
+      | undefined;
   }) => Effect.Effect<void, PersistenceSqlError>;
 
   /**
@@ -388,6 +418,50 @@ const rowJsonString = Schema.fromJsonString(Schema.Unknown);
 const jsonValueFromRow = Schema.decodeUnknownSync(rowJsonString);
 const rowJsonValue = Schema.encodeSync(rowJsonString);
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/**
+ * A baseline row, read either way it was written.
+ *
+ * Rows written since provenance was kept hold `{ stats, runId, digest,
+ * computedAt, coverage?, eventSetContentDigests? }`. Rows written before hold
+ * the bare stats. Both decode; the legacy one simply has no source, and every
+ * reader treats that as "provenance not recorded" rather than filling one in.
+ */
+const decodeBaseline = (
+  raw: string | null,
+): {
+  readonly baseline: BacktestStats | null;
+  readonly source: ForwardBaselineSource | null;
+} => {
+  if (raw === null) return { baseline: null, source: null };
+  const parsed: unknown = jsonValueFromRow(raw);
+  if (!isRecord(parsed)) return { baseline: null, source: null };
+  const stats = parsed.stats;
+  if (stats === undefined || !isRecord(stats)) {
+    // The legacy shape: the whole payload is the stats.
+    return { baseline: parsed as unknown as BacktestStats, source: null };
+  }
+  const computedAt = typeof parsed.computedAt === "number" ? parsed.computedAt : null;
+  if (computedAt === null) return { baseline: stats as unknown as BacktestStats, source: null };
+  return {
+    baseline: stats as unknown as BacktestStats,
+    source: {
+      runId: typeof parsed.runId === "string" ? parsed.runId : null,
+      digest: typeof parsed.digest === "string" ? parsed.digest : null,
+      computedAt,
+      ...(isRecord(parsed.coverage) ? { coverage: parsed.coverage as BacktestCoverage } : {}),
+      ...(Array.isArray(parsed.eventSetContentDigests)
+        ? {
+            eventSetContentDigests:
+              parsed.eventSetContentDigests as ReadonlyArray<EventSetContentDigest>,
+          }
+        : {}),
+    },
+  };
+};
+
 export const makeTradingThesisValidationService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
@@ -407,6 +481,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
   const hydrate = (row: ValidationRow) =>
     Effect.gen(function* () {
       const open = yield* openFillFor(row.validation_id);
+      const { baseline, source } = decodeBaseline(row.baseline_json);
       return {
         id: row.validation_id,
         threadId: row.thread_id,
@@ -422,10 +497,8 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         endReason: row.end_reason as ThesisValidationEndReason | null,
         notionalUsd: row.notional_usd,
         costs: jsonValueFromRow(row.costs_json) as BacktestCosts,
-        baseline:
-          row.baseline_json === null
-            ? null
-            : (jsonValueFromRow(row.baseline_json) as BacktestStats),
+        baseline,
+        baselineSource: source,
         barsWatched: row.bars_watched,
         state: toForwardState(row, open[0]),
         lastBarTime: row.last_bar_time,
@@ -598,11 +671,29 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       } satisfies BacktestCosts;
     });
 
-  /** Record the backtest figures a forward run will be scored against. */
-  const setBaseline = (input: { readonly id: string; readonly baseline: BacktestStats }) =>
+  /**
+   * Record the backtest figures a forward run will be scored against, with
+   * the identity of the backtest they came from when the caller knows it.
+   * The JSON shape is additive: a bare-stats payload (how every baseline was
+   * written before provenance existed) still decodes, with no source.
+   */
+  const setBaseline: TradingThesisValidationServiceShape["setBaseline"] = (input) =>
     sql`
       UPDATE trading_thesis_validations
-      SET baseline_json = ${JSON.stringify(input.baseline)}
+      SET baseline_json = ${
+        input.source === undefined
+          ? JSON.stringify(input.baseline)
+          : JSON.stringify({
+              stats: input.baseline,
+              runId: input.source.runId,
+              digest: input.source.digest,
+              computedAt: input.source.computedAt,
+              ...(input.source.coverage === undefined ? {} : { coverage: input.source.coverage }),
+              ...(input.source.eventSetContentDigests === undefined
+                ? {}
+                : { eventSetContentDigests: input.source.eventSetContentDigests }),
+            })
+      }
       WHERE validation_id = ${input.id}
     `.pipe(Effect.mapError(sqlFail("setBaseline")), Effect.asVoid);
 
@@ -1045,8 +1136,29 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
     Effect.gen(function* () {
       const validation = yield* get(input.id);
       if (validation === null) return null;
-      const all = yield* trades(input.id);
-      return composeReport(validation, all);
+      const all = yield* trades(validation.id);
+
+      // An event-anchored thesis whose next occurrence is still ahead has no
+      // signal due yet — every bar so far evaluated before any occurrence
+      // ended, so the operand read undefined and the rule could not fire.
+      // That empty ledger is waiting rather than failing, and the verdict
+      // says which. Read only while the sample is still under the floor and
+      // something could still be waiting: past the floor the run has signals
+      // on record and the calendar no longer changes the sentence.
+      const anchored = thesisEventSets(validation.thesis);
+      const settled = all.filter((trade) => trade.exitTime !== null).length;
+      let awaitingEvent = false;
+      if (anchored.length > 0 && settled < MIN_REPLAY_SETUPS) {
+        const cutoff = validation.lastBarTime ?? input.now;
+        const occurrences = yield* eventService.occurrencesFor(anchored);
+        awaitingEvent = anchored.some(
+          (eventSetId) =>
+            !occurrences.some(
+              (occurrence) => occurrence.eventSetId === eventSetId && occurrence.endAt <= cutoff,
+            ),
+        );
+      }
+      return composeReport(validation, all, { awaitingEvent });
     });
 
   const expireDue: TradingThesisValidationServiceShape["expireDue"] = (input) =>
@@ -1153,10 +1265,14 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
  *
  * Exported and pure so the shape can be tested without a database, and so the
  * expiry path and the on-demand path cannot compose two different reports.
+ * `options.awaitingEvent` — whether the thesis anchors on an event set whose
+ * next occurrence is still ahead — is computed by the caller, which is the
+ * side of the boundary that can read the calendar.
  */
 export function composeReport(
   validation: ThesisValidation,
   all: ReadonlyArray<PaperTrade>,
+  options?: { readonly awaitingEvent?: boolean | undefined },
 ): ForwardReport {
   const settled = all
     .map(settledAsBacktestTrade)
@@ -1182,6 +1298,12 @@ export function composeReport(
     barsWatched: validation.barsWatched,
     hasOpenTrade: open !== null,
     status: validation.status,
+    // Only a baseline whose coverage was recorded can be gated on it; a
+    // legacy baseline carries no coverage and is judged on its figures.
+    ...(validation.baselineSource?.coverage === undefined
+      ? {}
+      : { baselineCoverage: validation.baselineSource.coverage }),
+    ...(options?.awaitingEvent === true ? { awaitingEvent: true } : {}),
   });
 
   return {
@@ -1200,9 +1322,11 @@ export function composeReport(
     baselineExpectancyUsd: validation.baseline?.expectancyUsd ?? null,
     baselineWinRatePercent: validation.baseline?.winRatePercent ?? null,
     baselineTradesTaken: validation.baseline?.tradesTaken ?? null,
+    ...(validation.baselineSource === null ? {} : { baselineSource: validation.baselineSource }),
     comparison,
     verdictReason,
     paperOnly: true,
+    calculationVersion: FORWARD_CALCULATION_VERSION,
   };
 }
 

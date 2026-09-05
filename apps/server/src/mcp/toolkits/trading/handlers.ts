@@ -168,6 +168,7 @@ import {
   renderTradingEventsMenu,
   resolveEventStudyMetric,
   runEventStudy,
+  serializeEventSetContent,
   type TradingEventsResult,
   type TradingEventsOccurrenceInput,
   type TradingEventOccurrence,
@@ -181,10 +182,15 @@ import {
   type ResearchSceneView,
   type TradingChartResult,
 } from "@t3tools/trading-contracts/researchScenes";
-import { renderForwardMenu, type TradingValidateResult } from "@t3tools/trading-contracts/forward";
+import {
+  renderForwardMenu,
+  serializeForwardBaselineContent,
+  type TradingValidateResult,
+} from "@t3tools/trading-contracts/forward";
 import {
   HYPOTHESIS_SHOW_RUNS,
   HYPOTHESIS_SHOW_VERSIONS,
+  HYPOTHESIS_RUN_CALCULATION_VERSION,
   describeHypothesisStatus,
   renderTradingHypothesisMenu,
   thesesMatch,
@@ -202,6 +208,7 @@ import {
   thesisSetupAlerts,
 } from "@t3tools/trading-contracts/thesisWatchBridge";
 import {
+  contentDigestHex,
   TradingHypothesisService,
   type HypothesisRecord,
 } from "../../../trading/TradingHypothesisService.ts";
@@ -472,6 +479,33 @@ const resolveRunThesis = Effect.fn("TradingToolkit.resolveRunThesis")(function* 
     thesis: input.thesis,
     stamp: { hypothesisId: input.hypothesisId, hypothesisVersion: current.version },
   } as const;
+});
+
+/**
+ * Content digests for the event sets a thesis anchors on, so a run filed
+ * about it can say WHICH calendar it ran on. A set's id is stable while its
+ * dates are corrected, so the digest — sha256 over the set's name and
+ * occurrences — is the identity that moves when the calendar does. Undefined
+ * for a thesis that anchors on nothing; an anchored set that cannot be read
+ * contributes no digest rather than blocking the run (an unknown or retired
+ * set has already refused at `validateThesis` where it must).
+ */
+const eventSetContentDigestsFor = Effect.fn("TradingToolkit.eventSetContentDigestsFor")(function* (
+  thesis: TradingThesis,
+) {
+  const anchored = thesisEventSets(thesis);
+  if (anchored.length === 0) return undefined;
+  const events = yield* TradingEventService;
+  const digests: Array<{ readonly eventSetId: string; readonly digest: string }> = [];
+  for (const eventSetId of anchored) {
+    const set = yield* events.show(eventSetId).pipe(Effect.orDie);
+    if (set === null) continue;
+    digests.push({
+      eventSetId,
+      digest: contentDigestHex(serializeEventSetContent(set)),
+    });
+  }
+  return digests.length === 0 ? undefined : digests;
 });
 
 /**
@@ -3408,9 +3442,25 @@ export const handlers = {
 
       // Every completed run is kept, hypothesis or not. A measurement that
       // lived only in the transcript was the reason "what did that idea
-      // actually score" had no answer a week later.
+      // actually score" had no answer a week later. The provenance pins the
+      // calendar content an event-anchored thesis ran on and the calculation
+      // version, so the answer stays explainable when the calendar moves.
+      const digests = yield* eventSetContentDigestsFor(thesis);
+      const runProvenance =
+        digests === undefined
+          ? undefined
+          : {
+              eventSetContentDigests: digests,
+              calculationVersion: HYPOTHESIS_RUN_CALCULATION_VERSION,
+            };
       yield* hypotheses
-        .recordRun({ thesis, report: outcome.report, ...stamp, now })
+        .recordRun({
+          thesis,
+          report: outcome.report,
+          ...stamp,
+          now,
+          ...(runProvenance === undefined ? {} : { provenance: runProvenance }),
+        })
         .pipe(Effect.orDie);
 
       // A variation is a run like any other, so it is filed like any other -
@@ -3419,7 +3469,13 @@ export const handlers = {
       // reach did we actually test" would have no answer a week later.
       for (const variation of outcome.sweepRuns ?? []) {
         yield* hypotheses
-          .recordRun({ thesis: variation.report.thesis, report: variation.report, ...stamp, now })
+          .recordRun({
+            thesis: variation.report.thesis,
+            report: variation.report,
+            ...stamp,
+            now,
+            ...(runProvenance === undefined ? {} : { provenance: runProvenance }),
+          })
           .pipe(Effect.orDie);
       }
 
@@ -3496,8 +3552,8 @@ export const handlers = {
             })
             .pipe(Effect.orDie);
           if (armed.outcome === "refused") return yield* refuse(armed.reason);
+          const hypotheses = yield* TradingHypothesisService;
           if (stamp !== undefined) {
-            const hypotheses = yield* TradingHypothesisService;
             yield* hypotheses
               .noteTested({ hypothesisId: stamp.hypothesisId, now })
               .pipe(Effect.orDie);
@@ -3509,11 +3565,47 @@ export const handlers = {
           // underneath the validation is not a comparison. A backtest that
           // cannot run leaves the baseline null, which the report states
           // rather than papering over with a zero.
+          //
+          // The arm-time backtest is also FILED, like every completed run, so
+          // the baseline has a run reference: the report can name the run its
+          // comparison comes from, and a digest pins the exact figures — the
+          // same run keeps the same digest, and any change to the numbers
+          // does not. Event-set digests ride along for an anchored thesis,
+          // saying which calendar the baseline ran on.
           const backtest = yield* TradingBacktestService;
           const priced = yield* backtest.run({ thesis, now });
           if (priced.status === "ok") {
+            const digests = yield* eventSetContentDigestsFor(thesis);
+            const runProvenance =
+              digests === undefined
+                ? undefined
+                : {
+                    eventSetContentDigests: digests,
+                    calculationVersion: HYPOTHESIS_RUN_CALCULATION_VERSION,
+                  };
+            const runId = yield* hypotheses
+              .recordRun({
+                thesis,
+                report: priced.report,
+                ...stamp,
+                now,
+                ...(runProvenance === undefined ? {} : { provenance: runProvenance }),
+              })
+              .pipe(Effect.orDie);
             yield* validations
-              .setBaseline({ id: armed.validation.id, baseline: priced.report.stats })
+              .setBaseline({
+                id: armed.validation.id,
+                baseline: priced.report.stats,
+                source: {
+                  runId,
+                  digest: contentDigestHex(
+                    serializeForwardBaselineContent({ report: priced.report }),
+                  ),
+                  computedAt: now,
+                  coverage: priced.report.coverage,
+                  ...(digests === undefined ? {} : { eventSetContentDigests: digests }),
+                },
+              })
               .pipe(Effect.orDie);
           }
 

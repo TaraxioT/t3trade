@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { BacktestReport } from "@t3tools/trading-contracts/backtest";
+import { serializeEventSetContent } from "@t3tools/trading-contracts/eventSets";
 import {
   HYPOTHESIS_SHOW_RUNS,
   HYPOTHESIS_SHOW_VERSIONS,
@@ -27,6 +28,7 @@ import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import type { CandleRow } from "./archive/candles.ts";
 import { TradingMarketArchive, type TradingMarketArchiveShape } from "./TradingMarketArchive.ts";
 import {
+  contentDigestHex,
   TradingHypothesisService,
   TradingHypothesisServiceLive,
 } from "./TradingHypothesisService.ts";
@@ -265,6 +267,85 @@ layer("TradingHypothesisService", (it) => {
       // Filing a run against an idea is what moves it out of exploring; there
       // is no verb for it.
       assert.equal(shown?.status, "testing");
+    }),
+  );
+
+  // -------------------------------------------------------------------
+  // run provenance (the E1 repair)
+  // -------------------------------------------------------------------
+
+  it.effect("a run keeps the provenance it was filed with, and one filed without says so", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingHypothesisService;
+      const first = yield* saved("the ETH cross");
+
+      const digests = [{ eventSetId: "set-1", digest: "abc123" }];
+      yield* service.recordRun({
+        thesis: thesis(1),
+        report: report(thesis(1), 1),
+        hypothesisId: first.hypothesisId,
+        hypothesisVersion: 1,
+        now: START,
+        provenance: { eventSetContentDigests: digests, calculationVersion: "hypothesis-run-1" },
+      });
+      yield* service.recordRun({
+        thesis: thesis(2),
+        report: report(thesis(2), 2),
+        hypothesisId: first.hypothesisId,
+        hypothesisVersion: 1,
+        now: START + 1,
+      });
+
+      const shown = yield* service.show(first.hypothesisId);
+      assert.deepEqual(shown?.runs[1]?.provenance, {
+        eventSetContentDigests: digests,
+        calculationVersion: "hypothesis-run-1",
+      });
+      // Absent, not defaulted: the second run was filed the legacy way and
+      // its provenance is not recorded rather than guessed.
+      assert.isUndefined(shown?.runs[0]?.provenance);
+    }),
+  );
+
+  it.effect("the content digest changes when the calendar is amended", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingHypothesisService;
+      const first = yield* saved("the ETH cross");
+
+      // The same set, before and after a date is appended. A set's id is
+      // stable across that correction; the CONTENT digest is what moves.
+      const before = {
+        name: "the unlock",
+        occurrences: [{ startAt: START, endAt: START + 1, source: "user provided" }],
+      };
+      const amended = {
+        name: "the unlock",
+        occurrences: [
+          ...before.occurrences,
+          { startAt: START + DAY, endAt: START + DAY + 1, source: "user provided" },
+        ],
+      };
+      const digestBefore = contentDigestHex(serializeEventSetContent(before));
+      const digestAfter = contentDigestHex(serializeEventSetContent(amended));
+      assert.notEqual(digestBefore, digestAfter);
+
+      // A run filed while the calendar held the first spelling pins that
+      // digest, so the record says which dates it actually ran on.
+      yield* service.recordRun({
+        thesis: thesis(1),
+        report: report(thesis(1), 1),
+        hypothesisId: first.hypothesisId,
+        hypothesisVersion: 1,
+        now: START,
+        provenance: {
+          eventSetContentDigests: [{ eventSetId: "set-1", digest: digestBefore }],
+          calculationVersion: "hypothesis-run-1",
+        },
+      });
+      const shown = yield* service.show(first.hypothesisId);
+      assert.equal(shown?.runs[0]?.provenance?.eventSetContentDigests[0]?.digest, digestBefore);
     }),
   );
 

@@ -93,6 +93,17 @@ describe("ideaRowView", () => {
     expect(ideaRowView(row({ comparison: "no_baseline" }), 0).comparisonTone).toBe("neutral");
   });
 
+  it("does not colour tracking of a losing ledger as success", () => {
+    // The row carries no baseline figure, so "tracking" is judged against the
+    // forward expectancy it does carry: matching a losing backtest while the
+    // paper ledger loses money is replication, not a green chip.
+    const view = ideaRowView(row({ expectancyUsd: -1.05 }), 0);
+    expect(view.comparisonLabel).toBe("tracking");
+    expect(view.comparisonTone).toBe("neutral");
+    // A tracking run whose ledger wins keeps the positive chip.
+    expect(ideaRowView(row({ expectancyUsd: 1.25 }), 0).comparisonTone).toBe("positive");
+  });
+
   it("asks its thread a question that names the idea and the series", () => {
     expect(ideaStatusSentence(ideaRowView(row(), 0))).toBe(
       'How is "The 5m fade" doing on ETH · 5m, and what does the paper record say so far?',

@@ -52,6 +52,7 @@
 import * as Schema from "effect/Schema";
 
 import {
+  BacktestCoverage,
   BacktestStats,
   makeThesisSignals,
   summarizeTrades,
@@ -520,9 +521,15 @@ export function forwardWarmupBars(thesis: TradingThesis): number {
 /**
  * How the forward run compares to the backtest that armed it.
  *
- * `tracking` is not a compliment. It means the two expectancies are within a
- * band wide enough that the difference is noise at this sample size, which is
- * the only claim a few dozen trades supports.
+ * `tracking` is not a compliment. It means the two expectancies are inside a
+ * fixed heuristic band — see {@link FORWARD_TRACKING_BAND} — and the only
+ * claim a few dozen trades supports is "not visibly different yet".
+ *
+ * `no_baseline` covers every way there is no honest comparison: no backtest
+ * was recorded at all, or the one that was recorded is itself ungradeable —
+ * too few trades, or a window the archive served too incompletely for its
+ * figures to mean anything. The verdict sentence says which, because those
+ * are different facts about the run.
  */
 export const ForwardComparison = Schema.Literals([
   "tracking",
@@ -537,11 +544,51 @@ export type ForwardComparison = typeof ForwardComparison.Type;
  * The band, as a share of the backtested expectancy, inside which forward and
  * backtest are called the same.
  *
- * Wide on purpose. Expectancy over tens of trades has a standard error of the
- * same order as the number itself, so a tighter band would report a regime
- * change every time a single trade landed.
+ * Wide on purpose, and a HEURISTIC rather than a statistic: expectancy over
+ * tens of trades has a standard error of the same order as the number itself,
+ * and no sampling distribution is computed here. A tighter band would report
+ * a regime change every time a single trade landed; claiming this one is a
+ * confidence interval would be a stronger claim than the arithmetic makes.
  */
 export const FORWARD_TRACKING_BAND = 0.5;
+
+/**
+ * The calculation version of this module's shared arithmetic. Stamped on
+ * composed reports so a saved verdict can say which engine produced it;
+ * bumped when the arithmetic that produces a comparison changes.
+ */
+export const FORWARD_CALCULATION_VERSION = "forward-1";
+
+/** The content digest of one event set, pinned where a saved evaluation read it. */
+export const EventSetContentDigest = Schema.Struct({
+  eventSetId: Schema.String,
+  /** Hex sha256 over the set's canonical content serialization. */
+  digest: Schema.String,
+});
+export type EventSetContentDigest = typeof EventSetContentDigest.Type;
+
+/**
+ * Identity of the backtest a forward run is scored against, when the caller
+ * recorded one. Every field is absent-or-null rather than fabricated: a
+ * baseline written before this existed decodes with no source, and a surface
+ * can say "provenance not recorded" instead of guessing.
+ */
+export const ForwardBaselineSource = Schema.Struct({
+  /** The persisted backtest run the figures came from, when one was filed. */
+  runId: Schema.NullOr(Schema.String),
+  /**
+   * sha256 over {@link serializeForwardBaselineContent}, pinning the exact
+   * thesis, window, costs and figures the comparison was armed against.
+   */
+  digest: Schema.NullOr(Schema.String),
+  /** When the baseline backtest ran — the as-of cutoff of its archive read. */
+  computedAt: Schema.Number,
+  /** What the baseline's window actually served, when that was recorded. */
+  coverage: Schema.optional(BacktestCoverage),
+  /** Content digests of the event sets the baseline read, when it read any. */
+  eventSetContentDigests: Schema.optional(Schema.Array(EventSetContentDigest)),
+});
+export type ForwardBaselineSource = typeof ForwardBaselineSource.Type;
 
 export const ForwardReport = Schema.Struct({
   validationId: Schema.String,
@@ -563,26 +610,111 @@ export const ForwardReport = Schema.Struct({
   baselineExpectancyUsd: Schema.NullOr(Schema.Number),
   baselineWinRatePercent: Schema.NullOr(Schema.Number),
   baselineTradesTaken: Schema.NullOr(Schema.Number),
+  /**
+   * Which backtest those baseline figures came from, when that was recorded.
+   * Absent on rows armed before provenance was kept — never invented.
+   */
+  baselineSource: Schema.optional(ForwardBaselineSource),
   comparison: ForwardComparison,
   /** The whole verdict in prose, sample-size honesty included. */
   verdictReason: Schema.String,
   /** Paper only, always. Present so no client has to remember it. */
   paperOnly: Schema.Literal(true),
+  /**
+   * The engine version whose arithmetic produced these figures. Present on
+   * reports composed by this build; absent on shapes decoded from before it.
+   */
+  calculationVersion: Schema.optional(Schema.String),
 });
 export type ForwardReport = typeof ForwardReport.Type;
 
 const usd = (value: number): string => `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
 
 /**
+ * Key-sorted, undefined-dropping canonical JSON — the same normalization
+ * {@link thesesMatch} applies, stated here so the baseline digest below is a
+ * function of content rather than of which build serialized it.
+ */
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (typeof value === "object" && value !== null) {
+    const source = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) {
+      if (source[key] === undefined) continue;
+      out[key] = canonical(source[key]);
+    }
+    return out;
+  }
+  return value;
+};
+
+/**
+ * The canonical serialization a baseline's content identity is taken over:
+ * every field of the backtest report that the comparison could be explained
+ * by — thesis, notional, costs, coverage, stats, verdict — under a version
+ * tag. Hash it (the server uses sha256 over the utf8 string) and the baseline
+ * a validation was armed with is pinned: recomputing the same backtest later
+ * yields the same digest, and any change to the numbers does not.
+ */
+export function serializeForwardBaselineContent(input: {
+  readonly report: {
+    readonly thesis: unknown;
+    readonly notionalUsd: number;
+    readonly costs: unknown;
+    readonly coverage: unknown;
+    readonly stats: unknown;
+    readonly verdict: string;
+  };
+}): string {
+  return JSON.stringify([
+    "trading_forward.baseline.v1",
+    canonical(input.report.thesis),
+    input.report.notionalUsd,
+    canonical(input.report.costs),
+    canonical(input.report.coverage),
+    canonical(input.report.stats),
+    input.report.verdict,
+  ]);
+}
+
+/**
+ * How much of the baseline's requested window must actually have been served
+ * before its figures are a comparison. A majority-missing window is the line:
+ * past it the baseline measured something other than the window it claims,
+ * and any delta against it decorates a number that never was one.
+ */
+export const FORWARD_BASELINE_MIN_SERVED_SHARE = 0.5;
+
+/**
+ * Whether a baseline's archive window was served completely enough to compare
+ * against. Gaps count as missing (the schema clips them to the window
+ * already), and so do unserved edges; together they must not outweigh what
+ * was served.
+ */
+export function baselineCoverageIncomplete(coverage: BacktestCoverage): boolean {
+  if (coverage.servedFromT === null || coverage.servedToT === null) return true;
+  const span = coverage.requestedToT - coverage.requestedFromT;
+  if (span <= 0) return false;
+  const gapMs = coverage.gaps.reduce((sum, gap) => sum + (gap.toT - gap.fromT), 0);
+  const unservedMs =
+    Math.max(0, coverage.servedFromT - coverage.requestedFromT) +
+    Math.max(0, coverage.requestedToT - coverage.servedToT);
+  return gapMs + unservedMs > span * (1 - FORWARD_BASELINE_MIN_SERVED_SHARE);
+}
+
+/**
  * The running verdict: what the paper trades say, and whether it matches what
  * the backtest promised.
  *
- * The sample gate is {@link MIN_REPLAY_SETUPS}, the same floor the backtest
- * uses, and it comes first for the same reason. The numbers are printed
- * underneath it either way — withholding them would be its own dishonesty —
- * but under the floor nothing here calls them evidence, and the comparison is
- * refused outright rather than reported as a small difference between two
- * numbers that are both noise.
+ * Two sample gates come before any comparison, in this order. The forward
+ * run's own floor first — {@link MIN_REPLAY_SETUPS}, the same floor the
+ * backtest uses — and then the baseline's: a recorded baseline that itself
+ * took too few trades, or whose window the archive served too incompletely,
+ * is refused as no baseline at all rather than measured against, because a
+ * delta against an ungradeable number decorates nothing. The numbers are
+ * printed underneath both gates either way — withholding them would be its
+ * own dishonesty — but under a floor nothing here calls them evidence.
  */
 export function judgeForward(input: {
   readonly stats: BacktestStats;
@@ -591,6 +723,18 @@ export function judgeForward(input: {
   readonly barsWatched: number;
   readonly hasOpenTrade: boolean;
   readonly status: ThesisValidationStatus;
+  /**
+   * What the baseline's own window served, when that was recorded. A baseline
+   * whose window was served too incompletely to mean anything is refused as
+   * a comparison rather than measured against.
+   */
+  readonly baselineCoverage?: BacktestCoverage | undefined;
+  /**
+   * True when the thesis anchors on event sets and at least one anchored set
+   * has no completed occurrence inside the run yet, so no signal has ever
+   * been due. An empty ledger in that state is waiting, not failing.
+   */
+  readonly awaitingEvent?: boolean | undefined;
 }): { readonly comparison: ForwardComparison; readonly verdictReason: string } {
   const { stats, baselineExpectancyUsd } = input;
   const taken = stats.tradesTaken;
@@ -599,6 +743,12 @@ export function judgeForward(input: {
     : "";
   const pausedNote =
     input.status === "paused" ? " This validation is paused, so bars are passing unwatched." : "";
+  // The waiting note rides the below-floor branch only: past the floor the
+  // run has signals on record and is not waiting for anything.
+  const waitingNote =
+    input.awaitingEvent === true && taken < MIN_REPLAY_SETUPS
+      ? " This thesis anchors on an event set whose next occurrence is still ahead, so no signal has been due yet — waiting, not failing."
+      : "";
 
   if (taken < MIN_REPLAY_SETUPS) {
     return {
@@ -609,7 +759,8 @@ export function judgeForward(input: {
         `So far: ${usd(stats.expectancyUsd)} per trade after fees, ${stats.winRatePercent}% hit rate, ` +
         `${usd(stats.maxDrawdownUsd)} deepest drawdown. That is what happened, not evidence of an edge.` +
         openNote +
-        pausedNote,
+        pausedNote +
+        waitingNote,
     };
   }
 
@@ -624,23 +775,65 @@ export function judgeForward(input: {
     };
   }
 
+  // The baseline's own sample gate, BEFORE any comparison is attempted. A
+  // zero-trade or near-zero-trade baseline produces an expectancy of zero
+  // that says nothing, and a positive delta against it would read as
+  // "better than backtest" while meaning "better than nothing measured".
+  // `no_baseline` rather than a measurement, with the reason said out loud.
+  if (input.baselineTradesTaken !== null && input.baselineTradesTaken < MIN_REPLAY_SETUPS) {
+    return {
+      comparison: "no_baseline",
+      verdictReason:
+        `${measured} A backtest baseline was recorded, but it took only ` +
+        `${input.baselineTradesTaken} ${input.baselineTradesTaken === 1 ? "trade" : "trades"} — ` +
+        `under the ${MIN_REPLAY_SETUPS} a comparison needs — so there is no gradeable backtest ` +
+        `to compare against.${openNote}${pausedNote}`,
+    };
+  }
+  if (input.baselineCoverage !== undefined && baselineCoverageIncomplete(input.baselineCoverage)) {
+    return {
+      comparison: "no_baseline",
+      verdictReason:
+        `${measured} A backtest baseline was recorded, but the archive served too little of its ` +
+        `window for its figures to be a comparison, so it is refused rather than measured ` +
+        `against.${openNote}${pausedNote}`,
+    };
+  }
+
   const band = Math.abs(baselineExpectancyUsd) * FORWARD_TRACKING_BAND;
   const delta = stats.expectancyUsd - baselineExpectancyUsd;
   const against =
     `The backtest expected ${usd(baselineExpectancyUsd)} per trade` +
     (input.baselineTradesTaken === null ? "" : ` over ${input.baselineTradesTaken} trades`) +
     ".";
+  // Matching a baseline that loses money is replication, not success. The
+  // sentence has to carry that, because the token alone ("tracking") reads
+  // as good news to anybody who has not read this module.
+  const losingBaselineNote =
+    baselineExpectancyUsd < 0
+      ? " Both figures lose money after fees; matching a losing backtest is replication, not a result."
+      : "";
 
   if (Math.abs(delta) <= band) {
     return {
       comparison: "tracking",
-      verdictReason: `${measured} ${against} Forward is tracking the backtest within the noise of this sample.${openNote}${pausedNote}`,
+      verdictReason:
+        `${measured} ${against} Forward is tracking the backtest, within the heuristic ` +
+        `±${usd(band)} band — not a computed sampling distribution.` +
+        losingBaselineNote +
+        openNote +
+        pausedNote,
     };
   }
   if (delta > 0) {
     return {
       comparison: "better_than_backtest",
-      verdictReason: `${measured} ${against} Forward is running better than the backtest, which is as likely to be luck as edge at this sample size.${openNote}${pausedNote}`,
+      verdictReason:
+        `${measured} ${against} Forward is running better than the backtest, which is as likely to be ` +
+        `luck as edge at this sample size.` +
+        (baselineExpectancyUsd < 0 ? " The forward figure still loses money after fees." : "") +
+        openNote +
+        pausedNote,
     };
   }
   return {

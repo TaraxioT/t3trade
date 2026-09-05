@@ -27,6 +27,7 @@ import * as Crypto from "effect/Crypto";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { createHash } from "node:crypto";
 
 import { BacktestReport } from "@t3tools/trading-contracts/backtest";
 import type { ThesisValidationStatus } from "@t3tools/trading-contracts/forward";
@@ -36,6 +37,7 @@ import {
   HYPOTHESIS_SHOW_RUNS,
   HYPOTHESIS_SHOW_VERSIONS,
   HYPOTHESIS_TITLE_MAX_CHARS,
+  HypothesisRunProvenance,
   type HypothesisAuthor,
   type HypothesisConclusionStatus,
   type HypothesisRunSummary,
@@ -47,10 +49,25 @@ import { describeThesis, validateThesis, TradingThesis } from "@t3tools/trading-
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 
+/**
+ * Hex sha256 of a canonical serialization. The one hash saved evaluations
+ * pin their content with — event-set calendars and baseline reports both —
+ * stated once so every caller digests the same way. Hashing only: nothing
+ * here reaches anything but a digest.
+ */
+export const contentDigestHex = (serialized: string): string =>
+  createHash("sha256").update(serialized, "utf8").digest("hex");
+
 const decodeThesisJson = Schema.decodeUnknownSync(Schema.fromJsonString(TradingThesis));
 const encodeThesisJson = Schema.encodeUnknownSync(Schema.fromJsonString(TradingThesis));
 const decodeReportJson = Schema.decodeUnknownSync(Schema.fromJsonString(BacktestReport));
 const encodeReportJson = Schema.encodeUnknownSync(Schema.fromJsonString(BacktestReport));
+const decodeProvenanceJson = Schema.decodeUnknownSync(
+  Schema.fromJsonString(HypothesisRunProvenance),
+);
+const encodeProvenanceJson = Schema.encodeUnknownSync(
+  Schema.fromJsonString(HypothesisRunProvenance),
+);
 
 /**
  * A linked validation, without its paper-ledger arithmetic. See the module
@@ -166,6 +183,11 @@ export interface TradingHypothesisServiceShape {
    * Persist one completed backtest. `hypothesisId` is optional because a
    * backtest is still allowed to be a loose question; a stamped run also moves
    * its hypothesis out of `exploring`.
+   *
+   * `provenance` pins what the run was computed against — the content of the
+   * event sets its thesis anchors on, and the calculation version. Optional
+   * and additive: runs filed without it stay exactly what they were, and the
+   * summary reports the absence rather than a guess.
    */
   readonly recordRun: (input: {
     readonly thesis: TradingThesis;
@@ -173,6 +195,7 @@ export interface TradingHypothesisServiceShape {
     readonly hypothesisId?: string | undefined;
     readonly hypothesisVersion?: number | undefined;
     readonly now: number;
+    readonly provenance?: HypothesisRunProvenance | undefined;
   }) => Effect.Effect<string, PersistenceSqlError>;
 
   /**
@@ -220,6 +243,8 @@ interface RunRow {
   readonly hypothesis_version: number | null;
   readonly thesis_json: string;
   readonly report_json: string;
+  /** Null on runs filed before provenance was kept. */
+  readonly provenance_json: string | null;
   readonly created_at: number;
 }
 
@@ -271,6 +296,11 @@ const toRunSummary = (row: RunRow): HypothesisRunSummary => {
     totalNetUsd: report.stats.totalNetUsd,
     barsServed: report.coverage.barsServed,
     verdict: report.verdict,
+    // Null on legacy rows: the provenance simply was not recorded then, and
+    // the summary says absent rather than filling in anything inferred.
+    ...(row.provenance_json === null
+      ? {}
+      : { provenance: decodeProvenanceJson(row.provenance_json) }),
   };
 };
 
@@ -546,10 +576,13 @@ export const makeTradingHypothesisService = Effect.gen(function* () {
       const runId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       yield* sql`
         INSERT INTO trading_backtest_runs (
-          run_id, hypothesis_id, hypothesis_version, thesis_json, report_json, created_at
+          run_id, hypothesis_id, hypothesis_version, thesis_json, report_json,
+          provenance_json, created_at
         ) VALUES (
           ${runId}, ${input.hypothesisId ?? null}, ${input.hypothesisVersion ?? null},
-          ${encodeThesisJson(input.thesis)}, ${encodeReportJson(input.report)}, ${input.now}
+          ${encodeThesisJson(input.thesis)}, ${encodeReportJson(input.report)},
+          ${input.provenance === undefined ? null : encodeProvenanceJson(input.provenance)},
+          ${input.now}
         )
       `.pipe(Effect.mapError(sqlFail("recordRun")));
       if (input.hypothesisId !== undefined) {

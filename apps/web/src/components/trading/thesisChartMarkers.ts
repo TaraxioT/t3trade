@@ -56,6 +56,14 @@ export function thesisChartBadge(thesis: TradingChartThesis): ThesisChartBadge {
   const paused = thesis.status === "paused";
   const base = paused ? "Paused — paper only" : "Validating on paper";
   const comparison = describeComparison(thesis.comparison, "short");
+  // The badge payload carries no baseline figure, so "tracking" is judged
+  // against what it does carry: the settled paper trades' own net. Tracking
+  // while the ledger loses money is replication, not success, and a green
+  // badge over a losing run would call it one.
+  const settledNet = thesis.trades.reduce((sum, trade) => sum + (trade.netUsd ?? 0), 0);
+  const trackingWhileLosing =
+    (thesis.comparison === "tracking" || thesis.comparison === "better_than_backtest") &&
+    settledNet < 0;
   return {
     headline: thesis.headline,
     // The mismatch note names the timeframe rather than saying markers are
@@ -67,7 +75,7 @@ export function thesisChartBadge(thesis: TradingChartThesis): ThesisChartBadge {
     paused,
     showsMarkers: thesis.intervalMatches,
     comparisonLabel: comparison.label,
-    comparisonTone: comparison.tone,
+    comparisonTone: trackingWhileLosing ? "neutral" : comparison.tone,
   };
 }
 

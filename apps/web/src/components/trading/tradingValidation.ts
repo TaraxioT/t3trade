@@ -21,7 +21,7 @@ import {
 } from "@t3tools/trading-contracts/thesis";
 
 import { formatPrice, formatSignedUsd, formatUsd } from "./tradingFormat";
-import { asRecord, readNumber, readTradingCardResult, signedTone } from "./cardPayload";
+import { asRecord, readNumber, readString, readTradingCardResult, signedTone } from "./cardPayload";
 
 export interface ValidationStatLine {
   readonly label: string;
@@ -83,19 +83,31 @@ const COMPARISON_SHORT_LABELS: Record<string, string> = {
  *
  * Exported because three surfaces now state the same verdict - the report
  * card, the chart's badge and the ideas panel's rows - and they cannot be
- * allowed to call the same literal different things. `tracking` reads positive
- * for the same reason the engine says it is not a compliment: a forward run
+ * allowed to call the same literal different things. `tracking` reads
+ * positive when the baseline it tracks is a winner, because a forward run
  * that matches its backtest is the outcome the validation was armed to find.
+ * `tracking` a LOSING baseline does not: matching a backtest that loses
+ * money is replication, not a result, and colouring it green would call a
+ * negative expectancy a success. The caller passes the baseline expectancy
+ * when it has one; without it the tone falls back to the token alone.
  */
 export function describeComparison(
   comparison: string,
   form: "long" | "short" = "long",
+  baselineExpectancyUsd?: number | null,
 ): { readonly label: string; readonly tone: "positive" | "negative" | "neutral" } {
   const labels = form === "short" ? COMPARISON_SHORT_LABELS : COMPARISON_LABELS;
+  const losingBaseline = typeof baselineExpectancyUsd === "number" && baselineExpectancyUsd < 0;
+  const label =
+    comparison === "tracking" && losingBaseline
+      ? form === "short"
+        ? "tracking a losing backtest"
+        : "Tracking a losing backtest"
+      : (labels[comparison] ?? (form === "short" ? "no verdict" : "No verdict"));
   return {
-    label: labels[comparison] ?? (form === "short" ? "no verdict" : "No verdict"),
+    label,
     tone:
-      comparison === "better_than_backtest" || comparison === "tracking"
+      (comparison === "better_than_backtest" || comparison === "tracking") && !losingBaseline
         ? "positive"
         : comparison === "worse_than_backtest"
           ? "negative"
@@ -182,6 +194,28 @@ export function validationCardFromReport(
 
   const label = typeof report.headline === "string" ? report.headline : null;
 
+  // Where the baseline came from, when the run recorded it. A baseline with
+  // no source was armed before provenance was kept, and the honest line for
+  // it is "not recorded" — never a run id or a date guessed from anything
+  // else on the card.
+  const baselineSource = asRecord(report.baselineSource);
+  const baselineRunId = baselineSource === null ? null : readString(baselineSource.runId);
+  const baselineDigest = baselineSource === null ? null : readString(baselineSource.digest);
+  const baselineProvenanceLine =
+    baseline === null
+      ? []
+      : baselineSource === null
+        ? [{ label: "Baseline provenance", value: "not recorded", tone: "neutral" as const }]
+        : [
+            {
+              label: "Baseline provenance",
+              value:
+                (baselineRunId === null ? "no run id" : `run ${baselineRunId.slice(0, 8)}`) +
+                (baselineDigest === null ? "" : ` · digest ${baselineDigest.slice(0, 8)}`),
+              tone: "neutral" as const,
+            },
+          ];
+
   return {
     headline: label ?? describeThesis(thesis as unknown as TradingThesis),
     exits: describeExits((thesis.exits ?? {}) as TradingThesis["exits"]),
@@ -210,9 +244,10 @@ export function validationCardFromReport(
               tone: "neutral" as const,
             },
           ]),
+      ...baselineProvenanceLine,
     ],
-    comparisonLabel: describeComparison(comparison).label,
-    comparisonTone: describeComparison(comparison).tone,
+    comparisonLabel: describeComparison(comparison, "long", baseline).label,
+    comparisonTone: describeComparison(comparison, "long", baseline).tone,
     verdictReason: typeof report.verdictReason === "string" ? report.verdictReason : "",
     openLine:
       openEntry === null
