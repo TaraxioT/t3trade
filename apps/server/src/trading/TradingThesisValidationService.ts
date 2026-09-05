@@ -527,35 +527,49 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
               "End that one first, or validate this idea on another interval",
           } as const;
         }
-        yield* sql`
-          UPDATE trading_thesis_validations
-          SET status = 'ended', ended_at = ${input.now}, end_reason = 'superseded',
-              updated_at = ${input.now}
-          WHERE validation_id = ${held.validation_id}
-        `.pipe(Effect.mapError(sqlFail("arm.supersede")));
-        superseded = held.validation_id;
       }
-
+      // Everything that can fail OUTSIDE the tables is prepared before any
+      // row changes: a cost measurement or id mint that failed after the
+      // supersede used to leave the prior validation already ended — the
+      // refinement loop's old version destroyed with nothing to replace it.
+      // The supersede and the insert commit together or not at all.
       const id = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const now = input.now;
       const notionalUsd = input.notionalUsd ?? DEFAULT_PAPER_NOTIONAL_USD;
       const costs = yield* measureCosts(input.thesis.market);
 
-      yield* sql`
-        INSERT INTO trading_thesis_validations (
-          validation_id, thread_id, venue, asset, interval, thesis_json, label,
-          status, armed_at, expires_at, ended_at, end_reason, notional_usd,
-          costs_json, baseline_json, bars_watched, pending_entry_signal_time,
-          pending_exit_reason, last_bar_time, hypothesis_id, hypothesis_version,
-          created_at, updated_at
-        ) VALUES (
-          ${id}, ${input.threadId ?? null}, ${DEFAULT_TRADING_VENUE}, ${input.thesis.market},
-          ${input.thesis.interval}, ${encodeThesisJson(input.thesis)}, ${input.label ?? null},
-          'armed', ${now}, ${now + input.durationMs}, NULL, NULL, ${notionalUsd},
-          ${rowJsonValue(costs as unknown)}, NULL, 0, NULL, NULL, NULL,
-          ${input.hypothesisId ?? null}, ${input.hypothesisVersion ?? null}, ${now}, ${now}
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (held !== undefined) {
+              yield* sql`
+              UPDATE trading_thesis_validations
+              SET status = 'ended', ended_at = ${input.now}, end_reason = 'superseded',
+                  updated_at = ${input.now}
+              WHERE validation_id = ${held.validation_id}
+            `.pipe(Effect.mapError(sqlFail("arm.supersede")));
+            }
+            yield* sql`
+            INSERT INTO trading_thesis_validations (
+              validation_id, thread_id, venue, asset, interval, thesis_json, label,
+              status, armed_at, expires_at, ended_at, end_reason, notional_usd,
+              costs_json, baseline_json, bars_watched, pending_entry_signal_time,
+              pending_exit_reason, last_bar_time, hypothesis_id, hypothesis_version,
+              created_at, updated_at
+            ) VALUES (
+              ${id}, ${input.threadId ?? null}, ${DEFAULT_TRADING_VENUE}, ${input.thesis.market},
+              ${input.thesis.interval}, ${encodeThesisJson(input.thesis)}, ${input.label ?? null},
+              'armed', ${now}, ${now + input.durationMs}, NULL, NULL, ${notionalUsd},
+              ${rowJsonValue(costs as unknown)}, NULL, 0, NULL, NULL, NULL,
+              ${input.hypothesisId ?? null}, ${input.hypothesisVersion ?? null}, ${now}, ${now}
+            )
+          `.pipe(Effect.mapError(sqlFail("arm.insert")));
+          }),
         )
-      `.pipe(Effect.mapError(sqlFail("arm.insert")));
+        .pipe(Effect.mapError(sqlFail("arm.transaction")));
+      if (held !== undefined) {
+        superseded = held.validation_id;
+      }
 
       const validation = yield* get(id);
       return validation === null
@@ -788,95 +802,136 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       let barsWatched = validation.barsWatched;
       let lastBarTime = lastSeen;
 
-      for (let index = Math.max(firstUnseen, 0); index < closed.length; index += 1) {
-        const window = closed.slice(0, index + 1);
-        const tradeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-        const step = stepForward({
-          thesis: validation.thesis,
-          candles: window,
-          state,
-          notionalUsd: validation.notionalUsd,
-          nextTradeId: tradeId,
-          funding: signalFunding,
-          eventOccurrences,
-        });
+      // Every ledger effect of every processed bar, plus the checkpoint, in
+      // ONE transaction: a fill insert without its checkpoint is the exact
+      // inconsistency a redelivery would double-count, and a checkpoint
+      // without its fills would mark bars watched that nobody paid for. The
+      // archive reads above stay outside the transaction; the checkpoint is
+      // re-read inside it so a concurrent advance that committed first is
+      // refused rather than raced past.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const raced = yield* sql<{ readonly last_bar_time: number | null }>`
+            SELECT last_bar_time FROM trading_thesis_validations
+            WHERE validation_id = ${validation.id}
+          `.pipe(Effect.mapError(sqlFail("advance.reread")));
+            const checkpointNow = raced[0]?.last_bar_time ?? null;
+            if (checkpointNow !== validation.lastBarTime) {
+              // Die, not fail: the transaction rolls back either way, and a
+              // defect says "this pass's premise is stale, deliver again" —
+              // the next delivery re-reads the committed checkpoint and
+              // continues from it, having double-counted nothing.
+              return yield* Effect.die(
+                `advance lost the checkpoint race for ${validation.id}: ` +
+                  `${validation.lastBarTime} moved to ${checkpointNow} before commit`,
+              );
+            }
 
-        if (step.entered !== null) {
-          yield* sql`
-            INSERT INTO trading_thesis_paper_fills (
-              paper_trade_id, validation_id, entry_time, entry_price, signal_time,
-              stop_price, target_price, exit_time, exit_price, exit_reason,
-              bars_held, gross_usd, fees_usd, funding_usd, net_usd,
-              adverse_excursion_usd, created_at, updated_at
-            ) VALUES (
-              ${tradeId}, ${validation.id}, ${step.entered.entryTime},
-              ${round4(step.entered.entryPrice)}, ${step.entered.signalTime},
-              ${step.entered.stopPrice === null ? null : round4(step.entered.stopPrice)},
-              ${step.entered.targetPrice === null ? null : round4(step.entered.targetPrice)},
-              NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, 0, ${now}, ${now}
-            )
-          `.pipe(Effect.mapError(sqlFail("advance.enter")));
-          events.push({
-            kind: "paper_entry",
-            line: describePaperEntry({
-              market: validation.asset,
-              direction: validation.thesis.side,
-              price: round4(step.entered.entryPrice),
-            }),
-          });
-        }
+            for (let index = Math.max(firstUnseen, 0); index < closed.length; index += 1) {
+              const bar = closed[index] as MarketCandle;
+              const window = closed.slice(0, index + 1);
+              // The trade id is DERIVED from the validation and the bar its
+              // entry fills on, not minted: a crash between the fill insert and
+              // the checkpoint replays the same bar, and the same bar must
+              // produce the same id or the retry would mint a second logical
+              // fill. `INSERT ... ON CONFLICT DO NOTHING` makes the replay a
+              // no-op instead of a duplicate.
+              const tradeId = `${validation.id}:${bar.openTime}`;
+              const step = stepForward({
+                thesis: validation.thesis,
+                candles: window,
+                state,
+                notionalUsd: validation.notionalUsd,
+                nextTradeId: tradeId,
+                funding: signalFunding,
+                eventOccurrences,
+              });
 
-        if (step.exited !== null) {
-          const netUsd = yield* settleFill({
-            validation,
-            tradeId: step.exited.tradeId,
-            entryTime: step.exited.entryTime,
-            entryPrice: step.exited.entryPrice,
-            exitTime: step.exited.exitTime,
-            exitPrice: step.exited.exitPrice,
-            exitReason: step.exited.exitReason,
-            barsHeld: step.exited.barsHeld,
-            adverseExcursionUsd: step.exited.adverseExcursionUsd,
-            now,
-          });
-          events.push({
-            kind: "paper_exit",
-            line: describePaperExit({
-              market: validation.asset,
-              direction: validation.thesis.side,
-              price: round4(step.exited.exitPrice),
-              netUsd,
-              reason: step.exited.exitReason,
-            }),
-          });
-        }
+              if (step.entered !== null) {
+                yield* sql`
+                INSERT INTO trading_thesis_paper_fills (
+                  paper_trade_id, validation_id, entry_time, entry_price, signal_time,
+                  stop_price, target_price, exit_time, exit_price, exit_reason,
+                  bars_held, gross_usd, fees_usd, funding_usd, net_usd,
+                  adverse_excursion_usd, created_at, updated_at
+                ) VALUES (
+                  ${tradeId}, ${validation.id}, ${step.entered.entryTime},
+                  ${round4(step.entered.entryPrice)}, ${step.entered.signalTime},
+                  ${step.entered.stopPrice === null ? null : round4(step.entered.stopPrice)},
+                  ${step.entered.targetPrice === null ? null : round4(step.entered.targetPrice)},
+                  NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, 0, ${now}, ${now}
+                )
+                ON CONFLICT(paper_trade_id) DO NOTHING
+              `.pipe(Effect.mapError(sqlFail("advance.enter")));
+                events.push({
+                  kind: "paper_entry",
+                  line: describePaperEntry({
+                    market: validation.asset,
+                    direction: validation.thesis.side,
+                    price: round4(step.entered.entryPrice),
+                  }),
+                });
+              }
 
-        state = step.state;
-        barsWatched += 1;
-        lastBarTime = (closed[index] as MarketCandle).openTime;
-      }
+              // One bar can close TWO trades (a pending exit at the open plus a
+              // same-bar stop on a position entered at that same open). Every
+              // settlement is persisted, in the causal order the engine
+              // produced; dropping all but the last was the ledger defect.
+              for (const exit of step.exits) {
+                const netUsd = yield* settleFill({
+                  validation,
+                  tradeId: exit.tradeId,
+                  entryTime: exit.entryTime,
+                  entryPrice: exit.entryPrice,
+                  exitTime: exit.exitTime,
+                  exitPrice: exit.exitPrice,
+                  exitReason: exit.exitReason,
+                  barsHeld: exit.barsHeld,
+                  adverseExcursionUsd: exit.adverseExcursionUsd,
+                  now,
+                });
+                events.push({
+                  kind: "paper_exit",
+                  line: describePaperExit({
+                    market: validation.asset,
+                    direction: validation.thesis.side,
+                    price: round4(exit.exitPrice),
+                    netUsd,
+                    reason: exit.exitReason,
+                  }),
+                });
+              }
 
-      // The open position's running bar count and excursion live on its own
-      // ledger row, so the report reads one place for it.
-      if (state.open !== null) {
-        yield* sql`
-          UPDATE trading_thesis_paper_fills
-          SET bars_held = ${state.open.barsHeld},
-              adverse_excursion_usd = ${round2(state.open.adverseExcursionUsd)},
-              updated_at = ${now}
-          WHERE paper_trade_id = ${state.open.id} AND exit_time IS NULL
-        `.pipe(Effect.mapError(sqlFail("advance.openTrade")));
-      }
+              state = step.state;
+              barsWatched += 1;
+              lastBarTime = bar.openTime;
+            }
 
-      yield* sql`
-        UPDATE trading_thesis_validations
-        SET bars_watched = ${barsWatched},
-            pending_entry_signal_time = ${state.pendingEntrySignalTime},
-            pending_exit_reason = ${state.pendingExitReason},
-            last_bar_time = ${lastBarTime},
-            updated_at = ${now}
-        WHERE validation_id = ${validation.id}
-      `.pipe(Effect.mapError(sqlFail("advance.state")));
+            // The open position's running bar count and excursion live on its
+            // own ledger row, so the report reads one place for it.
+            if (state.open !== null) {
+              yield* sql`
+              UPDATE trading_thesis_paper_fills
+              SET bars_held = ${state.open.barsHeld},
+                  adverse_excursion_usd = ${round2(state.open.adverseExcursionUsd)},
+                  updated_at = ${now}
+              WHERE paper_trade_id = ${state.open.id} AND exit_time IS NULL
+            `.pipe(Effect.mapError(sqlFail("advance.openTrade")));
+            }
+
+            yield* sql`
+            UPDATE trading_thesis_validations
+            SET bars_watched = ${barsWatched},
+                pending_entry_signal_time = ${state.pendingEntrySignalTime},
+                pending_exit_reason = ${state.pendingExitReason},
+                last_bar_time = ${lastBarTime},
+                updated_at = ${now}
+            WHERE validation_id = ${validation.id}
+          `.pipe(Effect.mapError(sqlFail("advance.state")));
+          }),
+        )
+        .pipe(Effect.mapError(sqlFail("advance.transaction")));
 
       // The verdict, taken after the writes above so it reads the same ledger
       // the next `report` will. A validation whose label has never been

@@ -23,7 +23,7 @@ import {
   type ForwardState,
 } from "./forward.ts";
 import type { MarketCandle } from "./market.ts";
-import { MIN_REPLAY_SETUPS } from "./replay.ts";
+import { MIN_REPLAY_SETUPS, settleOnBars } from "./replay.ts";
 import type { TradingThesis } from "./thesis.ts";
 
 const MINUTE = 60_000;
@@ -128,14 +128,14 @@ const walkForward = (
       nextTradeId: `paper-${sequence}`,
     });
     state = step.state;
-    if (step.exited !== null) {
+    for (const exit of step.exits) {
       settled.push({
-        entryTime: step.exited.entryTime,
-        entryPrice: round4(step.exited.entryPrice),
-        exitTime: step.exited.exitTime,
-        exitPrice: round4(step.exited.exitPrice),
-        exitReason: step.exited.exitReason,
-        barsHeld: step.exited.barsHeld,
+        entryTime: exit.entryTime,
+        entryPrice: round4(exit.entryPrice),
+        exitTime: exit.exitTime,
+        exitPrice: round4(exit.exitPrice),
+        exitReason: exit.exitReason,
+        barsHeld: exit.barsHeld,
       });
     }
   }
@@ -578,5 +578,250 @@ describe("renderForwardMenu", () => {
     // The two facts a caller cannot infer and must not get wrong.
     expect(menu).toContain("durationHours");
     expect(menu, "the menu must say no order is ever placed").toContain("no order is ever placed");
+  });
+});
+
+describe("one causal re-entry policy, batch and forward (the B3 repair)", () => {
+  const parity = (thesis: TradingThesis, candles: ReadonlyArray<MarketCandle>) => {
+    const batch = runBacktest({ thesis, candles, costs, coverage: coverageOver(candles) });
+    const expected = batch.trades.filter((trade) => trade.exitReason !== "window_end");
+    const forward = walkForward(thesis, candles, forwardWarmupBars(thesis));
+    return { expected, forward };
+  };
+
+  it("a persistent condition with maxHoldBars 1 trades every bar in both engines", () => {
+    // No cross anywhere: the entry condition is simply ALWAYS true, so the
+    // sequence is the pure re-entry question — exit at one bar's open, enter
+    // at the same open, repeat. Cross-only fixtures could never expose a
+    // disagreement here because a cross fires once per crossing.
+    const thesis: TradingThesis = {
+      market: "ETH",
+      interval: "1m",
+      side: "long",
+      entry: {
+        predicates: [
+          {
+            left: { source: "price" },
+            comparator: "above",
+            right: { source: "constant", value: 1 },
+          },
+        ],
+      },
+      exits: { maxHoldBars: 1 },
+    };
+    const { expected, forward } = parity(thesis, wavyCandles(300));
+    expect(expected.length).toBeGreaterThan(10);
+    expect(forward.length).toBe(expected.length);
+    for (const [index, trade] of expected.entries()) {
+      const paper = forward[index];
+      expect(paper?.entryTime, `trade ${index} entry time`).toBe(trade.entryTime);
+      expect(paper?.exitTime, `trade ${index} exit time`).toBe(trade.exitTime);
+      expect(paper?.exitReason, `trade ${index} exit reason`).toBe(trade.exitReason);
+      expect(paper?.barsHeld, `trade ${index} bars held`).toBe(trade.barsHeld);
+    }
+  });
+
+  it("after an intrabar level exit, batch re-enters no earlier than forward", () => {
+    // The defect this pins: a level exit happens INSIDE its bar, after the
+    // open, so the position was not flat at that open. Batch used to resume
+    // scanning one bar earlier and re-entered at the exit bar's own open — a
+    // bar where the position was demonstrably still held — while forward
+    // correctly waited for the next bar. Entry always true + a tight stop
+    // makes every trade a level exit, so any disagreement shows immediately.
+    const thesis: TradingThesis = {
+      market: "ETH",
+      interval: "1m",
+      side: "long",
+      entry: {
+        predicates: [
+          {
+            left: { source: "price" },
+            comparator: "above",
+            right: { source: "constant", value: 1 },
+          },
+        ],
+      },
+      exits: { stop: { basis: "percent", value: 0.2 }, maxHoldBars: 30 },
+    };
+    const { expected, forward } = parity(thesis, wavyCandles(400));
+    expect(expected.some((trade) => trade.exitReason === "stop")).toBe(true);
+    expect(forward.length).toBe(expected.length);
+    for (const [index, trade] of expected.entries()) {
+      const paper = forward[index];
+      expect(paper?.entryTime, `trade ${index} entry time`).toBe(trade.entryTime);
+      expect(paper?.exitTime, `trade ${index} exit time`).toBe(trade.exitTime);
+      expect(paper?.exitPrice, `trade ${index} exit price`).toBe(trade.exitPrice);
+      expect(paper?.exitReason, `trade ${index} exit reason`).toBe(trade.exitReason);
+    }
+  });
+});
+
+describe("gap-through fills: one documented fill model (the B4 repair)", () => {
+  it("a long stop at 95 followed by a bar opening at 90 fills at 90, never 95", () => {
+    const settlement = settleOnBars({
+      long: true,
+      entryPrice: 100,
+      stopPrice: 95,
+      size: 10,
+      bars: [candle(0, 90, 91, 88, 89)],
+    });
+    expect(settlement.outcome).toBe("stop");
+    expect(settlement.exitPrice).toBe(90);
+  });
+
+  it("the short symmetry: a short's stop at 105 with a bar opening at 110 fills at 110", () => {
+    const settlement = settleOnBars({
+      long: false,
+      entryPrice: 100,
+      stopPrice: 105,
+      size: 10,
+      bars: [candle(0, 110, 112, 109, 111)],
+    });
+    expect(settlement.outcome).toBe("stop");
+    expect(settlement.exitPrice).toBe(110);
+  });
+
+  it("a stop reached inside a bar without a gap still fills at the stop level", () => {
+    const settlement = settleOnBars({
+      long: true,
+      entryPrice: 100,
+      stopPrice: 95,
+      size: 10,
+      bars: [candle(0, 99, 100, 94, 96)],
+    });
+    expect(settlement.outcome).toBe("stop");
+    expect(settlement.exitPrice).toBe(95);
+  });
+
+  it("a long target with a bar opening above it fills at the open — a limit's better price", () => {
+    const settlement = settleOnBars({
+      long: true,
+      entryPrice: 100,
+      targetPrice: 105,
+      size: 10,
+      bars: [candle(0, 108, 109, 107, 108)],
+    });
+    expect(settlement.outcome).toBe("target");
+    expect(settlement.exitPrice).toBe(108);
+  });
+
+  it("a bar holding both levels with a gap through the stop settles as the stop at the open", () => {
+    // Tie policy unchanged — the stop wins a bar holding both — but the stop
+    // leg pays the gap-through price when the bar opened beyond it.
+    const settlement = settleOnBars({
+      long: true,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 105,
+      size: 10,
+      bars: [candle(0, 90, 106, 89, 104)],
+    });
+    expect(settlement.outcome).toBe("stop");
+    expect(settlement.exitPrice).toBe(90);
+  });
+
+  it("the forward engine applies the same gap-through model to a held position", () => {
+    // Enter at bar 0's open (signal armed on a fabricated prior state), hold
+    // through bar 1 which OPENS below the stop: the exit fills at bar 1's
+    // open, not at the stop level.
+    const thesis: TradingThesis = {
+      market: "ETH",
+      interval: "1m",
+      side: "long",
+      entry: {
+        predicates: [
+          {
+            left: { source: "price" },
+            comparator: "above",
+            right: { source: "constant", value: 1 },
+          },
+        ],
+      },
+      exits: { stop: { basis: "percent", value: 5 } },
+    };
+    const step = stepForward({
+      thesis,
+      candles: [candle(0, 100, 101, 99, 100), candle(1, 90, 91, 88, 89)],
+      state: {
+        open: {
+          id: "paper-gap",
+          entryTime: 0,
+          entryPrice: 100,
+          signalTime: -MINUTE,
+          stopPrice: 95,
+          targetPrice: null,
+          barsHeld: 1,
+          adverseExcursionUsd: 0,
+        },
+        pendingEntrySignalTime: null,
+        pendingExitReason: null,
+      },
+      notionalUsd: 1_000,
+      nextTradeId: "unused",
+    });
+    expect(step.exits.length).toBe(1);
+    expect(step.exits[0]?.exitPrice).toBe(90);
+    expect(step.exits[0]?.exitReason).toBe("stop");
+  });
+});
+
+describe("one bar can settle two trades (the F1 repair)", () => {
+  it("a pending exit and a same-bar stop on the new entry both survive the step", () => {
+    // Bar 0's close armed both: the exit of the held position (max hold) and
+    // the entry signal (condition always true). Bar 1 then settles the OLD
+    // trade at its open, fills the NEW trade at the same open, and the new
+    // position's stop is hit inside bar 1. The single-exit shape used to
+    // overwrite the old exit with the new one; both must come back, in
+    // causal order.
+    const thesis: TradingThesis = {
+      market: "ETH",
+      interval: "1m",
+      side: "long",
+      entry: {
+        predicates: [
+          {
+            left: { source: "price" },
+            comparator: "above",
+            right: { source: "constant", value: 1 },
+          },
+        ],
+      },
+      exits: { stop: { basis: "percent", value: 5 }, maxHoldBars: 1 },
+    };
+    const bar0 = candle(0, 100, 101, 99, 100);
+    const bar1 = candle(1, 100, 101, 92, 93);
+    const state: ForwardState = {
+      open: {
+        id: "old-trade",
+        entryTime: 0,
+        entryPrice: 100,
+        signalTime: -MINUTE,
+        stopPrice: 80,
+        targetPrice: null,
+        barsHeld: 1,
+        adverseExcursionUsd: 0,
+      },
+      pendingEntrySignalTime: 0,
+      pendingExitReason: "max_hold",
+    };
+    const step = stepForward({
+      thesis,
+      candles: [bar0, bar1],
+      state,
+      notionalUsd: 1_000,
+      nextTradeId: "new-trade",
+    });
+    expect(step.exits.length).toBe(2);
+    // Causal order: the old trade settles first, at bar 1's open...
+    expect(step.exits[0]?.tradeId).toBe("old-trade");
+    expect(step.exits[0]?.exitPrice).toBe(100);
+    expect(step.exits[0]?.exitReason).toBe("max_hold");
+    // ...then the new trade, entered at the same open and stopped inside it.
+    expect(step.entered?.entryTime).toBe(bar1.openTime);
+    expect(step.exits[1]?.tradeId).toBe("new-trade");
+    expect(step.exits[1]?.exitPrice).toBe(95);
+    expect(step.exits[1]?.exitReason).toBe("stop");
+    expect(step.state.open).toBeNull();
+    expect(step.state.pendingEntrySignalTime).not.toBeNull();
   });
 });

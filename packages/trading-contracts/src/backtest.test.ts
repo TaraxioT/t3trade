@@ -262,8 +262,11 @@ describe("runBacktest — no lookahead", () => {
 
 describe("runBacktest — the costs are the whole story on a zero-edge series", () => {
   // Price never moves, so every trade's gross is exactly zero and the net is
-  // exactly the fee model. `above 0` holds on every bar, and a one-bar hold
-  // takes a trade every other bar.
+  // exactly the fee model. `above 0` holds on every bar, and under the causal
+  // re-entry policy a one-bar hold takes a trade EVERY bar: the exit fills at
+  // a bar's open and the next entry may fill at that same open, because the
+  // decided exit executes first — the identical cadence the forward engine
+  // has always had, which is the parity the batch resume used to break.
   const alwaysIn: TradingThesis = {
     market: "ETH",
     interval: "1m",
@@ -283,7 +286,7 @@ describe("runBacktest — the costs are the whole story on a zero-edge series", 
 
   it("nets negative by exactly the fee model, never by a rounding of it", () => {
     const { report, trades } = run(alwaysIn, flatSeries);
-    expect(trades.length).toBe(30);
+    expect(trades.length).toBe(60);
     for (const trade of trades) {
       expect(trade.grossUsd).toBe(0);
       // (1000 in + 1000 out) x (5 + 1) bps = $1.20.
@@ -291,14 +294,14 @@ describe("runBacktest — the costs are the whole story on a zero-edge series", 
       expect(trade.netUsd).toBe(-1.2);
     }
     expect(report.stats.totalGrossUsd).toBe(0);
-    expect(report.stats.totalFeesUsd).toBe(36);
-    expect(report.stats.totalNetUsd).toBe(-36);
+    expect(report.stats.totalFeesUsd).toBe(72);
+    expect(report.stats.totalNetUsd).toBe(-72);
     expect(report.stats.expectancyUsd).toBe(-1.2);
     expect(report.verdict).toBe("negative_after_fees");
     // The verdict sentence is read by a person, so the numbers in it carry
     // their currency and their sign the way a statement would.
     expect(report.verdictReason).toContain("-$1.20 per trade");
-    expect(report.verdictReason).toContain("costs took $36.00");
+    expect(report.verdictReason).toContain("costs took $72.00");
   });
 
   it("charges the live taker rate when the caller does not override it", () => {

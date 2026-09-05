@@ -240,8 +240,15 @@ export interface ForwardStep {
   readonly state: ForwardState;
   /** Set when this bar opened a position. */
   readonly entered: ForwardEntryEffect | null;
-  /** Set when this bar closed one. */
-  readonly exited: ForwardExitEffect | null;
+  /**
+   * Every trade this bar closed, in causal order. One bar CAN close two: a
+   * pending exit from the previous bar fills at this bar's open, and a
+   * pending entry that fills at the same open can hit its own stop or target
+   * inside the same bar. The old single-exit shape silently dropped the first
+   * of those from the ledger — the exact defect a paper ledger cannot carry.
+   * Empty when nothing closed.
+   */
+  readonly exits: ReadonlyArray<ForwardExitEffect>;
 }
 
 /**
@@ -291,7 +298,7 @@ export function stepForward(input: {
   const index = candles.length - 1;
   const bar = candles[index];
   if (bar === undefined) {
-    return { state: input.state, entered: null, exited: null };
+    return { state: input.state, entered: null, exits: [] };
   }
 
   const long = thesis.side === "long";
@@ -303,13 +310,16 @@ export function stepForward(input: {
   });
   let state = input.state;
   let entered: ForwardEntryEffect | null = null;
-  let exited: ForwardExitEffect | null = null;
+  // Every settlement this bar produces, in the order it happened. Overwriting
+  // a single exit variable — the defect this repairs — lost whichever trade
+  // settled first whenever one bar closed two.
+  const exits: Array<ForwardExitEffect> = [];
 
   /** Settle the open position and go flat. */
   const settle = (exitPrice: number, exitTime: number, reason: BacktestExitReason): void => {
     const open = state.open;
     if (open === null) return;
-    exited = {
+    exits.push({
       tradeId: open.id,
       entryTime: open.entryTime,
       entryPrice: open.entryPrice,
@@ -318,7 +328,7 @@ export function stepForward(input: {
       exitReason: reason,
       barsHeld: open.barsHeld,
       adverseExcursionUsd: open.adverseExcursionUsd,
-    };
+    });
     state = { ...state, open: null, pendingExitReason: null };
   };
 
@@ -421,7 +431,7 @@ export function stepForward(input: {
     state = { ...state, pendingEntrySignalTime: bar.openTime };
   }
 
-  return { state, entered, exited };
+  return { state, entered, exits };
 }
 
 /**
@@ -453,15 +463,31 @@ function settleAgainstBar(input: {
     (long ? open.entryPrice - worst : worst - open.entryPrice) * size,
   );
 
+  // One fill model, stated once and shared with the batch engine
+  // (`settleOnBars`): a STOP is a stop-market order, and a bar that OPENS
+  // beyond the stop fills at the open — the gap-through price the position
+  // holder actually receives, never the flattering stop level. A TARGET is a
+  // resting limit, and a bar that opens beyond it fills at the open too,
+  // which for a limit is the BETTER price. Levels inside the bar without a
+  // gap fill at the level itself.
+  const stopFill = (stopPrice: number): number =>
+    long ? Math.min(stopPrice, bar.open) : Math.max(stopPrice, bar.open);
+  const targetFill = (targetPrice: number): number =>
+    long ? Math.max(targetPrice, bar.open) : Math.min(targetPrice, bar.open);
+
   // Tested in this order so a bar holding both levels settles as the stop.
   if (open.stopPrice !== null && (long ? bar.low <= open.stopPrice : bar.high >= open.stopPrice)) {
-    return { exitPrice: open.stopPrice, reason: "stop", adverseExcursionUsd: excursion };
+    return { exitPrice: stopFill(open.stopPrice), reason: "stop", adverseExcursionUsd: excursion };
   }
   if (
     open.targetPrice !== null &&
     (long ? bar.high >= open.targetPrice : bar.low <= open.targetPrice)
   ) {
-    return { exitPrice: open.targetPrice, reason: "target", adverseExcursionUsd: excursion };
+    return {
+      exitPrice: targetFill(open.targetPrice),
+      reason: "target",
+      adverseExcursionUsd: excursion,
+    };
   }
   return { exitPrice: null, adverseExcursionUsd: excursion };
 }

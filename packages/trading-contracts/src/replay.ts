@@ -160,18 +160,31 @@ export function settleOnBars(input: {
       stopPrice !== undefined && (long ? bar.low <= stopPrice : bar.high >= stopPrice);
     const hitTarget =
       targetPrice !== undefined && (long ? bar.high >= targetPrice : bar.low <= targetPrice);
+    // One fill model, shared by the fixture replay, the thesis backtest and
+    // the forward state machine: a STOP is a stop-market order — a bar that
+    // OPENS beyond it fills at the open, the gap-through price the holder
+    // actually receives, never the flattering stop level. A TARGET is a
+    // resting limit — a bar that opens beyond it fills at the open, which for
+    // a limit is the BETTER price. Levels reached inside the bar fill at the
+    // level itself. Assumed (not measured) costs sit on top unchanged.
     if (hitStop) {
+      const fill = long
+        ? Math.min(stopPrice as number, bar.open)
+        : Math.max(stopPrice as number, bar.open);
       return {
         outcome: "stop",
-        exitPrice: stopPrice as number,
+        exitPrice: fill,
         barsHeld: index,
         adverseExcursionUsd: adverse,
       };
     }
     if (hitTarget) {
+      const fill = long
+        ? Math.max(targetPrice as number, bar.open)
+        : Math.min(targetPrice as number, bar.open);
       return {
         outcome: "target",
-        exitPrice: targetPrice as number,
+        exitPrice: fill,
         barsHeld: index,
         adverseExcursionUsd: adverse,
       };
