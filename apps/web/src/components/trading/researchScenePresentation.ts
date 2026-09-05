@@ -214,6 +214,10 @@ export function uncoveredOccurrenceNotes(
     readonly eventStudy?:
       | {
           readonly eventSetName: string;
+          /** The report's own rows, one per window in order, each with its measured reason. */
+          readonly report?:
+            | { readonly rows: ReadonlyArray<{ readonly reason?: string | undefined }> }
+            | undefined;
           readonly occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow>;
         }
       | undefined;
@@ -223,14 +227,22 @@ export function uncoveredOccurrenceNotes(
   const study = scene.eventStudy;
   if (study === undefined) return [];
   const notes: Array<string> = [];
-  for (const window of study.occurrenceWindows) {
+  for (const [index, window] of study.occurrenceWindows.entries()) {
     if (window.covered) continue;
     const label = window.label ?? study.eventSetName;
     const date = new Date(window.startAt).toISOString().slice(0, 10);
+    if (window.endAt > now) {
+      notes.push(`${label} (${date}) has not happened yet`);
+      continue;
+    }
+    // The engine's own reason, when the row carries one: a gap, a forming
+    // entry bar and a pre-archive event are different facts, and folding
+    // them all into "predates recorded data" misstates two of the three.
+    const reason = study.report?.rows[index]?.reason;
     notes.push(
-      window.endAt > now
-        ? `${label} (${date}) has not happened yet`
-        : `${label} (${date}) predates recorded data`,
+      reason === undefined || reason.includes("before the archived window")
+        ? `${label} (${date}) predates recorded data`
+        : `${label} (${date}) not measured: ${reason}`,
     );
   }
   return notes;

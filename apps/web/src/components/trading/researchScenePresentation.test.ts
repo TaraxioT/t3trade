@@ -342,6 +342,50 @@ describe("liveResearchMarkers (the live graph's scene decoration)", () => {
     expect(notes[1]).toContain("Frontier");
     expect(notes[1]).toContain(new Date(NOW - 3_000 * DAY).toISOString().slice(0, 10));
     expect(notes[1]).toContain("predates recorded data");
+    // The engine's own reason rides through when the row carries one: a gap
+    // and a forming entry bar are different facts from a pre-archive event,
+    // and the note must not fold all three into "predates recorded data".
+    const withReasons = uncoveredOccurrenceNotes(
+      {
+        sceneId: "scene-r",
+        eventStudy: {
+          eventSetName: "ETH upgrades",
+          report: {
+            rows: [
+              { reason: "a recording gap covers the 1 bar(s) right after this event ended" },
+              {},
+              {},
+            ],
+          },
+          occurrenceWindows: [
+            {
+              startAt: NOW - 1_000 * DAY,
+              endAt: NOW - 1_000 * DAY,
+              source: "https://e.org/gap",
+              covered: false,
+            },
+            {
+              startAt: NOW - 2_000 * DAY,
+              endAt: NOW - 2_000 * DAY,
+              source: "https://e.org/gap2",
+              covered: false,
+            },
+            {
+              startAt: NOW - 4_000 * DAY,
+              endAt: NOW - 4_000 * DAY,
+              source: "https://e.org/old",
+              covered: false,
+            },
+          ],
+        },
+      } as never,
+      NOW,
+    );
+    expect(withReasons[0]).toContain("not measured: a recording gap covers the 1 bar(s)");
+    // Without a row reason the honest default stays the pre-archive sentence.
+    expect(withReasons[1]).toContain("predates recorded data");
+    // A pre-archive reason keeps its established sentence verbatim.
+    expect(withReasons[2]).toContain("predates recorded data");
     // Covered occurrences say nothing: they draw, they do not explain.
     expect(uncoveredOccurrenceNotes({}, NOW)).toEqual([]);
   });

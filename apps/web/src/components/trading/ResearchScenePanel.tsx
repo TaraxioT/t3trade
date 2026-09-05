@@ -1058,19 +1058,42 @@ function AggregateTrace(props: {
 }) {
   const intervalMs = props.payload.report.horizonMs / props.payload.report.horizonBars;
   const entryBasis = payloadEntryBasis(props.payload);
-  const [traces, setTraces] = useState<
-    (ReadonlyArray<{ barsSinceEntry: number; changePct: number }> | null)[]
-  >(() => props.covered.map(() => null));
-  const ready = traces.length > 0 && traces.every((trace) => trace !== null);
+  // Slots are keyed by OCCURRENCE IDENTITY, never array position: the
+  // covered list can grow, shrink or reorder between reads, and a positional
+  // slot would either keep a departed occurrence's trace or leave a hole an
+  // arriving one can never fill. Each slot carries its own outcome — a
+  // failed or empty fetch is a stated fact beside the aggregate, never a
+  // phantom success and never an eternal skeleton.
+  type TraceSlot =
+    | {
+        readonly status: "ok";
+        readonly points: ReadonlyArray<{ barsSinceEntry: number; changePct: number }>;
+      }
+    | { readonly status: "empty" }
+    | { readonly status: "failed" };
+  const slotKey = (window: ResearchOccurrenceWindow) => `${window.startAt}:${window.endAt}`;
+  const [slots, setSlots] = useState<ReadonlyMap<string, TraceSlot>>(new Map());
+  const recordSlot = (window: ResearchOccurrenceWindow, slot: TraceSlot) =>
+    setSlots((previous) => {
+      const key = slotKey(window);
+      if (previous.get(key)?.status === "ok") return previous;
+      const next = new Map(previous);
+      next.set(key, slot);
+      return next;
+    });
+  const settled = props.covered.map(({ window }) => slots.get(slotKey(window)) ?? null);
+  const ready = settled.length > 0 && settled.every((slot) => slot !== null);
+  const failedCount = settled.filter((slot) => slot?.status === "failed").length;
+  const emptyCount = settled.filter((slot) => slot?.status === "empty").length;
   const collected = ready
-    ? (traces as ReadonlyArray<ReadonlyArray<{ barsSinceEntry: number; changePct: number }>>)
+    ? settled.flatMap((slot) => (slot !== null && slot.status === "ok" ? [slot.points] : []))
     : [];
   const aggregate = aggregateAlignedTrace(collected);
   return (
     <>
-      {props.covered.map(({ window }, index) => (
+      {props.covered.map(({ window }) => (
         <AggregateTraceFetch
-          key={`${window.startAt}:${index}`}
+          key={slotKey(window)}
           environmentId={props.environmentId}
           market={props.payload.market}
           interval={props.payload.interval as ChartInterval}
@@ -1079,26 +1102,39 @@ function AggregateTrace(props: {
           entryBasis={entryBasis}
           occurrence={window}
           onTrace={(points) =>
-            setTraces((previous) => {
-              if (previous[index] !== null) return previous;
-              const next = [...previous];
-              next[index] = points;
-              return next;
-            })
+            recordSlot(window, points.length === 0 ? { status: "empty" } : { status: "ok", points })
           }
+          onFailed={() => recordSlot(window, { status: "failed" })}
         />
       ))}
       {!ready ? (
         <div className="h-full min-h-24 motion-safe:animate-pulse rounded bg-muted/40" />
       ) : aggregate.points.length < 2 ? (
-        <div className="text-xs text-muted-foreground">not enough bars to aggregate</div>
+        <div className="text-xs text-muted-foreground" data-testid="aligned-aggregate-empty">
+          not enough bars to aggregate
+          {failedCount > 0 ? ` — ${failedCount} trace fetch(es) failed` : ""}
+        </div>
       ) : (
-        <TraceSvg
-          trace={aggregate.points}
-          horizonBars={props.payload.horizonBars}
-          emphasis
-          reference={props.reference}
-        />
+        <>
+          <TraceSvg
+            trace={aggregate.points}
+            horizonBars={props.payload.horizonBars}
+            emphasis
+            reference={props.reference}
+          />
+          {failedCount + emptyCount > 0 ? (
+            <div
+              className="px-1 text-[10px] text-muted-foreground"
+              data-testid="aligned-trace-coverage"
+            >
+              aggregate over {collected.length} trace(s)
+              {emptyCount > 0 ? `, ${emptyCount} with no usable bars` : ""}
+              {failedCount > 0
+                ? `, ${failedCount} unavailable (fetch failed — not an empty path)`
+                : ""}
+            </div>
+          ) : null}
+        </>
       )}
     </>
   );
@@ -1113,12 +1149,14 @@ function AggregateTraceFetch(props: {
   readonly entryBasis: EventStudyEntryBasis;
   readonly occurrence: ResearchOccurrenceWindow;
   readonly onTrace: (points: ReadonlyArray<{ barsSinceEntry: number; changePct: number }>) => void;
+  /** Called once when this fetch has FAILED — a stated outcome, not a skeleton. */
+  readonly onFailed: () => void;
 }) {
   // Same window rule as AlignedTrace: the close basis needs the entry bar,
   // whose open sits one full interval before the entry close it anchors on.
   const closeBasis = props.entryBasis === "first_closed_bar_after_event";
   const entryTime = props.occurrence.entryTime ?? props.occurrence.startAt;
-  const { data } = useTradingMarketChart(props.environmentId, props.market, props.interval, {
+  const { data, error } = useTradingMarketChart(props.environmentId, props.market, props.interval, {
     enabled: true,
     window: {
       startTime: entryTime - (closeBasis ? props.intervalMs : 0),
@@ -1130,6 +1168,13 @@ function AggregateTraceFetch(props: {
     ),
     poll: false,
   });
+  // A failed read settles this occurrence's slot as failed: the aggregate
+  // keeps the survivors and the coverage line says what is missing, instead
+  // of a skeleton that can never resolve or an empty trace that reads as a
+  // path that went nowhere.
+  useEffect(() => {
+    if (error !== null) props.onFailed();
+  }, [error, props]);
   useEffect(() => {
     if (data === null || props.occurrence.entryTime === undefined) return;
     props.onTrace(
@@ -1364,6 +1409,8 @@ export function ResearchScenePanel(props: {
   readonly onOpenScene: (sceneId: string) => void;
   readonly loading: boolean;
   readonly error: string | null;
+  /** Retries the scenes read when a refresh failed over a kept picture. */
+  readonly onRetry?: (() => void) | undefined;
   /** The research mode the outer graph's tabs selected (Live lives outside). */
   readonly mode: "calendar" | "aligned";
   /** The thread composer prefill; null on the trade home (no conversation). */
@@ -1381,9 +1428,12 @@ export function ResearchScenePanel(props: {
   // handlers below, where a property access on `scene` would lose it.
   const study = scene?.eventStudy;
 
-  // The error, loading and empty states keep the panel's shape: a message
-  // where the content would sit, never a different frame.
-  if (props.error !== null) {
+  // The error and empty states keep the panel's shape: a message where the
+  // content would sit, never a different frame. A refresh failure with
+  // scenes already in hand is a STALE notice over the kept picture plus a
+  // retry — the cached scenes are never discarded visually, which is what an
+  // early error return used to do.
+  if (props.error !== null && (scene === undefined || props.scenes.length === 0)) {
     return (
       <div
         className="flex flex-1 items-center justify-center rounded border border-border/60 p-2 text-center text-xs text-muted-foreground"
@@ -1393,6 +1443,25 @@ export function ResearchScenePanel(props: {
       </div>
     );
   }
+  const staleNotice =
+    props.error !== null ? (
+      <div
+        className="flex items-center gap-2 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
+        data-testid="research-scenes-stale"
+      >
+        <span>scene refresh failed — showing the last good read ({props.error})</span>
+        {props.onRetry === undefined ? null : (
+          <button
+            type="button"
+            className="cursor-pointer underline"
+            data-testid="research-scenes-retry"
+            onClick={props.onRetry}
+          >
+            retry
+          </button>
+        )}
+      </div>
+    ) : null;
   if (scene === undefined) {
     if (props.loading) {
       return (
@@ -1408,6 +1477,7 @@ export function ResearchScenePanel(props: {
   return (
     <section className="flex h-full min-h-0 flex-col gap-1" data-testid="research-scene-panel">
       <header className="flex flex-wrap items-center justify-between gap-2">
+        {staleNotice}
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {props.scenes.length > 1 ? (
             <select

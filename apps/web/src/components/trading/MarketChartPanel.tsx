@@ -407,59 +407,85 @@ export function MarketChartPanel({
           )}
         </div>
       ) : null}
-      {/* The Range rail and the Bars menu: two controls, two vocabularies.
-          Range labels stay short (1D…All); Bars labels are always spelled out
-          (1 min…1 month), so no two buttons can be read as the same thing. */}
-      <div className="flex flex-wrap items-center gap-2 px-1">
+      {/* The Range rail and the Bars menu: two controls, two vocabularies —
+          and LIVE's controls only. Calendar and Event aligned draw fixed
+          per-occurrence recipes the server measured; leaving the rail there
+          would promise a recalculation no press can perform, so the research
+          views state their measured recipe read-only instead.
+          Range labels stay short (1D…All); Bars labels are always spelled
+          out (1 min…1 month), so no two buttons can be read as the same
+          thing. */}
+      {view !== "live" ? (
         <div
-          className="flex overflow-hidden rounded-md border border-border/60 font-mono text-[10.5px] leading-none"
-          role="group"
-          aria-label="Chart range"
+          className="flex flex-wrap items-center gap-2 px-1 font-mono text-[10.5px] text-muted-foreground"
+          data-testid="market-chart-research-recipe"
         >
-          {RANGES.map((option) => (
-            <button
-              key={option}
-              type="button"
-              data-testid={`market-chart-range-${option}`}
-              aria-pressed={option === range}
-              className={cn(
-                "cursor-pointer px-1.5 py-1 transition-colors",
-                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1",
-                option === range
-                  ? "bg-accent font-medium text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => setRange(option)}
-            >
-              {RANGE_LABELS[option]}
-            </button>
-          ))}
+          {selectedScene?.eventStudy !== undefined ? (
+            <span>
+              {selectedScene.eventStudy.interval} bars · {selectedScene.eventStudy.horizonBars}-bar
+              horizon · measured recipe — Range and Bars apply to Live
+            </span>
+          ) : selectedScene?.strategyReplay !== undefined ? (
+            <span>
+              {selectedScene.strategyReplay.interval} bars · replay window per trade — Range and
+              Bars apply to Live
+            </span>
+          ) : (
+            <span>research view — Range and Bars apply to Live</span>
+          )}
         </div>
-        <select
-          aria-label="Chart bars"
-          data-testid="market-chart-bars"
-          className="rounded-md border border-border/60 bg-transparent px-1 py-0.5 font-mono text-[10.5px]"
-          value={resolved.mode === "manual" && bars !== null ? bars : "auto"}
-          onChange={(event) =>
-            setBars(event.target.value === "auto" ? null : (event.target.value as ChartInterval))
-          }
-        >
-          <option value="auto" data-testid="market-chart-bars-auto">
-            Auto
-          </option>
-          {MENU_INTERVALS.map((option) => (
-            <option key={option} value={option} data-testid={`market-chart-bars-${option}`}>
-              {intervalMenuLabel(option)}
+      ) : (
+        <div className="flex flex-wrap items-center gap-2 px-1">
+          <div
+            className="flex overflow-hidden rounded-md border border-border/60 font-mono text-[10.5px] leading-none"
+            role="group"
+            aria-label="Chart range"
+          >
+            {RANGES.map((option) => (
+              <button
+                key={option}
+                type="button"
+                data-testid={`market-chart-range-${option}`}
+                aria-pressed={option === range}
+                className={cn(
+                  "cursor-pointer px-1.5 py-1 transition-colors",
+                  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1",
+                  option === range
+                    ? "bg-accent font-medium text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setRange(option)}
+              >
+                {RANGE_LABELS[option]}
+              </button>
+            ))}
+          </div>
+          <select
+            aria-label="Chart bars"
+            data-testid="market-chart-bars"
+            className="rounded-md border border-border/60 bg-transparent px-1 py-0.5 font-mono text-[10.5px]"
+            value={resolved.mode === "manual" && bars !== null ? bars : "auto"}
+            onChange={(event) =>
+              setBars(event.target.value === "auto" ? null : (event.target.value as ChartInterval))
+            }
+          >
+            <option value="auto" data-testid="market-chart-bars-auto">
+              Auto
             </option>
-          ))}
-        </select>
-        <span
-          className="font-mono text-[10.5px] tabular-nums text-muted-foreground"
-          data-testid="market-chart-resolved-bars"
-        >
-          {resolvedBarsText}
-        </span>
-      </div>
+            {MENU_INTERVALS.map((option) => (
+              <option key={option} value={option} data-testid={`market-chart-bars-${option}`}>
+                {intervalMenuLabel(option)}
+              </option>
+            ))}
+          </select>
+          <span
+            className="font-mono text-[10.5px] tabular-nums text-muted-foreground"
+            data-testid="market-chart-resolved-bars"
+          >
+            {resolvedBarsText}
+          </span>
+        </div>
+      )}
       {/* The one shared plot stage. Same frame, same header, same rail for
           Live, Calendar and Event aligned; the content changes, the geometry
           never does. `className` is the caller's sizing; without it the
@@ -477,6 +503,7 @@ export function MarketChartPanel({
             onOpenScene={openScene}
             loading={scenes.isLoading}
             error={scenes.error}
+            onRetry={scenes.refresh}
             mode={view === "aligned" ? "aligned" : "calendar"}
             prefill={prefill}
           />

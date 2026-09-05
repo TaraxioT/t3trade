@@ -279,6 +279,18 @@ export function ThreadMarketCard({
                 environmentId={environmentId}
                 parts="market"
               />
+              {/* The thread's unified research graph beneath the mission
+                  panels: a bound mission must not cut the conversation off
+                  from the studies it published. The mission's own position,
+                  stop and target data stays in the panels above — this chart
+                  is the research half, and its markers are measurements, so
+                  the two can never be read as one picture of exposure. */}
+              <MarketChartPanel
+                environmentId={environmentId}
+                asset={asset}
+                armable={false}
+                threadRef={{ environmentId, threadId }}
+              />
               {/* And what is on the mission's other markets, listed under it.
                   A market with nothing on it draws nothing rather than an
                   empty card per held market. */}

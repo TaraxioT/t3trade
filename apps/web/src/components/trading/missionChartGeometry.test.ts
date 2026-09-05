@@ -2748,6 +2748,32 @@ describe("computeChartGeometry: research markers", () => {
     expect(geometry?.researchMarkers).toHaveLength(0);
   });
 
+  it("an uncovered UPCOMING occurrence still renders in the gutter: existence is not coverage", () => {
+    // A future occurrence is uncovered by definition — it has not been
+    // measured — but the gutter draws its SOURCED DATE, not a price. The
+    // covered gate is for past occurrences, and it used to reject every
+    // future event before its own rendering path could run.
+    const nowMillis = last;
+    const geometry = geometryWith(
+      [
+        markerInput({
+          startAt: last + 30_000,
+          endAt: last + 30_000,
+          upcoming: true,
+          covered: false,
+        }),
+      ],
+      { nowMillis },
+    );
+    expect(geometry?.researchMarkers).toHaveLength(1);
+    expect(geometry?.researchMarkers[0]?.upcoming).toBe(true);
+    // A past uncovered occurrence still draws nothing.
+    const past = geometryWith([markerInput({ startAt: base + 120_000, covered: false })], {
+      nowMillis,
+    });
+    expect(past?.researchMarkers).toHaveLength(0);
+  });
+
   it("stacks the labels of close occurrences in rows while the rules keep their x", () => {
     // Two activations seconds apart: their labels cannot share one row, but
     // neither rule moves a hair.

@@ -2018,15 +2018,16 @@ function placeResearchMarkers(input: {
   const placed: Array<Omit<ChartResearchMarker, "labelY">> = [];
 
   for (const marker of input.markers) {
-    // No coverage means no honest position: never a rule, never a band, and
-    // never a fabricated one at the left edge. The caller's coverage note is
-    // the only disclosure.
-    if (!marker.covered) continue;
     const span = marker.endAt > marker.startAt;
 
     if (marker.upcoming) {
-      // No clock, no future gutter: an upcoming occurrence cannot be drawn
-      // as record, so it is not drawn.
+      // An occurrence that has not happened yet is UNCOVERED by definition —
+      // and still renderable, because what the future gutter draws is the
+      // SOURCED DATE, not a price measurement. Event existence and price
+      // coverage are different facts; gating the gutter on `covered` used to
+      // reject every future event before its own rendering path ran. No
+      // clock, no future gutter: an upcoming occurrence cannot be drawn as
+      // record without one, so it is not drawn.
       if (!input.hasClock) continue;
       if (span) {
         let x1 = clamp(input.xForTime(marker.startAt), input.nowX, PLOT_WIDTH);
@@ -2048,6 +2049,11 @@ function placeResearchMarkers(input: {
       }
       continue;
     }
+
+    // No coverage means no honest position for a PAST occurrence: never a
+    // rule, never a band, and never a fabricated one at the left edge. The
+    // caller's coverage note is the only disclosure.
+    if (!marker.covered) continue;
 
     // An occurrence before the window's first candle has no honest x — the
     // same drop an old fill gets, and the opposite of a left-edge pin.
