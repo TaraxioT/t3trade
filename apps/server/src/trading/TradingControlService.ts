@@ -627,12 +627,28 @@ export const makeTradingControlService = Effect.gen(function* () {
   const closeManualPosition: TradingControlService["Service"]["closeManualPosition"] = (input) =>
     Effect.gen(function* () {
       // D4: a mission-owned market's exits belong to the mission's controls.
+      // The held-set table is the authority record since migration 079 — both
+      // held primary and held secondary markets refuse — and a failed read is
+      // a typed failure, never "nobody holds it" (06B).
       const owning = yield* sql<{ readonly mission_id: string; readonly status: string }>`
-        SELECT mission_id, status FROM trading_missions
-        WHERE venue = 'hyperliquid' AND market = ${input.market}
-          AND status NOT IN ('revoked', 'completed')
+        SELECT m.mission_id, m.status
+        FROM trading_mission_markets h
+        JOIN trading_missions m ON m.mission_id = h.mission_id
+        WHERE h.venue = 'hyperliquid' AND h.market = ${input.market}
+          AND h.released_at IS NULL
+          AND m.status NOT IN ('revoked', 'completed')
         LIMIT 1
-      `.pipe(Effect.orElseSucceed(() => []));
+      `.pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "exchange_action_failed",
+              detail: `manual close: held-market ownership read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
       const owner = owning[0];
       if (owner !== undefined) {
         return {

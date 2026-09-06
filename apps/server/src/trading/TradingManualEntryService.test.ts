@@ -127,9 +127,18 @@ layer("TradingManualEntryService", (it) => {
     }),
   );
 
-  it.effect("refuses a market an active mission holds, naming the mission (D4)", () =>
+  /**
+   * A mission plus its held rows. Since migration 079 the held set
+   * (`trading_mission_markets`) is the authority record, so a fixture mission
+   * is invisible to D4 without its rows (06B).
+   */
+  const seedMission = (
+    missionId: string,
+    status: string,
+    heldMarkets: ReadonlyArray<{ readonly market: string; readonly released: boolean }>,
+    userId = "local",
+  ) =>
     Effect.gen(function* () {
-      yield* migrated;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         INSERT INTO trading_missions (
@@ -137,16 +146,129 @@ layer("TradingManualEntryService", (it) => {
           harness_json, status, control_json, authority_version, version,
           created_at, updated_at
         ) VALUES (
-          'm_eth', 'local', 'acct_1', 'trade', 'ETH', '{}', 'position_open',
+          ${missionId}, ${userId}, 'acct_1', 'trade', 'ETH', '{}', ${status},
           '{}', 1, 1, 1, 1
         )
       `;
+      for (const held of heldMarkets) {
+        yield* sql`
+          INSERT INTO trading_mission_markets (
+            mission_id, user_id, venue, market, bound_at, released_at
+          ) VALUES (
+            ${missionId}, ${userId}, 'hyperliquid', ${held.market}, 1,
+            ${held.released ? 1 : null}
+          )
+        `;
+      }
+    });
+
+  it.effect("refuses a market an active mission holds, naming the mission (D4)", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission("m_eth", "position_open", [{ market: "ETH", released: false }]);
       const service = yield* TradingManualEntryService;
       const refused = yield* service.prepare(request);
       assert.equal(refused.outcome, "refused");
       if (refused.outcome === "refused") {
         assert.equal(refused.reason, "market_owned_by_mission");
         assert.ok(refused.detail.includes("m_eth"));
+      }
+    }),
+  );
+
+  it.effect("refuses a held SECONDARY market, not just the mission's primary (06B)", () =>
+    Effect.gen(function* () {
+      // Primary ETH, held ETH and BTC: a manual ticket on BTC refuses even
+      // though trading_missions.market says ETH.
+      yield* migrated;
+      yield* seedMission("m_multi", "position_open", [
+        { market: "ETH", released: false },
+        { market: "BTC", released: false },
+      ]);
+      const service = yield* TradingManualEntryService;
+      const refused = yield* service.prepare({ ...request, market: "BTC" });
+      assert.equal(refused.outcome, "refused");
+      if (refused.outcome === "refused") {
+        assert.equal(refused.reason, "market_owned_by_mission");
+        assert.ok(refused.detail.includes("m_multi"));
+        assert.ok(refused.detail.includes("BTC"));
+      }
+    }),
+  );
+
+  it.effect("a released secondary market is tradeable again (06B)", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission("m_released", "position_open", [
+        { market: "ETH", released: false },
+        { market: "BTC", released: true },
+      ]);
+      const service = yield* TradingManualEntryService;
+      const prepared = yield* service.prepare({ ...request, market: "BTC" });
+      assert.equal(
+        prepared.outcome,
+        "prepared",
+        prepared.outcome === "refused" ? `${prepared.reason}: ${prepared.detail}` : "",
+      );
+    }),
+  );
+
+  it.effect("a terminal mission holds nothing (06B)", () =>
+    Effect.gen(function* () {
+      // Completed missions release their rows; nothing refuses here.
+      yield* migrated;
+      yield* seedMission("m_done", "completed", [{ market: "ETH", released: true }]);
+      const service = yield* TradingManualEntryService;
+      const prepared = yield* service.prepare(request);
+      assert.equal(
+        prepared.outcome,
+        "prepared",
+        prepared.outcome === "refused" ? `${prepared.reason}: ${prepared.detail}` : "",
+      );
+    }),
+  );
+
+  it.effect("another active holder still refuses regardless of user (06B)", () =>
+    Effect.gen(function* () {
+      // The refusal scope stays conservative: any live held row refuses,
+      // whatever user owns it.
+      yield* migrated;
+      yield* seedMission("m_other", "position_open", [{ market: "ETH", released: false }], "other");
+      const service = yield* TradingManualEntryService;
+      const refused = yield* service.prepare(request);
+      assert.equal(refused.outcome, "refused");
+      if (refused.outcome === "refused") assert.equal(refused.reason, "market_owned_by_mission");
+    }),
+  );
+
+  it.effect("a failed ownership read refuses the ticket before any network read (06B)", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      // The read itself fails — the held-set table is gone. That must not be
+      // answered as "nobody holds it". The layer (and its database) is shared
+      // across this file, so the table is restored afterwards.
+      yield* sql`DROP TABLE trading_mission_markets`;
+      const service = yield* TradingManualEntryService;
+      const refused = yield* service.prepare(request);
+      yield* sql`
+        CREATE TABLE IF NOT EXISTS trading_mission_markets (
+          mission_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          venue TEXT NOT NULL,
+          market TEXT NOT NULL,
+          bound_at INTEGER NOT NULL,
+          released_at INTEGER,
+          PRIMARY KEY (mission_id, venue, market)
+        )
+      `;
+      assert.equal(refused.outcome, "refused");
+      if (refused.outcome === "refused") {
+        assert.equal(refused.reason, "market_data_unavailable");
+        assert.ok(
+          refused.detail.includes("held-market ownership could not be read"),
+          refused.detail,
+        );
       }
     }),
   );

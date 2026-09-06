@@ -701,3 +701,110 @@ it.effect("a failed resting-order read stops cancel_entries before any cancellat
     assert.deepEqual(fake.cancels, []);
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Held-market ownership in the manual close lane (06B): the held set
+// (migration 079) is the authority, secondary markets refuse too, and a
+// failed ownership read is a typed failure — never "nobody holds it".
+// ---------------------------------------------------------------------------
+
+const seedMissionHolding = (
+  missionId: string,
+  status: string,
+  heldMarkets: ReadonlyArray<{ readonly market: string; readonly released: boolean }>,
+): Effect.Effect<void, never, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_accounts (
+        account_id, user_id, environment,
+        master_wallet_json, execution_wallet_json, status, created_at, updated_at
+      ) VALUES (
+        'acct_1', 'local', 'testnet',
+        '{"privyWalletId":"pw_1","address":"0xmaster","ownership":"user"}',
+        '{"privyWalletId":"pw_1","address":"0xmaster","hyperliquidAgentName":"t3","ownership":"service"}',
+        'active', 0, 0
+      )
+    `;
+    yield* sql`
+      INSERT INTO trading_missions (
+        mission_id, user_id, trading_account_id, instruction, market,
+        harness_json, status, control_json, authority_version, version,
+        created_at, updated_at
+      ) VALUES (
+        ${missionId}, 'local', 'acct_1', 'trade', 'ETH', '{}', ${status},
+        '{}', 1, 1, 1, 1
+      )
+    `;
+    for (const held of heldMarkets) {
+      yield* sql`
+        INSERT INTO trading_mission_markets (
+          mission_id, user_id, venue, market, bound_at, released_at
+        ) VALUES (
+          ${missionId}, 'local', 'hyperliquid', ${held.market}, 1,
+          ${held.released ? 1 : null}
+        )
+      `;
+    }
+  }).pipe(Effect.orDie);
+
+it.effect("manual close refuses a held secondary market (06B)", () =>
+  Effect.gen(function* () {
+    // Mission primary ETH, held ETH and BTC: closing BTC by hand refuses even
+    // though trading_missions.market says ETH, and nothing is submitted.
+    const fake = makeFake({ positionSize: 0.5 });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.closeManualPosition({ ...MANUAL, market: "BTC" }),
+      seedMissionHolding("m_multi", "position_open", [
+        { market: "ETH", released: false },
+        { market: "BTC", released: false },
+      ]),
+    );
+
+    assert.equal(outcome.outcome, "refused");
+    if (outcome.outcome === "refused") {
+      assert.equal(outcome.reason, "market_owned_by_mission");
+      assert.ok(outcome.detail.includes("m_multi"));
+    }
+    assert.deepEqual(fake.exits, []);
+  }),
+);
+
+it.effect("manual close works again on a released market (06B)", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0 });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.closeManualPosition({ ...MANUAL, market: "BTC" }),
+      seedMissionHolding("m_released", "position_open", [
+        { market: "ETH", released: false },
+        { market: "BTC", released: true },
+      ]),
+    );
+
+    assert.equal(outcome.outcome, "done");
+    if (outcome.outcome === "done") assert.ok(outcome.summary.includes("Already flat"));
+  }),
+);
+
+it.effect("a failed ownership read fails the manual close with no submission (06B)", () =>
+  Effect.gen(function* () {
+    const breakHeldTable = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP TABLE trading_mission_markets`;
+    }).pipe(Effect.orDie);
+
+    const fake = makeFake({ positionSize: 0.5 });
+    const error = yield* runControl(
+      fake,
+      (s) => Effect.flip(s.closeManualPosition({ ...MANUAL, market: "BTC" })),
+      breakHeldTable,
+    );
+
+    assert.equal(error._tag, "TradingControlError");
+    assert.equal(error.reason, "exchange_action_failed");
+    assert.ok(error.detail?.includes("held-market ownership read failed"), error.detail);
+    assert.deepEqual(fake.exits, []);
+  }),
+);
