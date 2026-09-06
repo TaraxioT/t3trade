@@ -50,6 +50,10 @@ interface FakeExchange {
   transitions: Array<{ to: string; blockedReason: string | undefined }>;
   /** When set, every IOC submission fails outright. */
   submitFailure: boolean;
+  /** Per-call canonical-read plan, consumed front-to-back; "ok" afterwards (06C). */
+  snapshotReads: Array<"ok" | "fail">;
+  /** When set, the mission-block transition write fails (06C). */
+  blockWriteFails: boolean;
 }
 
 const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
@@ -59,25 +63,31 @@ const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
   cancels: [],
   transitions: [],
   submitFailure: false,
+  snapshotReads: [],
+  blockWriteFails: false,
   ...overrides,
 });
 
 const gatewayLayer = (fake: FakeExchange) =>
   Layer.succeed(HyperliquidGateway, {
     getAccountSnapshot: () =>
-      Effect.succeed({
-        positions:
-          Math.abs(fake.positionSize) < 1e-9
-            ? []
-            : [
-                {
-                  market: "ETH",
-                  size: fake.positionSize,
-                  entryPrice: 3_000,
-                  unrealisedPnl: 0,
-                  marginUsed: 100,
-                },
-              ],
+      Effect.suspend(() => {
+        const read = fake.snapshotReads.shift() ?? "ok";
+        if (read === "fail") return Effect.fail("account snapshot read refused");
+        return Effect.succeed({
+          positions:
+            Math.abs(fake.positionSize) < 1e-9
+              ? []
+              : [
+                  {
+                    market: "ETH",
+                    size: fake.positionSize,
+                    entryPrice: 3_000,
+                    unrealisedPnl: 0,
+                    marginUsed: 100,
+                  },
+                ],
+        });
       }),
     getOrderBook: () =>
       Effect.succeed({
@@ -139,9 +149,12 @@ const missionsLayer = (fake: FakeExchange) =>
   Layer.succeed(TradingMissionService, {
     getMissionVersion: () => Effect.succeed(1),
     transition: (input: { to: string; blockedReason?: string | undefined }) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        if (fake.blockWriteFails) {
+          return Effect.fail("mission transition write refused");
+        }
         fake.transitions.push({ to: input.to, blockedReason: input.blockedReason });
-        return { status: input.to };
+        return Effect.succeed({ status: input.to });
       }),
   } as unknown as TradingMissionService["Service"]);
 
@@ -153,9 +166,13 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_execution_records`;
 });
 
-const runClose = (fake: FakeExchange) =>
+const runClose = (
+  fake: FakeExchange,
+  seed: Effect.Effect<void, never, SqlClient.SqlClient> = Effect.void,
+) =>
   Effect.gen(function* () {
     yield* migrated;
+    yield* seed;
     const service = yield* makeTradingEmergencyCloseService;
     return yield* service.emergencyClose(INPUT);
   }).pipe(
@@ -320,4 +337,105 @@ it.effect("cancels increasing orders but never the reduce-only protection", () =
     // The entry is cancelled; the reduce-only stop and the close are not.
     assert.deepEqual(fake.cancels, ["0xentry"]);
   }),
+);
+
+// ---------------------------------------------------------------------------
+// Explicit uncertainty (06C): a failed canonical read is an explicit unknown
+// outcome — never a fabricated flat, never a stale size, never a retry.
+// ---------------------------------------------------------------------------
+
+it.effect("a failed initial canonical read reports unknown with zero attempts", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0.5, snapshotReads: ["fail"] });
+    const outcome = yield* runClose(fake);
+
+    assert.equal(outcome.flat, false);
+    assert.equal(outcome.remainingSize, null);
+    assert.equal(outcome.attempts, 0);
+    assert.deepEqual(fake.exits, [], "no IOC may be submitted when nothing was read");
+    assert.ok(outcome.failureNotice?.includes("outcome unknown"), outcome.failureNotice);
+    assert.ok(outcome.failureNotice?.includes("no order was submitted"), outcome.failureNotice);
+    // The block was attempted (and its write succeeded here).
+    assert.deepEqual(fake.transitions, [{ to: "blocked", blockedReason: "protection_failure" }]);
+    assert.ok(outcome.failureNotice?.includes("stays blocked"));
+  }),
+);
+
+it.effect("a failed post-submit read reports unknown after exactly one IOC", () =>
+  Effect.gen(function* () {
+    // 0.5 fills 60% -> 0.2 remains, then the confirming read fails. One
+    // submission, unknown outcome, no numeric size, no second IOC.
+    const fake = makeFake({
+      positionSize: 0.5,
+      fillFraction: 0.6,
+      snapshotReads: ["ok", "fail"],
+    });
+    const outcome = yield* runClose(fake);
+
+    assert.equal(outcome.flat, false);
+    assert.equal(outcome.remainingSize, null);
+    assert.equal(outcome.attempts, 1);
+    assert.deepEqual(fake.exits, [0.5]);
+    assert.ok(outcome.failureNotice?.includes("may have executed"), outcome.failureNotice);
+  }),
+);
+
+it.effect(
+  "failed order discovery keeps risk reduction but warns cancellation was unconfirmed",
+  () =>
+    Effect.gen(function* () {
+      // The increasing-order SELECT fails (table gone) while account reads are
+      // healthy: the close still runs and reduces, and the notice carries the
+      // unconfirmed-cancellation warning even though the close went flat.
+      const fake = makeFake({ positionSize: 0.5 });
+      const dropOrders = Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE trading_orders`;
+      }).pipe(Effect.orDie);
+      const outcome = yield* runClose(fake, dropOrders);
+
+      assert.equal(outcome.flat, true);
+      assert.equal(outcome.remainingSize, 0);
+      assert.deepEqual(fake.exits, [0.5], "risk reduction still attempted");
+      assert.deepEqual(fake.cancels, [], "nothing could be discovered to cancel");
+      assert.ok(
+        outcome.failureNotice?.includes("Increasing-order cancellation was unconfirmed"),
+        outcome.failureNotice,
+      );
+      assert.ok(outcome.failureNotice?.includes("may reopen exposure"), outcome.failureNotice);
+    }),
+);
+
+it.effect("a failed mission-block write is stated as attempted, never as established fact", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0.5, fillFraction: 0, blockWriteFails: true });
+    const outcome = yield* runClose(fake);
+
+    assert.equal(outcome.flat, false);
+    assert.deepEqual(fake.transitions, []);
+    assert.ok(
+      outcome.failureNotice?.includes("The mission block was attempted but could not be confirmed"),
+      outcome.failureNotice,
+    );
+    assert.ok(!outcome.failureNotice?.includes("stays blocked"), outcome.failureNotice);
+  }),
+);
+
+it.effect(
+  "an unknown outcome from a failed block write also avoids the established-fact phrase",
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFake({
+        positionSize: 0.5,
+        blockWriteFails: true,
+        snapshotReads: ["fail"],
+      });
+      const outcome = yield* runClose(fake);
+
+      assert.equal(outcome.remainingSize, null);
+      assert.ok(
+        outcome.failureNotice?.includes("attempted but could not be confirmed"),
+        outcome.failureNotice,
+      );
+    }),
 );
