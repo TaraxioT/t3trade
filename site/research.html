@@ -1,0 +1,1539 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Research mode · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="How T3 Trade runs charts, alerts, backtests, validations, missions and wakes with no signer at all, why refusals stay honest, and how the archive records the history Hyperliquid will not keep."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+      :root {
+        --void: #060A12;        /* page base */
+        --panel: #0B1120;       /* raised surface */
+        --panel-2: #0E1526;     /* second raise */
+        --edge: rgba(148,163,199,.13);
+        --edge-strong: rgba(148,163,199,.24);
+        --chalk: #D8E0EC;       /* primary text */
+        --slate: #8A97AD;       /* secondary text */
+        --dim: #5C6B84;         /* tertiary text */
+        --bid: #2BD576;         /* success, long, confirmed */
+        --ask: #FF5D6C;         /* risk, refusal, halt */
+        --amber: #FFB224;       /* caution, limits, unknown */
+        --flow: #56CCF2;        /* data in motion, links, events */
+        --flow-soft: rgba(86,204,242,.14);
+        --font-body: "IBM Plex Sans", system-ui, sans-serif;
+        --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+        --font-display: "Archivo", system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html { scroll-behavior: smooth; }
+      @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+      body {
+        background: var(--void);
+        color: var(--chalk);
+        font-family: var(--font-body);
+        font-size: 16.5px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection { background: rgba(86,204,242,.28); }
+      a { color: var(--flow); text-decoration: none; }
+      a:hover { text-decoration: underline; text-underline-offset: 3px; }
+      :focus-visible { outline: 2px solid var(--flow); outline-offset: 2px; border-radius: 4px; }
+      code, .mono { font-family: var(--font-mono); font-size: .86em; }
+      code.path {
+        color: var(--slate);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 6px;
+        padding: .1em .4em;
+        white-space: nowrap;
+      }
+      .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+
+      /* chrome */
+      .nav {
+        position: sticky; top: 0; z-index: 50;
+        background: rgba(6,10,18,.82);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--edge);
+      }
+      .nav-inner {
+        display: flex; align-items: center; justify-content: space-between;
+        height: 60px; gap: 16px;
+      }
+      .brand {
+        display: flex; align-items: center; gap: 10px;
+        color: var(--chalk); font-family: var(--font-mono); font-size: 13px;
+        letter-spacing: .08em; white-space: nowrap;
+      }
+      .brand:hover { text-decoration: none; }
+      .brand .tick { color: var(--bid); }
+      .nav-links { display: flex; gap: 4px; }
+      .nav-links a {
+        color: var(--slate); font-size: 13.5px; padding: 6px 10px;
+        border-radius: 8px; white-space: nowrap;
+      }
+      .nav-links a:hover { color: var(--chalk); background: var(--panel); text-decoration: none; }
+      .nav-links a[aria-current="page"] { color: var(--flow); background: var(--flow-soft); }
+      @media (max-width: 820px) {
+        .nav-links { display: none; }
+        .nav-links.open { display: flex; flex-direction: column; position: absolute; top: 60px; right: 12px; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 8px; }
+        .nav-menu-btn { display: inline-flex !important; }
+      }
+      .nav-menu-btn {
+        display: none; color: var(--slate); background: none; border: 1px solid var(--edge);
+        border-radius: 8px; padding: 6px 10px; font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+      }
+
+      .footer {
+        border-top: 1px solid var(--edge); margin-top: 96px; padding: 40px 0 56px;
+        color: var(--dim); font-size: 14px;
+      }
+      .footer .cols { display: flex; gap: 32px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
+      .footer nav { display: flex; flex-direction: column; gap: 8px; }
+      .footer a { color: var(--slate); } .footer a:hover { color: var(--flow); }
+      .footer .mono { font-size: 12px; letter-spacing: .06em; }
+
+      /* type roles */
+      .kicker {
+        font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .14em;
+        color: var(--flow); text-transform: uppercase;
+      }
+      h1 {
+        font-family: var(--font-display); font-weight: 800; font-stretch: 112%;
+        font-size: clamp(34px, 5.4vw, 58px); line-height: 1.04; letter-spacing: -.015em;
+        margin: 14px 0 18px; max-width: 18ch;
+      }
+      h2 {
+        font-family: var(--font-display); font-weight: 700; font-stretch: 106%;
+        font-size: clamp(24px, 3.2vw, 34px); line-height: 1.15; letter-spacing: -.01em;
+        margin: 0 0 14px; max-width: 26ch;
+      }
+      h3 { font-family: var(--font-body); font-weight: 600; font-size: 18px; margin: 0 0 8px; }
+      p { max-width: 66ch; color: var(--chalk); }
+      p.lede { font-size: 19px; color: var(--slate); max-width: 58ch; }
+      .section { padding: 76px 0; border-top: 1px solid var(--edge); }
+      .section:first-of-type { border-top: none; }
+      .icon { width: 1.25em; height: 1.25em; flex: none; vertical-align: -.25em; }
+
+      /* reveal on scroll */
+      .reveal { opacity: 0; transform: translateY(18px); }
+      .reveal.in { opacity: 1; transform: none; transition: opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1); }
+      @media (prefers-reduced-motion: reduce) {
+        .reveal { opacity: 1; transform: none; }
+      }
+
+      /* flow ribbon animation */
+      .edge-line { stroke-dasharray: 5 7; animation: march 1.1s linear infinite; }
+      @keyframes march { to { stroke-dashoffset: -12; } }
+      .node-pulse { animation: nodepulse 2.6s ease-in-out infinite; }
+      @keyframes nodepulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) {
+        .edge-line { animation: none; stroke-dasharray: none; }
+        .node-pulse { animation: none; opacity: .8; }
+        ribbon pulse circles and canvases must also be disabled by page JS (see recipes)
+      }
+
+      /* ---------- page-specific ---------- */
+      .hero { padding: 72px 0 26px; }
+      .hero h1 .icon { color: var(--flow); width: .9em; height: .9em; }
+      .ribbon-figure {
+        margin-top: 40px; background: var(--panel); border: 1px solid var(--edge);
+        border-radius: 10px; padding: 16px 10px 6px; overflow-x: auto;
+      }
+      .ribbon-figure svg { width: 100%; height: auto; min-width: 720px; display: block; }
+      .ribbon-cap {
+        display: flex; gap: 20px; padding: 10px 10px 8px; color: var(--slate);
+        font-family: var(--font-mono); font-size: 12px; flex-wrap: wrap;
+      }
+
+      /* split */
+      .split { display: grid; grid-template-columns: 7fr 5fr; gap: 40px; align-items: start; }
+      @media (max-width: 820px) { .split { grid-template-columns: 1fr; gap: 28px; } }
+      .split .prose p + p { margin-top: 14px; }
+
+      /* panel ledger (right rail of splits) */
+      .rail {
+        background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+        padding: 22px 22px 8px;
+      }
+      .rail .ledger { margin-top: 14px; }
+      .ledger { border-top: 1px solid var(--edge); }
+      .ledger .row {
+        display: grid; grid-template-columns: minmax(120px, 168px) 1fr; gap: 14px;
+        padding: 13px 0 15px; border-bottom: 1px solid var(--edge);
+      }
+      .ledger .row:last-child { border-bottom: none; }
+      .ledger .k {
+        font-family: var(--font-mono); font-size: 12.5px; color: var(--flow);
+        letter-spacing: .02em; overflow-wrap: anywhere;
+      }
+      .ledger .v { font-size: 14.5px; color: var(--slate); line-height: 1.55; }
+      .ledger .v b { color: var(--chalk); font-weight: 500; }
+
+      /* stat strip */
+      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 30px 0 8px; }
+      @media (max-width: 860px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+      .stat { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 18px 18px 14px; }
+      .stat .n { font-family: var(--font-mono); font-size: clamp(30px, 4vw, 44px); color: var(--chalk); line-height: 1.05; }
+      .stat .n small { font-size: .45em; color: var(--flow); }
+      .stat .l { margin-top: 8px; font-size: 13.5px; color: var(--slate); line-height: 1.45; }
+
+      /* layer stack */
+      .stack { display: grid; gap: 10px; margin-top: 8px; }
+      .stack .layer {
+        background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+        padding: 16px 18px;
+      }
+      .stack .layer.foundation { border-color: rgba(255,93,108,.38); }
+      .stack .layer .lk { font-family: var(--font-mono); font-size: 13px; color: var(--chalk); }
+      .stack .layer .ld { font-size: 13.5px; color: var(--slate); margin-top: 3px; line-height: 1.5; }
+      .stack .layer.foundation .lk { color: var(--ask); }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+      .chip {
+        font-family: var(--font-mono); font-size: 11.5px; color: var(--slate);
+        border: 1px solid var(--edge-strong); background: var(--panel-2);
+        border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+      }
+      .chip.signer { color: var(--amber); border-color: rgba(255,178,36,.5); }
+      .chip.readonly { color: var(--flow); border-color: rgba(86,204,242,.35); }
+      .stack .seam {
+        display: flex; align-items: center; gap: 10px; color: var(--slate);
+        font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .08em;
+        padding: 0 0 0 18px;
+      }
+      .stack .seam::before { content: ""; width: 1px; height: 14px; background: var(--edge-strong); margin-left: 6px; }
+
+      /* refusal wall */
+      .wall { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 30px; }
+      @media (max-width: 1020px) { .wall { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 700px) { .wall { grid-template-columns: 1fr; } }
+      .rf {
+        background: var(--panel); border: 1px solid var(--edge); border-left: 3px solid var(--ask);
+        border-radius: 10px; padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 10px;
+      }
+      .rf.standin { border-left-color: var(--amber); }
+      .rf .where {
+        font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--ask);
+      }
+      .rf.standin .where { color: var(--amber); }
+      .rf .say {
+        font-family: var(--font-mono); font-size: 13px; line-height: 1.55; color: var(--chalk);
+        background: var(--panel-2); border: 1px solid var(--edge); border-radius: 8px;
+        padding: 12px 13px;
+      }
+      .rf .say::before { content: open-quote; color: var(--ask); }
+      .rf .say::after { content: close-quote; color: var(--ask); }
+      .rf.standin .say::before, .rf.standin .say::after { color: var(--amber); }
+      .rf .why { font-size: 13.5px; color: var(--slate); line-height: 1.5; flex: 1; }
+      .rf .cite { font-family: var(--font-mono); font-size: 11.5px; color: var(--slate); }
+
+      /* bento */
+      .bento { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; margin-top: 30px; }
+      .cell {
+        background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+        padding: 20px; display: flex; flex-direction: column; gap: 8px;
+      }
+      .cell h3 { display: flex; align-items: center; gap: 9px; font-size: 16px; margin: 0; }
+      .cell h3 .icon { color: var(--flow); }
+      .cell p { color: var(--slate); font-size: 14.5px; max-width: none; }
+      .cell p b { color: var(--chalk); font-weight: 500; }
+      @media (min-width: 861px) {
+        .c4 { grid-column: span 4; } .c5 { grid-column: span 5; } .c7 { grid-column: span 7; } .c8 { grid-column: span 8; }
+      }
+      @media (max-width: 860px) { .cell { grid-column: span 12; } }
+      .cell .type { font-family: var(--font-mono); font-size: 11.5px; color: var(--amber); letter-spacing: .03em; }
+
+      /* timeline */
+      .tl { position: relative; margin-top: 30px; padding-left: 26px; border-left: 2px solid var(--edge-strong); display: grid; gap: 26px; }
+      .tl article { position: relative; }
+      .tl article::before {
+        content: ""; position: absolute; left: -33px; top: 7px; width: 10px; height: 10px;
+        border-radius: 50%; background: var(--void); border: 2px solid var(--flow);
+      }
+      .tl .step-k { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .12em; color: var(--flow); text-transform: uppercase; }
+      .tl h3 { margin: 4px 0 6px; }
+      .tl p { color: var(--slate); font-size: 15.5px; }
+
+      /* callouts */
+      .callout {
+        background: var(--panel); border: 1px solid var(--edge);
+        border-left: 3px solid var(--flow); border-radius: 10px; padding: 18px 20px; margin: 26px 0 0;
+      }
+      .callout.amber { border-left-color: var(--amber); }
+      .callout.ask { border-left-color: var(--ask); }
+      .callout .ct { font-family: var(--font-mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--flow); margin-bottom: 6px; }
+      .callout.amber .ct { color: var(--amber); }
+      .callout.ask .ct { color: var(--ask); }
+      .callout p { font-size: 15.5px; color: var(--chalk); max-width: none; }
+      .callout .q { color: var(--slate); font-style: italic; }
+
+      /* evidence */
+      .evi { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 26px; }
+      @media (max-width: 860px) { .evi { grid-template-columns: 1fr; } }
+      .evi h3 { font-size: 15px; }
+      .evi ul { list-style: none; display: grid; gap: 7px; margin-top: 10px; }
+      .evi li { font-size: 13.5px; color: var(--slate); line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html">Risk</a>
+          <a href="/status.html">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="wrap">
+        <div class="kicker">Research mode · the archive</div>
+        <h1>
+          <svg
+            class="icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6 21l6 -5l6 5" />
+            <path d="M12 13v8" />
+            <path
+              d="M3.294 13.678l.166 .281c.52 .88 1.624 1.265 2.605 .91l14.242 -5.165a1.023 1.023 0 0 0 .565 -1.456l-2.62 -4.705a1.087 1.087 0 0 0 -1.447 -.42l-.056 .032l-12.694 7.618c-1.02 .613 -1.357 1.897 -.76 2.905l-.001 0"
+            />
+            <path d="M14 5l3 5.5" />
+          </svg>
+          Research works without a signing key.
+        </h1>
+        <p class="lede">
+          Research mode works without a signer. Market data, charts, alerts, backtests, validations,
+          missions, and wakes remain available. Only actions that require a signature refuse, and
+          one resolver enforces that boundary. A separate archive process records history that
+          Hyperliquid no longer serves.
+        </p>
+
+        <figure class="ribbon-figure reveal">
+          <svg
+            viewBox="0 0 1100 300"
+            role="img"
+            aria-label="Two lanes. The read lane: the archive records candles, the chart RPC checks entitlement, panels render charts, watchlists and alerts; nothing in it can sign. The sign lane: an order intent reaches resolveSigner in the execution layer, which fails closed with signer_not_configured, so nothing is ever posted to the exchange."
+          >
+            <defs>
+              <marker
+                id="arrR"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-strong)" />
+              </marker>
+            </defs>
+
+            <!-- read lane -->
+            <text
+              x="60"
+              y="26"
+              fill="var(--dim)"
+              font-family="var(--font-mono)"
+              font-size="10"
+              letter-spacing="3"
+            >
+              READS FLOW · NO SIGNER ANYWHERE IN THE PATH
+            </text>
+            <path
+              id="rp1"
+              class="edge-line"
+              d="M292,64 H404"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <path
+              id="rp2"
+              class="edge-line"
+              d="M652,64 H764"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <g class="node-pulse">
+              <rect
+                x="60"
+                y="36"
+                width="232"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="rgba(86,204,242,.35)"
+              />
+              <text
+                x="176"
+                y="60"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                archive
+              </text>
+              <text
+                x="176"
+                y="78"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                WS candles · 1-min tail poll
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="404"
+                y="36"
+                width="248"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="rgba(86,204,242,.35)"
+              />
+              <text
+                x="528"
+                y="60"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                chart RPC
+              </text>
+              <text
+                x="528"
+                y="78"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                isChartReadEntitled · no key asked
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="764"
+                y="36"
+                width="276"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="rgba(86,204,242,.35)"
+              />
+              <text
+                x="902"
+                y="60"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                panels
+              </text>
+              <text
+                x="902"
+                y="78"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                chart · watchlist · alerts · scenes
+              </text>
+            </g>
+
+            <!-- sign lane -->
+            <text
+              x="60"
+              y="196"
+              fill="var(--dim)"
+              font-family="var(--font-mono)"
+              font-size="10"
+              letter-spacing="3"
+            >
+              SIGN PATH · REFUSED AT THE ONLY SEAM
+            </text>
+            <path
+              id="sp1"
+              class="edge-line"
+              d="M292,234 H404"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <path
+              id="sp2"
+              class="edge-line"
+              d="M652,234 H780"
+              stroke="rgba(255,93,108,.55)"
+              fill="none"
+              stroke-width="2"
+            />
+            <g class="node-pulse">
+              <rect
+                x="60"
+                y="206"
+                width="232"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="176"
+                y="230"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                order intent
+              </text>
+              <text
+                x="176"
+                y="248"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                placeTradingOrder · trading_enter
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="404"
+                y="206"
+                width="248"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="rgba(255,178,36,.45)"
+              />
+              <text
+                x="528"
+                y="230"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                resolveSigner
+              </text>
+              <text
+                x="528"
+                y="248"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                execution layer · fail-closed
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="780"
+                y="206"
+                width="260"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="rgba(255,93,108,.55)"
+              />
+              <text
+                x="910"
+                y="230"
+                text-anchor="middle"
+                fill="var(--ask)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                signer_not_configured
+              </text>
+              <text
+                x="910"
+                y="248"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                no POST /exchange · nothing signed
+              </text>
+            </g>
+            <g stroke="rgba(255,93,108,.7)" stroke-width="2.4" stroke-linecap="round">
+              <line x1="1046" y1="226" x2="1062" y2="242" />
+              <line x1="1062" y1="226" x2="1046" y2="242" />
+            </g>
+
+            <circle r="3.5" fill="var(--flow)">
+              <animateMotion dur="2.6s" repeatCount="indefinite">
+                <mpath href="#rp1" />
+              </animateMotion>
+            </circle>
+            <circle r="3.5" fill="var(--ask)">
+              <animateMotion dur="2.6s" repeatCount="indefinite">
+                <mpath href="#sp1" />
+              </animateMotion>
+            </circle>
+          </svg>
+          <div class="ribbon-cap">
+            <span>top lane always runs; bottom lane stops at the signer, before any wire</span>
+            <span><code>HyperliquidExecutionService.ts:870-871</code></span>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="mode">
+      <div class="wrap">
+        <h2 class="reveal">The UI explains research mode in one line.</h2>
+        <p class="lede reveal">
+          T3 Trade signs orders with a Hyperliquid key you supply. If you have not supplied one, the
+          app does not stop at the door: "Everything that reads the market keeps working, and only
+          signing refuses" (<code class="path">docs/user/research-mode.md:1-5</code>). The trade
+          home and the settings workspace each carry exactly one line that says so, and nothing else
+          nags.
+        </p>
+
+        <div class="stats">
+          <div class="stat reveal">
+            <div class="n">~5,000<small>&nbsp;bars</small></div>
+            <div class="l">
+              what Hyperliquid serves per interval, and nothing older; a 1m series reaches back
+              about three and a half days (<code class="path">archive/config.ts:4-9</code>)
+            </div>
+          </div>
+          <div class="stat reveal">
+            <div class="n">1<small>&nbsp;min</small></div>
+            <div class="l">
+              the archive's tail poll, refreshing every candle series the WS feed cannot vouch for
+              (<code class="path">archive/archiver.ts:4-6</code>)
+            </div>
+          </div>
+          <div class="stat reveal">
+            <div class="n">30<small>&nbsp;min</small></div>
+            <div class="l">
+              funding pulled forward from a high-water mark, every half hour (<code class="path"
+                >archive/archiver.ts:6-7</code
+              >)
+            </div>
+          </div>
+          <div class="stat reveal">
+            <div class="n">0<small>&nbsp;keys</small></div>
+            <div class="l">
+              credentials the archiver holds: it "never authenticates, never sees a key, and never
+              touches an order endpoint" (<code class="path">archive/config.ts:11-16</code>)
+            </div>
+          </div>
+        </div>
+
+        <div class="prose" style="margin-top: 40px">
+          <p class="reveal">
+            The line itself is a constant, rendered by one function that stays silent unless the
+            server reports the signer as explicitly unarmed:
+            <code class="path">describeSignerState</code> returns
+            <code class="path">RESEARCH_MODE_LINE</code> only when
+            <code class="path">signerArmed === false</code>, and null when the field is absent,
+            because servers that predate the field had one meaning (<code class="path"
+              >apps/web/src/components/trading/tradeHomePresentation.ts:87-93</code
+            >). The field is an optional boolean on the account view (<code class="path"
+              >packages/contracts/src/trading.ts:899</code
+            >).
+          </p>
+          <p class="reveal">
+            The comment above the constant states the design position: research mode is
+            "deliberately not a modal, not a nag, and not an onboarding flow: research mode is a
+            working state, and the only thing a user needs is to know it before an order is refused
+            rather than after" (<code class="path">tradeHomePresentation.ts:82-86</code>). Settings
+            shows the same sentence plus a pointer to the user doc (<code class="path"
+              >apps/web/src/components/trading/TradingWorkspacePanel.tsx:440-455</code
+            >).
+          </p>
+          <p class="reveal">
+            What keeps working is the list the doc commits to: charts on every timeframe, the
+            watchlist and universe search, price/time/metric alerts that arm and fire, backtests
+            against recorded bars at real fees and funding, forward validation on live bars,
+            missions that wake, read and journal, and published plans drawn on the chart with
+            declared levels (<code class="path">docs/user/research-mode.md:14-32</code>). The
+            <a href="/missions.html">Missions watches wakes</a> loop runs in full; only the
+            capital-moving half of it refuses.
+          </p>
+        </div>
+        <aside class="rail reveal" style="margin-top: 34px">
+          <h3 style="display: flex; align-items: center; gap: 9px">
+            <svg
+              class="icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+              <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+              <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" /></svg
+            >Keyless, verified
+          </h3>
+          <div class="ledger">
+            <div class="row">
+              <div class="k">charts</div>
+              <div class="v">
+                Served off the read gateway plus the archive; the RPC asks entitlement, never a
+                signer (<code class="path">ws.ts:2322-2343</code>).
+              </div>
+            </div>
+            <div class="row">
+              <div class="k">watchlist</div>
+              <div class="v">
+                The venue universe off the same read gateway, "so the universe and a resolve of one
+                asset never disagree" (<code class="path">runtimeLayer.ts:118-120</code>).
+              </div>
+            </div>
+            <div class="row">
+              <div class="k">alerts</div>
+              <div class="v">
+                Account watches on price, metric, derived and time conditions arm and fire keyless;
+                position conditions refuse at arm time (<code class="path"
+                  >TradingAlertService.ts:50-55</code
+                >, <code class="path">202-207</code>).
+              </div>
+            </div>
+            <div class="row">
+              <div class="k">backtests</div>
+              <div class="v">
+                "Reads the same archive and nothing else" (<code class="path"
+                  >runtimeLayer.ts:221-227</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="k">validations</div>
+              <div class="v">
+                Forward validation "reads the same archive and writes only its own paper tables"
+                (<code class="path">runtimeLayer.ts:228-235</code>).
+              </div>
+            </div>
+            <div class="row">
+              <div class="k">missions</div>
+              <div class="v">
+                The mission service sits in the core layer built without the exchange write path
+                (<code class="path">runtimeLayer.ts:89-123</code>).
+              </div>
+            </div>
+            <div class="row">
+              <div class="k">wakes</div>
+              <div class="v">
+                Every keyless wake carries the one no-account line, so the agent is never left to
+                discover it from a failed order (<code class="path"
+                  >TradingWakeupComposer.ts:811-821</code
+                >).
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section" id="boundary">
+      <div class="wrap">
+        <h2 class="reveal">One resolver rejects every unsigned write.</h2>
+        <p class="lede reveal">
+          There is no feature flag called research mode. The boundary is a single function in the
+          execution layer, and the layer graph is wired so the read surfaces never get near it.
+        </p>
+
+        <div class="split" style="margin-top: 36px">
+          <div class="prose">
+            <p class="reveal">
+              The signer is resolved inside <code class="path">HyperliquidExecutionService</code> by
+              <code class="path">resolveSigner</code>: if the key config yields
+              <code class="path">None</code>, the effect fails with
+              <code class="path">TradingExecutionError({ stage: "signer_not_configured" })</code>,
+              "reported as <code class="path">signer_not_configured</code> rather than a defect.
+              Every wire path runs through this" (<code class="path"
+                >apps/server/src/trading/HyperliquidExecutionService.ts:503-519</code
+              >). The resolution used to be pasted at six call sites; it is one function now.
+              <code class="path">submitOrder</code> resolves the signer as step 1, before market
+              metadata, before the order book, before any preview (<code class="path"
+                >HyperliquidExecutionService.ts:865-871</code
+              >).
+            </p>
+            <p class="reveal">
+              The key itself comes from <code class="path">InterimSignerConfig</code>: the env var
+              <code class="path">T3_TRADES_INTERIM_SIGNER_KEY</code> or the default machine-local
+              file <code class="path">~/.t3trade/secrets/hyperliquid-interim-signer-key.bin</code>.
+              "When the key is absent the signer resolves to
+              <code class="path">Option.none()</code> and every signable action is rejected",
+              deliberately, because this is the only code path that spends testnet capital (<code
+                class="path"
+                >InterimSignerConfig.ts:19-32</code
+              >). How the key is loaded, checked and kept out of logs is the
+              <a href="/signer.html">Signer &amp; authority</a> page's story.
+            </p>
+            <p class="reveal">
+              Above that seam, the composition root in
+              <code class="path">runtimeLayer.ts</code> builds read surfaces on layers that
+              structurally cannot sign. <code class="path">HyperliquidReadLayerLive</code> merges
+              exactly three services: the info client, the market resolver, and the read gateway
+              (<code class="path">runtimeLayer.ts:81-85</code>).
+              <code class="path">TradingCoreLayerLive</code>, which the file documents as "Mission
+              services that do not require the exchange write path", builds on it: mission
+              projection and service, market price, chart, universe (<code class="path"
+                >runtimeLayer.ts:89-123</code
+              >). The signer, the exchange client and the nonce coordinator appear only in
+              <code class="path">TradingFoundation</code>, the layer the execution consumers build
+              on (<code class="path">runtimeLayer.ts:153-165</code>).
+            </p>
+            <div class="callout ask reveal">
+              <div class="ct">A typed refusal at one boundary</div>
+              <p>
+                No code path discovers a missing signer by throwing deep inside a signature routine.
+                The one resolver answers for all of them, with a typed stage a surface can quote
+                verbatim. A research install is not an error state to be caught; it is the same
+                binary with the foundation's signer chip empty.
+              </p>
+            </div>
+          </div>
+          <aside class="reveal">
+            <h3 style="margin-bottom: 12px">The layer graph, read backwards</h3>
+            <div class="stack">
+              <div class="layer foundation">
+                <div class="lk">TradingFoundation</div>
+                <div class="ld">
+                  The only layer that can sign. Empty signer chip means every wire path refuses
+                  (<code class="path">runtimeLayer.ts:153-165</code>).
+                </div>
+                <div class="chips">
+                  <span class="chip signer">InterimSignerConfig</span>
+                  <span class="chip">exchange client</span>
+                  <span class="chip">nonce coordinator</span>
+                  <span class="chip">execution receipts</span>
+                </div>
+              </div>
+              <div class="seam">resolveSigner · the one seam below</div>
+              <div class="layer">
+                <div class="lk">TradingCoreLayerLive</div>
+                <div class="ld">
+                  "Mission services that do not require the exchange write path": missions,
+                  projection, price, chart, universe (<code class="path"
+                    >runtimeLayer.ts:89-123</code
+                  >).
+                </div>
+                <div class="chips">
+                  <span class="chip readonly">mission service</span>
+                  <span class="chip readonly">market price</span>
+                  <span class="chip readonly">market chart</span>
+                  <span class="chip readonly">universe</span>
+                </div>
+              </div>
+              <div class="seam">builds on reads only</div>
+              <div class="layer">
+                <div class="lk">HyperliquidReadLayerLive</div>
+                <div class="ld">
+                  Three services, no signing surface: info client, market resolver, read gateway
+                  (<code class="path">runtimeLayer.ts:81-85</code>).
+                </div>
+                <div class="chips">
+                  <span class="chip readonly">info</span>
+                  <span class="chip readonly">resolver</span>
+                  <span class="chip readonly">gateway</span>
+                </div>
+              </div>
+              <div class="layer">
+                <div class="lk">The research set</div>
+                <div class="ld">
+                  Backtest, validation, hypothesis, events, research scenes: dependency sets of "SQL
+                  and Crypto", wired so "nothing that could reach an order" is a visible claim at
+                  the wiring (<code class="path">runtimeLayer.ts:217-245</code>).
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="refusals">
+      <div class="wrap">
+        <h2 class="reveal">The wall of honest refusals.</h2>
+        <p class="lede reveal">
+          Every refusal names what still works, quotes the book where a quote is still possible, and
+          refuses at arm time rather than at fire time. These are the real strings, verbatim from
+          the repository.
+        </p>
+
+        <div class="wall">
+          <article class="rf reveal">
+            <div class="where">trade home · settings</div>
+            <div class="say">
+              Research mode: no trading key is configured. Observation, backtests and validations
+              work; orders will be refused.
+            </div>
+            <div class="why">
+              The single research-mode line, one constant rendered in two places, silent the moment
+              a signer is armed.
+            </div>
+            <div class="cite">tradeHomePresentation.ts:87-93</div>
+          </article>
+          <article class="rf reveal">
+            <div class="where">manual ticket · keyless preview</div>
+            <div class="say">
+              no trading signer is configured on this environment, so this order would be refused;
+              charts, watchlists, alerts, backtests and validations all work without one. The book
+              quotes (market) bid (best) ask (best), so a (side) now would fill near (level)
+            </div>
+            <div class="why">
+              The preview still reads the public book and interpolates the live quote; an unreadable
+              book costs the numbers, never the sentence. Refusal code
+              <code class="path">no_trading_signer</code>.
+            </div>
+            <div class="cite">TradingManualEntryService.ts:202-218, 265-270</div>
+          </article>
+          <article class="rf reveal">
+            <div class="where">agent entry · trading_enter</div>
+            <div class="say">
+              nothing was placed: this environment has no trading account (no signer armed), so an
+              entry cannot be priced, sized or signed. Arm a testnet account, then enter again.
+            </div>
+            <div class="why">
+              One honest refusal at the same seam the watch tool refuses at, not an account read
+              that errors the whole call after the mission was already bound. Refusal code
+              <code class="path">needs_trading_account</code>.
+            </div>
+            <div class="cite">TradingEntryService.ts:245-257</div>
+          </article>
+          <article class="rf reveal">
+            <div class="where">every keyless wake</div>
+            <div class="say">
+              no trading account is attached here: no signer is armed, so sizing is unavailable and
+              orders will be refused; observation, backtests and validations are unaffected
+            </div>
+            <div class="why">
+              One sentence per wake, naming both halves: what will not work and what still does. "A
+              keyless install is a research terminal, not a broken one."
+            </div>
+            <div class="cite">TradingWakeupComposer.ts:811-821</div>
+          </article>
+          <article class="rf reveal">
+            <div class="where">position-scoped alert · at arm time</div>
+            <div class="say">
+              a '(condition)' condition needs a mission position; account alerts take price, metric,
+              derived, or time
+            </div>
+            <div class="why">
+              Profit, give-back and fill alerts are refused when armed, not armed and left silent:
+              "An alert that can never fire is worse than no alert, because silence reads as 'the
+              level was not reached'". The code interpolates the asked condition kind.
+            </div>
+            <div class="cite">
+              TradingAlertService.ts:202-207 · docs/user/research-mode.md:41-44
+            </div>
+          </article>
+          <article class="rf standin reveal">
+            <div class="where">mandate · stand-in capital</div>
+            <div class="say">
+              No account could be read when this mission was created, so the capital below is a
+              stand-in rather than a balance. Sizing is unavailable and orders will be refused.
+            </div>
+            <div class="why">
+              A mandate nobody could size is labelled as the stand-in it is: "Saying so beats
+              presenting the fallback as measured."
+            </div>
+            <div class="cite">TradingWorkspacePanel.tsx:96-104</div>
+          </article>
+        </div>
+
+        <p class="reveal" style="margin-top: 30px; color: var(--slate); max-width: 66ch">
+          The pattern is one rule applied everywhere: a refusal must be more informative than the
+          action it refused. The ticket quotes the book it cannot trade on. The wake says what is
+          unaffected. The mandate admits its number is a stand-in. None of them pretend, and none of
+          them nag.
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="surfaces">
+      <div class="wrap">
+        <h2 class="reveal">What each surface reads, and what it cannot touch.</h2>
+        <p class="lede reveal">
+          Six research surfaces, one shared shape: each is wired to reads and its own tables, and
+          the wiring itself is the claim that it cannot place an order.
+        </p>
+
+        <div class="bento">
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 13a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -6"
+                />
+                <path
+                  d="M15 9a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -10"
+                />
+                <path
+                  d="M9 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -14"
+                />
+                <path d="M4 20h14" /></svg
+              >Charts
+            </h3>
+            <div class="type">read gateway + archive</div>
+            <p>
+              The chart pairs a live snapshot with candle history, sharing the read gateway so the
+              two "never disagree on freshness"; it "reads a closed window out of the archive before
+              it asks the exchange, which only serves the last ~5,000 bars" (<code class="path"
+                >runtimeLayer.ts:99-105</code
+              >). Entitlement is checked, not identity: "The chart RPC must not become a free
+              Hyperliquid proxy", so a mission on the market or membership in the follow set
+              entitles, and anything else fails with "Market (name) is neither followed nor held by
+              a mission" (<code class="path">chartReadEntitlement.ts:1-18</code>,
+              <code class="path">52-63</code>; enforced at
+              <code class="path">ws.ts:2322-2343</code>). A terminal mission still entitles the
+              windowed review chart, because "refusing a terminal mission on the windowed path would
+              refuse every review chart there is" (<code class="path"
+                >chartReadEntitlement.ts:12-16</code
+              >).
+            </p>
+          </div>
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M19 5h-7l-4 14l-3 -6h-2" />
+                <path d="M14 13l6 6" />
+                <path d="M14 19l6 -6" /></svg
+              >Backtests
+            </h3>
+            <div class="type">archive only</div>
+            <p>
+              "<code class="path">trading_backtest</code> reads the same archive and nothing else."
+              The archive layer is provided explicitly at the wiring "so the one dependency it has
+              is visible" (<code class="path">runtimeLayer.ts:221-227</code>). A backtest runs
+              against bars that already exist, at the fees and funding a real trade would have paid
+              (<code class="path">docs/user/research-mode.md:23-25</code>). There is no second price
+              source to consult; the repository records that decision as an ADR that is explicitly
+              not decided (<code class="path"
+                >docs/internals/historical-price-adapter-decision.md</code
+              >).
+            </p>
+          </div>
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                <path d="M9 12l2 2l4 -4" /></svg
+              >Forward validation
+            </h3>
+            <div class="type">archive + own paper tables</div>
+            <p>
+              An idea is watched on live bars for as long as asked, and every paper trade is
+              recorded (<code class="path">docs/user/research-mode.md:25-27</code>). The service
+              "reads the same archive and writes only its own paper tables"; the explicit dependency
+              set "is the claim that it cannot place an order" (<code class="path"
+                >runtimeLayer.ts:228-235</code
+              >). The chart even draws an armed thesis's paper trades as markers, as a read that
+              "can never fail the chart" (<code class="path">runtimeLayer.ts:106-114</code>).
+            </p>
+          </div>
+          <div class="cell c5 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 12h-8a1 1 0 1 0 -1 1v8a9 9 0 0 0 9 -9" />
+                <path d="M16 9a5 5 0 1 0 -7 7" />
+                <path d="M20.486 9a9 9 0 1 0 -11.482 11.495" /></svg
+              >Research scenes
+            </h3>
+            <div class="type">SQL and Crypto</div>
+            <p>
+              The UI shows research scenes below the message composer. The WS handler says it
+              outright: "Research mode through and through: scenes are research output, the read
+              needs no signer and no mission", and the only scope checked is the thread's own (<code
+                class="path"
+                >ws.ts:2299-2306</code
+              >). The scene record's dependency set is "SQL and Crypto, and nothing that could reach
+              an order" (<code class="path">runtimeLayer.ts:242-245</code>).
+            </p>
+          </div>
+          <div class="cell c7 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4 13a8 8 0 0 1 7 7a6 6 0 0 0 3 -5a9 9 0 0 0 6 -8a3 3 0 0 0 -3 -3a9 9 0 0 0 -8 6a6 6 0 0 0 -5 3"
+                />
+                <path d="M7 14a6 6 0 0 0 -3 6a6 6 0 0 0 6 -3" />
+                <path d="M14 9a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /></svg
+              >Missions, plans, wakes
+            </h3>
+            <div class="type">core layer, no write path</div>
+            <p>
+              A keyless mission can be started, wakes on its triggers, reads the market and the
+              archive, publishes plans and keeps its journal (<code class="path"
+                >docs/user/research-mode.md:28-32</code
+              >). The mission service is part of <code class="path">TradingCoreLayerLive</code>, the
+              layer documented as needing no exchange write path (<code class="path"
+                >runtimeLayer.ts:89-123</code
+              >). A published plan is recorded and drawn on the chart; "without a key nothing is
+              placed on the venue, and the agent is told so on every publish". Every wake carries
+              the no-account line, so the agent is "not left to discover this from a failed order"
+              (<code class="path">docs/user/research-mode.md:46-50</code>).
+            </p>
+          </div>
+          <div class="cell c8 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"
+                />
+                <path d="M9 17v1a3 3 0 0 0 6 0v-1" /></svg
+              >Alerts and watches
+            </h3>
+            <div class="type">read gateway validation</div>
+            <p>
+              Account-scoped alerts validate their markets through the read gateway, the same reads
+              the watchlist uses (<code class="path">TradingAlertService.ts:214-221</code>). Four
+              condition kinds arm keyless, verbatim from
+              <code class="path">ACCOUNT_WATCH_KINDS</code>: price, metric, derived, time (<code
+                class="path"
+                >TradingAlertService.ts:50-55</code
+              >). The line between arming and refusing is position scope, not signer presence, and
+              it is drawn at arm time with the reason named (<code class="path"
+                >TradingAlertService.ts:202-207</code
+              >). A time watch has no market to validate; everything else is checked against the
+              live universe (<code class="path">TradingAlertService.ts:214-216</code>).
+            </p>
+          </div>
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12" />
+                <path d="M19 16h-12a2 2 0 0 0 -2 2" />
+                <path d="M9 8h6" /></svg
+              >Ideas and events
+            </h3>
+            <div class="type">SQL and Crypto</div>
+            <p>
+              The hypothesis record (ideas, versions, runs) and the event calendar the engines read
+              carry the same dependency set as the scene record: "SQL and Crypto, which is the same
+              claim again: a filed idea is research, and nothing here can reach an order" (<code
+                class="path"
+                >runtimeLayer.ts:236-241</code
+              >).
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="archive">
+      <div class="wrap">
+        <h2 class="reveal">The archive: record it or lose it.</h2>
+        <p class="lede reveal">
+          Hyperliquid's Info API "is a window, not a history": every candle interval is capped at
+          roughly the most recent 5,000 bars, "so a 1m series reaches back about three and a half
+          days and nothing older is ever served again. The only way the lab owns that history is to
+          write it down as it goes by" (<code class="path"
+            >apps/server/src/trading/archive/config.ts:4-9</code
+          >). The supervisor's header says it shorter: "a minute not recorded is a minute gone"
+          (<code class="path">ArchiveSupervisor.ts:4-6</code>).
+        </p>
+
+        <div class="split" style="margin-top: 36px">
+          <div>
+            <h3 class="reveal" style="margin-bottom: 6px">One sequential tick, forever</h3>
+            <div class="tl">
+              <article class="reveal">
+                <div class="step-k">boot</div>
+                <h3>Full-window backfill</h3>
+                <p>
+                  Startup "always begins with a full-window backfill, which makes killing the
+                  process a supported way to operate it rather than an incident" (<code class="path"
+                    >archive/archiver.ts:15-16</code
+                  >).
+                </p>
+              </article>
+              <article class="reveal">
+                <div class="step-k">continuous</div>
+                <h3>WS candles between ticks</h3>
+                <p>
+                  Candles arrive primarily over the WebSocket feed; "the poll is boot backfill and
+                  gap repair" (<code class="path">archive/archiver.ts:6-10</code>). Sequential
+                  rather than three timers, so the single-flight Info client is never contended.
+                </p>
+              </article>
+              <article class="reveal">
+                <div class="step-k">every minute</div>
+                <h3>Tail refresh, context, book, heartbeat</h3>
+                <p>
+                  Each tick refreshes the tail of every candle series the WS feed cannot vouch for,
+                  samples the derivatives context and the top of book, and prints a heartbeat (<code
+                    class="path"
+                    >archive/archiver.ts:4-6</code
+                  >).
+                </p>
+              </article>
+              <article class="reveal">
+                <div class="step-k">every half hour</div>
+                <h3>Funding from the high-water mark</h3>
+                <p>
+                  Funding is pulled forward from a high-water mark, so backtests charge the rates a
+                  real trade would have paid (<code class="path">archive/archiver.ts:6-7</code>).
+                </p>
+              </article>
+              <article class="reveal">
+                <div class="step-k">failure</div>
+                <h3>Nothing throws</h3>
+                <p>
+                  A failed request returns null and the tick moves on; "a minute lost to a 429 is
+                  repaired a minute later without a retry queue" (<code class="path"
+                    >archive/archiver.ts:12-15</code
+                  >).
+                </p>
+              </article>
+            </div>
+          </div>
+          <div class="prose">
+            <p class="reveal">
+              The archive is its own process, not a thread in the server.
+              <code class="path">ArchiveSupervisor</code> spawns it as a Node child "restarts it
+              with backoff when it dies, reads its heartbeat off stdout" (<code class="path"
+                >ArchiveSupervisor.ts:11-13</code
+              >). It starts with the server, but only while the trading lease is held, so a second
+              server against the same state never double-runs mission machinery; the archive line
+              sits inside the same guard (<code class="path"
+                >apps/server/src/orchestration/Layers/OrchestrationReactor.ts:37-47</code
+              >).
+            </p>
+            <p class="reveal">
+              Its lock is deliberately not the trading lease. The trading lease is scoped to a state
+              directory; the archive "is machine-wide market data that a dev server and the
+              installed app read from the same file. So the supervisor takes a lease on the archive
+              path itself, and a second server on the same machine supervises nothing" (<code
+                class="path"
+                >ArchiveSupervisor.ts:15-19</code
+              >). Writer state is one explicit word, derived from the lease and the heartbeat:
+              <code class="path">owned-writer</code>,
+              <code class="path">healthy-external-writer</code>,
+              <code class="path">restarting</code>, <code class="path">stopped</code>,
+              <code class="path">stale</code>, <code class="path">unavailable</code> (<code
+                class="path"
+                >ArchiveSupervisor.ts:46-67</code
+              >).
+            </p>
+            <p class="reveal">
+              Which network it records is passed down as
+              <code class="path">T3TRADE_ARCHIVE_NETWORK</code>, so the recorded venue is the traded
+              venue; a hand-run archiver with nothing set keeps its historical default of mainnet
+              (<code class="path">archive/config.ts:42-50</code>). A fresh install with no follow
+              state records a cold-start floor of exactly two coins, BTC and ETH, "so a brand-new
+              archive is not empty" (<code class="path">archive/config.ts:28-35</code>).
+            </p>
+            <p class="reveal">
+              What gets deep recording is the follow set: what is held, armed, watchlisted, what a
+              chat is looking at, what was charted a moment ago. It is derived on read from tables
+              that already exist, and it reaches the archiver "through a small JSON file beside the
+              archive that the child re-reads each tick. A file rather than a table because the
+              archive database has exactly one writer and this would have made it two" (<code
+                class="path"
+                >FollowSetRegistry.ts:2-21</code
+              >).
+            </p>
+            <div class="callout amber reveal">
+              <div class="ct">Byte-stable replay</div>
+              <p>
+                When an argument needs a fixed dataset, it uses the checked-in replay window: the
+                2026-08-13 ETH morning, "the grind lower from ~06:00 UTC, three boundary entries
+                that failed, then the breakdown", with candles that are "the testnet feed's own
+                record (the venue the missions trade), fetched once and checked in", so every replay
+                of the window is the same replay, byte for byte (<code class="path"
+                  >TradingReplayWindow20260813.ts:5-12</code
+                >).
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="on">
+      <div class="wrap">
+        <h2 class="reveal">Turning execution on changes one thing.</h2>
+        <p class="lede reveal">
+          Supply the key and restart the server. "Nothing else changes: the research surfaces behave
+          identically, and the research-mode line disappears" (<code class="path"
+            >docs/user/research-mode.md:56-60</code
+          >). The layers do not rewire; <code class="path">TradingFoundation</code> simply resolves
+          a signer where it resolved none, and the read path that never asked is untouched.
+        </p>
+        <p class="reveal">
+          The same read paths run with or without a signer. Research mode is the full product
+          without a configured signer, not a degraded mode with execution added later. Where this
+          sits in the <a href="/overview.html">Big picture</a> is exactly here: reads fan out to
+          every surface, and the one write path funnels through a single guarded seam. What happens
+          when the chip is full, from nonce lanes to protection invariants, is the
+          <a href="/execution.html">Execution</a> and <a href="/risk.html">Risk</a> story; who may
+          fill it, and how the key is guarded, is <a href="/signer.html">Signer &amp; authority</a>.
+          The surfaces this page walked live on in every install, key or no key, on
+          <a href="/clients.html">Web &amp; desktop</a> alike, and the terms they use are defined in
+          the <a href="/glossary.html">Glossary</a>.
+        </p>
+
+        <div class="evi">
+          <div>
+            <h3>The boundary</h3>
+            <ul>
+              <li>
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:503-519</code
+                >
+                · resolveSigner, fail-closed
+              </li>
+              <li>
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:865-871</code
+                >
+                · step 1 of submitOrder
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/runtimeLayer.ts:81-85</code> · read layer
+                contents
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/runtimeLayer.ts:89-123</code> · core
+                layer claim
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/runtimeLayer.ts:153-165</code> ·
+                foundation, where the signer lives
+              </li>
+              <li>
+                <code class="path">packages/contracts/src/trading.ts:899</code> · signerArmed,
+                optional
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>The refusals</h3>
+            <ul>
+              <li>
+                <code class="path"
+                  >apps/web/src/components/trading/tradeHomePresentation.ts:82-93</code
+                >
+                · the one line
+              </li>
+              <li>
+                <code class="path"
+                  >apps/server/src/trading/TradingManualEntryService.ts:195-218</code
+                >
+                · keyless quote
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/TradingEntryService.ts:245-257</code> ·
+                nothing was placed
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/TradingWakeupComposer.ts:811-821</code> ·
+                wake line
+              </li>
+              <li>
+                <code class="path"
+                  >apps/server/src/trading/TradingAlertService.ts:50-55, 202-207</code
+                >
+                · arm-time refusal
+              </li>
+              <li>
+                <code class="path">docs/user/research-mode.md</code> · the user-facing contract
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>The archive</h3>
+            <ul>
+              <li>
+                <code class="path">apps/server/src/trading/ArchiveSupervisor.ts:4-19</code> · why it
+                runs, how it locks
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/archive/archiver.ts:4-16</code> · the
+                tick
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/archive/config.ts:4-50</code> · window,
+                keys, network
+              </li>
+              <li>
+                <code class="path">apps/server/src/trading/FollowSetRegistry.ts:2-21</code> · one
+                writer
+              </li>
+              <li>
+                <code class="path">apps/server/src/ws.ts:2299-2348</code> · scenes and entitlement
+              </li>
+              <li>
+                <code class="path"
+                  >apps/server/src/trading/TradingReplayWindow20260813.ts:5-12</code
+                >
+                · the fixed morning
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/status.html">See the board</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/missions.html">← Missions watches wakes</a>
+          <a href="/providers.html">Provider adapters →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document
+          .querySelectorAll("animateMotion, animate")
+          .forEach((a) => a.setAttribute("begin", "indefinite"));
+      }
+    </script>
+    <script>
+      (() => {
+        const els = document.querySelectorAll(".reveal");
+        if (
+          !("IntersectionObserver" in window) ||
+          matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach((el) => el.classList.add("in"));
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e, i) => {
+              if (e.isIntersecting) {
+                e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      })();
+    </script>
+  </body>
+</html>
