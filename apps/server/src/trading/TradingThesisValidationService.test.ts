@@ -13,10 +13,14 @@
  * is a database: the lifecycle and its reverse states, the catch-up walk, and
  * the separation.
  */
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -1395,3 +1399,188 @@ layer("TradingThesisValidationService catch-up and expiry", (it) => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// Concurrency (08A): two deliveries that read the SAME checkpoint cannot both
+// commit. The seam is the pre-transaction archive read (funding), gated with
+// Deferreds — pass A is released and committed first; stale pass B is released
+// only afterwards and must be refused by the in-transaction checkpoint guard,
+// leaving no partial writes. A normal re-delivery then converges on exactly
+// the ledger the single uninterrupted pass produced.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Concurrency (08A): two deliveries that read the SAME checkpoint cannot both
+// commit. The seam is the pre-transaction archive read (funding), gated with
+// Deferreds — pass A is released and committed first; stale pass B is released
+// only afterwards and must be refused by the in-transaction checkpoint guard,
+// leaving no partial writes. A normal re-delivery then converges on exactly
+// the ledger the single uninterrupted pass produced. Runs live (`it.live`):
+// the orchestration needs real fiber scheduling, not the test clock's.
+// ---------------------------------------------------------------------------
+
+/** The fixture thesis plus a funding clause that is always satisfied. */
+const fundingReadingThesis: TradingThesis = {
+  ...thesis,
+  entry: {
+    predicates: [
+      {
+        left: { source: "metric", metric: "funding_rate_8h" },
+        comparator: "above",
+        right: { source: "constant", value: -1 },
+      },
+      {
+        left: { source: "price" },
+        comparator: "crosses_above",
+        right: { source: "constant", value: 100 },
+      },
+    ],
+  },
+};
+
+it.live("a stale concurrent advance is refused and double-counts nothing (08A)", () =>
+  Effect.gen(function* () {
+    yield* migrated;
+    const sql = yield* SqlClient.SqlClient;
+
+    const armed = yield* (yield* TradingThesisValidationService).arm({
+      thesis: fundingReadingThesis,
+      durationMs: 14 * DAY,
+      now: START,
+    });
+    assert.equal(armed.outcome, "armed");
+    if (armed.outcome !== "armed") return;
+    const validationId = armed.validation.id;
+
+    // The gate lives in the funding read — an archive read `advance` makes
+    // BEFORE entering its transaction (once per bar, so the gate is keyed by
+    // FIBER, not call count), keeping every barrier outside the locked
+    // region. The first fiber runs straight through (pass A); any other
+    // fiber parks until released (stale pass B).
+    const firstEntered = yield* Deferred.make<void>();
+    const allowFirst = yield* Deferred.make<void>();
+    const secondEntered = yield* Deferred.make<void>();
+    const allowSecond = yield* Deferred.make<void>();
+    let ownerFiber: unknown;
+    let firstReleased = false;
+    let secondReleased = false;
+    const fundingRows = [{ coin: "ETH", time: START, fundingRate: 0, premium: 0 }];
+    const gatedArchive = {
+      coverage: () => Effect.succeed({ recordingSince: START, gaps: [] }),
+      candlesInWindow: (input: { readonly fromT: number; readonly toT: number }) =>
+        Effect.succeed(ALL_BARS.filter((row) => row.t >= input.fromT && row.t <= input.toT)),
+      fundingInWindow: () =>
+        Effect.suspend(() => {
+          const current = Fiber.getCurrent();
+          if (ownerFiber === undefined) {
+            ownerFiber = current;
+            return Deferred.succeed(firstEntered, void 0).pipe(
+              Effect.andThen(Deferred.await(allowFirst)),
+              Effect.map(() => {
+                firstReleased = true;
+                return fundingRows;
+              }),
+            );
+          }
+          if (current === ownerFiber) {
+            return firstReleased
+              ? Effect.succeed(fundingRows)
+              : Deferred.await(allowFirst).pipe(Effect.as(fundingRows));
+          }
+          if (secondReleased) return Effect.succeed(fundingRows);
+          return Deferred.succeed(secondEntered, void 0).pipe(
+            Effect.andThen(Deferred.await(allowSecond)),
+            Effect.map(() => {
+              secondReleased = true;
+              return fundingRows;
+            }),
+          );
+        }),
+      bookHistory: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
+    } as unknown as TradingMarketArchiveShape;
+
+    const gated = yield* makeTradingThesisValidationService.pipe(
+      Effect.provideService(TradingMarketArchive, gatedArchive),
+      Effect.provide(
+        Layer.mergeAll(TradingEventServiceLive, memory, NodeServices.layer, NodeCrypto.layer),
+      ),
+    );
+
+    // Pass A runs uninterrupted to its commit.
+    const fiberA = yield* Effect.forkChild(
+      gated.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL }),
+    );
+    yield* Deferred.await(firstEntered);
+
+    // Stale pass B reads the SAME rows (A is parked before its transaction)
+    // and parks in the same pre-transaction funding seam.
+    const fiberB = yield* Effect.forkChild(
+      gated.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL }),
+    );
+    yield* Deferred.await(secondEntered);
+
+    // Release A alone: it enters its transaction and commits while B parks.
+    yield* Deferred.succeed(allowFirst, void 0);
+    yield* Fiber.join(fiberA); // the uninterrupted pass must succeed
+
+    const afterA = yield* sql<{
+      readonly n: number;
+      readonly uniq: number;
+      readonly lastBar: number | null;
+    }>`
+        SELECT COUNT(*) AS n, COUNT(DISTINCT paper_trade_id) AS uniq,
+               (SELECT last_bar_time FROM trading_thesis_validations WHERE validation_id = ${validationId}) AS lastBar
+        FROM trading_thesis_paper_fills WHERE validation_id = ${validationId}
+      `;
+    assert.ok((afterA[0]?.n ?? 0) > 0, "the committed pass must actually trade");
+    assert.equal(afterA[0]?.uniq, afterA[0]?.n, "no duplicate trade identities");
+    assert.isNotNull(afterA[0]?.lastBar, "the checkpoint moved with the commit");
+
+    // NOW release stale B: its premise (the checkpoint it read) is gone, so
+    // the in-transaction guard must refuse it — not race past it.
+    yield* Deferred.succeed(allowSecond, void 0);
+    const exitB = yield* Effect.exit(Fiber.join(fiberB));
+    assert.isTrue(Exit.isFailure(exitB), "the stale pass must not succeed");
+    if (Exit.isFailure(exitB)) {
+      const squashed = Cause.squash(exitB.cause);
+      assert.ok(
+        String(squashed).includes("lost the checkpoint race"),
+        `expected the stale-checkpoint refusal, got: ${String(squashed)}`,
+      );
+    }
+
+    // The refused pass left nothing behind: same ledger, same checkpoint.
+    const afterB = yield* sql<{ readonly n: number; readonly uniq: number }>`
+        SELECT COUNT(*) AS n, COUNT(DISTINCT paper_trade_id) AS uniq
+        FROM trading_thesis_paper_fills WHERE validation_id = ${validationId}
+      `;
+    assert.equal(afterB[0]?.n, afterA[0]?.n);
+    assert.equal(afterB[0]?.uniq, afterA[0]?.n);
+
+    // Re-deliver normally: the fresh checkpoint means convergence, nothing
+    // new — exactly the state the single uninterrupted pass produced.
+    const redelivered = yield* gated.onClosedBar({
+      asset: "ETH",
+      interval: "5m",
+      now: AFTER_ALL,
+    });
+    assert.equal(redelivered.length, 0, "a fully caught-up delivery produces no events");
+    const final = yield* sql<{ readonly n: number; readonly open: number }>`
+        SELECT COUNT(*) AS n,
+               SUM(CASE WHEN exit_time IS NULL THEN 1 ELSE 0 END) AS open
+        FROM trading_thesis_paper_fills WHERE validation_id = ${validationId}
+      `;
+    assert.equal(final[0]?.n, afterA[0]?.n);
+    assert.equal(final[0]?.open ?? 0, 0, "every trade the checkpoint covers is settled");
+  }).pipe(
+    Effect.provide(
+      TradingThesisValidationServiceLive.pipe(
+        Layer.provideMerge(stubArchive),
+        Layer.provideMerge(TradingEventServiceLive),
+        Layer.provideMerge(memory),
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(NodeCrypto.layer),
+      ),
+    ),
+  ),
+);
