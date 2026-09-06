@@ -52,6 +52,11 @@ import { makeTradingExecutionGuard } from "./TradingExecutionGuard.ts";
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
+import { InterimSignerConfig } from "./InterimSignerConfig.ts";
+import {
+  TradingEmergencyCloseService,
+  type EmergencyCloseOutcome,
+} from "./TradingEmergencyCloseService.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
 import { makeTradingControlService, TradingControlService } from "./TradingControlService.ts";
@@ -1878,6 +1883,549 @@ it.live(
         }
         assert.deepEqual(cancelledCloids, ["0xinc"], "a failed discovery cancels nothing new");
       }).pipe(Effect.scoped, Effect.provide(ExhaustionLayer));
+    }),
+  { timeout: 30_000 },
+);
+
+// ===========================================================================
+// RC04 — an emergency close's result survives its caller.
+//
+// All three §17.5 call sites (protectIncrease after an entry, modifyStop, and
+// the protection watchdog) funnel through `recordEmergencyClose`: the outcome
+// notice is persisted to the mission inbox under an event-derived key, and
+// "blocked" is announced only when the block is a confirmed fact. These drive
+// the two harness entry points through the real event queue, and the watchdog
+// entry through its real 5s pass.
+// ===========================================================================
+
+/** The outcomes one emergency close can produce; fields per the RC03 union. */
+const emergencyOutcome = (overrides: {
+  flat: true;
+  blockWriteConfirmed?: boolean;
+  unconfirmedCancellations?: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+}): EmergencyCloseOutcome => {
+  const unconfirmed = overrides.unconfirmedCancellations ?? [];
+  // The real flat notice assembles its warnings from the same typed facts, so
+  // the fabricated outcome mirrors it rather than inventing separate prose.
+  const warnings = [
+    ...(overrides.blockWriteConfirmed === false
+      ? ["The mission block was attempted but could not be confirmed."]
+      : []),
+    ...(unconfirmed.length > 0
+      ? [
+          `Increasing-order cancellation was unconfirmed for ${unconfirmed.length} ` +
+            `order(s) (${unconfirmed.map((entry) => entry.cloid).join(", ")}); ` +
+            `resting entries may reopen exposure.`,
+        ]
+      : []),
+  ];
+  return {
+    flat: true,
+    remainingSize: 0,
+    attempts: 1,
+    ...(warnings.length === 0 ? {} : { failureNotice: warnings.join(" ") }),
+    blockWriteConfirmed: overrides.blockWriteConfirmed ?? true,
+    unconfirmedCancellations: unconfirmed,
+  };
+};
+const emergencyOpen = (remainingSize: number, warnings = ""): EmergencyCloseOutcome => ({
+  flat: false,
+  remainingSize,
+  attempts: 3,
+  failureNotice:
+    `Emergency close did not flatten ETH: ${remainingSize} remains after 3 attempts. ` +
+    `The mission stays blocked. Reason: test.${warnings}`,
+  blockWriteConfirmed: true,
+  unconfirmedCancellations: [],
+});
+const emergencyUnknown = (warnings = ""): EmergencyCloseOutcome => ({
+  flat: false,
+  remainingSize: null,
+  attempts: 1,
+  failureNotice:
+    `Emergency close outcome unknown for ETH: an order may have executed and the position ` +
+    `could not be confirmed after 1 attempt(s). The mission stays blocked. Reason: test.${warnings}`,
+  blockWriteConfirmed: true,
+  unconfirmedCancellations: [],
+});
+
+/**
+ * One RC04 case: the reactor over the real trading layer with the three
+ * §17.5-adjacent boundaries stubbed — protection always escalates, the
+ * emergency close answers a fixed outcome, and the harness wake/coordinator is
+ * recorded. The execution service is stubbed at the reactor boundary (the
+ * submit path has its own suites); what is under test is what happens to the
+ * emergency result afterwards.
+ */
+const runEmergencyEntryCase = (options: {
+  readonly entry: "open" | "modify_stop";
+  readonly outcome: EmergencyCloseOutcome;
+  readonly duplicateDelivery?: boolean;
+}) =>
+  Effect.gen(function* () {
+    const emergencyCalls: Array<{ readonly market: string }> = [];
+    // The stub mirrors the real service's contract: blockWriteConfirmed is
+    // true exactly when the mission-block transition write landed, so the
+    // reactor's announcement logic is exercised against the same fact it runs
+    // against in production.
+    const stubEmergency = Layer.succeed(TradingEmergencyCloseService, {
+      emergencyClose: (input: { readonly missionId: string; readonly market: string }) =>
+        Effect.gen(function* () {
+          const missions = yield* TradingMissionService;
+          if (options.outcome.blockWriteConfirmed) {
+            yield* missions.transition({
+              missionId: input.missionId,
+              to: "blocked",
+              expectedVersion: yield* missions.getMissionVersion(input.missionId),
+              blockedReason: "protection_failure",
+            });
+          }
+          emergencyCalls.push({ market: input.market });
+          return options.outcome;
+        }),
+    } as unknown as TradingEmergencyCloseService["Service"]);
+
+    const stubProtection = Layer.succeed(TradingProtectionService, {
+      reconcileProtection: () =>
+        Effect.succeed({
+          status: "escalate",
+          positionSize: 0.5,
+          protectedSize: 0,
+          replacedCloids: [],
+          escalationReason: "no stop could be placed",
+        }),
+      replaceProtection: () =>
+        Effect.succeed({
+          status: "escalate",
+          positionSize: 0.5,
+          protectedSize: 0,
+          replacedCloids: [],
+          escalationReason: "the replacement never confirmed",
+        }),
+      cancelEntriesWithProtection: () => Effect.die("not used"),
+    } as unknown as TradingProtectionService["Service"]);
+
+    const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+      requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
+      requestUserMessageRun: () => Effect.succeed(false),
+      adoptTurn: () => Effect.succeed(false),
+    } as unknown as TradingTurnCoordinator["Service"]);
+
+    const stubReconciler = Layer.succeed(HyperliquidReconciler, {
+      reconcile: () =>
+        Effect.succeed({
+          position: null,
+          openOrders: [],
+          canonicalOrders: [],
+          fills: [],
+          observedAt: 0,
+        } as never),
+    } as unknown as HyperliquidReconciler["Service"]);
+
+    const stubGateway = Layer.succeed(HyperliquidGateway, {
+      getTakerFeeRateBps: () => Effect.succeed({ feeBps: 45 }),
+      getOrderBook: () => Effect.succeed({ bestBidOffer: { bidPrice: 2_999, askPrice: 3_001 } }),
+      getAccountSnapshot: () => Effect.succeed({ positions: [] }),
+      resolveMarket: () => Effect.die("not used"),
+      getMarketSnapshot: () => Effect.die("not used"),
+      getMarketHistory: () => Effect.die("not used"),
+      getPosition: () => Effect.die("not used"),
+      getOpenOrders: () => Effect.succeed([]),
+    } as unknown as HyperliquidGateway["Service"]);
+
+    const stubExecution = Layer.succeed(HyperliquidExecutionService, {
+      submitOrder: () =>
+        Effect.succeed({
+          executionId: "exec_rc04",
+          missionId: MISSION_ID,
+          executionSequence: 1,
+          actionType: "open",
+          status: "accepted",
+        } as never),
+      submitCancel: () => Effect.void,
+      submitReduceOnlyIoc: () => Effect.succeed([] as never),
+    } as unknown as HyperliquidExecutionService["Service"]);
+
+    const stubSigner = Layer.succeed(InterimSignerConfig, {
+      resolve: Effect.succeed(Option.none()),
+    } as unknown as InterimSignerConfig["Service"]);
+
+    const CaseLayer = TradingMissionReactorLive.pipe(
+      Layer.provide(stubEmergency),
+      Layer.provide(stubProtection),
+      Layer.provide(stubCoordinator),
+      Layer.provide(stubReconciler),
+      Layer.provide(stubGateway),
+      Layer.provide(stubExecution),
+      Layer.provide(stubSigner),
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+        ),
+      ),
+      Layer.provideMerge(OrchestrationEngineLive),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(makeProviderRegistryLayer()),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-rc04-" })),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createMission;
+
+      // Executions are admitted from waiting/position_open; the reactor moves
+      // the mission to executing itself.
+      const missions = yield* TradingMissionService;
+      yield* missions.transition({
+        missionId: MISSION_ID,
+        to: "waiting",
+        expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
+      });
+
+      const engine = yield* OrchestrationEngineService;
+      const dispatchExecution = (sequence: number) =>
+        Effect.gen(function* () {
+          return yield* engine.dispatch({
+            type: "trading.execution.requested",
+            commandId: yield* commandId,
+            threadId: THREAD_ID,
+            missionId: MISSION_ID,
+            intent: {
+              missionId: MISSION_ID,
+              executionSequence: sequence,
+              actionType: options.entry,
+              market: "ETH",
+              side: options.entry === "open" ? "buy" : "sell",
+              size: 0.5,
+              orderPreference: "marketable_ioc",
+              limitPrice: 3_001,
+              stop: { stopPrice: 2_900, plannedLossAtStopUsd: 25 },
+              reduceOnly: options.entry !== "open",
+            },
+            expectedAuthorityVersion: 1,
+            activeHarnessRunId: "run_rc04",
+            createdAt: NOW,
+          });
+        });
+
+      if (options.entry === "modify_stop") {
+        // The position the moved stop protects, as the before-reconcile left it.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at
+          ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0, 1000)
+        `;
+      }
+
+      yield* dispatchExecution(1);
+      yield* settle;
+      if (options.duplicateDelivery === true) {
+        yield* dispatchExecution(1);
+        yield* settle;
+      }
+
+      const sql = yield* SqlClient.SqlClient;
+      const notices = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION_ID} AND deduplication_key LIKE 'emergency_close:%'
+      `;
+      const blockNotices = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION_ID}
+          AND deduplication_key LIKE 'emergency_block_unconfirmed:%'
+      `;
+      const refusalSummaries = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION_ID} AND deduplication_key LIKE 'execution_refused:%'
+      `;
+      const mission = yield* missions.getMission(MISSION_ID);
+      return {
+        emergencyCalls,
+        notices: notices.map((row) => row.summary),
+        blockNotices: blockNotices.map((row) => row.summary),
+        refusalSummaries: refusalSummaries.map((row) => row.summary),
+        missionStatus: mission.status,
+      };
+    }).pipe(Effect.scoped, Effect.provide(CaseLayer));
+  });
+
+it.effect("RC04 entry protectIncrease: flat outcome is recorded and blocked is announced", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOutcome({ flat: true }),
+    });
+
+    assert.equal(observed.emergencyCalls.length, 1);
+    assert.equal(observed.missionStatus, "blocked");
+    assert.equal(observed.notices.length, 1);
+    assert.ok(observed.notices[0]!.includes("Emergency close flattened ETH."), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: open outcome carries the signed remaining size", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOpen(0.2),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    assert.ok(observed.notices[0]!.includes("0.2 remains"), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: unknown outcome carries no numeric size", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyUnknown(),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    const notice = observed.notices[0]!;
+    assert.ok(notice.includes("outcome unknown"), notice);
+    assert.ok(!notice.includes("0.5"), notice);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: unconfirmed block leaves the status alone and says so", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOutcome({ flat: true, blockWriteConfirmed: false }),
+    });
+
+    // No status-set for an unconfirmed block: the mission keeps its real state
+    // and the uncertainty is published through the inbox instead.
+    assert.notEqual(observed.missionStatus, "blocked");
+    assert.equal(observed.notices.length, 1);
+    // The fresh read succeeded (the mission row exists), so the read-failure
+    // branch is not taken; the notice alone carries the failed block.
+    assert.ok(observed.notices[0]!.includes("could not be confirmed"), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: a flat close keeps its cancellation warning", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOutcome({
+        flat: true,
+        unconfirmedCancellations: [{ cloid: "0xentry", reason: "refused" }],
+      }),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    assert.ok(
+      observed.notices[0]!.includes("Increasing-order cancellation was unconfirmed"),
+      observed.notices[0],
+    );
+  }),
+);
+
+it.effect("RC04 entry modifyStop: the tool error describes the actual outcome, flat case", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOutcome({ flat: true }),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    // The refused modification's own channel: the refusal summary carries the
+    // actual emergency outcome, never the old unconditional "position was
+    // closed … and the mission is blocked".
+    const refusal = observed.refusalSummaries[0]!;
+    assert.ok(refusal.includes("§17.5 emergency close: Emergency close flattened ETH."), refusal);
+    assert.ok(!refusal.includes("the position was closed"), refusal);
+    assert.equal(observed.notices.length, 1);
+  }),
+);
+
+it.effect("RC04 entry modifyStop: an unknown emergency is not narrated as closed", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyUnknown(),
+    });
+
+    const refusal = observed.refusalSummaries[0]!;
+    assert.ok(refusal.includes("outcome unknown"), refusal);
+    assert.ok(!refusal.includes("was closed"), refusal);
+    assert.equal(observed.missionStatus, "blocked");
+  }),
+);
+
+it.effect("RC04 entry modifyStop: an open position's size survives to the tool error", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOpen(0.3),
+    });
+
+    assert.ok(observed.refusalSummaries[0]!.includes("0.3 remains"), observed.refusalSummaries[0]);
+  }),
+);
+
+it.effect("RC04 entry modifyStop: unconfirmed block does not become a blocked projection", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOutcome({ flat: true, blockWriteConfirmed: false }),
+    });
+
+    assert.notEqual(observed.missionStatus, "blocked");
+    assert.equal(observed.notices.length, 1);
+    assert.ok(observed.notices[0]!.includes("could not be confirmed"), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04: a duplicated delivery records one notice, not two", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOutcome({ flat: true }),
+      duplicateDelivery: true,
+    });
+
+    // Whatever the second delivery did upstream, the emergency notice for the
+    // triggering event is one row: the event-derived key collapses the replay.
+    assert.equal(observed.notices.length, 1);
+  }),
+);
+
+it.live(
+  "RC04 watchdog entry: escalation notice is recorded and blocked announced on flat",
+  () =>
+    // The third §17.5 caller — the protection watchdog's real 5s pass over a
+    // seeded uncovered position, with protection escalating and the emergency
+    // service stubbed to a confirmed flat outcome.
+    Effect.gen(function* () {
+      const emergencyCalls: Array<{ readonly market: string }> = [];
+      // Same contract as the entry-point stub: a confirmed block is a real
+      // transition write, not just a boolean.
+      const stubEmergency = Layer.succeed(TradingEmergencyCloseService, {
+        emergencyClose: (input: { readonly missionId: string; readonly market: string }) =>
+          Effect.gen(function* () {
+            const missions = yield* TradingMissionService;
+            yield* missions.transition({
+              missionId: input.missionId,
+              to: "blocked",
+              expectedVersion: yield* missions.getMissionVersion(input.missionId),
+              blockedReason: "protection_failure",
+            });
+            emergencyCalls.push({ market: input.market });
+            return emergencyOutcome({ flat: true });
+          }),
+      } as unknown as TradingEmergencyCloseService["Service"]);
+
+      const stubProtection = Layer.succeed(TradingProtectionService, {
+        reconcileProtection: () =>
+          Effect.succeed({
+            status: "escalate",
+            positionSize: 0.5,
+            protectedSize: 0,
+            replacedCloids: [],
+            escalationReason: "no stop could be placed",
+          }),
+        replaceProtection: () => Effect.die("not used"),
+        cancelEntriesWithProtection: () => Effect.die("not used"),
+      } as unknown as TradingProtectionService["Service"]);
+
+      const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+        requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
+        requestUserMessageRun: () => Effect.succeed(false),
+        adoptTurn: () => Effect.succeed(false),
+      } as unknown as TradingTurnCoordinator["Service"]);
+
+      const WatchdogLayer = TradingMissionReactorLive.pipe(
+        Layer.provide(stubEmergency),
+        Layer.provide(stubProtection),
+        Layer.provide(stubCoordinator),
+        Layer.provideMerge(
+          TradingLayerLive.pipe(
+            Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+          ),
+        ),
+        Layer.provideMerge(OrchestrationEngineLive),
+        Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provideMerge(OrchestrationProjectionPipelineLive),
+        Layer.provideMerge(OrchestrationEventStoreLive),
+        Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(makeProviderRegistryLayer()),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-rc04-watchdog-" }),
+        ),
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provideMerge(ThreadPlanProgress.layer),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* started;
+        yield* seedTradingAccount;
+        yield* createMission;
+
+        const missions = yield* TradingMissionService;
+        for (const to of ["waiting", "executing", "position_open"] as const) {
+          yield* missions.transition({
+            missionId: MISSION_ID,
+            to,
+            expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
+          });
+        }
+
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at
+          ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0, 1000)
+        `;
+        yield* sql`
+          INSERT INTO trading_execution_records (
+            execution_id, mission_id, execution_sequence, action_type,
+            cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+            reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+            stop_price
+          ) VALUES (
+            'exec-rc04-watchdog', ${MISSION_ID}, 1, 'open',
+            '0xrc04', 'idem-rc04', 'ETH', 'buy', 0.5, 3001, 'ioc',
+            0, ${MASTER_ADDRESS}, 'filled', '[]', 1000, 1000, 2900
+          )
+        `;
+
+        for (let attempt = 0; attempt < 800 && emergencyCalls.length === 0; attempt++) {
+          yield* Effect.sleep("10 millis");
+        }
+        assert.equal(emergencyCalls.length > 0, true, "the watchdog must reach §17.5");
+
+        const notices = yield* sql<{ readonly summary: string }>`
+          SELECT summary FROM trading_event_inbox
+          WHERE mission_id = ${MISSION_ID} AND deduplication_key LIKE 'emergency_close:%'
+        `;
+        assert.equal(notices.length, 1);
+        assert.ok(
+          notices[0]!.summary.includes("Emergency close flattened ETH."),
+          notices[0]!.summary,
+        );
+
+        const mission = yield* missions.getMission(MISSION_ID);
+        assert.equal(mission.status, "blocked");
+      }).pipe(Effect.scoped, Effect.provide(WatchdogLayer));
     }),
   { timeout: 30_000 },
 );

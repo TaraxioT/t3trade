@@ -45,6 +45,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -77,7 +78,11 @@ import { LOCAL_TRADING_ACCOUNT_ID } from "./TradingAccountBootstrap.ts";
 import { recordTakeProfitOutcome } from "./TradingProtectionLedger.ts";
 import { TradingProtectionService, withinManualEntryGrace } from "./TradingProtectionService.ts";
 import { TradingWorkingOrderService } from "./TradingWorkingOrderService.ts";
-import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
+import {
+  describeEmergencyCloseOutcome,
+  TradingEmergencyCloseService,
+  type EmergencyCloseOutcome,
+} from "./TradingEmergencyCloseService.ts";
 import { TradingControlService } from "./TradingControlService.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
@@ -318,6 +323,90 @@ const make = Effect.gen(function* () {
       createdAt: yield* nowIso,
     });
   });
+
+  /**
+   * §17.5's result, made to survive its caller (RC04). Every emergency-close
+   * call site funnels through here so the operator-visible truth is the same
+   * at all three: the outcome notice is persisted to the mission inbox under
+   * an event-derived identity — a replayed trigger collapses instead of
+   * duplicating — and "blocked" is announced only when the block is a
+   * confirmed fact: the emergency service's own transition write, or a fresh
+   * authoritative read that already says blocked. Anything else gets an
+   * explicit uncertainty notice; a status-set dispatched for an unconfirmed
+   * block is how a mission reads "safe" while nothing actually stopped it.
+   */
+  const recordEmergencyClose = Effect.fn("TradingMissionReactor.recordEmergencyClose")(
+    function* (input: {
+      readonly missionId: TradingMissionId;
+      readonly threadId: ThreadId;
+      readonly market: string;
+      /**
+       * Stable per triggering event — the execution sequence for harness
+       * intents, the watchdog tick for a protection pass — so a replayed
+       * delivery deduplicates instead of recording twice.
+       */
+      readonly triggerKey: string;
+      readonly outcome: EmergencyCloseOutcome;
+    }) {
+      const { missionId, threadId, market, triggerKey, outcome } = input;
+      const notice = describeEmergencyCloseOutcome(market, outcome);
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* inbox
+        .persist({
+          missionId,
+          category: "exchange",
+          deduplicationKey: `emergency_close:${market}:${triggerKey}`,
+          payload: {
+            market,
+            flat: outcome.flat,
+            remainingSize: outcome.remainingSize,
+            blockWriteConfirmed: outcome.blockWriteConfirmed,
+            unconfirmedCancels: outcome.unconfirmedCancellations.map((entry) => entry.cloid),
+          },
+          occurredAt,
+          summary: notice,
+        })
+        .pipe(Effect.ignore);
+
+      if (outcome.blockWriteConfirmed) {
+        yield* announceStatus({ missionId, threadId, status: "blocked" });
+        return notice;
+      }
+      // The block write did not land. Announce blocked only if the mission
+      // demonstrably is blocked anyway (the exhaustion path, an operator…);
+      // the fresh read is the authority, and its failure is not a guess.
+      const current = yield* missions.getMission(missionId).pipe(Effect.result);
+      if (Result.isSuccess(current)) {
+        if (current.success.status === "blocked") {
+          yield* announceStatus({ missionId, threadId, status: "blocked" });
+          return notice;
+        }
+        yield* Effect.logError(
+          "trading emergency close could not confirm the mission block; status left as-is",
+          { missionId, market, status: current.success.status },
+        );
+        return notice;
+      }
+      yield* Effect.logError(
+        "trading emergency close could not confirm the mission block or re-read the mission",
+        { missionId, market },
+      );
+      yield* inbox
+        .persist({
+          missionId,
+          category: "exchange",
+          deduplicationKey: `emergency_block_unconfirmed:${market}:${triggerKey}`,
+          payload: { market },
+          occurredAt,
+          summary:
+            `The mission block after the emergency close of ${market} is unconfirmed, and the ` +
+            `mission state could not be re-read; treat the mission as unsafe until its status ` +
+            `is confirmed.`,
+        })
+        .pipe(Effect.ignore);
+      return notice;
+    },
+  );
 
   /**
    * Move a mission one step along the §11.1 loop and announce where it landed.
@@ -1294,13 +1383,19 @@ const make = Effect.gen(function* () {
       missionId,
       reason: outcome.escalationReason,
     });
-    yield* emergency.emergencyClose({
+    const close = yield* emergency.emergencyClose({
       missionId,
       masterAddress,
       market: intent.market,
       reason: outcome.escalationReason ?? "protection could not be confirmed",
     });
-    yield* announceStatus({ missionId, threadId, status: "blocked" });
+    yield* recordEmergencyClose({
+      missionId,
+      threadId,
+      market: intent.market,
+      triggerKey: `seq:${intent.executionSequence}`,
+      outcome: close,
+    });
   });
 
   /**
@@ -1489,22 +1584,28 @@ const make = Effect.gen(function* () {
       missionId,
       reason: outcome.escalationReason,
     });
-    yield* emergency.emergencyClose({
+    const close = yield* emergency.emergencyClose({
       missionId,
       masterAddress,
       market: intent.market,
       reason: outcome.escalationReason ?? "stop replacement could not be confirmed",
     });
-    yield* announceStatus({ missionId, threadId, status: "blocked" });
-    // The stop move did not happen and the position was closed out from under
-    // it. Failing here is what puts that on the tool's own answer instead of
-    // leaving the harness to read "succeeded" for a mission that is now flat
-    // and blocked.
+    const notice = yield* recordEmergencyClose({
+      missionId,
+      threadId,
+      market: intent.market,
+      triggerKey: `seq:${intent.executionSequence}`,
+      outcome: close,
+    });
+    // The stop move did not happen; what §17.5 did to the position is the
+    // notice it returned. Failing here is what puts the actual outcome on the
+    // tool's own answer — the old text asserted "the position was closed …
+    // and the mission is blocked" no matter what the emergency found (RC04).
     return yield* new TradingExecutionError({
       stage: "intent_invalid",
       detail:
         `the new stop could not be confirmed (${outcome.escalationReason ?? "unconfirmed"}); ` +
-        `the position was closed under §17.5 and the mission is blocked`,
+        `§17.5 emergency close: ${notice}`,
     });
   });
 
@@ -2299,13 +2400,19 @@ const make = Effect.gen(function* () {
         missionId,
         reason: outcome.escalationReason,
       });
-      yield* emergency.emergencyClose({
+      const close = yield* emergency.emergencyClose({
         missionId,
         masterAddress,
         market,
         reason: outcome.escalationReason ?? "protection was removed and could not be re-placed",
       });
-      yield* announceStatus({ missionId, threadId, status: "blocked" });
+      yield* recordEmergencyClose({
+        missionId,
+        threadId,
+        market,
+        triggerKey: `tick:${occurredAt}`,
+        outcome: close,
+      });
     }
 
     // Either way the harness is told: its stop was pulled out from under it.

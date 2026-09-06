@@ -117,6 +117,22 @@ export type EmergencyCloseOutcome =
     };
 
 /**
+ * The one rendering of an emergency-close result every caller shares (RC04).
+ * Flat says flat; open carries the signed remaining size; unknown carries no
+ * number; and the block-write/cancellation warnings ride along even on a flat
+ * outcome — the open/unknown notices already embed them (RC03), and a flat
+ * notice prefixes its own fact to the warnings the outcome carries.
+ */
+export const describeEmergencyCloseOutcome = (
+  market: string,
+  outcome: EmergencyCloseOutcome,
+): string => {
+  if (!outcome.flat) return outcome.failureNotice;
+  const flat = `Emergency close flattened ${market}.`;
+  return outcome.failureNotice === undefined ? flat : `${flat} ${outcome.failureNotice}`;
+};
+
+/**
  * The emergency close. One entry point, deterministic, harness-free.
  */
 export class TradingEmergencyCloseService extends Context.Service<

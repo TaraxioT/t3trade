@@ -29,6 +29,7 @@ import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import {
   EMERGENCY_CLOSE_MAXIMUM_ATTEMPTS,
+  describeEmergencyCloseOutcome,
   makeTradingEmergencyCloseService,
   type EmergencyCloseInput,
 } from "./TradingEmergencyCloseService.ts";
@@ -593,5 +594,48 @@ it.effect("an unknown outcome can carry both warnings with no numeric size", () 
     assert.deepEqual(fake.exits, []);
     // The cancellation was still attempted — it does not depend on the read.
     assert.deepEqual(fake.cancels, ["0xentry"]);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// RC04 — the shared rendering callers put on their own channels.
+// ---------------------------------------------------------------------------
+
+it.effect("describeEmergencyCloseOutcome: flat and clean says exactly that", () =>
+  Effect.gen(function* () {
+    const outcome = yield* runClose(makeFake({ positionSize: 0 }));
+    if (outcome.flat !== true) throw new Error("expected flat");
+    const text = describeEmergencyCloseOutcome("ETH", outcome);
+    assert.equal(text, "Emergency close flattened ETH.");
+  }),
+);
+
+it.effect("describeEmergencyCloseOutcome: flat keeps its warnings", () =>
+  Effect.gen(function* () {
+    const outcome = yield* runClose(
+      makeFake({ positionSize: 0.5, cancelRejection: "refused" }),
+      seedRestingOrder("0xentry", "open", 0),
+    );
+    if (outcome.flat !== true) throw new Error("expected flat");
+    const text = describeEmergencyCloseOutcome("ETH", outcome);
+    assert.ok(text.startsWith("Emergency close flattened ETH."), text);
+    assert.ok(text.includes("Increasing-order cancellation was unconfirmed"), text);
+  }),
+);
+
+it.effect("describeEmergencyCloseOutcome: open carries the signed remainder", () =>
+  Effect.gen(function* () {
+    const outcome = yield* runClose(makeFake({ positionSize: 0.5, fillFraction: 0 }));
+    const text = describeEmergencyCloseOutcome("ETH", outcome);
+    assert.ok(text.includes("0.5 remains"), text);
+  }),
+);
+
+it.effect("describeEmergencyCloseOutcome: unknown carries no numeric size", () =>
+  Effect.gen(function* () {
+    const outcome = yield* runClose(makeFake({ positionSize: 0.5, snapshotReads: ["fail"] }));
+    const text = describeEmergencyCloseOutcome("ETH", outcome);
+    assert.ok(text.includes("outcome unknown"), text);
+    assert.ok(!text.includes("0.5"), text);
   }),
 );
