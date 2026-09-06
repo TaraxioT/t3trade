@@ -109,9 +109,12 @@ export function PullRequestChecksPopover({
   return (
     <Popover>
       {/* A listing row is itself a button, so the trigger renders as a span: a nested button is
-          not valid inside one. The click is stopped here so opening the checks does not also
-          select the row it sits on. */}
+          not valid inside one. `nativeButton={false}` keeps Base UI from injecting its own
+          button semantics on top of the span's role/tabIndex, so Enter and Space are handled by
+          the trigger itself rather than by a phantom native button inside the row. The click is
+          stopped here so opening the checks does not also select the row it sits on. */}
       <PopoverTrigger
+        nativeButton={false}
         render={
           <span
             role="button"
