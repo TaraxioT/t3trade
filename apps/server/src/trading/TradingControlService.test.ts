@@ -29,7 +29,10 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 import {
   makeTradingControlService,
+  TradingControlError,
+  type ControlOutcome,
   type ExchangeControlInput,
+  type ManualCloseOutcome,
   type TradingControlService,
 } from "./TradingControlService.ts";
 
@@ -52,6 +55,16 @@ interface Fake {
   manualExitRejection: string | null;
   /** Fraction of each manual reduce-only IOC that fills (1 = fully). */
   manualExitFillFraction: number;
+  /** When set, every mission reduce-only IOC is rejected with this reason. */
+  exitRejection: string | null;
+  /** Fraction of each mission reduce-only IOC that fills (1 = fully). */
+  exitFillFraction: number;
+  /**
+   * Per-call outcome plan for the canonical account snapshot, consumed
+   * front-to-back; reads past the plan succeed. Deterministic per-read
+   * control — no timing, no sleeps (06A).
+   */
+  snapshotReads: Array<"ok" | "fail">;
 }
 
 const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
@@ -63,25 +76,32 @@ const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
   protectionEscalates: false,
   manualExitRejection: null,
   manualExitFillFraction: 1,
+  exitRejection: null,
+  exitFillFraction: 1,
+  snapshotReads: [],
   ...overrides,
 });
 
 const gatewayLayer = (fake: Fake) =>
   Layer.succeed(HyperliquidGateway, {
     getAccountSnapshot: () =>
-      Effect.succeed({
-        positions:
-          Math.abs(fake.positionSize) < 1e-9
-            ? []
-            : [
-                {
-                  market: "ETH",
-                  size: fake.positionSize,
-                  entryPrice: 3_000,
-                  unrealisedPnl: 0,
-                  marginUsed: 100,
-                },
-              ],
+      Effect.suspend(() => {
+        const read = fake.snapshotReads.shift() ?? "ok";
+        if (read === "fail") return Effect.fail("account snapshot read refused");
+        return Effect.succeed({
+          positions:
+            Math.abs(fake.positionSize) < 1e-9
+              ? []
+              : [
+                  {
+                    market: "ETH",
+                    size: fake.positionSize,
+                    entryPrice: 3_000,
+                    unrealisedPnl: 0,
+                    marginUsed: 100,
+                  },
+                ],
+        });
       }),
     getOrderBook: () => Effect.succeed({ bestBidOffer: { bidPrice: 2_999, askPrice: 3_001 } }),
     getOpenOrders: () => Effect.succeed([]),
@@ -97,12 +117,16 @@ const executionLayer = (fake: Fake) =>
     submitReduceOnlyIoc: (input: { positionSize: number }) =>
       Effect.sync(() => {
         fake.exits.push(input.positionSize);
+        if (fake.exitRejection !== null) {
+          return [
+            { cloid: "0xexit", status: "error", reason: fake.exitRejection, role: "entry" },
+          ] as ReadonlyArray<TradingOrderResult>;
+        }
+        const closable = Math.abs(input.positionSize) * fake.exitFillFraction;
         const sign = fake.positionSize > 0 ? 1 : -1;
-        fake.positionSize = Number(
-          (fake.positionSize - sign * Math.abs(input.positionSize)).toFixed(10),
-        );
+        fake.positionSize = Number((fake.positionSize - sign * closable).toFixed(10));
         return [
-          { cloid: "0xexit", status: "filled", role: "entry" },
+          { cloid: "0xexit", status: "filled", filledSize: closable, role: "entry" },
         ] as ReadonlyArray<TradingOrderResult>;
       }),
     submitManualReduceOnlyIoc: (input: { positionSize: number }) =>
@@ -497,5 +521,183 @@ it.effect("manual close that fully fills reports closed", () =>
     if (outcome.outcome !== "done") return;
     assert.equal(outcome.positionSize, 0);
     assert.equal(outcome.summary, "Position closed.");
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Failed reads are failures (06A): a dead canonical account read or a dead
+// resting-order read must never be narrated as "flat" or "nothing to cancel".
+// ---------------------------------------------------------------------------
+
+it.effect("a failed initial canonical read fails the control instead of reporting flat", () =>
+  Effect.gen(function* () {
+    // reducePosition, closePosition, and the manual lane all read the
+    // canonical account before touching the exchange; the first read failing
+    // means no submission and no success outcome for each of them.
+    for (const run of [
+      (s: TradingControlService["Service"]) => s.reducePosition({ ...TARGET, percent: 50 }),
+      (s: TradingControlService["Service"]) => s.closePosition(TARGET),
+      (s: TradingControlService["Service"]) => s.closeManualPosition(MANUAL),
+    ] as Array<
+      (
+        s: TradingControlService["Service"],
+      ) => Effect.Effect<ControlOutcome | ManualCloseOutcome, TradingControlError>
+    >) {
+      const fake = makeFake({ positionSize: 10, snapshotReads: ["fail"] });
+      const error = yield* runControl(fake, (s) => Effect.flip(run(s)));
+
+      assert.equal(error._tag, "TradingControlError");
+      assert.equal(error.reason, "exchange_action_failed");
+      assert.ok(error.detail?.includes("canonical account read failed"), error.detail);
+      assert.deepEqual(fake.exits, [], "no order may be submitted after a failed initial read");
+    }
+  }),
+);
+
+it.effect("a healthy absent position still reads Already flat", () =>
+  Effect.gen(function* () {
+    // The read succeeded and the exchange holds nothing: that is a real flat,
+    // not a fabricated one, and both lanes must keep reporting it.
+    const reduce = yield* runControl(makeFake({ positionSize: 0 }), (s) =>
+      s.reducePosition({ ...TARGET, percent: 50 }),
+    );
+    assert.ok(reduce.summary.includes("Already flat"));
+
+    const manual = yield* runControl(makeFake({ positionSize: 0 }), (s) =>
+      s.closeManualPosition(MANUAL),
+    );
+    assert.equal(manual.outcome, "done");
+    if (manual.outcome === "done") assert.ok(manual.summary.includes("Already flat"));
+  }),
+);
+
+it.effect("an unconfirmable post-submit read reports an unknown close, never a size", () =>
+  Effect.gen(function* () {
+    // Reads: flat-check ok, loop initial ok, submit one IOC that only partly
+    // fills (10 -> 8), then the confirming read fails. Exactly one
+    // submission, an explicit unknown outcome, and no numeric zero.
+    const fake = makeFake({
+      positionSize: 10,
+      exitFillFraction: 0.2,
+      snapshotReads: ["ok", "ok", "fail"],
+    });
+    const outcome = yield* runControl(fake, (s) => s.closePosition(TARGET));
+
+    assert.equal(fake.exits.length, 1);
+    assert.equal(fake.exits[0], 10);
+    assert.equal(outcome.positionSize, null);
+    assert.equal(
+      outcome.summary,
+      "Close outcome unknown: an order may have executed; position could not be confirmed.",
+    );
+    assert.ok(!outcome.summary.includes("closed"));
+  }),
+);
+
+it.effect("an unconfirmable post-submit read never retries on a stale size", () =>
+  Effect.gen(function* () {
+    // Short side of the same guard: -10, one partial IOC, then the re-read
+    // fails. The loop must stop after that single submission rather than
+    // submit again sized from the pre-submit read.
+    const fake = makeFake({
+      positionSize: -10,
+      exitFillFraction: 0.2,
+      snapshotReads: ["ok", "ok", "fail"],
+    });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 100 }));
+
+    assert.deepEqual(fake.exits, [-10]);
+    assert.equal(outcome.positionSize, null);
+    assert.ok(outcome.summary.startsWith("Close outcome unknown"));
+  }),
+);
+
+it.effect(
+  "the manual lane fails with the unknown-outcome error when its confirming read fails",
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFake({
+        positionSize: 10,
+        manualExitFillFraction: 0.2,
+        snapshotReads: ["ok", "ok", "fail"],
+      });
+      const error = yield* runControl(fake, (s) => Effect.flip(s.closeManualPosition(MANUAL)));
+
+      assert.equal(error._tag, "TradingControlError");
+      assert.equal(error.reason, "exchange_action_failed");
+      assert.ok(error.detail?.startsWith("Close outcome unknown"), error.detail);
+      assert.equal(fake.exits.length, 1);
+    }),
+);
+
+it.effect("close_and_revoke does not revoke when the close outcome is unknown", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 10,
+      exitFillFraction: 0.2,
+      snapshotReads: ["ok", "ok", "fail"],
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevoke(TARGET));
+
+    assert.equal(outcome.positionSize, null);
+    assert.deepEqual(fake.transitions, [], "an unknown close must not reach the revoke");
+    assert.ok(outcome.summary.includes("Close outcome unknown"));
+    assert.ok(outcome.summary.includes("Authority was not revoked"));
+  }),
+);
+
+it.effect("close_and_revoke with a confirmed partial close keeps the authority", () =>
+  Effect.gen(function* () {
+    // Two bounded attempts at 20% fill each cannot reach flat: the truthful
+    // close result stands and the revoke is withheld.
+    const fake = makeFake({ positionSize: 10, exitFillFraction: 0.2 });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevoke(TARGET));
+
+    assert.deepEqual(fake.transitions, []);
+    assert.ok(outcome.summary.includes("partly closed"));
+    assert.ok(
+      outcome.summary.includes("Authority was not revoked because the position is still open"),
+    );
+  }),
+);
+
+it.effect("close_and_revoke with a confirmed no-fill close keeps the authority", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 10,
+      exitRejection: "Order could not immediately match against any resting orders.",
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevoke(TARGET));
+
+    assert.deepEqual(fake.transitions, []);
+    assert.ok(outcome.summary.includes("Close failed"));
+    assert.ok(
+      outcome.summary.includes("Authority was not revoked because the position is still open"),
+    );
+  }),
+);
+
+it.effect("a failed resting-order read stops cancel_entries before any cancellation", () =>
+  Effect.gen(function* () {
+    // The SELECT itself fails (the table is gone). The old empty-array
+    // fallback answered this as "No resting entry orders to cancel."
+    const seedBrokenOrders = Effect.gen(function* () {
+      yield* seedOrder("0xentry", "open", 0, 2_950);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP TABLE trading_orders`;
+    }).pipe(Effect.orDie);
+
+    const fake = makeFake();
+    const error = yield* runControl(
+      fake,
+      (s) => Effect.flip(s.cancelEntries(TARGET)),
+      seedBrokenOrders,
+    );
+
+    assert.equal(error._tag, "TradingControlError");
+    assert.equal(error.reason, "exchange_action_failed");
+    assert.ok(error.detail?.includes("resting-order read failed"), error.detail);
+    assert.deepEqual(fake.protectedCancels, []);
+    assert.deepEqual(fake.cancels, []);
   }),
 );

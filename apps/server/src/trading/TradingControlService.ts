@@ -31,6 +31,7 @@
  * @module TradingControlService
  */
 import { Context, Effect, Schema } from "effect";
+import * as Result from "effect/Result";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -74,12 +75,24 @@ export interface ExchangeControlInput extends ControlInput {
   readonly market: string;
 }
 
+/**
+ * What a submitted-but-unconfirmed close must say: an IOC may have executed,
+ * so the only truthful report is that the outcome is unknown — never a
+ * numeric size, "Already flat", or "Position closed" (prompt 06A).
+ */
+export const CLOSE_OUTCOME_UNKNOWN =
+  "Close outcome unknown: an order may have executed; position could not be confirmed.";
+
 /** What a control did. */
 export interface ControlOutcome {
   /** The mission status after the control, when it changed one. */
   readonly status?: string | undefined;
-  /** Signed canonical position size after the control. */
-  readonly positionSize: number;
+  /**
+   * Signed canonical position size after the control. `null` when a submitted
+   * order's effect could not be confirmed — an unknown outcome is never
+   * reported as a numeric (and especially never as zero) size.
+   */
+  readonly positionSize: number | null;
   /** Cloids the control cancelled. */
   readonly cancelledCloids: ReadonlyArray<string>;
   /** Human-readable summary for the workspace. */
@@ -162,6 +175,20 @@ export type ManualCloseOutcome =
 const REDUCTION_ATTEMPTS = 2;
 
 /**
+ * What the bounded reduce loop learned: either a confirmed canonical end
+ * state, or — when a submitted order's effect could not be re-read — nothing
+ * that may be narrated as a size (06A).
+ */
+type ReductionResult =
+  | {
+      readonly kind: "confirmed";
+      readonly positionSize: number;
+      readonly closedSize: number;
+      readonly failureReason: string | null;
+    }
+  | { readonly kind: "unknown" };
+
+/**
  * The truthful three-way close report (R2-2): what actually happened on the
  * exchange, not what was attempted. A close that filled nothing is a FAILURE
  * and says so, carrying the exchange's own rejection verbatim — the old
@@ -220,12 +247,28 @@ export const makeTradingControlService = Effect.gen(function* () {
         Effect.catch(() => Effect.void),
       );
 
-  /** Read the canonical position and the price a reduce-only exit would cross. */
-  const readPosition = (input: ExchangeControlInput) =>
+  /**
+   * Read the canonical position and the price a reduce-only exit would cross.
+   *
+   * A failed account read is a typed control failure, never a flat position:
+   * swallowing it here is how a dead exchange read used to become "Already
+   * flat." (06A). The book read keeps its best-effort fallback — a missing
+   * crossing price only degrades the reference price, it does not misreport
+   * exposure.
+   */
+  const readPosition = (input: ExchangeControlInput, operation: string) =>
     Effect.gen(function* () {
-      const snapshot = yield* gateway
-        .getAccountSnapshot(input.masterAddress as `0x${string}`)
-        .pipe(Effect.orElseSucceed(() => ({ positions: [] })));
+      const snapshot = yield* gateway.getAccountSnapshot(input.masterAddress as `0x${string}`).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "exchange_action_failed",
+              detail: `${operation}: canonical account read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
       const position = snapshot.positions.find((p) => p.market === input.market);
       if (position === undefined || position.size === 0) return { size: 0, crossingPrice: 0 };
 
@@ -279,9 +322,14 @@ export const makeTradingControlService = Effect.gen(function* () {
     /** Runs after each submit; the mission lane reconciles, the manual one waits on the reconciler's own cadence. */
     readonly betweenAttempts: Effect.Effect<void>;
     readonly logContext: string;
-  }) =>
+    /** Names the operation in read-failure details, e.g. "close position". */
+    readonly readOperation: string;
+  }): Effect.Effect<ReductionResult, TradingControlError> =>
     Effect.gen(function* () {
-      let position = yield* readPosition(input.exchangeInput);
+      let position = yield* readPosition(
+        input.exchangeInput,
+        `${input.readOperation} (initial read)`,
+      );
       const startingSize = Math.abs(position.size);
       let remainingToClose = Math.min(input.targetSize, startingSize);
       // The exchange's own words for the attempts that did not fill, so the
@@ -313,13 +361,23 @@ export const makeTradingControlService = Effect.gen(function* () {
 
         yield* input.betweenAttempts;
 
+        // A submitted order's effect is decided by the re-read. When that read
+        // fails the outcome is unknown: stop (never retry on a stale size) and
+        // say so — no numeric size, no "closed", no "flat" (06A).
+        const reread = yield* readPosition(
+          input.exchangeInput,
+          `${input.readOperation} (post-submit read)`,
+        ).pipe(Effect.result);
+        if (Result.isFailure(reread)) return { kind: "unknown" } as const;
+
         const before = Math.abs(position.size);
-        position = yield* readPosition(input.exchangeInput);
+        position = reread.success;
         const closed = before - Math.abs(position.size);
         remainingToClose = Math.max(0, remainingToClose - closed);
       }
 
       return {
+        kind: "confirmed" as const,
         positionSize: position.size,
         closedSize: Math.max(0, startingSize - Math.abs(position.size)),
         /** The most recent rejection, verbatim; null when nothing was refused. */
@@ -352,6 +410,7 @@ export const makeTradingControlService = Effect.gen(function* () {
           ),
       betweenAttempts: reconcileNow(input),
       logContext: "control",
+      readOperation: "control reduce",
     });
 
   const pause: TradingControlService["Service"]["pause"] = (input) =>
@@ -396,13 +455,22 @@ export const makeTradingControlService = Effect.gen(function* () {
   const cancelEntries: TradingControlService["Service"]["cancelEntries"] = (input) =>
     Effect.gen(function* () {
       // The shared read in `RestingIncreasingOrders` — the same rows §16.4
-      // exhaustion and the §17.5 emergency close cancel.
+      // exhaustion and the §17.5 emergency close cancel. A failed read stops
+      // here: it must never be answered as "no entries" (06A).
       const increasing = yield* readRestingIncreasingOrders(input.missionId).pipe(
-        Effect.orElseSucceed(() => []),
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "exchange_action_failed",
+              detail: `cancel entries: resting-order read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       if (increasing.length === 0) {
-        const position = yield* readPosition(input);
+        const position = yield* readPosition(input, "cancel entries (position read)");
         return {
           positionSize: position.size,
           cancelledCloids: [],
@@ -423,7 +491,7 @@ export const makeTradingControlService = Effect.gen(function* () {
         yield* cancelOrdersBestEffort({ orders: increasing, logContext: "cancel entries" }).pipe(
           Effect.provideService(HyperliquidExecutionService, execution),
         );
-        const position = yield* readPosition(input);
+        const position = yield* readPosition(input, "cancel entries (position read)");
         return {
           positionSize: position.size,
           cancelledCloids: cloids,
@@ -462,7 +530,7 @@ export const makeTradingControlService = Effect.gen(function* () {
 
   const reducePosition: TradingControlService["Service"]["reducePosition"] = (input) =>
     Effect.gen(function* () {
-      const position = yield* readPosition(input);
+      const position = yield* readPosition(input, "reduce position (initial read)");
       if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) {
         return {
           positionSize: 0,
@@ -473,6 +541,13 @@ export const makeTradingControlService = Effect.gen(function* () {
 
       const targetSize = Math.abs(position.size) * (input.percent / 100);
       const reduced = yield* reduceBy({ ...input, targetSize });
+      if (reduced.kind === "unknown") {
+        return {
+          positionSize: null,
+          cancelledCloids: [],
+          summary: CLOSE_OUTCOME_UNKNOWN,
+        } satisfies ControlOutcome;
+      }
 
       // Protection is sized to the position, so a smaller position needs a
       // smaller stop — and the old one is oversized until it is replaced.
@@ -491,7 +566,7 @@ export const makeTradingControlService = Effect.gen(function* () {
 
   const closePosition: TradingControlService["Service"]["closePosition"] = (input) =>
     Effect.gen(function* () {
-      const position = yield* readPosition(input);
+      const position = yield* readPosition(input, "close position (initial read)");
       if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) {
         return {
           positionSize: 0,
@@ -501,6 +576,13 @@ export const makeTradingControlService = Effect.gen(function* () {
       }
 
       const closed = yield* reduceBy({ ...input, targetSize: Math.abs(position.size) });
+      if (closed.kind === "unknown") {
+        return {
+          positionSize: null,
+          cancelledCloids: [],
+          summary: CLOSE_OUTCOME_UNKNOWN,
+        } satisfies ControlOutcome;
+      }
       return {
         positionSize: closed.positionSize,
         cancelledCloids: [],
@@ -518,13 +600,27 @@ export const makeTradingControlService = Effect.gen(function* () {
 
   const closeAndRevoke: TradingControlService["Service"]["closeAndRevoke"] = (input) =>
     Effect.gen(function* () {
+      // A failed or unknown close never reaches the revoke: revoking under an
+      // unconfirmed position would strand exposure nobody is authorized to
+      // manage. Only a confirmed flat (within epsilon) ends the authority;
+      // anything else keeps it and says so (06A).
       const closed = yield* closePosition(input);
-      const status = yield* transitionTo(input.missionId, "revoked");
+      if (
+        closed.positionSize !== null &&
+        Math.abs(closed.positionSize) <= PROTECTION_SIZE_EPSILON
+      ) {
+        const status = yield* transitionTo(input.missionId, "revoked");
+        return {
+          status,
+          positionSize: closed.positionSize,
+          cancelledCloids: closed.cancelledCloids,
+          summary: `${closed.summary} Authority revoked.`,
+        } satisfies ControlOutcome;
+      }
       return {
-        status,
         positionSize: closed.positionSize,
         cancelledCloids: closed.cancelledCloids,
-        summary: `${closed.summary} Authority revoked.`,
+        summary: `${closed.summary} Authority was not revoked because the position is still open.`,
       } satisfies ControlOutcome;
     });
 
@@ -553,7 +649,7 @@ export const makeTradingControlService = Effect.gen(function* () {
         masterAddress: input.masterAddress,
         market: input.market,
       };
-      let position = yield* readPosition(exchangeInput);
+      let position = yield* readPosition(exchangeInput, "manual close (initial read)");
       if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) {
         return {
           outcome: "done",
@@ -588,7 +684,19 @@ export const makeTradingControlService = Effect.gen(function* () {
         // picks the fills up.
         betweenAttempts: Effect.void,
         logContext: "manual close",
+        readOperation: "manual close",
       });
+      if (reduced.kind === "unknown") {
+        // The wire contract's done-variant carries a numeric size; an unknown
+        // outcome has none, so it travels the existing typed error channel
+        // rather than fabricating a number (06A).
+        return yield* Effect.fail(
+          new TradingControlError({
+            reason: "exchange_action_failed",
+            detail: CLOSE_OUTCOME_UNKNOWN,
+          }),
+        );
+      }
       return {
         outcome: "done",
         positionSize: reduced.positionSize,
