@@ -419,7 +419,9 @@ layer("075_TradingManualExecution", (it) => {
         "idx_trading_risk_reservations_mission",
         "idx_trading_risk_reservations_execution",
         "idx_trading_risk_reservations_account",
-        "idx_trading_missions_one_active_per_market",
+        // Since migration 079 the held-set table owns D4 exclusivity; the
+        // old one-column missions index is gone at head.
+        "idx_trading_mission_markets_mission",
       ]) {
         assert.isTrue(
           indexes.some((row) => row.name === index),
@@ -428,6 +430,14 @@ layer("075_TradingManualExecution", (it) => {
       }
       assert.isFalse(
         indexes.some((row) => row.name === "idx_trading_missions_one_active_per_user"),
+      );
+      assert.isFalse(
+        indexes.some((row) => row.name === "idx_trading_missions_one_active_per_market"),
+        "the pre-079 exclusivity index must be dropped at head",
+      );
+      assert.isTrue(
+        indexes.some((row) => row.name === "idx_trading_mission_markets_held"),
+        "the UNIQUE held-set index is the current exclusivity constraint",
       );
 
       // Re-run the migration body directly (the runner will not repeat it, but
