@@ -936,3 +936,50 @@ it.effect("a confirmed flat from a reduce reports 100% observed (06D)", () =>
     );
   }),
 );
+
+// ---------------------------------------------------------------------------
+// 09A companion: an exhausted, blocked mission keeps its provider-free
+// risk-reducing controls. §14.7 availability does not depend on the harness —
+// or on the mission's blocked state.
+// ---------------------------------------------------------------------------
+
+it.effect("risk-reducing controls stay usable on a blocked, exhausted mission (09A)", () =>
+  Effect.gen(function* () {
+    const seedBlockedMission = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_accounts (
+          account_id, user_id, environment,
+          master_wallet_json, execution_wallet_json, status, created_at, updated_at
+        ) VALUES (
+          'acct_1', 'local', 'testnet',
+          '{"privyWalletId":"pw_1","address":"0xmaster","ownership":"user"}',
+          '{"privyWalletId":"pw_1","address":"0xmaster","hyperliquidAgentName":"t3","ownership":"service"}',
+          'active', 0, 0
+        )
+      `;
+      yield* sql`
+        INSERT INTO trading_missions (
+          mission_id, user_id, trading_account_id, instruction, market,
+          harness_json, status, control_json, authority_version, version,
+          created_at, updated_at
+        ) VALUES (
+          ${MISSION}, 'local', 'acct_1', 'trade', 'ETH', '{}', 'blocked',
+          '{}', 1, 1, 1, 1
+        )
+      `;
+    }).pipe(Effect.orDie);
+
+    // A partial reduction still succeeds — the §14.7 buttons are the way out
+    // of a blocked mission, so blocking must not take them with it.
+    const fake = makeFake({ positionSize: 0.5, exitFillFraction: 0.5 });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.reducePosition({ ...TARGET, percent: 50 }),
+      seedBlockedMission,
+    );
+
+    assert.equal(fake.exits.length > 0, true);
+    assert.ok(outcome.summary.includes("decreased by"), outcome.summary);
+  }),
+);

@@ -48,12 +48,15 @@ import {
   type ReconciliationTrigger,
 } from "./HyperliquidReconciler.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
+import { makeTradingExecutionGuard } from "./TradingExecutionGuard.ts";
+import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
 import { TradingLeaseTarget, TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
+import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
 const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
@@ -1363,6 +1366,274 @@ it.live(
         Effect.scoped,
         Effect.provide(StubbedLayer),
       );
+    }),
+  { timeout: 30_000 },
+);
+
+// ---------------------------------------------------------------------------
+// Loss exhaustion (09A): when the cumulative-loss ceiling is gone, the
+// position-increasing order is cancelled, the reduce-only stop is NOT, the
+// protected exposure is not silently zeroed, the mission blocks, further
+// increases are refused, and provider-free risk-reducing controls stay usable.
+// Test-only child: no production behavior is changed here.
+// ---------------------------------------------------------------------------
+
+it.live(
+  "loss exhaustion preserves protected exposure, cancels only increases, and refuses more",
+  () =>
+    Effect.gen(function* () {
+      const submittedActions: Array<string> = [];
+      const cancelledCloids: Array<string> = [];
+      const stubExecution = Layer.succeed(HyperliquidExecutionService, {
+        submitOrder: (input: { intent: { actionType: string } }) =>
+          Effect.sync(() => {
+            submittedActions.push(input.intent.actionType);
+            return { status: "accepted" };
+          }),
+        submitReduceOnlyIoc: () => Effect.succeed([]),
+        submitCancel: (input: { cloid: string }) =>
+          Effect.sync(() => {
+            cancelledCloids.push(input.cloid);
+          }),
+        submitProtectiveStop: () => Effect.die("not used"),
+      } as unknown as HyperliquidExecutionService["Service"]);
+
+      // The reconciler is stubbed so the fixture accounting (the seeded loss
+      // and protected exposure) survives to the budget read instead of being
+      // converged away against the live exchange.
+      const stubReconciler = Layer.succeed(HyperliquidReconciler, {
+        reconcile: () =>
+          Effect.succeed({
+            position: null,
+            openOrders: [],
+            canonicalOrders: [],
+            fills: [],
+            observedAt: 1000,
+          }),
+      } as unknown as HyperliquidReconciler["Service"]);
+
+      const ExhaustionLayer = TradingMissionReactorLive.pipe(
+        Layer.provide(stubExecution),
+        Layer.provide(stubReconciler),
+        Layer.provideMerge(
+          TradingLayerLive.pipe(
+            Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+          ),
+        ),
+        Layer.provideMerge(OrchestrationEngineLive),
+        Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provideMerge(OrchestrationProjectionPipelineLive),
+        Layer.provideMerge(OrchestrationEventStoreLive),
+        Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(makeProviderRegistryLayer()),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-exhaust-" }),
+        ),
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provideMerge(ThreadPlanProgress.layer),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* started;
+        yield* seedTradingAccount;
+        yield* createMission;
+
+        const missions = yield* TradingMissionService;
+        for (const to of ["waiting", "executing", "position_open"] as const) {
+          const expectedVersion = yield* missions.getMissionVersion(MISSION_ID);
+          yield* missions.transition({ missionId: MISSION_ID, to, expectedVersion });
+        }
+
+        const sql = yield* SqlClient.SqlClient;
+        // Protected nonzero exposure: half an ETH, fully protected.
+        yield* sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at
+          ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0.5, 1000)
+        `;
+        // Deterministic fixture accounting: a realised loss far past the
+        // mission's cumulative-loss ceiling exhausts the §16.2 budget.
+        yield* sql`
+          INSERT INTO trading_fills (
+            fill_id, mission_id, execution_id, cloid, order_id, market, side,
+            filled_size, avg_fill_price, fee_usd, fee_token, traded_at, observed_at,
+            closed_pnl
+          ) VALUES (
+            'fill-loss', ${MISSION_ID}, 'exec-loss', '0xcloid-loss', 1, 'ETH', 'sell',
+            0.5, 2500, 0, 'USDC', 1000, 1000, -10000
+          )
+        `;
+        // One resting increase and one reduce-only stop.
+        const seedOrder = (cloid: string, actionType: string, reduceOnly: number) =>
+          sql`
+            INSERT INTO trading_orders (
+              mission_id, cloid, order_id, market, side, limit_price,
+              remaining_size, reduce_only, observed_at
+            ) VALUES (${MISSION_ID}, ${cloid}, 1, 'ETH', 'buy', 3000, 0.5, ${reduceOnly}, 1000)
+          `.pipe(
+            Effect.andThen(sql`
+              INSERT INTO trading_execution_records (
+                execution_id, mission_id, execution_sequence, action_type,
+                cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+                reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+                stop_price
+              ) VALUES (
+                ${`exec-${cloid}`}, ${MISSION_ID}, ${cloid === "0xinc" ? 2 : 3}, ${actionType}, ${cloid},
+                ${`idem-${cloid}`}, 'ETH', 'buy', 0.5, 3000, 'gtc', ${reduceOnly}, ${MASTER_ADDRESS},
+                'accepted', '[]', 1000, 1000, 2950
+              )
+            `),
+            Effect.orDie,
+          );
+        yield* seedOrder("0xinc", "open", 0);
+        yield* seedOrder("0xstop", "open", 1);
+
+        // An exhausted budget refuses a position-increasing execution before
+        // any submit — nothing reaches the exchange.
+        const engine = yield* OrchestrationEngineService;
+        yield* engine
+          .dispatch({
+            type: "trading.execution.requested",
+            commandId: yield* commandId,
+            threadId: THREAD_ID,
+            missionId: MISSION_ID,
+            intent: {
+              missionId: MISSION_ID,
+              executionSequence: 4,
+              actionType: "open",
+              market: "ETH",
+              side: "buy",
+              size: 0.5,
+              orderPreference: "marketable_ioc",
+              limitPrice: 3_001,
+              reduceOnly: false,
+            },
+            expectedAuthorityVersion: 1,
+            activeHarnessRunId: "run_1",
+            createdAt: NOW,
+          })
+          .pipe(Effect.ignore);
+        yield* settle;
+
+        assert.deepEqual(
+          submittedActions,
+          [],
+          "the exhausted budget refuses the increase pre-submit",
+        );
+
+        // The §16.4 exhaustion cancellation: the REAL guard service (the one
+        // the reactor's post-budget seam calls at L1824), built directly over
+        // this test's mission rows and the observed exchange seam.
+        const missionsInstance = yield* TradingMissionService;
+        const stubExecutionValue = {
+          submitOrder: (input: { intent: { actionType: string } }) =>
+            Effect.sync(() => {
+              submittedActions.push(input.intent.actionType);
+              return { status: "accepted" };
+            }),
+          submitReduceOnlyIoc: () => Effect.succeed([]),
+          submitCancel: (input: { cloid: string }) =>
+            Effect.sync(() => {
+              cancelledCloids.push(input.cloid);
+            }),
+          submitProtectiveStop: () => Effect.die("not used"),
+        } as unknown as HyperliquidExecutionService["Service"];
+        const stubReconcilerValue = {
+          reconcile: () =>
+            Effect.succeed({
+              position: null,
+              openOrders: [],
+              canonicalOrders: [],
+              fills: [],
+              observedAt: 1000,
+            }),
+        } as unknown as HyperliquidReconciler["Service"];
+        const observedGuard = yield* makeTradingExecutionGuard.pipe(
+          Effect.provideService(TradingMissionService, missionsInstance),
+          Effect.provideService(HyperliquidExecutionService, stubExecutionValue),
+          Effect.provideService(HyperliquidReconciler, stubReconcilerValue),
+        );
+        const blockExhausted = observedGuard
+          .blockForExhaustion(
+            MISSION_ID,
+            yield* missionsInstance.getMissionVersion(MISSION_ID),
+            MASTER_ADDRESS,
+          )
+          .pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(HyperliquidGateway, {} as HyperliquidGateway["Service"]),
+            Effect.provideService(HyperliquidInfoClient, {} as HyperliquidInfoClient["Service"]),
+          );
+        yield* blockExhausted;
+
+        assert.deepEqual(
+          cancelledCloids,
+          ["0xinc"],
+          "the resting increase is cancelled and the reduce-only stop is not",
+        );
+        assert.equal((yield* missions.getMission(MISSION_ID)).status, "blocked");
+
+        // The exposure is not silently zeroed and protection stays recorded.
+        const snapshot = yield* sql<{ readonly size: number; readonly protected_size: number }>`
+          SELECT size, protected_size FROM trading_position_snapshots
+          WHERE mission_id = ${MISSION_ID} ORDER BY observed_at DESC LIMIT 1
+        `;
+        assert.equal(snapshot[0]?.size, 0.5);
+        assert.equal(snapshot[0]?.protected_size, 0.5);
+
+        // A further increase is still refused while blocked and exhausted.
+        yield* engine
+          .dispatch({
+            type: "trading.execution.requested",
+            commandId: yield* commandId,
+            threadId: THREAD_ID,
+            missionId: MISSION_ID,
+            intent: {
+              missionId: MISSION_ID,
+              executionSequence: 5,
+              actionType: "open",
+              market: "ETH",
+              side: "buy",
+              size: 0.5,
+              orderPreference: "marketable_ioc",
+              limitPrice: 3_001,
+              reduceOnly: false,
+            },
+            expectedAuthorityVersion: 1,
+            activeHarnessRunId: "run_1",
+            createdAt: NOW,
+          })
+          .pipe(Effect.ignore);
+        yield* settle;
+        assert.deepEqual(submittedActions, [], "a blocked mission still refuses increases");
+
+        // Current behavior, asserted rather than changed: a failed discovery
+        // read surfaces as an infrastructure error — never recorded as a
+        // verified cancellation.
+        yield* sql`DROP TABLE trading_orders`;
+        const failedRead = yield* Effect.flip(
+          observedGuard
+            .blockForExhaustion(
+              MISSION_ID,
+              yield* missionsInstance.getMissionVersion(MISSION_ID),
+              MASTER_ADDRESS,
+            )
+            .pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.provideService(HyperliquidGateway, {} as HyperliquidGateway["Service"]),
+              Effect.provideService(HyperliquidInfoClient, {} as HyperliquidInfoClient["Service"]),
+            ),
+        );
+        assert.equal(failedRead._tag, "TradingExhaustionError");
+        if (failedRead._tag === "TradingExhaustionError") {
+          assert.equal(failedRead.reason, "infrastructure_error");
+        }
+        assert.deepEqual(cancelledCloids, ["0xinc"], "a failed discovery cancels nothing new");
+      }).pipe(Effect.scoped, Effect.provide(ExhaustionLayer));
     }),
   { timeout: 30_000 },
 );
