@@ -264,7 +264,10 @@ function TradeHomeForEnvironment({
         {missionsError === null ? null : (
           <p className="text-sm text-destructive">{missionsError}</p>
         )}
-        <div className="grid gap-4 lg:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)_minmax(16rem,20rem)]">
+        {/* The grid owns the shrink discipline: every track child gets
+            min-w-0 so long unbreakable content inside a panel widens its own
+            row instead of pushing columns past the viewport (10E). */}
+        <div className="grid min-w-0 gap-4 [&>*]:min-w-0 lg:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)_minmax(16rem,20rem)]">
           <WatchlistPanel
             environmentId={environmentId}
             selectedAsset={selectedAsset}
@@ -308,7 +311,7 @@ function TradeHomeForEnvironment({
               found out. Stacked rather than tabbed, because they answer
               different questions and a tab would hide one of them behind the
               other on a page whose whole point is one screen. */}
-          <div className="flex min-h-0 flex-col gap-4">
+          <div className="flex min-h-0 min-w-0 flex-col gap-4">
             <AlertFeedPanel environmentId={environmentId} />
             <IdeasPanel environmentId={environmentId} onSelectMarket={setPickedAsset} />
           </div>

@@ -119,7 +119,10 @@ export function IdeasPanel({
   };
 
   return (
-    <section aria-label="Ideas in forward validation" className="flex min-h-0 flex-col gap-2">
+    <section
+      aria-label="Ideas in forward validation"
+      className="flex min-h-0 min-w-0 flex-col gap-2"
+    >
       <header className="flex items-center gap-1.5 px-1">
         <FlaskConicalIcon className="size-3.5 text-muted-foreground" />
         {/* Forward paper validation, not generic testing: these are theses
