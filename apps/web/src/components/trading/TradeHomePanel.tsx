@@ -20,13 +20,12 @@
 import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 import { TrendingUpIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { isElectron } from "../../env";
 import { useTradingAccountView } from "../../lib/tradingAccountState";
 import { useTradingMarketChart } from "../../lib/tradingMarketChartState";
 import { useTradingMissions } from "../../lib/tradingMissionsState";
-import { useProjects } from "../../state/entities";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
@@ -38,6 +37,8 @@ import { MissionPriceChart } from "./MissionPriceChart";
 import { ThesisChartBadgeLine } from "./ThesisChartBadgeLine";
 import { OrderTicket } from "./OrderTicket";
 import { describeArchiveHealth, describeSignerState } from "./tradeHomePresentation";
+import { TradingEnvironmentSelector } from "./TradingEnvironmentSelector";
+import { useTradingEnvironmentRouting } from "./tradingEnvironmentSelection";
 import { useTradingUniverseAssets } from "./UniverseAssetSearch";
 import { WatchlistPanel } from "./WatchlistPanel";
 import { formatPrice } from "./tradingPresentation";
@@ -180,11 +181,10 @@ function TradeHomeChart({
 }
 
 export function TradeHomePanel() {
-  const projects = useProjects();
-  const environmentId = useMemo<EnvironmentId | null>(
-    () => projects[0]?.environmentId ?? null,
-    [projects],
-  );
+  // 07A: the trading destination is an explicit, session-scoped environment
+  // selection — never `projects[0]`, which answers a question nobody asked
+  // with a project sort order that can change under the user.
+  const { environments, gate, select } = useTradingEnvironmentRouting();
 
   return (
     <SidebarInset className="isolate h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -195,19 +195,49 @@ export function TradeHomePanel() {
             Trade
           </span>
         </WorkspacePageHeader>
-        {environmentId === null ? (
-          <p className="px-5 py-4 text-sm text-muted-foreground">
-            Connect an environment to trade.
-          </p>
+        {gate.state === "selected" ? (
+          // Keyed by environment id: switching environments resets local
+          // market/draft state and keeps late responses bound to the tree
+          // that issued them.
+          <TradeHomeForEnvironment
+            key={gate.environmentId}
+            environmentId={gate.environmentId}
+            selector={
+              <TradingEnvironmentSelector
+                environments={environments}
+                environmentId={gate.environmentId}
+                onSelect={select}
+              />
+            }
+          />
         ) : (
-          <TradeHomeForEnvironment environmentId={environmentId} />
+          <div className="flex flex-col gap-2 px-5 py-4">
+            <TradingEnvironmentSelector
+              environments={environments}
+              environmentId={gate.state === "unavailable" ? gate.environmentId : null}
+              onSelect={select}
+            />
+            <p className="text-sm text-muted-foreground" data-testid="trade-environment-gate">
+              {gate.state === "no-environments"
+                ? "Connect an environment to trade."
+                : gate.state === "choose"
+                  ? "Choose an environment to trade."
+                  : "The selected trading environment is no longer available; choose an environment to continue."}
+            </p>
+          </div>
         )}
       </div>
     </SidebarInset>
   );
 }
 
-function TradeHomeForEnvironment({ environmentId }: { environmentId: EnvironmentId }) {
+function TradeHomeForEnvironment({
+  environmentId,
+  selector,
+}: {
+  environmentId: EnvironmentId;
+  selector: ReactNode;
+}) {
   const { missions, error: missionsError } = useTradingMissions(environmentId);
   const account = useTradingAccountView(environmentId);
   const accounts = account.data?.accounts ?? [];
@@ -225,6 +255,7 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
   return (
     <ScrollArea className="min-h-0 flex-1">
       <div className="flex flex-col gap-3 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 items-center">{selector}</div>
         <ArchiveHealthLine message={archiveMessage} />
         <SignerStateLine message={signerMessage} />
         {account.error === null ? null : (

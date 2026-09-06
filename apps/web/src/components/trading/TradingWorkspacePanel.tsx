@@ -8,7 +8,6 @@ import { useMemo, useState } from "react";
 import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
 import { useTradingAccountView } from "../../lib/tradingAccountState";
 import { useTradingMissions } from "../../lib/tradingMissionsState";
-import { useProjects } from "../../state/entities";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
@@ -16,6 +15,8 @@ import { Switch } from "../ui/switch";
 import { MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import { describeSignerState } from "./tradeHomePresentation";
+import { TradingEnvironmentSelector } from "./TradingEnvironmentSelector";
+import { useTradingEnvironmentRouting } from "./tradingEnvironmentSelection";
 import { useMissionControls, type MissionControls } from "./useMissionControls";
 import {
   deriveMissionHistoryRow,
@@ -454,34 +455,58 @@ function SignerStateSection({ environmentId }: { environmentId: EnvironmentId })
 }
 
 export function TradingWorkspacePanel() {
-  const projects = useProjects();
-  const environmentId = useMemo<EnvironmentId | null>(
-    () => projects[0]?.environmentId ?? null,
-    [projects],
-  );
+  // 07A: same explicit, session-scoped selection the trade home uses — the
+  // two global trading surfaces trade on the same chosen environment, and
+  // neither derives it from project order anymore.
+  const { environments, gate, select } = useTradingEnvironmentRouting();
 
-  if (environmentId === null) {
-    return (
-      <SettingsPageContainer>
-        <TradeHomeDefaultSection />
-        <SettingsSection title="Trading" icon={<TrendingUpIcon className="size-4" />}>
-          <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
-            Connect an environment to see its trading missions.
-          </p>
-        </SettingsSection>
-      </SettingsPageContainer>
+  const selector =
+    gate.state === "selected" ? (
+      <TradingEnvironmentSelector
+        environments={environments}
+        environmentId={gate.environmentId}
+        onSelect={select}
+      />
+    ) : (
+      <TradingEnvironmentSelector
+        environments={environments}
+        environmentId={gate.state === "unavailable" ? gate.environmentId : null}
+        onSelect={select}
+      />
     );
-  }
 
-  return <TradingWorkspaceForEnvironment environmentId={environmentId} />;
+  return (
+    <SettingsPageContainer>
+      <TradeHomeDefaultSection />
+      <SettingsSection title="Trading environment" icon={<TrendingUpIcon className="size-4" />}>
+        <div className="flex min-w-0 items-center px-3 py-1.5 sm:px-4">{selector}</div>
+        {gate.state === "selected" ? null : (
+          <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
+            {gate.state === "no-environments"
+              ? "Connect an environment to see its trading missions."
+              : gate.state === "choose"
+                ? "Choose an environment to see its trading missions."
+                : "The selected trading environment is no longer available; choose an environment to continue."}
+          </p>
+        )}
+      </SettingsSection>
+      {gate.state === "selected" ? (
+        // Keyed by environment id so mission-panel state resets on switch and
+        // late responses stay bound to the environment that issued them.
+        <TradingWorkspaceForEnvironment
+          key={gate.environmentId}
+          environmentId={gate.environmentId}
+        />
+      ) : null}
+    </SettingsPageContainer>
+  );
 }
 
 function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: EnvironmentId }) {
   const { missions, error, isLoading, refresh } = useTradingMissions(environmentId);
 
   return (
-    <SettingsPageContainer>
-      <TradeHomeDefaultSection />
+    <>
       <SignerStateSection environmentId={environmentId} />
       <SettingsSection
         title="Trading"
@@ -514,7 +539,7 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
       ))}
 
       <MissionHistorySection missions={missions} environmentId={environmentId} />
-    </SettingsPageContainer>
+    </>
   );
 }
 
