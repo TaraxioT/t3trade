@@ -54,6 +54,7 @@ import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
+import { makeTradingControlService, TradingControlService } from "./TradingControlService.ts";
 import { TradingLeaseTarget, TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
@@ -395,45 +396,183 @@ const deleteThread = (threadId: ThreadId) =>
     yield* settle;
   });
 
-it.layer(TestLayer)("deleting a mission-bound thread", (it) => {
-  // Deleting a thread used to leave its mission holding authority with no
-  // surface to see it on, until the boot sweep erased the row and the record
-  // of the money it was holding. Deletion now ends the mission the same way
-  // settle does.
-  it.effect("revokes the mission bound to the deleted thread and keeps its row", () =>
-    Effect.gen(function* () {
+/**
+ * A recording stand-in for the exchange the mission-level finalization talks
+ * to (RC01). Canonical exposure lives in `positions`; a reduce-only IOC fills
+ * fully and converges its market to zero; reads fail exactly where the plan
+ * says. The REAL control service and mission domain run on top of it, so
+ * mission rows, transitions, and projections stay internally consistent while
+ * the exchange remains hermetic.
+ */
+interface FinalizationExchange {
+  readonly positions: Record<string, number>;
+  readonly snapshotReads: Array<"ok" | "fail">;
+  readonly exits: Array<{ readonly market: string; readonly size: number }>;
+  readonly cancels: Array<string>;
+}
+
+const makeFinalizationExchange = (
+  positions: Record<string, number>,
+  snapshotReads: ReadonlyArray<"ok" | "fail"> = [],
+): FinalizationExchange => ({
+  positions: { ...positions },
+  snapshotReads: [...snapshotReads],
+  exits: [],
+  cancels: [],
+});
+
+const finalizationGatewayLayer = (exchange: FinalizationExchange) =>
+  Layer.succeed(HyperliquidGateway, {
+    getAccountSnapshot: () =>
+      Effect.suspend(() => {
+        const read = exchange.snapshotReads.shift() ?? "ok";
+        if (read === "fail") return Effect.fail("account snapshot read refused");
+        return Effect.succeed({
+          positions: Object.entries(exchange.positions)
+            .filter(([, size]) => Math.abs(size) > 1e-12)
+            .map(([market, size]) => ({
+              market,
+              size,
+              entryPrice: 3_000,
+              unrealisedPnl: 0,
+              marginUsed: 100,
+            })),
+        });
+      }),
+    getOrderBook: () => Effect.succeed({ bestBidOffer: { bidPrice: 2_999, askPrice: 3_001 } }),
+    getOpenOrders: () => Effect.succeed([]),
+    resolveMarket: () => Effect.die("not used"),
+    getMarketSnapshot: () => Effect.die("not used"),
+    getMarketHistory: () => Effect.die("not used"),
+    getPosition: () => Effect.die("not used"),
+    getTakerFeeRateBps: () => Effect.die("not used"),
+  } as unknown as HyperliquidGateway["Service"]);
+
+const finalizationExecutionLayer = (exchange: FinalizationExchange) =>
+  Layer.succeed(HyperliquidExecutionService, {
+    submitReduceOnlyIoc: (input: { market: string; positionSize: number }) =>
+      Effect.sync(() => {
+        exchange.exits.push({ market: input.market, size: input.positionSize });
+        exchange.positions[input.market] = 0;
+        return [
+          {
+            cloid: "0xexit",
+            status: "filled",
+            filledSize: Math.abs(input.positionSize),
+            role: "entry",
+          },
+        ];
+      }),
+    submitCancel: (input: { cloid: string }) =>
+      Effect.sync(() => {
+        exchange.cancels.push(input.cloid);
+      }),
+    submitOrder: () => Effect.die("not used"),
+    submitProtectiveStop: () => Effect.die("not used"),
+  } as unknown as HyperliquidExecutionService["Service"]);
+
+/**
+ * The reactor over the real trading layer, with only the control service's
+ * exchange-facing dependencies stubbed (RC01). Everything durable — mission
+ * domain, transitions, projection — is real, so assertions read actual rows.
+ *
+ * The control layer is built FRESH (`Layer.effect` over the shared `make`
+ * effect) rather than re-providing `TradingControlServiceLive`: Effect
+ * memoizes a layer by reference, and `TradingLayerLive` already builds that
+ * reference with the real gateway — a second provision of the same reference
+ * is silently ignored.
+ */
+const reactorLayerOverExchange = (exchange: FinalizationExchange) => {
+  const controlOverStubs = Layer.effect(TradingControlService, makeTradingControlService).pipe(
+    Layer.provide(
+      Layer.mergeAll(finalizationGatewayLayer(exchange), finalizationExecutionLayer(exchange)),
+    ),
+  );
+  return TradingMissionReactorLive.pipe(
+    Layer.provide(controlOverStubs),
+    Layer.provideMerge(
+      TradingLayerLive.pipe(
+        Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+      ),
+    ),
+    Layer.provideMerge(OrchestrationEngineLive),
+    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(OrchestrationProjectionPipelineLive),
+    Layer.provideMerge(OrchestrationEventStoreLive),
+    Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+    Layer.provideMerge(RepositoryIdentityResolver.layer),
+    Layer.provideMerge(makeProviderRegistryLayer()),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-finalize-" })),
+    Layer.provideMerge(ThreadBackgroundLiveness.layer),
+    Layer.provideMerge(ThreadPlanProgress.layer),
+    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(NodeServices.layer),
+  );
+};
+
+/** A §14.7 exchange-touching control from the workspace, then drain. */
+const riskControl = (control: "close_and_revoke" | "close_position") =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    yield* engine.dispatch({
+      type: "trading.mission.risk-control",
+      commandId: yield* commandId,
+      threadId: THREAD_ID,
+      missionId: MISSION_ID,
+      control,
+      createdAt: NOW,
+    });
+    yield* settle;
+  });
+
+// Deleting a thread used to leave its mission holding authority with no
+// surface to see it on, until the boot sweep erased the row and the record of
+// the money it was holding. Deletion now ends the mission the same way settle
+// does — through the mission-level finalization gate (RC01).
+it.live("deleting a mission-bound thread revokes it and keeps its row", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* deleteThread(THREAD_ID);
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
       assert.equal(yield* missionRowCount, 1);
-    }).pipe(Effect.scoped),
-  );
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "revoked");
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // The mission is no longer authoritative, so the market it held is free —
-  // which is the whole point of ending it rather than leaving the orphan.
-  it.effect("frees the mission's authority", () =>
-    Effect.gen(function* () {
+it.live("deleting a mission-bound thread frees the mission's authority", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* deleteThread(THREAD_ID);
 
       const missions = yield* TradingMissionService;
       assert.isTrue(Option.isNone(yield* missions.findActiveMission(LOCAL_TRADING_USER_ID)));
-    }).pipe(Effect.scoped),
-  );
-});
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-it.layer(TestLayer)("settling a mission-bound thread", (it) => {
-  // Settle is the way out of a mission. A thread the user has finished with
-  // must not keep an authority that wakes, trades, and holds the one active
-  // slot the next thread needs.
-  it.effect("revokes the mission bound to the settled thread and keeps its row", () =>
-    Effect.gen(function* () {
+// Settle is the way out of a mission. A thread the user has finished with
+// must not keep an authority that wakes, trades, and holds the one active
+// slot the next thread needs.
+it.live("settling a mission-bound thread revokes it and keeps its row", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* settleThread(THREAD_ID);
@@ -445,16 +584,20 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       const projected = yield* projectedMission;
       assert.ok(Option.isSome(projected));
       assert.equal(projected.value.status, "revoked");
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // §11.1 has two permanent terminals and only one of them was reachable, so
-  // `completed` sat in the contract, the transition table, and the UI's
-  // completion summary while nothing ever set it. A fill is the difference: a
-  // mission that traded and came back flat finished, and says so.
-  it.effect("completes a flat mission that actually traded", () =>
-    Effect.gen(function* () {
+// §11.1 has two permanent terminals and only one of them was reachable, so
+// `completed` sat in the contract, the transition table, and the UI's
+// completion summary while nothing ever set it. A fill is the difference: a
+// mission that traded and came back flat finished, and says so.
+it.live("settling completes a flat mission that actually traded", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
       yield* recordFill;
 
@@ -465,15 +608,19 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       const projected = yield* projectedMission;
       assert.ok(Option.isSome(projected));
       assert.equal(projected.value.status, "completed");
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // A blocked mission's authority was withdrawn by a deterministic safety
-  // condition. It traded, but it did not finish — reporting that as a completed
-  // objective is the more expensive of the two lies.
-  it.effect("still revokes a mission that traded and then blocked", () =>
-    Effect.gen(function* () {
+// A blocked mission's authority was withdrawn by a deterministic safety
+// condition. It traded, but it did not finish — reporting that as a completed
+// objective is the more expensive of the two lies.
+it.live("settling still revokes a mission that traded and then blocked", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
       yield* recordFill;
       yield* blockMission;
@@ -482,12 +629,16 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
       assert.equal(yield* missionRowCount, 1);
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  it.effect("leaves a mission alone when some other thread is settled", () =>
-    Effect.gen(function* () {
+it.live("settling some other thread leaves the mission alone", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       const otherThread = ThreadId.make("thread-trading-reactor-unbound");
@@ -514,16 +665,22 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       const projected = yield* projectedMission;
       assert.ok(Option.isSome(projected));
       assert.notEqual(projected.value.status, "revoked");
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // `findMissionByThreadId` returns only a still-authoritative mission, so the
-  // second settle has nothing to act on even though the revoked row survives.
-  // Settle is a bulk action in the sidebar and must stay a silent no-op the
-  // second time.
-  it.effect("is a no-op when the mission is already revoked", () =>
-    Effect.gen(function* () {
+// `findMissionByThreadId` returns only a still-authoritative mission, so the
+// second settle has nothing to act on even though the revoked row survives.
+// Settle is a bulk action in the sidebar and must stay a silent no-op the
+// second time — and the second event must not submit duplicate closes.
+it.live("a second settle after a revoke is a no-op with no duplicate closes", () =>
+  Effect.gen(function* () {
+    // Canonical exposure the first settle has to close before revoking; the
+    // second settle must find a revoked mission and do nothing at all.
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* settleThread(THREAD_ID);
@@ -531,9 +688,96 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
       assert.equal(yield* missionRowCount, 1);
-    }).pipe(Effect.scoped),
-  );
-});
+      assert.equal(exchange.exits.length, 1, "the second settle must not close again");
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC01: the thread-ending path must run the canonical gate even when local
+// snapshots are absent or stale — the old code inferred "flat" from the local
+// snapshot table and skipped both the close and the confirmation entirely.
+it.live("thread ending with canonical exposure closes it before revoking", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* settleThread(THREAD_ID);
+
+      // One bounded close for the held exposure, then the single revoke.
+      assert.equal(exchange.exits.length, 1);
+      assert.equal(exchange.exits[0]?.market, "ETH");
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      assert.equal(exchange.positions.ETH, 0);
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC01: authority that cannot be confirmed is never terminally claimed. The
+// mission stays reachable from the trading workspace with its blocking status.
+it.live("an unconfirmable finalization keeps the mission authoritative", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 }, ["fail"]);
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* settleThread(THREAD_ID);
+
+      // No canonical read ever succeeded, so nothing was submitted and no
+      // terminal status was announced; the entry block the pass established
+      // is the last status the operator sees.
+      assert.deepEqual(exchange.exits, []);
+      assert.equal(yield* lastAnnouncedStatus, "paused");
+      const missions = yield* TradingMissionService;
+      const stillHeld = yield* missions.findMissionByThreadId(THREAD_ID);
+      assert.isTrue(Option.isSome(stillHeld), "the mission must stay reachable, not revoked");
+      assert.equal(yield* missionRowCount, 1);
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC01: the workspace's close-and-revoke button is the same mission-level
+// finalization — one revoke after an all-market canonical gate, never a
+// per-market revoke.
+it.live("the close_and_revoke control finalizes the whole mission once", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* riskControl("close_and_revoke");
+
+      assert.equal(exchange.exits.length, 1);
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      const missions = yield* TradingMissionService;
+      assert.isTrue(Option.isNone(yield* missions.findActiveMission(LOCAL_TRADING_USER_ID)));
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+it.live("the close_and_revoke control keeps authority when it cannot confirm", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 }, ["fail"]);
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* riskControl("close_and_revoke");
+
+      assert.deepEqual(exchange.exits, []);
+      assert.equal(yield* lastAnnouncedStatus, "paused");
+      const missions = yield* TradingMissionService;
+      assert.isTrue(Option.isSome(yield* missions.findMissionByThreadId(THREAD_ID)));
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
 it.layer(TestLayer)("trading mission reactor", (it) => {
   it.effect("projects a mission only after the domain accepts it", () =>

@@ -33,6 +33,7 @@ import {
   type ControlOutcome,
   type ExchangeControlInput,
   type ManualCloseOutcome,
+  type MissionFinalizationMarket,
   type TradingControlService,
 } from "./TradingControlService.ts";
 
@@ -46,7 +47,15 @@ const TARGET: ExchangeControlInput = {
 
 interface Fake {
   positionSize: number;
+  /**
+   * Canonical exposure by market. When set, this map is the exchange's truth
+   * for every market; when unset, the single `positionSize` field stands in
+   * for the ETH-only cases the older tests cover.
+   */
+  positions: Record<string, number> | undefined;
   exits: number[];
+  /** Every reduce-only IOC submission, with the market it targeted (RC01). */
+  exitLog: Array<{ readonly market: string; readonly size: number }>;
   cancels: string[];
   transitions: string[];
   protectedCancels: Array<ReadonlyArray<string>>;
@@ -72,11 +81,23 @@ interface Fake {
   exitFillPlan: Array<number>;
   /** Runs on each mission-lane reconcile between attempts — e.g. a concurrent position increase (06D). */
   onReconcile?: (() => void) | undefined;
+  // --- mission-domain stand-ins for the mission-level finalization (RC01) ---
+  /** Current mission status; the transition fake keeps it in step. */
+  missionStatus: string;
+  /** Held markets the mission fake reports. */
+  missionMarkets: string[];
+  /** Per-getMission held-set plan, consumed front-to-back; the last entry repeats. */
+  missionMarketsByCall: Array<string[]> | undefined;
+  /** Terminal/blocking statuses whose transition the mission fake refuses. */
+  failTransitionsTo: string[];
+  getMissionCalls: number;
 }
 
 const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
   positionSize: 0.5,
+  positions: undefined,
   exits: [],
+  exitLog: [],
   cancels: [],
   transitions: [],
   protectedCancels: [],
@@ -87,8 +108,33 @@ const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
   exitFillFraction: 1,
   snapshotReads: [],
   exitFillPlan: [],
+  missionStatus: "analysing",
+  missionMarkets: ["ETH"],
+  missionMarketsByCall: undefined,
+  failTransitionsTo: [],
+  getMissionCalls: 0,
   ...overrides,
 });
+
+/** The exchange's current canonical map: the explicit one, or the legacy single market. */
+const canonicalPositions = (fake: Fake): Record<string, number> =>
+  fake.positions ?? { ETH: fake.positionSize };
+
+/** Apply a fill to the canonical map, keeping the legacy field in step. */
+const applyFill = (fake: Fake, market: string, closable: number): void => {
+  if (fake.positions === undefined) {
+    // Legacy single-market lane: `positionSize` is the exchange's whole truth,
+    // including any concurrent change a test's onReconcile writes into it.
+    const sign = fake.positionSize > 0 ? 1 : -1;
+    fake.positionSize = Number((fake.positionSize - sign * closable).toFixed(10));
+    return;
+  }
+  const bucket = { ...fake.positions };
+  const current = bucket[market] ?? 0;
+  const sign = current > 0 ? 1 : -1;
+  bucket[market] = Number((current - sign * closable).toFixed(10));
+  fake.positions = bucket;
+};
 
 const gatewayLayer = (fake: Fake) =>
   Layer.succeed(HyperliquidGateway, {
@@ -96,20 +142,16 @@ const gatewayLayer = (fake: Fake) =>
       Effect.suspend(() => {
         const read = fake.snapshotReads.shift() ?? "ok";
         if (read === "fail") return Effect.fail("account snapshot read refused");
-        return Effect.succeed({
-          positions:
-            Math.abs(fake.positionSize) < 1e-9
-              ? []
-              : [
-                  {
-                    market: "ETH",
-                    size: fake.positionSize,
-                    entryPrice: 3_000,
-                    unrealisedPnl: 0,
-                    marginUsed: 100,
-                  },
-                ],
-        });
+        const positions = Object.entries(canonicalPositions(fake))
+          .filter(([, size]) => Math.abs(size) > 1e-12)
+          .map(([market, size]) => ({
+            market,
+            size,
+            entryPrice: 3_000,
+            unrealisedPnl: 0,
+            marginUsed: 100,
+          }));
+        return Effect.succeed({ positions });
       }),
     getOrderBook: () => Effect.succeed({ bestBidOffer: { bidPrice: 2_999, askPrice: 3_001 } }),
     getOpenOrders: () => Effect.succeed([]),
@@ -122,9 +164,10 @@ const gatewayLayer = (fake: Fake) =>
 
 const executionLayer = (fake: Fake) =>
   Layer.succeed(HyperliquidExecutionService, {
-    submitReduceOnlyIoc: (input: { positionSize: number }) =>
+    submitReduceOnlyIoc: (input: { market: string; positionSize: number }) =>
       Effect.sync(() => {
         fake.exits.push(input.positionSize);
+        fake.exitLog.push({ market: input.market, size: input.positionSize });
         if (fake.exitRejection !== null) {
           return [
             { cloid: "0xexit", status: "error", reason: fake.exitRejection, role: "entry" },
@@ -132,23 +175,22 @@ const executionLayer = (fake: Fake) =>
         }
         const closable =
           Math.abs(input.positionSize) * (fake.exitFillPlan.shift() ?? fake.exitFillFraction);
-        const sign = fake.positionSize > 0 ? 1 : -1;
-        fake.positionSize = Number((fake.positionSize - sign * closable).toFixed(10));
+        applyFill(fake, input.market, closable);
         return [
           { cloid: "0xexit", status: "filled", filledSize: closable, role: "entry" },
         ] as ReadonlyArray<TradingOrderResult>;
       }),
-    submitManualReduceOnlyIoc: (input: { positionSize: number }) =>
+    submitManualReduceOnlyIoc: (input: { market: string; positionSize: number }) =>
       Effect.sync(() => {
         fake.exits.push(input.positionSize);
+        fake.exitLog.push({ market: input.market, size: input.positionSize });
         if (fake.manualExitRejection !== null) {
           return [
             { cloid: "0xmanual", status: "error", reason: fake.manualExitRejection, role: "entry" },
           ] as ReadonlyArray<TradingOrderResult>;
         }
         const closable = Math.abs(input.positionSize) * fake.manualExitFillFraction;
-        const sign = fake.positionSize > 0 ? 1 : -1;
-        fake.positionSize = Number((fake.positionSize - sign * closable).toFixed(10));
+        applyFill(fake, input.market, closable);
         return [
           { cloid: "0xmanual", status: "filled", filledSize: closable, role: "entry" },
         ] as ReadonlyArray<TradingOrderResult>;
@@ -198,10 +240,34 @@ const missionsLayer = (fake: Fake) =>
   Layer.succeed(TradingMissionService, {
     getMissionVersion: () => Effect.succeed(1),
     transition: (input: { to: string }) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        if (fake.failTransitionsTo.includes(input.to)) {
+          return Effect.fail({ _tag: "TransitionRefused", to: input.to });
+        }
         fake.transitions.push(input.to);
-        return { status: input.to };
+        fake.missionStatus = input.to;
+        return Effect.succeed({ status: input.to });
       }),
+    getMission: () =>
+      Effect.sync(() => {
+        fake.getMissionCalls++;
+        const plan = fake.missionMarketsByCall;
+        const markets =
+          plan === undefined
+            ? fake.missionMarkets
+            : plan[Math.min(fake.getMissionCalls - 1, plan.length - 1)];
+        return {
+          id: MISSION,
+          userId: "local",
+          tradingAccountId: "acct_control",
+          instruction: "test",
+          market: fake.missionMarkets[0] ?? "ETH",
+          markets: markets ?? ["ETH"],
+          status: fake.missionStatus,
+          authorityVersion: 1,
+        };
+      }),
+    getMasterWalletAddress: () => Effect.succeed("0xmaster"),
   } as unknown as TradingMissionService["Service"]);
 
 const infoLayer = Layer.succeed(
@@ -214,6 +280,7 @@ const migrated = Effect.gen(function* () {
   yield* runMigrations({});
   yield* sql`DELETE FROM trading_orders`;
   yield* sql`DELETE FROM trading_execution_records`;
+  yield* sql`DELETE FROM trading_fills`;
 });
 
 /**
@@ -255,6 +322,7 @@ const seedOrder = (
   actionType: string,
   reduceOnly: number,
   stopPrice: number | null,
+  market = "ETH",
 ): Effect.Effect<void, never, SqlClient.SqlClient> =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -262,7 +330,7 @@ const seedOrder = (
       INSERT INTO trading_orders (
         mission_id, cloid, order_id, market, side, limit_price,
         remaining_size, reduce_only, observed_at
-      ) VALUES (${MISSION}, ${cloid}, 1, 'ETH', 'buy', 3000, 0.5, ${reduceOnly}, 0)
+      ) VALUES (${MISSION}, ${cloid}, 1, ${market}, 'buy', 3000, 0.5, ${reduceOnly}, 0)
     `;
     // One sequence per row: (mission, sequence) is unique since migration 053.
     const executionSequence = seededSequence++;
@@ -274,11 +342,30 @@ const seedOrder = (
         stop_price
       ) VALUES (
         ${`exec_${cloid}`}, ${MISSION}, ${executionSequence}, ${actionType}, ${cloid}, ${`idem_${cloid}`},
-        'ETH', 'buy', 0.5, 3000, 'gtc', ${reduceOnly}, '0xsigner', 'accepted', '[]', 0, 0,
+        ${market}, 'buy', 0.5, 3000, 'gtc', ${reduceOnly}, '0xsigner', 'accepted', '[]', 0, 0,
         ${stopPrice}
       )
     `;
   }).pipe(Effect.orDie);
+
+/** One reconciled fill: the completed-versus-revoked fact for thread ending. */
+const seedFill: Effect.Effect<void, never, SqlClient.SqlClient> = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO trading_fills (
+      fill_id, mission_id, execution_id, cloid, order_id, market, side,
+      filled_size, avg_fill_price, fee_usd, fee_token, traded_at, observed_at,
+      closed_pnl
+    ) VALUES (
+      'fill_control', ${MISSION}, 'exec_control', '0xcloid_control', 1, 'ETH', 'buy',
+      0.5, 3000, 1.5, 'USDC', 1000, 1000, 12.5
+    )
+  `;
+}).pipe(Effect.orDie);
+
+/** The finalization's market result, by market name. */
+const marketResult = (markets: ReadonlyArray<MissionFinalizationMarket>, market: string) =>
+  markets.find((entry) => entry.market === market);
 
 // ---------------------------------------------------------------------------
 // Lifecycle controls
@@ -435,26 +522,28 @@ it.effect("close_position on a flat position does nothing", () =>
   }),
 );
 
-it.effect("close_and_revoke closes first, then revokes", () =>
+it.effect("close_and_revoke finalizes a flat single-market mission", () =>
   Effect.gen(function* () {
-    // The order matters: revoking first would end the authority the close
-    // itself runs under.
-    const fake = makeFake({ positionSize: 0.5 });
-    const outcome = yield* runControl(fake, (s) => s.closeAndRevoke(TARGET));
+    const fake = makeFake({ positions: { ETH: 0.5 } });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
 
-    assert.deepEqual(fake.exits, [0.5]);
-    assert.deepEqual(fake.transitions, ["revoked"]);
+    // The close ran first — revoking before the close would end the authority
+    // the close itself runs under — and the revoke is the SECOND transition.
+    assert.deepEqual(fake.exitLog, [{ market: "ETH", size: 0.5 }]);
+    assert.deepEqual(fake.transitions, ["paused", "revoked"]);
+    assert.equal(outcome.finalized, true);
     assert.equal(outcome.status, "revoked");
+    assert.ok(outcome.summary.includes("Authority revoked"), outcome.summary);
   }),
 );
 
 it.effect("every control runs with no harness service in context", () =>
   Effect.gen(function* () {
-    // The negative property §14.7 turns on, exercised across all seven in one
+    // The negative property §14.7 turns on, exercised across all eight in one
     // context that contains no coordinator, no preview service, no provider
     // session, and no harness binding. Reaching for any of them would fail to
     // build rather than fall back.
-    const fake = makeFake({ positionSize: 0.5 });
+    const fake = makeFake({ positions: { ETH: 0.5 } });
     const summaries = yield* runControl(
       fake,
       (s) =>
@@ -465,17 +554,290 @@ it.effect("every control runs with no harness service in context", () =>
           const reduce = yield* s.reducePosition({ ...TARGET, percent: 25 });
           const close = yield* s.closePosition(TARGET);
           const revoke = yield* s.revoke({ missionId: MISSION });
-          const closeRevoke = yield* s.closeAndRevoke(TARGET);
-          return [pause, resume, cancel, reduce, close, revoke, closeRevoke].map((o) => o.summary);
+          const closeRevoke = yield* s.closeAndRevokeMission({ missionId: MISSION });
+          const threadEnd = yield* s.endMissionForThreadEnding({ missionId: MISSION });
+          return [pause, resume, cancel, reduce, close, revoke, closeRevoke, threadEnd].map(
+            (o) => o.summary,
+          );
         }),
       seedOrder("0xentry", "open", 0, 2_950),
     );
 
-    assert.equal(summaries.length, 7);
+    assert.equal(summaries.length, 8);
     assert.equal(
       summaries.every((s) => s.length > 0),
       true,
     );
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Mission-level finalization (RC01): authority ends exactly once, and only
+// after every held market is canonically flat and mission-owned increasing
+// orders can no longer reopen exposure. The per-market cases below are the
+// ones the R1 review named: a flat first market must never end a mission
+// whose second market is still open, unreadable, or unknown.
+// ---------------------------------------------------------------------------
+
+it.effect("a flat first market does not revoke while a second remains open", () =>
+  Effect.gen(function* () {
+    // ETH flat, BTC 1 short. The bounded close fills nothing (fraction 0), so
+    // BTC stays open and the authority must survive the whole pass.
+    const fake = makeFake({
+      missionMarkets: ["ETH", "BTC"],
+      positions: { ETH: 0, BTC: 1 },
+      exitFillFraction: 0,
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, false);
+    assert.deepEqual(fake.transitions, ["paused"]);
+    const btc = marketResult(outcome.markets, "BTC");
+    assert.ok(btc !== undefined);
+    assert.equal(btc.outcome, "remains");
+    assert.equal(btc.positionSize, 1);
+    const eth = marketResult(outcome.markets, "ETH");
+    assert.ok(eth !== undefined);
+    assert.equal(eth.outcome, "flat");
+    assert.ok(outcome.summary.includes("BTC is still open"), outcome.summary);
+    assert.ok(outcome.summary.includes("Authority was not revoked"), outcome.summary);
+    // Every submitted exit targeted the open market, never the flat one.
+    assert.ok(fake.exitLog.length > 0);
+    assert.ok(
+      fake.exitLog.every((exit) => exit.market === "BTC"),
+      fake.exitLog.map((exit) => `${exit.market}:${exit.size}`).join(","),
+    );
+  }),
+);
+
+it.effect("a second market's read failure keeps the authority as unconfirmed", () =>
+  Effect.gen(function* () {
+    // Canonical read sequence: ETH's close read (1, ok), BTC's close read
+    // (2, fail), ETH's confirmation read (3, ok), BTC's confirmation read
+    // (4, fail). BTC can never be confirmed, so nothing may end.
+    const fake = makeFake({
+      missionMarkets: ["ETH", "BTC"],
+      positions: { ETH: 0, BTC: 1 },
+      snapshotReads: ["ok", "fail", "ok", "fail"],
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, false);
+    const btc = marketResult(outcome.markets, "BTC");
+    assert.ok(btc !== undefined);
+    assert.equal(btc.outcome, "unknown");
+    assert.equal(btc.positionSize, null);
+    assert.ok(outcome.summary.includes("could not be confirmed"), outcome.summary);
+  }),
+);
+
+it.effect("a confirmed partial close keeps the authority with the remaining size", () =>
+  Effect.gen(function* () {
+    // Attempt 1 fills half, attempt 2 fills nothing: 0.25 of 0.5 remains.
+    const fake = makeFake({ positions: { ETH: 0.5 }, exitFillPlan: [0.5, 0] });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, false);
+    const eth = marketResult(outcome.markets, "ETH");
+    assert.ok(eth !== undefined);
+    assert.equal(eth.outcome, "remains");
+    assert.equal(eth.positionSize, 0.25);
+  }),
+);
+
+it.effect("an unknown close outcome keeps the authority unconfirmed", () =>
+  Effect.gen(function* () {
+    // The submitted close's re-read fails: the fill's effect is unknown, and
+    // the confirmation read fails too, so the mission cannot end.
+    const fake = makeFake({
+      positions: { ETH: 0.5 },
+      exitFillFraction: 0,
+      snapshotReads: ["ok", "fail", "fail"],
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, false);
+    const eth = marketResult(outcome.markets, "ETH");
+    assert.ok(eth !== undefined);
+    assert.equal(eth.outcome, "unknown");
+    assert.equal(eth.positionSize, null);
+    assert.ok(outcome.summary.includes("Authority was not revoked"), outcome.summary);
+  }),
+);
+
+it.effect("all canonical reads unavailable leaves the mission nonterminal", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      missionMarkets: ["ETH", "BTC"],
+      positions: { ETH: 1, BTC: 1 },
+      // Every canonical read fails: closes, and confirmations alike.
+      snapshotReads: Array.from({ length: 8 }, () => "fail" as const),
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    // No submission ever happened (reads gate the loop), and no transition
+    // beyond the entry-blocking pause.
+    assert.deepEqual(fake.exitLog, []);
+    assert.deepEqual(fake.transitions, ["paused"]);
+    assert.equal(outcome.finalized, false);
+    assert.ok(outcome.markets.every((market) => market.outcome === "unknown"));
+    assert.ok(outcome.summary.includes("could not be confirmed"), outcome.summary);
+  }),
+);
+
+it.effect("three held markets each get an explicit result", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      missionMarkets: ["ETH", "BTC", "SOL"],
+      positions: { ETH: 0, BTC: 1, SOL: 0 },
+      exitFillFraction: 0,
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, false);
+    assert.equal(outcome.markets.length, 3);
+    assert.equal(marketResult(outcome.markets, "ETH")?.outcome, "flat");
+    assert.equal(marketResult(outcome.markets, "BTC")?.outcome, "remains");
+    assert.equal(marketResult(outcome.markets, "SOL")?.outcome, "flat");
+  }),
+);
+
+it.effect("market order does not decide which market survives", () =>
+  Effect.gen(function* () {
+    // The mirror of the flat-first case: the open market leads, the flat one
+    // follows, and the outcome is the same either way.
+    const fake = makeFake({
+      missionMarkets: ["BTC", "ETH"],
+      positions: { ETH: 1, BTC: 0 },
+      exitFillFraction: 0,
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, false);
+    assert.equal(marketResult(outcome.markets, "ETH")?.outcome, "remains");
+    assert.equal(marketResult(outcome.markets, "BTC")?.outcome, "flat");
+  }),
+);
+
+it.effect("a held market added during finalization is not processed and blocks the end", () =>
+  Effect.gen(function* () {
+    // The mission holds ETH at the start; by the confirmation re-read it also
+    // holds BTC. A market the pass never closed cannot be claimed flat.
+    const fake = makeFake({
+      missionMarketsByCall: [["ETH"], ["ETH", "BTC"]],
+      positions: { ETH: 0 },
+    });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, false);
+    const btc = marketResult(outcome.markets, "BTC");
+    assert.ok(btc !== undefined);
+    assert.equal(btc.outcome, "unprocessed");
+    assert.equal(btc.positionSize, null);
+  }),
+);
+
+it.effect("unconfirmed increasing-order cancellation blocks the end even when flat", () =>
+  Effect.gen(function* () {
+    // RC01's explicit dependency on RC03: the void best-effort primitive can
+    // confirm nothing, so a discovered resting entry keeps the authority even
+    // though every position is flat.
+    const fake = makeFake({ positions: { ETH: 0 } });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.closeAndRevokeMission({ missionId: MISSION }),
+      seedOrder("0xentry", "open", 0, null),
+    );
+
+    assert.equal(outcome.finalized, false);
+    assert.deepEqual(fake.cancels, ["0xentry"]);
+    assert.ok(outcome.summary.includes("cancellation is unconfirmed"), outcome.summary);
+  }),
+);
+
+it.effect("a guard-transition failure stops the finalization before any close", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      missionStatus: "executing",
+      positions: { ETH: 1 },
+      failTransitionsTo: ["paused"],
+    });
+    const failure = yield* Effect.flip(
+      runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION })),
+    );
+
+    assert.equal(failure._tag, "TradingControlError");
+    if (failure._tag === "TradingControlError") {
+      assert.equal(failure.reason, "transition_rejected");
+    }
+    assert.deepEqual(fake.exitLog, []);
+    assert.deepEqual(fake.transitions, []);
+  }),
+);
+
+it.effect("an already-terminal mission is a no-op: no second revoke, no close orders", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ missionStatus: "revoked", positions: { ETH: 1 } });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.equal(outcome.finalized, true);
+    assert.equal(outcome.status, "revoked");
+    assert.deepEqual(fake.transitions, []);
+    assert.deepEqual(fake.exitLog, []);
+    assert.ok(outcome.summary.includes("already revoked"), outcome.summary);
+  }),
+);
+
+it.effect("a blocked mission finalizes without re-pausing, keeping its blocked record", () =>
+  Effect.gen(function* () {
+    // Pausing a blocked mission would erase the persisted blocked reason;
+    // blocked already refuses entries, so the pass must not touch it.
+    const fake = makeFake({ missionStatus: "blocked", positions: { ETH: 0.5 } });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
+
+    assert.deepEqual(fake.transitions, ["revoked"]);
+    assert.equal(outcome.finalized, true);
+  }),
+);
+
+it.effect("thread ending completes a traded, unblocked mission", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positions: { ETH: 0.5 } });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.endMissionForThreadEnding({ missionId: MISSION }),
+      seedFill,
+    );
+
+    assert.deepEqual(fake.transitions, ["paused", "completed"]);
+    assert.equal(outcome.finalized, true);
+    assert.equal(outcome.status, "completed");
+  }),
+);
+
+it.effect("thread ending revokes a mission that never traded", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positions: { ETH: 0.5 } });
+    const outcome = yield* runControl(fake, (s) =>
+      s.endMissionForThreadEnding({ missionId: MISSION }),
+    );
+
+    assert.equal(outcome.status, "revoked");
+    assert.equal(outcome.finalized, true);
+  }),
+);
+
+it.effect("thread ending revokes a traded mission that was blocked", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ missionStatus: "blocked", positions: { ETH: 0.5 } });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.endMissionForThreadEnding({ missionId: MISSION }),
+      seedFill,
+    );
+
+    assert.deepEqual(fake.transitions, ["revoked"]);
+    assert.equal(outcome.status, "revoked");
   }),
 );
 
@@ -643,19 +1005,24 @@ it.effect(
     }),
 );
 
-it.effect("close_and_revoke does not revoke when the close outcome is unknown", () =>
+it.effect("close_and_revoke does not revoke when the close outcome stays unknown", () =>
   Effect.gen(function* () {
+    // Read plan: initial read (ok), post-submit re-read (fail — the fill's
+    // effect is unknown), confirmation read (fail — still unconfirmable).
     const fake = makeFake({
-      positionSize: 10,
+      positions: { ETH: 10 },
       exitFillFraction: 0.2,
-      snapshotReads: ["ok", "ok", "fail"],
+      snapshotReads: ["ok", "ok", "fail", "fail"],
     });
-    const outcome = yield* runControl(fake, (s) => s.closeAndRevoke(TARGET));
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
 
-    assert.equal(outcome.positionSize, null);
-    assert.deepEqual(fake.transitions, [], "an unknown close must not reach the revoke");
-    assert.ok(outcome.summary.includes("Close outcome unknown"));
-    assert.ok(outcome.summary.includes("Authority was not revoked"));
+    const eth = marketResult(outcome.markets, "ETH");
+    assert.ok(eth !== undefined);
+    assert.equal(eth.positionSize, null);
+    assert.equal(outcome.finalized, false);
+    assert.deepEqual(fake.transitions, ["paused"], "an unknown close must not reach the revoke");
+    assert.ok(outcome.summary.includes("could not be confirmed"), outcome.summary);
+    assert.ok(outcome.summary.includes("Authority was not revoked"), outcome.summary);
   }),
 );
 
@@ -663,30 +1030,35 @@ it.effect("close_and_revoke with a confirmed partial close keeps the authority",
   Effect.gen(function* () {
     // Two bounded attempts at 20% fill each cannot reach flat: the truthful
     // close result stands and the revoke is withheld.
-    const fake = makeFake({ positionSize: 10, exitFillFraction: 0.2 });
-    const outcome = yield* runControl(fake, (s) => s.closeAndRevoke(TARGET));
+    const fake = makeFake({ positions: { ETH: 10 }, exitFillFraction: 0.2 });
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
 
-    assert.deepEqual(fake.transitions, []);
-    assert.ok(outcome.summary.includes("partly closed"));
-    assert.ok(
-      outcome.summary.includes("Authority was not revoked because the position is still open"),
-    );
+    assert.equal(outcome.finalized, false);
+    assert.deepEqual(fake.transitions, ["paused"]);
+    const eth = marketResult(outcome.markets, "ETH");
+    assert.ok(eth !== undefined);
+    assert.equal(eth.outcome, "remains");
+    assert.equal(eth.positionSize, 6.4);
+    assert.ok(outcome.summary.includes("ETH is still open"), outcome.summary);
+    assert.ok(outcome.summary.includes("a position is still open"), outcome.summary);
   }),
 );
 
 it.effect("close_and_revoke with a confirmed no-fill close keeps the authority", () =>
   Effect.gen(function* () {
     const fake = makeFake({
-      positionSize: 10,
+      positions: { ETH: 10 },
       exitRejection: "Order could not immediately match against any resting orders.",
     });
-    const outcome = yield* runControl(fake, (s) => s.closeAndRevoke(TARGET));
+    const outcome = yield* runControl(fake, (s) => s.closeAndRevokeMission({ missionId: MISSION }));
 
-    assert.deepEqual(fake.transitions, []);
-    assert.ok(outcome.summary.includes("Close failed"));
-    assert.ok(
-      outcome.summary.includes("Authority was not revoked because the position is still open"),
-    );
+    assert.equal(outcome.finalized, false);
+    assert.deepEqual(fake.transitions, ["paused"]);
+    const eth = marketResult(outcome.markets, "ETH");
+    assert.ok(eth !== undefined);
+    assert.equal(eth.outcome, "remains");
+    assert.equal(eth.positionSize, 10);
+    assert.ok(outcome.summary.includes("a position is still open"), outcome.summary);
   }),
 );
 

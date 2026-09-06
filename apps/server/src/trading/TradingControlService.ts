@@ -100,6 +100,41 @@ export interface ControlOutcome {
 }
 
 /**
+ * One held market's result in a mission finalization pass (RC01).
+ */
+export interface MissionFinalizationMarket {
+  readonly market: string;
+  /**
+   * What the pass established: `flat` only from a canonical read, `remains`
+   * with the confirmed signed size, `unknown` when a read could not confirm,
+   * `failed` when the bounded close attempt itself failed, and `unprocessed`
+   * when the market joined the mission during finalization.
+   */
+  readonly outcome: "flat" | "remains" | "unknown" | "failed" | "unprocessed";
+  /** Signed canonical size; `null` when it could not be confirmed. */
+  readonly positionSize: number | null;
+  /** Why the market kept the authority, in the exchange's or error's own words. */
+  readonly reason?: string;
+}
+
+/** What a mission-level close-and-finalize did (RC01). */
+export interface MissionFinalizationOutcome {
+  /**
+   * The mission status this operation left, when it changed one: the single
+   * terminal status when finalized, otherwise the entry-blocking status the
+   * pass established. Undefined when the mission was left exactly as it was.
+   */
+  readonly status?: string | undefined;
+  /** Whether the single terminal transition happened. */
+  readonly finalized: boolean;
+  readonly markets: ReadonlyArray<MissionFinalizationMarket>;
+  /** Only cloids the exchange acknowledged as cancelled. */
+  readonly cancelledCloids: ReadonlyArray<string>;
+  /** Human-readable summary for the workspace. */
+  readonly summary: string;
+}
+
+/**
  * The deterministic control service. Harness tools and workspace buttons
  * converge here (§14.7: "one control service, two entry points").
  */
@@ -133,10 +168,28 @@ export class TradingControlService extends Context.Service<
     /** End autonomous authority permanently, preserving any valid protection. */
     readonly revoke: (input: ControlInput) => Effect.Effect<ControlOutcome, TradingControlError>;
 
-    /** Close the position, then revoke. The one-click way out. */
-    readonly closeAndRevoke: (
-      input: ExchangeControlInput,
-    ) => Effect.Effect<ControlOutcome, TradingControlError>;
+    /**
+     * Close every held market, then revoke — the one-click way out (RC01).
+     *
+     * Mission-level on purpose: a mission is every market it holds, and
+     * authority ends exactly once, only after canonical flat is confirmed
+     * across the whole held set and mission-owned increasing orders can no
+     * longer reopen exposure. A failed or unknown market keeps the authority.
+     */
+    readonly closeAndRevokeMission: (
+      input: ControlInput,
+    ) => Effect.Effect<MissionFinalizationOutcome, TradingControlError>;
+
+    /**
+     * End a mission because its thread was settled or deleted (RC01).
+     *
+     * The same all-market finalization gate as {@link closeAndRevokeMission};
+     * only the terminal status differs — the §11.1 completed-versus-revoked
+     * rule: a mission that traded and was not blocked ends `completed`.
+     */
+    readonly endMissionForThreadEnding: (
+      input: ControlInput,
+    ) => Effect.Effect<MissionFinalizationOutcome, TradingControlError>;
 
     /**
      * Close or reduce a MANUAL position — the account-scoped §14.7 control
@@ -324,7 +377,7 @@ export const makeTradingControlService = Effect.gen(function* () {
 
   const transitionTo = (
     missionId: string,
-    to: "paused" | "analysing" | "revoked",
+    to: "paused" | "analysing" | "revoked" | "completed",
   ): Effect.Effect<string, TradingControlError> =>
     Effect.gen(function* () {
       const expectedVersion = yield* missions.getMissionVersion(missionId);
@@ -651,30 +704,304 @@ export const makeTradingControlService = Effect.gen(function* () {
       } satisfies ControlOutcome;
     });
 
-  const closeAndRevoke: TradingControlService["Service"]["closeAndRevoke"] = (input) =>
+  /**
+   * Statuses that already refuse new entries at the preview checklist, so a
+   * finalization pass starting from one needs no additional guard write.
+   * Pausing a `blocked` mission on top would erase its persisted reason, which
+   * is why blocked is treated as already-guarded rather than re-paused.
+   */
+  const ENTRY_BLOCKED_STATUSES: ReadonlySet<string> = new Set([
+    "paused",
+    "blocked",
+    "agent_unavailable",
+  ]);
+
+  /**
+   * Whether the mission ever recorded a fill — the completed-versus-revoked
+   * fact for thread ending (§11.1: a mission that never traded has no result
+   * to report and is simply revoked).
+   */
+  const hasRealizedFills = (missionId: string) =>
+    sql<{ fill_count: number }>`
+      SELECT COUNT(*) AS fill_count FROM trading_fills WHERE mission_id = ${missionId}
+    `.pipe(
+      Effect.map((rows) => (rows[0]?.fill_count ?? 0) > 0),
+      Effect.mapError(
+        (cause) =>
+          new TradingControlError({
+            reason: "exchange_action_failed",
+            detail: `finalize mission: fill-count read failed: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          }),
+      ),
+    );
+
+  /**
+   * The truthful blocked-finalization summary (RC01): every non-flat market in
+   * its own words, then why authority was kept. "Still open" is reserved for a
+   * confirmed nonzero position; anything unconfirmed says so.
+   */
+  const summarizeBlockedFinalization = (
+    markets: ReadonlyArray<MissionFinalizationMarket>,
+    cancellationReason: string | null,
+  ): string => {
+    const parts = markets
+      .filter((market) => market.outcome !== "flat")
+      .map((market) => {
+        switch (market.outcome) {
+          case "remains":
+            return `${market.market} is still open (${market.positionSize} ${market.market})`;
+          case "unknown":
+            return `${market.market} could not be confirmed`;
+          case "failed":
+            return `${market.market} close attempt failed${market.reason ? `: ${market.reason}` : ""}`;
+          case "unprocessed":
+            return `${market.market} was not processed (${market.reason ?? "joined during finalization"})`;
+          default:
+            return `${market.market}: ${market.outcome}`;
+        }
+      });
+    if (cancellationReason !== null) {
+      parts.push(`increasing-order cancellation is unconfirmed: ${cancellationReason}`);
+    }
+    const unconfirmed =
+      cancellationReason !== null ||
+      markets.some((market) => market.outcome !== "flat" && market.outcome !== "remains");
+    const kept = unconfirmed ? "the position could not be confirmed" : "a position is still open";
+    return `${parts.join("; ")}. Authority was not revoked because ${kept}.`;
+  };
+
+  /**
+   * The one mission-level close-and-finalize (R1/RC01).
+   *
+   * Order of operations, each because of the failure it prevents:
+   *
+   *   1. Establish the entry block first, so what is being unwound cannot
+   *      grow while it is unwound (existing lifecycle + checklist guard).
+   *   2. Cancel mission-owned increasing orders before closing, so a resting
+   *      entry cannot refill mid-close — with evidence: an unconfirmed
+   *      cancellation is finalization-blocking, never rounded up to success.
+   *   3. Attempt a bounded close on EVERY held market; one market's failure
+   *      never stops the others.
+   *   4. Immediately before the single terminal transition, re-resolve the
+   *      held set and re-read canonical state per market: flat as observed at
+   *      this final read is the gate — a new market, an unreadable market, or
+   *      any confirmed nonzero position keeps the authority nonterminal.
+   *   5. Transition exactly once.
+   *
+   * Cancellation evidence is honestly conservative until RC03 lands the typed
+   * acknowledgement report: the void best-effort primitive can confirm
+   * nothing, so any discovered resting order blocks terminal finalization.
+   */
+  const finalizeMission = (input: {
+    readonly missionId: string;
+    readonly terminal: "revoked" | "completed";
+  }): Effect.Effect<MissionFinalizationOutcome, TradingControlError> =>
     Effect.gen(function* () {
-      // A failed or unknown close never reaches the revoke: revoking under an
-      // unconfirmed position would strand exposure nobody is authorized to
-      // manage. Only a confirmed flat (within epsilon) ends the authority;
-      // anything else keeps it and says so (06A).
-      const closed = yield* closePosition(input);
-      if (
-        closed.positionSize !== null &&
-        Math.abs(closed.positionSize) <= PROTECTION_SIZE_EPSILON
-      ) {
-        const status = yield* transitionTo(input.missionId, "revoked");
+      const mission = yield* missions.getMission(input.missionId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `finalize mission: ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        ),
+      );
+
+      // A repeated event must neither revoke twice nor submit close orders
+      // under an authority that already ended.
+      if (mission.status === "revoked" || mission.status === "completed") {
         return {
-          status,
-          positionSize: closed.positionSize,
-          cancelledCloids: closed.cancelledCloids,
-          summary: `${closed.summary} Authority revoked.`,
-        } satisfies ControlOutcome;
+          status: mission.status,
+          finalized: true,
+          markets: [],
+          cancelledCloids: [],
+          summary: `Mission already ${mission.status}; nothing to finalize.`,
+        } satisfies MissionFinalizationOutcome;
       }
+
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `finalize mission: master wallet could not be resolved: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
+
+      // --- step 1: block new entries using the existing mechanisms ----------
+      let guardedStatus: string | undefined;
+      if (!ENTRY_BLOCKED_STATUSES.has(mission.status)) {
+        // Failure to establish the block stops the finalization: unwinding a
+        // position the mission may still increase is the race this gate is for.
+        guardedStatus = yield* transitionTo(input.missionId, "paused");
+      }
+
+      // --- step 2: cancel what could reopen exposure, with evidence ---------
+      let cancellationConfirmed = true;
+      let cancellationReason: string | null = null;
+      const discovered = yield* readRestingIncreasingOrders(input.missionId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.result,
+      );
+      if (Result.isFailure(discovered)) {
+        cancellationConfirmed = false;
+        cancellationReason =
+          "the resting-order read failed, so resting entries may reopen exposure";
+      } else if (discovered.success.length > 0) {
+        yield* cancelOrdersBestEffort({
+          orders: discovered.success,
+          logContext: "finalize mission",
+        }).pipe(Effect.provideService(HyperliquidExecutionService, execution));
+        cancellationConfirmed = false;
+        cancellationReason =
+          `${discovered.success.length} resting increasing order(s) were submitted for ` +
+          `cancellation, but their acknowledgements are not yet confirmed`;
+      }
+
+      // --- step 3: bounded close attempt on every held market ----------------
+      const results = new Map<string, MissionFinalizationMarket>();
+      for (const market of mission.markets) {
+        const closed = yield* closePosition({
+          missionId: input.missionId,
+          masterAddress,
+          market,
+        }).pipe(Effect.result);
+        if (Result.isFailure(closed)) {
+          results.set(market, {
+            market,
+            outcome: "failed",
+            positionSize: null,
+            reason: closed.failure.detail ?? closed.failure.message,
+          });
+          continue;
+        }
+        const outcome = closed.success;
+        if (outcome.positionSize === null) {
+          results.set(market, {
+            market,
+            outcome: "unknown",
+            positionSize: null,
+            reason: outcome.summary,
+          });
+        } else if (Math.abs(outcome.positionSize) <= PROTECTION_SIZE_EPSILON) {
+          results.set(market, { market, outcome: "flat", positionSize: 0 });
+        } else {
+          results.set(market, {
+            market,
+            outcome: "remains",
+            positionSize: outcome.positionSize,
+            reason: outcome.summary,
+          });
+        }
+      }
+
+      // --- step 4: fresh canonical confirmation across the current held set --
+      const fresh = yield* missions.getMission(input.missionId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `finalize mission: held-set re-read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
+      for (const market of fresh.markets) {
+        if (!results.has(market)) {
+          results.set(market, {
+            market,
+            outcome: "unprocessed",
+            positionSize: null,
+            reason: "the market joined the mission during finalization",
+          });
+          continue;
+        }
+        // The close pass's word is not the gate's word: a failed or unknown
+        // close may actually have filled, and a close that reported flat may
+        // have been refilled. The confirmation read decides.
+        const position = yield* readPosition(
+          { missionId: input.missionId, masterAddress, market },
+          `finalize mission (confirmation read, ${market})`,
+        ).pipe(Effect.result);
+        if (Result.isFailure(position)) {
+          results.set(market, {
+            market,
+            outcome: "unknown",
+            positionSize: null,
+            reason: "the confirmation read failed",
+          });
+          continue;
+        }
+        const size = position.success.size;
+        if (Math.abs(size) > PROTECTION_SIZE_EPSILON) {
+          results.set(market, {
+            market,
+            outcome: "remains",
+            positionSize: size,
+            reason: "a confirmed position remains after the bounded close",
+          });
+        } else {
+          results.set(market, { market, outcome: "flat", positionSize: 0 });
+        }
+      }
+
+      const marketResults = [...results.values()];
+      const blocked =
+        !cancellationConfirmed || marketResults.some((market) => market.outcome !== "flat");
+
+      if (blocked) {
+        return {
+          ...(guardedStatus === undefined ? {} : { status: guardedStatus }),
+          finalized: false,
+          markets: marketResults,
+          cancelledCloids: [],
+          summary: summarizeBlockedFinalization(marketResults, cancellationReason),
+        } satisfies MissionFinalizationOutcome;
+      }
+
+      // --- step 5: the single terminal transition ---------------------------
+      const status = yield* transitionTo(input.missionId, input.terminal);
       return {
-        positionSize: closed.positionSize,
-        cancelledCloids: closed.cancelledCloids,
-        summary: `${closed.summary} Authority was not revoked because the position is still open.`,
-      } satisfies ControlOutcome;
+        status,
+        finalized: true,
+        markets: marketResults,
+        cancelledCloids: [],
+        summary:
+          `All ${marketResults.length} held market(s) confirmed flat. ` +
+          (input.terminal === "revoked" ? "Authority revoked." : "Mission completed."),
+      } satisfies MissionFinalizationOutcome;
+    });
+
+  const closeAndRevokeMission: TradingControlService["Service"]["closeAndRevokeMission"] = (
+    input,
+  ) => finalizeMission({ missionId: input.missionId, terminal: "revoked" });
+
+  const endMissionForThreadEnding: TradingControlService["Service"]["endMissionForThreadEnding"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      // The §11.1 completed-versus-revoked fact is captured BEFORE the
+      // finalization pass: the pass may pause an active mission, and `blocked`
+      // read after a pause would have erased the reason the rule asks about.
+      const mission = yield* missions.getMission(input.missionId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `end mission for thread: ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        ),
+      );
+      const traded = yield* hasRealizedFills(input.missionId);
+      const terminal =
+        traded && mission.status !== "blocked" ? ("completed" as const) : ("revoked" as const);
+      return yield* finalizeMission({ missionId: input.missionId, terminal });
     });
 
   const closeManualPosition: TradingControlService["Service"]["closeManualPosition"] = (input) =>
@@ -798,7 +1125,8 @@ export const makeTradingControlService = Effect.gen(function* () {
     reducePosition,
     closePosition,
     revoke,
-    closeAndRevoke,
+    closeAndRevokeMission,
+    endMissionForThreadEnding,
     closeManualPosition,
   });
 });
