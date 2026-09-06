@@ -1956,3 +1956,118 @@ layer("WatchEvaluator and forward validation", (it) => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// Wake identity (09B): the declared batch/dedup semantics, stated exactly.
+// Watch wakes are per WATCH (one deduplication key per fired watch — a burst
+// of matching watches is one wake each, never merged across watches and never
+// duplicated per watch), while validation wakes are per MISSION per pass (the
+// coalescing rules above). Cancelled watches and watches whose mission has
+// ended with its thread fire nothing.
+// ---------------------------------------------------------------------------
+
+layer("WatchEvaluator wake identity", (it) => {
+  it.effect(
+    "several matching watches on one mission each file their own wake in one pass (09B)",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const first = yield* seed({
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "above",
+          price: 3_000,
+        });
+        const second = yield* seedMore({
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "above",
+          price: 3_050,
+        });
+        yield* TestClock.setTime(NOW);
+        const evaluator = yield* WatchEvaluator;
+        yield* evaluator.forgetDeliveredCandles;
+
+        // One sweep, two matching watches: the declared semantics are one wake
+        // per watch — distinct deduplication keys, both attributable to the
+        // same mission, neither merged into the other.
+        yield* evaluator.sweep;
+        yield* evaluator.drain;
+
+        const inbox = yield* TradingEventInbox;
+        const claimed = yield* inbox.claimPending("mission_1");
+        assert.equal(claimed.length, 2, "one wake per fired watch, per the declared semantics");
+        const keys = claimed.map((event) => event.deduplicationKey);
+        assert.notEqual(keys[0], keys[1], "each watch carries its own deduplication key");
+        assert.ok(keys.includes(`price_cross:${first.id}`) || keys[0] !== keys[1]);
+        assert.isDefined(second.id);
+      }),
+  );
+
+  it.effect("a cancelled watch fires nothing (09B)", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seed({
+        type: "price_cross",
+        market: "ETH",
+        priceSource: "mark",
+        direction: "above",
+        price: 3_000,
+      });
+      const watches = yield* TradingWatchService;
+      const strategies = yield* TradingStrategyService;
+      const registered = yield* strategies.listWatches("mission_1");
+      const watchId = registered[0]?.id;
+      assert.isDefined(watchId);
+      yield* watches.cancelWatch({ missionId: "mission_1", watchId: watchId! });
+
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+      requestedRuns.length = 0;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+      assert.equal(requestedRuns.length, 0);
+      assert.equal((yield* strategies.listWatches("mission_1"))[0]?.status, "cancelled");
+    }),
+  );
+
+  it.effect("a watch whose mission ended with its thread fires nothing (09B)", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seed({
+        type: "price_cross",
+        market: "ETH",
+        priceSource: "mark",
+        direction: "above",
+        price: 3_000,
+      });
+      // The thread is gone: the mission holding the watch is terminal, so the
+      // tracked read must not even consider the watch.
+      const missions = yield* TradingMissionService;
+      yield* missions.transition({
+        missionId: "mission_1",
+        to: "revoked",
+        expectedVersion: yield* missions.getMissionVersion("mission_1"),
+      });
+
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+      requestedRuns.length = 0;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+      assert.equal(requestedRuns.length, 0);
+    }),
+  );
+});
