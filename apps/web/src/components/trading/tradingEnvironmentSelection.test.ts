@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   __resetTradingEnvironmentSelectionForTests,
+  initializeTradingEnvironmentDestination,
   resolveInitialTradingEnvironmentId,
   resolveTradingEnvironmentGate,
   setTradingEnvironmentId,
@@ -45,83 +46,149 @@ describe("resolveInitialTradingEnvironmentId (07A)", () => {
   });
 });
 
-describe("resolveTradingEnvironmentGate (07A)", () => {
-  it("no catalog entries means no environments", () => {
+describe("resolveTradingEnvironmentGate (RC05)", () => {
+  it("before the catalog is ready there is no destination to route to", () => {
     expect(
       resolveTradingEnvironmentGate({
-        selectedEnvironmentId: null,
-        primaryEnvironmentId: env("a"),
+        destinationId: null,
+        initialChoiceComplete: false,
+        environmentIds: [env("a")],
+        catalogReady: false,
+      }),
+    ).toEqual({ state: "loading" });
+  });
+
+  it("a ready catalog whose one-time latch has not run yet is still loading", () => {
+    expect(
+      resolveTradingEnvironmentGate({
+        destinationId: null,
+        initialChoiceComplete: false,
+        environmentIds: [env("a")],
+        catalogReady: true,
+      }),
+    ).toEqual({ state: "loading" });
+  });
+
+  it("no catalog entries means no environments, even with a retained destination", () => {
+    expect(
+      resolveTradingEnvironmentGate({
+        destinationId: env("kept"),
+        initialChoiceComplete: true,
         environmentIds: [],
+        catalogReady: true,
       }),
     ).toEqual({ state: "no-environments" });
   });
 
-  it("an explicit selection wins over the primary", () => {
+  it("a completed initialization without a destination requires an explicit choice", () => {
     expect(
       resolveTradingEnvironmentGate({
-        selectedEnvironmentId: env("a"),
-        primaryEnvironmentId: env("b"),
+        destinationId: null,
+        initialChoiceComplete: true,
         environmentIds: [env("a"), env("b")],
-      }),
-    ).toEqual({ state: "selected", environmentId: env("a") });
-  });
-
-  it("a vanished selection is unavailable, never a silent fallback to the primary", () => {
-    expect(
-      resolveTradingEnvironmentGate({
-        selectedEnvironmentId: env("gone"),
-        primaryEnvironmentId: env("b"),
-        environmentIds: [env("a"), env("b")],
-      }),
-    ).toEqual({ state: "unavailable", environmentId: env("gone") });
-  });
-
-  it("no selection and no valid primary over several entries requires a choice", () => {
-    expect(
-      resolveTradingEnvironmentGate({
-        selectedEnvironmentId: null,
-        primaryEnvironmentId: null,
-        environmentIds: [env("a"), env("b")],
+        catalogReady: true,
       }),
     ).toEqual({ state: "choose" });
   });
 
-  it("no selection over a sole entry selects it", () => {
+  it("a destination present in the catalog is selected; a vanished one is unavailable", () => {
     expect(
       resolveTradingEnvironmentGate({
-        selectedEnvironmentId: null,
-        primaryEnvironmentId: null,
-        environmentIds: [env("a")],
+        destinationId: env("a"),
+        initialChoiceComplete: true,
+        environmentIds: [env("a"), env("b")],
+        catalogReady: true,
       }),
     ).toEqual({ state: "selected", environmentId: env("a") });
+    expect(
+      resolveTradingEnvironmentGate({
+        destinationId: env("gone"),
+        initialChoiceComplete: true,
+        environmentIds: [env("a"), env("b")],
+        catalogReady: true,
+      }),
+    ).toEqual({ state: "unavailable", environmentId: env("gone") });
   });
 });
 
-describe("the session-scoped selection store (07A)", () => {
-  it("an explicit set flows through the gate and reset restores the unset state", () => {
+describe("the session-scoped destination store (RC05)", () => {
+  it("latches the primary once and never re-derives it", () => {
     __resetTradingEnvironmentSelectionForTests();
-    const catalog = {
+
+    const first = initializeTradingEnvironmentDestination({
       primaryEnvironmentId: env("primary"),
       environmentIds: [env("primary"), env("other")],
-    };
-
-    // Unset: the primary is the implicit selection.
-    expect(resolveTradingEnvironmentGate({ ...catalog, selectedEnvironmentId: null })).toEqual({
-      state: "selected",
-      environmentId: env("primary"),
     });
+    expect(first).toEqual({ destinationId: env("primary"), initialChoiceComplete: true });
 
-    // An explicit choice is authoritative…
-    setTradingEnvironmentId(env("other"));
-    expect(
-      resolveTradingEnvironmentGate({ ...catalog, selectedEnvironmentId: env("other") }),
-    ).toEqual({ state: "selected", environmentId: env("other") });
+    // A later primary or catalog change is not a selection event.
+    const after = initializeTradingEnvironmentDestination({
+      primaryEnvironmentId: env("other"),
+      environmentIds: [env("other")],
+    });
+    expect(after.destinationId).toBe(env("primary"));
+  });
 
-    // …and reset returns to the implicit primary selection.
+  it("a sole entry latches; several entries with no primary latch to an explicit choice required", () => {
     __resetTradingEnvironmentSelectionForTests();
-    expect(resolveTradingEnvironmentGate({ ...catalog, selectedEnvironmentId: null })).toEqual({
-      state: "selected",
-      environmentId: env("primary"),
-    });
+    expect(
+      initializeTradingEnvironmentDestination({
+        primaryEnvironmentId: null,
+        environmentIds: [env("only")],
+      }).destinationId,
+    ).toBe(env("only"));
+
+    __resetTradingEnvironmentSelectionForTests();
+    expect(
+      initializeTradingEnvironmentDestination({
+        primaryEnvironmentId: null,
+        environmentIds: [env("a"), env("b")],
+      }),
+    ).toEqual({ destinationId: null, initialChoiceComplete: true });
+  });
+
+  it("an explicit choice is authoritative and itself completes the initialization", () => {
+    __resetTradingEnvironmentSelectionForTests();
+    setTradingEnvironmentId(env("other"));
+    // The automatic latch afterwards cannot revisit or overwrite the choice.
+    expect(
+      initializeTradingEnvironmentDestination({
+        primaryEnvironmentId: env("primary"),
+        environmentIds: [env("primary"), env("other")],
+      }).destinationId,
+    ).toBe(env("other"));
+
+    // The choice survives catalog churn — reorder, removal, empty — and the
+    // gate says unavailable/no-environments rather than switching.
+    expect(
+      resolveTradingEnvironmentGate({
+        destinationId: env("other"),
+        initialChoiceComplete: true,
+        environmentIds: [env("a")],
+        catalogReady: true,
+      }),
+    ).toEqual({ state: "unavailable", environmentId: env("other") });
+  });
+
+  it("a cleared destination keeps the session out of automatic-selection mode until reset", () => {
+    __resetTradingEnvironmentSelectionForTests();
+    setTradingEnvironmentId(env("a"));
+    setTradingEnvironmentId(null);
+    expect(
+      initializeTradingEnvironmentDestination({
+        primaryEnvironmentId: env("primary"),
+        environmentIds: [env("primary")],
+      }),
+    ).toEqual({ destinationId: null, initialChoiceComplete: true });
+
+    __resetTradingEnvironmentSelectionForTests();
+    expect(
+      resolveTradingEnvironmentGate({
+        destinationId: null,
+        initialChoiceComplete: false,
+        environmentIds: [],
+        catalogReady: false,
+      }),
+    ).toEqual({ state: "loading" });
   });
 });

@@ -210,6 +210,15 @@ export function TradeHomePanel() {
               />
             }
           />
+        ) : gate.state === "loading" ? (
+          // RC05: the catalog is not ready (or the one-time latch has not
+          // run). No selector, no environment-bound queries — a partial
+          // catalog never chooses a destination.
+          <div className="flex flex-col gap-2 px-5 py-4">
+            <p className="text-sm text-muted-foreground" data-testid="trade-environment-gate">
+              Loading trading environments…
+            </p>
+          </div>
         ) : (
           <div className="flex flex-col gap-2 px-5 py-4">
             <TradingEnvironmentSelector

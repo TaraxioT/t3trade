@@ -467,7 +467,9 @@ export function TradingWorkspacePanel() {
         environmentId={gate.environmentId}
         onSelect={select}
       />
-    ) : (
+    ) : gate.state === "loading" ? // RC05: no selector and no environment-bound content before the
+    // catalog is ready and the one-time latch has run.
+    null : (
       <TradingEnvironmentSelector
         environments={environments}
         environmentId={gate.state === "unavailable" ? gate.environmentId : null}
@@ -481,12 +483,17 @@ export function TradingWorkspacePanel() {
       <SettingsSection title="Trading environment" icon={<TrendingUpIcon className="size-4" />}>
         <div className="flex min-w-0 items-center px-3 py-1.5 sm:px-4">{selector}</div>
         {gate.state === "selected" ? null : (
-          <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
-            {gate.state === "no-environments"
-              ? "Connect an environment to see its trading missions."
-              : gate.state === "choose"
-                ? "Choose an environment to see its trading missions."
-                : "The selected trading environment is no longer available; choose an environment to continue."}
+          <p
+            className="px-3 py-2 text-sm text-muted-foreground sm:px-4"
+            data-testid="trading-environment-gate"
+          >
+            {gate.state === "loading"
+              ? "Loading trading environments…"
+              : gate.state === "no-environments"
+                ? "Connect an environment to see its trading missions."
+                : gate.state === "choose"
+                  ? "Choose an environment to see its trading missions."
+                  : "The selected trading environment is no longer available; choose an environment to continue."}
           </p>
         )}
       </SettingsSection>
