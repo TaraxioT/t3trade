@@ -182,6 +182,8 @@ const REDUCTION_ATTEMPTS = 2;
 type ReductionResult =
   | {
       readonly kind: "confirmed";
+      /** Signed canonical size before the first submission (reduceLoop's own read). */
+      readonly startingSize: number;
       readonly positionSize: number;
       readonly closedSize: number;
       readonly failureReason: string | null;
@@ -209,6 +211,46 @@ export const describeCloseOutcome = (input: {
     return `Close failed; nothing filled and ${remains}${exchangeSaid}`;
   }
   return `Position partly closed; ${remains}${exchangeSaid}`;
+};
+
+/** True when the position flipped side or grew in absolute size during a reduction (06D). */
+export const reductionChangedDuring = (startingSize: number, positionSize: number): boolean => {
+  const signChanged =
+    Math.abs(startingSize) > PROTECTION_SIZE_EPSILON &&
+    Math.abs(positionSize) > PROTECTION_SIZE_EPSILON &&
+    Math.sign(startingSize) !== Math.sign(positionSize);
+  return signChanged || Math.abs(positionSize) > Math.abs(startingSize) + PROTECTION_SIZE_EPSILON;
+};
+
+/**
+ * The observed-reduction report (06D): the canonical NET position change the
+ * exchange shows, never a fill attributed from the delta. Only a same-side
+ * decrease (or a confirmed flat) earns a percentage — rounded to at most two
+ * decimals; a sign change or grown exposure says the position changed and
+ * names the confirmed current size instead.
+ */
+export const describeReductionOutcome = (input: {
+  readonly market: string;
+  readonly startingSize: number;
+  readonly positionSize: number;
+  readonly requestedPercent: number;
+}): string => {
+  if (reductionChangedDuring(input.startingSize, input.positionSize)) {
+    return (
+      `Position changed during reduction; confirm current position before retrying. ` +
+      `Confirmed current position: ${input.positionSize} ${input.market}.`
+    );
+  }
+  const start = Math.abs(input.startingSize);
+  const observed =
+    start <= PROTECTION_SIZE_EPSILON
+      ? 0
+      : Math.round(((start - Math.abs(input.positionSize)) / start) * 10_000) / 100;
+  return (
+    `Position size decreased by ${observed}% ` +
+    `(${input.startingSize} to ${input.positionSize} ${input.market}); ` +
+    `requested ${input.requestedPercent}%.`
+  );
 };
 
 export const makeTradingControlService = Effect.gen(function* () {
@@ -330,6 +372,7 @@ export const makeTradingControlService = Effect.gen(function* () {
         input.exchangeInput,
         `${input.readOperation} (initial read)`,
       );
+      const signedStartingSize = position.size;
       const startingSize = Math.abs(position.size);
       let remainingToClose = Math.min(input.targetSize, startingSize);
       // The exchange's own words for the attempts that did not fill, so the
@@ -378,6 +421,7 @@ export const makeTradingControlService = Effect.gen(function* () {
 
       return {
         kind: "confirmed" as const,
+        startingSize: signedStartingSize,
         positionSize: position.size,
         closedSize: Math.max(0, startingSize - Math.abs(position.size)),
         /** The most recent rejection, verbatim; null when nothing was refused. */
@@ -556,11 +600,20 @@ export const makeTradingControlService = Effect.gen(function* () {
       return {
         positionSize: reduced.positionSize,
         cancelledCloids: [],
+        // 06D: the success line reports the OBSERVED canonical decrease, not
+        // the requested percentage; a sign flip or grown exposure is narrated
+        // as a changed position, never as an attributed fill.
         summary:
-          reduced.closedSize <= PROTECTION_SIZE_EPSILON
+          reduced.closedSize <= PROTECTION_SIZE_EPSILON &&
+          !reductionChangedDuring(reduced.startingSize, reduced.positionSize)
             ? `Reduce failed; nothing filled and ${Math.abs(reduced.positionSize)} ${input.market} remains.` +
               (reduced.failureReason === null ? "" : ` Exchange said: ${reduced.failureReason}`)
-            : `Reduced by ${input.percent}%. ${Math.abs(reduced.positionSize)} ${input.market} remains.`,
+            : describeReductionOutcome({
+                market: input.market,
+                startingSize: reduced.startingSize,
+                positionSize: reduced.positionSize,
+                requestedPercent: input.percent,
+              }),
       } satisfies ControlOutcome;
     });
 
@@ -716,13 +769,19 @@ export const makeTradingControlService = Effect.gen(function* () {
       return {
         outcome: "done",
         positionSize: reduced.positionSize,
-        // Truthful report (R2-2): a partial reduce that filled reports the
-        // percent; anything else — including a close that filled NOTHING —
-        // goes through the shared three-way close description, exchange
-        // reason attached verbatim.
+        // Truthful report (R2-2/06D): a partial reduce that filled reports the
+        // OBSERVED canonical decrease with the requested percent alongside;
+        // anything else — including a close that filled NOTHING — goes through
+        // the shared three-way close description, exchange reason verbatim.
         summary:
-          percent !== 100 && reduced.closedSize > PROTECTION_SIZE_EPSILON
-            ? `Reduced by ${percent}%. ${Math.abs(reduced.positionSize)} ${input.market} remains.`
+          (percent !== 100 && reduced.closedSize > PROTECTION_SIZE_EPSILON) ||
+          reductionChangedDuring(reduced.startingSize, reduced.positionSize)
+            ? describeReductionOutcome({
+                market: input.market,
+                startingSize: reduced.startingSize,
+                positionSize: reduced.positionSize,
+                requestedPercent: percent,
+              })
             : describeCloseOutcome({
                 market: input.market,
                 positionSize: reduced.positionSize,

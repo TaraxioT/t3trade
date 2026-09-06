@@ -65,6 +65,13 @@ interface Fake {
    * control — no timing, no sleeps (06A).
    */
   snapshotReads: Array<"ok" | "fail">;
+  /**
+   * Per-submission fill fractions for the mission lane, consumed
+   * front-to-back; submissions past the plan use exitFillFraction (06D).
+   */
+  exitFillPlan: Array<number>;
+  /** Runs on each mission-lane reconcile between attempts — e.g. a concurrent position increase (06D). */
+  onReconcile?: (() => void) | undefined;
 }
 
 const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
@@ -79,6 +86,7 @@ const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
   exitRejection: null,
   exitFillFraction: 1,
   snapshotReads: [],
+  exitFillPlan: [],
   ...overrides,
 });
 
@@ -122,7 +130,8 @@ const executionLayer = (fake: Fake) =>
             { cloid: "0xexit", status: "error", reason: fake.exitRejection, role: "entry" },
           ] as ReadonlyArray<TradingOrderResult>;
         }
-        const closable = Math.abs(input.positionSize) * fake.exitFillFraction;
+        const closable =
+          Math.abs(input.positionSize) * (fake.exitFillPlan.shift() ?? fake.exitFillFraction);
         const sign = fake.positionSize > 0 ? 1 : -1;
         fake.positionSize = Number((fake.positionSize - sign * closable).toFixed(10));
         return [
@@ -170,16 +179,20 @@ const protectionLayer = (fake: Fake) =>
       }),
   } as unknown as TradingProtectionService["Service"]);
 
-const reconcilerLayer = Layer.succeed(HyperliquidReconciler, {
-  reconcile: () =>
-    Effect.succeed({
-      position: null,
-      openOrders: [],
-      canonicalOrders: [],
-      fills: [],
-      observedAt: 0,
-    }),
-} as unknown as HyperliquidReconciler["Service"]);
+const reconcilerLayer = (fake: Fake) =>
+  Layer.succeed(HyperliquidReconciler, {
+    reconcile: () =>
+      Effect.sync(() => {
+        fake.onReconcile?.();
+        return {
+          position: null,
+          openOrders: [],
+          canonicalOrders: [],
+          fills: [],
+          observedAt: 0,
+        };
+      }),
+  } as unknown as HyperliquidReconciler["Service"]);
 
 const missionsLayer = (fake: Fake) =>
   Layer.succeed(TradingMissionService, {
@@ -227,7 +240,7 @@ const runControl = <A, E>(
         gatewayLayer(fake),
         executionLayer(fake),
         protectionLayer(fake),
-        reconcilerLayer,
+        reconcilerLayer(fake),
         missionsLayer(fake),
         infoLayer,
         NodeSqliteClient.layerMemory(),
@@ -806,5 +819,120 @@ it.effect("a failed ownership read fails the manual close with no submission (06
     assert.equal(error.reason, "exchange_action_failed");
     assert.ok(error.detail?.includes("held-market ownership read failed"), error.detail);
     assert.deepEqual(fake.exits, []);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Observed reductions (06D): the success line reports the canonical net
+// decrease with the requested percent alongside — never a fill attributed
+// from the position delta, never a percentage for a sign flip or growth.
+// ---------------------------------------------------------------------------
+
+it.effect("reports the observed decrease alongside the requested percent (06D)", () =>
+  Effect.gen(function* () {
+    // Start 10, request 50%: attempt 1 submits 5 and fills 40% of it (10 -> 8);
+    // attempt 2 fills nothing, so the total reduction is exactly 2.
+    const fake = makeFake({ positionSize: 10, exitFillPlan: [0.4, 0] });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 50 }));
+
+    assert.deepEqual(fake.exits, [5, 3]);
+    assert.equal(outcome.positionSize, 8);
+    assert.equal(
+      outcome.summary,
+      "Position size decreased by 20% (10 to 8 ETH); requested 50%.",
+      outcome.summary,
+    );
+  }),
+);
+
+it.effect("a fully-filled requested half reports 50% observed (06D)", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 10, exitFillPlan: [1] });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 50 }));
+
+    assert.equal(
+      outcome.summary,
+      "Position size decreased by 50% (10 to 5 ETH); requested 50%.",
+      outcome.summary,
+    );
+  }),
+);
+
+it.effect("a short reports its observed decrease with signed sizes (06D)", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: -10, exitFillPlan: [0.4, 0] });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 50 }));
+
+    assert.equal(
+      outcome.summary,
+      "Position size decreased by 20% (-10 to -8 ETH); requested 50%.",
+      outcome.summary,
+    );
+  }),
+);
+
+it.effect("a reduction that fills nothing is still a failure, not a percent (06D)", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 10, exitFillPlan: [0, 0] });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 50 }));
+
+    assert.ok(outcome.summary.startsWith("Reduce failed"), outcome.summary);
+    assert.ok(!outcome.summary.includes("%"), outcome.summary);
+  }),
+);
+
+it.effect("a concurrent increase is never narrated as an attributed fill (06D)", () =>
+  Effect.gen(function* () {
+    // Attempt 1 fills its 5, then a concurrent scale-in adds 6 between the
+    // reconcile and the re-read: the position GREW. No percentage may appear.
+    let scaledIn = false;
+    const fake = makeFake({
+      positionSize: 10,
+      exitFillPlan: [1, 0],
+      onReconcile: () => {
+        if (scaledIn) return;
+        scaledIn = true;
+        fake.positionSize += 6;
+      },
+    });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 50 }));
+
+    assert.ok(outcome.summary.startsWith("Position changed during reduction"), outcome.summary);
+    assert.ok(outcome.summary.includes("Confirmed current position: 11 ETH"), outcome.summary);
+    assert.ok(!outcome.summary.includes("decreased by"), outcome.summary);
+  }),
+);
+
+it.effect("a sign flip reports the changed position, not a fictitious fill (06D)", () =>
+  Effect.gen(function* () {
+    // The submitted 5 fills 12 (an opposing book): 10 long becomes 2 short.
+    const fake = makeFake({ positionSize: 10, exitFillPlan: [2.4] });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 50 }));
+
+    assert.ok(outcome.summary.startsWith("Position changed during reduction"), outcome.summary);
+    assert.ok(outcome.summary.includes("Confirmed current position: -2 ETH"), outcome.summary);
+    assert.ok(!outcome.summary.includes("decreased by"), outcome.summary);
+  }),
+);
+
+it.effect("a confirmed flat from a reduce reports 100% observed (06D)", () =>
+  Effect.gen(function* () {
+    // Requested 50, but concurrent activity closed the rest: the canonical
+    // read is flat, and flat is a same-side decrease to zero.
+    const fake = makeFake({
+      positionSize: 10,
+      exitFillPlan: [1],
+      onReconcile: () => {
+        fake.positionSize = 0;
+      },
+    });
+    const outcome = yield* runControl(fake, (s) => s.reducePosition({ ...TARGET, percent: 50 }));
+
+    assert.equal(outcome.positionSize, 0);
+    assert.equal(
+      outcome.summary,
+      "Position size decreased by 100% (10 to 0 ETH); requested 50%.",
+      outcome.summary,
+    );
   }),
 );
