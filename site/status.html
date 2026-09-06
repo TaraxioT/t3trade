@@ -523,6 +523,47 @@
         padding: 26px 16px;
         font-size: 14.5px;
       }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono,
+        h2 span,
+        h3 span,
+        p span {
+          overflow-wrap: anywhere;
+        }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path,
+        code,
+        .mono,
+        .k,
+        .who,
+        .chip,
+        .path-chip,
+        .file,
+        .fn,
+        .term,
+        .qno,
+        p span,
+        h2 span,
+        h3 span,
+        li span,
+        td,
+        th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre,
+        .terminal,
+        .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
     </style>
   </head>
   <body>

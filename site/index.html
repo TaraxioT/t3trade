@@ -680,6 +680,47 @@
         color: var(--dim);
         font-size: 14px;
       }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono,
+        h2 span,
+        h3 span,
+        p span {
+          overflow-wrap: anywhere;
+        }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path,
+        code,
+        .mono,
+        .k,
+        .who,
+        .chip,
+        .path-chip,
+        .file,
+        .fn,
+        .term,
+        .qno,
+        p span,
+        h2 span,
+        h3 span,
+        li span,
+        td,
+        th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre,
+        .terminal,
+        .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
     </style>
   </head>
   <body>
@@ -832,7 +873,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="110" y="62" text-anchor="middle" fill="var(--chalk)">web app</text>
-                  <text x="110" y="80" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="110" y="80" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     TradeHomePanel
                   </text>
                 </g>
@@ -849,7 +890,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="110" y="134" text-anchor="middle" fill="var(--chalk)">desktop</text>
-                  <text x="110" y="152" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="110" y="152" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     Electron wrapper
                   </text>
                 </g>
@@ -866,7 +907,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="341" y="98" text-anchor="middle" fill="var(--chalk)">typed WS RPC</text>
-                  <text x="341" y="116" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="341" y="116" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     WsRpcGroup
                   </text>
                 </g>
@@ -883,7 +924,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="110" y="234" text-anchor="middle" fill="var(--chalk)">providers</text>
-                  <text x="110" y="252" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="110" y="252" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     codex · claude · cursor · grok · opencode
                   </text>
                 </g>
@@ -902,7 +943,7 @@
                   <text x="341" y="234" text-anchor="middle" fill="var(--chalk)">
                     command queue
                   </text>
-                  <text x="341" y="252" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="341" y="252" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     OrchestrationEngine
                   </text>
                 </g>
@@ -919,7 +960,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="562" y="234" text-anchor="middle" fill="var(--chalk)">pure decider</text>
-                  <text x="562" y="252" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="562" y="252" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     decideCommand · no IO
                   </text>
                 </g>
@@ -938,7 +979,7 @@
                   <text x="783" y="234" text-anchor="middle" fill="var(--chalk)">
                     event log + projectors
                   </text>
-                  <text x="783" y="252" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="783" y="252" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     read models
                   </text>
                 </g>
@@ -955,7 +996,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="999" y="234" text-anchor="middle" fill="var(--chalk)">reactors</text>
-                  <text x="999" y="252" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="999" y="252" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     queued side effects
                   </text>
                 </g>
@@ -972,10 +1013,10 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="1119" y="226" text-anchor="middle" fill="var(--chalk)">Hyperliquid</text>
-                  <text x="1119" y="244" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="1119" y="244" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     testnet
                   </text>
-                  <text x="1119" y="262" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="1119" y="262" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     POST /exchange
                   </text>
                 </g>
@@ -992,7 +1033,7 @@
                     stroke="rgba(255,178,36,.45)"
                   />
                   <text x="562" y="354" text-anchor="middle" fill="var(--chalk)">risk gate</text>
-                  <text x="562" y="372" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="562" y="372" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     §16.3 preview · §16.4 budget
                   </text>
                 </g>
@@ -1009,7 +1050,7 @@
                     stroke="rgba(43,213,118,.45)"
                   />
                   <text x="780" y="354" text-anchor="middle" fill="var(--chalk)">signer</text>
-                  <text x="780" y="372" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="780" y="372" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     EIP-712 · nonce lane
                   </text>
                 </g>
@@ -1026,7 +1067,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="999" y="354" text-anchor="middle" fill="var(--chalk)">reconciler</text>
-                  <text x="999" y="372" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="999" y="372" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     8 triggers · canonical
                   </text>
                 </g>
@@ -1043,7 +1084,7 @@
                     stroke="var(--edge-strong)"
                   />
                   <text x="110" y="354" text-anchor="middle" fill="var(--chalk)">archive</text>
-                  <text x="110" y="372" text-anchor="middle" fill="var(--slate)" font-size="9">
+                  <text x="110" y="372" text-anchor="middle" fill="#A9B6CB" font-size="9.5">
                     keyless recorder
                   </text>
                 </g>
@@ -1160,7 +1201,7 @@
               <path
                 id="e13"
                 class="edge-line"
-                d="M783,266 C783,300 460,300 341,130"
+                d="M783,266 C783,318 460,318 341,130"
                 stroke="var(--flow)"
                 fill="none"
                 stroke-width="2"
