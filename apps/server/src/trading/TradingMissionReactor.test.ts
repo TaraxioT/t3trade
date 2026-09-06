@@ -762,6 +762,36 @@ it.live("the close_and_revoke control finalizes the whole mission once", () =>
       assert.equal(yield* lastAnnouncedStatus, "revoked");
       const missions = yield* TradingMissionService;
       assert.isTrue(Option.isNone(yield* missions.findActiveMission(LOCAL_TRADING_USER_ID)));
+
+      // RC06: the durable result of the press. The row, the projection's
+      // correlated field, and the timeline entry all say what the control did.
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly control: string;
+        readonly status: string;
+        readonly summary: string;
+        readonly request_event_sequence: number | null;
+      }>`
+        SELECT control, status, summary, request_event_sequence
+        FROM trading_control_results WHERE mission_id = ${MISSION_ID}
+      `;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.control, "close_and_revoke");
+      assert.equal(rows[0]!.status, "completed");
+      assert.notEqual(rows[0]!.request_event_sequence, null, "the result cites its request");
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.lastControlResult?.status, "completed");
+      assert.equal(projected.value.lastControlResult?.control, "close_and_revoke");
+      assert.deepEqual(
+        projected.value.lastControlResult?.markets.map((market) => market.market),
+        ["ETH"],
+      );
+      assert.ok(
+        projected.value.missionTimeline.some(
+          (entry) => entry.kind === "control_result" && entry.label.includes("revoked"),
+        ),
+      );
     }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
   }),
 );
@@ -780,6 +810,48 @@ it.live("the close_and_revoke control keeps authority when it cannot confirm", (
       assert.equal(yield* lastAnnouncedStatus, "paused");
       const missions = yield* TradingMissionService;
       assert.isTrue(Option.isSome(yield* missions.findMissionByThreadId(THREAD_ID)));
+
+      // RC06: a finalization that could not confirm anything is a failed
+      // control, never "completed" — the operator sees the refusal to claim
+      // what was not confirmed.
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly status: string; readonly summary: string }>`
+        SELECT status, summary FROM trading_control_results WHERE mission_id = ${MISSION_ID}
+      `;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.status, "failed");
+      assert.ok(rows[0]!.summary.includes("Authority was not revoked"), rows[0]!.summary);
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.lastControlResult?.status, "failed");
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC06: a per-market control records its own outcome — the request being
+// accepted was never the last word.
+it.live("a per-market control records its outcome with per-market summaries", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* riskControl("close_position");
+
+      assert.equal(exchange.exits.length, 1, "the held market was flattened");
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly control: string; readonly status: string }>`
+        SELECT control, status FROM trading_control_results WHERE mission_id = ${MISSION_ID}
+      `;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.control, "close_position");
+      assert.equal(rows[0]!.status, "completed");
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.lastControlResult?.control, "close_position");
+      assert.equal(projected.value.lastControlResult?.status, "completed");
     }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
   }),
 );

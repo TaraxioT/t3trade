@@ -20,6 +20,7 @@ import type { OrchestrationTradingMission } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import type { ControlOutcomeView } from "./useMissionControls";
 import { deriveMissionStrip, type MissionStripTone } from "./tradingPresentation";
 
 /**
@@ -31,6 +32,8 @@ export interface MissionStripControls {
   readonly isBusy: boolean;
   /** Why the last press did not take effect, or null. */
   readonly error: string | null;
+  /** The correlated outcome of the last risk-control press (RC06). */
+  readonly outcome: ControlOutcomeView;
   readonly lifecycle: (
     type: "trading.mission.pause" | "trading.mission.resume" | "trading.mission.revoke",
   ) => void;
@@ -115,6 +118,44 @@ export function MissionStripBar({
           {controls.error}
         </span>
       )}
+
+      {/* RC06: the correlated lifecycle of the last risk-control press. An
+          accepted dispatch is not a completed control, so the strip says which
+          of the three it is: in flight, its durable result, or interrupted
+          without a result. */}
+      {controls.outcome.state === "pending" ? (
+        <span
+          className="flex-none shrink animate-pulse text-muted-foreground"
+          data-testid="mission-strip-pending"
+        >
+          {controls.outcome.control.replace(/_/g, " ")}…
+        </span>
+      ) : controls.outcome.state === "interrupted" ? (
+        <span
+          className="min-w-0 shrink truncate text-armed"
+          data-testid="mission-strip-interrupted"
+          // oxlint-disable-next-line t3code/no-native-title-tooltip -- See the error slot above.
+          title={`The ${controls.outcome.control.replace(/_/g, " ")} control did not report a final result; its outcome is unknown`}
+        >
+          {controls.outcome.control.replace(/_/g, " ")}: no final result — outcome unknown
+        </span>
+      ) : controls.outcome.state === "result" ? (
+        <span
+          className={cn(
+            "min-w-0 shrink truncate",
+            controls.outcome.status === "failed"
+              ? "text-destructive"
+              : controls.outcome.status === "unknown"
+                ? "text-armed"
+                : "text-muted-foreground",
+          )}
+          data-testid="mission-strip-result"
+          // oxlint-disable-next-line t3code/no-native-title-tooltip -- See the error slot above.
+          title={controls.outcome.summary}
+        >
+          {controls.outcome.summary}
+        </span>
+      ) : null}
 
       <span className="ml-auto flex flex-none items-center gap-4">
         <Slot label="Max loss" value={strip.maximumLossLabel} />

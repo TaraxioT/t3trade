@@ -460,6 +460,18 @@ export type TradingMissionResultView = typeof TradingMissionResultView.Type;
  *
  * Bounded server-side: history grows without limit and this rides a 3s poll.
  */
+export const TradingRiskControl = Schema.Literals([
+  "cancel_entries",
+  "reduce_position",
+  "close_position",
+  "close_and_revoke",
+]);
+export type TradingRiskControl = typeof TradingRiskControl.Type;
+
+/** The four reduction sizes the workspace offers (§14.7). */
+export const TradingReductionPercent = Schema.Literals([25, 50, 75, 100]);
+export type TradingReductionPercent = typeof TradingReductionPercent.Type;
+
 export const TradingMissionTimelineEntry = Schema.Struct({
   at: IsoDateTime,
   kind: Schema.Literals([
@@ -473,6 +485,12 @@ export const TradingMissionTimelineEntry = Schema.Struct({
      * idea rather than about money.
      */
     "validation_event",
+    /**
+     * A §14.7 risk control finished, failed, or could not be confirmed
+     * (RC06) — and an §17.5 emergency close's persisted warning surfaces the
+     * same way, in the mission's own history.
+     */
+    "control_result",
   ]),
   /** Already-composed prose, so the client renders rather than interprets. */
   label: TrimmedNonEmptyString,
@@ -654,6 +672,30 @@ export const OrchestrationTradingMission = Schema.Struct({
    * Empty for a mission that has not woken, published, or moved a stop yet.
    */
   missionTimeline: Schema.Array(TradingMissionTimelineEntry),
+
+  /**
+   * The final outcome of the mission's most recent §14.7 risk control, or
+   * null (RC06). A dispatched command only proves the request was accepted;
+   * this is the correlated completion the operator sees without a provider —
+   * `requestEventSequence` ties it to the press that caused it, and an
+   * unknown position size stays null end to end.
+   */
+  lastControlResult: Schema.NullOr(
+    Schema.Struct({
+      control: TradingRiskControl,
+      status: Schema.Literals(["completed", "failed", "unknown"]),
+      summary: TrimmedNonEmptyString,
+      markets: Schema.Array(
+        Schema.Struct({
+          market: TrimmedNonEmptyString,
+          outcome: TrimmedNonEmptyString,
+          positionSize: Schema.NullOr(Schema.Number),
+        }),
+      ),
+      requestEventSequence: Schema.optional(Schema.Number),
+      occurredAt: IsoDateTime,
+    }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -1191,18 +1233,6 @@ export const TradingMissionControlCommand = Schema.Struct({
  * invokes them directly — no harness turn, and availability that does not
  * depend on the bound harness being online.
  */
-export const TradingRiskControl = Schema.Literals([
-  "cancel_entries",
-  "reduce_position",
-  "close_position",
-  "close_and_revoke",
-]);
-export type TradingRiskControl = typeof TradingRiskControl.Type;
-
-/** The four reduction sizes the workspace offers (§14.7). */
-export const TradingReductionPercent = Schema.Literals([25, 50, 75, 100]);
-export type TradingReductionPercent = typeof TradingReductionPercent.Type;
-
 export const TradingMissionRiskControlCommand = Schema.Struct({
   type: Schema.Literal("trading.mission.risk-control"),
   commandId: CommandId,
@@ -1211,6 +1241,42 @@ export const TradingMissionRiskControlCommand = Schema.Struct({
   control: TradingRiskControl,
   /** Required by `reduce_position`, meaningless for the others. */
   reductionPercent: Schema.optional(TradingReductionPercent),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The final outcome of an applied §14.7 risk control (RC06). Raised by the
+ * reactor AFTER the exchange work completed, failed, or could not be
+ * confirmed — a dispatched control command only proves the request was
+ * accepted, and this is the record that closes the loop for the operator.
+ *
+ * `requestEventSequence` is the sequence of the `trading.mission-risk-control-
+ * requested` event the reactor answered, so a client can correlate the result
+ * to the press that caused it and ignore results belonging to another
+ * request.
+ */
+export const TradingMissionControlResultSetCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.control-result"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  control: TradingRiskControl,
+  /** completed = the control did what was asked; failed = it provably did not; unknown = it could not be confirmed. */
+  status: Schema.Literals(["completed", "failed", "unknown"]),
+  /** Already-composed prose, so the client renders rather than interprets. */
+  summary: TrimmedNonEmptyString,
+  /** Per-market facts, where the control had them (close_and_revoke). */
+  markets: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        market: TrimmedNonEmptyString,
+        outcome: TrimmedNonEmptyString,
+        /** Null exactly when the size is unknown — never a zero standing in. */
+        positionSize: Schema.NullOr(Schema.Number),
+      }),
+    ),
+  ),
+  requestEventSequence: Schema.optional(Schema.Number),
   createdAt: IsoDateTime,
 });
 
@@ -1499,6 +1565,7 @@ export const InternalTradingCommand = Schema.Union([
   TradingMissionMarketBoundCommand,
   TradingMissionMarketReleasedCommand,
   TradingExecutionRequestedCommand,
+  TradingMissionControlResultSetCommand,
 ]);
 export type InternalTradingCommand = typeof InternalTradingCommand.Type;
 
@@ -1556,6 +1623,25 @@ export const TradingMissionRiskControlRequestedPayload = Schema.Struct({
   control: TradingRiskControl,
   reductionPercent: Schema.optional(TradingReductionPercent),
   requestedAt: IsoDateTime,
+});
+
+export const TradingMissionControlResultPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  control: TradingRiskControl,
+  status: Schema.Literals(["completed", "failed", "unknown"]),
+  summary: TrimmedNonEmptyString,
+  markets: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        market: TrimmedNonEmptyString,
+        outcome: TrimmedNonEmptyString,
+        positionSize: Schema.NullOr(Schema.Number),
+      }),
+    ),
+  ),
+  requestEventSequence: Schema.optional(Schema.Number),
+  updatedAt: IsoDateTime,
 });
 
 export const TradingMissionStatusChangedPayload = Schema.Struct({

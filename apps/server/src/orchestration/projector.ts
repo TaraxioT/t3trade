@@ -851,6 +851,7 @@ export function projectEvent(
     case "trading.mission-stop-adjusted":
     case "trading.mission-market-bound":
     case "trading.mission-market-released":
+    case "trading.mission-control-result":
     case "trading.execution-requested":
       return Effect.succeed(nextBase);
 

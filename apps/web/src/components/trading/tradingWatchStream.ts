@@ -435,7 +435,13 @@ export function deriveWatchLifecycle(mission: {
   readonly watches: ReadonlyArray<PersistedWatch>;
   readonly missionTimeline: ReadonlyArray<{
     readonly at: string;
-    readonly kind: "wake" | "stop_adjusted" | "strategy_published" | "journal" | "validation_event";
+    readonly kind:
+      | "wake"
+      | "stop_adjusted"
+      | "strategy_published"
+      | "journal"
+      | "validation_event"
+      | "control_result";
     readonly label: string;
   }>;
 }): { readonly stream: ReadonlyArray<WatchStreamItem> } {
@@ -454,7 +460,10 @@ export function deriveWatchLifecycle(mission: {
     // Attributing one to a fired price level would label the firing "paper
     // long opened on ETH" — a sentence about a different market event.
     const decision = after.find(
-      (entry) => entry.kind !== "wake" && entry.kind !== "validation_event",
+      (entry) =>
+        entry.kind !== "wake" &&
+        entry.kind !== "validation_event" &&
+        entry.kind !== "control_result",
     );
     if (decision !== undefined) return decision.label;
     const wake = after.find((entry) => entry.kind === "wake");

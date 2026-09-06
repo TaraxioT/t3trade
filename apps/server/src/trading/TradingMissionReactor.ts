@@ -18,6 +18,7 @@
  * @module TradingMissionReactor
  */
 import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
+import type { TradingRiskControl } from "@t3tools/contracts";
 import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
@@ -148,6 +149,18 @@ export const LOCAL_TRADING_USER_ID = "local";
  * its first line; that first line is the part the harness needs and the part
  * that fits an inbox summary. The whole rendering is kept on the event payload.
  */
+/** The per-market facts of a control result, as the projection row stores them (RC06). */
+const ControlMarketsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      market: Schema.String,
+      outcome: Schema.String,
+      positionSize: Schema.NullOr(Schema.Number),
+    }),
+  ),
+);
+const controlMarketsJson = Schema.encodeSync(ControlMarketsJson);
+
 const describeRefusal = (cause: Cause.Cause<unknown>): string => {
   const failure = Cause.squash(cause);
   const message = failure instanceof Error ? failure.message : String(failure);
@@ -1617,10 +1630,85 @@ const make = Effect.gen(function* () {
    * service directly. Nothing here consults the harness binding, the decision
    * lease, or the strategy version.
    */
+  /**
+   * Record a §14.7 control's final outcome where the operator reads it
+   * (RC06): one durable row — the mission projection re-reads it into
+   * `lastControlResult` — and one event, the doorbell that makes clients
+   * re-read. A dispatched control command only proves the request was
+   * accepted; this closes the loop with what the exchange work actually did,
+   * without a provider in the path.
+   */
+  const recordControlResult = Effect.fn("TradingMissionReactor.recordControlResult")(
+    function* (input: {
+      readonly missionId: TradingMissionId;
+      readonly threadId: ThreadId;
+      readonly control: TradingRiskControl;
+      readonly status: "completed" | "failed" | "unknown";
+      readonly summary: string;
+      readonly markets?: ReadonlyArray<{
+        readonly market: string;
+        readonly outcome: string;
+        readonly positionSize: number | null;
+      }>;
+      readonly requestEventSequence: number | undefined;
+    }) {
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_control_results (
+          mission_id, control, status, summary, markets_json,
+          request_event_sequence, occurred_at
+        ) VALUES (
+          ${input.missionId}, ${input.control}, ${input.status}, ${input.summary},
+          ${controlMarketsJson(input.markets ?? [])}, ${input.requestEventSequence ?? null},
+          ${occurredAt}
+        )
+      `.pipe(
+        Effect.catchCause((cause) =>
+          warnWithCause(
+            "trading control result row could not be written",
+            {
+              missionId: input.missionId,
+            },
+            cause,
+          ),
+        ),
+      );
+
+      const commandIdValue = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      yield* orchestrationEngine
+        .dispatch({
+          type: "trading.mission.control-result",
+          commandId: CommandId.make(commandIdValue),
+          threadId: input.threadId,
+          missionId: input.missionId,
+          control: input.control,
+          status: input.status,
+          summary: input.summary,
+          ...(input.markets === undefined ? {} : { markets: input.markets }),
+          ...(input.requestEventSequence === undefined
+            ? {}
+            : { requestEventSequence: input.requestEventSequence }),
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            warnWithCause(
+              "trading control result could not be published",
+              { missionId: input.missionId },
+              cause,
+            ),
+          ),
+        );
+    },
+  );
+
   const processRiskControlRequested = Effect.fn("TradingMissionReactor.riskControl")(function* (
     event: Extract<TradingRequestEvent, { type: "trading.mission-risk-control-requested" }>,
   ) {
     const { missionId, threadId, control, reductionPercent } = event.payload;
+    // Correlates the recorded result to the press that caused it (RC06).
+    const requestEventSequence = event.sequence;
 
     const mission = yield* missions.getMission(missionId);
     const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
@@ -1631,17 +1719,29 @@ const make = Effect.gen(function* () {
     // A per-market loop let the first flat market revoke while another still
     // held exposure.
     if (control === "close_and_revoke") {
-      const outcome = yield* controls
-        .closeAndRevokeMission({ missionId })
-        .pipe(
-          Effect.catchCause((cause) =>
-            warnWithCause(
+      const outcome = yield* controls.closeAndRevokeMission({ missionId }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            const refusal = describeRefusal(cause);
+            yield* warnWithCause(
               "trading close-and-revoke could not finalize the mission; it keeps its authority",
               { missionId },
               cause,
-            ).pipe(Effect.as(null)),
-          ),
-        );
+            );
+            // The finalization itself failed before producing an outcome:
+            // that is a failed control the operator must see, not a silent
+            // log line (RC06).
+            yield* recordControlResult({
+              missionId,
+              threadId,
+              control,
+              status: "failed",
+              summary: `Close and revoke failed: ${refusal}`,
+              requestEventSequence,
+            });
+          }).pipe(Effect.as(null)),
+        ),
+      );
       if (outcome === null) return;
       yield* Effect.logInfo("trading deterministic control applied", {
         missionId,
@@ -1666,6 +1766,25 @@ const make = Effect.gen(function* () {
           }),
         );
       }
+      yield* recordControlResult({
+        missionId,
+        threadId,
+        control,
+        // A non-finalized outcome with an unreadable market is an unknown
+        // control, not a failed one: something may have executed (RC06).
+        status: outcome.finalized
+          ? "completed"
+          : outcome.markets.some((market) => market.outcome === "unknown")
+            ? "unknown"
+            : "failed",
+        summary: outcome.summary,
+        markets: outcome.markets.map((market) => ({
+          market: market.market,
+          outcome: market.outcome,
+          positionSize: market.positionSize,
+        })),
+        requestEventSequence,
+      });
       return;
     }
 
@@ -1674,17 +1793,42 @@ const make = Effect.gen(function* () {
     // other running under a control the user believes they pressed.
     const outcomes = yield* Effect.forEach(mission.markets, (market) => {
       const target = { missionId, masterAddress, market };
-      return control === "cancel_entries"
-        ? controls.cancelEntries(target)
-        : control === "reduce_position"
-          ? controls.reducePosition({ ...target, percent: reductionPercent ?? 100 })
-          : controls.closePosition(target);
+      const applied =
+        control === "cancel_entries"
+          ? controls.cancelEntries(target)
+          : control === "reduce_position"
+            ? controls.reducePosition({ ...target, percent: reductionPercent ?? 100 })
+            : controls.closePosition(target);
+      return applied.pipe(
+        Effect.result,
+        Effect.map((result) => ({ market, result })),
+      );
     });
 
+    const summary =
+      outcomes.length === 0
+        ? "No held market to apply the control to."
+        : outcomes
+            .map(({ market, result }) =>
+              Result.isSuccess(result)
+                ? result.success.summary
+                : `${market}: ${result.failure instanceof Error ? result.failure.message.split("\n")[0] : String(result.failure)}`,
+            )
+            .join("; ");
     yield* Effect.logInfo("trading deterministic control applied", {
       missionId,
       control,
-      summary: outcomes.map((outcome) => outcome.summary).join("; "),
+      summary,
+    });
+    yield* recordControlResult({
+      missionId,
+      threadId,
+      control,
+      // Any provable per-market failure makes the control failed; every
+      // per-market summary already carries its own partial/unknown truth.
+      status: outcomes.some(({ result }) => Result.isFailure(result)) ? "failed" : "completed",
+      summary,
+      requestEventSequence,
     });
   });
 
