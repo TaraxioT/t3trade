@@ -17,12 +17,13 @@ import {
   UserRoundIcon,
   type LucideIcon,
 } from "lucide-react";
-import { memo, useLayoutEffect, useRef } from "react";
+import { memo, useLayoutEffect, useMemo, useRef } from "react";
 
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
 import { Command, CommandGroup, CommandItem, CommandList } from "../ui/command";
+import { composerSkillItemId, normalizeSkillPath } from "./composerSkillIdentity";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 
 export type ComposerCommandItem =
@@ -58,6 +59,40 @@ export type ComposerCommandItem =
       description: string;
     };
 
+/**
+ * Give skill items their stable identity (10B): id from provider + name +
+ * normalized path; exact provider/name/path duplicates collapse to one item
+ * (first record wins, selection payload preserved), and same-name collisions
+ * from different paths stay separate items whose descriptions carry enough
+ * path context to tell them apart. Non-skill items pass through untouched.
+ */
+function normalizeSkillItems(items: ReadonlyArray<ComposerCommandItem>): ComposerCommandItem[] {
+  const byIdentity = new Set<string>();
+  const nameCounts = new Map<string, number>();
+  const deduped: ComposerCommandItem[] = [];
+  for (const item of items) {
+    if (item.type !== "skill") {
+      deduped.push(item);
+      continue;
+    }
+    const id = composerSkillItemId({ provider: item.provider, skill: item.skill });
+    if (byIdentity.has(id)) continue;
+    byIdentity.add(id);
+    const nameKey = `${item.provider}\u0000${item.skill.name}`;
+    nameCounts.set(nameKey, (nameCounts.get(nameKey) ?? 0) + 1);
+    deduped.push({ ...item, id });
+  }
+  return deduped.map((item) => {
+    if (item.type !== "skill") return item;
+    const nameKey = `${item.provider}\u0000${item.skill.name}`;
+    if ((nameCounts.get(nameKey) ?? 0) < 2) return item;
+    return {
+      ...item,
+      description: `${item.description} · ${normalizeSkillPath(item.skill.path)}`,
+    };
+  });
+}
+
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   items: ComposerCommandItem[];
   resolvedTheme: "light" | "dark";
@@ -68,6 +103,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
 }) {
+  const items = useMemo(() => normalizeSkillItems(props.items), [props.items]);
   const listRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -93,10 +129,10 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         className="chat-composer-drawer-surface chat-composer-drawer-attached relative w-full overflow-hidden **:data-[slot=scroll-area-scrollbar]:data-[orientation=vertical]:my-4"
         data-composer-command-drawer="true"
       >
-        {props.items.length > 0 ? (
+        {items.length > 0 ? (
           <CommandList className="max-h-72 scroll-pb-6">
             <CommandGroup>
-              {props.items.map((item) => (
+              {items.map((item) => (
                 <ComposerCommandMenuItem
                   key={item.id}
                   item={item}
