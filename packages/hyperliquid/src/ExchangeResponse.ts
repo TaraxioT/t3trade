@@ -218,3 +218,70 @@ export function exchangeResponseType(value: unknown): string | undefined {
 export function isLiveOnExchange(row: OrderStatusRow): boolean {
   return row.outcome === "filled" || row.outcome === "resting";
 }
+
+/**
+ * What a cancel-by-cloid response says about the one cloid it was submitted
+ * for (RC02).
+ *
+ * A transport success is not a cancellation: the exchange can reject the
+ * action or the individual order while the POST still answers 200, and the
+ * permissive {@link readExchangeResponse} deliberately tolerates a status-less
+ * `cancel` envelope for other purposes. This decoder is stricter: only an
+ * explicit per-order `success` acknowledges the cancellation, everything else
+ * — including `resting`, `filled`, and waiting rows, which describe the ORDER
+ * rather than the cancel — is unconfirmed with the reason the response
+ * actually gives.
+ *
+ * "Not found"/"already cancelled" texts stay unconfirmed here as well:
+ * proving an order's absence is a canonical order lookup, not text matching.
+ */
+export interface CancelAcknowledgement {
+  readonly acknowledged: boolean;
+  /**
+   * Why the cancellation is not confirmed, in the exchange's own words where
+   * it said any. Undefined iff `acknowledged` is true.
+   */
+  readonly reason?: string;
+}
+
+/** Read one cloid's cancellation acknowledgement out of a cancel response. */
+export function readCancelAcknowledgement(value: unknown, cloid: string): CancelAcknowledgement {
+  const outcome = readExchangeResponse(value);
+  if (outcome.actionError !== undefined) {
+    return { acknowledged: false, reason: outcome.actionError };
+  }
+
+  const type = exchangeResponseType(value);
+  if (type !== "cancel") {
+    return {
+      acknowledged: false,
+      reason: `expected a cancel response for ${cloid}, received type ${type ?? "unknown"}`,
+    };
+  }
+
+  if (outcome.statuses.length === 0) {
+    return {
+      acknowledged: false,
+      reason: `the cancellation response for ${cloid} carried no per-order statuses`,
+    };
+  }
+  if (outcome.statuses.length > 1) {
+    return {
+      acknowledged: false,
+      reason: `expected exactly one cancellation status for ${cloid}, received ${outcome.statuses.length}`,
+    };
+  }
+
+  const row = outcome.statuses[0]!;
+  switch (row.outcome) {
+    case "success":
+      return { acknowledged: true };
+    case "error":
+      return { acknowledged: false, reason: row.reason ?? "per-order error without a reason" };
+    default:
+      return {
+        acknowledged: false,
+        reason: `the response reported the order as ${row.outcome}, not as cancelled`,
+      };
+  }
+}

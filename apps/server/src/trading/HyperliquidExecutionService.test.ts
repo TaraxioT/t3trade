@@ -143,27 +143,40 @@ const OK_RESPONSE = rowsResponse([
   { resting: { oid: 1_000 } },
 ]);
 
+/** The exchange's cancel-shaped envelope (RC02). */
+const cancelResponse = (statuses: ReadonlyArray<unknown>) =>
+  ({ status: "ok", response: { type: "cancel", data: { statuses } } }) as const;
+
+const CANCEL_OK_RESPONSE = cancelResponse(["success"]);
+
 /**
  * A mutable recording exchange: holds the canned response and the list of
  * submitted signed actions in a plain object. Mutable so one shared `it.layer`
  * can serve every test — each test sets the response it wants and reads the
- * captured submissions.
+ * captured submissions. The response is `unknown` because a cancel test pins
+ * the exchange's cancel-shaped envelope, not the order shape above.
  */
 interface RecordingExchange {
   submitted: SignedAction[];
-  response: ReturnType<typeof rowsResponse>;
+  response: unknown;
+  /** When set, `submit` fails at the transport level with this message. */
+  transportFailure: string | null;
 }
 
 const recordingExchange: RecordingExchange = {
   submitted: [],
   response: ERR_RESPONSE,
+  transportFailure: null,
 };
 
 const recordingExchangeLayer = Layer.succeed(HyperliquidExchangeClient, {
   submit: (signed: SignedAction) =>
-    Effect.sync(() => {
+    Effect.suspend(() => {
+      if (recordingExchange.transportFailure !== null) {
+        return Effect.fail(recordingExchange.transportFailure);
+      }
       recordingExchange.submitted.push(signed);
-      return recordingExchange.response;
+      return Effect.succeed(recordingExchange.response);
     }),
 } as unknown as HyperliquidExchangeClient["Service"]);
 
@@ -172,6 +185,7 @@ const resetRecorder = () =>
   Effect.sync(() => {
     recordingExchange.submitted = [];
     recordingExchange.response = ERR_RESPONSE;
+    recordingExchange.transportFailure = null;
   });
 
 // ---------------------------------------------------------------------------
@@ -413,6 +427,7 @@ layer("HyperliquidExecutionService", (it) => {
       Effect.gen(function* () {
         yield* migrated;
         yield* resetRecorder();
+        recordingExchange.response = CANCEL_OK_RESPONSE;
 
         const service = yield* HyperliquidExecutionService;
         const cloid = "a".repeat(32);
@@ -431,6 +446,123 @@ layer("HyperliquidExecutionService", (it) => {
         assert.equal(action.cancels![0]!.asset, ethMarket.assetIndex);
         assert.equal(action.cancels![0]!.cloid, cloid);
       }),
+  );
+
+  // --- cancellation acknowledgement inspection (RC02) ------------------------
+  //
+  // A transport success is not a cancellation. The exchange can reject the
+  // action or the individual order while the POST answers 200; only an
+  // explicit per-order success may resolve submitCancel, everything else is a
+  // typed TradingExecutionError. One submission per attempt either way — the
+  // captured action count pins that no acknowledgement failure retried.
+
+  const cancelCloid = "b".repeat(32);
+  const submitCancelFlip = () => {
+    const service = Effect.flatMap(HyperliquidExecutionService, (s) =>
+      s.submitCancel({ market: "ETH", cloid: cancelCloid }).pipe(Effect.flip),
+    );
+    return service;
+  };
+
+  it.effect("submitCancel resolves on an explicit cancellation success", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = CANCEL_OK_RESPONSE;
+
+      yield* Effect.flatMap(HyperliquidExecutionService, (s) =>
+        s.submitCancel({ market: "ETH", cloid: cancelCloid }),
+      );
+
+      assert.equal(recordingExchange.submitted.length, 1);
+    }),
+  );
+
+  it.effect(
+    "submitCancel fails typed on an action-level rejection over a successful transport",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        yield* resetRecorder();
+        recordingExchange.response = { status: "err", response: "Order does not exist" };
+
+        const failure = yield* submitCancelFlip();
+
+        assert.equal(failure._tag, "TradingExecutionError");
+        assert.equal(failure.stage, "inspect_failed");
+        assert.ok(failure.detail?.includes("Order does not exist"), failure.detail);
+        assert.equal(recordingExchange.submitted.length, 1);
+      }),
+  );
+
+  it.effect("submitCancel fails typed on a per-order rejection", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = cancelResponse([
+        { error: "Invalid order id or client order id" },
+      ]);
+
+      const failure = yield* submitCancelFlip();
+
+      assert.equal(failure.stage, "inspect_failed");
+      assert.ok(failure.detail?.includes("Invalid order id or client order id"), failure.detail);
+    }),
+  );
+
+  it.effect("submitCancel fails typed on a malformed envelope", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = { status: "ok" };
+
+      const failure = yield* submitCancelFlip();
+
+      assert.equal(failure.stage, "inspect_failed");
+      assert.ok(failure.detail?.includes("was not confirmed"), failure.detail);
+    }),
+  );
+
+  it.effect("submitCancel fails typed on a cancel envelope with no statuses", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = { status: "ok", response: { type: "cancel", data: {} } };
+
+      const failure = yield* submitCancelFlip();
+
+      assert.equal(failure.stage, "inspect_failed");
+      assert.ok(failure.detail?.includes("no per-order statuses"), failure.detail);
+    }),
+  );
+
+  it.effect("submitCancel fails typed on an unexpected success-shaped order response", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      // A filled/resting row describes the ORDER, never the cancellation.
+      recordingExchange.response = OK_RESPONSE;
+
+      const failure = yield* submitCancelFlip();
+
+      assert.equal(failure.stage, "inspect_failed");
+      assert.ok(failure.detail?.includes("expected a cancel response"), failure.detail);
+    }),
+  );
+
+  it.effect("submitCancel fails typed on a transport failure", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.transportFailure = "connection reset by peer";
+
+      const failure = yield* submitCancelFlip();
+
+      assert.equal(failure._tag, "TradingExecutionError");
+      assert.equal(failure.stage, "submit_failed");
+      assert.ok(failure.detail?.includes("connection reset by peer"), failure.detail);
+      assert.equal(recordingExchange.submitted.length, 0);
+    }),
   );
 
   // --- the mandatory-stop gate, submission half (§16.3 item 17, §17) -------
@@ -489,7 +621,8 @@ layer("HyperliquidExecutionService", (it) => {
         .pipe(Effect.flip);
 
       assert.equal(failure.stage, "missing_stop");
-      assert.ok(failure.detail?.includes("wrong side"));
+      // The gate's own words: the stop is on the losing-side's opposite.
+      assert.ok(failure.detail?.includes("other side"), failure.detail);
       assert.equal(recordingExchange.submitted.length, 0);
     }),
   );

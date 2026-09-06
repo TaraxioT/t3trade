@@ -107,11 +107,20 @@ const OK_FILLED = {
   },
 } as const;
 
+// RC02: a cancel-by-cloid answers a cancel-shaped envelope, and only an
+// explicit per-order success confirms the cancellation. The old blanket
+// order-shaped response made a transport-OK cancel count as cancelled no
+// matter what the exchange actually said.
+const CANCEL_OK = {
+  status: "ok",
+  response: { type: "cancel", data: { statuses: ["success"] } },
+} as const;
+
 const recordingExchangeLayer = Layer.succeed(HyperliquidExchangeClient, {
   submit: (signed: SignedAction) =>
     Effect.sync(() => {
       recordingExchange.submitted.push(signed);
-      return OK_FILLED;
+      return (signed.action as { type?: string }).type === "cancelByCloid" ? CANCEL_OK : OK_FILLED;
     }),
 } as unknown as HyperliquidExchangeClient["Service"]);
 
