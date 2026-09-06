@@ -296,7 +296,7 @@
           <a href="/overview.html">Big picture</a>
           <a href="/architecture.html">Event spine</a>
           <a href="/execution.html">Execution</a>
-          <a href="/risk.html">Risk</a>
+          <a href="/risk.html">Risk control</a>
           <a href="/status.html">Build board</a>
         </nav>
         <button
@@ -965,10 +965,12 @@
             <p>
               The families are declared once in
               <code class="path">packages/client-runtime/src/state/orchestration.ts</code>:
-              <code>tradingMissionSnapshot</code> (<code class="path">:60-63</code>),
-              <code>tradingMarketChart</code> (<code class="path">:64-67</code>),
-              <code>tradingAccountView</code> (<code class="path">:86-89</code>), and the doorbell
-              subscription <code>tradingAccountInvalidations</code> (<code class="path">:93-96</code
+              <code>tradingMissionSnapshot</code> (<code class="path">orchestration.ts:60-63</code
+              >), <code>tradingMarketChart</code> (<code class="path">orchestration.ts:64-67</code
+              >), <code>tradingAccountView</code> (<code class="path">orchestration.ts:86-89</code
+              >), and the doorbell subscription <code>tradingAccountInvalidations</code> (<code
+                class="path"
+                >orchestration.ts:93-96</code
               >). Panels consume them with <code>useAtomValue</code> and render projector output.
             </p>
           </div>
@@ -1040,9 +1042,9 @@
                 refusal reason on screen, not an acknowledgement",
                 <code class="path">orchestration.ts:124-130</code>), dragging a stop level (<code
                   class="path"
-                  >:155-163</code
-                >), previewing an order (<code class="path">:176-186</code>). The server answers
-                synchronously and the sentence lands beside the control.
+                  >orchestration.ts:155-163</code
+                >), previewing an order (<code class="path">orchestration.ts:176-186</code>). The
+                server answers synchronously and the sentence lands beside the control.
               </div>
             </div>
             <div class="row">
@@ -1052,7 +1054,9 @@
                 commands. Their outcomes arrive through the projection and feed. A control goes
                 directly to the server without a bound agent-runtime turn, called a harness turn in
                 this subsystem (<code class="path">orchestration.ts:144-154</code>); placing an
-                order is "answered through the feed" (<code class="path">:206-209</code>).
+                order is "answered through the feed" (<code class="path"
+                  >orchestration.ts:206-209</code
+                >).
               </div>
             </div>
             <div class="row">
@@ -1063,7 +1067,7 @@
                   class="path"
                   >orchestration.ts:117-123</code
                 >). Research scenes are never held either, because the interesting moment is exactly
-                when a scene appears (<code class="path">:68-74</code>).
+                when a scene appears (<code class="path">orchestration.ts:68-74</code>).
               </div>
             </div>
           </div>
@@ -1491,9 +1495,9 @@
               must be the same control, and it must have happened at or after the press, with a 1
               second allowance for clock skew between the reactor's timestamp and the browser's
               (<code class="path">useMissionControls.ts:89-124</code>, the comparison at
-              <code class="path">:108-112</code>). An older result belongs to an earlier press; a
-              newer result for a different control belongs to another surface's press; neither may
-              clear this one's pending state.
+              <code class="path">useMissionControls.ts:108-112</code>). An older result belongs to
+              an earlier press; a newer result for a different control belongs to another surface's
+              press; neither may clear this one's pending state.
             </p>
             <p>
               A press whose result never lands stops waiting after 30 seconds and reads as

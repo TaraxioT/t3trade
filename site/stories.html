@@ -288,7 +288,7 @@
           <a href="/overview.html">Big picture</a>
           <a href="/architecture.html">Event spine</a>
           <a href="/execution.html">Execution</a>
-          <a href="/risk.html">Risk</a>
+          <a href="/risk.html">Risk control</a>
           <a href="/status.html">Build board</a>
         </nav>
         <button
@@ -747,8 +747,8 @@
                     <code>unconfirmed</code> with its reason, logged at warn per cloid (<code
                       class="path"
                       >apps/server/src/trading/RestingIncreasingOrders.ts:36-50</code
-                    >, <code class="path">:78-107</code>). The emergency-close outcome union now
-                    carries <code>blockWriteConfirmed</code> and
+                    >, <code class="path">RestingIncreasingOrders.ts:78-107</code>). The
+                    emergency-close outcome union now carries <code>blockWriteConfirmed</code> and
                     <code>unconfirmedCancellations</code> on all three branches, flat, open, and
                     unknown (<code class="path"
                       >apps/server/src/trading/TradingEmergencyCloseService.ts:75-117</code
@@ -800,10 +800,10 @@
                     not be confirmed (<code class="path"
                       >apps/server/src/trading/TradingMissionReactor.ts:1399</code
                     >), a stop replacement left the position uncovered (<code class="path"
-                      >:1600</code
+                      >TradingMissionReactor.ts:1600</code
                     >), and the protection watchdog could not re-place a removed stop (<code
                       class="path"
-                      >:2547</code
+                      >TradingMissionReactor.ts:2547</code
                     >). Each call site assembled its own rendering of the outcome, and one of the
                     three got it wrong; nothing pinned the three together (the commit exists to make
                     results "survive all three reactor callers", commit 6e6203dcd).
@@ -894,9 +894,9 @@
                     else none, and several entries with no valid primary require an explicit choice
                     before any trading query or control runs (<code class="path"
                       >apps/web/src/components/trading/tradingEnvironmentSelection.ts:10-24</code
-                    >, <code class="path">:70-78</code>). Later catalog, project, and primary
-                    changes never move it. A destination that vanishes renders
-                    <code>unavailable</code> with an explicit
+                    >, <code class="path">tradingEnvironmentSelection.ts:70-78</code>). Later
+                    catalog, project, and primary changes never move it. A destination that vanishes
+                    renders <code>unavailable</code> with an explicit
                     <code>Use &lt;label&gt; (&lt;id&gt;)</code> recovery action and never a silent
                     fallback (<code class="path"
                       >apps/web/src/components/trading/TradingEnvironmentSelector.tsx:37-65</code
@@ -982,9 +982,9 @@
                     <code>interrupted</code> after
                     <code>CONTROL_RESULT_TIMEOUT_MILLIS = 30_000</code> (<code class="path"
                       >apps/web/src/components/trading/useMissionControls.ts:69</code
-                    >, <code class="path">:89-124</code>). A refresh on the way out of the dispatch
-                    lands a successful control in under a second despite the 3 second projection
-                    cadence (<code class="path"
+                    >, <code class="path">useMissionControls.ts:89-124</code>). A refresh on the way
+                    out of the dispatch lands a successful control in under a second despite the 3
+                    second projection cadence (<code class="path"
                       >apps/web/src/components/trading/useMissionControls.ts:150-157</code
                     >). The durability rule is stated in the migration: "the exchange stays the
                     truth; this is the record of what T3 Trade's control did about it" (<code
@@ -1149,7 +1149,7 @@
               because revoking it would leave real exposure nobody is authorized to manage (<code
                 class="path"
                 >apps/server/src/trading/TradingMissionSweep.ts:16-20</code
-              >, <code class="path">:67-71</code>).
+              >, <code class="path">TradingMissionSweep.ts:67-71</code>).
             </p>
           </div>
         </div>

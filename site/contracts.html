@@ -709,7 +709,7 @@
           <a href="/overview.html">Big picture</a>
           <a href="/architecture.html">Event spine</a>
           <a href="/execution.html">Execution</a>
-          <a href="/risk.html">Risk</a>
+          <a href="/risk.html">Risk control</a>
           <a href="/status.html">Build board</a>
         </nav>
         <button
@@ -1519,10 +1519,12 @@ export const OrchestrationCommand = Schema.Union([
               as RC06: "a dispatched command only proves the request was accepted" (<code
                 class="path"
                 >apps/web/src/components/trading/useMissionControls.ts:14</code
-              >, the hook at <code class="path">:126</code>, the risk dispatcher at
-              <code class="path">:131</code>). §14.7 defines these controls so a workspace button
-              invokes them directly, with no harness turn and no dependency on the bound provider
-              being online (<code class="path">packages/contracts/src/trading.ts:1226-1235</code>).
+              >, the hook at <code class="path">useMissionControls.ts:126</code>, the risk
+              dispatcher at <code class="path">useMissionControls.ts:131</code>). §14.7 defines
+              these controls so a workspace button invokes them directly, with no harness turn and
+              no dependency on the bound provider being online (<code class="path"
+                >packages/contracts/src/trading.ts:1226-1235</code
+              >).
             </p>
           </article>
           <article>
@@ -1588,7 +1590,7 @@ export const OrchestrationCommand = Schema.Union([
               sequence of the requested event the reactor answered, "so a client can correlate the
               result to the press that caused it and ignore results belonging to another request"
               (<code class="path">packages/contracts/src/trading.ts:1247-1257</code>, payload at
-              <code class="path">:1628-1645</code>). Status is one of
+              <code class="path">trading.ts:1628-1645</code>). Status is one of
               <code class="path">completed</code>, <code class="path">failed</code>, or
               <code class="path">unknown</code>, because an exchange that timed out is an honest
               state, not a guess.

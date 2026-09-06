@@ -300,7 +300,7 @@
           <a href="/overview.html">Big picture</a>
           <a href="/architecture.html">Event spine</a>
           <a href="/execution.html">Execution</a>
-          <a href="/risk.html">Risk</a>
+          <a href="/risk.html">Risk control</a>
           <a href="/status.html">Build board</a>
         </nav>
         <button
@@ -790,7 +790,7 @@
           zero allocation would be a mission that cannot work rather than one that must not; every
           execution call is refused before a size is computed, and the mandate's last clause is the
           whole mission: "Never trade." (<code class="path">TradingAuthorityBinding.ts:429-431</code
-          >, <code class="path">530-547</code>).
+          >, <code class="path">TradingAuthorityBinding.ts:530-547</code>).
         </p>
       </div>
     </section>
@@ -805,7 +805,7 @@
           <code class="path">blocked</code> for one of the four persisted reasons. A companion test
           asserts the encoded table equals the published one edge for edge, so the meaning of each
           edge stays with the spec (<code class="path">MissionTransitions.ts:1-12</code>,
-          <code class="path">38-45</code>).
+          <code class="path">MissionTransitions.ts:38-45</code>).
         </p>
 
         <div class="stats">
@@ -1465,7 +1465,7 @@
                 class="path"
                 >trading-contracts/watch.ts:1269-1303</code
               >, <code class="path">TradingTurnCoordinator.ts:787-797</code>,
-              <code class="path">720-724</code>).
+              <code class="path">TradingTurnCoordinator.ts:720-724</code>).
             </p>
           </div>
           <div class="cell c4 reveal" style="background: var(--panel-2)">
@@ -1577,7 +1577,7 @@
               still sees it; the retry stops the moment the event is no longer pending, which means
               a run claimed it and a follow-up resume would be redundant (<code class="path"
                 >TradingMissionReactor.ts:126-133</code
-              >, <code class="path">998-1023</code>).
+              >, <code class="path">TradingMissionReactor.ts:998-1023</code>).
             </p>
           </article>
           <article class="reveal">
@@ -1623,7 +1623,7 @@
               because each embedded bar is a line repeated for the life of the thread (<code
                 class="path"
                 >TradingWakeupComposer.ts:1-19</code
-              >, <code class="path">101-110</code>).
+              >, <code class="path">TradingWakeupComposer.ts:101-110</code>).
             </p>
           </article>
           <article class="reveal">
@@ -1649,8 +1649,9 @@
               <code class="path">completed</code> or <code class="path">failed</code>, flips the
               run's inbox events to consumed, re-arms coverage, and delivers any operator messages
               that queued behind the run (<code class="path">TradingTurnCoordinator.ts:350-366</code
-              >, <code class="path">412-438</code>). A dispatched turn that never starts releases
-              the lease after 10 minutes (<code class="path">TradingTurnCoordinator.ts:368-377</code
+              >, <code class="path">TradingTurnCoordinator.ts:412-438</code>). A dispatched turn
+              that never starts releases the lease after 10 minutes (<code class="path"
+                >TradingTurnCoordinator.ts:368-377</code
               >).
             </p>
           </article>
@@ -1663,7 +1664,7 @@
           message on an operative mission is an event like any other; it gets the same fresh
           snapshot, and if the lease is held it is queued and delivered the moment the run releases
           it (<code class="path">TradingTurnCoordinator.ts:112-131</code>,
-          <code class="path">441-474</code>).
+          <code class="path">TradingTurnCoordinator.ts:441-474</code>).
         </p>
       </div>
     </section>
@@ -1848,7 +1849,7 @@
               against the same database cannot revoke missions the live holder still believes in.
               Idempotent and cheap: on a clean database it finds nothing (<code class="path"
                 >TradingMissionSweep.ts:22-25</code
-              >, <code class="path">50-60</code>).
+              >, <code class="path">TradingMissionSweep.ts:50-60</code>).
             </div>
           </div>
         </div>

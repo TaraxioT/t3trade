@@ -695,7 +695,7 @@
           <a href="/overview.html">Big picture</a>
           <a href="/architecture.html">Event spine</a>
           <a href="/execution.html">Execution</a>
-          <a href="/risk.html">Risk</a>
+          <a href="/risk.html">Risk control</a>
           <a href="/status.html">Build board</a>
         </nav>
         <button
@@ -2193,12 +2193,12 @@
                   its protocol; the orchestration layer never knows which one is behind a thread.
                   Adding one is a driver plus an adapter, with no orchestration, contract, or client
                   change. Lives in
-                  <code class="path">apps/server/src/provider/builtInDrivers.ts:49-56</code> and
+                  <code class="path">apps/server/src/provider/builtInDrivers.ts:47-53</code> and
                   <code class="path">docs/internals/providers.md:9-31</code>.
                 </p>
                 <div class="tmeta">
                   <span class="k">Related</span><span><a href="#t-harness">harness</a></span
-                  ><span class="k">Home</span><a href="/providers.html">Providers</a>
+                  ><span class="k">Home</span><a href="/providers.html">Provider adapters</a>
                 </div>
               </article>
               <article
@@ -2439,7 +2439,7 @@
               </p>
             </div>
             <div class="lrow reveal">
-              <h3><a href="/providers.html">Providers</a></h3>
+              <h3><a href="/providers.html">Provider adapters</a></h3>
               <p>
                 The five agent runtimes and the adapter boundary that keeps orchestration
                 provider-agnostic.

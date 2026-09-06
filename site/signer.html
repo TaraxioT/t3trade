@@ -263,7 +263,7 @@
           <a href="/overview.html">Big picture</a>
           <a href="/architecture.html">Event spine</a>
           <a href="/execution.html">Execution</a>
-          <a href="/risk.html">Risk</a>
+          <a href="/risk.html">Risk control</a>
           <a href="/status.html">Build board</a>
         </nav>
         <button
@@ -604,7 +604,7 @@
               what the exchange verifies (<code class="path">Signing.ts:24</code>). The
               <code class="path">source</code> field of the Agent struct is
               <code class="path">"b"</code> on testnet and <code class="path">"a"</code> on mainnet
-              (<code class="path">Signing.ts:21</code>, <code class="path">:211</code>).
+              (<code class="path">Signing.ts:21</code>, <code class="path">Signing.ts:211</code>).
             </p>
             <p>
               One subtlety carries real weight: msgpack preserves the insertion order of the
@@ -620,9 +620,9 @@
               id. Internally the id is the raw 0 or 1; on the wire it is biased to 27 or 28, the
               Ethereum convention the exchange deserializes (<code class="path"
                 >Signing.ts:50-57</code
-              >, <code class="path">:266-276</code>). The signer address is derived the standard
-              way, the last 20 bytes of the keccak256 of the uncompressed public key, and is
-              recorded as the signer of record on every execution (<code class="path"
+              >, <code class="path">Signing.ts:266-276</code>). The signer address is derived the
+              standard way, the last 20 bytes of the keccak256 of the uncompressed public key, and
+              is recorded as the signer of record on every execution (<code class="path"
                 >Signing.ts:231-237</code
               >).
             </p>
@@ -654,8 +654,8 @@ digest = keccak256(0x1901, domainSeparator,
               The <code class="path">Agent</code> type hash is
               <code class="path">keccak256("Agent(string source,bytes32 connectionId)")</code> and
               the final digest follows EIP-712 exactly (<code class="path">Signing.ts:117-119</code
-              >, <code class="path">:190-192</code>). Nothing here is T3's invention; every constant
-              is matched against the reference SDK so the exchange accepts the bytes.
+              >, <code class="path">Signing.ts:190-192</code>). Nothing here is T3's invention;
+              every constant is matched against the reference SDK so the exchange accepts the bytes.
             </p>
           </div>
         </div>
@@ -783,7 +783,7 @@ digest = keccak256(0x1901, domainSeparator,
               derived from the key, or the resolve fails with
               <code class="path">address_mismatch</code> (<code class="path"
                 >InterimSignerConfig.ts:12-17</code
-              >, <code class="path">:161-168</code>).
+              >, <code class="path">InterimSignerConfig.ts:161-168</code>).
             </p>
           </article>
           <article>
@@ -795,7 +795,7 @@ digest = keccak256(0x1901, domainSeparator,
               server, the packaged desktop app, and the live smoke tests, resolves through one
               module, so "a machine has exactly one place to arm" (<code class="path"
                 >packages/hyperliquid/src/KeyLocation.ts:3-15</code
-              >, <code class="path">:29-42</code>).
+              >, <code class="path">KeyLocation.ts:29-42</code>).
             </p>
           </article>
           <article>
@@ -809,7 +809,8 @@ digest = keccak256(0x1901, domainSeparator,
               <code class="path">mode &amp; 0o077</code>; on Windows the mode means nothing, so it
               reports null there and the check is skipped rather than faked (<code class="path"
                 >InterimSignerConfig.ts:34-37</code
-              >, <code class="path">:72-75</code>, <code class="path">:217-220</code>).
+              >, <code class="path">InterimSignerConfig.ts:72-75</code>,
+              <code class="path">InterimSignerConfig.ts:217-220</code>).
             </p>
           </article>
           <article class="no">
@@ -833,7 +834,8 @@ digest = keccak256(0x1901, domainSeparator,
               so no test run ambiently arms live execution with the developer's real key; a test
               that wants an armed gate must set the env var itself (<code class="path"
                 >InterimSignerConfig.ts:26-27</code
-              >, <code class="path">:39-41</code>, <code class="path">:247-258</code>).
+              >, <code class="path">InterimSignerConfig.ts:39-41</code>,
+              <code class="path">InterimSignerConfig.ts:247-258</code>).
             </p>
           </article>
         </div>
@@ -959,9 +961,9 @@ T3CODE_HOME                    T3TRADE_HOME
               documented default rather than failing, because "a typo'd risk ceiling must not be the
               thing that stops a mission from being created" (<code class="path"
                 >TestnetAuthority.ts:8-11</code
-              >, <code class="path">:31-35</code>). And the knobs only shrink or grow size: "Nothing
-              here can grant direction reversal, switch margin mode, or touch the risk policy"
-              (<code class="path">TestnetAuthority.ts:21-23</code>).
+              >, <code class="path">TestnetAuthority.ts:31-35</code>). And the knobs only shrink or
+              grow size: "Nothing here can grant direction reversal, switch margin mode, or touch
+              the risk policy" (<code class="path">TestnetAuthority.ts:21-23</code>).
             </p>
             <div class="nums">
               <span>20x <b>leverage</b></span
@@ -1011,7 +1013,7 @@ T3CODE_HOME                    T3TRADE_HOME
               <code class="path">TradingMarketManualExposureError</code>, with the words: "An agent
               may not take a market its owner is already trading, so nothing was placed here."
               (<code class="path">TradingAuthorityBinding.ts:153</code>,
-              <code class="path">:357-374</code>)
+              <code class="path">TradingAuthorityBinding.ts:357-374</code>)
             </p>
             <p>
               Once a mission is bound, §10.2 fixes its provider for the mission's lifetime. The
@@ -1169,7 +1171,7 @@ WHERE status NOT IN (<span class="str">'completed'</span>, <span class="str">'fa
             <p style="font-size: 13.5px; margin-top: 8px">
               Constants at <code class="path">TradingRuntimeLease.ts:101</code> (<code class="path"
                 >HEARTBEAT_INTERVAL_MS = 10_000</code
-              >) and <code class="path">:108</code> (<code class="path"
+              >) and <code class="path">TradingRuntimeLease.ts:108</code> (<code class="path"
                 >STALE_AFTER_MS = 45_000</code
               >). An in-memory database is private to the process by construction and needs no lease
               (<code class="path">TradingRuntimeLease.ts:24-26</code>).
@@ -1369,13 +1371,13 @@ WHERE status NOT IN (<span class="str">'completed'</span>, <span class="str">'fa
               <b style="color: var(--chalk)">Where this connects.</b> The nine-step submit sequence
               that ends at this lane is traced on <a href="/execution.html">Execution</a>. The loss
               budget whose exhaustion blocks signing is <a href="/risk.html">Risk control</a>. The
-              typed intents that reach the corridor are
-              <a href="/contracts.html">Contracts &amp; types</a>. The decision lease exists to
-              serialize <a href="/missions.html">Missions, watches, wakes</a>. Everything on this
-              page refuses safely without a signer, which is why
-              <a href="/research.html">Research mode</a> works key-less. Remote sessions reach this
-              machine through <a href="/relay.html">Relay &amp; environments</a>. The guarantees
-              rest on the invariants collected in <a href="/invariants.html">Safety invariants</a>.
+              typed intents that reach the corridor are <a href="/contracts.html">Contracts</a>. The
+              decision lease exists to serialize
+              <a href="/missions.html">Missions watches wakes</a>. Everything on this page refuses
+              safely without a signer, which is why <a href="/research.html">Research mode</a> works
+              key-less. Remote sessions reach this machine through
+              <a href="/relay.html">Relay &amp; environments</a>. The guarantees rest on the
+              invariants collected in <a href="/invariants.html">Safety invariants</a>.
             </p>
           </div>
         </div>
@@ -1393,8 +1395,8 @@ WHERE status NOT IN (<span class="str">'completed'</span>, <span class="str">'fa
         </div>
         <nav aria-label="Section neighbors">
           <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
-          <a href="/contracts.html">← Contracts &amp; types</a>
-          <a href="/missions.html">Missions, watches, wakes →</a>
+          <a href="/contracts.html">← Contracts</a>
+          <a href="/missions.html">Missions watches wakes →</a>
         </nav>
       </div>
     </footer>
