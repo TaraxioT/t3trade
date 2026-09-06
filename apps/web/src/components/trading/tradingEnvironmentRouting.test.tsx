@@ -416,3 +416,34 @@ describe("mounted trading environment routing (RC05)", () => {
     });
   });
 });
+
+it("an explicit choice required over one remaining entry offers and accepts the sole entry", async () => {
+  await withMountedConsumers(1, async () => {
+    // Two entries with no primary latch to "require explicit choice"…
+    await updateCatalog({
+      isReady: true,
+      primaryEnvironmentId: null,
+      environments: [environment("env_a", "A"), environment("env_b", "B")],
+    });
+    await act(async () => {});
+    expect(observedGate).toBe("choose");
+
+    // …then the catalog shrinks to one. The gate still requires an explicit
+    // choice; the selector's static-markup test proves the sole entry is
+    // offered as a working Use action in this state (RC09-F2), and taking
+    // that choice is what select() performs — so drive it directly, the fake
+    // DOM cannot dispatch synthetic clicks.
+    await updateCatalog({ environments: [environment("env_a", "A")] });
+    await act(async () => {});
+    expect(observedGate).toBe("choose");
+    act(() => {
+      setTradingEnvironmentId("env_a" as EnvironmentId);
+    });
+    await act(async () => {});
+    expect(observedGate).toBe("selected");
+    expect(observedDestination).toBe("env_a");
+    expect(boundEvents.filter((event) => event.kind === "mount")).toEqual([
+      { environmentId: "env_a", kind: "mount" },
+    ]);
+  });
+});

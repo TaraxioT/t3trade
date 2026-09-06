@@ -36,19 +36,25 @@ export function TradingEnvironmentSelector({
 }) {
   if (environments.length <= 1) {
     const single = environments[0] ?? null;
-    // The requested destination is not the one remaining entry: it vanished.
-    // Name it, and offer the one working recovery instead of a static label.
-    const unavailable =
-      environmentId !== null && (single === null || single.environmentId !== environmentId);
+    // The requested destination is not the one remaining entry — either it
+    // vanished, or no destination was ever chosen (the once-only initial
+    // choice resolved to "require explicit" while more entries existed, and
+    // the catalog has since shrunk). Both are dead ends on a static label:
+    // name what happened and offer the one working choice (RC05/RC09-F2).
+    const selected = single !== null && single.environmentId === environmentId;
     return (
       <span
         className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
         data-testid="trading-environment-label"
       >
         <MonitorIcon className="size-3 shrink-0" />
-        {unavailable && single !== null ? (
+        {!selected && single !== null ? (
           <>
-            <span className="truncate">{environmentId} is no longer available.</span>
+            <span className="truncate">
+              {environmentId !== null
+                ? `${environmentId} is no longer available.`
+                : "Choose an environment to trade."}
+            </span>
             <button
               type="button"
               className="shrink-0 rounded-sm px-1 font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"

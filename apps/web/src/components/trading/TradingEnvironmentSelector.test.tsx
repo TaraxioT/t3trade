@@ -82,3 +82,20 @@ describe("TradingEnvironmentSelector (07A/RC05)", () => {
     expect(html).toContain('value="env_a"');
   });
 });
+
+it("offers the sole entry as an explicit choice when no destination was ever chosen (RC09-F2)", () => {
+  // The once-only initial latch can resolve to "require explicit choice" while
+  // two entries exist; if the catalog then shrinks to one, a static label
+  // would be a dead end with no working selection action.
+  const html = renderToStaticMarkup(
+    <TradingEnvironmentSelector
+      environments={[environment("env_a", "Local testnet")]}
+      environmentId={null}
+      onSelect={() => {}}
+    />,
+  );
+
+  expect(html).toContain("Choose an environment to trade.");
+  expect(html).toContain('data-testid="trading-environment-use-remaining"');
+  expect(html).toContain("Use Local testnet (env_a)");
+});
