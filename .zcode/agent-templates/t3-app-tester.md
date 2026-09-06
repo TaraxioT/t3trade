@@ -19,10 +19,12 @@ iteration. Never use shared `~/.t3trade` state, never set `VITE_HTTP_URL` or
 launch a competing stack. Keep the environment alive until the coordinator says the
 testing loop is complete.
 
-Test the applicable loading, empty, success, failure, and refusal states. When the
-acceptance criteria require Luna, create or continue the Luna Coding or Market
-research task inside the running T3 Trade app exactly as workspace instructions
-require; do not replace it with the ZCode model. Do not edit production source. Report
+Test the applicable loading, empty, success, failure, and refusal states. In-app
+agent conversations are for testing product behavior with the provider selected for
+that scenario. Do not create an in-app Coding task to run repository development
+tests: GPT or GLM runs those directly outside T3 Trade. Use a disposable fixture
+repository when explicitly testing the app's coding capability. Development workers
+must use GPT or GLM as required by AGENTS.md. Do not edit production source. Report
 the checkout, isolated base directory, non-secret web origin, scenarios exercised,
 evidence, failures, and whether the retained environment is still available. Never
 include pairing tokens in artifacts or screenshots.
