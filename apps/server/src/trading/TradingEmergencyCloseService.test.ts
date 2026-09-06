@@ -21,7 +21,10 @@ import type { TradingOrderResult } from "@t3tools/trading-contracts/execution";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
-import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
+import {
+  HyperliquidExecutionService,
+  TradingExecutionError,
+} from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import {
@@ -54,6 +57,8 @@ interface FakeExchange {
   snapshotReads: Array<"ok" | "fail">;
   /** When set, the mission-block transition write fails (06C). */
   blockWriteFails: boolean;
+  /** When set, every entry-cancellation fails typed (RC03). */
+  cancelRejection: string | null;
 }
 
 const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
@@ -65,6 +70,7 @@ const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
   submitFailure: false,
   snapshotReads: [],
   blockWriteFails: false,
+  cancelRejection: null,
   ...overrides,
 });
 
@@ -118,8 +124,17 @@ const executionLayer = (fake: FakeExchange) =>
         ] as ReadonlyArray<TradingOrderResult>);
       }),
     submitCancel: (input: { cloid: string }) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         fake.cancels.push(input.cloid);
+        if (fake.cancelRejection !== null) {
+          return Effect.fail(
+            new TradingExecutionError({
+              stage: "inspect_failed",
+              detail: fake.cancelRejection,
+            }),
+          );
+        }
+        return Effect.void;
       }),
     submitOrder: () => Effect.die("not used"),
     submitProtectiveStop: () => Effect.die("not used"),
@@ -339,6 +354,34 @@ it.effect("cancels increasing orders but never the reduce-only protection", () =
   }),
 );
 
+/** Seed one resting order plus the execution record that names its action. */
+let seededSequence = 0;
+const seedRestingOrder = (
+  cloid: string,
+  actionType: string,
+  reduceOnly: number,
+): Effect.Effect<void, never, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_orders (
+        mission_id, cloid, order_id, market, side, limit_price,
+        remaining_size, reduce_only, observed_at
+      ) VALUES (${MISSION}, ${cloid}, 1, 'ETH', 'sell', 3000, 0.5, ${reduceOnly}, 0)
+    `;
+    const executionSequence = seededSequence++;
+    yield* sql`
+      INSERT INTO trading_execution_records (
+        execution_id, mission_id, execution_sequence, action_type,
+        cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+        reduce_only, signer_address, status, order_results_json, created_at, updated_at
+      ) VALUES (
+        ${`exec_${cloid}`}, ${MISSION}, ${executionSequence}, ${actionType}, ${cloid}, ${`idem_${cloid}`},
+        'ETH', 'sell', 0.5, 3000, 'gtc', ${reduceOnly}, '0xsigner', 'accepted', '[]', 0, 0
+      )
+    `;
+  }).pipe(Effect.orDie);
+
 // ---------------------------------------------------------------------------
 // Explicit uncertainty (06C): a failed canonical read is an explicit unknown
 // outcome — never a fabricated flat, never a stale size, never a retry.
@@ -438,4 +481,117 @@ it.effect(
         outcome.failureNotice,
       );
     }),
+);
+
+// ---------------------------------------------------------------------------
+// RC03 — cancellation and block-write uncertainty survive every outcome, both
+// as prose and as typed facts, and never stop the risk reduction itself.
+// ---------------------------------------------------------------------------
+
+it.effect("a flat close with an unconfirmed entry cancellation still flattens and warns", () =>
+  Effect.gen(function* () {
+    // The exchange refused the entry's cancellation, but the close is not held
+    // hostage by it: the position is flattened, and the warning — plus the
+    // typed list — record that an entry may still be resting.
+    const fake = makeFake({ positionSize: 0.5, cancelRejection: "rejected by exchange" });
+    const outcome = yield* runClose(fake, seedRestingOrder("0xentry", "open", 0));
+
+    assert.equal(outcome.flat, true);
+    assert.equal(outcome.remainingSize, 0);
+    assert.deepEqual(fake.exits, [0.5], "risk reduction still attempted");
+    assert.deepEqual(fake.cancels, ["0xentry"], "the cancellation was still attempted");
+    assert.ok(
+      outcome.failureNotice?.includes("Increasing-order cancellation was unconfirmed for 1"),
+      outcome.failureNotice,
+    );
+    assert.ok(outcome.failureNotice?.includes("0xentry"), outcome.failureNotice);
+    if (outcome.flat === true) {
+      assert.deepEqual(outcome.unconfirmedCancellations, [
+        { cloid: "0xentry", reason: "rejected by exchange" },
+      ]);
+      assert.equal(outcome.blockWriteConfirmed, true);
+    }
+  }),
+);
+
+it.effect("a flat close with a failed block write reports the flat and the failed block", () =>
+  Effect.gen(function* () {
+    // The position was flattened, but the block write failed: both facts
+    // travel. A summary that said only "flat" would hide that nothing stops
+    // the mission from increasing exposure again.
+    const fake = makeFake({ positionSize: 0.5, blockWriteFails: true });
+    const outcome = yield* runClose(fake);
+
+    assert.equal(outcome.flat, true);
+    assert.equal(outcome.remainingSize, 0);
+    if (outcome.flat === true) {
+      assert.equal(outcome.blockWriteConfirmed, false);
+      assert.deepEqual(outcome.unconfirmedCancellations, []);
+      assert.ok(
+        outcome.failureNotice?.includes("attempted but could not be confirmed"),
+        outcome.failureNotice,
+      );
+    }
+    assert.deepEqual(fake.transitions, [], "the block write never landed");
+  }),
+);
+
+it.effect("a flat close can carry both warnings at once", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 0.5,
+      blockWriteFails: true,
+      cancelRejection: "rejected by exchange",
+    });
+    const outcome = yield* runClose(fake, seedRestingOrder("0xentry", "open", 0));
+
+    assert.equal(outcome.flat, true);
+    if (outcome.flat === true) {
+      assert.equal(outcome.blockWriteConfirmed, false);
+      assert.equal(outcome.unconfirmedCancellations.length, 1);
+      assert.ok(
+        outcome.failureNotice?.includes("Increasing-order cancellation was unconfirmed for 1"),
+        outcome.failureNotice,
+      );
+      assert.ok(
+        outcome.failureNotice?.includes("attempted but could not be confirmed"),
+        outcome.failureNotice,
+      );
+    }
+    // The close itself still completed.
+    assert.deepEqual(fake.exits, [0.5]);
+  }),
+);
+
+it.effect("an unknown outcome can carry both warnings with no numeric size", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 0.5,
+      blockWriteFails: true,
+      cancelRejection: "rejected by exchange",
+      snapshotReads: ["fail"],
+    });
+    const outcome = yield* runClose(fake, seedRestingOrder("0xentry", "open", 0));
+
+    assert.equal(outcome.flat, false);
+    assert.equal(outcome.remainingSize, null);
+    if (outcome.flat === false && outcome.remainingSize === null) {
+      assert.equal(outcome.blockWriteConfirmed, false);
+      assert.equal(outcome.unconfirmedCancellations.length, 1);
+      assert.ok(
+        outcome.failureNotice?.includes("Increasing-order cancellation was unconfirmed for 1"),
+        outcome.failureNotice,
+      );
+      assert.ok(
+        outcome.failureNotice?.includes("attempted but could not be confirmed"),
+        outcome.failureNotice,
+      );
+      // No numeric size may ride along on an unknown outcome.
+      assert.ok(!outcome.failureNotice?.includes("0.5"), outcome.failureNotice);
+    }
+    // Nothing was submitted against an unread position.
+    assert.deepEqual(fake.exits, []);
+    // The cancellation was still attempted — it does not depend on the read.
+    assert.deepEqual(fake.cancels, ["0xentry"]);
+  }),
 );

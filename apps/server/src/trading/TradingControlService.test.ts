@@ -23,11 +23,15 @@ import type { TradingOrderResult } from "@t3tools/trading-contracts/execution";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
-import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
+import {
+  HyperliquidExecutionService,
+  TradingExecutionError,
+} from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 import {
+  describeEntryCancellation,
   makeTradingControlService,
   TradingControlError,
   type ControlOutcome,
@@ -91,6 +95,23 @@ interface Fake {
   /** Terminal/blocking statuses whose transition the mission fake refuses. */
   failTransitionsTo: string[];
   getMissionCalls: number;
+  /**
+   * Cloids whose cancellation the fake exchange refuses (RC03). Everything
+   * else is acknowledged; a refused cloid fails typed, exactly like an
+   * exchange-level rejection observed through the RC02 acknowledgement check.
+   */
+  cancelRejections: ReadonlyArray<string>;
+  /**
+   * When set, the protection fake's cancel-entries outcome carries this
+   * entry-cancellation report, so the control layer's propagation of the
+   * acknowledged-only summary can be asserted without re-faking §17.3.
+   */
+  protectedEntryCancellation:
+    | {
+        readonly acknowledged: ReadonlyArray<string>;
+        readonly unconfirmed: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+      }
+    | undefined;
 }
 
 const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
@@ -113,6 +134,8 @@ const makeFake = (overrides: Partial<Fake> = {}): Fake => ({
   missionMarketsByCall: undefined,
   failTransitionsTo: [],
   getMissionCalls: 0,
+  cancelRejections: [],
+  protectedEntryCancellation: undefined,
   ...overrides,
 });
 
@@ -196,8 +219,17 @@ const executionLayer = (fake: Fake) =>
         ] as ReadonlyArray<TradingOrderResult>;
       }),
     submitCancel: (input: { cloid: string }) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         fake.cancels.push(input.cloid);
+        if (fake.cancelRejections.includes(input.cloid)) {
+          return Effect.fail(
+            new TradingExecutionError({
+              stage: "inspect_failed",
+              detail: "rejected by exchange",
+            }),
+          );
+        }
+        return Effect.void;
       }),
     // Present so the layer builds, but a control that reached the full submit
     // path would need a preview context — which is exactly what these must not
@@ -217,6 +249,9 @@ const protectionLayer = (fake: Fake) =>
           positionSize: fake.positionSize,
           protectedSize: fake.protectionEscalates ? 0 : Math.abs(fake.positionSize),
           replacedCloids: [],
+          ...(fake.protectedEntryCancellation === undefined
+            ? {}
+            : { entryCancellation: fake.protectedEntryCancellation }),
         };
       }),
   } as unknown as TradingProtectionService["Service"]);
@@ -467,6 +502,101 @@ it.effect("cancel_entries reports plainly when nothing is resting", () =>
     assert.ok(outcome.summary.includes("No resting entry orders"));
   }),
 );
+
+// ---------------------------------------------------------------------------
+// RC03 — an entry-cancellation claim agrees with what the exchange confirmed
+// ---------------------------------------------------------------------------
+
+it.effect("a plain cancel_entries reports acknowledged entries only (mixed batch)", () =>
+  Effect.gen(function* () {
+    // Pre-Phase-5 records carry no stop, so cancellation runs plainly. Two
+    // entries, one refused: both were attempted, the outcome claims only the
+    // acknowledged one, and the summary says the rest could not be confirmed.
+    const fake = makeFake({ cancelRejections: ["0xfirst"] });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.cancelEntries(TARGET),
+      Effect.gen(function* () {
+        yield* seedOrder("0xfirst", "open", 0, null);
+        yield* seedOrder("0xsecond", "open", 0, null);
+      }),
+    );
+
+    assert.deepEqual(fake.cancels, ["0xfirst", "0xsecond"], "every entry was attempted");
+    assert.deepEqual(outcome.cancelledCloids, ["0xsecond"]);
+    assert.equal(
+      outcome.summary,
+      "Cancelled 1 of 2 resting entry order(s); 1 could not be confirmed.",
+    );
+  }),
+);
+
+it.effect("a plain cancel_entries says not confirmed when every acknowledgement fails", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ cancelRejections: ["0xfirst", "0xsecond"] });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.cancelEntries(TARGET),
+      Effect.gen(function* () {
+        yield* seedOrder("0xfirst", "open", 0, null);
+        yield* seedOrder("0xsecond", "open", 0, null);
+      }),
+    );
+
+    assert.deepEqual(fake.cancels, ["0xfirst", "0xsecond"]);
+    assert.deepEqual(outcome.cancelledCloids, []);
+    assert.equal(outcome.summary, "Cancellation was not confirmed for 2 resting entry order(s).");
+  }),
+);
+
+it.effect("a protection-aware cancel_entries carries the acknowledged-only report", () =>
+  Effect.gen(function* () {
+    // The §17.3 path reports the same truth: protection was established
+    // first, so an unconfirmed cancel is a still-resting entry — reported as
+    // such, never rounded up into the cancelled list.
+    const fake = makeFake({
+      protectedEntryCancellation: {
+        acknowledged: ["0xsecond"],
+        unconfirmed: [{ cloid: "0xfirst", reason: "rejected by exchange" }],
+      },
+    });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.cancelEntries(TARGET),
+      seedOrder("0xentry", "open", 0, 2_950),
+    );
+
+    assert.deepEqual(fake.protectedCancels, [["0xentry"]]);
+    assert.deepEqual(outcome.cancelledCloids, ["0xsecond"]);
+    assert.ok(
+      outcome.summary.includes("Cancelled 1 of 2 resting entry order(s); 1 could not be confirmed"),
+      outcome.summary,
+    );
+    assert.ok(outcome.summary.includes("stays protected"), outcome.summary);
+  }),
+);
+
+it("describeEntryCancellation never claims more than was acknowledged", () => {
+  const report = (acknowledged: string[], unconfirmed: string[]) => ({
+    acknowledged,
+    unconfirmed: unconfirmed.map((cloid) => ({ cloid, reason: "refused" })),
+  });
+  // All confirmed: the plain count.
+  assert.equal(
+    describeEntryCancellation(2, report(["0xa", "0xb"], [])),
+    "Cancelled 2 resting entry order(s).",
+  );
+  // Mixed: how many of how many, and the residue named.
+  assert.equal(
+    describeEntryCancellation(3, report(["0xa"], ["0xb", "0xc"])),
+    "Cancelled 1 of 3 resting entry order(s); 2 could not be confirmed.",
+  );
+  // None: not a zero-count "cancelled 0" — a refusal to claim cancellation.
+  assert.equal(
+    describeEntryCancellation(2, report([], ["0xa", "0xb"])),
+    "Cancellation was not confirmed for 2 resting entry order(s).",
+  );
+});
 
 it.effect("reduce_position takes the requested fraction of the canonical position", () =>
   Effect.gen(function* () {
@@ -739,10 +869,10 @@ it.effect("a held market added during finalization is not processed and blocks t
 
 it.effect("unconfirmed increasing-order cancellation blocks the end even when flat", () =>
   Effect.gen(function* () {
-    // RC01's explicit dependency on RC03: the void best-effort primitive can
-    // confirm nothing, so a discovered resting entry keeps the authority even
-    // though every position is flat.
-    const fake = makeFake({ positions: { ETH: 0 } });
+    // RC03 dependency resolved: the acknowledgement is real now, so a resting
+    // entry whose cancellation the exchange refused keeps the authority even
+    // though every position reads flat — the entry may still fill.
+    const fake = makeFake({ positions: { ETH: 0 }, cancelRejections: ["0xentry"] });
     const outcome = yield* runControl(
       fake,
       (s) => s.closeAndRevokeMission({ missionId: MISSION }),
@@ -751,7 +881,28 @@ it.effect("unconfirmed increasing-order cancellation blocks the end even when fl
 
     assert.equal(outcome.finalized, false);
     assert.deepEqual(fake.cancels, ["0xentry"]);
-    assert.ok(outcome.summary.includes("cancellation is unconfirmed"), outcome.summary);
+    assert.ok(
+      outcome.summary.includes("1 of 1 resting increasing order(s) were not confirmed cancelled"),
+      outcome.summary,
+    );
+  }),
+);
+
+it.effect("an acknowledged increasing-order cancellation lets a flat mission finalize", () =>
+  Effect.gen(function* () {
+    // The mirror of the blocked case: the exchange confirmed the cancel, the
+    // positions are flat, and finalization proceeds exactly once.
+    const fake = makeFake({ positions: { ETH: 0 } });
+    const outcome = yield* runControl(
+      fake,
+      (s) => s.closeAndRevokeMission({ missionId: MISSION }),
+      seedOrder("0xentry", "open", 0, null),
+    );
+
+    assert.equal(outcome.finalized, true);
+    assert.equal(outcome.status, "revoked");
+    assert.deepEqual(outcome.cancelledCloids, ["0xentry"]);
+    assert.deepEqual(fake.cancels, ["0xentry"]);
   }),
 );
 

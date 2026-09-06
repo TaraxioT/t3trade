@@ -24,7 +24,11 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
 import { TradingMissionService } from "./TradingMissionService.ts";
-import { cancelOrdersBestEffort, readRestingIncreasingOrders } from "./RestingIncreasingOrders.ts";
+import {
+  cancelOrdersBestEffort,
+  type CancellationReport,
+  readRestingIncreasingOrders,
+} from "./RestingIncreasingOrders.ts";
 import {
   HyperliquidExecutionService,
   TradingExecutionError,
@@ -94,13 +98,17 @@ export class TradingExecutionGuard extends Context.Service<
      * position-increasing resting orders so the exchange does not keep filling
      * against an exhausted budget while the mission reads "blocked". The reactor
      * + decider honour this by rejecting `trading_resume_mission` while blocked.
+     *
+     * RC03: returns what the cancellation pass was actually acknowledged as —
+     * the block itself never depends on every cancel confirming, but the
+     * unconfirmed ones must stay visible to the caller.
      */
     readonly blockForExhaustion: (
       missionId: string,
       expectedVersion: number,
       masterAddress: string,
     ) => Effect.Effect<
-      void,
+      CancellationReport,
       TradingExhaustionError,
       SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
     >;
@@ -180,7 +188,7 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
     expectedVersion: number,
     masterAddress: string,
   ): Effect.Effect<
-    void,
+    CancellationReport,
     TradingExhaustionError,
     SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
   > =>
@@ -200,9 +208,15 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
             }),
         ),
       );
-      yield* cancelOrdersBestEffort({ orders: increasing, logContext: "blockForExhaustion" }).pipe(
-        Effect.provideService(HyperliquidExecutionService, execution),
-      );
+      // RC03: the cancellation report is returned, not swallowed — an
+      // unconfirmed cancel must remain visible to the caller. It never stops
+      // the block itself: abandoning the §16.4 safety block because one cancel
+      // would not confirm would trade a bounded uncertainty for a mission that
+      // keeps increasing exposure.
+      const report = yield* cancelOrdersBestEffort({
+        orders: increasing,
+        logContext: "blockForExhaustion",
+      }).pipe(Effect.provideService(HyperliquidExecutionService, execution));
 
       yield* missions
         .transition({
@@ -239,6 +253,7 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
           )
           .pipe(Effect.catch(() => Effect.void)),
       );
+      return report;
     });
 
   const guardResume = (

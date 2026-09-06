@@ -306,6 +306,30 @@ export const describeReductionOutcome = (input: {
   );
 };
 
+/**
+ * The acknowledged-only entry-cancellation summary (RC03): all confirmed,
+ * some confirmed, or none confirmed — never "cancelled N" for a batch whose
+ * acknowledgements did not arrive.
+ */
+export const describeEntryCancellation = (
+  requested: number,
+  report: {
+    readonly acknowledged: ReadonlyArray<string>;
+    readonly unconfirmed: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+  },
+): string => {
+  const confirmed = report.acknowledged.length;
+  const unconfirmed = report.unconfirmed.length;
+  if (unconfirmed === 0) return `Cancelled ${confirmed} resting entry order(s).`;
+  if (confirmed > 0) {
+    return (
+      `Cancelled ${confirmed} of ${requested} resting entry order(s); ` +
+      `${unconfirmed} could not be confirmed.`
+    );
+  }
+  return `Cancellation was not confirmed for ${requested} resting entry order(s).`;
+};
+
 export const makeTradingControlService = Effect.gen(function* () {
   // SQL and the gateway are captured at layer build, not demanded per call.
   // §14.7's controls are invoked straight from a workspace button; making the
@@ -584,15 +608,21 @@ export const makeTradingControlService = Effect.gen(function* () {
 
       if (stopPrice === null) {
         // No recorded stop to reconcile against; cancel plainly. This is the
-        // pre-Phase-5 record shape, not a new state.
-        yield* cancelOrdersBestEffort({ orders: increasing, logContext: "cancel entries" }).pipe(
-          Effect.provideService(HyperliquidExecutionService, execution),
-        );
+        // pre-Phase-5 record shape, not a new state. RC03: the acknowledged
+        // count is what the exchange confirmed — a mixed or fully failed batch
+        // says so instead of claiming every requested cloid.
+        const report = yield* cancelOrdersBestEffort({
+          orders: increasing,
+          logContext: "cancel entries",
+        }).pipe(Effect.provideService(HyperliquidExecutionService, execution));
         const position = yield* readPosition(input, "cancel entries (position read)");
         return {
           positionSize: position.size,
-          cancelledCloids: cloids,
-          summary: `Cancelled ${cloids.length} resting entry order(s).`,
+          cancelledCloids: report.acknowledged,
+          summary: describeEntryCancellation(increasing.length, {
+            acknowledged: report.acknowledged,
+            unconfirmed: report.unconfirmed,
+          }),
         } satisfies ControlOutcome;
       }
 
@@ -615,13 +645,25 @@ export const makeTradingControlService = Effect.gen(function* () {
           ),
         );
 
+      if (outcome.status === "escalate") {
+        return {
+          positionSize: outcome.positionSize,
+          cancelledCloids: [],
+          summary: "Entry orders left in place: the filled size could not be protected first.",
+        } satisfies ControlOutcome;
+      }
+
+      // RC03: the protection-aware branch reports the same acknowledged-only
+      // truth. Protection was established first, so an unconfirmed cancel is a
+      // still-resting entry — not an unprotected-exposure problem.
+      const cancellation = outcome.entryCancellation;
       return {
         positionSize: outcome.positionSize,
-        cancelledCloids: cloids,
+        cancelledCloids: cancellation?.acknowledged ?? [],
         summary:
-          outcome.status === "escalate"
-            ? "Entry orders left in place: the filled size could not be protected first."
-            : `Cancelled ${cloids.length} resting entry order(s); the filled size stays protected.`,
+          cancellation === undefined
+            ? "Cancelled entry orders; the filled size stays protected."
+            : `${describeEntryCancellation(cancellation.acknowledged.length + cancellation.unconfirmed.length, cancellation)} The filled size stays protected.`,
       } satisfies ControlOutcome;
     });
 
@@ -842,8 +884,13 @@ export const makeTradingControlService = Effect.gen(function* () {
       }
 
       // --- step 2: cancel what could reopen exposure, with evidence ---------
+      // RC03: the typed acknowledgement report decides. Only an empty
+      // unconfirmed list (with a successful discovery read) counts as
+      // confirmed; any unconfirmed or undiscoverable resting increasing order
+      // keeps the authority nonterminal, even with every position flat.
       let cancellationConfirmed = true;
       let cancellationReason: string | null = null;
+      let acknowledgedCloids: ReadonlyArray<string> = [];
       const discovered = yield* readRestingIncreasingOrders(input.missionId).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.result,
@@ -853,14 +900,19 @@ export const makeTradingControlService = Effect.gen(function* () {
         cancellationReason =
           "the resting-order read failed, so resting entries may reopen exposure";
       } else if (discovered.success.length > 0) {
-        yield* cancelOrdersBestEffort({
+        const report = yield* cancelOrdersBestEffort({
           orders: discovered.success,
           logContext: "finalize mission",
         }).pipe(Effect.provideService(HyperliquidExecutionService, execution));
-        cancellationConfirmed = false;
-        cancellationReason =
-          `${discovered.success.length} resting increasing order(s) were submitted for ` +
-          `cancellation, but their acknowledgements are not yet confirmed`;
+        acknowledgedCloids = report.acknowledged;
+        if (report.unconfirmed.length > 0) {
+          cancellationConfirmed = false;
+          cancellationReason =
+            `${report.unconfirmed.length} of ${discovered.success.length} resting increasing ` +
+            `order(s) were not confirmed cancelled (${report.unconfirmed
+              .map((entry) => entry.cloid)
+              .join(", ")})`;
+        }
       }
 
       // --- step 3: bounded close attempt on every held market ----------------
@@ -960,7 +1012,7 @@ export const makeTradingControlService = Effect.gen(function* () {
           ...(guardedStatus === undefined ? {} : { status: guardedStatus }),
           finalized: false,
           markets: marketResults,
-          cancelledCloids: [],
+          cancelledCloids: acknowledgedCloids,
           summary: summarizeBlockedFinalization(marketResults, cancellationReason),
         } satisfies MissionFinalizationOutcome;
       }
@@ -971,7 +1023,7 @@ export const makeTradingControlService = Effect.gen(function* () {
         status,
         finalized: true,
         markets: marketResults,
-        cancelledCloids: [],
+        cancelledCloids: acknowledgedCloids,
         summary:
           `All ${marketResults.length} held market(s) confirmed flat. ` +
           (input.terminal === "revoked" ? "Authority revoked." : "Mission completed."),

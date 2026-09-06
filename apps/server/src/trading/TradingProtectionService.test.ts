@@ -20,6 +20,7 @@ import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot
 import type { TradingOrderResult } from "@t3tools/trading-contracts/execution";
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
+import { TradingExecutionError } from "./HyperliquidExecutionService.ts";
 import {
   makeTradingProtectionService,
   MANUAL_PROTECTION_GRACE_MILLIS,
@@ -104,6 +105,8 @@ interface FakeExchange {
   /** When true, a take-profit placement is accepted but never appears in canonical state. */
   /** Every placement and cancel, in the order they happened. */
   log: Array<"place" | "cancel">;
+  /** Cloids whose cancellation the exchange refuses (RC03). */
+  cancelRejections: ReadonlyArray<string>;
 }
 
 const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
@@ -115,6 +118,7 @@ const makeFake = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
   placementFailure: undefined,
   swallowPlacements: false,
   log: [],
+  cancelRejections: [],
   ...overrides,
 });
 
@@ -172,10 +176,19 @@ const executionLayer = (fake: FakeExchange) =>
         ] satisfies ReadonlyArray<TradingOrderResult>;
       }),
     submitCancel: (input: { cloid: string }) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         fake.log.push("cancel");
         fake.cancels.push(input.cloid);
         fake.orders = fake.orders.filter((o) => o.cloid !== input.cloid);
+        if (fake.cancelRejections.includes(input.cloid)) {
+          return Effect.fail(
+            new TradingExecutionError({
+              stage: "inspect_failed",
+              detail: "rejected by exchange",
+            }),
+          );
+        }
+        return Effect.void;
       }),
     submitOrder: () => Effect.die("not used"),
   } as unknown as HyperliquidExecutionService["Service"]);
@@ -387,6 +400,31 @@ it.effect("does not cancel the parent when the filled slice cannot be protected"
 
     assert.equal(outcome.status, "escalate");
     assert.deepEqual(fake.cancels, []);
+  }),
+);
+
+it.effect("reports acknowledged-only entry cancellation and still reconciles after", () =>
+  Effect.gen(function* () {
+    // RC03: two parents, one whose cancellation the exchange refused. Both
+    // legs run, the report names exactly what was acknowledged, and the
+    // post-cancel reconcile still happens — a refused cancel is a
+    // still-resting entry, not a reason to skip the coverage check.
+    const fake = makeFake({ positionSize: 0.12, cancelRejections: ["0xparent1"] });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.cancelEntriesWithProtection({ ...INPUT, cloids: ["0xparent1", "0xparent2"] }),
+    );
+
+    assert.deepEqual(fake.cancels, ["0xparent1", "0xparent2"], "every leg was attempted");
+    assert.deepEqual(outcome.entryCancellation?.acknowledged, ["0xparent2"]);
+    assert.deepEqual(
+      outcome.entryCancellation?.unconfirmed.map((entry) => entry.cloid),
+      ["0xparent1"],
+    );
+    // The final reconcile ran after the cancel legs and found the stop placed
+    // before them still covering the filled slice — the report rides on a
+    // completed step-5 outcome, not a shortcut around it.
+    assert.equal(outcome.status, "already_protected");
+    assert.ok(outcome.entryCancellation !== undefined);
   }),
 );
 

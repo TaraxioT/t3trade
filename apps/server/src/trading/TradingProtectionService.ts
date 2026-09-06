@@ -41,7 +41,7 @@
  *
  * @module TradingProtectionService
  */
-import { Context, Effect, Schema } from "effect";
+import { Context, Effect, Result, Schema } from "effect";
 import * as Layer from "effect/Layer";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
@@ -129,6 +129,16 @@ export interface ProtectionOutcome {
   readonly replacedCloids: ReadonlyArray<string>;
   /** Why the pass escalated, when it did. */
   readonly escalationReason?: string | undefined;
+  /**
+   * What the entry-cancellation legs of `cancelEntriesWithProtection` were
+   * actually acknowledged as (RC03). Present only on that operation; the
+   * acknowledged list is exchange-confirmed cloids only, so a mixed or failed
+   * batch is distinguishable from a fully confirmed one.
+   */
+  readonly entryCancellation?: {
+    readonly acknowledged: ReadonlyArray<string>;
+    readonly unconfirmed: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+  };
 }
 
 /** What the take-profit reconciliation needs to know for one mission. */
@@ -643,23 +653,36 @@ export const makeTradingProtectionService = Effect.gen(function* () {
         const before = yield* reconcileProtection(input);
         if (before.status === "escalate") return before;
 
+        // RC03: every entry leg is attempted, and what the exchange actually
+        // acknowledged is reported cloid by cloid — a failed or unconfirmed
+        // cancel never joins the acknowledged list.
+        const acknowledged: Array<string> = [];
+        const unconfirmed: Array<{ readonly cloid: string; readonly reason: string }> = [];
         for (const cloid of input.cloids) {
-          yield* execution
+          const outcome = yield* execution
             .submitCancel({ market: input.market, cloid })
-            .pipe(
-              Effect.catchTag("TradingExecutionError", (cause) =>
-                Effect.logWarning(
-                  `cancel entries: could not cancel ${cloid}: ${cause.message}. ` +
-                    "The reconcile below still runs; a still-resting order is caught " +
-                    "on the next convergence.",
-                ),
-              ),
-            );
+            .pipe(Effect.result);
+          if (Result.isSuccess(outcome)) {
+            acknowledged.push(cloid);
+            continue;
+          }
+          const failure = outcome.failure;
+          const reason =
+            failure._tag === "TradingExecutionError"
+              ? (failure.detail ?? failure.message)
+              : String(failure);
+          unconfirmed.push({ cloid, reason });
+          yield* Effect.logWarning(
+            `cancel entries: could not confirm the cancellation of ${cloid}: ${reason}. ` +
+              "The reconcile below still runs; a still-resting order is caught " +
+              "on the next convergence.",
+          );
         }
 
         // --- §17.3 step 5: reconcile again, because the parent's children
         // may have been cancelled with it.
-        return yield* reconcileProtection(input);
+        const after = yield* reconcileProtection(input);
+        return { ...after, entryCancellation: { acknowledged, unconfirmed } };
       });
 
   // --- plan 29 step 2.5: the take-profit mirror of the stop reconcile ------

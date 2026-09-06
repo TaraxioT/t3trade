@@ -116,11 +116,25 @@ const CANCEL_OK = {
   response: { type: "cancel", data: { statuses: ["success"] } },
 } as const;
 
+// RC03: the one cloid the exhaustion-failure case seeds is refused at the
+// application level — transport OK, per-order error. This is the shape that
+// made the pre-RC02 code report a rejected cancel as a successful one.
+const CANCEL_REFUSED_CLOID = "f".repeat(32);
+const CANCEL_REFUSED = {
+  status: "ok",
+  response: {
+    type: "cancel",
+    data: { statuses: [{ error: "Order already canceled or does not exist" }] },
+  },
+} as const;
+
 const recordingExchangeLayer = Layer.succeed(HyperliquidExchangeClient, {
   submit: (signed: SignedAction) =>
     Effect.sync(() => {
       recordingExchange.submitted.push(signed);
-      return (signed.action as { type?: string }).type === "cancelByCloid" ? CANCEL_OK : OK_FILLED;
+      if ((signed.action as { type?: string }).type !== "cancelByCloid") return OK_FILLED;
+      const cancelAction = signed.action as { cancels?: ReadonlyArray<{ cloid: string }> };
+      return cancelAction.cancels?.[0]?.cloid === CANCEL_REFUSED_CLOID ? CANCEL_REFUSED : CANCEL_OK;
     }),
 } as unknown as HyperliquidExchangeClient["Service"]);
 
@@ -588,7 +602,7 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         `;
 
         const guard = yield* TradingExecutionGuard;
-        yield* guard.blockForExhaustion(MISSION, 1, MASTER_ADDR);
+        const report = yield* guard.blockForExhaustion(MISSION, 1, MASTER_ADDR);
 
         // Exactly one cancel submitted — for the increasing order, not the reduce order.
         const cancels = recordingExchange.submitted
@@ -598,6 +612,11 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
           .filter((a) => a.type === "cancelByCloid");
         assert.equal(cancels.length, 1);
         assert.equal(cancels[0]!.cancels![0]!.cloid, incCloidBare);
+
+        // RC03: the block returns what the pass was acknowledged as — here the
+        // one increasing cloid, with nothing unconfirmed.
+        assert.deepEqual(report.acknowledged, [incCloidBare]);
+        assert.deepEqual(report.unconfirmed, []);
 
         // The mission transitioned to blocked with the cumulative-loss-limit reason.
         assert.equal(recordingMissions.transitions.length, 1);
@@ -619,12 +638,9 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         recordingMissions.transitions.length = 0;
         const sql = yield* SqlClient.SqlClient;
 
-        // Seed an increasing order whose cloid will fail to cancel. The recording
-        // fake exchange always returns OK, so to simulate a cancel failure we
-        // point the order at a market the fake gateway cannot resolve. The
-        // execution service resolves the asset index via gateway.resolveMarket;
-        // an unresolvable market yields TradingExecutionError(market_unresolved),
-        // which the guard's catchTag logs and continues past.
+        // Seed an increasing order whose cloid the recording exchange refuses
+        // to acknowledge (RC03): transport succeeds, the per-order row is an
+        // error — the exact shape that once counted as a cancelled order.
         const badCloid = "f".repeat(32);
         yield* sql`
           INSERT INTO trading_execution_records (
@@ -643,9 +659,17 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
 
         const guard = yield* TradingExecutionGuard;
         // The fake gateway only resolves ETH; NOPE → market_unresolved error,
-        // which blockForExhaustion logs and swallows. The effect must still
-        // succeed (the mission still transitions to blocked).
-        yield* guard.blockForExhaustion(MISSION, 1, MASTER_ADDR);
+        // which the cancel pass reports instead of acknowledging. The effect
+        // must still succeed (the mission still transitions to blocked) — the
+        // §16.4 block never trades itself away for one unconfirmed cancel.
+        const report = yield* guard.blockForExhaustion(MISSION, 1, MASTER_ADDR);
+
+        // RC03: the refused cancel is visible in the returned report — the
+        // mission is blocked, and the caller can see which entry may still be
+        // resting under that block.
+        assert.deepEqual(report.acknowledged, []);
+        assert.equal(report.unconfirmed.length, 1);
+        assert.equal(report.unconfirmed[0]!.cloid, badCloid);
 
         assert.equal(recordingMissions.transitions.length, 1);
         assert.equal(recordingMissions.transitions[0]!.to, "blocked");

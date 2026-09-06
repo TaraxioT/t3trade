@@ -1800,13 +1800,27 @@ const make = Effect.gen(function* () {
       const expectedVersion = yield* missions.getMissionVersion(missionId);
       // A version conflict means another transition beat us; the mission state
       // the projection holds is still authoritative, so log and continue.
-      yield* guard.blockForExhaustion(missionId, expectedVersion, masterAddress).pipe(
-        Effect.catch(() =>
-          Effect.logWarning("trading execution: could not block exhausted mission", {
+      const exhaustion = yield* guard
+        .blockForExhaustion(missionId, expectedVersion, masterAddress)
+        .pipe(
+          Effect.catch(() =>
+            Effect.logWarning("trading execution: could not block exhausted mission", {
+              missionId,
+            }).pipe(Effect.as(null)),
+          ),
+        );
+      // RC03: the block stands even when a cancel would not confirm, but the
+      // unconfirmed ones are never silently dropped — they are the entries
+      // that may reopen exposure under a mission the operator sees as blocked.
+      if (exhaustion !== null && exhaustion.unconfirmed.length > 0) {
+        yield* Effect.logWarning(
+          "trading execution: exhausted mission blocked with unconfirmed increasing-order cancellations",
+          {
             missionId,
-          }),
-        ),
-      );
+            unconfirmed: exhaustion.unconfirmed.map((entry) => entry.cloid),
+          },
+        );
+      }
       yield* announceStatus({ missionId, threadId, status: "blocked" });
     }
   });

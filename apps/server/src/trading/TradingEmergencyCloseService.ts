@@ -64,6 +64,13 @@ export interface EmergencyCloseInput {
  * How the procedure ended. A narrow three-way union (06C): flat is only ever
  * claimed from a canonical read, an unknown outcome never carries a numeric
  * size, and a last-known size is never presented as current.
+ *
+ * RC03 adds two typed facts alongside the prose: whether the mission-block
+ * write was confirmed, and how many increasing-order cancellations remain
+ * unconfirmed. Both survive flat, open, and unknown results — a close that
+ * flattened the position while its entry cancellations or its block write
+ * stayed unconfirmed is a different outcome than a clean one, and callers
+ * must not parse the notice to tell them apart.
  */
 export type EmergencyCloseOutcome =
   /** A canonical read confirmed flat. */
@@ -74,6 +81,13 @@ export type EmergencyCloseOutcome =
       readonly attempts: number;
       /** Carried only when a side effect (e.g. entry cancellation) is unconfirmed. */
       readonly failureNotice?: string | undefined;
+      /** Whether the §17.5 mission-block write was confirmed (RC03). */
+      readonly blockWriteConfirmed: boolean;
+      /** Increasing-order cancellations the exchange did not confirm (RC03). */
+      readonly unconfirmedCancellations: ReadonlyArray<{
+        readonly cloid: string;
+        readonly reason: string;
+      }>;
     }
   /** A canonical read confirmed the position is still open. */
   | {
@@ -82,6 +96,11 @@ export type EmergencyCloseOutcome =
       readonly remainingSize: number;
       readonly attempts: number;
       readonly failureNotice: string;
+      readonly blockWriteConfirmed: boolean;
+      readonly unconfirmedCancellations: ReadonlyArray<{
+        readonly cloid: string;
+        readonly reason: string;
+      }>;
     }
   /** The canonical size could not be confirmed; a submitted order may have executed. */
   | {
@@ -90,6 +109,11 @@ export type EmergencyCloseOutcome =
       readonly remainingSize: null;
       readonly attempts: number;
       readonly failureNotice: string;
+      readonly blockWriteConfirmed: boolean;
+      readonly unconfirmedCancellations: ReadonlyArray<{
+        readonly cloid: string;
+        readonly reason: string;
+      }>;
     };
 
 /**
@@ -138,6 +162,29 @@ const blockSentence = (blockWriteFailed: boolean): string =>
     ? "The mission block was attempted but could not be confirmed."
     : "The mission stays blocked.";
 
+/**
+ * The unconfirmed-cancellation warning (RC03): discovery failure and
+ * individual acknowledgement failure carry the same weight, and both survive
+ * every close outcome.
+ */
+const cancellationWarningText = (cancellation: {
+  readonly discoveryFailed: boolean;
+  readonly unconfirmed: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+}): string => {
+  if (cancellation.discoveryFailed) {
+    return (
+      " Increasing-order cancellation was unconfirmed: the resting-order read failed, " +
+      "so resting entries may reopen exposure."
+    );
+  }
+  if (cancellation.unconfirmed.length === 0) return "";
+  const cloids = cancellation.unconfirmed.map((entry) => entry.cloid).join(", ");
+  return (
+    ` Increasing-order cancellation was unconfirmed for ${cancellation.unconfirmed.length} ` +
+    `order(s) (${cloids}); resting entries may reopen exposure.`
+  );
+};
+
 export const makeTradingEmergencyCloseService = Effect.gen(function* () {
   const execution = yield* HyperliquidExecutionService;
   const reconciler = yield* HyperliquidReconciler;
@@ -179,15 +226,23 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
    * position — the shared read + best-effort cancel in
    * `RestingIncreasingOrders`. Reduce-only orders stay: they are the
    * protection, and cancelling them is the opposite of what a safety action
-   * should do. A failed discovery read no longer degrades to a silent
-   * "nothing to cancel": the close still proceeds (risk reduction must not
-   * die on a SQL error), but the outcome carries an explicit warning that
-   * increasing-order cancellation was unconfirmed — resting entries may
-   * reopen exposure (06C).
+   * should do. A failed discovery read never degrades to "nothing to cancel":
+   * the close still proceeds (risk reduction must not die on a SQL error),
+   * but the outcome carries an explicit warning that increasing-order
+   * cancellation was unconfirmed — resting entries may reopen exposure (06C).
+   * RC03: individual cancellation failures ride along with the same weight as
+   * the discovery failure.
    */
   const cancelIncreasingOrders = (
     input: EmergencyCloseInput,
-  ): Effect.Effect<{ readonly discoveryFailed: boolean }, never, SqlClient.SqlClient> =>
+  ): Effect.Effect<
+    {
+      readonly discoveryFailed: boolean;
+      readonly unconfirmed: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+    },
+    never,
+    SqlClient.SqlClient
+  > =>
     Effect.gen(function* () {
       const discovered = yield* readRestingIncreasingOrders(input.missionId).pipe(Effect.result);
       if (Result.isFailure(discovered)) {
@@ -195,13 +250,13 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
           "emergency close: increasing-order cancellation unconfirmed: the resting-order read failed",
           { missionId: input.missionId, cause: String(discovered.failure) },
         );
-        return { discoveryFailed: true };
+        return { discoveryFailed: true, unconfirmed: [] };
       }
-      yield* cancelOrdersBestEffort({
+      const report = yield* cancelOrdersBestEffort({
         orders: discovered.success,
         logContext: "emergency close",
       }).pipe(Effect.provideService(HyperliquidExecutionService, execution));
-      return { discoveryFailed: false };
+      return { discoveryFailed: false, unconfirmed: report.unconfirmed };
     });
 
   const emergencyClose: TradingEmergencyCloseService["Service"]["emergencyClose"] = (input) =>
@@ -241,9 +296,7 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
 
       // --- §17.5 step 2: cancel what could grow the position ----------------
       const cancellation = yield* cancelIncreasingOrders(input);
-      const cancelWarning = cancellation.discoveryFailed
-        ? " Increasing-order cancellation was unconfirmed: the resting-order read failed, so resting entries may reopen exposure."
-        : "";
+      const cancelWarning = cancellationWarningText(cancellation);
 
       // --- §17.5 steps 3–6: up to three bounded attempts --------------------
       // Read boundaries catch a failed canonical read and answer with the
@@ -264,6 +317,8 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
             `Emergency close outcome unknown for ${input.market}: the canonical position could ` +
             `not be read, so no order was submitted. ${blockSentence(blockWriteFailed)}` +
             ` Reason: ${input.reason}.${cancelWarning}`,
+          blockWriteConfirmed: !blockWriteFailed,
+          unconfirmedCancellations: cancellation.unconfirmed,
         } satisfies EmergencyCloseOutcome;
       }
       let remaining = initialRead.success;
@@ -343,6 +398,8 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
             `Emergency close outcome unknown for ${input.market}: an order may have executed ` +
             `and the position could not be confirmed after ${attempts} attempt(s). ` +
             `${blockSentence(blockWriteFailed)} Reason: ${input.reason}.${cancelWarning}`,
+          blockWriteConfirmed: !blockWriteFailed,
+          unconfirmedCancellations: cancellation.unconfirmed,
         } satisfies EmergencyCloseOutcome;
       }
 
@@ -351,11 +408,21 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
           missionId: input.missionId,
           attempts,
         });
+        // RC03: a flat position does not retire the other two uncertainties.
+        // A close that flattened while its block write or an entry
+        // cancellation stayed unconfirmed is a different outcome than a clean
+        // one, and the notice must say so rather than report only the flat.
+        const flatWarnings = [
+          ...(blockWriteFailed ? [blockSentence(true)] : []),
+          ...(cancelWarning === "" ? [] : [cancelWarning.trim()]),
+        ];
         return {
           flat: true,
           remainingSize: 0,
           attempts,
-          ...(cancelWarning === "" ? {} : { failureNotice: cancelWarning.trim() }),
+          ...(flatWarnings.length === 0 ? {} : { failureNotice: flatWarnings.join(" ") }),
+          blockWriteConfirmed: !blockWriteFailed,
+          unconfirmedCancellations: cancellation.unconfirmed,
         } satisfies EmergencyCloseOutcome;
       }
 
@@ -376,6 +443,8 @@ export const makeTradingEmergencyCloseService = Effect.gen(function* () {
         remainingSize: remaining.size,
         attempts,
         failureNotice,
+        blockWriteConfirmed: !blockWriteFailed,
+        unconfirmedCancellations: cancellation.unconfirmed,
       } satisfies EmergencyCloseOutcome;
     });
 
