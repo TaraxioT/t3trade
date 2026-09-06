@@ -1,8 +1,9 @@
 /**
- * The watchlist (final-form Phase 4): the user-ordered list of markets the
- * trade home keeps warm.
+ * The watchlist (final-form Phase 4): the list of markets the trade home
+ * keeps warm.
  *
- * Rows render in the persisted `position` order the server serves. Adding a
+ * Rows render in the stable insertion order the server serves (`position`
+ * assigned when a market is added; there is no reorder UI or API). Adding a
  * market starts recording it within one follow-set publish tick — the server
  * reads `trading_watchlist` directly on every recompute — so the add button is
  * also the "start collecting data on this" button, and the hint under the

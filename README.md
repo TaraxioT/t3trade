@@ -81,7 +81,7 @@ experiments.
 
 ## Running it
 
-You need Node.js (`^22.16 || ^23.11 || >=24.10`), the `vp` command, and at
+You need Node.js (`^24.13.1`, matching `engines` in `package.json`), the `vp` command, and at
 least one coding-agent CLI installed and authenticated.
 
 ```bash
@@ -170,7 +170,7 @@ not part of the application's migration chain.
 
 ### What it records
 
-For BTC, ETH, and SOL:
+For every recorded market (see below):
 
 | Table          | Cadence      | What it holds                                                         |
 | -------------- | ------------ | --------------------------------------------------------------------- |
@@ -188,20 +188,33 @@ A gap older than the API window can never be repaired, so it is recorded in
 `known_gaps` instead of retried forever. A heartbeat line once a minute reports
 rows written per table and how far behind each interval's newest bar is.
 
-### Adding a coin
+### What gets recorded
 
-Add it to `ARCHIVE_COINS` in
-[`apps/server/src/trading/archive/config.ts`](./apps/server/src/trading/archive/config.ts)
-and restart. The schema needs no change, and the next startup backfills that
-coin's full window.
+The coins to record come from the server's follow set: adding a market to the
+watchlist (or a mission or watch taking it up) starts recording it within one
+follow-set publish tick, and removing every follow of a market stops it. Before
+any follow file exists, `DEFAULT_SEED_COINS` (BTC and ETH) keeps the two majors
+recording so a fresh install is never silent; once a follow file exists it is
+the sole source. At most `MAX_ARCHIVE_COINS` (24) markets are recorded at once —
+the cap lives in
+[`apps/server/src/trading/archive/config.ts`](./apps/server/src/trading/archive/config.ts).
+
+One distinction matters: recording starts when the follow does, so bars before
+that moment were never written and cannot be summoned — the archiver backfills
+only the window the exchange still serves. New recordings begin at the next
+startup backfill of that window; anything older is a `known_gaps` row, not a
+retry loop.
 
 ### Reading it back
 
-[`apps/server/src/trading/archive/read.ts`](./apps/server/src/trading/archive/read.ts)
-holds pure read helpers — latest candle, candles in a range, trailing mean
-funding, latest open interest and book. Nothing in the application imports them
-yet; they exist so the toolkit has one place to ask. The file is in WAL mode,
-so reading it while the archiver writes is safe.
+The application reads the archive back through
+[`TradingMarketArchive.ts`](./apps/server/src/trading/TradingMarketArchive.ts),
+the service the follow loop, watch evaluator, and forward validation all query
+for candles, funding, and derived metrics. It builds on the pure read helpers
+in [`archive/read.ts`](./apps/server/src/trading/archive/read.ts) (latest
+candle, candles in a range, trailing mean funding, latest open interest and
+book). The file is in WAL mode, so reading it while the archiver writes is
+safe.
 
 ## Safety model
 
