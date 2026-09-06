@@ -1064,9 +1064,10 @@
               <code>ATTRIBUTION_GRACE_MILLIS = 60_000</code>: a fill up to 60 seconds before the
               previous observation still counts as explaining a change (<code class="path"
                 >apps/server/src/trading/HyperliquidReconciler.ts:1004</code
-              >). Widening the window does not hide genuine external orders. Those fills have no
-              cloid, so the attribution query excludes them regardless of the window width (<code
-                class="path"
+              >). External fills carry no cloid, so the attribution query never explains them at any
+              window width. The code names the one tradeoff honestly: an external order placed
+              within the grace of one of the mission's own fills can be masked, "which is a far
+              cheaper mistake than crying theft at the mission's own entry" (<code class="path"
                 >apps/server/src/trading/HyperliquidReconciler.ts:998-1003</code
               >). The <a href="/reconciliation.html">Reconciliation</a> page shows the loop this
               window lives inside.

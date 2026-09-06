@@ -30,7 +30,10 @@ Bindings (project-level, production and preview): `STATUS_KV` (Workers KV namesp
 
 ## Board API
 
-- `GET /api/status` returns `{agents: [...], events: [...]}` from the KV key `board:v1`.
+- One KV key per agent (`agent:<id>`) and one immutable key per event
+  (`event:<iso-ms>:<id>:<rand>`), so concurrent check-ins cannot overwrite each
+  other and no key nears the one-write-per-second KV limit. GET assembles the
+  board on read; events are trimmed best-effort beyond 320.
 - `POST /api/status` with `{token, agent: {...}, note}` upserts one agent entry and
-  prepends an event. Statuses: exploring, drafting, writing, review, done, failed,
-  improved. All fields size-capped.
+  appends an event. Statuses: exploring, drafting, writing, review, done, failed,
+  improved. All fields size-capped; `agent.page` must be a root-relative site path.

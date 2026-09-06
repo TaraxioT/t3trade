@@ -767,6 +767,9 @@ curl -sf -X POST "$SITE/api/status" -H 'content-type: application/json' -d '{
             /[<>&"]/g,
             (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c],
           );
+        // defense in depth: the API already rejects non-site paths; never link one
+        const safePage = (p) =>
+          typeof p === "string" && /^\/[a-z0-9-]+(\.html)?$/i.test(p) ? p : "#";
         let seen = {};
 
         function render(board) {
@@ -779,9 +782,9 @@ curl -sf -X POST "$SITE/api/status" -H 'content-type: application/json' -d '{
             grid.innerHTML = agents
               .map(
                 (a) => `
-        <article class="agent-card${seen[a.id] !== a.updatedAt ? " flash" : ""}" data-id="${esc(a.id)}">
+        <article class="agent-card${!reduce && seen[a.id] !== a.updatedAt ? " flash" : ""}" data-id="${esc(a.id)}">
           <div class="agent-head">
-            <a href="${esc(a.page || "#")}">${esc(a.section)}</a>
+            <a href="${safePage(a.page)}">${esc(a.section)}</a>
             <span class="st s-${esc(a.status)}">${esc(a.status)}</span>
           </div>
           <div class="bar" role="progressbar" aria-valuenow="${a.progress}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.section)} progress"><i style="width:${a.progress}%"></i><s></s></div>
@@ -832,7 +835,8 @@ curl -sf -X POST "$SITE/api/status" -H 'content-type: application/json' -d '{
           }
         }
         tick();
-        if (!reduce) setInterval(tick, 15000);
+        // data refresh is not motion: always poll; reduce only stills the animations
+        setInterval(tick, 15000);
       })();
     </script>
   </body>
