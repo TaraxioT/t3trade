@@ -83,6 +83,16 @@ export function createDesktopClerkBridge(stateDir: string, isDevelopment: boolea
   });
 }
 
+type DesktopClerkBridge = ReturnType<typeof createClerkBridge>;
+
+// The Clerk SDK's own single-instance handling quits the process before any
+// IPC handlers exist, so a secondary instance only needs this inert stand-in
+// to carry isPrimaryInstance: false through configure.
+const secondaryInstanceBridge: DesktopClerkBridge = {
+  isPrimaryInstance: false,
+  cleanup() {},
+};
+
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronApp = yield* ElectronApp.ElectronApp;
@@ -96,27 +106,40 @@ export const make = Effect.gen(function* () {
   const userDataPath = yield* DesktopAppIdentity.resolveUserDataPath;
   yield* electronApp.setPath("userData", userDataPath);
 
-  const bridge = yield* Effect.acquireRelease(
-    Effect.try({
-      try: () => createDesktopClerkBridge(environment.stateDir, environment.isDevelopment),
-      catch: (cause) =>
-        new DesktopClerkBridgeInitializationError({
-          stateDir: environment.stateDir,
-          isDevelopment: environment.isDevelopment,
-          cause,
+  // The SDK only acquires Electron's single-instance lock on Windows and
+  // Linux; on macOS it reports isPrimaryInstance: true unconditionally, so
+  // direct binary launches (open -n, automation fixtures) would both reach
+  // embedded-backend startup against the same state directory. Take the lock
+  // ourselves on every platform, keyed on the userData path set above,
+  // before the bridge and long before the backend pool starts. The lock is
+  // released by process exit only — releasing it during our own shutdown
+  // would let a new instance open the state directory this process is still
+  // closing.
+  const holdsSingleInstanceLock = yield* electronApp.requestSingleInstanceLock;
+
+  const bridge = holdsSingleInstanceLock
+    ? yield* Effect.acquireRelease(
+        Effect.try({
+          try: () => createDesktopClerkBridge(environment.stateDir, environment.isDevelopment),
+          catch: (cause) =>
+            new DesktopClerkBridgeInitializationError({
+              stateDir: environment.stateDir,
+              isDevelopment: environment.isDevelopment,
+              cause,
+            }),
         }),
-    }),
-    (bridge) =>
-      Effect.try({
-        try: () => bridge.cleanup(),
-        catch: (cause) =>
-          new DesktopClerkBridgeCleanupError({
-            stateDir: environment.stateDir,
-            isDevelopment: environment.isDevelopment,
-            cause,
-          }),
-      }).pipe(Effect.orDie),
-  );
+        (bridge) =>
+          Effect.try({
+            try: () => bridge.cleanup(),
+            catch: (cause) =>
+              new DesktopClerkBridgeCleanupError({
+                stateDir: environment.stateDir,
+                isDevelopment: environment.isDevelopment,
+                cause,
+              }),
+          }).pipe(Effect.orDie),
+      )
+    : secondaryInstanceBridge;
 
   return DesktopClerk.of({
     configure: Effect.gen(function* () {
@@ -125,11 +148,11 @@ export const make = Effect.gen(function* () {
       const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
       const runPromise = Effect.runPromiseWith(context);
 
-      // The SDK bridge holds Electron's single-instance lock (acquired at
-      // bridge creation) so OAuth deep-link callbacks on Windows/Linux are
-      // forwarded to the running app. In a secondary instance the bridge has
-      // already begun quitting the app; app.quit() is asynchronous, so stop
-      // bootstrap here before whenReady can fire.
+      // The single-instance lock was acquired in make (by us, on every
+      // platform — the SDK bridge only takes it on Windows and Linux), so a
+      // secondary instance arrives here with the stand-in bridge. app.quit()
+      // is asynchronous, so stop bootstrap here before whenReady can fire
+      // and the backend pool can acquire the state directory.
       if (!bridge.isPrimaryInstance) {
         yield* electronApp.quit;
         return yield* Effect.interrupt;

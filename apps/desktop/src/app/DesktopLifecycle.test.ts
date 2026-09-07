@@ -35,6 +35,7 @@ function makeElectronAppLayer(
     name: Effect.succeed("T3 Trade"),
     systemLocale: Effect.succeed("en-US"),
     whenReady: Effect.void,
+    requestSingleInstanceLock: Effect.succeed(true),
     quit,
     exit: () => Effect.void,
     relaunch: () => Effect.void,
