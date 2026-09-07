@@ -150,11 +150,14 @@ export const make = Effect.gen(function* () {
 
       // The single-instance lock was acquired in make (by us, on every
       // platform — the SDK bridge only takes it on Windows and Linux), so a
-      // secondary instance arrives here with the stand-in bridge. app.quit()
-      // is asynchronous, so stop bootstrap here before whenReady can fire
-      // and the backend pool can acquire the state directory.
+      // secondary instance arrives here with the stand-in bridge. A
+      // secondary owns no bridge, windows or backend, and the graceful
+      // quit handshake (before-quit → shutdown → re-quit) can never
+      // complete once this runtime interrupts, which would leave an inert
+      // process behind. app.exit skips the handshake and stops the process
+      // deterministically, before bootstrap can acquire the state directory.
       if (!bridge.isPrimaryInstance) {
-        yield* electronApp.quit;
+        yield* electronApp.exit(0);
         return yield* Effect.interrupt;
       }
 

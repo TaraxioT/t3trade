@@ -193,13 +193,16 @@ describe("DesktopClerk", () => {
     );
   });
 
-  it.effect("quits and interrupts startup in a secondary instance", () => {
+  it.effect("exits the process and interrupts startup in a secondary instance", () => {
     storageMock.mockReturnValue(storageAdapter);
     createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: false });
-    const quit = vi.fn();
+    const exitCalls: Array<number> = [];
     const registeredEvents: string[] = [];
     const electronApp = {
-      quit: Effect.sync(quit),
+      exit: (code: number) =>
+        Effect.sync(() => {
+          exitCalls.push(code);
+        }),
       on: (eventName: string) =>
         Effect.sync(() => {
           registeredEvents.push(eventName);
@@ -212,7 +215,7 @@ describe("DesktopClerk", () => {
       const exit = yield* Effect.exit(Effect.scoped(clerk.configure));
 
       assert.isTrue(Exit.hasInterrupts(exit));
-      assert.equal(quit.mock.calls.length, 1);
+      assert.deepEqual(exitCalls, [0]);
       assert.deepEqual(registeredEvents, []);
     }).pipe(
       Effect.provide(makeDesktopClerkLayer()),
@@ -236,14 +239,14 @@ describe("DesktopClerk", () => {
     });
   });
 
-  it.effect("a lock-losing instance quits before startup can reach the backend", () => {
+  it.effect("a lock-losing instance exits before startup can reach the backend", () => {
     storageMock.mockReturnValue(storageAdapter);
-    const quit = vi.fn();
     const lifecycleReceipts: string[] = [];
     const electronApp = {
-      quit: Effect.sync(() => {
-        lifecycleReceipts.push("quit");
-      }),
+      exit: (code: number) =>
+        Effect.sync(() => {
+          lifecycleReceipts.push(`exit:${code}`);
+        }),
       on: (eventName: string) =>
         Effect.sync(() => {
           lifecycleReceipts.push(`on:${eventName}`);
@@ -270,7 +273,7 @@ describe("DesktopClerk", () => {
       );
 
       assert.isTrue(Exit.hasInterrupts(exit));
-      assert.deepEqual(lifecycleReceipts, ["quit"]);
+      assert.deepEqual(lifecycleReceipts, ["exit:0"]);
     }).pipe(
       Effect.provide(makeDesktopClerkLayer(true, [], false)),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
