@@ -85,6 +85,7 @@ const OG_IMAGE_URL = `${SITE_URL}/og-card.png`;
             <span class="nav-brand-tag">testnet · alpha</span>
           </a>
           <div class="nav-right">
+            <a class="nav-ghost" href="/diorama/">Diorama</a>
             <a
               class="nav-github"
               href={GITHUB_REPOSITORY_URL}
@@ -571,7 +572,8 @@ const OG_IMAGE_URL = `${SITE_URL}/og-card.png`;
     gap: 8px;
   }
 
-  .nav-github {
+  .nav-github,
+  .nav-ghost {
     display: inline-flex;
     align-items: center;
     gap: 7px;
@@ -587,7 +589,8 @@ const OG_IMAGE_URL = `${SITE_URL}/og-card.png`;
     transition: color 0.18s ease, border-color 0.18s ease, background 0.18s ease;
   }
 
-  .nav-github:hover {
+  .nav-github:hover,
+  .nav-ghost:hover {
     color: var(--fg);
     border-color: var(--border-strong);
     background: rgba(255, 255, 255, 0.04);

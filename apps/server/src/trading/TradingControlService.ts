@@ -31,6 +31,7 @@
  * @module TradingControlService
  */
 import { Context, Effect, Schema } from "effect";
+import * as Result from "effect/Result";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -74,13 +75,60 @@ export interface ExchangeControlInput extends ControlInput {
   readonly market: string;
 }
 
+/**
+ * What a submitted-but-unconfirmed close must say: an IOC may have executed,
+ * so the only truthful report is that the outcome is unknown — never a
+ * numeric size, "Already flat", or "Position closed" (prompt 06A).
+ */
+export const CLOSE_OUTCOME_UNKNOWN =
+  "Close outcome unknown: an order may have executed; position could not be confirmed.";
+
 /** What a control did. */
 export interface ControlOutcome {
   /** The mission status after the control, when it changed one. */
   readonly status?: string | undefined;
-  /** Signed canonical position size after the control. */
-  readonly positionSize: number;
+  /**
+   * Signed canonical position size after the control. `null` when a submitted
+   * order's effect could not be confirmed — an unknown outcome is never
+   * reported as a numeric (and especially never as zero) size.
+   */
+  readonly positionSize: number | null;
   /** Cloids the control cancelled. */
+  readonly cancelledCloids: ReadonlyArray<string>;
+  /** Human-readable summary for the workspace. */
+  readonly summary: string;
+}
+
+/**
+ * One held market's result in a mission finalization pass (RC01).
+ */
+export interface MissionFinalizationMarket {
+  readonly market: string;
+  /**
+   * What the pass established: `flat` only from a canonical read, `remains`
+   * with the confirmed signed size, `unknown` when a read could not confirm,
+   * `failed` when the bounded close attempt itself failed, and `unprocessed`
+   * when the market joined the mission during finalization.
+   */
+  readonly outcome: "flat" | "remains" | "unknown" | "failed" | "unprocessed";
+  /** Signed canonical size; `null` when it could not be confirmed. */
+  readonly positionSize: number | null;
+  /** Why the market kept the authority, in the exchange's or error's own words. */
+  readonly reason?: string;
+}
+
+/** What a mission-level close-and-finalize did (RC01). */
+export interface MissionFinalizationOutcome {
+  /**
+   * The mission status this operation left, when it changed one: the single
+   * terminal status when finalized, otherwise the entry-blocking status the
+   * pass established. Undefined when the mission was left exactly as it was.
+   */
+  readonly status?: string | undefined;
+  /** Whether the single terminal transition happened. */
+  readonly finalized: boolean;
+  readonly markets: ReadonlyArray<MissionFinalizationMarket>;
+  /** Only cloids the exchange acknowledged as cancelled. */
   readonly cancelledCloids: ReadonlyArray<string>;
   /** Human-readable summary for the workspace. */
   readonly summary: string;
@@ -120,10 +168,28 @@ export class TradingControlService extends Context.Service<
     /** End autonomous authority permanently, preserving any valid protection. */
     readonly revoke: (input: ControlInput) => Effect.Effect<ControlOutcome, TradingControlError>;
 
-    /** Close the position, then revoke. The one-click way out. */
-    readonly closeAndRevoke: (
-      input: ExchangeControlInput,
-    ) => Effect.Effect<ControlOutcome, TradingControlError>;
+    /**
+     * Close every held market, then revoke — the one-click way out (RC01).
+     *
+     * Mission-level on purpose: a mission is every market it holds, and
+     * authority ends exactly once, only after canonical flat is confirmed
+     * across the whole held set and mission-owned increasing orders can no
+     * longer reopen exposure. A failed or unknown market keeps the authority.
+     */
+    readonly closeAndRevokeMission: (
+      input: ControlInput,
+    ) => Effect.Effect<MissionFinalizationOutcome, TradingControlError>;
+
+    /**
+     * End a mission because its thread was settled or deleted (RC01).
+     *
+     * The same all-market finalization gate as {@link closeAndRevokeMission};
+     * only the terminal status differs — the §11.1 completed-versus-revoked
+     * rule: a mission that traded and was not blocked ends `completed`.
+     */
+    readonly endMissionForThreadEnding: (
+      input: ControlInput,
+    ) => Effect.Effect<MissionFinalizationOutcome, TradingControlError>;
 
     /**
      * Close or reduce a MANUAL position — the account-scoped §14.7 control
@@ -162,6 +228,22 @@ export type ManualCloseOutcome =
 const REDUCTION_ATTEMPTS = 2;
 
 /**
+ * What the bounded reduce loop learned: either a confirmed canonical end
+ * state, or — when a submitted order's effect could not be re-read — nothing
+ * that may be narrated as a size (06A).
+ */
+type ReductionResult =
+  | {
+      readonly kind: "confirmed";
+      /** Signed canonical size before the first submission (reduceLoop's own read). */
+      readonly startingSize: number;
+      readonly positionSize: number;
+      readonly closedSize: number;
+      readonly failureReason: string | null;
+    }
+  | { readonly kind: "unknown" };
+
+/**
  * The truthful three-way close report (R2-2): what actually happened on the
  * exchange, not what was attempted. A close that filled nothing is a FAILURE
  * and says so, carrying the exchange's own rejection verbatim — the old
@@ -182,6 +264,70 @@ export const describeCloseOutcome = (input: {
     return `Close failed; nothing filled and ${remains}${exchangeSaid}`;
   }
   return `Position partly closed; ${remains}${exchangeSaid}`;
+};
+
+/** True when the position flipped side or grew in absolute size during a reduction (06D). */
+export const reductionChangedDuring = (startingSize: number, positionSize: number): boolean => {
+  const signChanged =
+    Math.abs(startingSize) > PROTECTION_SIZE_EPSILON &&
+    Math.abs(positionSize) > PROTECTION_SIZE_EPSILON &&
+    Math.sign(startingSize) !== Math.sign(positionSize);
+  return signChanged || Math.abs(positionSize) > Math.abs(startingSize) + PROTECTION_SIZE_EPSILON;
+};
+
+/**
+ * The observed-reduction report (06D): the canonical NET position change the
+ * exchange shows, never a fill attributed from the delta. Only a same-side
+ * decrease (or a confirmed flat) earns a percentage — rounded to at most two
+ * decimals; a sign change or grown exposure says the position changed and
+ * names the confirmed current size instead.
+ */
+export const describeReductionOutcome = (input: {
+  readonly market: string;
+  readonly startingSize: number;
+  readonly positionSize: number;
+  readonly requestedPercent: number;
+}): string => {
+  if (reductionChangedDuring(input.startingSize, input.positionSize)) {
+    return (
+      `Position changed during reduction; confirm current position before retrying. ` +
+      `Confirmed current position: ${input.positionSize} ${input.market}.`
+    );
+  }
+  const start = Math.abs(input.startingSize);
+  const observed =
+    start <= PROTECTION_SIZE_EPSILON
+      ? 0
+      : Math.round(((start - Math.abs(input.positionSize)) / start) * 10_000) / 100;
+  return (
+    `Position size decreased by ${observed}% ` +
+    `(${input.startingSize} to ${input.positionSize} ${input.market}); ` +
+    `requested ${input.requestedPercent}%.`
+  );
+};
+
+/**
+ * The acknowledged-only entry-cancellation summary (RC03): all confirmed,
+ * some confirmed, or none confirmed — never "cancelled N" for a batch whose
+ * acknowledgements did not arrive.
+ */
+export const describeEntryCancellation = (
+  requested: number,
+  report: {
+    readonly acknowledged: ReadonlyArray<string>;
+    readonly unconfirmed: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+  },
+): string => {
+  const confirmed = report.acknowledged.length;
+  const unconfirmed = report.unconfirmed.length;
+  if (unconfirmed === 0) return `Cancelled ${confirmed} resting entry order(s).`;
+  if (confirmed > 0) {
+    return (
+      `Cancelled ${confirmed} of ${requested} resting entry order(s); ` +
+      `${unconfirmed} could not be confirmed.`
+    );
+  }
+  return `Cancellation was not confirmed for ${requested} resting entry order(s).`;
 };
 
 export const makeTradingControlService = Effect.gen(function* () {
@@ -220,12 +366,28 @@ export const makeTradingControlService = Effect.gen(function* () {
         Effect.catch(() => Effect.void),
       );
 
-  /** Read the canonical position and the price a reduce-only exit would cross. */
-  const readPosition = (input: ExchangeControlInput) =>
+  /**
+   * Read the canonical position and the price a reduce-only exit would cross.
+   *
+   * A failed account read is a typed control failure, never a flat position:
+   * swallowing it here is how a dead exchange read used to become "Already
+   * flat." (06A). The book read keeps its best-effort fallback — a missing
+   * crossing price only degrades the reference price, it does not misreport
+   * exposure.
+   */
+  const readPosition = (input: ExchangeControlInput, operation: string) =>
     Effect.gen(function* () {
-      const snapshot = yield* gateway
-        .getAccountSnapshot(input.masterAddress as `0x${string}`)
-        .pipe(Effect.orElseSucceed(() => ({ positions: [] })));
+      const snapshot = yield* gateway.getAccountSnapshot(input.masterAddress as `0x${string}`).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "exchange_action_failed",
+              detail: `${operation}: canonical account read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
       const position = snapshot.positions.find((p) => p.market === input.market);
       if (position === undefined || position.size === 0) return { size: 0, crossingPrice: 0 };
 
@@ -239,7 +401,7 @@ export const makeTradingControlService = Effect.gen(function* () {
 
   const transitionTo = (
     missionId: string,
-    to: "paused" | "analysing" | "revoked",
+    to: "paused" | "analysing" | "revoked" | "completed",
   ): Effect.Effect<string, TradingControlError> =>
     Effect.gen(function* () {
       const expectedVersion = yield* missions.getMissionVersion(missionId);
@@ -279,9 +441,15 @@ export const makeTradingControlService = Effect.gen(function* () {
     /** Runs after each submit; the mission lane reconciles, the manual one waits on the reconciler's own cadence. */
     readonly betweenAttempts: Effect.Effect<void>;
     readonly logContext: string;
-  }) =>
+    /** Names the operation in read-failure details, e.g. "close position". */
+    readonly readOperation: string;
+  }): Effect.Effect<ReductionResult, TradingControlError> =>
     Effect.gen(function* () {
-      let position = yield* readPosition(input.exchangeInput);
+      let position = yield* readPosition(
+        input.exchangeInput,
+        `${input.readOperation} (initial read)`,
+      );
+      const signedStartingSize = position.size;
       const startingSize = Math.abs(position.size);
       let remainingToClose = Math.min(input.targetSize, startingSize);
       // The exchange's own words for the attempts that did not fill, so the
@@ -313,13 +481,24 @@ export const makeTradingControlService = Effect.gen(function* () {
 
         yield* input.betweenAttempts;
 
+        // A submitted order's effect is decided by the re-read. When that read
+        // fails the outcome is unknown: stop (never retry on a stale size) and
+        // say so — no numeric size, no "closed", no "flat" (06A).
+        const reread = yield* readPosition(
+          input.exchangeInput,
+          `${input.readOperation} (post-submit read)`,
+        ).pipe(Effect.result);
+        if (Result.isFailure(reread)) return { kind: "unknown" } as const;
+
         const before = Math.abs(position.size);
-        position = yield* readPosition(input.exchangeInput);
+        position = reread.success;
         const closed = before - Math.abs(position.size);
         remainingToClose = Math.max(0, remainingToClose - closed);
       }
 
       return {
+        kind: "confirmed" as const,
+        startingSize: signedStartingSize,
         positionSize: position.size,
         closedSize: Math.max(0, startingSize - Math.abs(position.size)),
         /** The most recent rejection, verbatim; null when nothing was refused. */
@@ -352,6 +531,7 @@ export const makeTradingControlService = Effect.gen(function* () {
           ),
       betweenAttempts: reconcileNow(input),
       logContext: "control",
+      readOperation: "control reduce",
     });
 
   const pause: TradingControlService["Service"]["pause"] = (input) =>
@@ -396,13 +576,22 @@ export const makeTradingControlService = Effect.gen(function* () {
   const cancelEntries: TradingControlService["Service"]["cancelEntries"] = (input) =>
     Effect.gen(function* () {
       // The shared read in `RestingIncreasingOrders` — the same rows §16.4
-      // exhaustion and the §17.5 emergency close cancel.
+      // exhaustion and the §17.5 emergency close cancel. A failed read stops
+      // here: it must never be answered as "no entries" (06A).
       const increasing = yield* readRestingIncreasingOrders(input.missionId).pipe(
-        Effect.orElseSucceed(() => []),
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "exchange_action_failed",
+              detail: `cancel entries: resting-order read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       if (increasing.length === 0) {
-        const position = yield* readPosition(input);
+        const position = yield* readPosition(input, "cancel entries (position read)");
         return {
           positionSize: position.size,
           cancelledCloids: [],
@@ -419,15 +608,21 @@ export const makeTradingControlService = Effect.gen(function* () {
 
       if (stopPrice === null) {
         // No recorded stop to reconcile against; cancel plainly. This is the
-        // pre-Phase-5 record shape, not a new state.
-        yield* cancelOrdersBestEffort({ orders: increasing, logContext: "cancel entries" }).pipe(
-          Effect.provideService(HyperliquidExecutionService, execution),
-        );
-        const position = yield* readPosition(input);
+        // pre-Phase-5 record shape, not a new state. RC03: the acknowledged
+        // count is what the exchange confirmed — a mixed or fully failed batch
+        // says so instead of claiming every requested cloid.
+        const report = yield* cancelOrdersBestEffort({
+          orders: increasing,
+          logContext: "cancel entries",
+        }).pipe(Effect.provideService(HyperliquidExecutionService, execution));
+        const position = yield* readPosition(input, "cancel entries (position read)");
         return {
           positionSize: position.size,
-          cancelledCloids: cloids,
-          summary: `Cancelled ${cloids.length} resting entry order(s).`,
+          cancelledCloids: report.acknowledged,
+          summary: describeEntryCancellation(increasing.length, {
+            acknowledged: report.acknowledged,
+            unconfirmed: report.unconfirmed,
+          }),
         } satisfies ControlOutcome;
       }
 
@@ -450,19 +645,31 @@ export const makeTradingControlService = Effect.gen(function* () {
           ),
         );
 
+      if (outcome.status === "escalate") {
+        return {
+          positionSize: outcome.positionSize,
+          cancelledCloids: [],
+          summary: "Entry orders left in place: the filled size could not be protected first.",
+        } satisfies ControlOutcome;
+      }
+
+      // RC03: the protection-aware branch reports the same acknowledged-only
+      // truth. Protection was established first, so an unconfirmed cancel is a
+      // still-resting entry — not an unprotected-exposure problem.
+      const cancellation = outcome.entryCancellation;
       return {
         positionSize: outcome.positionSize,
-        cancelledCloids: cloids,
+        cancelledCloids: cancellation?.acknowledged ?? [],
         summary:
-          outcome.status === "escalate"
-            ? "Entry orders left in place: the filled size could not be protected first."
-            : `Cancelled ${cloids.length} resting entry order(s); the filled size stays protected.`,
+          cancellation === undefined
+            ? "Cancelled entry orders; the filled size stays protected."
+            : `${describeEntryCancellation(cancellation.acknowledged.length + cancellation.unconfirmed.length, cancellation)} The filled size stays protected.`,
       } satisfies ControlOutcome;
     });
 
   const reducePosition: TradingControlService["Service"]["reducePosition"] = (input) =>
     Effect.gen(function* () {
-      const position = yield* readPosition(input);
+      const position = yield* readPosition(input, "reduce position (initial read)");
       if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) {
         return {
           positionSize: 0,
@@ -473,6 +680,13 @@ export const makeTradingControlService = Effect.gen(function* () {
 
       const targetSize = Math.abs(position.size) * (input.percent / 100);
       const reduced = yield* reduceBy({ ...input, targetSize });
+      if (reduced.kind === "unknown") {
+        return {
+          positionSize: null,
+          cancelledCloids: [],
+          summary: CLOSE_OUTCOME_UNKNOWN,
+        } satisfies ControlOutcome;
+      }
 
       // Protection is sized to the position, so a smaller position needs a
       // smaller stop — and the old one is oversized until it is replaced.
@@ -481,17 +695,26 @@ export const makeTradingControlService = Effect.gen(function* () {
       return {
         positionSize: reduced.positionSize,
         cancelledCloids: [],
+        // 06D: the success line reports the OBSERVED canonical decrease, not
+        // the requested percentage; a sign flip or grown exposure is narrated
+        // as a changed position, never as an attributed fill.
         summary:
-          reduced.closedSize <= PROTECTION_SIZE_EPSILON
+          reduced.closedSize <= PROTECTION_SIZE_EPSILON &&
+          !reductionChangedDuring(reduced.startingSize, reduced.positionSize)
             ? `Reduce failed; nothing filled and ${Math.abs(reduced.positionSize)} ${input.market} remains.` +
               (reduced.failureReason === null ? "" : ` Exchange said: ${reduced.failureReason}`)
-            : `Reduced by ${input.percent}%. ${Math.abs(reduced.positionSize)} ${input.market} remains.`,
+            : describeReductionOutcome({
+                market: input.market,
+                startingSize: reduced.startingSize,
+                positionSize: reduced.positionSize,
+                requestedPercent: input.percent,
+              }),
       } satisfies ControlOutcome;
     });
 
   const closePosition: TradingControlService["Service"]["closePosition"] = (input) =>
     Effect.gen(function* () {
-      const position = yield* readPosition(input);
+      const position = yield* readPosition(input, "close position (initial read)");
       if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) {
         return {
           positionSize: 0,
@@ -501,6 +724,13 @@ export const makeTradingControlService = Effect.gen(function* () {
       }
 
       const closed = yield* reduceBy({ ...input, targetSize: Math.abs(position.size) });
+      if (closed.kind === "unknown") {
+        return {
+          positionSize: null,
+          cancelledCloids: [],
+          summary: CLOSE_OUTCOME_UNKNOWN,
+        } satisfies ControlOutcome;
+      }
       return {
         positionSize: closed.positionSize,
         cancelledCloids: [],
@@ -516,27 +746,341 @@ export const makeTradingControlService = Effect.gen(function* () {
       } satisfies ControlOutcome;
     });
 
-  const closeAndRevoke: TradingControlService["Service"]["closeAndRevoke"] = (input) =>
+  /**
+   * Statuses that already refuse new entries at the preview checklist, so a
+   * finalization pass starting from one needs no additional guard write.
+   * Pausing a `blocked` mission on top would erase its persisted reason, which
+   * is why blocked is treated as already-guarded rather than re-paused.
+   */
+  const ENTRY_BLOCKED_STATUSES: ReadonlySet<string> = new Set([
+    "paused",
+    "blocked",
+    "agent_unavailable",
+  ]);
+
+  /**
+   * Whether the mission ever recorded a fill — the completed-versus-revoked
+   * fact for thread ending (§11.1: a mission that never traded has no result
+   * to report and is simply revoked).
+   */
+  const hasRealizedFills = (missionId: string) =>
+    sql<{ fill_count: number }>`
+      SELECT COUNT(*) AS fill_count FROM trading_fills WHERE mission_id = ${missionId}
+    `.pipe(
+      Effect.map((rows) => (rows[0]?.fill_count ?? 0) > 0),
+      Effect.mapError(
+        (cause) =>
+          new TradingControlError({
+            reason: "exchange_action_failed",
+            detail: `finalize mission: fill-count read failed: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          }),
+      ),
+    );
+
+  /**
+   * The truthful blocked-finalization summary (RC01): every non-flat market in
+   * its own words, then why authority was kept. "Still open" is reserved for a
+   * confirmed nonzero position; anything unconfirmed says so.
+   */
+  const summarizeBlockedFinalization = (
+    markets: ReadonlyArray<MissionFinalizationMarket>,
+    cancellationReason: string | null,
+  ): string => {
+    const parts = markets
+      .filter((market) => market.outcome !== "flat")
+      .map((market) => {
+        switch (market.outcome) {
+          case "remains":
+            return `${market.market} is still open (${market.positionSize} ${market.market})`;
+          case "unknown":
+            return `${market.market} could not be confirmed`;
+          case "failed":
+            return `${market.market} close attempt failed${market.reason ? `: ${market.reason}` : ""}`;
+          case "unprocessed":
+            return `${market.market} was not processed (${market.reason ?? "joined during finalization"})`;
+          default:
+            return `${market.market}: ${market.outcome}`;
+        }
+      });
+    if (cancellationReason !== null) {
+      parts.push(`increasing-order cancellation is unconfirmed: ${cancellationReason}`);
+    }
+    const unconfirmed =
+      cancellationReason !== null ||
+      markets.some((market) => market.outcome !== "flat" && market.outcome !== "remains");
+    const kept = unconfirmed ? "the position could not be confirmed" : "a position is still open";
+    return `${parts.join("; ")}. Authority was not revoked because ${kept}.`;
+  };
+
+  /**
+   * The one mission-level close-and-finalize (R1/RC01).
+   *
+   * Order of operations, each because of the failure it prevents:
+   *
+   *   1. Establish the entry block first, so what is being unwound cannot
+   *      grow while it is unwound (existing lifecycle + checklist guard).
+   *   2. Cancel mission-owned increasing orders before closing, so a resting
+   *      entry cannot refill mid-close — with evidence: an unconfirmed
+   *      cancellation is finalization-blocking, never rounded up to success.
+   *   3. Attempt a bounded close on EVERY held market; one market's failure
+   *      never stops the others.
+   *   4. Immediately before the single terminal transition, re-resolve the
+   *      held set and re-read canonical state per market: flat as observed at
+   *      this final read is the gate — a new market, an unreadable market, or
+   *      any confirmed nonzero position keeps the authority nonterminal.
+   *   5. Transition exactly once.
+   *
+   * Cancellation evidence is honestly conservative until RC03 lands the typed
+   * acknowledgement report: the void best-effort primitive can confirm
+   * nothing, so any discovered resting order blocks terminal finalization.
+   */
+  const finalizeMission = (input: {
+    readonly missionId: string;
+    readonly terminal: "revoked" | "completed";
+  }): Effect.Effect<MissionFinalizationOutcome, TradingControlError> =>
     Effect.gen(function* () {
-      const closed = yield* closePosition(input);
-      const status = yield* transitionTo(input.missionId, "revoked");
+      const mission = yield* missions.getMission(input.missionId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `finalize mission: ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        ),
+      );
+
+      // A repeated event must neither revoke twice nor submit close orders
+      // under an authority that already ended.
+      if (mission.status === "revoked" || mission.status === "completed") {
+        return {
+          status: mission.status,
+          finalized: true,
+          markets: [],
+          cancelledCloids: [],
+          summary: `Mission already ${mission.status}; nothing to finalize.`,
+        } satisfies MissionFinalizationOutcome;
+      }
+
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `finalize mission: master wallet could not be resolved: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
+
+      // --- step 1: block new entries using the existing mechanisms ----------
+      let guardedStatus: string | undefined;
+      if (!ENTRY_BLOCKED_STATUSES.has(mission.status)) {
+        // Failure to establish the block stops the finalization: unwinding a
+        // position the mission may still increase is the race this gate is for.
+        guardedStatus = yield* transitionTo(input.missionId, "paused");
+      }
+
+      // --- step 2: cancel what could reopen exposure, with evidence ---------
+      // RC03: the typed acknowledgement report decides. Only an empty
+      // unconfirmed list (with a successful discovery read) counts as
+      // confirmed; any unconfirmed or undiscoverable resting increasing order
+      // keeps the authority nonterminal, even with every position flat.
+      let cancellationConfirmed = true;
+      let cancellationReason: string | null = null;
+      let acknowledgedCloids: ReadonlyArray<string> = [];
+      const discovered = yield* readRestingIncreasingOrders(input.missionId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.result,
+      );
+      if (Result.isFailure(discovered)) {
+        cancellationConfirmed = false;
+        cancellationReason =
+          "the resting-order read failed, so resting entries may reopen exposure";
+      } else if (discovered.success.length > 0) {
+        const report = yield* cancelOrdersBestEffort({
+          orders: discovered.success,
+          logContext: "finalize mission",
+        }).pipe(Effect.provideService(HyperliquidExecutionService, execution));
+        acknowledgedCloids = report.acknowledged;
+        if (report.unconfirmed.length > 0) {
+          cancellationConfirmed = false;
+          cancellationReason =
+            `${report.unconfirmed.length} of ${discovered.success.length} resting increasing ` +
+            `order(s) were not confirmed cancelled (${report.unconfirmed
+              .map((entry) => entry.cloid)
+              .join(", ")})`;
+        }
+      }
+
+      // --- step 3: bounded close attempt on every held market ----------------
+      const results = new Map<string, MissionFinalizationMarket>();
+      for (const market of mission.markets) {
+        const closed = yield* closePosition({
+          missionId: input.missionId,
+          masterAddress,
+          market,
+        }).pipe(Effect.result);
+        if (Result.isFailure(closed)) {
+          results.set(market, {
+            market,
+            outcome: "failed",
+            positionSize: null,
+            reason: closed.failure.detail ?? closed.failure.message,
+          });
+          continue;
+        }
+        const outcome = closed.success;
+        if (outcome.positionSize === null) {
+          results.set(market, {
+            market,
+            outcome: "unknown",
+            positionSize: null,
+            reason: outcome.summary,
+          });
+        } else if (Math.abs(outcome.positionSize) <= PROTECTION_SIZE_EPSILON) {
+          results.set(market, { market, outcome: "flat", positionSize: 0 });
+        } else {
+          results.set(market, {
+            market,
+            outcome: "remains",
+            positionSize: outcome.positionSize,
+            reason: outcome.summary,
+          });
+        }
+      }
+
+      // --- step 4: fresh canonical confirmation across the current held set --
+      const fresh = yield* missions.getMission(input.missionId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `finalize mission: held-set re-read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
+      for (const market of fresh.markets) {
+        if (!results.has(market)) {
+          results.set(market, {
+            market,
+            outcome: "unprocessed",
+            positionSize: null,
+            reason: "the market joined the mission during finalization",
+          });
+          continue;
+        }
+        // The close pass's word is not the gate's word: a failed or unknown
+        // close may actually have filled, and a close that reported flat may
+        // have been refilled. The confirmation read decides.
+        const position = yield* readPosition(
+          { missionId: input.missionId, masterAddress, market },
+          `finalize mission (confirmation read, ${market})`,
+        ).pipe(Effect.result);
+        if (Result.isFailure(position)) {
+          results.set(market, {
+            market,
+            outcome: "unknown",
+            positionSize: null,
+            reason: "the confirmation read failed",
+          });
+          continue;
+        }
+        const size = position.success.size;
+        if (Math.abs(size) > PROTECTION_SIZE_EPSILON) {
+          results.set(market, {
+            market,
+            outcome: "remains",
+            positionSize: size,
+            reason: "a confirmed position remains after the bounded close",
+          });
+        } else {
+          results.set(market, { market, outcome: "flat", positionSize: 0 });
+        }
+      }
+
+      const marketResults = [...results.values()];
+      const blocked =
+        !cancellationConfirmed || marketResults.some((market) => market.outcome !== "flat");
+
+      if (blocked) {
+        return {
+          ...(guardedStatus === undefined ? {} : { status: guardedStatus }),
+          finalized: false,
+          markets: marketResults,
+          cancelledCloids: acknowledgedCloids,
+          summary: summarizeBlockedFinalization(marketResults, cancellationReason),
+        } satisfies MissionFinalizationOutcome;
+      }
+
+      // --- step 5: the single terminal transition ---------------------------
+      const status = yield* transitionTo(input.missionId, input.terminal);
       return {
         status,
-        positionSize: closed.positionSize,
-        cancelledCloids: closed.cancelledCloids,
-        summary: `${closed.summary} Authority revoked.`,
-      } satisfies ControlOutcome;
+        finalized: true,
+        markets: marketResults,
+        cancelledCloids: acknowledgedCloids,
+        summary:
+          `All ${marketResults.length} held market(s) confirmed flat. ` +
+          (input.terminal === "revoked" ? "Authority revoked." : "Mission completed."),
+      } satisfies MissionFinalizationOutcome;
+    });
+
+  const closeAndRevokeMission: TradingControlService["Service"]["closeAndRevokeMission"] = (
+    input,
+  ) => finalizeMission({ missionId: input.missionId, terminal: "revoked" });
+
+  const endMissionForThreadEnding: TradingControlService["Service"]["endMissionForThreadEnding"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      // The §11.1 completed-versus-revoked fact is captured BEFORE the
+      // finalization pass: the pass may pause an active mission, and `blocked`
+      // read after a pause would have erased the reason the rule asks about.
+      const mission = yield* missions.getMission(input.missionId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "mission_not_found",
+              detail: `end mission for thread: ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        ),
+      );
+      const traded = yield* hasRealizedFills(input.missionId);
+      const terminal =
+        traded && mission.status !== "blocked" ? ("completed" as const) : ("revoked" as const);
+      return yield* finalizeMission({ missionId: input.missionId, terminal });
     });
 
   const closeManualPosition: TradingControlService["Service"]["closeManualPosition"] = (input) =>
     Effect.gen(function* () {
       // D4: a mission-owned market's exits belong to the mission's controls.
+      // The held-set table is the authority record since migration 079 — both
+      // held primary and held secondary markets refuse — and a failed read is
+      // a typed failure, never "nobody holds it" (06B).
       const owning = yield* sql<{ readonly mission_id: string; readonly status: string }>`
-        SELECT mission_id, status FROM trading_missions
-        WHERE venue = 'hyperliquid' AND market = ${input.market}
-          AND status NOT IN ('revoked', 'completed')
+        SELECT m.mission_id, m.status
+        FROM trading_mission_markets h
+        JOIN trading_missions m ON m.mission_id = h.mission_id
+        WHERE h.venue = 'hyperliquid' AND h.market = ${input.market}
+          AND h.released_at IS NULL
+          AND m.status NOT IN ('revoked', 'completed')
         LIMIT 1
-      `.pipe(Effect.orElseSucceed(() => []));
+      `.pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingControlError({
+              reason: "exchange_action_failed",
+              detail: `manual close: held-market ownership read failed: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            }),
+        ),
+      );
       const owner = owning[0];
       if (owner !== undefined) {
         return {
@@ -553,7 +1097,7 @@ export const makeTradingControlService = Effect.gen(function* () {
         masterAddress: input.masterAddress,
         market: input.market,
       };
-      let position = yield* readPosition(exchangeInput);
+      let position = yield* readPosition(exchangeInput, "manual close (initial read)");
       if (Math.abs(position.size) <= PROTECTION_SIZE_EPSILON) {
         return {
           outcome: "done",
@@ -588,17 +1132,35 @@ export const makeTradingControlService = Effect.gen(function* () {
         // picks the fills up.
         betweenAttempts: Effect.void,
         logContext: "manual close",
+        readOperation: "manual close",
       });
+      if (reduced.kind === "unknown") {
+        // The wire contract's done-variant carries a numeric size; an unknown
+        // outcome has none, so it travels the existing typed error channel
+        // rather than fabricating a number (06A).
+        return yield* Effect.fail(
+          new TradingControlError({
+            reason: "exchange_action_failed",
+            detail: CLOSE_OUTCOME_UNKNOWN,
+          }),
+        );
+      }
       return {
         outcome: "done",
         positionSize: reduced.positionSize,
-        // Truthful report (R2-2): a partial reduce that filled reports the
-        // percent; anything else — including a close that filled NOTHING —
-        // goes through the shared three-way close description, exchange
-        // reason attached verbatim.
+        // Truthful report (R2-2/06D): a partial reduce that filled reports the
+        // OBSERVED canonical decrease with the requested percent alongside;
+        // anything else — including a close that filled NOTHING — goes through
+        // the shared three-way close description, exchange reason verbatim.
         summary:
-          percent !== 100 && reduced.closedSize > PROTECTION_SIZE_EPSILON
-            ? `Reduced by ${percent}%. ${Math.abs(reduced.positionSize)} ${input.market} remains.`
+          (percent !== 100 && reduced.closedSize > PROTECTION_SIZE_EPSILON) ||
+          reductionChangedDuring(reduced.startingSize, reduced.positionSize)
+            ? describeReductionOutcome({
+                market: input.market,
+                startingSize: reduced.startingSize,
+                positionSize: reduced.positionSize,
+                requestedPercent: percent,
+              })
             : describeCloseOutcome({
                 market: input.market,
                 positionSize: reduced.positionSize,
@@ -615,7 +1177,8 @@ export const makeTradingControlService = Effect.gen(function* () {
     reducePosition,
     closePosition,
     revoke,
-    closeAndRevoke,
+    closeAndRevokeMission,
+    endMissionForThreadEnding,
     closeManualPosition,
   });
 });

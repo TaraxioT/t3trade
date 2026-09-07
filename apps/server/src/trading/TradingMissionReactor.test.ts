@@ -48,12 +48,21 @@ import {
   type ReconciliationTrigger,
 } from "./HyperliquidReconciler.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
+import { makeTradingExecutionGuard } from "./TradingExecutionGuard.ts";
+import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
+import { InterimSignerConfig } from "./InterimSignerConfig.ts";
+import {
+  TradingEmergencyCloseService,
+  type EmergencyCloseOutcome,
+} from "./TradingEmergencyCloseService.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
+import { makeTradingControlService, TradingControlService } from "./TradingControlService.ts";
 import { TradingLeaseTarget, TradingRuntimeLease } from "./TradingRuntimeLease.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
+import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
 const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
@@ -392,45 +401,183 @@ const deleteThread = (threadId: ThreadId) =>
     yield* settle;
   });
 
-it.layer(TestLayer)("deleting a mission-bound thread", (it) => {
-  // Deleting a thread used to leave its mission holding authority with no
-  // surface to see it on, until the boot sweep erased the row and the record
-  // of the money it was holding. Deletion now ends the mission the same way
-  // settle does.
-  it.effect("revokes the mission bound to the deleted thread and keeps its row", () =>
-    Effect.gen(function* () {
+/**
+ * A recording stand-in for the exchange the mission-level finalization talks
+ * to (RC01). Canonical exposure lives in `positions`; a reduce-only IOC fills
+ * fully and converges its market to zero; reads fail exactly where the plan
+ * says. The REAL control service and mission domain run on top of it, so
+ * mission rows, transitions, and projections stay internally consistent while
+ * the exchange remains hermetic.
+ */
+interface FinalizationExchange {
+  readonly positions: Record<string, number>;
+  readonly snapshotReads: Array<"ok" | "fail">;
+  readonly exits: Array<{ readonly market: string; readonly size: number }>;
+  readonly cancels: Array<string>;
+}
+
+const makeFinalizationExchange = (
+  positions: Record<string, number>,
+  snapshotReads: ReadonlyArray<"ok" | "fail"> = [],
+): FinalizationExchange => ({
+  positions: { ...positions },
+  snapshotReads: [...snapshotReads],
+  exits: [],
+  cancels: [],
+});
+
+const finalizationGatewayLayer = (exchange: FinalizationExchange) =>
+  Layer.succeed(HyperliquidGateway, {
+    getAccountSnapshot: () =>
+      Effect.suspend(() => {
+        const read = exchange.snapshotReads.shift() ?? "ok";
+        if (read === "fail") return Effect.fail("account snapshot read refused");
+        return Effect.succeed({
+          positions: Object.entries(exchange.positions)
+            .filter(([, size]) => Math.abs(size) > 1e-12)
+            .map(([market, size]) => ({
+              market,
+              size,
+              entryPrice: 3_000,
+              unrealisedPnl: 0,
+              marginUsed: 100,
+            })),
+        });
+      }),
+    getOrderBook: () => Effect.succeed({ bestBidOffer: { bidPrice: 2_999, askPrice: 3_001 } }),
+    getOpenOrders: () => Effect.succeed([]),
+    resolveMarket: () => Effect.die("not used"),
+    getMarketSnapshot: () => Effect.die("not used"),
+    getMarketHistory: () => Effect.die("not used"),
+    getPosition: () => Effect.die("not used"),
+    getTakerFeeRateBps: () => Effect.die("not used"),
+  } as unknown as HyperliquidGateway["Service"]);
+
+const finalizationExecutionLayer = (exchange: FinalizationExchange) =>
+  Layer.succeed(HyperliquidExecutionService, {
+    submitReduceOnlyIoc: (input: { market: string; positionSize: number }) =>
+      Effect.sync(() => {
+        exchange.exits.push({ market: input.market, size: input.positionSize });
+        exchange.positions[input.market] = 0;
+        return [
+          {
+            cloid: "0xexit",
+            status: "filled",
+            filledSize: Math.abs(input.positionSize),
+            role: "entry",
+          },
+        ];
+      }),
+    submitCancel: (input: { cloid: string }) =>
+      Effect.sync(() => {
+        exchange.cancels.push(input.cloid);
+      }),
+    submitOrder: () => Effect.die("not used"),
+    submitProtectiveStop: () => Effect.die("not used"),
+  } as unknown as HyperliquidExecutionService["Service"]);
+
+/**
+ * The reactor over the real trading layer, with only the control service's
+ * exchange-facing dependencies stubbed (RC01). Everything durable — mission
+ * domain, transitions, projection — is real, so assertions read actual rows.
+ *
+ * The control layer is built FRESH (`Layer.effect` over the shared `make`
+ * effect) rather than re-providing `TradingControlServiceLive`: Effect
+ * memoizes a layer by reference, and `TradingLayerLive` already builds that
+ * reference with the real gateway — a second provision of the same reference
+ * is silently ignored.
+ */
+const reactorLayerOverExchange = (exchange: FinalizationExchange) => {
+  const controlOverStubs = Layer.effect(TradingControlService, makeTradingControlService).pipe(
+    Layer.provide(
+      Layer.mergeAll(finalizationGatewayLayer(exchange), finalizationExecutionLayer(exchange)),
+    ),
+  );
+  return TradingMissionReactorLive.pipe(
+    Layer.provide(controlOverStubs),
+    Layer.provideMerge(
+      TradingLayerLive.pipe(
+        Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+      ),
+    ),
+    Layer.provideMerge(OrchestrationEngineLive),
+    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(OrchestrationProjectionPipelineLive),
+    Layer.provideMerge(OrchestrationEventStoreLive),
+    Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+    Layer.provideMerge(RepositoryIdentityResolver.layer),
+    Layer.provideMerge(makeProviderRegistryLayer()),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-finalize-" })),
+    Layer.provideMerge(ThreadBackgroundLiveness.layer),
+    Layer.provideMerge(ThreadPlanProgress.layer),
+    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(NodeServices.layer),
+  );
+};
+
+/** A §14.7 exchange-touching control from the workspace, then drain. */
+const riskControl = (control: "close_and_revoke" | "close_position") =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    yield* engine.dispatch({
+      type: "trading.mission.risk-control",
+      commandId: yield* commandId,
+      threadId: THREAD_ID,
+      missionId: MISSION_ID,
+      control,
+      createdAt: NOW,
+    });
+    yield* settle;
+  });
+
+// Deleting a thread used to leave its mission holding authority with no
+// surface to see it on, until the boot sweep erased the row and the record of
+// the money it was holding. Deletion now ends the mission the same way settle
+// does — through the mission-level finalization gate (RC01).
+it.live("deleting a mission-bound thread revokes it and keeps its row", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* deleteThread(THREAD_ID);
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
       assert.equal(yield* missionRowCount, 1);
-    }).pipe(Effect.scoped),
-  );
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "revoked");
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // The mission is no longer authoritative, so the market it held is free —
-  // which is the whole point of ending it rather than leaving the orphan.
-  it.effect("frees the mission's authority", () =>
-    Effect.gen(function* () {
+it.live("deleting a mission-bound thread frees the mission's authority", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* deleteThread(THREAD_ID);
 
       const missions = yield* TradingMissionService;
       assert.isTrue(Option.isNone(yield* missions.findActiveMission(LOCAL_TRADING_USER_ID)));
-    }).pipe(Effect.scoped),
-  );
-});
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-it.layer(TestLayer)("settling a mission-bound thread", (it) => {
-  // Settle is the way out of a mission. A thread the user has finished with
-  // must not keep an authority that wakes, trades, and holds the one active
-  // slot the next thread needs.
-  it.effect("revokes the mission bound to the settled thread and keeps its row", () =>
-    Effect.gen(function* () {
+// Settle is the way out of a mission. A thread the user has finished with
+// must not keep an authority that wakes, trades, and holds the one active
+// slot the next thread needs.
+it.live("settling a mission-bound thread revokes it and keeps its row", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* settleThread(THREAD_ID);
@@ -442,16 +589,20 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       const projected = yield* projectedMission;
       assert.ok(Option.isSome(projected));
       assert.equal(projected.value.status, "revoked");
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // §11.1 has two permanent terminals and only one of them was reachable, so
-  // `completed` sat in the contract, the transition table, and the UI's
-  // completion summary while nothing ever set it. A fill is the difference: a
-  // mission that traded and came back flat finished, and says so.
-  it.effect("completes a flat mission that actually traded", () =>
-    Effect.gen(function* () {
+// §11.1 has two permanent terminals and only one of them was reachable, so
+// `completed` sat in the contract, the transition table, and the UI's
+// completion summary while nothing ever set it. A fill is the difference: a
+// mission that traded and came back flat finished, and says so.
+it.live("settling completes a flat mission that actually traded", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
       yield* recordFill;
 
@@ -462,15 +613,19 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       const projected = yield* projectedMission;
       assert.ok(Option.isSome(projected));
       assert.equal(projected.value.status, "completed");
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // A blocked mission's authority was withdrawn by a deterministic safety
-  // condition. It traded, but it did not finish — reporting that as a completed
-  // objective is the more expensive of the two lies.
-  it.effect("still revokes a mission that traded and then blocked", () =>
-    Effect.gen(function* () {
+// A blocked mission's authority was withdrawn by a deterministic safety
+// condition. It traded, but it did not finish — reporting that as a completed
+// objective is the more expensive of the two lies.
+it.live("settling still revokes a mission that traded and then blocked", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
       yield* recordFill;
       yield* blockMission;
@@ -479,12 +634,16 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
       assert.equal(yield* missionRowCount, 1);
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  it.effect("leaves a mission alone when some other thread is settled", () =>
-    Effect.gen(function* () {
+it.live("settling some other thread leaves the mission alone", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({});
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       const otherThread = ThreadId.make("thread-trading-reactor-unbound");
@@ -511,16 +670,22 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       const projected = yield* projectedMission;
       assert.ok(Option.isSome(projected));
       assert.notEqual(projected.value.status, "revoked");
-    }).pipe(Effect.scoped),
-  );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
-  // `findMissionByThreadId` returns only a still-authoritative mission, so the
-  // second settle has nothing to act on even though the revoked row survives.
-  // Settle is a bulk action in the sidebar and must stay a silent no-op the
-  // second time.
-  it.effect("is a no-op when the mission is already revoked", () =>
-    Effect.gen(function* () {
+// `findMissionByThreadId` returns only a still-authoritative mission, so the
+// second settle has nothing to act on even though the revoked row survives.
+// Settle is a bulk action in the sidebar and must stay a silent no-op the
+// second time — and the second event must not submit duplicate closes.
+it.live("a second settle after a revoke is a no-op with no duplicate closes", () =>
+  Effect.gen(function* () {
+    // Canonical exposure the first settle has to close before revoking; the
+    // second settle must find a revoked mission and do nothing at all.
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
       yield* started;
+      yield* seedTradingAccount;
       yield* createQuietMission;
 
       yield* settleThread(THREAD_ID);
@@ -528,9 +693,168 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
       assert.equal(yield* missionRowCount, 1);
-    }).pipe(Effect.scoped),
-  );
-});
+      assert.equal(exchange.exits.length, 1, "the second settle must not close again");
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC01: the thread-ending path must run the canonical gate even when local
+// snapshots are absent or stale — the old code inferred "flat" from the local
+// snapshot table and skipped both the close and the confirmation entirely.
+it.live("thread ending with canonical exposure closes it before revoking", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* settleThread(THREAD_ID);
+
+      // One bounded close for the held exposure, then the single revoke.
+      assert.equal(exchange.exits.length, 1);
+      assert.equal(exchange.exits[0]?.market, "ETH");
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      assert.equal(exchange.positions.ETH, 0);
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC01: authority that cannot be confirmed is never terminally claimed. The
+// mission stays reachable from the trading workspace with its blocking status.
+it.live("an unconfirmable finalization keeps the mission authoritative", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 }, ["fail"]);
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* settleThread(THREAD_ID);
+
+      // No canonical read ever succeeded, so nothing was submitted and no
+      // terminal status was announced; the entry block the pass established
+      // is the last status the operator sees.
+      assert.deepEqual(exchange.exits, []);
+      assert.equal(yield* lastAnnouncedStatus, "paused");
+      const missions = yield* TradingMissionService;
+      const stillHeld = yield* missions.findMissionByThreadId(THREAD_ID);
+      assert.isTrue(Option.isSome(stillHeld), "the mission must stay reachable, not revoked");
+      assert.equal(yield* missionRowCount, 1);
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC01: the workspace's close-and-revoke button is the same mission-level
+// finalization — one revoke after an all-market canonical gate, never a
+// per-market revoke.
+it.live("the close_and_revoke control finalizes the whole mission once", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* riskControl("close_and_revoke");
+
+      assert.equal(exchange.exits.length, 1);
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      const missions = yield* TradingMissionService;
+      assert.isTrue(Option.isNone(yield* missions.findActiveMission(LOCAL_TRADING_USER_ID)));
+
+      // RC06: the durable result of the press. The row, the projection's
+      // correlated field, and the timeline entry all say what the control did.
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly control: string;
+        readonly status: string;
+        readonly summary: string;
+        readonly request_event_sequence: number | null;
+      }>`
+        SELECT control, status, summary, request_event_sequence
+        FROM trading_control_results WHERE mission_id = ${MISSION_ID}
+      `;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.control, "close_and_revoke");
+      assert.equal(rows[0]!.status, "completed");
+      assert.notEqual(rows[0]!.request_event_sequence, null, "the result cites its request");
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.lastControlResult?.status, "completed");
+      assert.equal(projected.value.lastControlResult?.control, "close_and_revoke");
+      assert.deepEqual(
+        projected.value.lastControlResult?.markets.map((market) => market.market),
+        ["ETH"],
+      );
+      assert.ok(
+        projected.value.missionTimeline.some(
+          (entry) => entry.kind === "control_result" && entry.label.includes("revoked"),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+it.live("the close_and_revoke control keeps authority when it cannot confirm", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 }, ["fail"]);
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* riskControl("close_and_revoke");
+
+      assert.deepEqual(exchange.exits, []);
+      assert.equal(yield* lastAnnouncedStatus, "paused");
+      const missions = yield* TradingMissionService;
+      assert.isTrue(Option.isSome(yield* missions.findMissionByThreadId(THREAD_ID)));
+
+      // RC06: a finalization that could not confirm anything is a failed
+      // control, never "completed" — the operator sees the refusal to claim
+      // what was not confirmed.
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly status: string; readonly summary: string }>`
+        SELECT status, summary FROM trading_control_results WHERE mission_id = ${MISSION_ID}
+      `;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.status, "failed");
+      assert.ok(rows[0]!.summary.includes("Authority was not revoked"), rows[0]!.summary);
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.lastControlResult?.status, "failed");
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
+
+// RC06: a per-market control records its own outcome — the request being
+// accepted was never the last word.
+it.live("a per-market control records its outcome with per-market summaries", () =>
+  Effect.gen(function* () {
+    const exchange = makeFinalizationExchange({ ETH: 1 });
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createQuietMission;
+
+      yield* riskControl("close_position");
+
+      assert.equal(exchange.exits.length, 1, "the held market was flattened");
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly control: string; readonly status: string }>`
+        SELECT control, status FROM trading_control_results WHERE mission_id = ${MISSION_ID}
+      `;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.control, "close_position");
+      assert.equal(rows[0]!.status, "completed");
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.lastControlResult?.control, "close_position");
+      assert.equal(projected.value.lastControlResult?.status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(reactorLayerOverExchange(exchange)));
+  }),
+);
 
 it.layer(TestLayer)("trading mission reactor", (it) => {
   it.effect("projects a mission only after the domain accepts it", () =>
@@ -1363,6 +1687,817 @@ it.live(
         Effect.scoped,
         Effect.provide(StubbedLayer),
       );
+    }),
+  { timeout: 30_000 },
+);
+
+// ---------------------------------------------------------------------------
+// Loss exhaustion (09A): when the cumulative-loss ceiling is gone, the
+// position-increasing order is cancelled, the reduce-only stop is NOT, the
+// protected exposure is not silently zeroed, the mission blocks, further
+// increases are refused, and provider-free risk-reducing controls stay usable.
+// Test-only child: no production behavior is changed here.
+// ---------------------------------------------------------------------------
+
+it.live(
+  "loss exhaustion preserves protected exposure, cancels only increases, and refuses more",
+  () =>
+    Effect.gen(function* () {
+      const submittedActions: Array<string> = [];
+      const cancelledCloids: Array<string> = [];
+      const stubExecution = Layer.succeed(HyperliquidExecutionService, {
+        submitOrder: (input: { intent: { actionType: string } }) =>
+          Effect.sync(() => {
+            submittedActions.push(input.intent.actionType);
+            return { status: "accepted" };
+          }),
+        submitReduceOnlyIoc: () => Effect.succeed([]),
+        submitCancel: (input: { cloid: string }) =>
+          Effect.sync(() => {
+            cancelledCloids.push(input.cloid);
+          }),
+        submitProtectiveStop: () => Effect.die("not used"),
+      } as unknown as HyperliquidExecutionService["Service"]);
+
+      // The reconciler is stubbed so the fixture accounting (the seeded loss
+      // and protected exposure) survives to the budget read instead of being
+      // converged away against the live exchange.
+      const stubReconciler = Layer.succeed(HyperliquidReconciler, {
+        reconcile: () =>
+          Effect.succeed({
+            position: null,
+            openOrders: [],
+            canonicalOrders: [],
+            fills: [],
+            observedAt: 1000,
+          }),
+      } as unknown as HyperliquidReconciler["Service"]);
+
+      const ExhaustionLayer = TradingMissionReactorLive.pipe(
+        Layer.provide(stubExecution),
+        Layer.provide(stubReconciler),
+        Layer.provideMerge(
+          TradingLayerLive.pipe(
+            Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+          ),
+        ),
+        Layer.provideMerge(OrchestrationEngineLive),
+        Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provideMerge(OrchestrationProjectionPipelineLive),
+        Layer.provideMerge(OrchestrationEventStoreLive),
+        Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(makeProviderRegistryLayer()),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-exhaust-" }),
+        ),
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provideMerge(ThreadPlanProgress.layer),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* started;
+        yield* seedTradingAccount;
+        yield* createMission;
+
+        const missions = yield* TradingMissionService;
+        for (const to of ["waiting", "executing", "position_open"] as const) {
+          const expectedVersion = yield* missions.getMissionVersion(MISSION_ID);
+          yield* missions.transition({ missionId: MISSION_ID, to, expectedVersion });
+        }
+
+        const sql = yield* SqlClient.SqlClient;
+        // Protected nonzero exposure: half an ETH, fully protected.
+        yield* sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at
+          ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0.5, 1000)
+        `;
+        // Deterministic fixture accounting: a realised loss far past the
+        // mission's cumulative-loss ceiling exhausts the §16.2 budget.
+        yield* sql`
+          INSERT INTO trading_fills (
+            fill_id, mission_id, execution_id, cloid, order_id, market, side,
+            filled_size, avg_fill_price, fee_usd, fee_token, traded_at, observed_at,
+            closed_pnl
+          ) VALUES (
+            'fill-loss', ${MISSION_ID}, 'exec-loss', '0xcloid-loss', 1, 'ETH', 'sell',
+            0.5, 2500, 0, 'USDC', 1000, 1000, -10000
+          )
+        `;
+        // One resting increase and one reduce-only stop.
+        const seedOrder = (cloid: string, actionType: string, reduceOnly: number) =>
+          sql`
+            INSERT INTO trading_orders (
+              mission_id, cloid, order_id, market, side, limit_price,
+              remaining_size, reduce_only, observed_at
+            ) VALUES (${MISSION_ID}, ${cloid}, 1, 'ETH', 'buy', 3000, 0.5, ${reduceOnly}, 1000)
+          `.pipe(
+            Effect.andThen(sql`
+              INSERT INTO trading_execution_records (
+                execution_id, mission_id, execution_sequence, action_type,
+                cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+                reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+                stop_price
+              ) VALUES (
+                ${`exec-${cloid}`}, ${MISSION_ID}, ${cloid === "0xinc" ? 2 : 3}, ${actionType}, ${cloid},
+                ${`idem-${cloid}`}, 'ETH', 'buy', 0.5, 3000, 'gtc', ${reduceOnly}, ${MASTER_ADDRESS},
+                'accepted', '[]', 1000, 1000, 2950
+              )
+            `),
+            Effect.orDie,
+          );
+        yield* seedOrder("0xinc", "open", 0);
+        yield* seedOrder("0xstop", "open", 1);
+
+        // An exhausted budget refuses a position-increasing execution before
+        // any submit — nothing reaches the exchange.
+        const engine = yield* OrchestrationEngineService;
+        yield* engine
+          .dispatch({
+            type: "trading.execution.requested",
+            commandId: yield* commandId,
+            threadId: THREAD_ID,
+            missionId: MISSION_ID,
+            intent: {
+              missionId: MISSION_ID,
+              executionSequence: 4,
+              actionType: "open",
+              market: "ETH",
+              side: "buy",
+              size: 0.5,
+              orderPreference: "marketable_ioc",
+              limitPrice: 3_001,
+              reduceOnly: false,
+            },
+            expectedAuthorityVersion: 1,
+            activeHarnessRunId: "run_1",
+            createdAt: NOW,
+          })
+          .pipe(Effect.ignore);
+        yield* settle;
+
+        assert.deepEqual(
+          submittedActions,
+          [],
+          "the exhausted budget refuses the increase pre-submit",
+        );
+
+        // The §16.4 exhaustion cancellation: the REAL guard service (the one
+        // the reactor's post-budget seam calls at L1824), built directly over
+        // this test's mission rows and the observed exchange seam.
+        const missionsInstance = yield* TradingMissionService;
+        const stubExecutionValue = {
+          submitOrder: (input: { intent: { actionType: string } }) =>
+            Effect.sync(() => {
+              submittedActions.push(input.intent.actionType);
+              return { status: "accepted" };
+            }),
+          submitReduceOnlyIoc: () => Effect.succeed([]),
+          submitCancel: (input: { cloid: string }) =>
+            Effect.sync(() => {
+              cancelledCloids.push(input.cloid);
+            }),
+          submitProtectiveStop: () => Effect.die("not used"),
+        } as unknown as HyperliquidExecutionService["Service"];
+        const stubReconcilerValue = {
+          reconcile: () =>
+            Effect.succeed({
+              position: null,
+              openOrders: [],
+              canonicalOrders: [],
+              fills: [],
+              observedAt: 1000,
+            }),
+        } as unknown as HyperliquidReconciler["Service"];
+        const observedGuard = yield* makeTradingExecutionGuard.pipe(
+          Effect.provideService(TradingMissionService, missionsInstance),
+          Effect.provideService(HyperliquidExecutionService, stubExecutionValue),
+          Effect.provideService(HyperliquidReconciler, stubReconcilerValue),
+        );
+        const blockExhausted = observedGuard
+          .blockForExhaustion(
+            MISSION_ID,
+            yield* missionsInstance.getMissionVersion(MISSION_ID),
+            MASTER_ADDRESS,
+          )
+          .pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(HyperliquidGateway, {} as HyperliquidGateway["Service"]),
+            Effect.provideService(HyperliquidInfoClient, {} as HyperliquidInfoClient["Service"]),
+          );
+        yield* blockExhausted;
+
+        assert.deepEqual(
+          cancelledCloids,
+          ["0xinc"],
+          "the resting increase is cancelled and the reduce-only stop is not",
+        );
+        assert.equal((yield* missions.getMission(MISSION_ID)).status, "blocked");
+
+        // The exposure is not silently zeroed and protection stays recorded.
+        const snapshot = yield* sql<{ readonly size: number; readonly protected_size: number }>`
+          SELECT size, protected_size FROM trading_position_snapshots
+          WHERE mission_id = ${MISSION_ID} ORDER BY observed_at DESC LIMIT 1
+        `;
+        assert.equal(snapshot[0]?.size, 0.5);
+        assert.equal(snapshot[0]?.protected_size, 0.5);
+
+        // A further increase is still refused while blocked and exhausted.
+        yield* engine
+          .dispatch({
+            type: "trading.execution.requested",
+            commandId: yield* commandId,
+            threadId: THREAD_ID,
+            missionId: MISSION_ID,
+            intent: {
+              missionId: MISSION_ID,
+              executionSequence: 5,
+              actionType: "open",
+              market: "ETH",
+              side: "buy",
+              size: 0.5,
+              orderPreference: "marketable_ioc",
+              limitPrice: 3_001,
+              reduceOnly: false,
+            },
+            expectedAuthorityVersion: 1,
+            activeHarnessRunId: "run_1",
+            createdAt: NOW,
+          })
+          .pipe(Effect.ignore);
+        yield* settle;
+        assert.deepEqual(submittedActions, [], "a blocked mission still refuses increases");
+
+        // Current behavior, asserted rather than changed: a failed discovery
+        // read surfaces as an infrastructure error — never recorded as a
+        // verified cancellation.
+        yield* sql`DROP TABLE trading_orders`;
+        const failedRead = yield* Effect.flip(
+          observedGuard
+            .blockForExhaustion(
+              MISSION_ID,
+              yield* missionsInstance.getMissionVersion(MISSION_ID),
+              MASTER_ADDRESS,
+            )
+            .pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.provideService(HyperliquidGateway, {} as HyperliquidGateway["Service"]),
+              Effect.provideService(HyperliquidInfoClient, {} as HyperliquidInfoClient["Service"]),
+            ),
+        );
+        assert.equal(failedRead._tag, "TradingExhaustionError");
+        if (failedRead._tag === "TradingExhaustionError") {
+          assert.equal(failedRead.reason, "infrastructure_error");
+        }
+        assert.deepEqual(cancelledCloids, ["0xinc"], "a failed discovery cancels nothing new");
+      }).pipe(Effect.scoped, Effect.provide(ExhaustionLayer));
+    }),
+  { timeout: 30_000 },
+);
+
+// ===========================================================================
+// RC04 — an emergency close's result survives its caller.
+//
+// All three §17.5 call sites (protectIncrease after an entry, modifyStop, and
+// the protection watchdog) funnel through `recordEmergencyClose`: the outcome
+// notice is persisted to the mission inbox under an event-derived key, and
+// "blocked" is announced only when the block is a confirmed fact. These drive
+// the two harness entry points through the real event queue, and the watchdog
+// entry through its real 5s pass.
+// ===========================================================================
+
+/** The outcomes one emergency close can produce; fields per the RC03 union. */
+const emergencyOutcome = (overrides: {
+  flat: true;
+  blockWriteConfirmed?: boolean;
+  unconfirmedCancellations?: ReadonlyArray<{ readonly cloid: string; readonly reason: string }>;
+}): EmergencyCloseOutcome => {
+  const unconfirmed = overrides.unconfirmedCancellations ?? [];
+  // The real flat notice assembles its warnings from the same typed facts, so
+  // the fabricated outcome mirrors it rather than inventing separate prose.
+  const warnings = [
+    ...(overrides.blockWriteConfirmed === false
+      ? ["The mission block was attempted but could not be confirmed."]
+      : []),
+    ...(unconfirmed.length > 0
+      ? [
+          `Increasing-order cancellation was unconfirmed for ${unconfirmed.length} ` +
+            `order(s) (${unconfirmed.map((entry) => entry.cloid).join(", ")}); ` +
+            `resting entries may reopen exposure.`,
+        ]
+      : []),
+  ];
+  return {
+    flat: true,
+    remainingSize: 0,
+    attempts: 1,
+    ...(warnings.length === 0 ? {} : { failureNotice: warnings.join(" ") }),
+    blockWriteConfirmed: overrides.blockWriteConfirmed ?? true,
+    unconfirmedCancellations: unconfirmed,
+  };
+};
+const emergencyOpen = (remainingSize: number, warnings = ""): EmergencyCloseOutcome => ({
+  flat: false,
+  remainingSize,
+  attempts: 3,
+  failureNotice:
+    `Emergency close did not flatten ETH: ${remainingSize} remains after 3 attempts. ` +
+    `The mission stays blocked. Reason: test.${warnings}`,
+  blockWriteConfirmed: true,
+  unconfirmedCancellations: [],
+});
+const emergencyUnknown = (warnings = ""): EmergencyCloseOutcome => ({
+  flat: false,
+  remainingSize: null,
+  attempts: 1,
+  failureNotice:
+    `Emergency close outcome unknown for ETH: an order may have executed and the position ` +
+    `could not be confirmed after 1 attempt(s). The mission stays blocked. Reason: test.${warnings}`,
+  blockWriteConfirmed: true,
+  unconfirmedCancellations: [],
+});
+
+/**
+ * One RC04 case: the reactor over the real trading layer with the three
+ * §17.5-adjacent boundaries stubbed — protection always escalates, the
+ * emergency close answers a fixed outcome, and the harness wake/coordinator is
+ * recorded. The execution service is stubbed at the reactor boundary (the
+ * submit path has its own suites); what is under test is what happens to the
+ * emergency result afterwards.
+ */
+const runEmergencyEntryCase = (options: {
+  readonly entry: "open" | "modify_stop";
+  readonly outcome: EmergencyCloseOutcome;
+  readonly duplicateDelivery?: boolean;
+}) =>
+  Effect.gen(function* () {
+    const emergencyCalls: Array<{ readonly market: string }> = [];
+    // The stub mirrors the real service's contract: blockWriteConfirmed is
+    // true exactly when the mission-block transition write landed, so the
+    // reactor's announcement logic is exercised against the same fact it runs
+    // against in production.
+    const stubEmergency = Layer.succeed(TradingEmergencyCloseService, {
+      emergencyClose: (input: { readonly missionId: string; readonly market: string }) =>
+        Effect.gen(function* () {
+          const missions = yield* TradingMissionService;
+          if (options.outcome.blockWriteConfirmed) {
+            yield* missions.transition({
+              missionId: input.missionId,
+              to: "blocked",
+              expectedVersion: yield* missions.getMissionVersion(input.missionId),
+              blockedReason: "protection_failure",
+            });
+          }
+          emergencyCalls.push({ market: input.market });
+          return options.outcome;
+        }),
+    } as unknown as TradingEmergencyCloseService["Service"]);
+
+    const stubProtection = Layer.succeed(TradingProtectionService, {
+      reconcileProtection: () =>
+        Effect.succeed({
+          status: "escalate",
+          positionSize: 0.5,
+          protectedSize: 0,
+          replacedCloids: [],
+          escalationReason: "no stop could be placed",
+        }),
+      replaceProtection: () =>
+        Effect.succeed({
+          status: "escalate",
+          positionSize: 0.5,
+          protectedSize: 0,
+          replacedCloids: [],
+          escalationReason: "the replacement never confirmed",
+        }),
+      cancelEntriesWithProtection: () => Effect.die("not used"),
+    } as unknown as TradingProtectionService["Service"]);
+
+    const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+      requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
+      requestUserMessageRun: () => Effect.succeed(false),
+      adoptTurn: () => Effect.succeed(false),
+    } as unknown as TradingTurnCoordinator["Service"]);
+
+    const stubReconciler = Layer.succeed(HyperliquidReconciler, {
+      reconcile: () =>
+        Effect.succeed({
+          position: null,
+          openOrders: [],
+          canonicalOrders: [],
+          fills: [],
+          observedAt: 0,
+        } as never),
+    } as unknown as HyperliquidReconciler["Service"]);
+
+    const stubGateway = Layer.succeed(HyperliquidGateway, {
+      getTakerFeeRateBps: () => Effect.succeed({ feeBps: 45 }),
+      getOrderBook: () => Effect.succeed({ bestBidOffer: { bidPrice: 2_999, askPrice: 3_001 } }),
+      getAccountSnapshot: () => Effect.succeed({ positions: [] }),
+      resolveMarket: () => Effect.die("not used"),
+      getMarketSnapshot: () => Effect.die("not used"),
+      getMarketHistory: () => Effect.die("not used"),
+      getPosition: () => Effect.die("not used"),
+      getOpenOrders: () => Effect.succeed([]),
+    } as unknown as HyperliquidGateway["Service"]);
+
+    const stubExecution = Layer.succeed(HyperliquidExecutionService, {
+      submitOrder: () =>
+        Effect.succeed({
+          executionId: "exec_rc04",
+          missionId: MISSION_ID,
+          executionSequence: 1,
+          actionType: "open",
+          status: "accepted",
+        } as never),
+      submitCancel: () => Effect.void,
+      submitReduceOnlyIoc: () => Effect.succeed([] as never),
+    } as unknown as HyperliquidExecutionService["Service"]);
+
+    const stubSigner = Layer.succeed(InterimSignerConfig, {
+      resolve: Effect.succeed(Option.none()),
+    } as unknown as InterimSignerConfig["Service"]);
+
+    const CaseLayer = TradingMissionReactorLive.pipe(
+      Layer.provide(stubEmergency),
+      Layer.provide(stubProtection),
+      Layer.provide(stubCoordinator),
+      Layer.provide(stubReconciler),
+      Layer.provide(stubGateway),
+      Layer.provide(stubExecution),
+      Layer.provide(stubSigner),
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+        ),
+      ),
+      Layer.provideMerge(OrchestrationEngineLive),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(makeProviderRegistryLayer()),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-rc04-" })),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createMission;
+
+      // Executions are admitted from waiting/position_open; the reactor moves
+      // the mission to executing itself.
+      const missions = yield* TradingMissionService;
+      yield* missions.transition({
+        missionId: MISSION_ID,
+        to: "waiting",
+        expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
+      });
+
+      const engine = yield* OrchestrationEngineService;
+      const dispatchExecution = (sequence: number) =>
+        Effect.gen(function* () {
+          return yield* engine.dispatch({
+            type: "trading.execution.requested",
+            commandId: yield* commandId,
+            threadId: THREAD_ID,
+            missionId: MISSION_ID,
+            intent: {
+              missionId: MISSION_ID,
+              executionSequence: sequence,
+              actionType: options.entry,
+              market: "ETH",
+              side: options.entry === "open" ? "buy" : "sell",
+              size: 0.5,
+              orderPreference: "marketable_ioc",
+              limitPrice: 3_001,
+              stop: { stopPrice: 2_900, plannedLossAtStopUsd: 25 },
+              reduceOnly: options.entry !== "open",
+            },
+            expectedAuthorityVersion: 1,
+            activeHarnessRunId: "run_rc04",
+            createdAt: NOW,
+          });
+        });
+
+      if (options.entry === "modify_stop") {
+        // The position the moved stop protects, as the before-reconcile left it.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at
+          ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0, 1000)
+        `;
+      }
+
+      yield* dispatchExecution(1);
+      yield* settle;
+      if (options.duplicateDelivery === true) {
+        yield* dispatchExecution(1);
+        yield* settle;
+      }
+
+      const sql = yield* SqlClient.SqlClient;
+      const notices = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION_ID} AND deduplication_key LIKE 'emergency_close:%'
+      `;
+      const blockNotices = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION_ID}
+          AND deduplication_key LIKE 'emergency_block_unconfirmed:%'
+      `;
+      const refusalSummaries = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION_ID} AND deduplication_key LIKE 'execution_refused:%'
+      `;
+      const mission = yield* missions.getMission(MISSION_ID);
+      return {
+        emergencyCalls,
+        notices: notices.map((row) => row.summary),
+        blockNotices: blockNotices.map((row) => row.summary),
+        refusalSummaries: refusalSummaries.map((row) => row.summary),
+        missionStatus: mission.status,
+      };
+    }).pipe(Effect.scoped, Effect.provide(CaseLayer));
+  });
+
+it.effect("RC04 entry protectIncrease: flat outcome is recorded and blocked is announced", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOutcome({ flat: true }),
+    });
+
+    assert.equal(observed.emergencyCalls.length, 1);
+    assert.equal(observed.missionStatus, "blocked");
+    assert.equal(observed.notices.length, 1);
+    assert.ok(observed.notices[0]!.includes("Emergency close flattened ETH."), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: open outcome carries the signed remaining size", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOpen(0.2),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    assert.ok(observed.notices[0]!.includes("0.2 remains"), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: unknown outcome carries no numeric size", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyUnknown(),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    const notice = observed.notices[0]!;
+    assert.ok(notice.includes("outcome unknown"), notice);
+    assert.ok(!notice.includes("0.5"), notice);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: unconfirmed block leaves the status alone and says so", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOutcome({ flat: true, blockWriteConfirmed: false }),
+    });
+
+    // No status-set for an unconfirmed block: the mission keeps its real state
+    // and the uncertainty is published through the inbox instead.
+    assert.notEqual(observed.missionStatus, "blocked");
+    assert.equal(observed.notices.length, 1);
+    // The fresh read succeeded (the mission row exists), so the read-failure
+    // branch is not taken; the notice alone carries the failed block.
+    assert.ok(observed.notices[0]!.includes("could not be confirmed"), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04 entry protectIncrease: a flat close keeps its cancellation warning", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "open",
+      outcome: emergencyOutcome({
+        flat: true,
+        unconfirmedCancellations: [{ cloid: "0xentry", reason: "refused" }],
+      }),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    assert.ok(
+      observed.notices[0]!.includes("Increasing-order cancellation was unconfirmed"),
+      observed.notices[0],
+    );
+  }),
+);
+
+it.effect("RC04 entry modifyStop: the tool error describes the actual outcome, flat case", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOutcome({ flat: true }),
+    });
+
+    assert.equal(observed.missionStatus, "blocked");
+    // The refused modification's own channel: the refusal summary carries the
+    // actual emergency outcome, never the old unconditional "position was
+    // closed … and the mission is blocked".
+    const refusal = observed.refusalSummaries[0]!;
+    assert.ok(refusal.includes("§17.5 emergency close: Emergency close flattened ETH."), refusal);
+    assert.ok(!refusal.includes("the position was closed"), refusal);
+    assert.equal(observed.notices.length, 1);
+  }),
+);
+
+it.effect("RC04 entry modifyStop: an unknown emergency is not narrated as closed", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyUnknown(),
+    });
+
+    const refusal = observed.refusalSummaries[0]!;
+    assert.ok(refusal.includes("outcome unknown"), refusal);
+    assert.ok(!refusal.includes("was closed"), refusal);
+    assert.equal(observed.missionStatus, "blocked");
+  }),
+);
+
+it.effect("RC04 entry modifyStop: an open position's size survives to the tool error", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOpen(0.3),
+    });
+
+    assert.ok(observed.refusalSummaries[0]!.includes("0.3 remains"), observed.refusalSummaries[0]);
+  }),
+);
+
+it.effect("RC04 entry modifyStop: unconfirmed block does not become a blocked projection", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOutcome({ flat: true, blockWriteConfirmed: false }),
+    });
+
+    assert.notEqual(observed.missionStatus, "blocked");
+    assert.equal(observed.notices.length, 1);
+    assert.ok(observed.notices[0]!.includes("could not be confirmed"), observed.notices[0]);
+  }),
+);
+
+it.effect("RC04: a duplicated delivery records one notice, not two", () =>
+  Effect.gen(function* () {
+    const observed = yield* runEmergencyEntryCase({
+      entry: "modify_stop",
+      outcome: emergencyOutcome({ flat: true }),
+      duplicateDelivery: true,
+    });
+
+    // Whatever the second delivery did upstream, the emergency notice for the
+    // triggering event is one row: the event-derived key collapses the replay.
+    assert.equal(observed.notices.length, 1);
+  }),
+);
+
+it.live(
+  "RC04 watchdog entry: escalation notice is recorded and blocked announced on flat",
+  () =>
+    // The third §17.5 caller — the protection watchdog's real 5s pass over a
+    // seeded uncovered position, with protection escalating and the emergency
+    // service stubbed to a confirmed flat outcome.
+    Effect.gen(function* () {
+      const emergencyCalls: Array<{ readonly market: string }> = [];
+      // Same contract as the entry-point stub: a confirmed block is a real
+      // transition write, not just a boolean.
+      const stubEmergency = Layer.succeed(TradingEmergencyCloseService, {
+        emergencyClose: (input: { readonly missionId: string; readonly market: string }) =>
+          Effect.gen(function* () {
+            const missions = yield* TradingMissionService;
+            yield* missions.transition({
+              missionId: input.missionId,
+              to: "blocked",
+              expectedVersion: yield* missions.getMissionVersion(input.missionId),
+              blockedReason: "protection_failure",
+            });
+            emergencyCalls.push({ market: input.market });
+            return emergencyOutcome({ flat: true });
+          }),
+      } as unknown as TradingEmergencyCloseService["Service"]);
+
+      const stubProtection = Layer.succeed(TradingProtectionService, {
+        reconcileProtection: () =>
+          Effect.succeed({
+            status: "escalate",
+            positionSize: 0.5,
+            protectedSize: 0,
+            replacedCloids: [],
+            escalationReason: "no stop could be placed",
+          }),
+        replaceProtection: () => Effect.die("not used"),
+        cancelEntriesWithProtection: () => Effect.die("not used"),
+      } as unknown as TradingProtectionService["Service"]);
+
+      const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+        requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
+        requestUserMessageRun: () => Effect.succeed(false),
+        adoptTurn: () => Effect.succeed(false),
+      } as unknown as TradingTurnCoordinator["Service"]);
+
+      const WatchdogLayer = TradingMissionReactorLive.pipe(
+        Layer.provide(stubEmergency),
+        Layer.provide(stubProtection),
+        Layer.provide(stubCoordinator),
+        Layer.provideMerge(
+          TradingLayerLive.pipe(
+            Layer.provide(Layer.succeed(TradingLeaseTarget, { dbPath: ":memory:" })),
+          ),
+        ),
+        Layer.provideMerge(OrchestrationEngineLive),
+        Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provideMerge(OrchestrationProjectionPipelineLive),
+        Layer.provideMerge(OrchestrationEventStoreLive),
+        Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(makeProviderRegistryLayer()),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-rc04-watchdog-" }),
+        ),
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provideMerge(ThreadPlanProgress.layer),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* started;
+        yield* seedTradingAccount;
+        yield* createMission;
+
+        const missions = yield* TradingMissionService;
+        for (const to of ["waiting", "executing", "position_open"] as const) {
+          yield* missions.transition({
+            missionId: MISSION_ID,
+            to,
+            expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
+          });
+        }
+
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at
+          ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0, 1000)
+        `;
+        yield* sql`
+          INSERT INTO trading_execution_records (
+            execution_id, mission_id, execution_sequence, action_type,
+            cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+            reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+            stop_price
+          ) VALUES (
+            'exec-rc04-watchdog', ${MISSION_ID}, 1, 'open',
+            '0xrc04', 'idem-rc04', 'ETH', 'buy', 0.5, 3001, 'ioc',
+            0, ${MASTER_ADDRESS}, 'filled', '[]', 1000, 1000, 2900
+          )
+        `;
+
+        for (let attempt = 0; attempt < 800 && emergencyCalls.length === 0; attempt++) {
+          yield* Effect.sleep("10 millis");
+        }
+        assert.equal(emergencyCalls.length > 0, true, "the watchdog must reach §17.5");
+
+        const notices = yield* sql<{ readonly summary: string }>`
+          SELECT summary FROM trading_event_inbox
+          WHERE mission_id = ${MISSION_ID} AND deduplication_key LIKE 'emergency_close:%'
+        `;
+        assert.equal(notices.length, 1);
+        assert.ok(
+          notices[0]!.summary.includes("Emergency close flattened ETH."),
+          notices[0]!.summary,
+        );
+
+        const mission = yield* missions.getMission(MISSION_ID);
+        assert.equal(mission.status, "blocked");
+      }).pipe(Effect.scoped, Effect.provide(WatchdogLayer));
     }),
   { timeout: 30_000 },
 );

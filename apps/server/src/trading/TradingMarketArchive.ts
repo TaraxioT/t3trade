@@ -232,6 +232,14 @@ export interface TradingMarketArchiveShape {
     readonly fromT: number;
     readonly toT: number;
     readonly maxBars: number;
+    /**
+     * Which end of the window survives when it holds more bars than the
+     * caller asked for. `newest` (the default) is the chart's question,
+     * read right-to-left; `oldest` is a state machine's — a catch-up walk
+     * must see the OLDEST unseen bars first or a cap silently skips them
+     * forever, which is exactly what it must never do.
+     */
+    readonly keep?: "newest" | "oldest";
   }) => Effect.Effect<ReadonlyArray<CandleRow>>;
   /**
    * Funding rows inside a closed window, oldest first — the funding
@@ -473,12 +481,14 @@ export const makeTradingMarketArchive = (
             : { status: "unavailable", kind: "archive", reason: result.reason },
       ),
 
-    candlesInWindow: ({ coin, interval, fromT, toT, maxBars }) =>
+    candlesInWindow: ({ coin, interval, fromT, toT, maxBars, keep }) =>
       withHandle((db) => {
         const bars = candlesInRange(db, coin, interval, fromT, toT, venue);
-        // Newest bars win when the window holds more than the caller asked
-        // for: a chart is read right-to-left.
-        return bars.length <= maxBars ? bars : bars.slice(bars.length - maxBars);
+        if (bars.length <= maxBars) return bars;
+        // Newest bars win by default: a chart is read right-to-left. A
+        // catch-up walk asks for `oldest`, because the bars it has not yet
+        // seen are at the front and a newest-keeping cap would drop them.
+        return keep === "oldest" ? bars.slice(0, maxBars) : bars.slice(bars.length - maxBars);
       }, "archive file not found").pipe(
         Effect.map((result) => (Array.isArray(result) ? result : [])),
       ),

@@ -482,3 +482,241 @@ describe("an event-anchored thesis", () => {
     }),
   );
 });
+
+// -- forming bars and the funding settlement bound ------------------------------
+//
+// The archiver can store a bar that has not closed yet. A run cut off mid-bar
+// must not trade on it: no entry on its numbers, no exit inside it, no
+// window-end liquidation priced off a close that does not exist. And because
+// exits settle at CLOSE times while `servedToT` reports the last bar's open,
+// the funding read has to reach the final close or the last bar's own hours
+// are silently free.
+
+describe("forming bars never reach the engine", () => {
+  const HOUR = 60 * MINUTE;
+  const DAY = 24 * HOUR;
+  // NOW sits one hour inside b3, so b3 is forming (closeTime > NOW) while
+  // every bar before it has closed.
+  const T0 = NOW - 3 * DAY - HOUR;
+
+  const dailyBar = (t: number, o: number, h: number, l: number, c: number): CandleRow => ({
+    coin: "ETH",
+    interval: "1d",
+    t,
+    tClose: t + DAY - 1,
+    o,
+    h,
+    l,
+    c,
+    v: 10,
+    n: 5,
+  });
+
+  // b0 closes below 100; b1's close crosses above it, so the entry fills at
+  // b2's open (101). b2's high/low never touch the 1% bracket (99.99/102.01),
+  // so the trade runs to a window-end exit at b2's close. The forming b3 has
+  // a low of 49: served, it would stop the trade out inside itself.
+  const closedBars = (): ReadonlyArray<CandleRow> => [
+    dailyBar(T0, 99, 99.5, 98.5, 99),
+    dailyBar(T0 + DAY, 99, 101.5, 99, 101),
+    dailyBar(T0 + 2 * DAY, 101, 102, 100, 101),
+  ];
+  const formingBar = (): CandleRow => dailyBar(T0 + 3 * DAY, 101, 101, 49, 50);
+
+  const dailyThesis: TradingThesis = { ...thesis, interval: "1d" };
+
+  it.effect("excludes the forming final bar: no entry, exit, or liquidation happens on it", () =>
+    Effect.gen(function* () {
+      const outcome = yield* makeTradingBacktestService(
+        stubArchive({
+          candlesInWindow: () => Effect.succeed([...closedBars(), formingBar()]),
+        }),
+        stubEvents(),
+      ).run({ thesis: dailyThesis, lookbackDays: 7, notionalUsd: 1_000, now: NOW });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+
+      expect(outcome.report.coverage.barsServed).toBe(3);
+      // The last bar actually served is b2 — an OPEN time of a CLOSED bar,
+      // never the forming bar behind it.
+      expect(outcome.report.coverage.servedToT).toBe(T0 + 2 * DAY);
+      expect(outcome.trades).toHaveLength(1);
+      // Had the forming bar leaked in, its low of 49 stops this trade out
+      // inside it instead.
+      expect(outcome.trades[0]?.exitReason).toBe("window_end");
+      expect(outcome.trades[0]?.exitTime).toBe(T0 + 3 * DAY - 1);
+      expect(outcome.trades[0]?.exitPrice).toBe(101);
+    }),
+  );
+
+  it.effect("bounds the run cutoff to closed bars, close time inclusive", () =>
+    Effect.gen(function* () {
+      const bars = [...closedBars(), formingBar()];
+      const service = makeTradingBacktestService(
+        stubArchive({ candlesInWindow: () => Effect.succeed(bars) }),
+        stubEvents(),
+      );
+
+      // Exactly at b2's close time: b2 has closed, so it is servable.
+      const atClose = yield* service.run({
+        thesis: dailyThesis,
+        lookbackDays: 7,
+        now: T0 + 3 * DAY - 1,
+      });
+      expect(atClose.status).toBe("ok");
+      if (atClose.status === "ok") expect(atClose.report.coverage.barsServed).toBe(3);
+
+      // One millisecond earlier b2 is forming: only b0 and b1 are servable,
+      // and a signal on the new last bar has no next bar to fill at.
+      const beforeClose = yield* service.run({
+        thesis: dailyThesis,
+        lookbackDays: 7,
+        now: T0 + 3 * DAY - 2,
+      });
+      expect(beforeClose.status).toBe("ok");
+      if (beforeClose.status !== "ok") return;
+      expect(beforeClose.report.coverage.barsServed).toBe(2);
+      expect(beforeClose.report.stats.tradesTaken).toBe(0);
+    }),
+  );
+
+  it.effect("reports requested against served bounds over closed bars only", () =>
+    Effect.gen(function* () {
+      const outcome = yield* makeTradingBacktestService(
+        stubArchive({
+          candlesInWindow: () => Effect.succeed([...closedBars(), formingBar()]),
+        }),
+        stubEvents(),
+      ).run({ thesis: dailyThesis, lookbackDays: 7, now: NOW });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+
+      // The forming bar's open (T0 + 3d) is inside the REQUESTED window, and
+      // the served bounds say so was not served: servedToT is b2's open.
+      expect(outcome.report.coverage.requestedFromT).toBe(NOW - 7 * DAY);
+      expect(outcome.report.coverage.requestedToT).toBe(NOW);
+      expect(outcome.report.coverage.servedFromT).toBe(T0);
+      expect(outcome.report.coverage.servedToT).toBe(T0 + 2 * DAY);
+      expect(outcome.report.coverage.barsServed).toBe(3);
+    }),
+  );
+});
+
+describe("funding through the final close", () => {
+  const HOUR = 60 * MINUTE;
+  const DAY = 24 * HOUR;
+  const T0 = NOW - 3 * DAY - HOUR;
+
+  const dailyBar = (t: number, o: number, h: number, l: number, c: number): CandleRow => ({
+    coin: "ETH",
+    interval: "1d",
+    t,
+    tClose: t + DAY - 1,
+    o,
+    h,
+    l,
+    c,
+    v: 10,
+    n: 5,
+  });
+  const closedBars = (): ReadonlyArray<CandleRow> => [
+    dailyBar(T0, 99, 99.5, 98.5, 99),
+    dailyBar(T0 + DAY, 99, 101.5, 99, 101),
+    dailyBar(T0 + 2 * DAY, 101, 102, 100, 101),
+  ];
+
+  /** A funding double that records its query bounds and filters like the real read. */
+  const fundingArchive = (
+    rows: ReadonlyArray<{ readonly time: number; readonly fundingRate: number }>,
+  ) => {
+    const calls: Array<{ readonly fromT: number; readonly toT: number }> = [];
+    return {
+      calls,
+      archive: stubArchive({
+        candlesInWindow: () => Effect.succeed(closedBars()),
+        fundingInWindow: (input: { readonly fromT: number; readonly toT: number }) => {
+          calls.push({ fromT: input.fromT, toT: input.toT });
+          return Effect.succeed(
+            rows
+              .filter((row) => row.time >= input.fromT && row.time <= input.toT)
+              .map((row) => ({
+                coin: "ETH",
+                time: row.time,
+                fundingRate: row.fundingRate,
+                premium: 0,
+              })),
+          );
+        },
+      }),
+    };
+  };
+
+  it.effect("charges hourly funding stamped after the final candle's open through its close", () =>
+    Effect.gen(function* () {
+      // Hourly rows across the whole window, plus one stamped exactly at the
+      // final candle's close time.
+      const rows = [
+        ...Array.from({ length: 76 }, (_, k) => ({ time: T0 + k * HOUR, fundingRate: 0.0005 })),
+        { time: T0 + 3 * DAY - 1, fundingRate: 0.0005 },
+      ];
+      const { archive, calls } = fundingArchive(rows);
+      const outcome = yield* makeTradingBacktestService(archive, stubEvents()).run({
+        thesis: { ...thesis, interval: "1d" },
+        lookbackDays: 7,
+        notionalUsd: 1_000,
+        now: NOW,
+      });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+
+      // Hand-derived: the entry fills at b2's open (T0 + 2d) and exits at its
+      // close (T0 + 3d - 1). The rows in (entry, exit] are the 23 hourly
+      // stamps T0+49h..T0+71h plus the boundary row at the exit stamp itself:
+      // 24 rows x 0.0005 = 0.012 hourly rate. A long PAYS a positive rate,
+      // so -0.012 x 1000 = -12.00.
+      expect(outcome.trades[0]?.fundingUsd).toBe(-12);
+      // The funding query reached the final close, not the final open: an
+      // open-time bound serves only rows through T0+48h and charges nothing.
+      expect(calls).toEqual([{ fromT: T0, toT: T0 + 3 * DAY - 1 }]);
+    }),
+  );
+
+  it.effect("charges exactly (entry, exit]: the entry stamp is never double-billed", () =>
+    Effect.gen(function* () {
+      // One row at the entry instant, one at the exit instant. Only the exit
+      // stamp is inside (entry, exit]: 0.002 x 1000 = 2.00, paid by a long.
+      const { archive } = fundingArchive([
+        { time: T0 + 2 * DAY, fundingRate: 0.001 },
+        { time: T0 + 3 * DAY - 1, fundingRate: 0.002 },
+      ]);
+      const outcome = yield* makeTradingBacktestService(archive, stubEvents()).run({
+        thesis: { ...thesis, interval: "1d" },
+        lookbackDays: 7,
+        notionalUsd: 1_000,
+        now: NOW,
+      });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+      // Charging the entry stamp too would read -3; charging neither, 0.
+      expect(outcome.trades[0]?.fundingUsd).toBe(-2);
+    }),
+  );
+
+  it.effect("flips the funding sign with the side: a short is paid what a long pays", () =>
+    Effect.gen(function* () {
+      const { archive } = fundingArchive([
+        { time: T0 + 2 * DAY, fundingRate: 0.001 },
+        { time: T0 + 3 * DAY - 1, fundingRate: 0.002 },
+      ]);
+      const outcome = yield* makeTradingBacktestService(archive, stubEvents()).run({
+        thesis: { ...thesis, interval: "1d", side: "short" },
+        lookbackDays: 7,
+        notionalUsd: 1_000,
+        now: NOW,
+      });
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+      expect(outcome.trades[0]?.fundingUsd).toBe(2);
+    }),
+  );
+});

@@ -8,24 +8,40 @@ import {
   FUTURE_GUTTER_RATIO,
   GUTTER_LABEL_EDGE_INSET,
   GUTTER_LABEL_MIN_SEPARATION,
+  LEFT_AXIS_LANE_WIDTH,
+  LEFT_AXIS_LABEL_CHAR_WIDTH,
+  LEFT_AXIS_LABEL_MIN_WIDTH_PX,
+  LEFT_AXIS_MERGE_DISTANCE_RATIO,
   MIN_CANDLE_DOMAIN_SHARE,
   MAX_DRAWN_CONDITIONS,
   MAX_DRAWN_PAST_MARKERS,
   MIN_CANDLES_FOR_SVG,
+  MIN_EVENT_BAND_WIDTH,
   MIN_VISIBLE_BARS,
   PLOT_WIDTH,
+  RESEARCH_LABEL_ROW_STEP,
+  RESEARCH_MARKER_NOTE,
   computeChartGeometry,
   clusterConditions,
   dedupeConditions,
-  MIN_EVENT_BAND_WIDTH,
-  type ChartStudyOverlayInput,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
   findLevelAtPrice,
+  formatGridPrice,
+  formatUtcInstant,
+  gridPriceDecimals,
+  gridTickTarget,
+  isHttpSourceUrl,
+  leftAxisLabelWidth,
   layoutGutterLabels,
+  layoutLeftAxisLabels,
   medianBarInterval,
+  researchMarkerAriaLabel,
   selectVisibleCandles,
+  type ChartResearchMarkerInput,
+  type ChartStudyOverlayInput,
+  type LeftAxisLabelEntry,
 } from "./missionChartGeometry";
 
 // ---------------------------------------------------------------------------
@@ -342,7 +358,7 @@ describe("computeChartGeometry — mark point", () => {
 });
 
 describe("computeChartGeometry — axis mappings", () => {
-  it("maps timeStart → x=0 and timeEnd → x=PLOT_WIDTH", () => {
+  it("maps timeStart → the lane's far edge and timeEnd → x=PLOT_WIDTH", () => {
     const candles = fiveWalkingCandles();
     const geometry = computeChartGeometry({
       candles,
@@ -354,7 +370,8 @@ describe("computeChartGeometry — axis mappings", () => {
       markPrice: null,
     })!;
 
-    expect(geometry.xForTime(geometry.timeStart)).toBeCloseTo(0, 6);
+    expect(geometry.plotLeft).toBe(LEFT_AXIS_LANE_WIDTH);
+    expect(geometry.xForTime(geometry.timeStart)).toBeCloseTo(LEFT_AXIS_LANE_WIDTH, 6);
     expect(geometry.xForTime(geometry.timeEnd)).toBeCloseTo(PLOT_WIDTH, 6);
   });
 
@@ -794,7 +811,8 @@ describe("computeChartGeometry — wall-clock axis", () => {
     // The ruler ends where the bar being drawn will close, so it holds still
     // while that bar forms.
     expect(geometry.timeEnd).toBe(lastOpenTime + 60_000);
-    const axisEndX = PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO);
+    const axisEndX =
+      geometry.plotLeft + (PLOT_WIDTH - geometry.plotLeft) * (1 - FUTURE_GUTTER_RATIO);
     expect(geometry.xForTime(geometry.timeEnd)).toBeCloseTo(axisEndX, 6);
     // `now` is inside the frame, short of that end by the rest of the bar.
     expect(geometry.nowX).toBeLessThan(axisEndX);
@@ -1972,9 +1990,11 @@ describe("computeChartGeometry: event bands", () => {
     const geometry = geometryWith([bandAt(first - 120_000, first + 60_000)]);
     expect(geometry?.timeBands).toHaveLength(1);
     const band = geometry?.timeBands[0];
-    expect(band?.x1).toBe(0);
+    // Clipped at the reserved lane's far edge — the plot's left, not the
+    // frame's.
+    expect(band?.x1).toBe(LEFT_AXIS_LANE_WIDTH);
     expect(band?.x2).toBeGreaterThan(MIN_EVENT_BAND_WIDTH);
-    expect(band?.width).toBe(band?.x2 ?? 0);
+    expect(band?.width).toBe((band?.x2 ?? 0) - LEFT_AXIS_LANE_WIDTH);
   });
 
   it("drops a band wholly outside the plot rather than pinning it", () => {
@@ -2058,10 +2078,15 @@ describe("computeChartGeometry: the study overlay", () => {
     const overlay = geometry?.studyOverlay;
     expect(overlay).not.toBeNull();
     expect(overlay?.activation?.label).toBe("Merge / Paris");
-    expect(overlay?.activation?.x).toBeCloseTo(PLOT_WIDTH * (30_000 / 240_000), 5);
-    expect(overlay?.entry?.x).toBeCloseTo(PLOT_WIDTH * (60_000 / 240_000), 5);
+    // Positions as fractions along the PLOT — [plotLeft, PLOT_WIDTH], the
+    // lane no longer part of the axis — so the pinned fact is "its own time"
+    // rather than one coordinate pair per constant.
+    const alongPlot = (x: number): number =>
+      (x - geometry!.plotLeft) / (PLOT_WIDTH - geometry!.plotLeft);
+    expect(alongPlot(overlay!.activation!.x)).toBeCloseTo(30_000 / 240_000, 5);
+    expect(alongPlot(overlay!.entry!.x)).toBeCloseTo(60_000 / 240_000, 5);
     expect(overlay?.entry?.y).toBeCloseTo(geometry!.yForPrice(100), 8);
-    expect(overlay?.exit?.x).toBeCloseTo(PLOT_WIDTH * (180_000 / 240_000), 5);
+    expect(alongPlot(overlay!.exit!.x)).toBeCloseTo(180_000 / 240_000, 5);
     expect(overlay?.exit?.y).toBeCloseTo(geometry!.yForPrice(103), 8);
     // The connector joins exactly the placed markers, in order.
     expect(overlay?.returnSpan).toEqual({
@@ -2098,19 +2123,62 @@ describe("computeChartGeometry: the study overlay", () => {
     expect(geometry?.studyOverlay?.entry).not.toBeNull();
   });
 
-  it("clamps a marker past the right edge to the plot's edge, keeping its true price", () => {
-    // The close basis's exit is the exit bar's close, which lands after the
-    // last open the axis ends on: pinned at the edge, price untouched.
+  it("drops a marker beyond the loaded window rather than pinning it at the edge", () => {
+    // An exit a full bar PAST the last bar's close is beyond the loaded
+    // window: drawing it clamped onto the right edge would claim it happened
+    // there. It must not draw at all — and a missing end draws no connector.
     const geometry = geometryWith({
       activation: { at: base + 30_000, label: "Dencun" },
       entry: { at: base + 60_000, price: 100, label: "study entry" },
-      exit: { at: last + 60_000, price: 104, label: "study exit after 30 bars" },
+      exit: {
+        at: last + 2 * 60_000,
+        price: 104,
+        label: "study exit: terminal close after 30 bars",
+      },
+      returnPct: 4,
+    });
+    expect(geometry?.studyOverlay?.exit).toBeNull();
+    expect(geometry?.studyOverlay?.returnSpan).toBeNull();
+    // The entry, inside the window, still draws.
+    expect(geometry?.studyOverlay?.entry).not.toBeNull();
+  });
+
+  it("keeps a close-basis stamp of the final loaded bar, clamped at most one bar", () => {
+    // The close basis stamps the exit at the exit bar's CLOSE, which lands
+    // after the last open the axis ends on. The bar is loaded, so the marker
+    // draws — its x pinned at the plot edge, at most one bar of overhang,
+    // never a whole window of false time.
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Dencun" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: { at: last + 60_000, price: 104, label: "study exit: terminal close after 30 bars" },
       returnPct: 4,
     });
     const exit = geometry?.studyOverlay?.exit;
     expect(exit?.x).toBe(PLOT_WIDTH);
     expect(exit?.price).toBe(104);
     expect(exit?.y).toBeCloseTo(geometry!.yForPrice(104), 8);
+    expect(exit?.priceClipped).toBe(false);
+  });
+
+  it("flags a price outside the y-domain instead of silently moving it onto the axis", () => {
+    // A measured price beyond the candle domain is kept verbatim in `price`
+    // while the dot is clamped inside the frame — and `priceClipped` says the
+    // drawn y is not the measured price, so no axis position is implied.
+    const geometry = geometryWith({
+      activation: { at: base + 30_000, label: "Dencun" },
+      entry: { at: base + 60_000, price: 100, label: "study entry" },
+      exit: {
+        at: base + 3 * 60_000,
+        price: 10_000,
+        label: "study exit: terminal close after 30 bars",
+      },
+      returnPct: 4,
+    });
+    const exit = geometry?.studyOverlay?.exit;
+    expect(exit?.price).toBe(10_000);
+    expect(exit?.priceClipped).toBe(true);
+    expect(exit?.y).toBe(0);
   });
 
   it("draws no connector when one end of the study is missing", () => {
@@ -2133,5 +2201,650 @@ describe("computeChartGeometry: the study overlay", () => {
     });
     expect(geometry?.studyOverlay?.entry).toBeNull();
     expect(geometry?.studyOverlay?.returnSpan).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the unified left-axis lane
+// ---------------------------------------------------------------------------
+//
+// What was broken: the grid prices and the session levels were placed by two
+// independent passes, each internally consistent, printing on top of each
+// other at the same left edge. What is pinned here is the ONE pass that
+// replaces them: separation always holds, priority decides who moves, a
+// label that cannot be placed is suppressed (never overlapped, and never its
+// rule), duplicate visible text collapses, and nudging stays bounded.
+
+describe("layoutLeftAxisLabels", () => {
+  const frameHeight = 160;
+  const minSeparation = 12; // a 10px line plus leading, at a 1:1 frame
+  const layout = (entries: ReadonlyArray<LeftAxisLabelEntry>) =>
+    layoutLeftAxisLabels({
+      entries,
+      frameHeight,
+      minSeparation,
+      maxNudge: minSeparation,
+    });
+
+  const pairwiseSeparation = (ys: ReadonlyArray<number>): number => {
+    let smallest = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < ys.length; i += 1) {
+      smallest = Math.min(smallest, ys[i]! - ys[i - 1]!);
+    }
+    return smallest;
+  };
+
+  it("holds the screenshot's density: 5 grid ticks and 7 session levels in 160 units", () => {
+    // The collision the screenshot showed: a full grid plus every session
+    // level fighting for one left edge. Whatever survives must be legible.
+    const result = layout([
+      // 7 session levels, several nearly coincident.
+      { id: "session-pdh", text: "pd hi 2,461", y: 12, priority: 1 },
+      { id: "session-vwap", text: "vwap 2,431", y: 31, priority: 1 },
+      { id: "session-do", text: "d op 2,431", y: 32, priority: 1 },
+      { id: "session-dh", text: "d hi 2,437", y: 40, priority: 1 },
+      { id: "session-dl", text: "d lo 2,404", y: 96, priority: 1 },
+      { id: "session-pdc", text: "pd cl 2,419", y: 118, priority: 1 },
+      { id: "session-pdl", text: "pd lo 2,384", y: 149, priority: 1 },
+      // 5 ordinary grid ticks.
+      { id: "grid-a", text: "2,380", y: 8, priority: 2 },
+      { id: "grid-b", text: "2,400", y: 44, priority: 2 },
+      { id: "grid-c", text: "2,420", y: 80, priority: 2 },
+      { id: "grid-d", text: "2,440", y: 116, priority: 2 },
+      { id: "grid-e", text: "2,460", y: 152, priority: 2 },
+    ]);
+
+    const ys = result.placed.map((placement) => placement.y);
+    expect(ys.length).toBeGreaterThan(0);
+    expect(pairwiseSeparation([...ys].sort((a, b) => a - b))).toBeGreaterThanOrEqual(
+      minSeparation - 1e-6,
+    );
+    // At this density something has to give, and what gives is the grid:
+    // ticks are suppressed rather than overlapped or moved onto a session.
+    expect(result.placed.some((placement) => placement.id.startsWith("grid-"))).toBe(true);
+    expect(result.suppressed.size).toBeGreaterThan(0);
+    for (const placement of result.placed) {
+      expect(placement.y).toBeGreaterThanOrEqual(minSeparation / 2);
+      expect(placement.y).toBeLessThanOrEqual(frameHeight - minSeparation / 2);
+    }
+    // Whatever the lane folded away is DISCLOSED, not dropped: every overflow
+    // entry is a suppressed entry with its own readable text, and the lane
+    // never collapses to nothing.
+    expect(result.overflow.length).toBeGreaterThan(0);
+    for (const entry of result.overflow) {
+      expect(result.suppressed.has(entry.id)).toBe(true);
+      expect(entry.text.length).toBeGreaterThan(0);
+    }
+    expect(result.placed.some((placement) => placement.id.startsWith("session-"))).toBe(true);
+  });
+
+  it("keeps every placed label within one nudge of its own rule", () => {
+    const entries: LeftAxisLabelEntry[] = [
+      { id: "session-a", text: "a", y: 60, priority: 1 },
+      { id: "session-b", text: "b", y: 62, priority: 1 },
+      { id: "grid-a", text: "1", y: 61, priority: 2 },
+      { id: "grid-b", text: "2", y: 130, priority: 2 },
+    ];
+    const result = layout(entries);
+    const trueY = new Map(entries.map((entry) => [entry.id, entry.y]));
+    for (const placement of result.placed) {
+      expect(Math.abs(placement.y - trueY.get(placement.id)!)).toBeLessThanOrEqual(
+        minSeparation + 1e-6,
+      );
+    }
+  });
+
+  it("holds the priority order: drag readout > session level > grid tick", () => {
+    // Three labels within a hair of each other: the dragged price keeps its
+    // exact y, the session level moves clear, and the near-equal tick folds
+    // under the session — its price is printed there, so it is suppressed
+    // without being overflow.
+    const result = layout([
+      { id: "drag-readout", text: "2,420.25", y: 80, priority: 0 },
+      { id: "session-vwap", text: "vwap 2,420.5", y: 82, priority: 1 },
+      { id: "grid-a", text: "2,420", y: 84, priority: 2 },
+    ]);
+    expect(result.placed.find((placement) => placement.id === "drag-readout")?.y).toBe(80);
+    const session = result.placed.find((placement) => placement.id === "session-vwap");
+    expect(session).toBeDefined();
+    expect(Math.abs(session!.y - 80)).toBeGreaterThanOrEqual(minSeparation - 1e-6);
+    // The tick cannot sit legibly beside the level it is priced at: folded
+    // into the level's label, hidden without being overflow — and its rule is
+    // the renderer's business, untouched.
+    expect(result.suppressed.has("grid-a")).toBe(true);
+    expect(result.placed.find((placement) => placement.id === "grid-a")).toBeUndefined();
+    expect(result.overflow.map((entry) => entry.id)).not.toContain("grid-a");
+  });
+
+  it("merges a tick a hair beneath the level, and nudges a genuinely separate one clear", () => {
+    // Two units apart (the screenshot's 2,461-over-2,460): one label — the
+    // named level, at its own y.
+    const folded = layout([
+      { id: "session-pdc", text: "pd cl 2,419", y: 40, priority: 1 },
+      { id: "grid-a", text: "2,420", y: 42, priority: 2 },
+    ]);
+    expect(folded.placed.find((placement) => placement.id === "session-pdc")?.y).toBe(40);
+    expect(folded.placed.find((placement) => placement.id === "grid-a")).toBeUndefined();
+    expect(folded.overflow).toEqual([]);
+
+    // Six apart: two honest facts, so the level holds its ground exactly and
+    // the tick is the one that moves clear.
+    const apart = layout([
+      { id: "session-pdc", text: "pd cl 2,419", y: 40, priority: 1 },
+      { id: "grid-a", text: "2,420", y: 46, priority: 2 },
+    ]);
+    expect(apart.placed.find((placement) => placement.id === "session-pdc")?.y).toBe(40);
+    const grid = apart.placed.find((placement) => placement.id === "grid-a");
+    expect(grid).toBeDefined();
+    expect(grid!.y - 40).toBeGreaterThanOrEqual(minSeparation - 1e-6);
+  });
+
+  it("suppresses a tick boxed between two levels rather than overlapping either", () => {
+    const result = layout([
+      { id: "session-a", text: "a", y: 40, priority: 1 },
+      { id: "session-b", text: "b", y: 52, priority: 1 },
+      { id: "grid-a", text: "1", y: 46, priority: 2 },
+    ]);
+    // Both levels hold their ground exactly a separation apart; the tick in
+    // the gap has nowhere legible to go within its nudge.
+    expect(result.placed.find((placement) => placement.id === "session-a")?.y).toBe(40);
+    expect(result.placed.find((placement) => placement.id === "session-b")?.y).toBe(52);
+    expect(result.suppressed.has("grid-a")).toBe(true);
+  });
+
+  it("deduplicates equal or near-equal visible text into one label", () => {
+    // Two ticks whose formatted prices print identically are one fact.
+    const sameText = layout([
+      { id: "grid-a", text: "2,420", y: 40, priority: 2 },
+      { id: "grid-b", text: "2,420", y: 40.5, priority: 2 },
+    ]);
+    expect(sameText.placed).toHaveLength(1);
+    expect(sameText.placed[0]!.y).toBe(40);
+    expect(sameText.suppressed.has("grid-b")).toBe(true);
+
+    // The more important entry's position wins the shared text.
+    const crossKind = layout([
+      { id: "session-pdc", text: "2,420", y: 40, priority: 1 },
+      { id: "grid-a", text: "2,420", y: 41, priority: 2 },
+    ]);
+    expect(crossKind.placed).toHaveLength(1);
+    expect(crossKind.placed[0]!.id).toBe("session-pdc");
+    expect(crossKind.suppressed.has("grid-a")).toBe(true);
+  });
+
+  it("leaves an empty lane empty", () => {
+    const result = layout([]);
+    expect(result.placed).toEqual([]);
+    expect(result.suppressed.size).toBe(0);
+    expect(result.overflow).toEqual([]);
+  });
+
+  it("merges a near-value grid tick under the named level — one label, no overflow", () => {
+    // The screenshot's pair: a session level at 2,461 with the grid's 2,460 a
+    // hair beneath it. One label survives — the named one, at its own y — and
+    // the folded tick is NOT overflow: its price is printed on the axis under
+    // the label that won.
+    const result = layout([
+      { id: "session-pdh", text: "pd hi 2,461", y: 40, priority: 1 },
+      { id: "grid-a", text: "2,460", y: 41, priority: 2 },
+    ]);
+    expect(result.placed).toHaveLength(1);
+    expect(result.placed[0]).toMatchObject({ id: "session-pdh", y: 40 });
+    expect(result.suppressed.has("grid-a")).toBe(true);
+    expect(result.overflow).toEqual([]);
+  });
+
+  it("counts a folded same-kind level as overflow — its fact is printed nowhere", () => {
+    // vwap and the day's open a few cents apart: the lane keeps one label,
+    // but the loser's NAME is absent from the axis entirely, so it is
+    // disclosed in the count rather than silently absorbed.
+    const result = layout([
+      { id: "session-vwap", text: "vwap 2,431", y: 31, priority: 1 },
+      { id: "session-do", text: "d op 2,431", y: 31.2, priority: 1 },
+    ]);
+    expect(result.placed).toHaveLength(1);
+    expect(result.placed[0]!.id).toBe("session-vwap");
+    expect(result.overflow.map((entry) => entry.id)).toEqual(["session-do"]);
+    expect(result.suppressed.has("session-do")).toBe(true);
+  });
+
+  it("keeps two honestly different prices two labels", () => {
+    const gap = minSeparation * LEFT_AXIS_MERGE_DISTANCE_RATIO + 1;
+    const result = layout([
+      { id: "session-a", text: "a", y: 40, priority: 1 },
+      { id: "grid-a", text: "1", y: 40 + gap, priority: 2 },
+    ]);
+    expect(result.placed).toHaveLength(2);
+    expect(result.overflow).toEqual([]);
+  });
+
+  it("never lets the dragged readout swallow a named level by merging", () => {
+    // The readout is a pointer read, not an axis fact: dragging across a
+    // session level must nudge the level's label clear, not fold it away.
+    const result = layout([
+      { id: "drag-readout", text: "2,420.25", y: 80, priority: 0 },
+      { id: "session-vwap", text: "vwap 2,420.5", y: 80.5, priority: 1 },
+    ]);
+    expect(result.placed).toHaveLength(2);
+    expect(result.placed.find((placement) => placement.id === "drag-readout")?.y).toBe(80);
+    expect(result.overflow).toEqual([]);
+  });
+
+  it("never hides the lane's most important named level, however boxed", () => {
+    // Pathological piles: whatever else the lane does, the first named level
+    // in priority order is placed — an axis that hides every level it names
+    // has stopped being an axis.
+    const fixtures: ReadonlyArray<ReadonlyArray<LeftAxisLabelEntry>> = [
+      [
+        { id: "drag-readout", text: "2,420.25", y: 154, priority: 0 },
+        { id: "session-a", text: "a", y: 153, priority: 1 },
+        { id: "session-b", text: "b", y: 141, priority: 1 },
+      ],
+      [
+        { id: "drag-readout", text: "2,420.25", y: 80, priority: 0 },
+        { id: "session-a", text: "a", y: 80.5, priority: 1 },
+        { id: "grid-a", text: "1", y: 79.5, priority: 2 },
+      ],
+      [
+        { id: "drag-readout", text: "2,420.25", y: 6, priority: 0 },
+        { id: "session-a", text: "a", y: 7, priority: 1 },
+        { id: "grid-a", text: "1", y: 5, priority: 2 },
+      ],
+    ];
+    for (const entries of fixtures) {
+      const result = layout(entries);
+      const mostImportantNamed = [...entries]
+        .filter((entry) => entry.priority >= 1)
+        .sort((a, b) => a.priority - b.priority || a.y - b.y || a.id.localeCompare(b.id))[0]!;
+      expect(result.placed.some((placement) => placement.id === mostImportantNamed.id)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the reserved left-axis lane (computeChartGeometry)
+// ---------------------------------------------------------------------------
+//
+// The lane is ground the geometry HOLDS EMPTY: the plot's x-range is
+// [plotLeft, PLOT_WIDTH], so candles, lines and rules begin at the lane's far
+// edge, and the labels the lane layout places render inside [0, plotLeft].
+// Both halves of that exclusion are pinned here.
+
+describe("computeChartGeometry — the reserved left-axis lane", () => {
+  const candles = fiveWalkingCandles();
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+  } as const;
+
+  it("reserves the default lane and starts every drawn thing at its far edge", () => {
+    const geometry = computeChartGeometry(base);
+    if (geometry === null) throw new Error("expected geometry");
+    expect(geometry.plotLeft).toBe(LEFT_AXIS_LANE_WIDTH);
+    expect(geometry.xForTime(geometry.timeStart)).toBeCloseTo(LEFT_AXIS_LANE_WIDTH, 6);
+    // Bars sit at their own times: a centre left of the lane edge is a bar
+    // drawn inside the lane. The one allowance is the window-edge bar, whose
+    // BODY may overhang half a width into the clip the renderer holds at the
+    // lane edge (the same sliver the old viewBox edge used to clip at x=0).
+    for (const bar of geometry.bars) {
+      expect(bar.x).toBeGreaterThanOrEqual(LEFT_AXIS_LANE_WIDTH - 1e-6);
+      if (bar.x - bar.halfWidth < LEFT_AXIS_LANE_WIDTH - 1e-6) {
+        expect(bar.x).toBeCloseTo(LEFT_AXIS_LANE_WIDTH, 6);
+      }
+    }
+    for (const point of [...geometry.preEntryPoints, ...geometry.postEntryPoints]) {
+      expect(point.x).toBeGreaterThanOrEqual(LEFT_AXIS_LANE_WIDTH - 1e-6);
+    }
+  });
+
+  it("honours the renderer's narrow-frame lane and still excludes it", () => {
+    // What the renderer passes on a ~360px frame: the 84px label floor
+    // converted into viewBox units. The plot narrows; the exclusion does not.
+    const lane = LEFT_AXIS_LABEL_MIN_WIDTH_PX * (1000 / 360);
+    const geometry = computeChartGeometry({ ...base, leftAxisLaneWidth: lane });
+    if (geometry === null) throw new Error("expected geometry");
+    expect(geometry.plotLeft).toBeCloseTo(lane, 6);
+    for (const bar of geometry.bars) {
+      expect(bar.x).toBeGreaterThanOrEqual(lane - 1e-6);
+      if (bar.x - bar.halfWidth < lane - 1e-6) {
+        expect(bar.x).toBeCloseTo(lane, 6);
+      }
+    }
+    for (const point of [...geometry.preEntryPoints, ...geometry.postEntryPoints]) {
+      expect(point.x).toBeGreaterThanOrEqual(lane - 1e-6);
+    }
+    // With a clock, the future gutter still shrinks the axis to the lane's
+    // right, composed with the lane rather than against it.
+    const withClock = computeChartGeometry({
+      ...base,
+      leftAxisLaneWidth: lane,
+      nowMillis: candles[candles.length - 1]!.openTime + 30_000,
+    });
+    if (withClock === null) throw new Error("expected geometry");
+    const expectedAxisEnd = lane + (PLOT_WIDTH - lane) * (1 - FUTURE_GUTTER_RATIO);
+    expect(withClock.xForTime(withClock.timeEnd)).toBeCloseTo(expectedAxisEnd, 6);
+    expect(withClock.nowX).toBeGreaterThan(lane);
+    expect(withClock.nowX).toBeLessThan(expectedAxisEnd);
+  });
+
+  it("clamps a nonsensical lane request rather than trusting it", () => {
+    const nan = computeChartGeometry({ ...base, leftAxisLaneWidth: Number.NaN });
+    expect(nan?.plotLeft).toBe(LEFT_AXIS_LANE_WIDTH);
+    const negative = computeChartGeometry({ ...base, leftAxisLaneWidth: -5 });
+    expect(negative?.plotLeft).toBe(LEFT_AXIS_LANE_WIDTH);
+    // A lane wider than the plot itself is a caller error: held to two fifths
+    // so the plot keeps a majority of its width.
+    const huge = computeChartGeometry({ ...base, leftAxisLaneWidth: 900 });
+    expect(huge?.plotLeft).toBe(PLOT_WIDTH * 0.4);
+  });
+
+  it("keeps every lane label's modelled x-extent inside the reserved lane", () => {
+    // Labels right-align against the lane's far edge, so a label's extent is
+    // [plotLeft - width, plotLeft] and containment is one inequality per
+    // label — pinned per placed label, not assumed from the constant.
+    const geometry = computeChartGeometry(base);
+    if (geometry === null) throw new Error("expected geometry");
+    const lane = geometry.plotLeft;
+    const entries: LeftAxisLabelEntry[] = [
+      { id: "session-pdh", text: "pd hi 2,461", y: 12, priority: 1 },
+      { id: "session-vwap", text: "vwap 2,431", y: 31, priority: 1 },
+      { id: "session-do", text: "d op 2,431", y: 32, priority: 1 },
+      { id: "session-pdl", text: "pd lo 2,384", y: 149, priority: 1 },
+      { id: "grid-a", text: "2,380", y: 8, priority: 2 },
+      { id: "grid-b", text: "2,400", y: 44, priority: 2 },
+      { id: "grid-c", text: "2,420", y: 80, priority: 2 },
+    ];
+    const result = layoutLeftAxisLabels({
+      entries,
+      frameHeight: CHART_VIEWBOX_HEIGHT,
+      minSeparation: 12,
+      maxNudge: 12,
+    });
+    const textById = new Map(entries.map((entry) => [entry.id, entry.text]));
+    for (const placement of result.placed) {
+      const text = textById.get(placement.id);
+      expect(text).toBeDefined();
+      const width = leftAxisLabelWidth(text!);
+      const left = lane - width;
+      expect(left).toBeGreaterThanOrEqual(-1e-6);
+      expect(lane).toBeLessThanOrEqual(PLOT_WIDTH);
+    }
+  });
+
+  it("models the default lane wide enough for the longest label it draws", () => {
+    // A session label is the lane's longest text: a two-word level name plus
+    // a grouped price at full two-decimal precision.
+    const longest = "pd cl 2,431.25";
+    expect(leftAxisLabelWidth(longest)).toBeLessThanOrEqual(LEFT_AXIS_LANE_WIDTH);
+    expect(leftAxisLabelWidth("")).toBeGreaterThan(0);
+    expect(LEFT_AXIS_LABEL_CHAR_WIDTH).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// grid precision and tick count
+// ---------------------------------------------------------------------------
+
+describe("gridPriceDecimals", () => {
+  it("picks the coarsest decimals the tick spacing supports", () => {
+    expect(gridPriceDecimals(50)).toBe(0);
+    expect(gridPriceDecimals(10)).toBe(0);
+    expect(gridPriceDecimals(2.5)).toBe(1);
+    expect(gridPriceDecimals(0.5)).toBe(1);
+    expect(gridPriceDecimals(0.25)).toBe(2);
+    expect(gridPriceDecimals(0.01)).toBe(2);
+    expect(gridPriceDecimals(0.000002)).toBe(6);
+  });
+
+  it("falls back to two decimals for a step it cannot read", () => {
+    expect(gridPriceDecimals(0)).toBe(2);
+    expect(gridPriceDecimals(-1)).toBe(2);
+    expect(gridPriceDecimals(Number.NaN)).toBe(2);
+  });
+});
+
+describe("formatGridPrice", () => {
+  // The grouping separator follows the runtime locale; the precision must not.
+  it("prints each spacing at its own precision, without mixing", () => {
+    expect(formatGridPrice(2420, 0)).toMatch(/2[.,]420$/);
+    expect(formatGridPrice(2420.5, 1)).toMatch(/2[.,]420\.5$/);
+    expect(formatGridPrice(2420.51, 2)).toMatch(/2[.,]420\.51$/);
+    expect(formatGridPrice(2420.5, 1)).not.toContain("51");
+  });
+});
+
+describe("gridTickTarget", () => {
+  it("reduces the tick count on narrow frames before any type shrinks", () => {
+    // The font sizes are constants of the chart (10px/9px); the ONLY lever
+    // the measured width pulls is how many rules are drawn.
+    expect(gridTickTarget(900)).toBe(4);
+    expect(gridTickTarget(560)).toBe(4);
+    expect(gridTickTarget(559)).toBe(3);
+    expect(gridTickTarget(360)).toBe(3);
+    expect(gridTickTarget(359)).toBe(2);
+  });
+
+  it("defaults to the full count unmeasured", () => {
+    expect(gridTickTarget(0)).toBe(4);
+    expect(gridTickTarget(Number.NaN)).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// research markers
+// ---------------------------------------------------------------------------
+//
+// One researched event occurrence from a published scene, placed on the time
+// axis: an instantaneous activation is a rule at its EXACT saved millisecond
+// (never moved for collisions — only labels stack), a genuine span is a band,
+// an uncovered occurrence draws nothing at all, and an upcoming one follows
+// the bounded future-gutter policy.
+
+describe("computeChartGeometry: research markers", () => {
+  const base = 1_700_000_000_000;
+  const candles = fiveWalkingCandles();
+  // Five candles spaced a minute apart, no clock: the whole plot spans the
+  // four minutes from the first open to the last.
+  const first = base;
+  const last = base + 4 * 60_000;
+
+  const markerInput = (overrides: Partial<ChartResearchMarkerInput>): ChartResearchMarkerInput => ({
+    key: "research-1",
+    label: "Dencun",
+    startAt: base + 120_000,
+    endAt: base + 120_000,
+    sourceUrl: "https://ethereum.org/en/roadmap/dencun",
+    covered: true,
+    upcoming: false,
+    ...overrides,
+  });
+
+  const geometryWith = (
+    markers: ReadonlyArray<ChartResearchMarkerInput>,
+    extra: { readonly nowMillis?: number } = {},
+  ) =>
+    computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+      researchMarkers: markers,
+      ...extra,
+    });
+
+  it("rules an instantaneous occurrence at the exact millisecond it saved", () => {
+    const geometry = geometryWith([markerInput({})]);
+    expect(geometry?.researchMarkers).toHaveLength(1);
+    const marker = geometry?.researchMarkers[0];
+    expect(marker?.span).toBe(false);
+    // The rule's x is the projection of the instant itself — to the exact
+    // float, never rounded to a bar or nudged for collisions.
+    expect(marker?.x1).toBe(geometry!.xForTime(base + 120_000));
+    expect(marker?.x2).toBe(marker?.x1);
+  });
+
+  it("bands a genuine span across its own start and end", () => {
+    const geometry = geometryWith([markerInput({ startAt: base + 60_000, endAt: base + 150_000 })]);
+    const marker = geometry?.researchMarkers[0];
+    expect(marker?.span).toBe(true);
+    expect(marker?.x1).toBeCloseTo(geometry!.xForTime(base + 60_000), 5);
+    expect(marker?.x2).toBeCloseTo(geometry!.xForTime(base + 150_000), 5);
+    expect(marker!.x2 - marker!.x1).toBeGreaterThanOrEqual(MIN_EVENT_BAND_WIDTH);
+  });
+
+  it("draws nothing for an uncovered occurrence — no rule, no band, no left-edge pin", () => {
+    const geometry = geometryWith([
+      markerInput({ covered: false, startAt: base + 60_000, endAt: base + 150_000 }),
+    ]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+  });
+
+  it("drops an occurrence from before the window like an old fill", () => {
+    const geometry = geometryWith([markerInput({ startAt: first - 1, endAt: first - 1 })]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+  });
+
+  it("drops a covered instant past the axis end instead of pinning it at the edge", () => {
+    // Without a clock the axis ends at the last loaded bar: an instant beyond
+    // it is outside the loaded window, and clamping its x onto the right edge
+    // would draw it at a time it did not happen at. Left of the window is
+    // dropped; right of it must be too.
+    const geometry = geometryWith([markerInput({ startAt: last + 60_000, endAt: last + 60_000 })]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+    // One still inside the window keeps drawing.
+    expect(geometryWith([markerInput({})])?.researchMarkers).toHaveLength(1);
+  });
+
+  it("clamps an upcoming occurrence into the future gutter, never beyond it", () => {
+    const nowMillis = last;
+    const geometry = geometryWith(
+      [
+        // Far beyond the gutter: pinned at its far edge, visibly.
+        markerInput({ startAt: base + 30 * 60_000, endAt: base + 31 * 60_000, upcoming: true }),
+      ],
+      { nowMillis },
+    );
+    const marker = geometry?.researchMarkers[0];
+    expect(marker).toBeDefined();
+    expect(marker?.upcoming).toBe(true);
+    expect(marker?.x1).toBeGreaterThanOrEqual(geometry?.nowX ?? 0);
+    expect(marker?.x1).toBeLessThanOrEqual(PLOT_WIDTH);
+    // Pinned at the gutter's far edge, the visible-minimum floor must not
+    // push the band past the plot and into the price gutter.
+    expect(marker?.x2).toBeLessThanOrEqual(PLOT_WIDTH);
+    expect(marker!.x2 - marker!.x1).toBeGreaterThanOrEqual(MIN_EVENT_BAND_WIDTH);
+  });
+
+  it("draws no upcoming occurrence without a clock — there is no gutter to hold it", () => {
+    const geometry = geometryWith([markerInput({ upcoming: true })]);
+    expect(geometry?.researchMarkers).toHaveLength(0);
+  });
+
+  it("an uncovered UPCOMING occurrence still renders in the gutter: existence is not coverage", () => {
+    // A future occurrence is uncovered by definition — it has not been
+    // measured — but the gutter draws its SOURCED DATE, not a price. The
+    // covered gate is for past occurrences, and it used to reject every
+    // future event before its own rendering path could run.
+    const nowMillis = last;
+    const geometry = geometryWith(
+      [
+        markerInput({
+          startAt: last + 30_000,
+          endAt: last + 30_000,
+          upcoming: true,
+          covered: false,
+        }),
+      ],
+      { nowMillis },
+    );
+    expect(geometry?.researchMarkers).toHaveLength(1);
+    expect(geometry?.researchMarkers[0]?.upcoming).toBe(true);
+    // A past uncovered occurrence still draws nothing.
+    const past = geometryWith([markerInput({ startAt: base + 120_000, covered: false })], {
+      nowMillis,
+    });
+    expect(past?.researchMarkers).toHaveLength(0);
+  });
+
+  it("stacks the labels of close occurrences in rows while the rules keep their x", () => {
+    // Two activations seconds apart: their labels cannot share one row, but
+    // neither rule moves a hair.
+    const nearA = base + 120_000;
+    const nearB = base + 125_000;
+    const geometry = geometryWith([
+      markerInput({ key: "a", startAt: nearA, endAt: nearA }),
+      markerInput({ key: "b", startAt: nearB, endAt: nearB }),
+    ]);
+    const a = geometry?.researchMarkers.find((marker) => marker.key === "a");
+    const b = geometry?.researchMarkers.find((marker) => marker.key === "b");
+    expect(a?.x1).toBe(geometry!.xForTime(nearA));
+    expect(b?.x1).toBe(geometry!.xForTime(nearB));
+    expect(Math.abs(b!.labelY - a!.labelY)).toBeGreaterThanOrEqual(RESEARCH_LABEL_ROW_STEP);
+
+    // Far apart, the labels share the first row.
+    const apart = geometryWith([
+      markerInput({ key: "a", startAt: base + 60_000, endAt: base + 60_000 }),
+      markerInput({ key: "b", startAt: base + 180_000, endAt: base + 180_000 }),
+    ]);
+    const apartA = apart?.researchMarkers.find((marker) => marker.key === "a");
+    const apartB = apart?.researchMarkers.find((marker) => marker.key === "b");
+    expect(apartA?.labelY).toBe(apartB?.labelY);
+  });
+
+  it("keeps every field the renderer labels the occurrence by", () => {
+    const geometry = geometryWith([markerInput({})]);
+    const marker = geometry?.researchMarkers[0];
+    expect(marker?.key).toBe("research-1");
+    expect(marker?.label).toBe("Dencun");
+    expect(marker?.sourceUrl).toBe("https://ethereum.org/en/roadmap/dencun");
+  });
+});
+
+describe("research marker disclosure", () => {
+  // 2024-03-13 13:00:00 UTC — the instant the Dencun example names.
+  const dencun = 1_710_334_800_000;
+
+  it("formats the exact UTC date and time", () => {
+    expect(formatUtcInstant(dencun)).toBe("2024-03-13 13:00 UTC");
+    expect(formatUtcInstant(dencun + 15_000)).toBe("2024-03-13 13:00:15 UTC");
+    expect(formatUtcInstant(Number.NaN)).toBe("");
+  });
+
+  it("accepts only http(s) sources as links", () => {
+    expect(isHttpSourceUrl("https://ethereum.org/en/roadmap/dencun")).toBe(true);
+    expect(isHttpSourceUrl("http://example.com")).toBe(true);
+    expect(isHttpSourceUrl("ipfs://bafy...")).toBe(false);
+    expect(isHttpSourceUrl("javascript:alert(1)")).toBe(false);
+    expect(isHttpSourceUrl("")).toBe(false);
+  });
+
+  it("carries the name, the exact instant, the not-a-trade wording, and the source", () => {
+    const label = researchMarkerAriaLabel({
+      label: "Dencun",
+      startAt: dencun,
+      sourceUrl: "https://ethereum.org/en/roadmap/dencun",
+    });
+    expect(label).toContain("Dencun");
+    expect(label).toContain("2024-03-13 13:00 UTC");
+    expect(label).toContain(RESEARCH_MARKER_NOTE);
+    expect(label).toContain("https://ethereum.org/en/roadmap/dencun");
+  });
+
+  it("omits a non-http source rather than linking it", () => {
+    const label = researchMarkerAriaLabel({
+      label: "Dencun",
+      startAt: dencun,
+      sourceUrl: "ipfs://bafy...",
+    });
+    expect(label).toContain("Dencun");
+    expect(label).not.toContain("ipfs");
   });
 });

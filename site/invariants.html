@@ -1,0 +1,2086 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Safety invariants · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="The seventeen invariants T3 Trade refuses to break: one spending path, exchange-native protection, bounded loss budgets, and the leases and fail-closed signer behind them."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+      :root {
+        --void: #060a12; /* page base */
+        --panel: #0b1120; /* raised surface */
+        --panel-2: #0e1526; /* second raise */
+        --edge: rgba(148, 163, 199, 0.13);
+        --edge-strong: rgba(148, 163, 199, 0.24);
+        --chalk: #d8e0ec; /* primary text */
+        --slate: #8a97ad; /* secondary text */
+        --dim: #5c6b84; /* tertiary text */
+        --bid: #2bd576; /* success, long, confirmed */
+        --ask: #ff5d6c; /* risk, refusal, halt */
+        --amber: #ffb224; /* caution, limits, unknown */
+        --flow: #56ccf2; /* data in motion, links, events */
+        --flow-soft: rgba(86, 204, 242, 0.14);
+        --font-body: "IBM Plex Sans", system-ui, sans-serif;
+        --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+        --font-display: "Archivo", system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+      body {
+        background: var(--void);
+        color: var(--chalk);
+        font-family: var(--font-body);
+        font-size: 16.5px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection {
+        background: rgba(86, 204, 242, 0.28);
+      }
+      a {
+        color: var(--flow);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      :focus-visible {
+        outline: 2px solid var(--flow);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      code,
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 0.86em;
+      }
+      code.path {
+        color: var(--slate);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 6px;
+        padding: 0.1em 0.4em;
+        white-space: nowrap;
+      }
+      .wrap {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      /* chrome */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(6, 10, 18, 0.82);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--edge);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+        gap: 16px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--chalk);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        white-space: nowrap;
+      }
+      .brand:hover {
+        text-decoration: none;
+      }
+      .brand .tick {
+        color: var(--bid);
+      }
+      .nav-links {
+        display: flex;
+        gap: 4px;
+      }
+      .nav-links a {
+        color: var(--slate);
+        font-size: 13.5px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        white-space: nowrap;
+      }
+      .nav-links a:hover {
+        color: var(--chalk);
+        background: var(--panel);
+        text-decoration: none;
+      }
+      .nav-links a[aria-current="page"] {
+        color: var(--flow);
+        background: var(--flow-soft);
+      }
+      @media (max-width: 820px) {
+        .nav-links {
+          display: none;
+        }
+        .nav-links.open {
+          display: flex;
+          flex-direction: column;
+          position: absolute;
+          top: 60px;
+          right: 12px;
+          background: var(--panel);
+          border: 1px solid var(--edge);
+          border-radius: 10px;
+          padding: 8px;
+        }
+        .nav-menu-btn {
+          display: inline-flex !important;
+        }
+      }
+      .nav-menu-btn {
+        display: none;
+        color: var(--slate);
+        background: none;
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .footer {
+        border-top: 1px solid var(--edge);
+        margin-top: 96px;
+        padding: 40px 0 56px;
+        color: var(--dim);
+        font-size: 14px;
+      }
+      .footer .cols {
+        display: flex;
+        gap: 32px;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .footer nav {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .footer a {
+        color: var(--slate);
+      }
+      .footer a:hover {
+        color: var(--flow);
+      }
+      .footer .mono {
+        font-size: 12px;
+        letter-spacing: 0.06em;
+      }
+
+      /* type roles */
+      .kicker {
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        letter-spacing: 0.14em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      h1 {
+        font-family: var(--font-display);
+        font-weight: 800;
+        font-stretch: 112%;
+        font-size: clamp(34px, 5.4vw, 58px);
+        line-height: 1.04;
+        letter-spacing: -0.015em;
+        margin: 14px 0 18px;
+        max-width: 18ch;
+      }
+      h2 {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-stretch: 106%;
+        font-size: clamp(24px, 3.2vw, 34px);
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        margin: 0 0 14px;
+        max-width: 26ch;
+      }
+      h3 {
+        font-family: var(--font-body);
+        font-weight: 600;
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+      p {
+        max-width: 66ch;
+        color: var(--chalk);
+      }
+      p.lede {
+        font-size: 19px;
+        color: var(--slate);
+        max-width: 58ch;
+      }
+      .section {
+        padding: 76px 0;
+        border-top: 1px solid var(--edge);
+      }
+      .section:first-of-type {
+        border-top: none;
+      }
+      .icon {
+        width: 1.25em;
+        height: 1.25em;
+        flex: none;
+        vertical-align: -0.25em;
+      }
+
+      /* reveal on scroll */
+      .reveal {
+        opacity: 0;
+        transform: translateY(18px);
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+        transition:
+          opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+          transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .reveal {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* flow ribbon animation */
+      .edge-line {
+        stroke-dasharray: 5 7;
+        animation: march 1.1s linear infinite;
+      }
+      @keyframes march {
+        to {
+          stroke-dashoffset: -12;
+        }
+      }
+      .node-pulse {
+        animation: nodepulse 2.6s ease-in-out infinite;
+      }
+      @keyframes nodepulse {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .edge-line {
+          animation: none;
+          stroke-dasharray: none;
+        }
+        .node-pulse {
+          animation: none;
+          opacity: 0.8;
+        }
+      }
+
+      /* ---------------------------------------------------------------- page */
+
+      .hero {
+        padding: 64px 0 10px;
+      }
+      .ribbon {
+        margin-top: 36px;
+      }
+      .ribbon svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      /* stat strip */
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 22px;
+      }
+      .stat .n {
+        font-family: var(--font-mono);
+        font-size: clamp(30px, 4vw, 44px);
+        line-height: 1.1;
+        color: var(--chalk);
+      }
+      .stat .l {
+        margin-top: 6px;
+        font-size: 13.5px;
+        color: var(--slate);
+        max-width: 24ch;
+      }
+      @media (max-width: 680px) {
+        .stats {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      /* callout */
+      .callout {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-left: 3px solid var(--flow);
+        border-radius: 10px;
+        padding: 22px 24px;
+      }
+      .callout.flow-edge {
+        border-left-color: var(--flow);
+      }
+      .callout.ask-edge {
+        border-left-color: var(--ask);
+      }
+      .callout h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .callout p {
+        margin-top: 8px;
+        color: var(--slate);
+        font-size: 15.5px;
+      }
+
+      /* constitution cards */
+      .law-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        margin-top: 26px;
+      }
+      @media (max-width: 860px) {
+        .law-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .law {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 20px 22px;
+      }
+      .law .art {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.14em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      .law h3 {
+        margin: 8px 0 8px;
+        font-size: 17.5px;
+      }
+      .law .lawline {
+        font-size: 15.5px;
+        color: var(--chalk);
+      }
+      .meta {
+        margin-top: 14px;
+        border-top: 1px solid var(--edge);
+        padding-top: 12px;
+        display: grid;
+        gap: 9px;
+      }
+      .meta .m {
+        display: grid;
+        grid-template-columns: 76px 1fr;
+        gap: 12px;
+        font-size: 14px;
+        color: var(--slate);
+      }
+      .meta .m .k {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--slate);
+        padding-top: 2px;
+      }
+      .meta .m.cost .k {
+        color: var(--amber);
+      }
+      .meta .m p {
+        font-size: 14px;
+        color: var(--slate);
+        max-width: none;
+      }
+
+      /* ledger */
+      .ledger {
+        border-top: 1px solid var(--edge);
+        margin-top: 26px;
+      }
+      .lrow {
+        display: grid;
+        grid-template-columns: minmax(0, 360px) 1fr;
+        gap: 28px;
+        padding: 26px 0;
+      }
+      .lrow .art {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.14em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      .lrow h3 {
+        margin: 8px 0 8px;
+      }
+      .lrow .lawline {
+        font-size: 15.5px;
+      }
+      @media (max-width: 768px) {
+        .lrow {
+          grid-template-columns: 1fr;
+          gap: 14px;
+          padding: 22px 0;
+        }
+      }
+
+      /* split */
+      .split {
+        display: grid;
+        grid-template-columns: 7fr 5fr;
+        gap: 22px;
+        margin-top: 26px;
+        align-items: start;
+      }
+      @media (max-width: 768px) {
+        .split {
+          grid-template-columns: 1fr;
+        }
+      }
+      .knobpanel {
+        background: var(--panel-2);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 20px 22px;
+      }
+      .knobpanel .art {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.14em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      .knobpanel h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 8px 0 8px;
+      }
+      .knobs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 12px 0 4px;
+      }
+      .knobs code {
+        font-size: 11px;
+        color: var(--slate);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 6px;
+        padding: 0.25em 0.5em;
+      }
+
+      /* timeline */
+      .spine {
+        border-left: 2px solid var(--edge-strong);
+        padding-left: 30px;
+        margin-top: 26px;
+        display: grid;
+        gap: 30px;
+        max-width: 760px;
+      }
+      .step {
+        position: relative;
+      }
+      .step::before {
+        content: "";
+        position: absolute;
+        left: -37px;
+        top: 7px;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--flow);
+        box-shadow: 0 0 0 4px var(--flow-soft);
+      }
+      .step h3 {
+        margin-bottom: 4px;
+      }
+      .step .who {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--flow);
+      }
+      .step p {
+        font-size: 15px;
+        color: var(--slate);
+        margin-top: 4px;
+      }
+      .step .refusal {
+        color: var(--amber);
+      }
+
+      /* evidence */
+      .ev-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 26px 40px;
+        margin-top: 20px;
+      }
+      @media (max-width: 860px) {
+        .ev-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .ev {
+        list-style: none;
+        display: grid;
+        gap: 9px;
+        margin-top: 10px;
+      }
+      .ev li {
+        font-size: 14px;
+        color: var(--slate);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: baseline;
+      }
+
+      /* long file:line citations live in narrow grid cells; let them wrap only on phones */
+      @media (max-width: 640px) {
+        .meta code.path,
+        .ev code.path,
+        .stat code.path,
+        .knobpanel code.path {
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+      }
+
+      /* mobile: wide diagrams scroll instead of shrinking below legibility */
+      @media (max-width: 700px) {
+        figure:has(> svg[viewBox]:not(.icon)),
+        div:has(> svg[viewBox]:not(.icon)) {
+          overflow-x: auto;
+        }
+        svg[viewBox]:not(.icon) {
+          min-width: 660px;
+        }
+      }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono,
+        h2 span,
+        h3 span,
+        p span {
+          overflow-wrap: anywhere;
+        }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path,
+        code,
+        .mono,
+        .k,
+        .who,
+        .chip,
+        .path-chip,
+        .file,
+        .fn,
+        .term,
+        .qno,
+        p span,
+        h2 span,
+        h3 span,
+        li span,
+        td,
+        th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre,
+        .terminal,
+        .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html">Risk control</a>
+          <a href="/status.html">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <div class="wrap hero">
+        <div class="kicker">Safety invariants</div>
+        <h1>What the system refuses to break</h1>
+        <p class="lede">
+          T3 Trade lets a language model submit signed testnet orders under fixed constraints. This
+          page lists 17 invariants the system will not weaken. Each includes its purpose,
+          enforcement point, and operational cost. A safety auditor should read this page first.
+        </p>
+
+        <div class="ribbon">
+          <svg
+            viewBox="0 0 1160 132"
+            role="img"
+            aria-label="Every increasing request clears preview, guard, budget, signer and exchange, then reconciles against canonical truth"
+          >
+            <path id="pall" d="M162,66 H962" stroke="none" fill="none" />
+            <circle r="3.5" fill="var(--flow)">
+              <animateMotion dur="3.6s" repeatCount="indefinite">
+                <mpath href="#pall" />
+              </animateMotion>
+            </circle>
+            <circle r="3.5" fill="var(--flow)" opacity=".7">
+              <animateMotion dur="3.6s" begin="1.8s" repeatCount="indefinite">
+                <mpath href="#pall" />
+              </animateMotion>
+            </circle>
+            <path
+              id="p1"
+              class="edge-line"
+              d="M162,66 H202"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="p2"
+              class="edge-line"
+              d="M352,66 H392"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="p3"
+              class="edge-line"
+              d="M542,66 H582"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="p4"
+              class="edge-line"
+              d="M732,66 H772"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="p5"
+              class="edge-line"
+              d="M922,66 H962"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <g class="node-pulse">
+              <rect
+                x="12"
+                y="40"
+                width="150"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="87"
+                y="61"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                preview
+              </text>
+              <text
+                x="87"
+                y="77"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                §16.3 checklist
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="202"
+                y="40"
+                width="150"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="277"
+                y="61"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                guard
+              </text>
+              <text
+                x="277"
+                y="77"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                guardAction §16.4
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="392"
+                y="40"
+                width="150"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="467"
+                y="61"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                budget
+              </text>
+              <text
+                x="467"
+                y="77"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                evaluateLossBudget
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="582"
+                y="40"
+                width="150"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="657"
+                y="61"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                signer
+              </text>
+              <text
+                x="657"
+                y="77"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                signInNonceLane
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="772"
+                y="40"
+                width="150"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="847"
+                y="61"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                exchange
+              </text>
+              <text
+                x="847"
+                y="77"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                POST /exchange
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="962"
+                y="40"
+                width="150"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="1037"
+                y="61"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                reconcile
+              </text>
+              <text
+                x="1037"
+                y="77"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                §18.2 · 8 triggers
+              </text>
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <section class="section">
+        <div class="wrap stats">
+          <div class="stat reveal">
+            <div class="n">17</div>
+            <div class="l">
+              articles in this constitution, grouped under capital, truth, control, and isolation
+            </div>
+          </div>
+          <div class="stat reveal" style="transition-delay: 60ms">
+            <div class="n">1</div>
+            <div class="l">
+              code path that spends capital, of the whole server
+              <code class="path">apps/server/src/trading/HyperliquidExecutionService.ts:4</code>
+            </div>
+          </div>
+          <div class="stat reveal" style="transition-delay: 120ms">
+            <div class="n">8</div>
+            <div class="l">
+              moments that force a reconciliation pass
+              <code class="path">apps/server/src/trading/HyperliquidReconciler.ts:66-76</code>
+            </div>
+          </div>
+          <div class="stat reveal" style="transition-delay: 180ms">
+            <div class="n">3</div>
+            <div class="l">
+              attempts maximum in a bounded emergency close
+              <code class="path">apps/server/src/trading/TradingEmergencyCloseService.ts:51</code>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <div class="callout flow-edge reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M7 20l10 0" />
+                <path d="M6 6l6 -1l6 1" />
+                <path d="M12 3l0 17" />
+                <path d="M9 12l-3 -6l-3 6a3 3 0 0 0 6 0" />
+                <path d="M21 12l-3 -6l-3 6a3 3 0 0 0 6 0" /></svg
+              >Trading safety outranks convenience
+            </h3>
+            <p>
+              Every article below can make a flow fail; none of them can be weakened to make a flow
+              pass. That is the working rule of the repository, stated in its priorities: never
+              weaken an execution guard, a loss budget, a protection requirement, an authority
+              check, an idempotency boundary, or a reconciliation rule to make an agent or UI flow
+              pass <code class="path">AGENTS.md:11</code>. The seventeen articles are grouped into
+              four clauses: how capital moves, what counts as truth, who holds control, and what
+              stays isolated.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Capital: through one door, written down first</h2>
+          <p>
+            Seven articles govern the only path that can spend. Their shared shape: the decision is
+            persisted before it is irreversible, deduplicated locally because no one else will, and
+            checked against risk twice.
+          </p>
+          <div class="law-grid">
+            <article class="law reveal">
+              <div class="art">Art. 01</div>
+              <h3>One door to the exchange</h3>
+              <p class="lawline">Exactly one code path spends testnet capital.</p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    If two paths can sign an order, each is a place a guard can be forgotten. The
+                    file states its monopoly in its first sentence.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:4</code
+                    >. Seven submit entry points share one signer resolution, one nonce lane, and
+                    one response inspector.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    The file is 1,224 lines, and every new order shape must fold into it rather than
+                    fork it.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal" style="transition-delay: 60ms">
+              <div class="art">Art. 02</div>
+              <h3>The record is written before the signature</h3>
+              <p class="lawline">
+                The execution record and its risk reservation are persisted before anything is
+                signed, and a retry is refused unless the record still sits in a pre-submission
+                status.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    A crash between signing and the response must leave a durable fact behind, and
+                    an unresolved submission is exactly the case that duplicates a position if
+                    retried blind. The code says so at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:296-299</code
+                    >.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    Persist at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:668-784</code
+                    >, signature at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:798</code
+                    >; allowed retry statuses <code>previewed</code>, <code>reserved</code>,
+                    <code>signed</code> at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:301-305</code
+                    >, refusal at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:770-772</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    A record stuck in <code>submitted</code> is never resubmitted; it waits for
+                    reconciliation to settle it into <code>accepted</code>, <code>filled</code>, or
+                    <code>failed</code>.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal">
+              <div class="art">Art. 03</div>
+              <h3>Idempotency is local, because the exchange will not provide it</h3>
+              <p class="lawline">
+                T3 deduplicates its own submissions; Hyperliquid does not deduplicate marketable
+                IOCs.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    Cloid uniqueness is enforced only among resting orders, and a marketable IOC
+                    never rests, so a resubmitted IOC opens a second order and fills again. The
+                    module doc records that this was verified live, in
+                    <code class="path">packages/hyperliquid/src/executionLive.test.ts</code>.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:17-23</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    The idempotency record is load-bearing safety state: it is persisted, read back,
+                    and trusted over any caller's claim to be a retry.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal" style="transition-delay: 60ms">
+              <div class="art">Art. 04</div>
+              <h3>The checklist runs twice</h3>
+              <p class="lawline">
+                The §16.3 position-increase checklist runs at preview, and the mandatory-stop gate
+                runs again against the price actually going on the wire.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    For a marketable IOC the wire price is the BBO-derived limit, not the requested
+                    one. An increase whose stop stopped making sense between preview and mapping
+                    must be refused before a nonce is spent.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    The item list at
+                    <code class="path">apps/server/src/trading/TradingPreviewService.ts:40-70</code
+                    >, fourteen increase rows plus two exit-only; the second evaluation at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:605-624</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Work is done and then refused. Late refusals are the price of never signing a
+                    nonsensical stop.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal">
+              <div class="art">Art. 05</div>
+              <h3>No acknowledged exposure without confirmed protection</h3>
+              <p class="lawline">
+                No acknowledged position increase may remain without a confirmed exchange-native
+                reduce-only stop beyond the bounded reconciliation window.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    A grouped submission proves nothing about whether the stop child is live, so
+                    coverage is read back from the exchange's open orders every time. The
+                    exchange-authoritative set includes orders T3 never chose, because a linked
+                    TP/SL child still protects
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidReconciler.ts:108-113</code
+                    >.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    The invariant at
+                    <code class="path">apps/server/src/trading/TradingProtectionService.ts:4-9</code
+                    >; coverage confirmed from exchange-authoritative orders at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidReconciler.ts:1129-1145</code
+                    >; a window that closes uncovered escalates to the §17.5 emergency close at
+                    <code class="path">apps/server/src/trading/TradingMissionReactor.ts:2542</code>.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Overlapping reduce-only stops are tolerated as harmless clutter, the escalation
+                    path will realize losses to keep the law, and manual entries get a 10 second
+                    grace so an entry's own stop is not double-placed
+                    <code class="path">apps/server/src/trading/TradingProtectionService.ts:70</code
+                    >.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal" style="transition-delay: 60ms">
+              <div class="art">Art. 06</div>
+              <h3>Loss exhaustion blocks, and the harness cannot unblock itself</h3>
+              <p class="lawline">
+                When the cumulative loss budget is exhausted, increasing orders are cancelled, new
+                increases are refused, and only an explicit user resume clears the blocked state.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    The exchange must not keep filling against an exhausted budget while the mission
+                    reads blocked, and a model must not be able to vote itself back into capital.
+                    <code>resume_blocked</code> is one of the guard's refusal literals,
+                    <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:43-49</code
+                    >.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:1-14</code>;
+                    the blocking pass also cancels resting increasing orders and reports unconfirmed
+                    cancels visibly,
+                    <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:96-105</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Mission productivity stops until a human acts. That is the intended shape, not a
+                    bug to route around.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal">
+              <div class="art">Art. 07</div>
+              <h3>Profits can never expand the loss budget</h3>
+              <p class="lawline">
+                The risk policy type forbids profit-funded budget expansion outright.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    Realized losses clamp toward zero, but realized profits never raise the ceiling,
+                    so a winning streak cannot buy risk headroom the user never granted.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code>positivePnlExpandsLossBudget: Schema.Literal(false)</code> at
+                    <code class="path">packages/trading-contracts/src/authority.ts:41</code>. Not a
+                    boolean: the literal false, so no payload can carry <code>true</code> and
+                    decode.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Raising a ceiling requires an explicit new authority grant, never a good day on
+                    the market.
+                  </p>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Truth: the exchange is the only record</h2>
+          <p>
+            Three articles decide what counts as a fact. The exchange is authoritative for
+            positions, orders, and fills. This section calls that exchange state canonical. Local
+            data is corrected to match it, and unconfirmed outcomes remain unknown.
+          </p>
+          <div class="ledger">
+            <div class="lrow reveal">
+              <div>
+                <div class="art">Art. 08</div>
+                <h3>The exchange is the only truth</h3>
+                <p class="lawline">
+                  Local tables are overwritten with canonical exchange state; local state never
+                  outranks Hyperliquid.
+                </p>
+              </div>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    Positions, fills, and open orders belong to the exchange. A local belief that
+                    disagrees is drift to be repaired, not a rival account of what happened.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidReconciler.ts:1117-1152</code
+                    >; the eight triggers that force a pass, from server startup to a periodic
+                    backstop while a position is open, at
+                    <code class="path">apps/server/src/trading/HyperliquidReconciler.ts:66-76</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Every downstream read model must tolerate being corrected underneath it, and
+                    reconciliation runs even when nothing appears to have changed.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <div class="art">Art. 09</div>
+                <h3>An unconfirmed outcome is never a success</h3>
+                <p class="lawline">
+                  A cancellation succeeds only on an explicit exchange acknowledgement; a submitted
+                  but unconfirmed close is reported as unknown.
+                </p>
+              </div>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    RC02 found a transport-level success being narrated as a cancelled order while
+                    the exchange rejected the action. The fix reads only an explicit per-order
+                    success, because proving absence is a canonical order lookup, not text matching
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:995-1007</code
+                    >.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    The acknowledgement gate above; the unconfirmed close line
+                    <code>CLOSE_OUTCOME_UNKNOWN</code> at
+                    <code class="path">apps/server/src/trading/TradingControlService.ts:78-84</code
+                    >, which never reports a numeric size, and never zero, for an unconfirmed close.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    The agent runtime and UI must preserve typed unknowns. RC03 threaded
+                    <code>CancellationReport</code> with separate <code>acknowledged</code> and
+                    <code>unconfirmed</code> lists through every caller so nothing rounds an
+                    unconfirmed cancel up.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <div class="art">Art. 10</div>
+                <h3>Take-profit is a wake, not a resting order</h3>
+                <p class="lawline">
+                  Profit targets are handled by waking the bound agent runtime, not by placing
+                  server-managed resting orders; watches fire exactly once; a mission holding a
+                  position is never deaf.
+                </p>
+              </div>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    Two take-profit rungs once filled silently between wakes and the model
+                    misattributed the position drop. The fix retired the server-side take-profit
+                    lane and made the target a wake, per the note at
+                    <code class="path"
+                      >apps/server/src/trading/TradingProtectionService.ts:34-40</code
+                    >.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    The two durable exactly-once guards, an atomic flip of an active watch plus a
+                    per-watch inbox dedup key, at
+                    <code class="path">apps/server/src/trading/WatchEvaluator.ts:16-23</code>; the
+                    coverage floor at
+                    <code class="path">packages/trading-contracts/src/watch.ts:1288</code>.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Exits depend on the wake path being alive. The floor buys that: while holding a
+                    position, a mission is reassessed at least every 3 bars, clamped between 2 and
+                    15 minutes.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Control: the human outranks the model</h2>
+          <p>
+            Two articles place the operator above the machinery. The buttons that reduce risk answer
+            with no model running at all, and the knobs that tune authority can only make it smaller
+            in kind, never broader.
+          </p>
+          <div class="split">
+            <article class="law reveal">
+              <div class="art">Art. 11</div>
+              <h3>The user's buttons answer while the model is dead</h3>
+              <p class="lawline">
+                None of the seven deterministic controls may require a harness turn, the subsystem's
+                name for a bound agent-runtime turn. The controls work while the provider process is
+                stopped, the session is unreachable, or the model is generating a response.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    A user who wants out of a position must be able to get out. The harness
+                    checklist needs a current strategy version, a matching authority version, and a
+                    decision lease: three things absent precisely when these buttons matter most.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code class="path">apps/server/src/trading/TradingControlService.ts:1-31</code>.
+                    The controls are pause, resume, cancelEntries, reducePosition at 25/50/75/100
+                    percent, closePosition, revoke, and closeAndRevoke. The bypass is preview-only:
+                    every control still goes through the signer, the nonce lane, canonical
+                    reconciliation, and protection reconciliation,
+                    <code class="path">apps/server/src/trading/TradingControlService.ts:19-24</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    The buttons are deliberately dumb. Fixed reduction steps, reduce-only physics,
+                    and honest unknowns instead of clever exits.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <aside class="knobpanel reveal" style="transition-delay: 80ms">
+              <div class="art">Art. 12</div>
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                  <path d="M13.41 10.59l2.59 -2.59" />
+                  <path d="M7 12a5 5 0 0 1 5 -5" /></svg
+                >Authority ceilings only narrow
+              </h3>
+              <p class="lawline" style="font-size: 15.5px">
+                Operator knobs move four absolute dollar ceilings. They can widen or narrow size,
+                and nothing else.
+              </p>
+              <div class="knobs">
+                <code>T3_TRADES_AUTHORITY_MAX_LEVERAGE</code>
+                <code>T3_TRADES_AUTHORITY_MAX_GROSS_NOTIONAL_USD</code>
+                <code>T3_TRADES_AUTHORITY_MAX_CUMULATIVE_LOSS_USD</code>
+                <code>T3_TRADES_AUTHORITY_MAX_PLANNED_RISK_USD</code>
+              </div>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    An operator raising a ceiling is thinking in dollars about a specific account,
+                    not in ratios. And a number in the environment must never grant direction
+                    reversal, switch margin mode, or touch the risk policy: those are authority the
+                    user grants explicitly.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code class="path">apps/server/src/trading/TestnetAuthority.ts:13-23</code>.
+                    Junk values fall back to the documented default rather than failing mission
+                    creation.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    There is no environment shortcut around a permission. Broadening what a mission
+                    may do takes an explicit grant.
+                  </p>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Isolation: nothing runs twice, nothing leaks</h2>
+          <p>
+            Five articles keep writers single and boundaries hard. One mission owns a market, one
+            run owns a decision, one process owns the database, one lane owns every signature, and
+            trading code never becomes a second provider runtime.
+          </p>
+          <div class="law-grid">
+            <article class="law reveal">
+              <div class="art">Art. 13</div>
+              <h3>One mission, one market, one owner</h3>
+              <p class="lawline">
+                One active mission per installation, and a market belongs either to a mission or to
+                the user's manual trading, never both.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    Two authorities writing the same position cannot be reconciled by reading. D4
+                    makes exclusivity a precondition instead of a dispute.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    The one-active-mission invariant in
+                    <code class="path"
+                      >apps/server/src/trading/TradingMissionService.ts:124-132</code
+                    >; the manual side refuses the ticket with <code>market_owned_by_mission</code>,
+                    named so the refusal reads as the rule it is,
+                    <code class="path"
+                      >apps/server/src/trading/TradingManualEntryService.ts:13-16</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    You cannot trade around your own agent in the same market, and the ticket tells
+                    you exactly which rule stopped you.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal" style="transition-delay: 60ms">
+              <div class="art">Art. 14</div>
+              <h3>One decision lease, one writer</h3>
+              <p class="lawline">
+                One run at a time may own a mission's decision lease, and one process at a time may
+                run the trading runtime against a database.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    Concurrent runs would double-trade the same authority, and a second process's
+                    housekeeping once killed a live soak.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    The unique partial index
+                    <code>idx_trading_harness_runs_one_active_per_mission</code> turns a concurrent
+                    insert into <code>queued_behind_active_run</code>,
+                    <code class="path">apps/server/src/trading/TradingTurnCoordinator.ts:5-11</code
+                    >. The single-writer lock file, created with the exclusive <code>wx</code> flag,
+                    at
+                    <code class="path">apps/server/src/trading/TradingRuntimeLease.ts:12-22</code>.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    A fired watch behind an active run queues and retries. The lease itself
+                    documents one corner where two processes can both believe they hold it for at
+                    most one heartbeat interval, roughly 10 seconds, and lease-gated loops bound
+                    that to dual belief, never dual writing,
+                    <code class="path">apps/server/src/trading/TradingRuntimeLease.ts:51-71</code>.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal">
+              <div class="art">Art. 15</div>
+              <h3>The signer fails closed</h3>
+              <p class="lawline">
+                No armed signer means no signed action, reported as a refusal, and a key the rest of
+                the machine can read is refused loudly.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    Not armed and armed-with-a-readable-key need different answers, and only one of
+                    them is fixed by a chmod
+                    <code class="path">apps/server/src/trading/InterimSignerConfig.ts:213-220</code
+                    >. Under vitest the key-file source is skipped entirely, so no test can
+                    ambiently arm live execution with the developer's real key,
+                    <code class="path">apps/server/src/trading/InterimSignerConfig.ts:248-259</code
+                    >.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code>resolveSigner</code> maps an unarmed gate to the typed refusal
+                    <code>signer_not_configured</code>,
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:508-518</code
+                    >; a loose permission mode raises <code>insecure_key_permissions</code>.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Research mode is a real mode, not a degraded one: charts, backtests, and
+                    validations all work, and every order is refused until a key exists.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal" style="transition-delay: 60ms">
+              <div class="art">Art. 16</div>
+              <h3>Trading code never spawns a provider</h3>
+              <p class="lawline">
+                The trading extension may not start provider processes or create a second provider
+                session directory, and a static test scans for every process-spawning pattern.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    §6.3 keeps ProviderService the only provider runtime, so trading code can never
+                    quietly become a second one, per the test's own header,
+                    <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:8-11</code>.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    The pattern list, from <code>node:child_process</code> imports to
+                    <code>Command.make</code>, at
+                    <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:44-53</code
+                    >; the one audited exemption is <code>ArchiveSupervisor</code>, which spawns the
+                    in-repo market archiver and holds no key,
+                    <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:56-64</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Any future subprocess need must widen one audited exemption, in the open, or
+                    fail this test.
+                  </p>
+                </div>
+              </div>
+            </article>
+            <article class="law reveal">
+              <div class="art">Art. 17</div>
+              <h3>Signing is local, deterministic, and serialized</h3>
+              <p class="lawline">
+                Every signature is taken inside one serialized nonce lane, and the testnet-ness of
+                the signature domain is derived from the resolved endpoints.
+              </p>
+              <div class="meta">
+                <div class="m">
+                  <span class="k">Why</span>
+                  <p>
+                    The lane keeps nonces strictly monotonic so two actions can never race for the
+                    same nonce. Deriving testnet-ness from the endpoints means the signature domain
+                    can never disagree with the exchange the action is sent to. A second copy of the
+                    signing block would be a second chance to sign outside the lane.
+                  </p>
+                </div>
+                <div class="m">
+                  <span class="k">At</span>
+                  <p>
+                    <code class="path">packages/hyperliquid/src/NonceCoordinator.ts:4-18</code>; the
+                    single signing site <code>signInNonceLane</code> at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:527-552</code
+                    >; <code>isTestnet</code> derived from endpoints at
+                    <code class="path"
+                      >apps/server/src/trading/HyperliquidExecutionService.ts:499-501</code
+                    >.
+                  </p>
+                </div>
+                <div class="m cost">
+                  <span class="k">Cost</span>
+                  <p>
+                    Signature throughput is bounded by one lane. Nonces fast-forward to current Unix
+                    milliseconds, so a restart needs no persisted nonce state: real time has always
+                    moved past anything signed before it,
+                    <code class="path">packages/hyperliquid/src/NonceCoordinator.ts:8-12</code>.
+                  </p>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <div class="callout ask-edge reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M11.46 20.846a12 12 0 0 1 -7.96 -14.846a12 12 0 0 0 8.5 -3a12 12 0 0 0 8.5 3a12 12 0 0 1 -.09 7.06"
+                />
+                <path d="M15 19l2 2l4 -4" /></svg
+              >When protection cannot be confirmed, the system stops trying
+            </h3>
+            <p>
+              The protection watchdog does not re-place a stop forever. When the window closes
+              uncovered,
+              <code class="path">apps/server/src/trading/TradingProtectionService.ts:30-32</code>
+              reports <code>escalate</code> and the §17.5 bounded emergency close takes over: block
+              increases, cancel non-reduce-only orders, read fresh canonical state, submit a
+              reduce-only IOC, reconcile, retry with fresh reads, at most three attempts, then an
+              honest report of what is left
+              <code class="path">apps/server/src/trading/TradingEmergencyCloseService.ts:12-32</code
+              >,
+              <code class="path">apps/server/src/trading/TradingEmergencyCloseService.ts:51</code>.
+              An unbounded retry loop against a market that will not take the size is a way to keep
+              paying fees forever; three attempts and the truth is the specified behavior.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>The gauntlet a request passes</h2>
+          <p>
+            Every position-increasing request clears the same layers, in the ribbon above and in
+            code. Each layer has a named refusal, and none of them can be skipped to make a flow
+            pass.
+          </p>
+          <div class="spine">
+            <div class="step reveal">
+              <div class="who">Layer 1 · preview</div>
+              <h3>§16.3 checklist</h3>
+              <p>
+                Fourteen increase rows plus two exit-only items, each with its own rejection reason
+                and a test pinning it. Refuses as
+                <span class="refusal">TradingPreviewRejection</span> naming the first failing item.
+                <code class="path">apps/server/src/trading/TradingPreviewService.ts:40-70</code>
+              </p>
+            </div>
+            <div class="step reveal">
+              <div class="who">Layer 2 · guard</div>
+              <h3>guardAction, §16.4</h3>
+              <p>
+                The exhaustion gate, run before any nonce is spent. Refuses as
+                <span class="refusal">budget_exhausted</span> or
+                <span class="refusal">action_not_permitted_under_exhaustion</span>; cancel, reduce,
+                close, and modify_stop stay permitted because §16.4 blocks taking on risk, not
+                managing risk already open.
+                <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:43-49</code>,
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:145-153</code>
+              </p>
+            </div>
+            <div class="step reveal">
+              <div class="who">Layer 3 · budget</div>
+              <h3>evaluateLossBudget, §16.2</h3>
+              <p>
+                The pure decider over reconciled inputs computes what remains, and the reservation
+                against that budget is persisted with the record before signing.
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:106</code>,
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:774-784</code
+                >
+              </p>
+            </div>
+            <div class="step reveal">
+              <div class="who">Layer 4 · signer</div>
+              <h3>Fail-closed resolution</h3>
+              <p>
+                Refuses as <span class="refusal">signer_not_configured</span> when no key is armed,
+                and as <span class="refusal">insecure_key_permissions</span> when the key file is
+                readable by group or other. One signature site, inside the serialized nonce lane.
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:508-518</code
+                >,
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:527-552</code
+                >
+              </p>
+            </div>
+            <div class="step reveal">
+              <div class="who">Layer 5 · exchange</div>
+              <h3>POST /exchange, then inspect everything</h3>
+              <p>
+                Every per-order status in the response is inspected, and a grouped response is
+                attributed to legs positionally. A cancel is confirmed only by an explicit per-order
+                success.
+                <code class="path">apps/server/src/trading/HyperliquidExecutionService.ts:14</code>,
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:995-1007</code
+                >
+              </p>
+            </div>
+            <div class="step reveal">
+              <div class="who">Layer 6 · reconcile</div>
+              <h3>§18.2 convergence</h3>
+              <p>
+                Eight triggers force a pass that reads canonical account, orders, and fills, and
+                overwrites local tables with what the exchange says.
+                <code class="path">apps/server/src/trading/HyperliquidReconciler.ts:66-76</code>,
+                <code class="path">apps/server/src/trading/HyperliquidReconciler.ts:1117-1152</code>
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Where each law is told in full</h2>
+          <p>
+            Each article here is enforced inside a subsystem with its own page in the atlas. The
+            reader-facing titles below carry the detail this constitution cites.
+          </p>
+          <div class="ledger">
+            <div class="lrow reveal">
+              <div>
+                <h3 style="margin: 0"><a href="/execution.html">Execution</a></h3>
+              </div>
+              <p style="color: var(--slate); font-size: 15px">
+                The submit sequence step by step, on the one path that spends capital.
+              </p>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <h3 style="margin: 0"><a href="/risk.html">Risk control</a></h3>
+              </div>
+              <p style="color: var(--slate); font-size: 15px">
+                The loss budget equations and the checklist that guards every increase.
+              </p>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <h3 style="margin: 0"><a href="/reconciliation.html">Reconciliation</a></h3>
+              </div>
+              <p style="color: var(--slate); font-size: 15px">
+                The eight triggers, the drift classes, and the repair loop that keeps the exchange
+                canonical.
+              </p>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <h3 style="margin: 0"><a href="/signer.html">Signer &amp; authority</a></h3>
+              </div>
+              <p style="color: var(--slate); font-size: 15px">
+                Key resolution and permissions, the nonce lane, and the authority ceilings.
+              </p>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <h3 style="margin: 0"><a href="/missions.html">Missions watches wakes</a></h3>
+              </div>
+              <p style="color: var(--slate); font-size: 15px">
+                Mission statuses, per-market exclusivity, and the wake loop that keeps a holder
+                never deaf.
+              </p>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <h3 style="margin: 0"><a href="/contracts.html">Contracts</a></h3>
+              </div>
+              <p style="color: var(--slate); font-size: 15px">
+                The typed spine every control, event, and refusal literal rides.
+              </p>
+            </div>
+            <div class="lrow reveal">
+              <div>
+                <h3 style="margin: 0"><a href="/stories.html">Failure stories</a></h3>
+              </div>
+              <p style="color: var(--slate); font-size: 15px">
+                The incidents that wrote these laws, RC02 through RC06, told as postmortems.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="wrap">
+          <h2>Go deeper</h2>
+          <div class="ev-grid">
+            <div class="reveal">
+              <h3>The spending path</h3>
+              <ul class="ev">
+                <li>
+                  <code class="path">apps/server/src/trading/HyperliquidExecutionService.ts:4</code>
+                  the one path that spends
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/trading/HyperliquidExecutionService.ts:605-624</code
+                  >
+                  second stop gate, wire price
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/trading/HyperliquidExecutionService.ts:668-784</code
+                  >
+                  persist before signing
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/trading/HyperliquidExecutionService.ts:770-772</code
+                  >
+                  retry refusal
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/trading/HyperliquidExecutionService.ts:995-1007</code
+                  >
+                  cancel acknowledgement
+                </li>
+              </ul>
+            </div>
+            <div class="reveal" style="transition-delay: 60ms">
+              <h3>Protection and exhaustion</h3>
+              <ul class="ev">
+                <li>
+                  <code class="path">apps/server/src/trading/TradingProtectionService.ts:4-9</code>
+                  the stop invariant
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/trading/TradingEmergencyCloseService.ts:12-32</code
+                  >
+                  the bounded close order
+                </li>
+                <li>
+                  <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:1-14</code>
+                  §16.4 enforcement
+                </li>
+                <li>
+                  <code class="path">packages/trading-contracts/src/authority.ts:41</code>
+                  Literal(false)
+                </li>
+                <li>
+                  <code class="path">apps/server/src/trading/TestnetAuthority.ts:13-23</code> the
+                  four knobs
+                </li>
+              </ul>
+            </div>
+            <div class="reveal">
+              <h3>Truth and receipts</h3>
+              <ul class="ev">
+                <li>
+                  <code class="path">apps/server/src/trading/HyperliquidReconciler.ts:66-76</code>
+                  the eight triggers
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/trading/HyperliquidReconciler.ts:1117-1152</code
+                  >
+                  local never outranks
+                </li>
+                <li>
+                  <code class="path">apps/server/src/trading/TradingControlService.ts:78-84</code>
+                  the unknown-close line
+                </li>
+                <li>
+                  <code class="path">apps/server/src/trading/WatchEvaluator.ts:16-23</code>
+                  exactly-once guards
+                </li>
+                <li>
+                  <code class="path">packages/trading-contracts/src/watch.ts:1288</code> the
+                  coverage floor
+                </li>
+              </ul>
+            </div>
+            <div class="reveal" style="transition-delay: 60ms">
+              <h3>Isolation</h3>
+              <ul class="ev">
+                <li>
+                  <code class="path">apps/server/src/trading/TradingTurnCoordinator.ts:5-11</code>
+                  the decision lease
+                </li>
+                <li>
+                  <code class="path">apps/server/src/trading/TradingRuntimeLease.ts:51-71</code>
+                  bounded dual belief
+                </li>
+                <li>
+                  <code class="path">apps/server/src/trading/InterimSignerConfig.ts:248-259</code>
+                  vitest cannot arm the key
+                </li>
+                <li>
+                  <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:44-64</code>
+                  no provider spawns
+                </li>
+                <li>
+                  <code class="path">packages/hyperliquid/src/NonceCoordinator.ts:4-18</code> one
+                  serialized lane
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/status.html">See the board</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/clients.html">← Web &amp; desktop</a>
+          <a href="/stories.html">Failure stories →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document
+          .querySelectorAll("animateMotion, animate")
+          .forEach((a) => a.setAttribute("begin", "indefinite"));
+      }
+    </script>
+    <script>
+      (() => {
+        const els = document.querySelectorAll(".reveal");
+        if (
+          !("IntersectionObserver" in window) ||
+          matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach((el) => el.classList.add("in"));
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e, i) => {
+              if (e.isIntersecting) {
+                e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      })();
+    </script>
+  </body>
+</html>

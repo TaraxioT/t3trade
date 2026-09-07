@@ -126,17 +126,25 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
   const iocSlippage = yield* IocSlippageConfig;
   const estimator = yield* TradingCostEstimator;
 
-  /** The active mission holding this market, if any — the D4 refusal's input. */
+  /**
+   * The active mission holding this market, if any — the D4 refusal's input.
+   *
+   * The held-set table is the authority record since migration 079: a mission
+   * holds a SET of markets, so the mission row's own `market` column only
+   * ever knew the first one. Both held primary and held secondary markets
+   * refuse. A failed read is a failed read — it propagates rather than
+   * reading as "nobody holds it" (06B).
+   */
   const findActiveMissionOnMarket = (market: string) =>
     sql<{ readonly mission_id: string; readonly status: string }>`
-      SELECT mission_id, status FROM trading_missions
-      WHERE venue = 'hyperliquid' AND market = ${market}
-        AND status NOT IN ('revoked', 'completed')
+      SELECT m.mission_id, m.status
+      FROM trading_mission_markets h
+      JOIN trading_missions m ON m.mission_id = h.mission_id
+      WHERE h.venue = 'hyperliquid' AND h.market = ${market}
+        AND h.released_at IS NULL
+        AND m.status NOT IN ('revoked', 'completed')
       LIMIT 1
-    `.pipe(
-      Effect.map((rows) => rows[0] ?? null),
-      Effect.orElseSucceed(() => null),
-    );
+    `.pipe(Effect.map((rows) => rows[0] ?? null));
 
   /**
    * The leverage the exchange has this market configured at for this account,
@@ -220,7 +228,26 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
       }
 
       // --- D4, manual side: a mission holds this market -------------------
-      const owningMission = yield* findActiveMissionOnMarket(request.market);
+      // The ownership read is the gate: a failed read refuses before any
+      // network or exchange call, because "could not read who holds it" must
+      // never be answered as "nobody holds it" (06B).
+      const ownershipRead = yield* findActiveMissionOnMarket(request.market).pipe(
+        Effect.map(
+          (
+            row,
+          ): {
+            readonly owner: { readonly mission_id: string; readonly status: string } | null;
+          } => ({ owner: row }),
+        ),
+        Effect.catch(() => Effect.succeed({ owner: null, readFailed: true as const })),
+      );
+      if ("readFailed" in ownershipRead) {
+        return refused(
+          "market_data_unavailable",
+          "held-market ownership could not be read; retry once — nothing was prepared or submitted",
+        );
+      }
+      const owningMission = ownershipRead.owner;
       if (owningMission !== null) {
         return refused(
           "market_owned_by_mission",

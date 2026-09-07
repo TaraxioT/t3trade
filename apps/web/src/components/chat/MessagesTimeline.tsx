@@ -1800,7 +1800,16 @@ function WorkGroupToggleTimelineRow({
             className="size-4 shrink-0 stroke-[1.8] opacity-70"
           />
         </span>
-        <span className="min-w-0 flex-1 truncate text-secondary-label">{row.summary}</span>
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate",
+            // A failing group must not wear the passing group's tone: the
+            // summary line itself turns destructive, not just its icon.
+            row.hasFailure ? "font-medium text-destructive" : "text-secondary-label",
+          )}
+        >
+          {row.summary}
+        </span>
       </button>
     );
   }
@@ -2425,7 +2434,9 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
   if (tone === "error") {
     return {
       iconName: "circle-alert",
-      className: "text-foreground",
+      // An error must carry its color, not just its glyph: a foreground-toned
+      // alert reads as another muted step beside the info check.
+      className: "text-destructive",
     };
   }
   if (tone === "thinking") {
@@ -2688,8 +2699,11 @@ function buildToolCallExpandedBody(
   return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
+// Reading text, not a label: an expanded tool body is scrolled and skimmed
+// line by line, so it takes the foreground-reading tone the composer's own
+// output panes use rather than the one-line secondary label tone.
 const toolCallExpandedBodyClassName =
-  "max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-[length:var(--font-size-code,0.6875rem)] leading-relaxed select-text";
+  "max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-foreground/80 text-[length:var(--font-size-code,0.6875rem)] leading-relaxed select-text";
 
 function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   if (
@@ -3188,22 +3202,17 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const displayText = workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
-  const showDestructiveRowStyle =
-    showFailedIndicator &&
-    (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
   const iconWrapperClass = cn(
     "flex size-6 shrink-0 items-center justify-center",
     showWarningIndicator || showFailedIndicator
       ? "text-destructive"
-      : showDestructiveRowStyle
-        ? "text-destructive"
-        : workEntry.tone === "tool" || showFailedIndicator
-          ? "text-icon-muted"
-          : iconConfig.className,
+      : workEntry.tone === "tool"
+        ? "text-icon-muted"
+        : iconConfig.className,
   );
   const headingClass = showWarningIndicator
     ? "font-medium text-warning"
-    : showDestructiveRowStyle
+    : showFailedIndicator
       ? "font-medium text-destructive"
       : workLogEntryIsToolLike(workEntry)
         ? "text-secondary-label"

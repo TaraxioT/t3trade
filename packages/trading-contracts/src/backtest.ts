@@ -831,8 +831,22 @@ export function runBacktest(input: {
       adverseExcursionUsd: round2(settlement.adverseExcursionUsd),
     });
 
-    // Resume from the exit bar: a signal on it can fill at the bar after.
-    signalIndex = Math.max(signalIndex, exitIndex - 1);
+    // Resume scanning by when the position was actually FLAT — the one
+    // causal policy, shared with the forward engine's steps 1 and 5: an
+    // entry may fill at bar B's open only if the position was flat at B's
+    // open. A close-based exit filled AT the exit bar's open — the exit was
+    // decided a bar earlier and executes first at that price — so a signal on
+    // the bar before it re-enters at the exit bar's own open. A LEVEL exit
+    // happened inside the exit bar, after its open: at that open the position
+    // was still held, so the earliest legal fill is the NEXT bar's open (a
+    // signal on the exit bar itself). The old unconditional resume scanned
+    // from the exit bar for every exit kind — entering one bar later than
+    // forward on close exits and, for level exits, disagreeing about the
+    // earliest legal re-entry at all.
+    const firstAllowedSignal = settlement.outcome === "open" ? exitIndex - 1 : exitIndex;
+    // The loop increments after the body, so park one BELOW the first signal
+    // this trade's exit permits; never move backwards past an earlier state.
+    signalIndex = Math.max(signalIndex, firstAllowedSignal - 1);
   }
 
   // -- totals ----------------------------------------------------------------

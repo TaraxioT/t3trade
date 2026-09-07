@@ -1697,6 +1697,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "trading.mission-stop-adjusted":
         case "trading.mission-market-bound":
         case "trading.mission-market-released":
+        case "trading.mission-control-result":
           yield* tradingMissionProjection.refresh({
             missionId: event.payload.missionId,
             occurredAt: event.occurredAt,
@@ -1731,6 +1732,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "trading.mission-stop-adjusted":
         case "trading.mission-market-bound":
         case "trading.mission-market-released":
+        case "trading.mission-control-result":
         case "trading.execution-requested":
           yield* tradingAccountProjection.invalidate({ reason: event.type });
           return;

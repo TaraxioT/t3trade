@@ -320,7 +320,7 @@ function AlertRow({
           )}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm text-foreground">{alert.summary}</span>
+          <span className="block break-words text-sm text-foreground">{alert.summary}</span>
           <span className="block text-[11px] tabular-nums text-muted-foreground">{firedLine}</span>
         </span>
       </button>
@@ -379,7 +379,7 @@ export function AlertFeedPanel({
       : allAlerts.filter((alert) => alert.market.asset === market);
 
   return (
-    <section aria-label="Alerts" className="flex min-h-0 flex-col gap-2">
+    <section aria-label="Alerts" className="flex min-h-0 min-w-0 flex-col gap-2">
       <header className="flex items-center gap-1.5 px-1">
         <BellIcon className="size-3.5 text-muted-foreground" />
         <h2 className="text-sm font-semibold text-foreground">Alerts</h2>

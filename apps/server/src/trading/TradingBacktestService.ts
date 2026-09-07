@@ -8,6 +8,13 @@
  * off an assumption, and reporting all of it back so the numbers are read with
  * their provenance attached.
  *
+ * Two bounds the engine trusts this service to get right. Only CLOSED bars go
+ * in: the archiver can store a forming bar, and a run cut off mid-bar must not
+ * trade on numbers that are still moving. And funding is queried to the final
+ * served bar's CLOSE, because exits settle at close times while `servedToT`
+ * reports an open time — a funding read bounded by the open would leave the
+ * final bar's own hours uncharged on every hold that crossed it.
+ *
  * Read-only, and structurally so: every call goes through
  * {@link TradingMarketArchive}, which opens the archive file read-only, and
  * the event calendar service, which this reads but never writes. There is no
@@ -320,20 +327,51 @@ export const makeTradingBacktestService = (
           } as const;
         }
 
-        const candles = rows.map(toCandle);
+        // Only bars that have closed by the run's cutoff. The archiver can
+        // store a forming bar, and a rule read on one fires on numbers that
+        // are still moving — the same doctrine the forward validation's
+        // catch-up applies. A forming bar must not create an entry, an exit,
+        // or a window-end liquidation priced off a close that does not exist
+        // yet, so it never reaches the engine at all.
+        const candles = rows.map(toCandle).filter((candle) => candle.closeTime <= now);
+        if (candles.length === 0) {
+          return {
+            status: "refused",
+            reason: "no_archived_bars",
+            detail:
+              `every ${interval} bar the archive holds for ${thesis.market} in that window ` +
+              "is still forming as of the run's cutoff; move the cutoff past the newest bar's close",
+          } as const;
+        }
+
         const servedFromT = candles[0]?.openTime ?? null;
+        /** Open time of the last bar actually served — the last CLOSED one. */
         const servedToT = candles[candles.length - 1]?.openTime ?? null;
+        /**
+         * The settlement bound. Exits are stamped at a bar's CLOSE — a
+         * window-end liquidation and a stop/target touch inside the final bar
+         * both settle at `tClose` — so the funding and coverage reads reach
+         * the final eligible close, not its open. Querying funding only to
+         * `servedToT` would leave every hold through the last bar's own hours
+         * uncharged, the exact hours the trade was open for.
+         */
+        const settlementToT = candles[candles.length - 1]?.closeTime ?? requestedToT;
 
         const coverageDetail = yield* archive.coverage({
           coin: thesis.market,
           interval,
           fromT: servedFromT ?? requestedFromT,
-          toT: servedToT ?? requestedToT,
+          toT: settlementToT,
         });
+        // From the first served bar's OPEN: a funding row stamped at or before
+        // an entry belongs to the hour before it, and the engine's (entry,
+        // exit] window excludes it, so no earlier row can ever be owed a
+        // charge. To the settlement close, so no row inside the final bar's
+        // hours is missing.
         const funding = yield* archive.fundingInWindow({
           coin: thesis.market,
           fromT: servedFromT ?? requestedFromT,
-          toT: servedToT ?? requestedToT,
+          toT: settlementToT,
         });
 
         // The grammar passed above; this is the same check re-asked now that
@@ -351,6 +389,12 @@ export const makeTradingBacktestService = (
           n: SLIPPAGE_SAMPLE_ROWS,
         });
         const measured = book.status === "ok" ? halfSpreadBps(book.rows) : null;
+        // Provenance caveat, labelled where the number is made: the archive's
+        // book samples are the most RECENT `SLIPPAGE_SAMPLE_ROWS` rows, so on
+        // a historical window the measured spread describes the market's
+        // recent liquidity, not the liquidity of the days walked. The wire
+        // cost shape has no field to carry that distinction, so it lives here
+        // rather than on the number.
         const costs: BacktestCosts = {
           takerFeeBpsPerSide: BACKTEST_TAKER_FEE_BPS_PER_SIDE,
           slippageBpsPerSide: measured ?? BACKTEST_FALLBACK_SLIPPAGE_BPS_PER_SIDE,

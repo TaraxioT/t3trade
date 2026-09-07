@@ -364,10 +364,13 @@ const renderArmedWatches = (
 
 /**
  * The static half of the fetch pointer (plan 38 §1.5): the menu exists, here
- * is how to name it. Last line of every render path.
+ * is how to name it. Last line of every render path. The menu is named FIRST
+ * and says so — catalog-first, one menu call before any guessed key — and the
+ * line is size-bounded by the wake budgets, so the teaching has to stay this
+ * tight.
  */
 const FETCH_POINTER =
-  "nothing here but the above — trading_look({fetch:[...]}) ; menu: trading_look({})";
+  "nothing here but the above — menu first: trading_look({}) ; trading_look({fetch:[...]})";
 
 /**
  * The one-line fold of what fired (plan 38 §1.4).

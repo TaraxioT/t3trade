@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Build board · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="The live, KV-backed board where every build agent marks its progress on the T3 Trade System Atlas."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+      :root {
+        --void: #060a12;
+        --panel: #0b1120;
+        --panel-2: #0e1526;
+        --edge: rgba(148, 163, 199, 0.13);
+        --edge-strong: rgba(148, 163, 199, 0.24);
+        --chalk: #d8e0ec;
+        --slate: #8a97ad;
+        --dim: #5c6b84;
+        --bid: #2bd576;
+        --ask: #ff5d6c;
+        --amber: #ffb224;
+        --flow: #56ccf2;
+        --flow-soft: rgba(86, 204, 242, 0.14);
+        --font-body: "IBM Plex Sans", system-ui, sans-serif;
+        --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+        --font-display: "Archivo", system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+      body {
+        background: var(--void);
+        color: var(--chalk);
+        font-family: var(--font-body);
+        font-size: 16.5px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection {
+        background: rgba(86, 204, 242, 0.28);
+      }
+      a {
+        color: var(--flow);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      :focus-visible {
+        outline: 2px solid var(--flow);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      code,
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 0.86em;
+      }
+      code.path {
+        color: var(--slate);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 6px;
+        padding: 0.1em 0.4em;
+        white-space: nowrap;
+      }
+      .wrap {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(6, 10, 18, 0.82);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--edge);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+        gap: 16px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--chalk);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        white-space: nowrap;
+      }
+      .brand:hover {
+        text-decoration: none;
+      }
+      .brand .tick {
+        color: var(--bid);
+      }
+      .nav-links {
+        display: flex;
+        gap: 4px;
+      }
+      .nav-links a {
+        color: var(--slate);
+        font-size: 13.5px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        white-space: nowrap;
+      }
+      .nav-links a:hover {
+        color: var(--chalk);
+        background: var(--panel);
+        text-decoration: none;
+      }
+      .nav-links a[aria-current="page"] {
+        color: var(--flow);
+        background: var(--flow-soft);
+      }
+      .nav-menu-btn {
+        display: none;
+        color: var(--slate);
+        background: none;
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      @media (max-width: 880px) {
+        .nav-links {
+          display: none;
+        }
+        .nav-links.open {
+          display: flex;
+          flex-direction: column;
+          position: absolute;
+          top: 60px;
+          right: 12px;
+          background: var(--panel);
+          border: 1px solid var(--edge);
+          border-radius: 10px;
+          padding: 8px;
+        }
+        .nav-menu-btn {
+          display: inline-flex;
+        }
+      }
+
+      .footer {
+        border-top: 1px solid var(--edge);
+        margin-top: 96px;
+        padding: 40px 0 56px;
+        color: var(--dim);
+        font-size: 14px;
+      }
+      .footer .cols {
+        display: flex;
+        gap: 32px;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .footer nav {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .footer a {
+        color: var(--slate);
+      }
+      .footer a:hover {
+        color: var(--flow);
+      }
+      .footer .mono {
+        font-size: 12px;
+        letter-spacing: 0.06em;
+      }
+
+      .kicker {
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        letter-spacing: 0.14em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      h1 {
+        font-family: var(--font-display);
+        font-weight: 800;
+        font-stretch: 112%;
+        font-size: clamp(34px, 5.4vw, 58px);
+        line-height: 1.04;
+        letter-spacing: -0.015em;
+        margin: 14px 0 18px;
+        max-width: 18ch;
+      }
+      h2 {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-stretch: 106%;
+        font-size: clamp(24px, 3.2vw, 34px);
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        margin: 0 0 14px;
+        max-width: 26ch;
+      }
+      h3 {
+        font-family: var(--font-body);
+        font-weight: 600;
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+      p {
+        max-width: 66ch;
+        color: var(--chalk);
+      }
+      p.lede {
+        font-size: 19px;
+        color: var(--slate);
+        max-width: 58ch;
+      }
+      .section {
+        padding: 76px 0;
+        border-top: 1px solid var(--edge);
+      }
+      .section:first-of-type {
+        border-top: none;
+      }
+      .icon {
+        width: 1.25em;
+        height: 1.25em;
+        flex: none;
+        vertical-align: -0.25em;
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(18px);
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+        transition:
+          opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+          transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .reveal {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .edge-line {
+        stroke-dasharray: 5 7;
+        animation: march 1.1s linear infinite;
+      }
+      @keyframes march {
+        to {
+          stroke-dashoffset: -12;
+        }
+      }
+      .node-pulse {
+        animation: nodepulse 2.6s ease-in-out infinite;
+      }
+      @keyframes nodepulse {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .edge-line {
+          animation: none;
+          stroke-dasharray: none;
+        }
+        .node-pulse {
+          animation: none;
+          opacity: 0.8;
+        }
+      }
+
+      /* page */
+      .board-grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 12px;
+        margin-top: 28px;
+      }
+      .agent-card {
+        grid-column: span 4;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        transition: border-color 0.25s ease;
+      }
+      .agent-card.flash {
+        border-color: var(--flow);
+      }
+      @media (max-width: 880px) {
+        .agent-card {
+          grid-column: span 12;
+        }
+      }
+      @media (min-width: 881px) and (max-width: 1120px) {
+        .agent-card {
+          grid-column: span 6;
+        }
+      }
+      .agent-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .agent-head a {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-stretch: 106%;
+        font-size: 16.5px;
+        color: var(--chalk);
+      }
+      .agent-head .st {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--edge-strong);
+        color: var(--slate);
+        white-space: nowrap;
+      }
+      .st.s-done,
+      .st.s-improved {
+        color: var(--bid);
+        border-color: rgba(43, 213, 118, 0.45);
+      }
+      .st.s-failed {
+        color: var(--ask);
+        border-color: rgba(255, 93, 108, 0.45);
+      }
+      .st.s-exploring,
+      .st.s-drafting,
+      .st.s-writing,
+      .st.s-review {
+        color: var(--flow);
+        border-color: rgba(86, 204, 242, 0.45);
+        animation: chipblink 2s ease-in-out infinite;
+      }
+      @keyframes chipblink {
+        0%,
+        100% {
+          opacity: 0.6;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .st {
+          animation: none;
+        }
+      }
+      .bar {
+        position: relative;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--panel-2);
+        border: 1px solid var(--edge);
+        overflow: hidden;
+      }
+      .bar > i {
+        position: absolute;
+        inset: 0 auto 0 0;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(86, 204, 242, 0.35), var(--flow));
+        transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .bar > i {
+          transition: none;
+        }
+      }
+      .bar > s {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          100deg,
+          transparent 30%,
+          rgba(216, 224, 236, 0.18) 50%,
+          transparent 70%
+        );
+        transform: translateX(-100%);
+        animation: shimmer 1.8s ease-in-out infinite;
+      }
+      @keyframes shimmer {
+        to {
+          transform: translateX(100%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .bar > s {
+          display: none;
+        }
+      }
+      .agent-card .meta {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--dim);
+        display: flex;
+        justify-content: space-between;
+      }
+      .agent-notes {
+        color: var(--slate);
+        font-size: 13.5px;
+        line-height: 1.5;
+        max-height: 96px;
+        overflow: hidden;
+      }
+      .agent-notes li {
+        margin-left: 16px;
+      }
+      .stream {
+        margin-top: 40px;
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .stream-head {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--edge);
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.12em;
+        color: var(--slate);
+        text-transform: uppercase;
+        display: flex;
+        justify-content: space-between;
+      }
+      .stream-body {
+        max-height: 380px;
+        overflow-y: auto;
+      }
+      .ev {
+        display: flex;
+        gap: 14px;
+        align-items: baseline;
+        padding: 10px 16px;
+        border-top: 1px solid var(--edge);
+        font-size: 14px;
+      }
+      .ev:first-child {
+        border-top: none;
+      }
+      .ev time {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--dim);
+        flex: none;
+        min-width: 108px;
+      }
+      .ev .who {
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        color: var(--flow);
+        flex: none;
+      }
+      .ev .what {
+        color: var(--slate);
+      }
+      .howto {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 22px;
+        margin-top: 26px;
+      }
+      .howto pre {
+        background: var(--void);
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 16px;
+        overflow-x: auto;
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--slate);
+        margin-top: 12px;
+      }
+      .howto pre b {
+        color: var(--flow);
+        font-weight: 500;
+      }
+      .empty {
+        color: var(--dim);
+        padding: 26px 16px;
+        font-size: 14.5px;
+      }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono,
+        h2 span,
+        h3 span,
+        p span {
+          overflow-wrap: anywhere;
+        }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path,
+        code,
+        .mono,
+        .k,
+        .who,
+        .chip,
+        .path-chip,
+        .file,
+        .fn,
+        .term,
+        .qno,
+        p span,
+        h2 span,
+        h3 span,
+        li span,
+        td,
+        th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre,
+        .terminal,
+        .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html">Risk control</a>
+          <a href="/status.html" aria-current="page">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <section class="hero" style="padding: 84px 0 30px">
+      <div class="wrap">
+        <div class="kicker">Shared KV · live</div>
+        <h1>The board every agent writes to.</h1>
+        <p class="lede">
+          Each section page is written by one dedicated agent. They check in here, through a
+          Cloudflare Worker API backed by Workers KV, so the whole build is observable while it
+          happens.
+        </p>
+      </div>
+    </section>
+
+    <section class="section" style="padding-top: 30px">
+      <div class="wrap">
+        <svg
+          viewBox="0 0 900 110"
+          role="img"
+          aria-label="Agent check-ins flow through the status API into KV and out to this board"
+          style="width: 100%; height: auto"
+        >
+          <g font-family="var(--font-mono)" font-size="11">
+            <path
+              id="s1"
+              class="edge-line"
+              d="M150,55 H330"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="s2"
+              class="edge-line"
+              d="M480,55 H660"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <g class="node-pulse">
+              <rect
+                x="20"
+                y="29"
+                width="130"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text x="85" y="51" text-anchor="middle" fill="var(--chalk)">build agent</text>
+              <text x="85" y="69" text-anchor="middle" fill="var(--slate)" font-size="9">
+                curl POST
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="340"
+                y="29"
+                width="140"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text x="410" y="51" text-anchor="middle" fill="var(--chalk)">/api/status</text>
+              <text x="410" y="69" text-anchor="middle" fill="var(--slate)" font-size="9">
+                Pages Function
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="670"
+                y="29"
+                width="140"
+                height="52"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text x="740" y="51" text-anchor="middle" fill="var(--chalk)">Workers KV</text>
+              <text x="740" y="69" text-anchor="middle" fill="var(--slate)" font-size="9">
+                board:v1
+              </text>
+            </g>
+            <circle r="3.5" fill="var(--flow)">
+              <animateMotion dur="2s" repeatCount="indefinite"><mpath href="#s1" /></animateMotion>
+            </circle>
+            <circle r="3.5" fill="var(--flow)" opacity=".7">
+              <animateMotion dur="2s" begin="1s" repeatCount="indefinite">
+                <mpath href="#s2" />
+              </animateMotion>
+            </circle>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <section class="section" style="padding-top: 20px">
+      <div class="wrap">
+        <h2>Sections in flight.</h2>
+        <div class="board-grid" id="board" aria-live="polite">
+          <div class="empty">Reading the board from KV…</div>
+        </div>
+        <div class="stream">
+          <div class="stream-head"><span>Event stream</span><span id="count"></span></div>
+          <div class="stream-body" id="stream"><div class="empty">No events yet.</div></div>
+        </div>
+        <div class="howto">
+          <h3>How an agent checks in</h3>
+          <p style="color: var(--slate); font-size: 14.5px">
+            Three times per mission: at start, after exploring the code, and at delivery. The token
+            is a spam filter, not a secret worth protecting.
+          </p>
+          <pre>
+curl -sf -X POST "$SITE/api/status" -H 'content-type: application/json' -d '{
+  "token": "<b>redacted</b>",
+  "agent": { "id": "risk", "section": "Risk control", "page": "/risk.html",
+             "status": "<b>done</b>", "progress": 100,
+             "notes": ["14-item preview documented"],
+             "findings": ["stop gate runs twice: preview and wire price"],
+             "files": ["site/risk.html"] },
+  "note": "page delivered"
+}'</pre
+          >
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/">Back to the atlas</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/glossary.html">← Glossary</a>
+          <a href="/">Atlas →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      (() => {
+        const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (reduce)
+          document
+            .querySelectorAll("animateMotion, animate")
+            .forEach((a) => a.setAttribute("begin", "indefinite"));
+        const els = document.querySelectorAll(".reveal");
+        if (!("IntersectionObserver" in window) || reduce) {
+          els.forEach((el) => el.classList.add("in"));
+        } else {
+          const io = new IntersectionObserver(
+            (entries) => {
+              entries.forEach((e, i) => {
+                if (e.isIntersecting) {
+                  e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                  e.target.classList.add("in");
+                  io.unobserve(e.target);
+                }
+              });
+            },
+            { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+          );
+          els.forEach((el) => io.observe(el));
+        }
+
+        const esc = (s) =>
+          String(s).replace(
+            /[<>&"]/g,
+            (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c],
+          );
+        // defense in depth: the API already rejects non-site paths; never link one
+        const safePage = (p) =>
+          typeof p === "string" && /^\/[a-z0-9-]+(\.html)?$/i.test(p) ? p : "#";
+        let seen = {};
+
+        function render(board) {
+          const grid = document.getElementById("board");
+          const agents = board.agents || [];
+          if (!agents.length) {
+            grid.innerHTML =
+              '<div class="empty">No agents have checked in yet. The first POST wins.</div>';
+          } else {
+            grid.innerHTML = agents
+              .map(
+                (a) => `
+        <article class="agent-card${!reduce && seen[a.id] !== a.updatedAt ? " flash" : ""}" data-id="${esc(a.id)}">
+          <div class="agent-head">
+            <a href="${safePage(a.page)}">${esc(a.section)}</a>
+            <span class="st s-${esc(a.status)}">${esc(a.status)}</span>
+          </div>
+          <div class="bar" role="progressbar" aria-valuenow="${a.progress}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.section)} progress"><i style="width:${a.progress}%"></i><s></s></div>
+          <div class="meta"><span>${esc(a.id)}</span><span>${a.progress}%</span><span>${new Date(a.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span></div>
+          ${
+            a.notes && a.notes.length
+              ? `<ul class="agent-notes">${a.notes
+                  .slice(0, 3)
+                  .map((n) => `<li>${esc(n)}</li>`)
+                  .join("")}</ul>`
+              : ""
+          }
+        </article>`,
+              )
+              .join("");
+            if (!reduce)
+              setTimeout(
+                () =>
+                  document
+                    .querySelectorAll(".agent-card.flash")
+                    .forEach((c) => c.classList.remove("flash")),
+                900,
+              );
+          }
+          const evs = board.events || [];
+          document.getElementById("count").textContent = evs.length + " events";
+          document.getElementById("stream").innerHTML = evs.length
+            ? evs
+                .map(
+                  (e) =>
+                    `<div class="ev"><time>${new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><span class="who">${esc(e.id)}</span><span class="what">${esc(e.text)}</span></div>`,
+                )
+                .join("")
+            : '<div class="empty">No events yet.</div>';
+          agents.forEach((a) => (seen[a.id] = a.updatedAt));
+        }
+
+        async function tick() {
+          try {
+            const r = await fetch("/api/status", { cache: "no-store" });
+            if (r.ok) render(await r.json());
+            else
+              document.getElementById("board").innerHTML =
+                `<div class="empty">Board unreachable (HTTP ${r.status}). Static preview only.</div>`;
+          } catch {
+            document.getElementById("board").innerHTML =
+              '<div class="empty">Board unreachable from this network. The site itself is static and unaffected.</div>';
+          }
+        }
+        tick();
+        // data refresh is not motion: always poll; reduce only stills the animations
+        setInterval(tick, 15000);
+      })();
+    </script>
+  </body>
+</html>

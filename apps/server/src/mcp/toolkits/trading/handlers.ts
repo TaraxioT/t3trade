@@ -166,7 +166,9 @@ import {
   eventStudyReadWindow,
   parseTradingEventsOccurrence,
   renderTradingEventsMenu,
+  resolveEventStudyMetric,
   runEventStudy,
+  serializeEventSetContent,
   type TradingEventsResult,
   type TradingEventsOccurrenceInput,
   type TradingEventOccurrence,
@@ -180,10 +182,15 @@ import {
   type ResearchSceneView,
   type TradingChartResult,
 } from "@t3tools/trading-contracts/researchScenes";
-import { renderForwardMenu, type TradingValidateResult } from "@t3tools/trading-contracts/forward";
+import {
+  renderForwardMenu,
+  serializeForwardBaselineContent,
+  type TradingValidateResult,
+} from "@t3tools/trading-contracts/forward";
 import {
   HYPOTHESIS_SHOW_RUNS,
   HYPOTHESIS_SHOW_VERSIONS,
+  HYPOTHESIS_RUN_CALCULATION_VERSION,
   describeHypothesisStatus,
   renderTradingHypothesisMenu,
   thesesMatch,
@@ -201,6 +208,7 @@ import {
   thesisSetupAlerts,
 } from "@t3tools/trading-contracts/thesisWatchBridge";
 import {
+  contentDigestHex,
   TradingHypothesisService,
   type HypothesisRecord,
 } from "../../../trading/TradingHypothesisService.ts";
@@ -471,6 +479,33 @@ const resolveRunThesis = Effect.fn("TradingToolkit.resolveRunThesis")(function* 
     thesis: input.thesis,
     stamp: { hypothesisId: input.hypothesisId, hypothesisVersion: current.version },
   } as const;
+});
+
+/**
+ * Content digests for the event sets a thesis anchors on, so a run filed
+ * about it can say WHICH calendar it ran on. A set's id is stable while its
+ * dates are corrected, so the digest — sha256 over the set's name and
+ * occurrences — is the identity that moves when the calendar does. Undefined
+ * for a thesis that anchors on nothing; an anchored set that cannot be read
+ * contributes no digest rather than blocking the run (an unknown or retired
+ * set has already refused at `validateThesis` where it must).
+ */
+const eventSetContentDigestsFor = Effect.fn("TradingToolkit.eventSetContentDigestsFor")(function* (
+  thesis: TradingThesis,
+) {
+  const anchored = thesisEventSets(thesis);
+  if (anchored.length === 0) return undefined;
+  const events = yield* TradingEventService;
+  const digests: Array<{ readonly eventSetId: string; readonly digest: string }> = [];
+  for (const eventSetId of anchored) {
+    const set = yield* events.show(eventSetId).pipe(Effect.orDie);
+    if (set === null) continue;
+    digests.push({
+      eventSetId,
+      digest: contentDigestHex(serializeEventSetContent(set)),
+    });
+  }
+  return digests.length === 0 ? undefined : digests;
 });
 
 /**
@@ -3407,9 +3442,25 @@ export const handlers = {
 
       // Every completed run is kept, hypothesis or not. A measurement that
       // lived only in the transcript was the reason "what did that idea
-      // actually score" had no answer a week later.
+      // actually score" had no answer a week later. The provenance pins the
+      // calendar content an event-anchored thesis ran on and the calculation
+      // version, so the answer stays explainable when the calendar moves.
+      const digests = yield* eventSetContentDigestsFor(thesis);
+      const runProvenance =
+        digests === undefined
+          ? undefined
+          : {
+              eventSetContentDigests: digests,
+              calculationVersion: HYPOTHESIS_RUN_CALCULATION_VERSION,
+            };
       yield* hypotheses
-        .recordRun({ thesis, report: outcome.report, ...stamp, now })
+        .recordRun({
+          thesis,
+          report: outcome.report,
+          ...stamp,
+          now,
+          ...(runProvenance === undefined ? {} : { provenance: runProvenance }),
+        })
         .pipe(Effect.orDie);
 
       // A variation is a run like any other, so it is filed like any other -
@@ -3418,7 +3469,13 @@ export const handlers = {
       // reach did we actually test" would have no answer a week later.
       for (const variation of outcome.sweepRuns ?? []) {
         yield* hypotheses
-          .recordRun({ thesis: variation.report.thesis, report: variation.report, ...stamp, now })
+          .recordRun({
+            thesis: variation.report.thesis,
+            report: variation.report,
+            ...stamp,
+            now,
+            ...(runProvenance === undefined ? {} : { provenance: runProvenance }),
+          })
           .pipe(Effect.orDie);
       }
 
@@ -3495,8 +3552,8 @@ export const handlers = {
             })
             .pipe(Effect.orDie);
           if (armed.outcome === "refused") return yield* refuse(armed.reason);
+          const hypotheses = yield* TradingHypothesisService;
           if (stamp !== undefined) {
-            const hypotheses = yield* TradingHypothesisService;
             yield* hypotheses
               .noteTested({ hypothesisId: stamp.hypothesisId, now })
               .pipe(Effect.orDie);
@@ -3508,11 +3565,47 @@ export const handlers = {
           // underneath the validation is not a comparison. A backtest that
           // cannot run leaves the baseline null, which the report states
           // rather than papering over with a zero.
+          //
+          // The arm-time backtest is also FILED, like every completed run, so
+          // the baseline has a run reference: the report can name the run its
+          // comparison comes from, and a digest pins the exact figures — the
+          // same run keeps the same digest, and any change to the numbers
+          // does not. Event-set digests ride along for an anchored thesis,
+          // saying which calendar the baseline ran on.
           const backtest = yield* TradingBacktestService;
           const priced = yield* backtest.run({ thesis, now });
           if (priced.status === "ok") {
+            const digests = yield* eventSetContentDigestsFor(thesis);
+            const runProvenance =
+              digests === undefined
+                ? undefined
+                : {
+                    eventSetContentDigests: digests,
+                    calculationVersion: HYPOTHESIS_RUN_CALCULATION_VERSION,
+                  };
+            const runId = yield* hypotheses
+              .recordRun({
+                thesis,
+                report: priced.report,
+                ...stamp,
+                now,
+                ...(runProvenance === undefined ? {} : { provenance: runProvenance }),
+              })
+              .pipe(Effect.orDie);
             yield* validations
-              .setBaseline({ id: armed.validation.id, baseline: priced.report.stats })
+              .setBaseline({
+                id: armed.validation.id,
+                baseline: priced.report.stats,
+                source: {
+                  runId,
+                  digest: contentDigestHex(
+                    serializeForwardBaselineContent({ report: priced.report }),
+                  ),
+                  computedAt: now,
+                  coverage: priced.report.coverage,
+                  ...(digests === undefined ? {} : { eventSetContentDigests: digests }),
+                },
+              })
               .pipe(Effect.orDie);
           }
 
@@ -3961,13 +4054,64 @@ export const handlers = {
       };
 
       switch (input.action) {
-        case "record": {
-          if (input.name === undefined) return yield* refuse("record needs a name");
+        case "preview": {
           if (input.occurrences === undefined) {
-            return yield* refuse("record needs occurrences: [{start, end?, label?, source}]");
+            return yield* refuse(
+              "preview needs occurrences: [{start, end?, precision?, label?, source}]",
+            );
           }
           const parsed = parseAll(input.occurrences);
           if ("reason" in parsed) return yield* refuse(parsed.reason);
+          // The shape says which write this preview precedes: a name previews
+          // a record, no name previews an add (which carries none to confirm).
+          const action = input.name === undefined ? "add" : "record";
+          const { digest } = yield* eventService
+            .previewConfirmation({
+              threadId,
+              action,
+              name: (input.name ?? "").trim(),
+              occurrences: parsed.occurrences,
+              now,
+            })
+            .pipe(Effect.orDie);
+          return eventsResult({
+            occurrences: parsed.occurrences,
+            confirmationDigest: digest,
+            outcome:
+              `${parsed.occurrences.length} occurrence(s) parsed and read back in order. ` +
+              `Call ${action} with requireReadBack: true and this confirmationDigest to write ` +
+              "exactly these dates; any change to them needs a fresh preview",
+          });
+        }
+
+        case "record": {
+          if (input.name === undefined) return yield* refuse("record needs a name");
+          if (input.occurrences === undefined) {
+            return yield* refuse(
+              "record needs occurrences: [{start, end?, precision?, label?, source}]",
+            );
+          }
+          const parsed = parseAll(input.occurrences);
+          if ("reason" in parsed) return yield* refuse(parsed.reason);
+          if (input.requireReadBack === true) {
+            if (input.confirmationDigest === undefined) {
+              return yield* refuse(
+                "requireReadBack is true but no confirmationDigest came with it: " +
+                  "preview the dates first and pass the confirmationDigest that preview returned",
+              );
+            }
+            const confirmed = yield* eventService
+              .consumeConfirmation({
+                threadId,
+                action: "record",
+                name: input.name.trim(),
+                occurrences: parsed.occurrences,
+                confirmationDigest: input.confirmationDigest,
+                now,
+              })
+              .pipe(Effect.orDie);
+            if (confirmed.outcome === "refused") return yield* refuse(confirmed.reason);
+          }
           const written = yield* eventService
             .record({
               name: input.name,
@@ -3994,10 +4138,32 @@ export const handlers = {
         case "add": {
           if (input.eventSetId === undefined) return yield* refuse("add needs an eventSetId");
           if (input.occurrences === undefined) {
-            return yield* refuse("add needs occurrences: [{start, end?, label?, source}]");
+            return yield* refuse(
+              "add needs occurrences: [{start, end?, precision?, label?, source}]",
+            );
           }
           const parsed = parseAll(input.occurrences);
           if ("reason" in parsed) return yield* refuse(parsed.reason);
+          if (input.requireReadBack === true) {
+            if (input.confirmationDigest === undefined) {
+              return yield* refuse(
+                "requireReadBack is true but no confirmationDigest came with it: " +
+                  "preview the dates first and pass the confirmationDigest that preview returned",
+              );
+            }
+            // add carries no name to confirm, so the canonical name is empty.
+            const confirmed = yield* eventService
+              .consumeConfirmation({
+                threadId,
+                action: "add",
+                name: "",
+                occurrences: parsed.occurrences,
+                confirmationDigest: input.confirmationDigest,
+                now,
+              })
+              .pipe(Effect.orDie);
+            if (confirmed.outcome === "refused") return yield* refuse(confirmed.reason);
+          }
           const written = yield* eventService
             .add({ eventSetId: input.eventSetId, occurrences: parsed.occurrences, author, now })
             .pipe(Effect.orDie);
@@ -4064,6 +4230,17 @@ export const handlers = {
           const badHorizon = checkEventStudy({ horizonBars });
           if (badHorizon !== null) return yield* refuse(badHorizon);
           const entryBasis = input.entryBasis ?? EVENT_STUDY_DEFAULT_ENTRY_BASIS;
+          // The metric resolves exactly as the publish action resolves it:
+          // one pure resolver, so a published scene is the same study this
+          // action described, and a contradictory direction/price field pair
+          // refuses before a bar is read.
+          const resolvedMetric = resolveEventStudyMetric({
+            metric: input.metric,
+            direction: input.direction,
+            priceField: input.priceField,
+            excursionThresholdPct: input.excursionThresholdPct,
+          });
+          if ("reason" in resolvedMetric) return yield* refuse(resolvedMetric.reason);
 
           // The TradingBacktestService read pattern, in miniature: probe what
           // the archive holds, refuse a window too large to walk before the
@@ -4156,13 +4333,37 @@ export const handlers = {
             horizonBars,
             entryBasis,
             now,
+            ...(resolvedMetric.metric === "path_extrema"
+              ? {
+                  metric: "path_extrema" as const,
+                  direction: resolvedMetric.direction,
+                  priceField: resolvedMetric.priceField,
+                  ...(resolvedMetric.excursionThresholdPct === undefined
+                    ? {}
+                    : {
+                        excursionThresholdPct: resolvedMetric.excursionThresholdPct,
+                        ...(input.thresholdChosenAfterResults === true
+                          ? { thresholdChosenAfterResults: true as const }
+                          : {}),
+                      }),
+                }
+              : {}),
           });
           // The basis is part of the answer: a close-to-close number and an
           // open-entry number answer different questions, and the model
-          // narrates the one that was actually measured.
+          // narrates the one that was actually measured. The metric phrase
+          // says what the extrema are (and that they are hindsight-perfect),
+          // and the closing sentence names the only path to "shown": a study
+          // that stays a tool result was never on the graph.
+          const metricSentence =
+            resolvedMetric.metric === "path_extrema"
+              ? ` Metric: path extrema for a ${resolvedMetric.direction} on the ${resolvedMetric.priceField} — the excursion to that extremum is hindsight-perfect (maximum favorable excursion after entry), not a realizable result.`
+              : "";
           return eventsResult({
             study,
-            outcome: `${study.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.`,
+            outcome:
+              `${study.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence} ` +
+              "To show this on the graph, call trading_chart publish_event_study with the same parameters.",
           });
         }
       }
@@ -4237,6 +4438,15 @@ export const handlers = {
           const badHorizon = checkEventStudy({ horizonBars });
           if (badHorizon !== null) return yield* refuse(badHorizon);
           const entryBasis = input.entryBasis ?? EVENT_STUDY_DEFAULT_ENTRY_BASIS;
+          // The same resolver as the events study action, so a published
+          // scene is the same study the study action described.
+          const resolvedMetric = resolveEventStudyMetric({
+            metric: input.metric,
+            direction: input.direction,
+            priceField: input.priceField,
+            excursionThresholdPct: input.excursionThresholdPct,
+          });
+          if ("reason" in resolvedMetric) return yield* refuse(resolvedMetric.reason);
           const interval = (input.interval ?? "1d") as ArchiveInterval;
           const width = INTERVAL_MS[interval];
           if (width === undefined) {
@@ -4321,6 +4531,21 @@ export const handlers = {
             horizonBars,
             entryBasis,
             now,
+            ...(resolvedMetric.metric === "path_extrema"
+              ? {
+                  metric: "path_extrema" as const,
+                  direction: resolvedMetric.direction,
+                  priceField: resolvedMetric.priceField,
+                  ...(resolvedMetric.excursionThresholdPct === undefined
+                    ? {}
+                    : {
+                        excursionThresholdPct: resolvedMetric.excursionThresholdPct,
+                        ...(input.thresholdChosenAfterResults === true
+                          ? { thresholdChosenAfterResults: true as const }
+                          : {}),
+                      }),
+                }
+              : {}),
           });
           const servedFromT = candles[0]?.openTime ?? now;
           const servedToT = candles[candles.length - 1]?.openTime ?? now;
@@ -4338,10 +4563,13 @@ export const handlers = {
           // The windows the client fetches per occurrence: the event span
           // plus the measured horizon, so Calendar mode draws each occurrence
           // with its own entry and exit bars without shipping years of bars.
+          // Each carries the occurrence's own time precision so the graph
+          // never guesses a moment the source never established.
           const occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow> = report.rows.map(
             (row) => ({
               startAt: row.startAt,
               endAt: row.endAt,
+              ...(row.timePrecision === undefined ? {} : { timePrecision: row.timePrecision }),
               ...(row.label === undefined ? {} : { label: row.label }),
               source: row.source,
               covered: row.covered,
@@ -4349,9 +4577,16 @@ export const handlers = {
               ...(row.exitTime === undefined ? {} : { exitTime: row.exitTime }),
             }),
           );
+          const metricTitleSuffix =
+            resolvedMetric.metric === "path_extrema"
+              ? `, ${resolvedMetric.direction} path extrema` +
+                (resolvedMetric.excursionThresholdPct === undefined
+                  ? ""
+                  : `, threshold ${resolvedMetric.excursionThresholdPct}%`)
+              : "";
           const title =
             input.title ??
-            `${set.name} on ${input.market}, ${interval} bars, ${horizonBars} forward`;
+            `${set.name} on ${input.market}, ${interval} bars, ${horizonBars} forward${metricTitleSuffix}`;
           const published = yield* scenes
             .publish({
               threadId,
@@ -4365,6 +4600,25 @@ export const handlers = {
                 document: {
                   priceSource: "hyperliquid",
                   entryBasis,
+                  // The metric is part of the recipe and always recorded: a
+                  // path_extrema scene's extrema and excursion aggregates read
+                  // as nothing without it. Scenes persisted before metrics
+                  // existed decode as forward_return via the schema default.
+                  metric: resolvedMetric.metric,
+                  ...(resolvedMetric.metric === "path_extrema"
+                    ? {
+                        direction: resolvedMetric.direction,
+                        priceField: resolvedMetric.priceField,
+                        ...(resolvedMetric.excursionThresholdPct === undefined
+                          ? {}
+                          : {
+                              excursionThresholdPct: resolvedMetric.excursionThresholdPct,
+                              ...(input.thresholdChosenAfterResults === true
+                                ? { thresholdChosenAfterResults: true as const }
+                                : {}),
+                            }),
+                      }
+                    : {}),
                   ...(input.illustrativeNotionalUsd === undefined
                     ? {}
                     : { illustrativeNotionalUsd: input.illustrativeNotionalUsd }),
@@ -4390,12 +4644,28 @@ export const handlers = {
           if (published.outcome === "refused") return yield* refuse(published.reason);
           const scene = yield* withReferenceStatus(published.scene);
           const coveredWindows = occurrenceWindows.filter((w) => w.covered).length;
+          const metricSentence =
+            resolvedMetric.metric === "path_extrema"
+              ? ` Metric: path extrema for a ${resolvedMetric.direction} on the ${resolvedMetric.priceField} — the excursion is hindsight-perfect (maximum favorable excursion after entry), not a realizable result.`
+              : "";
           return chartResult({
             scene,
+            // Publication proves the record was saved and made active, never
+            // that a viewport moved: the open action is the direct path to
+            // seeing it, and the sentence stops at what actually happened.
+            open: {
+              kind: "open_scene",
+              sceneId: scene.sceneId,
+              threadId,
+              market: input.market,
+              view: "calendar",
+              label: "Open on graph",
+            },
             outcome:
-              `${report.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}. ` +
-              `Shown on graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
-              `calendar and event-aligned views above this chat. ${RESEARCH_DISCLAIMER}`,
+              `${report.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence} ` +
+              `Published to this thread's graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
+              "calendar and event-aligned views — press Open on graph to focus it. " +
+              `${RESEARCH_DISCLAIMER}`,
           });
         }
 
@@ -4500,10 +4770,20 @@ export const handlers = {
             })
             .pipe(Effect.orDie);
           if (published.outcome === "refused") return yield* refuse(published.reason);
+          const pinnedScene = yield* withReferenceStatus(published.scene);
           return chartResult({
-            scene: published.scene,
+            scene: pinnedScene,
+            open: {
+              kind: "open_scene",
+              sceneId: pinnedScene.sceneId,
+              threadId,
+              market: input.market,
+              view: "live",
+              label: "Open on graph",
+            },
             outcome:
-              "The note is pinned to the graph with an authored-note label; it is not a computed layer.",
+              "The note is pinned to this thread's graph with an authored-note label; it is not a " +
+              "computed layer — press Open on graph to see it on Live",
           });
         }
 
@@ -4518,7 +4798,34 @@ export const handlers = {
             return yield* refuse("no scene of this chat with that id");
           }
           const scene = yield* withReferenceStatus(shown);
-          return chartResult({ scene, outcome: scene.title });
+          // `show` reads; it recomputes nothing and creates nothing. A
+          // superseded or cleared row is history and says so, and the open
+          // action is the same navigation affordance publication carries —
+          // reading a record back was never the same thing as seeing it.
+          const marketOf =
+            scene.eventStudy?.market ??
+            scene.strategyReplay?.thesis.market ??
+            scene.annotation?.market;
+          const view = scene.annotation === undefined ? "calendar" : "live";
+          return chartResult({
+            scene,
+            ...(marketOf === undefined
+              ? {}
+              : {
+                  open: {
+                    kind: "open_scene",
+                    sceneId: scene.sceneId,
+                    threadId,
+                    market: marketOf,
+                    view,
+                    label: "Open on graph",
+                  },
+                }),
+            outcome:
+              scene.status === "active"
+                ? `${scene.title} — read back; press Open on graph to focus it`
+                : `${scene.title} — history (${scene.status}); press Open on graph to view it as it was recorded`,
+          });
         }
 
         case "list": {

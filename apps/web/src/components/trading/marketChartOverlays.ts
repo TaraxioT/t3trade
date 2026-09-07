@@ -49,53 +49,11 @@ export function sessionLevelLines(
   return lines;
 }
 
-/**
- * How far apart two session labels must sit, in viewBox-height units.
- *
- * A label is one line of 9px text; on the ~160-unit viewBox the chart renders
- * at, eight units is a little over one line — the same arithmetic the price
- * gutter's `GUTTER_LABEL_MIN_SEPARATION` uses for its two-line tags.
- */
-export const SESSION_LABEL_MIN_SEPARATION = 8;
-
-/**
- * Hold the session labels apart vertically, the way the price gutter holds
- * its tags apart (`layoutGutterLabels`), only simpler: every label has the
- * same priority, so a forward sweep pushes overlaps down and a backward sweep
- * pulls the tail back inside the frame. The rule keeps its true y; only the
- * label moves. Returns each label's y, keyed by the line's `key`.
- *
- * Two levels at nearly the same price ("open 81.18" on "vwap 81.14") are the
- * common case this exists for — without it the two labels print on top of
- * each other and read as one garbled number.
- */
-export function layoutSessionLabelYs(
-  labels: ReadonlyArray<{ readonly key: string; readonly y: number }>,
-  frameHeight: number,
-): ReadonlyMap<string, number> {
-  const placed = labels
-    .map((label) => ({ key: label.key, labelY: label.y }))
-    .sort((a, b) => a.labelY - b.labelY);
-  // The label hangs below its anchor, so the bottom inset clears one line and
-  // the top needs none.
-  const bottom = frameHeight - SESSION_LABEL_MIN_SEPARATION;
-  for (let i = 1; i < placed.length; i += 1) {
-    const previous = placed[i - 1]!;
-    const current = placed[i]!;
-    current.labelY = Math.max(current.labelY, previous.labelY + SESSION_LABEL_MIN_SEPARATION);
-  }
-  const last = placed[placed.length - 1];
-  if (last !== undefined) last.labelY = Math.min(last.labelY, bottom);
-  for (let i = placed.length - 2; i >= 0; i -= 1) {
-    const next = placed[i + 1]!;
-    const current = placed[i]!;
-    current.labelY = Math.min(current.labelY, next.labelY - SESSION_LABEL_MIN_SEPARATION);
-  }
-  for (const label of placed) {
-    label.labelY = Math.max(label.labelY, 0);
-  }
-  return new Map(placed.map((label) => [label.key, label.labelY]));
-}
+// Session labels no longer have a layout here: the chart's left axis runs ONE
+// collision pass over grid prices, session levels, and the dragged-price
+// readout together — `layoutLeftAxisLabels` in missionChartGeometry — because
+// the two independent placements this module used to serve printed the two
+// kinds on top of each other at the same left edge.
 
 /** One shaded stretch of the time axis, clipped to the drawn window. */
 export interface CoverageBand {

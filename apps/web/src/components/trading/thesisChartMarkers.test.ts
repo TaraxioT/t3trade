@@ -278,4 +278,26 @@ describe("thesisChartBadge comparison", () => {
       "neutral",
     );
   });
+
+  it("does not colour tracking of a losing ledger as success", () => {
+    // The badge payload carries no baseline figure, so "tracking" is judged
+    // against the settled paper trades' own net: matching a losing backtest
+    // is replication, not a green badge.
+    const losing = thesis({
+      trades: [
+        {
+          id: "t1",
+          entryTime: 1_000,
+          entryPrice: 3_000,
+          exitTime: 2_000,
+          exitPrice: 2_950,
+          netUsd: -32.5,
+          exitReason: "stop",
+          stopPrice: null,
+          targetPrice: null,
+        },
+      ],
+    });
+    expect(thesisChartBadge(losing).comparisonTone).toBe("neutral");
+  });
 });

@@ -20,13 +20,12 @@
 import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 import { TrendingUpIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { isElectron } from "../../env";
 import { useTradingAccountView } from "../../lib/tradingAccountState";
 import { useTradingMarketChart } from "../../lib/tradingMarketChartState";
 import { useTradingMissions } from "../../lib/tradingMissionsState";
-import { useProjects } from "../../state/entities";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
@@ -38,6 +37,8 @@ import { MissionPriceChart } from "./MissionPriceChart";
 import { ThesisChartBadgeLine } from "./ThesisChartBadgeLine";
 import { OrderTicket } from "./OrderTicket";
 import { describeArchiveHealth, describeSignerState } from "./tradeHomePresentation";
+import { TradingEnvironmentSelector } from "./TradingEnvironmentSelector";
+import { useTradingEnvironmentRouting } from "./tradingEnvironmentSelection";
 import { useTradingUniverseAssets } from "./UniverseAssetSearch";
 import { WatchlistPanel } from "./WatchlistPanel";
 import { formatPrice } from "./tradingPresentation";
@@ -180,11 +181,10 @@ function TradeHomeChart({
 }
 
 export function TradeHomePanel() {
-  const projects = useProjects();
-  const environmentId = useMemo<EnvironmentId | null>(
-    () => projects[0]?.environmentId ?? null,
-    [projects],
-  );
+  // 07A: the trading destination is an explicit, session-scoped environment
+  // selection — never `projects[0]`, which answers a question nobody asked
+  // with a project sort order that can change under the user.
+  const { environments, gate, select } = useTradingEnvironmentRouting();
 
   return (
     <SidebarInset className="isolate h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -195,19 +195,58 @@ export function TradeHomePanel() {
             Trade
           </span>
         </WorkspacePageHeader>
-        {environmentId === null ? (
-          <p className="px-5 py-4 text-sm text-muted-foreground">
-            Connect an environment to trade.
-          </p>
+        {gate.state === "selected" ? (
+          // Keyed by environment id: switching environments resets local
+          // market/draft state and keeps late responses bound to the tree
+          // that issued them.
+          <TradeHomeForEnvironment
+            key={gate.environmentId}
+            environmentId={gate.environmentId}
+            selector={
+              <TradingEnvironmentSelector
+                environments={environments}
+                environmentId={gate.environmentId}
+                onSelect={select}
+              />
+            }
+          />
+        ) : gate.state === "loading" ? (
+          // RC05: the catalog is not ready (or the one-time latch has not
+          // run). No selector, no environment-bound queries — a partial
+          // catalog never chooses a destination.
+          <div className="flex flex-col gap-2 px-5 py-4">
+            <p className="text-sm text-muted-foreground" data-testid="trade-environment-gate">
+              Loading trading environments…
+            </p>
+          </div>
         ) : (
-          <TradeHomeForEnvironment environmentId={environmentId} />
+          <div className="flex flex-col gap-2 px-5 py-4">
+            <TradingEnvironmentSelector
+              environments={environments}
+              environmentId={gate.state === "unavailable" ? gate.environmentId : null}
+              onSelect={select}
+            />
+            <p className="text-sm text-muted-foreground" data-testid="trade-environment-gate">
+              {gate.state === "no-environments"
+                ? "Connect an environment to trade."
+                : gate.state === "choose"
+                  ? "Choose an environment to trade."
+                  : "The selected trading environment is no longer available; choose an environment to continue."}
+            </p>
+          </div>
         )}
       </div>
     </SidebarInset>
   );
 }
 
-function TradeHomeForEnvironment({ environmentId }: { environmentId: EnvironmentId }) {
+function TradeHomeForEnvironment({
+  environmentId,
+  selector,
+}: {
+  environmentId: EnvironmentId;
+  selector: ReactNode;
+}) {
   const { missions, error: missionsError } = useTradingMissions(environmentId);
   const account = useTradingAccountView(environmentId);
   const accounts = account.data?.accounts ?? [];
@@ -225,6 +264,7 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
   return (
     <ScrollArea className="min-h-0 flex-1">
       <div className="flex flex-col gap-3 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 items-center">{selector}</div>
         <ArchiveHealthLine message={archiveMessage} />
         <SignerStateLine message={signerMessage} />
         {account.error === null ? null : (
@@ -233,7 +273,10 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
         {missionsError === null ? null : (
           <p className="text-sm text-destructive">{missionsError}</p>
         )}
-        <div className="grid gap-4 lg:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)_minmax(16rem,20rem)]">
+        {/* The grid owns the shrink discipline: every track child gets
+            min-w-0 so long unbreakable content inside a panel widens its own
+            row instead of pushing columns past the viewport (10E). */}
+        <div className="grid min-w-0 gap-4 [&>*]:min-w-0 lg:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)_minmax(16rem,20rem)]">
           <WatchlistPanel
             environmentId={environmentId}
             selectedAsset={selectedAsset}
@@ -277,7 +320,7 @@ function TradeHomeForEnvironment({ environmentId }: { environmentId: Environment
               found out. Stacked rather than tabbed, because they answer
               different questions and a tab would hide one of them behind the
               other on a page whose whole point is one screen. */}
-          <div className="flex min-h-0 flex-col gap-4">
+          <div className="flex min-h-0 min-w-0 flex-col gap-4">
             <AlertFeedPanel environmentId={environmentId} />
             <IdeasPanel environmentId={environmentId} onSelectMarket={setPickedAsset} />
           </div>

@@ -135,6 +135,47 @@ describe("deriveValidationCard", () => {
     expect(baseline?.value).toContain("$1.10");
   });
 
+  it("does not word or colour tracking a losing baseline as success", () => {
+    // The engine says tracking a backtest that loses money is replication,
+    // not a result; the card must not undo that with a green chip.
+    const card = deriveValidationCard(
+      call(
+        report({
+          baselineExpectancyUsd: -1.1,
+          stats: stats({ expectancyUsd: -1.05, totalNetUsd: -31.5 }),
+          verdictReason:
+            "Forward is tracking the backtest within a heuristic band. Both figures lose money after fees.",
+        }),
+      ),
+    );
+    expect(card?.comparisonLabel).toBe("Tracking a losing backtest");
+    expect(card?.comparisonTone).toBe("neutral");
+  });
+
+  it("names the run a recorded baseline came from, and says when none was recorded", () => {
+    const withSource = deriveValidationCard(
+      call(
+        report({
+          baselineSource: {
+            runId: "0f4c1a2b-1111-2222-3333-444444444444",
+            digest: "9a8b7c6d5e4f3021",
+            computedAt: 2_000,
+          },
+        }),
+      ),
+    );
+    const provenance = withSource?.stats.find((stat) => stat.label === "Baseline provenance");
+    expect(provenance?.value).toContain("run 0f4c1a2b");
+    expect(provenance?.value).toContain("digest 9a8b7c6d");
+    expect(provenance?.tone).toBe("neutral");
+
+    // A baseline armed before provenance was kept: the absence is stated,
+    // never papered over with a run id guessed from anything else.
+    const legacy = deriveValidationCard(call(report()));
+    const legacyProvenance = legacy?.stats.find((stat) => stat.label === "Baseline provenance");
+    expect(legacyProvenance?.value).toBe("not recorded");
+  });
+
   it("omits the comparison row when nothing was recorded to compare against", () => {
     const card = deriveValidationCard(
       call(report({ baselineExpectancyUsd: null, comparison: "no_baseline" })),

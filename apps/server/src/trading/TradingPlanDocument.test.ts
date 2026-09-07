@@ -638,6 +638,36 @@ layer("TradingPlanDocument — the guard fails closed on unreadable state", (it)
       }).pipe(Effect.provide(store));
     }),
   );
+
+  it.effect("a runtime row that cannot name a cwd fences; a missing row passes", () =>
+    Effect.gen(function* () {
+      const store = isolatedStore();
+      yield* Effect.gen(function* () {
+        yield* runMigrations({});
+        // Every shape a present-but-corrupt payload can take: a row exists,
+        // so an activation may stand behind it, but it can no longer name the
+        // workspace — unreadable, never absent.
+        const shapes = [
+          ["thread_bad1", "not json"],
+          ["thread_bad2", "[1,2]"],
+          ["thread_bad3", JSON.stringify({ cwd: 42 })],
+          ["thread_bad4", JSON.stringify({ cwd: "   " })],
+        ] as const;
+        for (const [threadId, payload] of shapes) {
+          yield* seedThreadCwdRaw(threadId, payload);
+          const refused = yield* guardPlanDocumentDrift("open", threadId);
+          assert.notEqual(refused, null, `${payload} must fence`);
+          assert.equal(refused?.reason, "plan_document_drifted");
+          assert.include(refused?.detail ?? "", "could not be read");
+          // Exposure-reducing actions never reach the read.
+          assert.equal(yield* guardPlanDocumentDrift("close", threadId), null);
+        }
+        // A thread with no runtime row at all recorded no session, so nothing
+        // can have been activated through it: absence stays a pass.
+        assert.equal(yield* guardPlanDocumentDrift("open", "thread_never_session"), null);
+      }).pipe(Effect.provide(store));
+    }),
+  );
 });
 
 layer("TradingPlanDocument — the deleted-root fallback is deterministic", (it) => {

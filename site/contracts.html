@@ -1,0 +1,2032 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Contracts &amp; types · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="How T3 Trade's two contract packages keep every surface honest: pure trading policy in trading-contracts, wire unions and typed RPCs in contracts, and idempotency in three layers."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+      :root {
+        --void: #060a12; /* page base */
+        --panel: #0b1120; /* raised surface */
+        --panel-2: #0e1526; /* second raise */
+        --edge: rgba(148, 163, 199, 0.13);
+        --edge-strong: rgba(148, 163, 199, 0.24);
+        --chalk: #d8e0ec; /* primary text */
+        --slate: #8a97ad; /* secondary text */
+        --dim: #5c6b84; /* tertiary text */
+        --bid: #2bd576; /* success, long, confirmed */
+        --ask: #ff5d6c; /* risk, refusal, halt */
+        --amber: #ffb224; /* caution, limits, unknown */
+        --flow: #56ccf2; /* data in motion, links, events */
+        --flow-soft: rgba(86, 204, 242, 0.14);
+        --font-body: "IBM Plex Sans", system-ui, sans-serif;
+        --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+        --font-display: "Archivo", system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+      body {
+        background: var(--void);
+        color: var(--chalk);
+        font-family: var(--font-body);
+        font-size: 16.5px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection {
+        background: rgba(86, 204, 242, 0.28);
+      }
+      a {
+        color: var(--flow);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      :focus-visible {
+        outline: 2px solid var(--flow);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      code,
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 0.86em;
+      }
+      code.path {
+        color: var(--slate);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 6px;
+        padding: 0.1em 0.4em;
+        white-space: nowrap;
+      }
+      .wrap {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      /* chrome */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(6, 10, 18, 0.82);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--edge);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+        gap: 16px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--chalk);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        white-space: nowrap;
+      }
+      .brand:hover {
+        text-decoration: none;
+      }
+      .brand .tick {
+        color: var(--bid);
+      }
+      .nav-links {
+        display: flex;
+        gap: 4px;
+      }
+      .nav-links a {
+        color: var(--slate);
+        font-size: 13.5px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        white-space: nowrap;
+      }
+      .nav-links a:hover {
+        color: var(--chalk);
+        background: var(--panel);
+        text-decoration: none;
+      }
+      .nav-links a[aria-current="page"] {
+        color: var(--flow);
+        background: var(--flow-soft);
+      }
+      @media (max-width: 820px) {
+        .nav-links {
+          display: none;
+        }
+        .nav-links.open {
+          display: flex;
+          flex-direction: column;
+          position: absolute;
+          top: 60px;
+          right: 12px;
+          background: var(--panel);
+          border: 1px solid var(--edge);
+          border-radius: 10px;
+          padding: 8px;
+        }
+        .nav-menu-btn {
+          display: inline-flex !important;
+        }
+      }
+      .nav-menu-btn {
+        display: none;
+        color: var(--slate);
+        background: none;
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .footer {
+        border-top: 1px solid var(--edge);
+        margin-top: 96px;
+        padding: 40px 0 56px;
+        color: var(--dim);
+        font-size: 14px;
+      }
+      .footer .cols {
+        display: flex;
+        gap: 32px;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .footer nav {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .footer a {
+        color: var(--slate);
+      }
+      .footer a:hover {
+        color: var(--flow);
+      }
+      .footer .mono {
+        font-size: 12px;
+        letter-spacing: 0.06em;
+      }
+
+      /* type roles */
+      .kicker {
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        letter-spacing: 0.14em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      h1 {
+        font-family: var(--font-display);
+        font-weight: 800;
+        font-stretch: 112%;
+        font-size: clamp(34px, 5.4vw, 58px);
+        line-height: 1.04;
+        letter-spacing: -0.015em;
+        margin: 14px 0 18px;
+        max-width: 18ch;
+      }
+      h2 {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-stretch: 106%;
+        font-size: clamp(24px, 3.2vw, 34px);
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        margin: 0 0 14px;
+        max-width: 26ch;
+      }
+      h3 {
+        font-family: var(--font-body);
+        font-weight: 600;
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+      p {
+        max-width: 66ch;
+        color: var(--chalk);
+      }
+      p.lede {
+        font-size: 19px;
+        color: var(--slate);
+        max-width: 58ch;
+      }
+      .section {
+        padding: 76px 0;
+        border-top: 1px solid var(--edge);
+      }
+      .section:first-of-type {
+        border-top: none;
+      }
+      .icon {
+        width: 1.25em;
+        height: 1.25em;
+        flex: none;
+        vertical-align: -0.25em;
+      }
+
+      /* reveal on scroll */
+      .reveal {
+        opacity: 0;
+        transform: translateY(18px);
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+        transition:
+          opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+          transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .reveal {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* flow ribbon animation */
+      .edge-line {
+        stroke-dasharray: 5 7;
+        animation: march 1.1s linear infinite;
+      }
+      @keyframes march {
+        to {
+          stroke-dashoffset: -12;
+        }
+      }
+      .node-pulse {
+        animation: nodepulse 2.6s ease-in-out infinite;
+      }
+      @keyframes nodepulse {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .edge-line {
+          animation: none;
+          stroke-dasharray: none;
+        }
+        .node-pulse {
+          animation: none;
+          opacity: 0.8;
+        }
+      }
+
+      /* ---------- page-specific ---------- */
+      .hero {
+        padding: 84px 0 30px;
+      }
+      .hero-meta {
+        display: flex;
+        gap: 22px;
+        margin-top: 30px;
+        flex-wrap: wrap;
+        color: var(--slate);
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+      }
+      .hero-meta b {
+        color: var(--chalk);
+        font-weight: 500;
+      }
+      .hero-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 18px;
+      }
+      .hero-head .icon {
+        width: 44px;
+        height: 44px;
+        color: var(--flow);
+        margin-top: 10px;
+        flex: none;
+      }
+
+      .ribbon-box {
+        margin-top: 44px;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 18px 12px 8px;
+        overflow-x: auto;
+      }
+      .ribbon-box svg {
+        width: 100%;
+        height: auto;
+        min-width: 680px;
+        display: block;
+      }
+      .ribbon-cap {
+        padding: 10px 10px 4px;
+        color: var(--slate);
+        font-size: 14px;
+        max-width: none;
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: 7fr 5fr;
+        gap: 42px;
+        align-items: start;
+      }
+      @media (max-width: 768px) {
+        .split {
+          grid-template-columns: 1fr;
+        }
+      }
+      .split .side-note {
+        color: var(--slate);
+        font-size: 15.5px;
+      }
+
+      .term {
+        background: var(--panel-2);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .term-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--edge);
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--slate);
+        letter-spacing: 0.04em;
+      }
+      .term-head .dots {
+        display: inline-flex;
+        gap: 4px;
+      }
+      .term-head .dots i {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--edge-strong);
+      }
+      .term pre {
+        margin: 0;
+        padding: 16px 18px;
+        overflow-x: auto;
+        font-family: var(--font-mono);
+        font-size: 14px;
+        line-height: 1.62;
+        color: var(--chalk);
+      }
+      .term pre .cmt {
+        color: var(--slate);
+      }
+      .term pre .str {
+        color: var(--flow);
+      }
+      .tree pre {
+        font-size: 14px;
+      }
+      .tree pre .dir {
+        color: var(--flow);
+      }
+      .tree pre .note {
+        color: var(--slate);
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      .stat {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 22px 20px;
+      }
+      .stat b {
+        display: block;
+        font-family: var(--font-mono);
+        font-weight: 600;
+        font-size: clamp(30px, 4vw, 44px);
+        line-height: 1.1;
+        color: var(--chalk);
+      }
+      .stat span {
+        display: block;
+        margin-top: 8px;
+        color: var(--slate);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      @media (max-width: 720px) {
+        .stats {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      .ledger {
+        border-top: 1px solid var(--edge);
+        margin-top: 10px;
+      }
+      .lrow {
+        display: grid;
+        grid-template-columns: 250px 1fr;
+        gap: 24px;
+        padding: 24px 0;
+      }
+      @media (max-width: 768px) {
+        .lrow {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+      }
+      .lname {
+        font-family: var(--font-mono);
+        font-size: 14.5px;
+        color: var(--flow);
+        overflow-wrap: anywhere;
+      }
+      .lsub {
+        color: var(--slate);
+        font-size: 14px;
+        margin-top: 6px;
+        font-family: var(--font-mono);
+        overflow-wrap: anywhere;
+      }
+      .lrow p {
+        color: var(--slate);
+        font-size: 15.5px;
+      }
+      .lrow p + p {
+        margin-top: 8px;
+      }
+      .lrow code.path {
+        white-space: normal;
+      }
+
+      .callout {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-left: 3px solid var(--ask);
+        border-radius: 10px;
+        padding: 22px 24px;
+      }
+      .callout h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .callout h3 .icon {
+        color: var(--ask);
+      }
+      .callout p {
+        color: var(--slate);
+        font-size: 15.5px;
+      }
+      .callout p + p {
+        margin-top: 10px;
+      }
+      .callout .term {
+        margin-top: 16px;
+      }
+
+      .bento {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 14px;
+      }
+      .bcell {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 22px;
+      }
+      .bcell.tint {
+        background: var(--panel-2);
+      }
+      .bcell h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .bcell h3 .icon {
+        color: var(--flow);
+      }
+      .bcell p {
+        color: var(--slate);
+        font-size: 15px;
+      }
+      .bcell .term {
+        margin-top: 14px;
+      }
+      @media (max-width: 839px) {
+        .bcell {
+          grid-column: span 12 !important;
+        }
+      }
+      @media (min-width: 840px) {
+        .bcell.s7 {
+          grid-column: span 7;
+        }
+        .bcell.s5 {
+          grid-column: span 5;
+        }
+        .bcell.s8 {
+          grid-column: span 8;
+        }
+        .bcell.s4 {
+          grid-column: span 4;
+        }
+      }
+
+      .tl {
+        position: relative;
+        margin-top: 26px;
+        padding-left: 26px;
+        border-left: 2px solid var(--edge-strong);
+        display: grid;
+        gap: 26px;
+      }
+      .tl article {
+        position: relative;
+      }
+      .tl article::before {
+        content: "";
+        position: absolute;
+        left: -33px;
+        top: 7px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--void);
+        border: 2px solid var(--flow);
+      }
+      .tl .step-k {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.12em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      .tl h3 {
+        margin: 4px 0 6px;
+      }
+      .tl p {
+        color: var(--slate);
+        font-size: 15.5px;
+      }
+      .tl p + p {
+        margin-top: 8px;
+      }
+
+      .evidence {
+        display: grid;
+        gap: 26px;
+      }
+      @media (min-width: 840px) {
+        .evidence {
+          grid-template-columns: 1fr 1fr 1fr;
+        }
+      }
+      .evidence h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .evidence h3 .icon {
+        color: var(--flow);
+      }
+      .evidence ul {
+        list-style: none;
+        display: grid;
+        gap: 10px;
+        margin-top: 4px;
+      }
+      .evidence li {
+        color: var(--slate);
+        font-size: 14.5px;
+        line-height: 1.55;
+      }
+      .evidence li code.path {
+        white-space: normal;
+      }
+
+      .siblings {
+        margin-top: 34px;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 20px 22px;
+      }
+      .siblings p {
+        color: var(--slate);
+        font-size: 15px;
+      }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono,
+        h2 span,
+        h3 span,
+        p span {
+          overflow-wrap: anywhere;
+        }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path,
+        code,
+        .mono,
+        .k,
+        .who,
+        .chip,
+        .path-chip,
+        .file,
+        .fn,
+        .term,
+        .qno,
+        p span,
+        h2 span,
+        h3 span,
+        li span,
+        td,
+        th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre,
+        .terminal,
+        .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html">Risk control</a>
+          <a href="/status.html">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <!-- ================= HERO ================= -->
+      <section class="hero wrap">
+        <div class="hero-head">
+          <svg
+            class="icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+            <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2" />
+            <path d="M10 13l-1 2l1 2" />
+            <path d="M14 13l1 2l-1 2" />
+          </svg>
+          <div>
+            <p class="kicker">Contracts &amp; types</p>
+            <h1>The shared language that keeps every surface honest.</h1>
+            <p class="lede">
+              T3 Trade splits its shared language into two packages. One holds the trading domain's
+              types and the pure math that decides what is allowed. The other holds what crosses a
+              process boundary. Every surface speaks one of them, and neither will accept a vague
+              answer.
+            </p>
+          </div>
+        </div>
+        <div class="hero-meta">
+          <span>domain: <b>packages/trading-contracts</b></span>
+          <span>wire: <b>packages/contracts</b></span>
+          <span>schema: <b>Effect Schema</b></span>
+        </div>
+
+        <div class="ribbon-box">
+          <svg
+            viewBox="0 0 900 220"
+            role="img"
+            aria-label="A contract change in the shared packages fans out to the pure decider, the trading reactor, and the web and desktop clients"
+          >
+            <path
+              id="rc-p1"
+              class="edge-line"
+              d="M158,110 H248"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="rc-p2"
+              class="edge-line"
+              d="M408,110 C470,110 480,27 560,27"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="rc-p3"
+              class="edge-line"
+              d="M408,110 C470,110 480,82 560,82"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="rc-p4"
+              class="edge-line"
+              d="M408,110 C470,110 480,137 560,137"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+            <path
+              id="rc-p5"
+              class="edge-line"
+              d="M408,110 C470,110 480,192 560,192"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+            />
+
+            <g class="node-pulse">
+              <rect
+                x="8"
+                y="83"
+                width="150"
+                height="54"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="83"
+                y="105"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                type change
+              </text>
+              <text
+                x="83"
+                y="121"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                trading-contracts
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="248"
+                y="83"
+                width="160"
+                height="54"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="328"
+                y="105"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="11"
+              >
+                wire union
+              </text>
+              <text
+                x="328"
+                y="121"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                contracts / rpc.ts
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="560"
+                y="8"
+                width="200"
+                height="38"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="660"
+                y="24"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="10.5"
+              >
+                decider.ts
+              </text>
+              <text
+                x="660"
+                y="37"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                pure decision
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="560"
+                y="63"
+                width="200"
+                height="38"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="660"
+                y="79"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="10.5"
+              >
+                TradingMissionReactor
+              </text>
+              <text
+                x="660"
+                y="92"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                exchange writes
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="560"
+                y="118"
+                width="200"
+                height="38"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="660"
+                y="134"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="10.5"
+              >
+                useMissionControls
+              </text>
+              <text
+                x="660"
+                y="147"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                apps/web
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="560"
+                y="173"
+                width="200"
+                height="38"
+                rx="10"
+                fill="var(--panel)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="660"
+                y="189"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="10.5"
+              >
+                desktop
+              </text>
+              <text
+                x="660"
+                y="202"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                loads the web bundle
+              </text>
+            </g>
+
+            <circle r="3.5" fill="var(--flow)">
+              <animateMotion dur="1.8s" repeatCount="indefinite">
+                <mpath href="#rc-p1" />
+              </animateMotion>
+            </circle>
+            <circle r="3.5" fill="var(--flow)" opacity=".85">
+              <animateMotion dur="2.2s" begin="0.5s" repeatCount="indefinite">
+                <mpath href="#rc-p3" />
+              </animateMotion>
+            </circle>
+            <circle r="3.5" fill="var(--flow)" opacity=".7">
+              <animateMotion dur="2.2s" begin="1.3s" repeatCount="indefinite">
+                <mpath href="#rc-p5" />
+              </animateMotion>
+            </circle>
+          </svg>
+          <p class="ribbon-cap">
+            One contract change, four consumers. Editing a shared type in
+            <code class="path">packages/contracts/src/trading.ts</code> reaches the server decider,
+            the trading reactor, the web client, and the desktop shell in the same build, because
+            they all import the same schemas.
+          </p>
+        </div>
+      </section>
+
+      <!-- ================= TWO PACKAGES ================= -->
+      <section class="section wrap">
+        <div class="split">
+          <div class="reveal">
+            <h2>Two packages, two jobs.</h2>
+            <p>
+              <code class="path">packages/trading-contracts</code> defines the trading domain. It
+              contains types such as <code class="path">TradingAuthority</code>,
+              <code class="path">MarketRef</code>, and order intents. It also contains pure policy
+              and accounting functions that take already-reconciled, exchange-authoritative data and
+              return a verdict or number. These functions perform no IO, read no clocks, and call no
+              exchange APIs. The module doc is explicit: "Property tests pin every equation. The
+              functions take already-reconciled inputs (Hyperliquid is canonical, §18.2); they never
+              read the exchange" (<code class="path"
+                >packages/trading-contracts/src/lossAccounting.ts:15-18</code
+              >).
+            </p>
+            <p>
+              <code class="path">packages/contracts</code>, published as
+              <code class="path">@t3tools/contracts</code>, is the wire. Commands, events, and typed
+              WebSocket RPCs cross process boundaries through it: the server validates what clients
+              send, clients validate what the server pushes, and both sides fail to compile rather
+              than guess when a shape changes. A schema change here must be handled by every active
+              producer and consumer, which is the fan-out rule this page keeps returning to.
+            </p>
+            <p class="side-note">
+              The split is deliberate. Safety decisions live in pure functions you can
+              property-test, not in prompt prose or client state. The wire carries only what both
+              sides need to agree on.
+            </p>
+          </div>
+          <div class="reveal term tree" style="transition-delay: 80ms">
+            <div class="term-head">
+              <span class="dots"><i></i><i></i><i></i></span> two packages, mapped
+            </div>
+            <pre><span class="dir">packages/trading-contracts/</span>   <span class="note">domain + pure policy</span>
+  entry.ts            <span class="note">deriveFeasibleSize</span>
+  lossAccounting.ts   <span class="note">evaluateLossBudget</span>
+  stopAdjustment.ts   <span class="note">checkStopAdjustment</span>
+  authority.ts        <span class="note">TradingRiskPolicy</span>
+  execution.ts        <span class="note">order intent, cloid type</span>
+  primitives.ts       <span class="note">MarketRef, venue</span>
+
+<span class="dir">packages/contracts/</span>            <span class="note">the wire</span>
+  orchestration.ts    <span class="note">commands + events</span>
+  trading.ts          <span class="note">trading wire family</span>
+  rpc.ts              <span class="note">typed WS RPCs</span></pre>
+          </div>
+        </div>
+
+        <div class="stats reveal" style="margin-top: 56px">
+          <div class="stat">
+            <b>45</b
+            ><span
+              >event members in the <code class="path">OrchestrationEvent</code> union (<code
+                class="path"
+                >packages/contracts/src/orchestration.ts:1553</code
+              >)</span
+            >
+          </div>
+          <div class="stat">
+            <b>6</b
+            ><span
+              >equations in the §16.2 loss budget, all pinned by property tests (<code class="path"
+                >packages/trading-contracts/src/lossAccounting.ts:106-138</code
+              >)</span
+            >
+          </div>
+          <div class="stat">
+            <b>16</b
+            ><span
+              >bytes in a deterministic cloid: SHA-256 truncated, hex as
+              <code class="path">0x</code> plus 32 chars (<code class="path"
+                >packages/trading-contracts/src/execution.ts:75-88</code
+              >)</span
+            >
+          </div>
+          <div class="stat">
+            <b>94</b
+            ><span
+              >numbered migrations so far, <code class="path">001</code> through
+              <code class="path">094_TradingControlResults.ts</code> (<code class="path"
+                >apps/server/src/persistence/Migrations/</code
+              >)</span
+            >
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= PURE FUNCTIONS ================= -->
+      <section class="section wrap">
+        <div class="reveal">
+          <h2>The core policy functions.</h2>
+          <p>
+            Three pure functions enforce the main policies in
+            <code class="path">trading-contracts</code>. Each accepts data the caller has already
+            read, so its limits can be tested without connecting to the exchange (<code class="path"
+              >packages/trading-contracts/src/entry.ts:116-118</code
+            >).
+          </p>
+        </div>
+
+        <div class="ledger reveal">
+          <div class="lrow">
+            <div>
+              <div class="lname">deriveFeasibleSize</div>
+              <div class="lsub">packages/trading-contracts/src/entry.ts:221</div>
+            </div>
+            <div>
+              <p>
+                Position sizing takes the minimum. The submitted size is the smallest of the size
+                requested by the agent runtime, called the harness in code, and five named ceilings:
+                <code class="path">gross_notional</code>, <code class="path">leverage</code>,
+                <code class="path">planned_loss_ceiling</code>,
+                <code class="path">loss_budget</code>, and
+                <code class="path">account_margin</code> when the account's own capacity is known.
+                The result is truncated toward zero at the exchange's base-unit precision (<code
+                  class="path"
+                  >entry.ts:208-211</code
+                >), so a size never rounds up past a ceiling.
+              </p>
+              <p>
+                Two validations run before the sizing math. A stop on the wrong side of entry
+                returns <code class="path">stop_on_wrong_side</code> before any arithmetic runs
+                (<code class="path">entry.ts:226-241</code>). And a size that was asked for is a
+                ceiling, not a suggestion: "Nothing below raises it" (<code class="path"
+                  >entry.ts:283-287</code
+                >). The harness's only lever for taking less risk than the mandate allows is the
+                number it puts in the request.
+              </p>
+            </div>
+          </div>
+          <div class="lrow">
+            <div>
+              <div class="lname">evaluateLossBudget</div>
+              <div class="lsub">packages/trading-contracts/src/lossAccounting.ts:106</div>
+            </div>
+            <div>
+              <p>
+                Spec §16.2 as six equations. Realized mission result is closed PnL plus net funding
+                minus all paid fees; realized loss used is clamped at zero, so a profitable mission
+                lowers loss-used but never raises the ceiling; open positions and pending entries
+                add their reserved risk; remaining is floored at zero; and
+                <code class="path">exhausted</code> flips when remaining reaches zero (<code
+                  class="path"
+                  >lossAccounting.ts:106-138</code
+                >).
+              </p>
+              <p>
+                Under exhaustion, only <code class="path">cancel</code>,
+                <code class="path">reduce</code>, <code class="path">close</code>, and
+                <code class="path">modify_stop</code> pass. The comment says why: §16.4 "blocks
+                taking on risk, not managing the risk already open" (<code class="path"
+                  >lossAccounting.ts:145-158</code
+                >).
+              </p>
+            </div>
+          </div>
+          <div class="lrow">
+            <div>
+              <div class="lname">checkStopAdjustment</div>
+              <div class="lsub">packages/trading-contracts/src/stopAdjustment.ts:148</div>
+            </div>
+            <div>
+              <p>
+                Stop movement as staged refusals, in a fixed order chosen so the most fundamental
+                objection wins: <code class="path">wrong_side</code>, then
+                <code class="path">risk_envelope</code>, then
+                <code class="path">breakeven_ratchet</code>, then
+                <code class="path">step_too_large</code>, <code class="path">noise_floor</code>,
+                <code class="path">target_encroachment</code>, and finally
+                <code class="path">adjustment_budget</code> (<code class="path"
+                  >stopAdjustment.ts:148-234</code
+                >).
+              </p>
+              <p>
+                The ratchet is the memorable one. Once a stop has crossed to the winning side of
+                entry it stays there: "A trade that can no longer lose does not get to become one
+                that can again" (<code class="path">stopAdjustment.ts:179-180</code>). Comparisons
+                use a <code class="path">PRICE_EPSILON</code> of 1e-9 so a stop moved exactly to a
+                cap is not refused by floating-point residue (<code class="path"
+                  >stopAdjustment.ts:236-241</code
+                >).
+              </p>
+            </div>
+          </div>
+          <div class="lrow">
+            <div>
+              <div class="lname">openPositionRisk</div>
+              <div class="lsub">packages/trading-contracts/src/lossAccounting.ts:47</div>
+            </div>
+            <div>
+              <p>
+                Missing values do not invent directional risk. When a stop or weighted entry is
+                missing, the directional loss-to-stop term contributes zero rather than full
+                notional. Booking a missing stop as a zero price would book the entire notional of a
+                long against the budget and exhaust it instantly. Instead "a missing stop is
+                reported honestly as 'no directional risk reserved,' never as 'maximum risk'" (<code
+                  class="path"
+                  >lossAccounting.ts:33-59</code
+                >). Fees and slippage still count; only the unknown term is zero.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="term reveal" style="margin-top: 20px">
+          <div class="term-head">
+            <span class="dots"><i></i><i></i><i></i></span> entry.ts:243-289 · every ceiling as a
+            size, the smallest one wins
+          </div>
+          <pre>const caps = [
+  { by: <span class="str">"gross_notional"</span>, size: notionalHeadroom(input.maximumGrossNotionalUsd) },
+  ...(input.accountMarginCapacityUsd === undefined
+    ? []
+    : [{ by: <span class="str">"account_margin"</span>, size: notionalHeadroom(input.accountMarginCapacityUsd) }]),
+  { by: <span class="str">"leverage"</span>, size: notionalHeadroom(input.maximumLeverage * input.allocatedCapitalUsd) },
+  { by: <span class="str">"planned_loss_ceiling"</span>, size: input.maximumPlannedRiskPerPositionUsd / stopDistance },
+  { by: <span class="str">"loss_budget"</span>, size: Math.max(0, input.remainingCumulativeLossUsd) / reservedRiskPerUnit },
+];
+const binding = caps.reduce((tightest, cap) =&gt; (cap.size &lt; tightest.size ? cap : tightest));
+<span class="cmt">// "A size that was asked for is a CEILING, not a suggestion."</span>
+const allowed = Math.min(requestedSize, binding.size);</pre>
+        </div>
+      </section>
+
+      <!-- ================= THE LAW ================= -->
+      <section class="section wrap">
+        <div class="callout reveal">
+          <h3>
+            <svg
+              class="icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"
+              />
+              <path d="M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+              <path d="M12 12l0 2.5" />
+            </svg>
+            The law the schema itself enforces
+          </h3>
+          <p>
+            Most safety rules are a boolean someone could flip. This one is a type.
+            <code class="path">positivePnlExpandsLossBudget</code> is not declared as
+            <code class="path">Schema.Boolean</code>; it is
+            <code class="path">Schema.Literal(false)</code>. The only value accepted by the current
+            schema is false, so configuration and persisted data cannot enable profit-funded risk
+            expansion. Enabling it would require an explicit code and schema change (<code
+              class="path"
+              >packages/trading-contracts/src/authority.ts:37-43</code
+            >).
+          </p>
+          <p>
+            The accounting honors it implicitly: a positive result drives loss-used toward zero
+            through the <code class="path">max(0, -result)</code> clamp and "never raises
+            maximumCumulativeLossUsd" (<code class="path"
+              >packages/trading-contracts/src/lossAccounting.ts:100-112</code
+            >). The defaults agree: fee rate from
+            <code class="path">hyperliquid_user_fees</code> with a 5 bps per-side fallback, 25 bps
+            stop-slippage reserve, and
+            <code class="path">positivePnlExpandsLossBudget: false</code> (<code class="path"
+              >authority.ts:105-110</code
+            >).
+          </p>
+          <div class="term">
+            <div class="term-head">
+              <span class="dots"><i></i><i></i><i></i></span> authority.ts:37-43
+            </div>
+            <pre>export const TradingRiskPolicy = Schema.Struct({
+  feeRateSource: Schema.Literal(<span class="str">"hyperliquid_user_fees"</span>),
+  fallbackTakerFeeBpsPerSide: Schema.Number,
+  stopSlippageReserveBps: Schema.Number,
+  positivePnlExpandsLossBudget: Schema.Literal(false), <span class="cmt">// not Boolean. false is the only inhabitant.</span>
+});</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= WIRE SHAPE ================= -->
+      <section class="section wrap">
+        <div class="reveal">
+          <h2>What crosses the boundary.</h2>
+          <p>
+            The wire package separates what a client may dispatch from what only the server may
+            raise. That split is visible in three places: the command unions, the event base fields,
+            and the typed RPCs.
+          </p>
+        </div>
+
+        <div class="bento" style="margin-top: 26px">
+          <div class="bcell tint s7 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+                <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2" />
+                <path d="M10 13l-1 2l1 2" />
+                <path d="M14 13l1 2l-1 2" />
+              </svg>
+              Command unions, split by trust
+            </h3>
+            <p>
+              <code class="path">ClientOrchestrationCommand</code> is 23 project and thread command
+              shapes plus <code class="path">DispatchableTradingCommand</code>, the trading family a
+              client may send. <code class="path">InternalOrchestrationCommand</code> is 8
+              server-raised shapes plus <code class="path">InternalTradingCommand</code>: session
+              writes, assistant deltas, revert completion, mission status changes. The full
+              <code class="path">OrchestrationCommand</code> union is both, but only the client
+              union is accepted from a socket (<code class="path"
+                >packages/contracts/src/orchestration.ts:1089-1236</code
+              >).
+            </p>
+            <div class="term">
+              <div class="term-head">
+                <span class="dots"><i></i><i></i><i></i></span> orchestration.ts:1118-1236, elided
+              </div>
+              <pre>export const ClientOrchestrationCommand = Schema.Union([
+  ProjectCreateCommand,
+  ThreadCreateCommand,
+  <span class="cmt">/* 21 more project and thread commands */</span>
+  DispatchableTradingCommand,
+]);
+
+const InternalOrchestrationCommand = Schema.Union([
+  ThreadSessionSetCommand,
+  ThreadMessageAssistantDeltaCommand,
+  <span class="cmt">/* 6 more server-raised commands */</span>
+  InternalTradingCommand,
+]);
+
+export const OrchestrationCommand = Schema.Union([
+  DispatchableClientOrchestrationCommand,
+  InternalOrchestrationCommand,
+]);</pre>
+            </div>
+          </div>
+
+          <div class="bcell s5 reveal" style="transition-delay: 80ms">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12h4l3 8l4 -16l3 8h4" />
+              </svg>
+              Every event carries its own trail
+            </h3>
+            <p>
+              Each of the 45 event members spreads <code class="path">EventBaseFields</code>: a
+              global <code class="path">sequence</code>, its own <code class="path">eventId</code>,
+              the aggregate it belongs to, and three correlation handles, plus metadata that can
+              name the client origin (<code class="path">surface</code>,
+              <code class="path">appVersion</code>) the engine stamps after the decider returns
+              (<code class="path">orchestration.ts:1520-1551</code>). The decider stays pure;
+              attribution is an engine concern.
+            </p>
+            <div class="term">
+              <div class="term-head">
+                <span class="dots"><i></i><i></i><i></i></span> orchestration.ts:1541-1551
+              </div>
+              <pre>const EventBaseFields = {
+  sequence: NonNegativeInt,
+  eventId: EventId,
+  aggregateKind: OrchestrationAggregateKind,
+  aggregateId: Schema.Union([ProjectId, ThreadId, TradingMissionId]),
+  occurredAt: IsoDateTime,
+  commandId: Schema.NullOr(CommandId),
+  causationEventId: Schema.NullOr(EventId),
+  correlationId: Schema.NullOr(CommandId),
+  metadata: OrchestrationEventMetadata,
+} <span class="str">as const</span>;</pre>
+            </div>
+          </div>
+
+          <div class="bcell s7 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 13h5" />
+                <path d="M12 16v-8h3a2 2 0 0 1 2 2v1a2 2 0 0 1 -2 2h-3" />
+                <path d="M20 8v8" />
+                <path d="M9 16v-5.5a2.5 2.5 0 0 0 -5 0v5.5" />
+              </svg>
+              Typed RPCs, built on Effect
+            </h3>
+            <p>
+              Every WebSocket call is an <code class="path">Rpc.make</code> definition with a
+              payload schema, a success schema, and an error union. Dispatching a command returns a
+              <code class="path">DispatchResult</code> whose first field is
+              <code class="path">sequence</code>: proof the command found its place in the ordered
+              stream, and deliberately not proof of any outcome (<code class="path"
+                >packages/contracts/src/rpc.ts:906-913</code
+              >, <code class="path">orchestration.ts:1858-1866</code>).
+            </p>
+            <div class="term">
+              <div class="term-head">
+                <span class="dots"><i></i><i></i><i></i></span> rpc.ts:906-913
+              </div>
+              <pre>export const WsOrchestrationDispatchCommandRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.dispatchCommand,
+  {
+    payload: ClientOrchestrationCommand,
+    success: OrchestrationRpcSchemas.dispatchCommand.output, <span class="cmt">// DispatchResult { sequence, ... }</span>
+    error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+  },
+);</pre>
+            </div>
+          </div>
+
+          <div class="bcell tint s5 reveal" style="transition-delay: 80ms">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+                <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+                <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" />
+              </svg>
+              One member, on purpose
+            </h3>
+            <p>
+              <code class="path">TradingVenue = Schema.Literals(["hyperliquid"])</code>. A
+              one-member enum sounds redundant until you read why it exists: every market identity
+              already carries its venue, "so that adding a second one is a data question rather than
+              a rewrite" (<code class="path"
+                >packages/trading-contracts/src/primitives.ts:73-85</code
+              >). The data model records the venue now, but the code does not add multi-venue
+              abstractions before a second venue exists.
+            </p>
+            <p>
+              The same restraint shows in <code class="path">TradingMarket</code>: it used to be the
+              literals <code class="path">"ETH" | "BTC"</code>, and is now an opaque string, because
+              Hyperliquid's <code class="path">MarketResolver</code> already decides whether an
+              asset exists (<code class="path">primitives.ts:87-99</code>).
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= FAN-OUT WORKED EXAMPLE ================= -->
+      <section class="section wrap">
+        <div class="reveal">
+          <h2>One command, every layer.</h2>
+          <p>
+            The fan-out rule says a schema change must be handled by every active producer and
+            consumer. Here is what that means in practice: the full life of one
+            <code class="path">trading.mission.risk-control</code> press, from a workspace button to
+            the correlated result event.
+          </p>
+        </div>
+
+        <div class="tl reveal">
+          <article>
+            <div class="step-k">press · apps/web</div>
+            <h3>The button does not trust its own dispatch</h3>
+            <p>
+              <code class="path">useMissionControls</code> binds one dispatcher per control and
+              keeps the press pending until a durable result arrives. Its module doc states the rule
+              as RC06: "a dispatched command only proves the request was accepted" (<code
+                class="path"
+                >apps/web/src/components/trading/useMissionControls.ts:14</code
+              >, the hook at <code class="path">useMissionControls.ts:126</code>, the risk
+              dispatcher at <code class="path">useMissionControls.ts:131</code>). §14.7 defines
+              these controls so a workspace button invokes them directly, with no harness turn and
+              no dependency on the bound provider being online (<code class="path"
+                >packages/contracts/src/trading.ts:1226-1235</code
+              >).
+            </p>
+          </article>
+          <article>
+            <div class="step-k">mint · client-runtime</div>
+            <h3>A typed command is born</h3>
+            <p>
+              <code class="path">tradingRiskControl</code> mints a fresh
+              <code class="path">commandId</code> and <code class="path">createdAt</code>, then
+              dispatches the <code class="path">trading.mission.risk-control</code> member with the
+              mission, thread, control, and an optional
+              <code class="path">reductionPercent</code> for
+              <code class="path">reduce_position</code> (<code class="path"
+                >packages/client-runtime/src/operations/commands.ts:449-462</code
+              >). The command struct itself is a schema (<code class="path"
+                >packages/contracts/src/trading.ts:1236-1245</code
+              >).
+            </p>
+          </article>
+          <article>
+            <div class="step-k">wire · packages/contracts</div>
+            <h3>It crosses as a union member, and comes back as a number</h3>
+            <p>
+              The command travels inside
+              <code class="path">ClientOrchestrationCommand</code> through
+              <code class="path">WsOrchestrationDispatchCommandRpc</code>. The success reply is a
+              <code class="path">DispatchResult</code> led by
+              <code class="path">sequence</code> (<code class="path"
+                >packages/contracts/src/rpc.ts:906-913</code
+              >). At this point the client knows only that the request landed in the ordered stream.
+            </p>
+          </article>
+          <article>
+            <div class="step-k">decide · apps/server</div>
+            <h3>The decider asks, and refuses to answer</h3>
+            <p>
+              The pure decider maps the command to a
+              <code class="path">trading.mission-risk-control-requested</code> event. It
+              deliberately resolves no target status here, because "what the mission becomes depends
+              on what the exchange does, so the reactor decides it after the fact" (<code
+                class="path"
+                >apps/server/src/orchestration/decider.ts:1475-1499</code
+              >). The event is persisted before any side effect runs.
+            </p>
+          </article>
+          <article>
+            <div class="step-k">act · apps/server</div>
+            <h3>The reactor does the exchange work, then reports</h3>
+            <p>
+              <code class="path">TradingMissionReactor</code> answers the question. Its module doc:
+              the decider's <code class="path">*-requested</code> event "is a question, not an
+              answer", and the ordering is the whole point, because "The UI never sees a status the
+              domain refused" (<code class="path"
+                >apps/server/src/trading/TradingMissionReactor.ts:4-10</code
+              >). When the exchange work completes, fails, or cannot be confirmed, it raises the
+              internal <code class="path">trading.mission.control-result</code> command.
+            </p>
+          </article>
+          <article>
+            <div class="step-k">correlate · every client</div>
+            <h3>The result names the press that caused it</h3>
+            <p>
+              The control-result payload carries <code class="path">requestEventSequence</code>: the
+              sequence of the requested event the reactor answered, "so a client can correlate the
+              result to the press that caused it and ignore results belonging to another request"
+              (<code class="path">packages/contracts/src/trading.ts:1247-1257</code>, payload at
+              <code class="path">trading.ts:1628-1645</code>). Status is one of
+              <code class="path">completed</code>, <code class="path">failed</code>, or
+              <code class="path">unknown</code>, because an exchange that timed out is an honest
+              state, not a guess.
+            </p>
+          </article>
+          <article>
+            <div class="step-k">same code · apps/desktop</div>
+            <h3>Desktop inherits the whole path</h3>
+            <p>
+              The desktop shell loads the web app in its window (<code class="path"
+                >apps/desktop/src/window/DesktopWindow.ts:623</code
+              >) and builds on the same <code class="path">@t3tools/client-runtime</code>. There is
+              no second trading producer to update, which is exactly why the fan-out rule matters:
+              one contract edit reaches every file on this timeline in one rebuild, and misses none
+              of them.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <!-- ================= IDEMPOTENCY ================= -->
+      <section class="section wrap">
+        <div class="reveal">
+          <h2>Idempotency in three layers.</h2>
+          <p>
+            Retries are a fact of network life. The contracts make each retry land somewhere safe:
+            at the command layer, at the exchange layer, and at the wake layer.
+          </p>
+        </div>
+
+        <div class="ledger reveal">
+          <div class="lrow">
+            <div>
+              <div class="lname">sticky command receipts</div>
+              <div class="lsub">
+                apps/server/src/orchestration/Layers/OrchestrationEngine.ts:149-177
+              </div>
+            </div>
+            <div>
+              <p>
+                Replaying an accepted <code class="path">commandId</code> returns the original
+                result sequence, not a second execution. A rejected one fails forever after with
+                <code class="path">OrchestrationCommandPreviouslyRejectedError</code>: a rejection
+                is sticky. And a receipt aimed at a different aggregate raises
+                <code class="path">OrchestrationCommandIdConflictError</code>, because "A receipt
+                only proves this exact command was handled" for that aggregate. Replaying it
+                elsewhere would report success for work that never happened.
+              </p>
+            </div>
+          </div>
+          <div class="lrow">
+            <div>
+              <div class="lname">deterministic cloids</div>
+              <div class="lsub">packages/trading-contracts/src/execution.ts:75-88</div>
+            </div>
+            <div>
+              <p>
+                Every execution derives its client order id from SHA-256 over
+                <code class="path">missionId</code>, <code class="path">executionSequence</code>,
+                and <code class="path">actionType</code>, truncated to 16 bytes and hex-encoded with
+                the <code class="path">0x</code> prefix the exchange validates. Retries of the same
+                action reuse every input, so they reuse the cloid.
+              </p>
+              <p>
+                One nuance from the implementation: "A cloid is a correlation id, not an idempotency
+                key." Retry safety belongs to the executor, which refuses to resubmit a record that
+                already reached the exchange; the stable cloid is what lets a fill be joined back to
+                the execution that caused it (<code class="path"
+                  >packages/hyperliquid/src/Cloid.ts:4-14</code
+                >). The prefix is load-bearing: an unprefixed cloid was once silently stored as
+                <code class="path">null</code> by the exchange, leaving a fill unjoinable to its own
+                entry (<code class="path">Cloid.ts:20-23</code>).
+              </p>
+            </div>
+          </div>
+          <div class="lrow">
+            <div>
+              <div class="lname">inbox deduplication</div>
+              <div class="lsub">
+                apps/server/src/persistence/Migrations/035_TradingDomain.ts:154-159
+              </div>
+            </div>
+            <div>
+              <p>
+                Watch fires and other wake sources land in a table with a unique index on
+                <code class="path">(mission_id, deduplication_key)</code>, so "reconnects and
+                replays drop duplicates before they generate a second wake-up". A watch fires
+                exactly once even when the market feed reconnects mid-evaluation.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="term reveal" style="margin-top: 20px">
+          <div class="term-head">
+            <span class="dots"><i></i><i></i><i></i></span> execution.ts:87 ·
+            035_TradingDomain.ts:156-159
+          </div>
+          <pre>export const TradingCloid = Schema.String.check(Schema.isPattern(<span class="str">/^0x[0-9a-f]{32}$/</span>));
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_event_inbox_dedupe
+ON trading_event_inbox (mission_id, deduplication_key)</pre>
+        </div>
+      </section>
+
+      <!-- ================= EVOLUTION ================= -->
+      <section class="section wrap">
+        <div class="reveal">
+          <h2>Growing the language without breaking it.</h2>
+          <p>
+            A shared schema is a promise to old data. Four habits keep that promise while the system
+            keeps changing.
+          </p>
+        </div>
+
+        <div class="tl reveal">
+          <article>
+            <div class="step-k">habit 1</div>
+            <h3>Additive optionality</h3>
+            <p>
+              New fields arrive as <code class="path">Schema.optional</code>. The
+              <code class="path">maxWakes</code> budget on an authority version is the pattern in
+              one sentence: absent means unlimited, and "every mission created before this field
+              existed keeps its old behavior" (<code class="path"
+                >packages/trading-contracts/src/authority.ts:85-94</code
+              >). Old rows decode; new rows carry more.
+            </p>
+          </article>
+          <article>
+            <div class="step-k">habit 2</div>
+            <h3>Numbered migrations</h3>
+            <p>
+              Every durable shape change is a numbered file, 94 so far, from
+              <code class="path">001_OrchestrationEvents.ts</code> through
+              <code class="path">094_TradingControlResults.ts</code> (<code class="path"
+                >apps/server/src/persistence/Migrations/</code
+              >). The sequence is the audit trail: when a behavior changed and which tables it
+              touched is answerable from the directory listing alone.
+            </p>
+          </article>
+          <article>
+            <div class="step-k">habit 3</div>
+            <h3>Deprecated events stay decodable</h3>
+            <p>
+              A retired event is not deleted from the union. It stays so event stores written by
+              older builds still decode, and the projector simply ignores it (<code class="path"
+                >packages/contracts/src/orchestration.ts:1634-1640</code
+              >). Removing it would make the event store unreadable at the exact row that predates
+              the removal.
+            </p>
+          </article>
+          <article>
+            <div class="step-k">habit 4</div>
+            <h3>Tolerance readers for old payloads</h3>
+            <p>
+              Persisted JSON that predates a schema axis is read through a reader that knows both
+              shapes. <code class="path">decodeMarketRef</code> still accepts a bare
+              <code class="path">"ETH"</code> from rows written before venues existed, reading it as
+              the default venue, while new payloads carry the full pair (<code class="path"
+                >packages/trading-contracts/src/primitives.ts:125-142</code
+              >).
+            </p>
+          </article>
+        </div>
+
+        <div class="term reveal" style="margin-top: 22px">
+          <div class="term-head">
+            <span class="dots"><i></i><i></i><i></i></span> orchestration.ts:1634-1640 ·
+            primitives.ts:131-132
+          </div>
+          <pre><span class="cmt">// Deprecated: no emitter remains. Kept only so event stores written by</span>
+<span class="cmt">// older builds still decode; the projector ignores it.</span>
+Schema.Struct({
+  ...EventBaseFields,
+  type: Schema.Literal(<span class="str">"thread.workspace-mode-set"</span>),
+  ...
+}),
+
+export const decodeMarketRef = (value: unknown): MarketRef | null =&gt; {
+  <span class="cmt">// a bare "ETH" means Hyperliquid, because that is the only venue</span>
+  <span class="cmt">// there has ever been. New payloads carry the pair and decode unchanged.</span>
+  if (typeof value === <span class="str">"string"</span> &amp;&amp; value.trim().length &gt; 0) return marketRef(value.trim());</pre>
+        </div>
+      </section>
+
+      <!-- ================= ACCOUNTING TRUTHS ================= -->
+      <section class="section wrap">
+        <div class="split">
+          <div class="reveal">
+            <h2>Accounting the contracts refuse to get wrong.</h2>
+            <p>
+              Fees are never counted twice. Paid entry fees already live inside the realized mission
+              result, so they are not also reserved as unpaid open-position fees; a queued entry
+              reserves both estimated entry and exit fees because neither has been paid yet, and a
+              filled position reserves only what remains unpaid (<code class="path"
+                >packages/trading-contracts/src/lossAccounting.ts:6-14</code
+              >).
+            </p>
+            <p>
+              <code class="path">closedPnl</code> is always the exchange's attribution, never a
+              number T3 computes. The per-fill field is documented as the "Realised PnL the exchange
+              attributed to this fill (§16.2 closedPnl)" (<code class="path"
+                >packages/contracts/src/trading.ts:133</code
+              >). Local code reconciles toward that truth; it does not rival it. How that
+              convergence runs is the <a href="/reconciliation.html">Reconciliation</a> story.
+            </p>
+            <p>
+              And the rounding policy errs toward exactness: precision is applied by field name, at
+              significant figures, so "A field that is forgotten stays exact, which is the safe
+              direction to be wrong in" (<code class="path"
+                >packages/trading-contracts/src/precision.ts:1-56</code
+              >).
+            </p>
+          </div>
+          <div class="reveal term" style="transition-delay: 80ms">
+            <div class="term-head">
+              <span class="dots"><i></i><i></i><i></i></span> lossAccounting.ts:106-122 · the first
+              two equations
+            </div>
+            <pre>export function evaluateLossBudget(input: LossBudgetInput): TradingLossBudget {
+  <span class="cmt">// Eq 1: realised mission result = closedPnl + netFunding - allPaidFees.</span>
+  const realizedMissionResultUsd =
+    input.closedPnlUsd + input.netFundingUsd - input.allPaidTradingFeesUsd;
+
+  <span class="cmt">// Eq 2: realised loss used = max(0, -result). Profits clamp this to zero.</span>
+  const realizedLossUsedUsd = max0(-realizedMissionResultUsd);
+
+  ...
+
+  <span class="cmt">// Eq 6: remaining = max(0, ceiling - used). Never negative.</span>
+  const remainingCumulativeLossUsd =
+    max0(input.maximumCumulativeLossUsd - lossBudgetUsedUsd);</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= GO DEEPER ================= -->
+      <section class="section wrap">
+        <div class="reveal">
+          <h2>Go deeper.</h2>
+          <p>
+            Every file below was read for this page. Start with the two that carry the most policy
+            per line.
+          </p>
+        </div>
+
+        <div class="evidence reveal" style="margin-top: 26px">
+          <div>
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12" />
+                <path d="M19 16h-12a2 2 0 0 0 -2 2" />
+                <path d="M9 8h6" />
+              </svg>
+              Pure deciders
+            </h3>
+            <ul>
+              <li>
+                Sizing and the five ceilings:
+                <code class="path">packages/trading-contracts/src/entry.ts:116-337</code>
+              </li>
+              <li>
+                The six budget equations:
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:1-158</code>
+              </li>
+              <li>
+                Staged stop refusals:
+                <code class="path">packages/trading-contracts/src/stopAdjustment.ts:140-241</code>
+              </li>
+              <li>
+                Mandate ceilings and defaults:
+                <code class="path">packages/trading-contracts/src/authority.ts:37-189</code>
+              </li>
+              <li>
+                Versioned policy, V3 active:
+                <code class="path">packages/trading-contracts/src/policy.ts:272-289</code>
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+                <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+                <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" />
+              </svg>
+              The wire
+            </h3>
+            <ul>
+              <li>
+                Command and event unions:
+                <code class="path">packages/contracts/src/orchestration.ts:1089-1782</code>
+              </li>
+              <li>
+                Trading wire family:
+                <code class="path">packages/contracts/src/trading.ts:1188-1318</code>
+              </li>
+              <li>
+                Typed WS RPCs: <code class="path">packages/contracts/src/rpc.ts:906-913</code>
+              </li>
+              <li>
+                Cloid type and contract:
+                <code class="path">packages/trading-contracts/src/execution.ts:49-88</code>
+              </li>
+              <li>
+                Cloid derivation: <code class="path">packages/hyperliquid/src/Cloid.ts:1-60</code>
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+                <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2" />
+                <path d="M10 13l-1 2l1 2" />
+                <path d="M14 13l1 2l-1 2" />
+              </svg>
+              Fan-out touchpoints
+            </h3>
+            <ul>
+              <li>
+                Client command builder:
+                <code class="path">packages/client-runtime/src/operations/commands.ts:449-462</code>
+              </li>
+              <li>
+                Web press handling:
+                <code class="path"
+                  >apps/web/src/components/trading/useMissionControls.ts:14-131</code
+                >
+              </li>
+              <li>
+                Server decider case:
+                <code class="path">apps/server/src/orchestration/decider.ts:1475-1499</code>
+              </li>
+              <li>
+                Reactor answering:
+                <code class="path">apps/server/src/trading/TradingMissionReactor.ts:1-18</code>
+              </li>
+              <li>
+                Desktop loading the web bundle:
+                <code class="path">apps/desktop/src/window/DesktopWindow.ts:623</code>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="siblings reveal">
+          <p>
+            <strong>Neighbors in the atlas:</strong> the
+            <a href="/architecture.html">Event spine</a> page shows the engine that orders these
+            events; <a href="/execution.html">Execution</a> follows an intent to a signed order;
+            <a href="/risk.html">Risk control</a> walks the budget gates these equations feed;
+            <a href="/signer.html">Signer &amp; authority</a> covers who may sign what the contracts
+            permit; <a href="/providers.html">Provider adapters</a> translate agent protocols at the
+            boundary; and <a href="/invariants.html">Safety invariants</a> collects the laws,
+            including the literal one.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/status.html">See the board</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/reconciliation.html">← Reconciliation</a>
+          <a href="/signer.html">Signer &amp; authority →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document
+          .querySelectorAll("animateMotion, animate")
+          .forEach((a) => a.setAttribute("begin", "indefinite"));
+      }
+    </script>
+    <script>
+      (() => {
+        const els = document.querySelectorAll(".reveal");
+        if (
+          !("IntersectionObserver" in window) ||
+          matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach((el) => el.classList.add("in"));
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e, i) => {
+              if (e.isIntersecting) {
+                e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      })();
+    </script>
+  </body>
+</html>

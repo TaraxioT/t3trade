@@ -18,6 +18,7 @@
  * @module TradingMissionReactor
  */
 import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
+import type { TradingRiskControl } from "@t3tools/contracts";
 import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
@@ -45,6 +46,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -77,7 +79,11 @@ import { LOCAL_TRADING_ACCOUNT_ID } from "./TradingAccountBootstrap.ts";
 import { recordTakeProfitOutcome } from "./TradingProtectionLedger.ts";
 import { TradingProtectionService, withinManualEntryGrace } from "./TradingProtectionService.ts";
 import { TradingWorkingOrderService } from "./TradingWorkingOrderService.ts";
-import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
+import {
+  describeEmergencyCloseOutcome,
+  TradingEmergencyCloseService,
+  type EmergencyCloseOutcome,
+} from "./TradingEmergencyCloseService.ts";
 import { TradingControlService } from "./TradingControlService.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
@@ -143,6 +149,18 @@ export const LOCAL_TRADING_USER_ID = "local";
  * its first line; that first line is the part the harness needs and the part
  * that fits an inbox summary. The whole rendering is kept on the event payload.
  */
+/** The per-market facts of a control result, as the projection row stores them (RC06). */
+const ControlMarketsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      market: Schema.String,
+      outcome: Schema.String,
+      positionSize: Schema.NullOr(Schema.Number),
+    }),
+  ),
+);
+const controlMarketsJson = Schema.encodeSync(ControlMarketsJson);
+
 const describeRefusal = (cause: Cause.Cause<unknown>): string => {
   const failure = Cause.squash(cause);
   const message = failure instanceof Error ? failure.message : String(failure);
@@ -318,6 +336,90 @@ const make = Effect.gen(function* () {
       createdAt: yield* nowIso,
     });
   });
+
+  /**
+   * §17.5's result, made to survive its caller (RC04). Every emergency-close
+   * call site funnels through here so the operator-visible truth is the same
+   * at all three: the outcome notice is persisted to the mission inbox under
+   * an event-derived identity — a replayed trigger collapses instead of
+   * duplicating — and "blocked" is announced only when the block is a
+   * confirmed fact: the emergency service's own transition write, or a fresh
+   * authoritative read that already says blocked. Anything else gets an
+   * explicit uncertainty notice; a status-set dispatched for an unconfirmed
+   * block is how a mission reads "safe" while nothing actually stopped it.
+   */
+  const recordEmergencyClose = Effect.fn("TradingMissionReactor.recordEmergencyClose")(
+    function* (input: {
+      readonly missionId: TradingMissionId;
+      readonly threadId: ThreadId;
+      readonly market: string;
+      /**
+       * Stable per triggering event — the execution sequence for harness
+       * intents, the watchdog tick for a protection pass — so a replayed
+       * delivery deduplicates instead of recording twice.
+       */
+      readonly triggerKey: string;
+      readonly outcome: EmergencyCloseOutcome;
+    }) {
+      const { missionId, threadId, market, triggerKey, outcome } = input;
+      const notice = describeEmergencyCloseOutcome(market, outcome);
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* inbox
+        .persist({
+          missionId,
+          category: "exchange",
+          deduplicationKey: `emergency_close:${market}:${triggerKey}`,
+          payload: {
+            market,
+            flat: outcome.flat,
+            remainingSize: outcome.remainingSize,
+            blockWriteConfirmed: outcome.blockWriteConfirmed,
+            unconfirmedCancels: outcome.unconfirmedCancellations.map((entry) => entry.cloid),
+          },
+          occurredAt,
+          summary: notice,
+        })
+        .pipe(Effect.ignore);
+
+      if (outcome.blockWriteConfirmed) {
+        yield* announceStatus({ missionId, threadId, status: "blocked" });
+        return notice;
+      }
+      // The block write did not land. Announce blocked only if the mission
+      // demonstrably is blocked anyway (the exhaustion path, an operator…);
+      // the fresh read is the authority, and its failure is not a guess.
+      const current = yield* missions.getMission(missionId).pipe(Effect.result);
+      if (Result.isSuccess(current)) {
+        if (current.success.status === "blocked") {
+          yield* announceStatus({ missionId, threadId, status: "blocked" });
+          return notice;
+        }
+        yield* Effect.logError(
+          "trading emergency close could not confirm the mission block; status left as-is",
+          { missionId, market, status: current.success.status },
+        );
+        return notice;
+      }
+      yield* Effect.logError(
+        "trading emergency close could not confirm the mission block or re-read the mission",
+        { missionId, market },
+      );
+      yield* inbox
+        .persist({
+          missionId,
+          category: "exchange",
+          deduplicationKey: `emergency_block_unconfirmed:${market}:${triggerKey}`,
+          payload: { market },
+          occurredAt,
+          summary:
+            `The mission block after the emergency close of ${market} is unconfirmed, and the ` +
+            `mission state could not be re-read; treat the mission as unsafe until its status ` +
+            `is confirmed.`,
+        })
+        .pipe(Effect.ignore);
+      return notice;
+    },
+  );
 
   /**
    * Move a mission one step along the §11.1 loop and announce where it landed.
@@ -757,7 +859,9 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Whether a mission still holds exchange exposure, per the reconciled snapshots. */
+  /**
+   * Whether a mission still holds exchange exposure, per the reconciled snapshots.
+   */
   const holdsPosition = Effect.fn("TradingMissionReactor.holdsPosition")(function* (
     missionId: TradingMissionId,
   ) {
@@ -771,26 +875,6 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Whether this mission ever traded.
-   *
-   * A fill is the whole difference between the two permanent terminals. A
-   * mission that opened a thread, published nothing, and was settled has no
-   * result to report and is simply `revoked`; one that entered, traded, and came
-   * back flat has a realised result, and calling that `revoked` too made
-   * `completed` unreachable — the UI's completion summary and the binding
-   * query's terminal set were both written against a status nothing ever set.
-   */
-  const hasRealizedResult = Effect.fn("TradingMissionReactor.hasRealizedResult")(function* (
-    missionId: TradingMissionId,
-  ) {
-    const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql<{ fill_count: number }>`
-      SELECT COUNT(*) AS fill_count FROM trading_fills WHERE mission_id = ${missionId}
-    `;
-    return (rows[0]?.fill_count ?? 0) > 0;
-  });
-
-  /**
    * Settling or deleting a thread ends its mission.
    *
    * Settle is the sidebar's "I am done with this thread", and delete is the
@@ -801,11 +885,14 @@ const make = Effect.gen(function* () {
    * an open position and no surface to see it on, which the boot sweep then
    * erased along with the record of the money it was holding.
    *
-   * Exposure decides how it ends. A flat mission is simply revoked. A mission
-   * that still holds a position goes through §17.5's close-and-revoke, which
-   * cancels resting entries and flattens the position before dropping the
-   * authority — the same thing the workspace's destructive button does, and the
-   * only ordering that does not leave a position nobody is authorized to manage.
+   * RC01: the ending runs the mission-level finalization — a bounded close on
+   * every held market, a canonical all-market flat confirmation, and only then
+   * one terminal transition. The old per-market loop could end the mission on
+   * the first flat market while another still held exposure, and the local
+   * snapshot shortcut skipped the canonical gate entirely. A finalization that
+   * cannot confirm everything keeps the mission nonterminal and reachable from
+   * the trading workspace, with its failure reason; it is never logged or
+   * announced as closed merely because the procedure ran.
    *
    * `findMissionByThreadId` returns only a still-authoritative mission, so a
    * settle on an already-revoked thread is a no-op rather than an error.
@@ -821,78 +908,48 @@ const make = Effect.gen(function* () {
     const mission = found.value;
     const missionId = TradingMissionId.make(mission.id);
 
-    if (yield* holdsPosition(missionId)) {
-      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      // Every market the mission holds: the thread is going, so nothing it was
-      // carrying on any of them may outlive it.
-      const outcomes = yield* Effect.forEach(mission.markets, (market) =>
-        controls.closeAndRevoke({ missionId, masterAddress, market }),
+    const outcome = yield* controls
+      .endMissionForThreadEnding({ missionId: mission.id })
+      .pipe(
+        Effect.catchCause((cause) =>
+          warnWithCause(
+            "thread ending could not finalize the mission; it keeps its authority",
+            { missionId, threadId, ending },
+            cause,
+          ).pipe(Effect.as(null)),
+        ),
       );
-      yield* Effect.logInfo("thread ending closed and revoked a mission holding a position", {
-        missionId,
-        threadId,
-        ending,
-        summary: outcomes.map((entry) => entry.summary).join("; "),
-      });
-      // The status the closes left the mission in. Every market's close walks
-      // the same mission, so the last one to answer is the one that stands.
-      const reached = outcomes
-        .map((entry) => entry.status)
-        .filter((status): status is string => status !== undefined);
-      const last = reached[reached.length - 1];
-      if (last !== undefined) {
-        const status = last as TradingMissionStatus;
-        yield* announceStatus({ missionId, threadId, status });
-        if (status === "revoked" || status === "completed") {
-          yield* Effect.sync(() => clearSessionProfile(threadId));
-          yield* Effect.forEach(mission.markets, (market) =>
-            retireWorkingOrdersQuietly({
-              missionId,
-              tradingAccountId: mission.tradingAccountId,
-              market,
-              reason: `the thread was ${ending}`,
-            }),
-          );
-        }
-      }
-      return;
-    }
+    if (outcome === null) return;
 
-    // §11.1's two permanent terminals say different things, and only one of
-    // them was ever reachable. A flat mission that traded and hit no
-    // deterministic block ended cleanly: that is `completed`. A blocked one did
-    // not — its authority was withdrawn by a safety condition, and reporting
-    // that as a completed objective would be the more expensive lie.
-    const traded = yield* hasRealizedResult(missionId);
-    const terminal: TradingMissionStatus =
-      traded && mission.status !== "blocked" ? "completed" : "revoked";
-
-    yield* Effect.logInfo("thread ending ended a flat mission", {
+    yield* Effect.logInfo("thread ending finalized a mission", {
       missionId,
       threadId,
       ending,
-      terminal,
-      traded,
-      status: mission.status,
+      finalized: outcome.finalized,
+      summary: outcome.summary,
     });
-    yield* advance({
-      missionId,
-      threadId,
-      from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
-      to: terminal,
-      reason: ending === "deleted" ? "thread_deleted" : "thread_settled",
-    });
-    // Whatever resting entry the mission left behind goes with it — a flat
-    // ending skips the close-and-revoke path that cancels entries for a
-    // position, and a patient entry must not outlive its mission.
-    yield* Effect.forEach(mission.markets, (market) =>
-      retireWorkingOrdersQuietly({
+
+    if (outcome.status !== undefined) {
+      yield* announceStatus({
         missionId,
-        tradingAccountId: mission.tradingAccountId,
-        market,
-        reason: `the thread was ${ending}`,
-      }),
-    );
+        threadId,
+        status: outcome.status as TradingMissionStatus,
+      });
+    }
+    if (outcome.finalized) {
+      yield* Effect.sync(() => clearSessionProfile(threadId));
+      // Whatever resting entry the mission left behind goes with it — the
+      // finalization cancels what its own read found; this sweeps the patient
+      // working-entry lane.
+      yield* Effect.forEach(mission.markets, (market) =>
+        retireWorkingOrdersQuietly({
+          missionId,
+          tradingAccountId: mission.tradingAccountId,
+          market,
+          reason: `the thread was ${ending}`,
+        }),
+      );
+    }
   });
 
   /** Map the fired watch's type to the §11.2 run cause it wakes the harness with. */
@@ -1339,13 +1396,19 @@ const make = Effect.gen(function* () {
       missionId,
       reason: outcome.escalationReason,
     });
-    yield* emergency.emergencyClose({
+    const close = yield* emergency.emergencyClose({
       missionId,
       masterAddress,
       market: intent.market,
       reason: outcome.escalationReason ?? "protection could not be confirmed",
     });
-    yield* announceStatus({ missionId, threadId, status: "blocked" });
+    yield* recordEmergencyClose({
+      missionId,
+      threadId,
+      market: intent.market,
+      triggerKey: `seq:${intent.executionSequence}`,
+      outcome: close,
+    });
   });
 
   /**
@@ -1534,22 +1597,28 @@ const make = Effect.gen(function* () {
       missionId,
       reason: outcome.escalationReason,
     });
-    yield* emergency.emergencyClose({
+    const close = yield* emergency.emergencyClose({
       missionId,
       masterAddress,
       market: intent.market,
       reason: outcome.escalationReason ?? "stop replacement could not be confirmed",
     });
-    yield* announceStatus({ missionId, threadId, status: "blocked" });
-    // The stop move did not happen and the position was closed out from under
-    // it. Failing here is what puts that on the tool's own answer instead of
-    // leaving the harness to read "succeeded" for a mission that is now flat
-    // and blocked.
+    const notice = yield* recordEmergencyClose({
+      missionId,
+      threadId,
+      market: intent.market,
+      triggerKey: `seq:${intent.executionSequence}`,
+      outcome: close,
+    });
+    // The stop move did not happen; what §17.5 did to the position is the
+    // notice it returned. Failing here is what puts the actual outcome on the
+    // tool's own answer — the old text asserted "the position was closed …
+    // and the mission is blocked" no matter what the emergency found (RC04).
     return yield* new TradingExecutionError({
       stage: "intent_invalid",
       detail:
         `the new stop could not be confirmed (${outcome.escalationReason ?? "unconfirmed"}); ` +
-        `the position was closed under §17.5 and the mission is blocked`,
+        `§17.5 emergency close: ${notice}`,
     });
   });
 
@@ -1561,51 +1630,206 @@ const make = Effect.gen(function* () {
    * service directly. Nothing here consults the harness binding, the decision
    * lease, or the strategy version.
    */
+  /**
+   * Record a §14.7 control's final outcome where the operator reads it
+   * (RC06): one durable row — the mission projection re-reads it into
+   * `lastControlResult` — and one event, the doorbell that makes clients
+   * re-read. A dispatched control command only proves the request was
+   * accepted; this closes the loop with what the exchange work actually did,
+   * without a provider in the path.
+   */
+  const recordControlResult = Effect.fn("TradingMissionReactor.recordControlResult")(
+    function* (input: {
+      readonly missionId: TradingMissionId;
+      readonly threadId: ThreadId;
+      readonly control: TradingRiskControl;
+      readonly status: "completed" | "failed" | "unknown";
+      readonly summary: string;
+      readonly markets?: ReadonlyArray<{
+        readonly market: string;
+        readonly outcome: string;
+        readonly positionSize: number | null;
+      }>;
+      readonly requestEventSequence: number | undefined;
+    }) {
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_control_results (
+          mission_id, control, status, summary, markets_json,
+          request_event_sequence, occurred_at
+        ) VALUES (
+          ${input.missionId}, ${input.control}, ${input.status}, ${input.summary},
+          ${controlMarketsJson(input.markets ?? [])}, ${input.requestEventSequence ?? null},
+          ${occurredAt}
+        )
+      `.pipe(
+        Effect.catchCause((cause) =>
+          warnWithCause(
+            "trading control result row could not be written",
+            {
+              missionId: input.missionId,
+            },
+            cause,
+          ),
+        ),
+      );
+
+      const commandIdValue = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      yield* orchestrationEngine
+        .dispatch({
+          type: "trading.mission.control-result",
+          commandId: CommandId.make(commandIdValue),
+          threadId: input.threadId,
+          missionId: input.missionId,
+          control: input.control,
+          status: input.status,
+          summary: input.summary,
+          ...(input.markets === undefined ? {} : { markets: input.markets }),
+          ...(input.requestEventSequence === undefined
+            ? {}
+            : { requestEventSequence: input.requestEventSequence }),
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            warnWithCause(
+              "trading control result could not be published",
+              { missionId: input.missionId },
+              cause,
+            ),
+          ),
+        );
+    },
+  );
+
   const processRiskControlRequested = Effect.fn("TradingMissionReactor.riskControl")(function* (
     event: Extract<TradingRequestEvent, { type: "trading.mission-risk-control-requested" }>,
   ) {
     const { missionId, threadId, control, reductionPercent } = event.payload;
+    // Correlates the recorded result to the press that caused it (RC06).
+    const requestEventSequence = event.sequence;
 
     const mission = yield* missions.getMission(missionId);
     const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    // A §14.7 button is about the mission, and the mission is every market it
-    // holds. Cancelling entries or flattening on one of two would leave the
-    // other running under a control the user believes they pressed.
-    const outcomes = yield* Effect.forEach(mission.markets, (market) => {
-      const target = { missionId, masterAddress, market };
-      return control === "cancel_entries"
-        ? controls.cancelEntries(target)
-        : control === "reduce_position"
-          ? controls.reducePosition({ ...target, percent: reductionPercent ?? 100 })
-          : control === "close_position"
-            ? controls.closePosition(target)
-            : controls.closeAndRevoke(target);
-    });
 
-    yield* Effect.logInfo("trading deterministic control applied", {
-      missionId,
-      control,
-      summary: outcomes.map((outcome) => outcome.summary).join("; "),
-    });
-
-    const reached = outcomes
-      .map((outcome) => outcome.status)
-      .filter((status): status is string => status !== undefined);
-    const last = reached[reached.length - 1];
-    if (last !== undefined) {
-      const status = last as TradingMissionStatus;
-      yield* announceStatus({ missionId, threadId, status });
-      if (status === "revoked" || status === "completed") {
+    // close_and_revoke ends the MISSION, and a mission is every market it
+    // holds: one mission-level finalization — a bounded close per held
+    // market, a canonical all-market flat gate, and a single revoke (RC01).
+    // A per-market loop let the first flat market revoke while another still
+    // held exposure.
+    if (control === "close_and_revoke") {
+      const outcome = yield* controls.closeAndRevokeMission({ missionId }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            const refusal = describeRefusal(cause);
+            yield* warnWithCause(
+              "trading close-and-revoke could not finalize the mission; it keeps its authority",
+              { missionId },
+              cause,
+            );
+            // The finalization itself failed before producing an outcome:
+            // that is a failed control the operator must see, not a silent
+            // log line (RC06).
+            yield* recordControlResult({
+              missionId,
+              threadId,
+              control,
+              status: "failed",
+              summary: `Close and revoke failed: ${refusal}`,
+              requestEventSequence,
+            });
+          }).pipe(Effect.as(null)),
+        ),
+      );
+      if (outcome === null) return;
+      yield* Effect.logInfo("trading deterministic control applied", {
+        missionId,
+        control,
+        finalized: outcome.finalized,
+        summary: outcome.summary,
+      });
+      if (outcome.status !== undefined) {
+        yield* announceStatus({
+          missionId,
+          threadId,
+          status: outcome.status as TradingMissionStatus,
+        });
+      }
+      if (outcome.finalized) {
         yield* Effect.forEach(mission.markets, (market) =>
           retireWorkingOrdersQuietly({
             missionId,
             tradingAccountId: mission.tradingAccountId,
             market,
-            reason: `the ${control} control ended the mission`,
+            reason: "the close_and_revoke control ended the mission",
           }),
         );
       }
+      yield* recordControlResult({
+        missionId,
+        threadId,
+        control,
+        // A non-finalized outcome with an unreadable market is an unknown
+        // control, not a failed one: something may have executed (RC06).
+        status: outcome.finalized
+          ? "completed"
+          : outcome.markets.some((market) => market.outcome === "unknown")
+            ? "unknown"
+            : "failed",
+        summary: outcome.summary,
+        markets: outcome.markets.map((market) => ({
+          market: market.market,
+          outcome: market.outcome,
+          positionSize: market.positionSize,
+        })),
+        requestEventSequence,
+      });
+      return;
     }
+
+    // A §14.7 button is about the mission, and the mission is every market it
+    // holds. Cancelling entries or flattening on one of two would leave the
+    // other running under a control the user believes they pressed.
+    const outcomes = yield* Effect.forEach(mission.markets, (market) => {
+      const target = { missionId, masterAddress, market };
+      const applied =
+        control === "cancel_entries"
+          ? controls.cancelEntries(target)
+          : control === "reduce_position"
+            ? controls.reducePosition({ ...target, percent: reductionPercent ?? 100 })
+            : controls.closePosition(target);
+      return applied.pipe(
+        Effect.result,
+        Effect.map((result) => ({ market, result })),
+      );
+    });
+
+    const summary =
+      outcomes.length === 0
+        ? "No held market to apply the control to."
+        : outcomes
+            .map(({ market, result }) =>
+              Result.isSuccess(result)
+                ? result.success.summary
+                : `${market}: ${result.failure instanceof Error ? result.failure.message.split("\n")[0] : String(result.failure)}`,
+            )
+            .join("; ");
+    yield* Effect.logInfo("trading deterministic control applied", {
+      missionId,
+      control,
+      summary,
+    });
+    yield* recordControlResult({
+      missionId,
+      threadId,
+      control,
+      // Any provable per-market failure makes the control failed; every
+      // per-market summary already carries its own partial/unknown truth.
+      status: outcomes.some(({ result }) => Result.isFailure(result)) ? "failed" : "completed",
+      summary,
+      requestEventSequence,
+    });
   });
 
   /**
@@ -1821,13 +2045,27 @@ const make = Effect.gen(function* () {
       const expectedVersion = yield* missions.getMissionVersion(missionId);
       // A version conflict means another transition beat us; the mission state
       // the projection holds is still authoritative, so log and continue.
-      yield* guard.blockForExhaustion(missionId, expectedVersion, masterAddress).pipe(
-        Effect.catch(() =>
-          Effect.logWarning("trading execution: could not block exhausted mission", {
+      const exhaustion = yield* guard
+        .blockForExhaustion(missionId, expectedVersion, masterAddress)
+        .pipe(
+          Effect.catch(() =>
+            Effect.logWarning("trading execution: could not block exhausted mission", {
+              missionId,
+            }).pipe(Effect.as(null)),
+          ),
+        );
+      // RC03: the block stands even when a cancel would not confirm, but the
+      // unconfirmed ones are never silently dropped — they are the entries
+      // that may reopen exposure under a mission the operator sees as blocked.
+      if (exhaustion !== null && exhaustion.unconfirmed.length > 0) {
+        yield* Effect.logWarning(
+          "trading execution: exhausted mission blocked with unconfirmed increasing-order cancellations",
+          {
             missionId,
-          }),
-        ),
-      );
+            unconfirmed: exhaustion.unconfirmed.map((entry) => entry.cloid),
+          },
+        );
+      }
       yield* announceStatus({ missionId, threadId, status: "blocked" });
     }
   });
@@ -2306,13 +2544,19 @@ const make = Effect.gen(function* () {
         missionId,
         reason: outcome.escalationReason,
       });
-      yield* emergency.emergencyClose({
+      const close = yield* emergency.emergencyClose({
         missionId,
         masterAddress,
         market,
         reason: outcome.escalationReason ?? "protection was removed and could not be re-placed",
       });
-      yield* announceStatus({ missionId, threadId, status: "blocked" });
+      yield* recordEmergencyClose({
+        missionId,
+        threadId,
+        market,
+        triggerKey: `tick:${occurredAt}`,
+        outcome: close,
+      });
     }
 
     // Either way the harness is told: its stop was pulled out from under it.

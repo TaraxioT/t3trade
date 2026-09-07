@@ -26,7 +26,7 @@
 import * as Schema from "effect/Schema";
 
 import { BacktestVerdict } from "./backtest.ts";
-import { ForwardComparison, ThesisValidationStatus } from "./forward.ts";
+import { EventSetContentDigest, ForwardComparison, ThesisValidationStatus } from "./forward.ts";
 import { describeThesis, TradingThesis } from "./thesis.ts";
 
 /**
@@ -95,11 +95,36 @@ export const HypothesisVersion = Schema.Struct({
 export type HypothesisVersion = typeof HypothesisVersion.Type;
 
 /**
+ * The calculation version stamped on runs filed by this build, so a saved run
+ * can say which arithmetic produced its figures. Bumped when the numbers a
+ * run stores change meaning.
+ */
+export const HYPOTHESIS_RUN_CALCULATION_VERSION = "hypothesis-run-1";
+
+/**
+ * The identity a saved run carries beyond its own figures: the CONTENT of the
+ * event sets it read, as digests, and the calculation version that produced
+ * the numbers. Everything else a run needs to be reproduced — thesis, window,
+ * costs, notional, as-of — is already on the row and its report.
+ */
+export const HypothesisRunProvenance = Schema.Struct({
+  /**
+   * One digest per event set the thesis anchored on, pinned at save time: a
+   * set's id is stable while its dates are corrected, so this is what says
+   * which calendar the run actually ran on.
+   */
+  eventSetContentDigests: Schema.Array(EventSetContentDigest),
+  calculationVersion: Schema.String,
+});
+export type HypothesisRunProvenance = typeof HypothesisRunProvenance.Type;
+
+/**
  * One persisted backtest, as the card reads it.
  *
  * The headline numbers rather than the whole report: a hypothesis with ten
  * runs would otherwise carry ten full reports, and the run the reader wants in
- * full is one `trading_backtest` call away.
+ * full is one `trading_backtest` call away. The row itself keeps more (the
+ * report, its timestamps); this is the window onto it.
  */
 export const HypothesisRunSummary = Schema.Struct({
   runId: Schema.String,
@@ -115,6 +140,12 @@ export const HypothesisRunSummary = Schema.Struct({
   totalNetUsd: Schema.Number,
   barsServed: Schema.Number,
   verdict: BacktestVerdict,
+  /**
+   * What the run was computed against, when it was recorded. Absent on runs
+   * filed before provenance was kept — a surface says "provenance not
+   * recorded" for those rather than inventing any of it.
+   */
+  provenance: Schema.optional(HypothesisRunProvenance),
 });
 export type HypothesisRunSummary = typeof HypothesisRunSummary.Type;
 

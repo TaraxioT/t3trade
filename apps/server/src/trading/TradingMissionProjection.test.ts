@@ -797,6 +797,33 @@ describe("buildMissionTimeline", () => {
         : JSON.stringify(over.toolsCalled),
   });
 
+  // RC06: a §14.7 control's durable outcome is history the operator reads —
+  // with its status word prefixed, so "failed" and "unknown" never hide
+  // inside prose.
+  it("files a control result with its status word, and drops blank summaries", () => {
+    const timeline = buildMissionTimeline({
+      wakes: [],
+      stopAdjustments: [],
+      publishes: [],
+      controlResults: [
+        {
+          control: "close_and_revoke",
+          status: "failed",
+          summary: "ETH is still open (1 ETH). Authority was not revoked.",
+          occurred_at: 5_000,
+        },
+        { control: "cancel_entries", status: "completed", summary: "   ", occurred_at: 4_000 },
+      ],
+    });
+
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0]?.kind, "control_result");
+    assert.equal(
+      timeline[0]?.label,
+      "close_and_revoke failed: ETH is still open (1 ETH). Authority was not revoked.",
+    );
+  });
+
   it("merges the three sources newest-first", () => {
     const timeline = buildMissionTimeline({
       wakes: [wake({ runId: "r1", cause: "scheduled_reassessment", createdAt: 1_000 })],

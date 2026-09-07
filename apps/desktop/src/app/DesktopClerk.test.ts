@@ -29,7 +29,11 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
-const makeDesktopClerkLayer = (isDevelopment = true, events: string[] = []) => {
+const makeDesktopClerkLayer = (
+  isDevelopment = true,
+  events: string[] = [],
+  holdsSingleInstanceLock = true,
+) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: "/tmp/t3-state",
     isDevelopment,
@@ -44,6 +48,10 @@ const makeDesktopClerkLayer = (isDevelopment = true, events: string[] = []) => {
       Effect.sync(() => {
         events.push(`setPath:${name}:${value}`);
       }),
+    requestSingleInstanceLock: Effect.sync(() => {
+      events.push("requestSingleInstanceLock");
+      return holdsSingleInstanceLock;
+    }),
   } as unknown as ElectronApp.ElectronApp["Service"];
 
   return DesktopClerk.layer.pipe(
@@ -96,10 +104,14 @@ describe("DesktopClerk", () => {
         ],
       ]);
       assert.equal(cleanup.mock.calls.length, 1);
-      // The bridge acquires Electron's single-instance lock at creation, and
-      // the lock both lives in and creates the userData directory — so the
-      // real path must be set before the bridge exists.
-      assert.deepEqual(events, ["setPath:userData:/tmp/app-data/t3trade-dev", "createClerkBridge"]);
+      // The lock is keyed on the userData directory, so the real path must
+      // be set before the lock is requested, and the lock must be held
+      // before the SDK bridge exists.
+      assert.deepEqual(events, [
+        "setPath:userData:/tmp/app-data/t3trade-dev",
+        "requestSingleInstanceLock",
+        "createClerkBridge",
+      ]);
       storageMock.mockClear();
       createClerkBridgeMock.mockClear();
     });
@@ -181,13 +193,16 @@ describe("DesktopClerk", () => {
     );
   });
 
-  it.effect("quits and interrupts startup in a secondary instance", () => {
+  it.effect("exits the process and interrupts startup in a secondary instance", () => {
     storageMock.mockReturnValue(storageAdapter);
     createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: false });
-    const quit = vi.fn();
+    const exitCalls: Array<number> = [];
     const registeredEvents: string[] = [];
     const electronApp = {
-      quit: Effect.sync(quit),
+      exit: (code: number) =>
+        Effect.sync(() => {
+          exitCalls.push(code);
+        }),
       on: (eventName: string) =>
         Effect.sync(() => {
           registeredEvents.push(eventName);
@@ -200,10 +215,67 @@ describe("DesktopClerk", () => {
       const exit = yield* Effect.exit(Effect.scoped(clerk.configure));
 
       assert.isTrue(Exit.hasInterrupts(exit));
-      assert.equal(quit.mock.calls.length, 1);
+      assert.deepEqual(exitCalls, [0]);
       assert.deepEqual(registeredEvents, []);
     }).pipe(
       Effect.provide(makeDesktopClerkLayer()),
+      Effect.provideService(ElectronApp.ElectronApp, electronApp),
+      Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
+    );
+  });
+
+  it.effect("never creates the SDK bridge when the single-instance lock is lost", () => {
+    const events: string[] = [];
+    storageMock.mockReturnValue(storageAdapter);
+
+    return Effect.gen(function* () {
+      yield* Effect.scoped(Layer.build(makeDesktopClerkLayer(true, events, false)));
+
+      assert.equal(createClerkBridgeMock.mock.calls.length, 0);
+      assert.deepEqual(events, [
+        "setPath:userData:/tmp/app-data/t3trade-dev",
+        "requestSingleInstanceLock",
+      ]);
+    });
+  });
+
+  it.effect("a lock-losing instance exits before startup can reach the backend", () => {
+    storageMock.mockReturnValue(storageAdapter);
+    const lifecycleReceipts: string[] = [];
+    const electronApp = {
+      exit: (code: number) =>
+        Effect.sync(() => {
+          lifecycleReceipts.push(`exit:${code}`);
+        }),
+      on: (eventName: string) =>
+        Effect.sync(() => {
+          lifecycleReceipts.push(`on:${eventName}`);
+        }),
+    } as unknown as ElectronApp.ElectronApp["Service"];
+    const electronWindow = {} as ElectronWindow.ElectronWindow["Service"];
+
+    return Effect.gen(function* () {
+      const clerk = yield* DesktopClerk.DesktopClerk;
+
+      // Mirror the startup sequence in DesktopApp.ts: clerk.configure runs
+      // before whenReady and before bootstrap's primaryBackend.start. The
+      // continuation markers stand in for those later stages; an interrupt
+      // inside configure must keep every one of them from running.
+      const exit = yield* Effect.exit(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* clerk.configure;
+            lifecycleReceipts.push("whenReady");
+            lifecycleReceipts.push("bootstrap");
+            lifecycleReceipts.push("primaryBackend.start");
+          }),
+        ),
+      );
+
+      assert.isTrue(Exit.hasInterrupts(exit));
+      assert.deepEqual(lifecycleReceipts, ["exit:0"]);
+    }).pipe(
+      Effect.provide(makeDesktopClerkLayer(true, [], false)),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
       Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
     );

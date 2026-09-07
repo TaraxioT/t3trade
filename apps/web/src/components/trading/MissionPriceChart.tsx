@@ -38,7 +38,7 @@ import type {
   TradingChartThesis,
 } from "@t3tools/contracts";
 
-import { coverageBands, layoutSessionLabelYs, sessionLevelLines } from "./marketChartOverlays";
+import { coverageBands, sessionLevelLines } from "./marketChartOverlays";
 import { thesisChartConditions, thesisChartMarkers, thesisChartZones } from "./thesisChartMarkers";
 import { useMissionChartMode } from "./missionChartModeStore";
 import { isMomentSelected, useMissionSelection } from "./missionSelectionStore";
@@ -49,12 +49,23 @@ import {
   CHART_VIEWBOX_WIDTH,
   FUTURE_GUTTER_RATIO,
   LABEL_GUTTER_WIDTH,
+  LEFT_AXIS_LABEL_MIN_WIDTH_PX,
+  LEFT_AXIS_LANE_WIDTH,
   PLOT_WIDTH,
+  RESEARCH_MARKER_NOTE,
   computeChartGeometry,
   findLevelAtPrice,
+  formatGridPrice,
+  formatUtcInstant,
+  gridPriceDecimals,
+  gridTickTarget,
+  isHttpSourceUrl,
+  layoutLeftAxisLabels,
   medianBarInterval,
+  researchMarkerAriaLabel,
   type ChartCondition,
   type ChartLevel,
+  type ChartResearchMarkerInput,
   type ChartStudyOverlayInput,
   type ChartTimeBandInput,
   type ChartLevelKind,
@@ -62,6 +73,7 @@ import {
   type ChartZoneInput,
   type ChartZoneTone,
   type GutterTag,
+  type LeftAxisLabelEntry,
 } from "./missionChartGeometry";
 import { formatPrice, type ChartFillKind, type ChartFillMarker } from "./tradingPresentation";
 
@@ -177,6 +189,17 @@ interface MissionPriceChartProps {
    * render at whatever interval the chart is on.
    */
   readonly eventBands?: ReadonlyArray<ChartTimeBandInput>;
+  /**
+   * Researched event occurrences from the thread's active scene, drawn on the
+   * live price graph at their exact saved instants.
+   *
+   * The scene-derived seam, separate from `eventBands` above (which belongs to
+   * a validation's thesis calendar): a research marker carries its own
+   * provenance (label, source URL, coverage) and is never styled as a fill,
+   * order, or execution. Rendered by the unified-graph work; the geometry
+   * contract is `ChartResearchMarkerInput`.
+   */
+  readonly researchMarkers?: ReadonlyArray<ChartResearchMarkerInput>;
   /**
    * One historical study's overlay on this window: the activation the study
    * anchored on, the measured entry and exit with their prices, and the
@@ -631,6 +654,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     zones,
     thesis,
     eventBands,
+    researchMarkers,
     studyOverlay,
     onAskAboutMarker,
     draggableKinds,
@@ -651,6 +675,33 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     readonly price: number;
   } | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
+  // The frame's measured size, rounded to whole pixels so ordinary layout
+  // jitter never re-renders for it. Two axis decisions read it: the grid's
+  // tick count (a narrow frame draws fewer rules, never smaller type) and the
+  // left-axis lane's label separation (a 10px line is more viewBox units on a
+  // short frame than a tall one). Measured by ResizeObserver — it fires on
+  // real resizes only, so nothing here animates or repaints continuously.
+  const [frameSize, setFrameSize] = useState<{
+    readonly width: number;
+    readonly height: number;
+  } | null>(null);
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (frame === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (box === undefined) return;
+      const width = Math.round(box.width);
+      const height = Math.round(box.height);
+      setFrameSize((previous) =>
+        previous !== null && previous.width === width && previous.height === height
+          ? previous
+          : { width, height },
+      );
+    });
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
   // The draw-in dash is stripped once the intro has played. Left on, the
   // polyline keeps `stroke-dasharray: 1` against a `pathLength` that
   // re-normalises every time the points change — and on a line that updates
@@ -689,6 +740,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // thing that says which moment one of them is is its own sentence, and the
   // only place there is room for that sentence is a tooltip.
   const [hoveredPastKey, setHoveredPastKey] = useState<string | null>(null);
+  // Which research marker's detail is open. Static reveal — hover, focus, or
+  // click all open it, and nothing about it animates.
+  const [openResearchKey, setOpenResearchKey] = useState<string | null>(null);
 
   // Candles or the close line (final-form phase 6). One persisted preference
   // shared by every mounted chart, so the live panel and the review read the
@@ -773,6 +827,24 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   const allZones = useMemo(() => mergeOverlays(zones, thesisZones), [zones, thesisZones]);
   const allFills = useMemo(() => mergeOverlays(fills, thesisMarkers), [fills, thesisMarkers]);
 
+  // --- the reserved left-axis lane ------------------------------------------
+  //
+  // The strip [0, plotLeft) at the left of the viewBox is HELD EMPTY: the
+  // plot's candles, lines, fills and rules all begin at its right edge, and
+  // the lane's labels — the grid prices, the named session levels, and (while
+  // one is live) the dragged-price readout — render inside it, right-aligned
+  // against the plot so every number sits beside the rule it names. The lane
+  // width is the geometry's default share, raised on frames whose measured
+  // width makes that share too narrow to hold a whole 9px/10px label — the
+  // left twin of the right gutter's own `max(15%, 4.5rem)` floor, and derived
+  // from the same measured frame the separation below uses.
+  const viewBoxUnitsPerPxX =
+    frameSize !== null && frameSize.width > 0 ? CHART_VIEWBOX_WIDTH / frameSize.width : 1;
+  const leftAxisLaneWidth = Math.max(
+    LEFT_AXIS_LANE_WIDTH,
+    LEFT_AXIS_LABEL_MIN_WIDTH_PX * viewBoxUnitsPerPxX,
+  );
+
   const geometry = computeChartGeometry({
     candles,
     entryPrice,
@@ -781,6 +853,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     liquidationPrice,
     entryTime,
     markPrice,
+    leftAxisLaneWidth,
     ...(allConditions === undefined ? {} : { conditions: allConditions }),
     ...(allZones === undefined ? {} : { zones: allZones }),
     ...(allFills === undefined ? {} : { fills: allFills }),
@@ -791,6 +864,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(timeMarkers === undefined ? {} : { timeMarkers }),
     ...(pastMarkers === undefined ? {} : { pastMarkers }),
     ...(eventBands === undefined ? {} : { eventBands }),
+    ...(researchMarkers === undefined ? {} : { researchMarkers }),
     ...(studyOverlay === undefined ? {} : { studyOverlay }),
   });
 
@@ -872,7 +946,17 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     [...geometry.preEntryPoints, ...geometry.postEntryPoints],
     CHART_VIEWBOX_HEIGHT,
   );
-  const gridPrices = gridPricesFor(geometry.domainMin, geometry.domainMax, 4);
+  // The grid scale: how many rules the frame can carry (fewer on a narrow
+  // frame — the type never shrinks below its 10px), and the coarsest decimals
+  // the step spacing supports, so "2,420" and "2,420.51" are not mixed
+  // without need.
+  const gridTargetLines = gridTickTarget(frameSize?.width ?? 0);
+  const gridPrices = gridPricesFor(geometry.domainMin, geometry.domainMax, gridTargetLines);
+  const gridStep =
+    gridPrices.length >= 2
+      ? gridPrices[1]! - gridPrices[0]!
+      : (geometry.domainMax - geometry.domainMin) / Math.max(2, gridTargetLines);
+  const gridDecimals = gridPriceDecimals(gridStep);
 
   // Final-form phase 6 overlays, all prop-gated: a mission chart passes none
   // of them and renders exactly as before.
@@ -883,21 +967,76 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     timeEnd: geometry.timeEnd,
   });
   const sessionLines = sessionLevelLines(sessionLevels, geometry.domainMin, geometry.domainMax);
-  // The labels folded apart: two session levels a few cents apart keep their
-  // rules at the true prices, but their one-line labels must not print on top
-  // of each other.
-  const sessionLabelYs = layoutSessionLabelYs(
-    sessionLines.map((line) => ({ key: line.key, y: geometry.yForPrice(line.price) })),
-    CHART_VIEWBOX_HEIGHT,
-  );
+
+  // --- the unified left-axis lane ------------------------------------------
+  //
+  // ONE collision pass over every label the left axis draws — grid prices,
+  // session levels, and (while a drag is live) the dragged-price readout.
+  // The two independent placements this replaces each kept their own kind
+  // apart while printing the two kinds on top of each other at the same left
+  // edge. Rules keep their exact y; only labels nudge, within a bounded
+  // distance; near-equal prices merge under the named level; and a label
+  // that cannot be placed legibly is suppressed into the lane's "+N" count —
+  // never hidden silently, and never its rule.
+  //
+  // The lane's priorities, most important first: the dragged price (what the
+  // operator is stating right now), the named session levels, the ordinary
+  // grid ticks.
+  const leftAxisEntries: LeftAxisLabelEntry[] = [];
+  if (drag !== null) {
+    leftAxisEntries.push({
+      id: "drag-readout",
+      text: formatPrice(drag.price),
+      y: geometry.yForPrice(drag.price),
+      priority: 0,
+    });
+  }
+  for (const line of sessionLines) {
+    leftAxisEntries.push({
+      id: `session-${line.key}`,
+      text: `${line.label} ${formatPrice(line.price)}`,
+      y: geometry.yForPrice(line.price),
+      priority: 1,
+    });
+  }
+  for (const price of gridPrices) {
+    leftAxisEntries.push({
+      id: `grid-${price}`,
+      text: formatGridPrice(price, gridDecimals),
+      y: geometry.yForPrice(price),
+      priority: 2,
+    });
+  }
+  // The separation is derived from the rendered font: the lane's largest
+  // text is 10px, plus a hair of leading, expressed in viewBox units through
+  // the frame's measured height. Unmeasured, one viewBox unit is assumed to
+  // be one pixel — the ratio the chart's ~160px panels render at.
+  const viewBoxUnitsPerPx =
+    frameSize !== null && frameSize.height > 0 ? CHART_VIEWBOX_HEIGHT / frameSize.height : 1;
+  const leftAxisMinSeparation = 12 * viewBoxUnitsPerPx;
+  const leftAxis = layoutLeftAxisLabels({
+    entries: leftAxisEntries,
+    frameHeight: CHART_VIEWBOX_HEIGHT,
+    minSeparation: leftAxisMinSeparation,
+    maxNudge: leftAxisMinSeparation,
+  });
+  const leftAxisEntryById = new Map(leftAxisEntries.map((entry) => [entry.id, entry]));
+  const leftAxisY = (id: string): number | null => {
+    if (leftAxis.suppressed.has(id)) return null;
+    return leftAxis.placed.find((placement) => placement.id === id)?.y ?? null;
+  };
   const maxVolume =
     showVolume === true ? candles.reduce((max, candle) => Math.max(max, candle.volume), 0) : 0;
   const volumeByOpenTime =
     maxVolume > 0 ? new Map(candles.map((candle) => [candle.openTime, candle.volume])) : null;
   /** How tall the volume underlay may stand, in viewBox units (~16%). */
   const VOLUME_PANE_HEIGHT = 26;
-  /** Clamp a band edge into the drawn record — never into the future gutter. */
-  const bandX = (t: number): number => Math.min(Math.max(geometry.xForTime(t), 0), geometry.nowX);
+  /**
+   * Clamp a band edge into the drawn record — never left of the lane's far
+   * edge, never into the future gutter.
+   */
+  const bandX = (t: number): number =>
+    Math.min(Math.max(geometry.xForTime(t), geometry.plotLeft), geometry.nowX);
 
   // One bar's width on the axis, and the slide that plays when a new one lands.
   //
@@ -908,7 +1047,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // right and travels into place. Once a minute the whole pane moves, in the
   // direction time runs, for about the length of a breath.
   const barPitch =
-    candles.length > 0 ? (PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO)) / candles.length : 0;
+    candles.length > 0
+      ? ((PLOT_WIDTH - geometry.plotLeft) * (1 - FUTURE_GUTTER_RATIO)) / candles.length
+      : 0;
   const lastBarAt = candles[candles.length - 1]?.openTime ?? 0;
   const [slideOffset, setSlideOffset] = useState(0);
   const lastBarRef = useRef(lastBarAt);
@@ -927,6 +1068,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // The gutter overlay is positioned in percentages of the same viewBox the SVG
   // uses, so the two stay in register at any container size.
   const gutterPercent = (LABEL_GUTTER_WIDTH / CHART_VIEWBOX_WIDTH) * 100;
+  // The lane strip likewise: percentages of the same viewBox keep the labels
+  // and the plot edge in register at any container size.
+  const lanePercent = (geometry.plotLeft / CHART_VIEWBOX_WIDTH) * 100;
   const flashedLevel =
     flash === undefined || flash === null ? null : findLevelAtPrice(geometry.levels, flash.price);
 
@@ -972,7 +1116,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     let best: { x: number; y: number; price: number; at: number; isMark: boolean } | null = null;
     for (const candle of candles) {
       const x = geometry.xForTime(candle.openTime);
-      if (x < 0) continue;
+      if (x < geometry.plotLeft) continue;
       if (best === null || Math.abs(x - viewX) < Math.abs(best.x - viewX)) {
         // A forming bar's close is in the future; the clock caps the label at
         // the newest moment that has actually happened.
@@ -1150,16 +1294,30 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               style={{ stopOpacity: "var(--mission-chart-wedge-far)" }}
             />
           </linearGradient>
+          {/* The plot's own bounds: [plotLeft, PLOT_WIDTH]. The reserved lane
+              to the left is held empty, so the series — the one layer whose
+              first bar and whose one-bar slide can overhang its window — is
+              clipped here rather than trusted to land inside. Same semantics
+              the viewBox edge used to enforce at x=0, now at the lane edge. */}
+          <clipPath id={`${gradientId}-plot`}>
+            <rect
+              x={geometry.plotLeft}
+              y={0}
+              width={PLOT_WIDTH - geometry.plotLeft}
+              height={CHART_VIEWBOX_HEIGHT}
+            />
+          </clipPath>
         </defs>
 
         {/* The price grid. Four rules at round numbers across the domain, which
             is the frame the Stocks app reads its line against — without them a
             price line is a shape with no scale, and every wiggle looks the same
-            size whether the market moved a dollar or twenty. */}
+            size whether the market moved a dollar or twenty. The rules begin at
+            the reserved lane's far edge, never inside it. */}
         {gridPrices.map((price) => (
           <line
             key={`grid-${price}`}
-            x1={0}
+            x1={geometry.plotLeft}
             y1={geometry.yForPrice(price)}
             x2={PLOT_WIDTH}
             y2={geometry.yForPrice(price)}
@@ -1223,6 +1381,67 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             />
           </g>
         ))}
+
+        {/* Research occurrence markers (the scene's events, at their exact
+            saved instants): a dotted vertical rule for an instantaneous
+            occurrence — never moved for collisions, only its label stacks —
+            and a washed band with dotted edges for a genuine span. The same
+            muted register the thesis calendar's bands use, but told apart by
+            the dotted edges on BOTH sides and by nothing that ever reads as
+            a fill, order, or execution. The upcoming occurrence draws in the
+            lighter wash, like the calendar's upcoming band. */}
+        {geometry.researchMarkers.map((marker) =>
+          marker.span ? (
+            <g key={`research-${marker.key}`} data-testid={`research-marker-${marker.key}`}>
+              <rect
+                x={marker.x1}
+                y={0}
+                width={marker.x2 - marker.x1}
+                height={CHART_VIEWBOX_HEIGHT}
+                fill={
+                  marker.upcoming
+                    ? "color-mix(in oklab, var(--color-muted-foreground) 6%, transparent)"
+                    : "color-mix(in oklab, var(--color-muted-foreground) 9%, transparent)"
+                }
+                stroke="none"
+              />
+              {[marker.x1, marker.x2].map((edge, index) => (
+                <line
+                  key={`research-edge-${index}`}
+                  x1={edge}
+                  y1={0}
+                  x2={edge}
+                  y2={CHART_VIEWBOX_HEIGHT}
+                  stroke={
+                    marker.upcoming
+                      ? "color-mix(in oklab, var(--color-muted-foreground) 30%, transparent)"
+                      : "color-mix(in oklab, var(--color-muted-foreground) 45%, transparent)"
+                  }
+                  strokeWidth={1}
+                  strokeDasharray="2 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+            </g>
+          ) : (
+            <line
+              key={`research-${marker.key}`}
+              data-testid={`research-marker-${marker.key}`}
+              x1={marker.x1}
+              y1={0}
+              x2={marker.x1}
+              y2={CHART_VIEWBOX_HEIGHT}
+              stroke={
+                marker.upcoming
+                  ? "color-mix(in oklab, var(--color-muted-foreground) 30%, transparent)"
+                  : "color-mix(in oklab, var(--color-muted-foreground) 45%, transparent)"
+              }
+              strokeWidth={1}
+              strokeDasharray="2 4"
+              vectorEffect="non-scaling-stroke"
+            />
+          ),
+        )}
 
         {/* The research study overlay: a named activation rule, the measured
             entry and exit, and the signed return between them. Measurements
@@ -1346,9 +1565,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           return (
             <g key={`zone-${zone.key}`} data-testid={`mission-chart-zone-${zone.key}`}>
               <rect
-                x={0}
+                x={geometry.plotLeft}
                 y={zone.y}
-                width={PLOT_WIDTH}
+                width={PLOT_WIDTH - geometry.plotLeft}
                 height={zone.height}
                 fill={`color-mix(in oklab, ${ink} ${ZONE_FILL_PERCENT[zone.register]}%, transparent)`}
                 stroke="none"
@@ -1361,7 +1580,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               ).map(([edge, edgeY]) => (
                 <line
                   key={`zone-edge-${edge}`}
-                  x1={0}
+                  x1={geometry.plotLeft}
                   y1={edgeY}
                   x2={PLOT_WIDTH}
                   y2={edgeY}
@@ -1378,13 +1597,15 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         })}
 
         {/* Session-level rules (phase 6): thin, dashed, muted — the labels
-            live in the HTML overlay so they never stretch. Only drawn on the
-            market chart (the prop is absent on mission charts). */}
+            live in the reserved lane's HTML overlay so they never stretch.
+            The rules start at the lane's far edge, like every other rule.
+            Only drawn on the market chart (the prop is absent on mission
+            charts). */}
         {sessionLines.map((line) => (
           <line
             key={`session-${line.key}`}
             data-testid={`market-chart-session-${line.key}`}
-            x1={0}
+            x1={geometry.plotLeft}
             y1={geometry.yForPrice(line.price)}
             x2={geometry.nowX}
             y2={geometry.yForPrice(line.price)}
@@ -1422,159 +1643,163 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         ) : null}
 
         {/* The series, as one moving object: the fill and all three line
-            segments travel together when a bar closes. */}
-        <g
-          style={{
-            transform: `translateX(${slideOffset}px)`,
-            transition:
-              slideOffset === 0 ? "transform 700ms cubic-bezier(0.33, 1, 0.68, 1)" : "none",
-          }}
-        >
-          {/* The volume underlay (phase 6): one quiet bar per candle along the
+            segments travel together when a bar closes. Clipped to the plot's
+            bounds — the lane stays empty and the gutter stays text whatever
+            the one-bar slide does. */}
+        <g clipPath={`url(#${gradientId}-plot)`}>
+          <g
+            style={{
+              transform: `translateX(${slideOffset}px)`,
+              transition:
+                slideOffset === 0 ? "transform 700ms cubic-bezier(0.33, 1, 0.68, 1)" : "none",
+            }}
+          >
+            {/* The volume underlay (phase 6): one quiet bar per candle along the
               bottom edge, direction-tinted at low opacity, scaled to the
               window's own maximum. It slides with the series. */}
-          {volumeByOpenTime !== null
-            ? geometry.bars.map((bar) => {
-                const volume = volumeByOpenTime.get(bar.key) ?? 0;
-                const height = maxVolume > 0 ? (volume / maxVolume) * VOLUME_PANE_HEIGHT : 0;
-                if (height <= 0) return null;
-                return (
-                  <rect
-                    key={`volume-${bar.key}`}
-                    data-testid="market-chart-volume-bar"
-                    x={bar.x - bar.halfWidth}
-                    y={CHART_VIEWBOX_HEIGHT - height}
-                    width={bar.halfWidth * 2}
-                    height={height}
-                    fill={bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)"}
-                    opacity={0.22}
-                    stroke="none"
-                  />
-                );
-              })
-            : null}
+            {volumeByOpenTime !== null
+              ? geometry.bars.map((bar) => {
+                  const volume = volumeByOpenTime.get(bar.key) ?? 0;
+                  const height = maxVolume > 0 ? (volume / maxVolume) * VOLUME_PANE_HEIGHT : 0;
+                  if (height <= 0) return null;
+                  return (
+                    <rect
+                      key={`volume-${bar.key}`}
+                      data-testid="market-chart-volume-bar"
+                      x={bar.x - bar.halfWidth}
+                      y={CHART_VIEWBOX_HEIGHT - height}
+                      width={bar.halfWidth * 2}
+                      height={height}
+                      fill={bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)"}
+                      opacity={0.22}
+                      stroke="none"
+                    />
+                  );
+                })
+              : null}
 
-          {!drawCandles && areaPath !== "" ? (
-            <path
-              className="mission-plot-settle"
-              d={areaPath}
-              fill={`url(#${gradientId}-under)`}
-              stroke="none"
-            />
-          ) : null}
+            {!drawCandles && areaPath !== "" ? (
+              <path
+                className="mission-plot-settle"
+                d={areaPath}
+                fill={`url(#${gradientId}-under)`}
+                stroke="none"
+              />
+            ) : null}
 
-          {/* Candle mode (final-form phase 6): every bar as body + wicks, in
+            {/* Candle mode (final-form phase 6): every bar as body + wicks, in
             the profit/loss pair by direction. The bar the wick took a stop out
             on is invisible in a line of closes; this is the picture the
             exchange draws. The bodies are viewBox rects — the plot stretches,
             and a body SHOULD stretch with the bar pitch — while the wicks keep
             a real 1px through `non-scaling-stroke`. A doji's body is given a
             minimum height so the bar still happened on screen. */}
-          {drawCandles ? (
-            <g className="mission-plot-settle" data-testid="mission-chart-candles">
-              {geometry.bars.map((bar) => {
-                const barColor =
-                  bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)";
-                return (
-                  <g key={bar.key}>
-                    <line
-                      x1={bar.x}
-                      y1={bar.highY}
-                      x2={bar.x}
-                      y2={bar.lowY}
-                      stroke={barColor}
-                      strokeWidth={1}
-                      opacity={0.85}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    <rect
-                      x={bar.x - bar.halfWidth}
-                      y={bar.bodyTop}
-                      width={bar.halfWidth * 2}
-                      height={Math.max(bar.bodyBottom - bar.bodyTop, 0.75)}
-                      fill={barColor}
-                      opacity={0.9}
-                    />
-                  </g>
-                );
-              })}
-            </g>
-          ) : null}
+            {drawCandles ? (
+              <g className="mission-plot-settle" data-testid="mission-chart-candles">
+                {geometry.bars.map((bar) => {
+                  const barColor =
+                    bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)";
+                  return (
+                    <g key={bar.key}>
+                      <line
+                        x1={bar.x}
+                        y1={bar.highY}
+                        x2={bar.x}
+                        y2={bar.lowY}
+                        stroke={barColor}
+                        strokeWidth={1}
+                        opacity={0.85}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <rect
+                        x={bar.x - bar.halfWidth}
+                        y={bar.bodyTop}
+                        width={bar.halfWidth * 2}
+                        height={Math.max(bar.bodyBottom - bar.bodyTop, 0.75)}
+                        fill={barColor}
+                        opacity={0.9}
+                      />
+                    </g>
+                  );
+                })}
+              </g>
+            ) : null}
 
-          {/* The two EMAs, over the candles only. Over the close line the
+            {/* The two EMAs, over the candles only. Over the close line the
             smooth pair stole the eye from the price; over candle texture they
             read as the overlay they are — and the cross of fast through slow is
             the strategy's own entry read, drawn from the same arithmetic the
             gate runs. Slow first (geometry orders them), so fast sits on top. */}
-          {drawEma
-            ? geometry.emaLines.map((line) => (
-                <polyline
-                  key={`ema-${line.speed}`}
-                  data-testid={`mission-chart-ema-${line.speed}`}
-                  points={toPoints(line.points)}
-                  fill="none"
-                  stroke={
-                    line.speed === "fast" ? "var(--color-info)" : "var(--color-muted-foreground)"
-                  }
-                  strokeWidth={1.25}
-                  opacity={0.85}
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))
-            : null}
+            {drawEma
+              ? geometry.emaLines.map((line) => (
+                  <polyline
+                    key={`ema-${line.speed}`}
+                    data-testid={`mission-chart-ema-${line.speed}`}
+                    points={toPoints(line.points)}
+                    fill="none"
+                    stroke={
+                      line.speed === "fast" ? "var(--color-info)" : "var(--color-muted-foreground)"
+                    }
+                    strokeWidth={1.25}
+                    opacity={0.85}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))
+              : null}
 
-          {/* Pre-entry segment. Held at three quarters of the line's colour
+            {/* Pre-entry segment. Held at three quarters of the line's colour
             rather than in grey: the hour before the fill is the same price
             series, and draining it to muted grey was what made the chart look
             like two different instruments spliced at the entry. */}
-          {!drawCandles && geometry.preEntryPoints.length >= 2 ? (
-            <polyline
-              className={drawClass}
-              onAnimationEnd={() => setIntroDone(true)}
-              pathLength={1}
-              points={toPoints(geometry.preEntryPoints)}
-              fill="none"
-              stroke={lineColor}
-              strokeWidth={LINE_WIDTH}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              opacity={pnlSign === null ? 1 : 0.55}
-              vectorEffect="non-scaling-stroke"
-            />
-          ) : null}
+            {!drawCandles && geometry.preEntryPoints.length >= 2 ? (
+              <polyline
+                className={drawClass}
+                onAnimationEnd={() => setIntroDone(true)}
+                pathLength={1}
+                points={toPoints(geometry.preEntryPoints)}
+                fill="none"
+                stroke={lineColor}
+                strokeWidth={LINE_WIDTH}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                opacity={pnlSign === null ? 1 : 0.55}
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
 
-          {/* Post-entry segment: the held part, at full strength. */}
-          {!drawCandles && geometry.postEntryPoints.length >= 2 ? (
-            <polyline
-              className={drawClass}
-              onAnimationEnd={() => setIntroDone(true)}
-              pathLength={1}
-              points={toPoints(geometry.postEntryPoints)}
-              fill="none"
-              stroke={segmentColor}
-              strokeWidth={LINE_WIDTH}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          ) : null}
+            {/* Post-entry segment: the held part, at full strength. */}
+            {!drawCandles && geometry.postEntryPoints.length >= 2 ? (
+              <polyline
+                className={drawClass}
+                onAnimationEnd={() => setIntroDone(true)}
+                pathLength={1}
+                points={toPoints(geometry.postEntryPoints)}
+                fill="none"
+                stroke={segmentColor}
+                strokeWidth={LINE_WIDTH}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
 
-          {/* The forming bar: last close → the mark. The one part of the line
-            that changes between candle closes, which on a 1m series is 59
-            seconds out of every 60 — so it is the segment that carries the
-            left-to-right progress, and it is drawn at full strength. */}
-          {geometry.livePoints.length === 2 ? (
-            <polyline
-              points={toPoints(geometry.livePoints)}
-              fill="none"
-              stroke={segmentColor}
-              strokeWidth={LINE_WIDTH}
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          ) : null}
+            {/* The forming bar: last close → the mark. The one part of the line
+              that changes between candle closes, which on a 1m series is 59
+              seconds of every 60 — so it is the segment that carries the
+              left-to-right progress, and it is drawn at full strength. */}
+            {geometry.livePoints.length === 2 ? (
+              <polyline
+                points={toPoints(geometry.livePoints)}
+                fill="none"
+                stroke={segmentColor}
+                strokeWidth={LINE_WIDTH}
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
+          </g>
         </g>
 
         {/* The plan wedge (phase 3): ONE soft translucent shape from the live
@@ -1686,7 +1911,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
                 <line
                   key={`hairline-${tag.key}`}
                   data-testid="mission-chart-hairline"
-                  x1={0}
+                  x1={geometry.plotLeft}
                   y1={tag.y}
                   x2={geometry.nowX}
                   y2={tag.y}
@@ -1706,7 +1931,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             key={`flash-${flash?.nonce ?? 0}`}
             data-testid="mission-chart-flash"
             className="mission-level-flash"
-            x1={0}
+            x1={geometry.plotLeft}
             y1={flashedLevel.y}
             // Stops at now, like the rule it is highlighting: a flash running
             // into the gutter would be the one saturated thing in it.
@@ -1742,7 +1967,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         {drag === null ? null : (
           <line
             data-testid="mission-chart-drag-rule"
-            x1={0}
+            x1={geometry.plotLeft}
             y1={geometry.yForPrice(drag.price)}
             x2={PLOT_WIDTH}
             y2={geometry.yForPrice(drag.price)}
@@ -1757,11 +1982,136 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             the chip's own level, wherever its label was laid out. */}
       </svg>
 
+      {/* The research markers' labels, stacked by the geometry's collision
+          pass when two occurrences sit close on the axis — the RULES keep
+          their true x, only the labels stack downward in rows. HTML rather
+          than SVG text so nothing stretches, with a background so a label
+          reads over candles. */}
+      {geometry.researchMarkers.map((marker) => (
+        <span
+          key={`research-label-${marker.key}`}
+          data-testid={`research-marker-label-${marker.key}`}
+          className={cn(
+            "pointer-events-none absolute bg-background/70 px-[2px] font-mono text-[9px] leading-none",
+            marker.upcoming ? "text-muted-foreground/70" : "text-muted-foreground",
+          )}
+          style={{
+            left: `${(marker.x1 / CHART_VIEWBOX_WIDTH) * 100}%`,
+            top: `${(marker.labelY / CHART_VIEWBOX_HEIGHT) * 100}%`,
+            maxWidth: `calc(${((CHART_VIEWBOX_WIDTH - marker.x1) / CHART_VIEWBOX_WIDTH) * 100}% - 4px)`,
+          }}
+        >
+          <span className="block truncate">{marker.label}</span>
+        </span>
+      ))}
+
+      {/* One focusable strip per research occurrence: the whole column at its
+          rule (or across its band), through which hover, focus, or click
+          opens the occurrence's detail. The strip carries the full facts in
+          its aria-label — name, exact UTC instant, the not-a-trade wording,
+          the source — and the detail adds the source as a real link. Nothing
+          here animates. Rendered BEFORE the grab strips so a draggable
+          level's hit area keeps priority over the research column. */}
+      {geometry.researchMarkers.map((marker) => {
+        // An instantaneous rule gets a hit column centred on it; a span
+        // covers its band. Both at least wide enough to hit.
+        const stripWidthUnits = marker.span ? Math.max(marker.x2 - marker.x1, 12) : 12;
+        const stripLeftUnits = Math.max(
+          0,
+          marker.span ? marker.x1 : marker.x1 - stripWidthUnits / 2,
+        );
+        const stripLeftPx =
+          (stripLeftUnits / CHART_VIEWBOX_WIDTH) * (frameSize?.width ?? CHART_VIEWBOX_WIDTH);
+        // Keep the detail card inside the frame however far right the
+        // occurrence sits: shifted left of its own strip when that is what it
+        // takes, but never past the frame's left edge. Unmeasured, the 8px
+        // offset is close enough for the first paint.
+        const detailLeftPx =
+          frameSize === null
+            ? 8
+            : Math.max(-stripLeftPx, Math.min(8, frameSize.width - 236 - stripLeftPx));
+        const open = openResearchKey === marker.key;
+        return (
+          <div
+            key={`research-hit-${marker.key}`}
+            className="absolute inset-y-0"
+            style={{
+              left: `${(stripLeftUnits / CHART_VIEWBOX_WIDTH) * 100}%`,
+              width: `${(stripWidthUnits / CHART_VIEWBOX_WIDTH) * 100}%`,
+            }}
+            // Hover AND focus live on the WRAPPER: the detail card and its
+            // source link are siblings of the strip inside it, so entering
+            // them must not read as leaving the occurrence — focus events
+            // bubble, and the relatedTarget check then keeps the card open
+            // while its link holds focus. No z-index here either — the drag
+            // strips below are later siblings and must keep winning the hit
+            // test over a research column; the open detail card carries its
+            // own z.
+            onMouseEnter={() => setOpenResearchKey(marker.key)}
+            onMouseLeave={() =>
+              setOpenResearchKey((current) => (current === marker.key ? null : current))
+            }
+            onFocus={() => setOpenResearchKey(marker.key)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setOpenResearchKey((current) => (current === marker.key ? null : current));
+              }
+            }}
+          >
+            <span
+              data-testid={`research-marker-hit-${marker.key}`}
+              role="note"
+              tabIndex={0}
+              aria-label={researchMarkerAriaLabel(marker)}
+              className={cn(
+                "absolute inset-0 block cursor-default outline-none focus-visible:bg-foreground/10",
+                open && "bg-foreground/5",
+              )}
+              onClick={() => setOpenResearchKey(marker.key)}
+            />
+            {open ? (
+              <span
+                data-testid={`research-marker-detail-${marker.key}`}
+                className="absolute top-2 z-20 block w-56 rounded-sm border border-border/60 bg-background/95 px-2 py-1.5 backdrop-blur-sm"
+                style={{ left: `${detailLeftPx}px` }}
+              >
+                <span className="block font-mono text-[10px] leading-tight text-foreground">
+                  {marker.label}
+                  {marker.upcoming ? (
+                    <span className="text-muted-foreground"> · upcoming</span>
+                  ) : null}
+                </span>
+                <span className="mt-0.5 block font-mono text-[9px] leading-tight text-muted-foreground">
+                  {marker.span
+                    ? `${formatUtcInstant(marker.startAt)} → ${formatUtcInstant(marker.endAt)}`
+                    : formatUtcInstant(marker.startAt)}
+                </span>
+                <span className="mt-0.5 block text-[9px] leading-tight text-muted-foreground">
+                  {RESEARCH_MARKER_NOTE}
+                </span>
+                {isHttpSourceUrl(marker.sourceUrl) ? (
+                  <a
+                    href={marker.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid={`research-marker-source-${marker.key}`}
+                    className="mt-0.5 block truncate text-[9px] leading-tight text-info underline underline-offset-2"
+                  >
+                    {marker.sourceUrl}
+                  </a>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+
       {/* The grab strips. HTML rather than SVG because a stretched plot makes
           a thin SVG hit area unusably narrow at some widths and enormous at
           others; a percentage-positioned strip is the same eight pixels tall
-          whatever the panel does. They sit over the plot only — the gutter is
-          text and must stay selectable. */}
+          whatever the panel does. They sit over the plot only — starting at
+          the lane's far edge, because the lane is text and must stay
+          selectable, and the gutter to the right is text too. */}
       {geometry.levels
         .filter((level) => isDraggable(level.kind) && level.inFrame)
         .map((level) => (
@@ -1774,8 +2124,8 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             aria-valuenow={level.price}
             className="absolute h-[9px] -translate-y-1/2 cursor-ns-resize touch-none"
             style={{
-              left: 0,
-              width: `${(PLOT_WIDTH / CHART_VIEWBOX_WIDTH) * 100}%`,
+              left: `${lanePercent}%`,
+              width: `${((PLOT_WIDTH - geometry.plotLeft) / CHART_VIEWBOX_WIDTH) * 100}%`,
               top: `${(level.y / CHART_VIEWBOX_HEIGHT) * 100}%`,
             }}
             onPointerDown={(event) => startDrag(level.kind, event)}
@@ -1787,16 +2137,18 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
 
       {/* The dragged price, and what it would plan to lose. Follows the
           pointer, because a readout the operator has to look away to read is a
-          readout they will not read while dragging. */}
+          readout they will not read while dragging. It anchors at the reserved
+          lane's left edge and is the lane's top priority, so it never stacks a
+          grid number on itself; longer than the lane, it runs on over the plot
+          with its own opaque backing — the same licence the crosshair readout
+          has, for the same reason: it is a transient read, not chart chrome. */}
       {drag === null ? null : (
         <span
           data-testid="mission-chart-drag-readout"
-          // Left, not right: the gutter on the right is where the level tags
-          // live, and a readout over them covers the very prices the operator
-          // is dragging relative to.
-          className="pointer-events-none absolute left-1 -translate-y-1/2 rounded-sm bg-background/90 px-1 py-0.5 font-mono text-[10.5px] tabular-nums"
+          className="mission-lane-label pointer-events-none absolute -translate-y-1/2 whitespace-nowrap rounded-sm px-1 py-0.5 font-mono text-[10.5px] tabular-nums"
           style={{
-            top: `${(geometry.yForPrice(drag.price) / CHART_VIEWBOX_HEIGHT) * 100}%`,
+            left: `calc(${lanePercent}% + 2px)`,
+            top: `${((leftAxisY("drag-readout") ?? geometry.yForPrice(drag.price)) / CHART_VIEWBOX_HEIGHT) * 100}%`,
             color: levelInkColor(drag.kind),
           }}
         >
@@ -2148,38 +2500,88 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         ) : null}
       </div>
 
-      {/* The grid's own prices, sitting just above their rules at the left of
-          the plot. The Stocks app puts this scale on the right; here the right
-          is the level gutter — entry, stop, target, the mark — and a price
-          scale interleaved with those would be two columns of numbers meaning
-          different things. The left of the plot is empty ground. */}
-      {gridPrices.map((price) => (
-        <span
-          key={`grid-label-${price}`}
-          className="pointer-events-none absolute left-1.5 -translate-y-full pb-0.5 font-mono text-[10px] leading-none tabular-nums text-muted-foreground"
-          style={{ top: `${(geometry.yForPrice(price) / CHART_VIEWBOX_HEIGHT) * 100}%` }}
-          aria-hidden="true"
-        >
-          {formatPrice(price)}
-        </span>
-      ))}
+      {/* The reserved left-axis lane: a strip the geometry holds EMPTY —
+          every candle, line, fill and rule starts at its far edge — so the
+          price scale has ground of its own instead of printing over early
+          bars. ONE placement shared by the grid prices, the session levels,
+          and (while live) the dragged price; the collision-aware pass in the
+          geometry module decides what sits where, what nudged, and what was
+          folded away because it could not be read. The Stocks app puts this
+          scale on the right; here the right is the level gutter, and the left
+          lane is the scale's ground.
 
-      {/* The session rules' labels (phase 6): tiny, muted, at the left end of
-          their rule, under it so they never sit on the grid labels above.
-          Docked at the folded y, so two levels a few cents apart still print
-          as two readable lines; the rules stay at their true prices. */}
-      {sessionLines.map((line) => (
-        <span
-          key={`session-label-${line.key}`}
-          className="pointer-events-none absolute left-1.5 pt-0.5 font-mono text-[9px] leading-none tabular-nums text-muted-foreground/80"
-          style={{
-            top: `${((sessionLabelYs.get(line.key) ?? geometry.yForPrice(line.price)) / CHART_VIEWBOX_HEIGHT) * 100}%`,
-          }}
-          aria-hidden="true"
-        >
-          {line.label} {formatPrice(line.price)}
+          Labels right-align against the plot edge so each number sits beside
+          the rule it names, on the lane's theme-aware backing material, so
+          they read over whatever the panel's glass shows through them. Named
+          levels carry the full-strength ink (weight and colour both — the
+          muted token this panel wears sits exactly at the 4.5:1 contrast
+          floor, and ANY alpha on it drops below), while grid ticks stay
+          legible but visibly subordinate in the quieter muted ink. A rule
+          whose label was folded away keeps drawing — the pass hides labels,
+          never rules. */}
+      <div
+        data-testid="mission-chart-left-lane"
+        className="pointer-events-none absolute inset-y-0 left-0"
+        style={{ width: `${lanePercent}%` }}
+      >
+        {leftAxis.placed.map((placement) => {
+          const entry = leftAxisEntryById.get(placement.id);
+          if (entry === undefined) return null;
+          // The dragged price has its own element above, with the ink and the
+          // risk figure; the lane only decides where it sits.
+          if (placement.id === "drag-readout") return null;
+          const isSession = placement.id.startsWith("session-");
+          return (
+            <span
+              key={placement.id}
+              data-testid={isSession ? "market-chart-session-label" : "mission-chart-grid-label"}
+              className={cn(
+                "mission-lane-label pointer-events-none absolute right-[3px] -translate-y-1/2 whitespace-nowrap rounded-[2px] px-[3px] font-mono leading-none tabular-nums",
+                isSession
+                  ? "text-[9px] font-medium text-foreground"
+                  : "text-[10px] font-normal text-muted-foreground",
+              )}
+              style={{ top: `${(placement.y / CHART_VIEWBOX_HEIGHT) * 100}%` }}
+              aria-hidden="true"
+            >
+              {entry.text}
+            </span>
+          );
+        })}
+        {/* The lane's overflow chip, in the right gutter's own idiom: levels
+            the lane had no legible room for are counted, never silently
+            dropped, and the accessible label NAMES them — a screen reader
+            reaches every hidden level here even though the visual labels are
+            decorative. Keyboard-focusable so that name is reachable without a
+            pointer. */}
+        {leftAxis.overflow.length > 0 ? (
+          <span
+            data-testid="mission-chart-lane-overflow"
+            className="mission-lane-label pointer-events-none absolute bottom-[2px] left-[3px] rounded-[2px] px-[3px] font-mono text-[9px] leading-none text-muted-foreground"
+            tabIndex={0}
+            role="note"
+            aria-label={`${leftAxis.overflow.length} more ${
+              leftAxis.overflow.length === 1 ? "level" : "levels"
+            } not shown: ${leftAxis.overflow.map((entry) => entry.text).join(", ")}`}
+          >
+            +{leftAxis.overflow.length}
+          </span>
+        ) : null}
+      </div>
+      {/* The lane's one accessible summary: the visual labels are decorative
+          (aria-hidden, positioned for the eye), so this sentence is what
+          assistive tech actually reads — every level the lane knows about,
+          placed or folded, plus the count of what was hidden. */}
+      {leftAxisEntries.length > 0 ? (
+        <span className="sr-only" data-testid="mission-chart-lane-summary">
+          {`Left price axis: ${leftAxisEntries.map((entry) => entry.text).join("; ")}.`}
+          {leftAxis.overflow.length > 0
+            ? ` ${leftAxis.overflow.length} more ${
+                leftAxis.overflow.length === 1 ? "level" : "levels"
+              } not shown.`
+            : ""}
         </span>
-      ))}
+      ) : null}
 
       {/* The arm-at-price chip (phase 6): docked in the gutter at the pointer's
           own price while the affordance is on. Clicking it arms a notify watch

@@ -9,7 +9,13 @@ import { renderForwardMenu, TRADING_VALIDATE_TOOL } from "@t3tools/trading-contr
 import { TRADING_HYPOTHESIS_TOOL } from "@t3tools/trading-contracts/hypothesis";
 import { TRADING_EVENTS_TOOL } from "@t3tools/trading-contracts/eventSets";
 import { TRADING_CHART_TOOL } from "@t3tools/trading-contracts/researchScenes";
-import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
+import {
+  TRADING_LOOK_TOOL,
+  TRADING_LOOK_INTERVALS,
+  TRADING_LOOK_MAX_ARCHIVE_ROWS,
+  TRADING_LOOK_MAX_BARS,
+  TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS,
+} from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
@@ -146,6 +152,49 @@ it("points at the calibration the one read now carries", () => {
   expect(TradingToolkit.tools[TRADING_LOOK_TOOL].description ?? "").toContain("calibration");
 });
 
+// The avoidable invalid calls this repair targets (unknown `funding` keys, a
+// `4h` look interval, `horizonBars: 672`, `candles:1h:500`) all came from
+// descriptions that named the keys but not their grammar. The description is
+// now the first place a model can learn a legal call — before the refusal has
+// to teach it — so the bounds it states are asserted against the same
+// constants the parser refuses by.
+it("states the look grammar and caps the parser enforces", () => {
+  const look = TradingToolkit.tools[TRADING_LOOK_TOOL].description ?? "";
+  // The candle grammar: a worked example, the interval set, the bar cap, and
+  // that one call carries one interval.
+  expect(look).toContain("candles:1h:200");
+  expect(look).toContain(TRADING_LOOK_INTERVALS.join("|"));
+  expect(look).toContain(`n≤${TRADING_LOOK_MAX_BARS}`);
+  expect(look).toContain("one tf per call");
+  // The archive keys by their real names with their real bounds — the old
+  // "funding/oi/book/scan" abbreviation invented a `funding` key that never
+  // parsed.
+  for (const key of ["funding_stats:W", "funding_series:n", "oi_premium:n", "book_history:n"]) {
+    expect(look, key).toContain(key);
+  }
+  expect(look).toContain(`days 1-${TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS}`);
+  expect(look).toContain(`(n≤${TRADING_LOOK_MAX_ARCHIVE_ROWS})`);
+  expect(look).not.toContain("funding/oi/book/scan");
+  // Catalog-first: the menu call is what an unsure caller is pointed at, not
+  // another guess.
+  expect(look).toContain("trading_look({})");
+  expect(look).toContain("never guess");
+});
+
+// The study grammar deliberately differs from the look grammar (1m through 1d,
+// not stopping at 1h; hundreds of bars, not 200), and the four-week daily
+// study is the example that keeps a 672-bar horizon from ever being composed.
+it("states the event-study grammar, caps, and the four-week example", () => {
+  const events = TradingToolkit.tools[TRADING_EVENTS_TOOL].description ?? "";
+  expect(events).toContain("1m|3m|5m|15m|1h|4h|1d");
+  expect(events).toContain("horizonBars 1..500");
+  expect(events).toContain("default 30");
+  expect(events).toContain('{interval: "1d", horizonBars: 28}');
+  // The coarsest-interval rule, and why: archive coverage.
+  expect(events).toContain("coarsest interval");
+  expect(events).toContain("finer intervals start later");
+});
+
 // Re-levelling used to be cancel-then-register, with the side being re-levelled
 // unwatched in between. The description has to name the parameter that closes
 // that, and the case where it silently does not.
@@ -248,15 +297,32 @@ it("keeps every description on a budget", () => {
   // Raised from 5,750 when `trading_plan_document` became the thirteenth tool:
   // chat is the strategy control plane now, and the direct-vs-planned line the
   // description draws is the one thing a provider cannot infer from the tools.
-  expect(total, "total description chars must stay under 6,250").toBeLessThan(6_250);
+  //
+  // Raised from 6,250 to 7,000 when `trading_look` and `trading_events` began
+  // carrying their grammar and caps (intervals, bar/row bounds, the 1d x 28
+  // study example): a model that learns a bound only from a refusal has
+  // already spent the call the bound was meant to save. The two rewritten
+  // descriptions measure 664 and 821 chars; the raise is their difference
+  // (531) plus deliberate headroom, not a widening until it fitted.
+  //
+  // Raised from 7,000 to 7,250 when `trading_events` and `trading_chart`
+  // began teaching the path_extrema study metric (metric/direction/priceField
+  // and the lowest-low excursion, hindsight-perfect) and the publication
+  // continuation: the mission those sentences answer is a study that escaped
+  // to shell math because the tool never said what it could measure. The
+  // landed grammar text stays intact; the raise carries only the new
+  // sentences (events 821 -> 1,120, chart 507 -> 675).
+  expect(total, "total description chars must stay under 7,250").toBeLessThan(7_250);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;
-    // `trading_look` answers what twelve tools used to, so it carries the
-    // longest description in the set. 500 leaves edit headroom, not room for
-    // a new field glossary.
-    expect(len, `${tool.name} description is ${len} chars, must be <= 500`).toBeLessThanOrEqual(
-      500,
+    // `trading_events` carries the study grammar (interval set, horizonBars
+    // bound, the four-week example, the path_extrema metric fields) and
+    // `trading_look` the fetch grammar, so they are the longest descriptions
+    // in the set. 1,150 leaves edit headroom, not room for a new field
+    // glossary; it moved from 900 when the metric fields landed.
+    expect(len, `${tool.name} description is ${len} chars, must be <= 1,150`).toBeLessThanOrEqual(
+      1_150,
     );
   }
 });

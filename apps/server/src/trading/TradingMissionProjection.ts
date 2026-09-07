@@ -23,7 +23,11 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ThreadId, TradingMissionId } from "@t3tools/contracts";
-import type { OrchestrationTradingMission, TradingMissionTimelineEntry } from "@t3tools/contracts";
+import type {
+  OrchestrationTradingMission,
+  TradingMissionTimelineEntry,
+  TradingRiskControl,
+} from "@t3tools/contracts";
 import type { TradingOrderTimeInForce } from "@t3tools/trading-contracts/execution";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
@@ -68,6 +72,29 @@ export class TradingMissionProjection extends Context.Service<
 const toIso = (epochMillis: number): string => DateTime.formatIso(DateTime.makeUnsafe(epochMillis));
 
 const MarketsJson = Schema.fromJsonString(Schema.Array(Schema.String));
+/** The per-market facts of a control result row (RC06). Unreadable reads as absent. */
+const ControlMarketsRowJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      market: Schema.String,
+      outcome: Schema.String,
+      positionSize: Schema.NullOr(Schema.Number),
+    }),
+  ),
+);
+const parseControlMarketsJson = (
+  json: string,
+): ReadonlyArray<{
+  readonly market: string;
+  readonly outcome: string;
+  readonly positionSize: number | null;
+}> => {
+  try {
+    return Schema.decodeUnknownSync(ControlMarketsRowJson)(json);
+  } catch {
+    return [];
+  }
+};
 const encodeMarketsJson = Schema.encodeUnknownSync(MarketsJson);
 const decodeMarketsJson = Schema.decodeUnknownSync(MarketsJson);
 const WatchesJson = Schema.fromJsonString(Schema.Array(PersistedWatch));
@@ -339,6 +366,14 @@ interface ValidationEventRow {
   readonly occurred_at: number;
 }
 
+/** A §14.7 control outcome row, or an §17.5 emergency notice, as the timeline reads it (RC06). */
+export interface ControlResultTimelineRow {
+  readonly control: string;
+  readonly status: string;
+  readonly summary: string;
+  readonly occurred_at: number;
+}
+
 /** A strategy publish. */
 interface StrategyVersionRow {
   readonly version: number;
@@ -360,6 +395,8 @@ export function buildMissionTimeline(input: {
   readonly publishes: ReadonlyArray<StrategyVersionRow>;
   readonly journal?: ReadonlyArray<JournalNoteRow>;
   readonly validationEvents?: ReadonlyArray<ValidationEventRow>;
+  /** A §14.7 control's durable outcome, and an §17.5 emergency notice (RC06). */
+  readonly controlResults?: ReadonlyArray<ControlResultTimelineRow>;
 }): ReadonlyArray<TradingMissionTimelineEntry> {
   const entries: Array<TradingMissionTimelineEntry & { readonly atMillis: number }> = [];
 
@@ -432,6 +469,20 @@ export function buildMissionTimeline(input: {
     });
   }
 
+  // The already-composed outcome sentence, prefixed with the control's own
+  // status word — "failed" and "unknown" are the two an operator must never
+  // have to infer from prose (RC06).
+  for (const result of input.controlResults ?? []) {
+    const label = result.summary.trim();
+    if (label === "") continue;
+    entries.push({
+      atMillis: result.occurred_at,
+      at: toIso(result.occurred_at),
+      kind: "control_result",
+      label: `${result.control} ${result.status}: ${label}`,
+    });
+  }
+
   return entries
     .sort((a, b) => b.atMillis - a.atMillis)
     .slice(0, MISSION_TIMELINE_LIMIT)
@@ -491,6 +542,7 @@ const toMission = (
   strategy: TradingPlanState | null,
   strategies: ReadonlyArray<TradingPlanState>,
   missionTimeline: ReadonlyArray<TradingMissionTimelineEntry>,
+  lastControlResult: OrchestrationTradingMission["lastControlResult"] = null,
 ): OrchestrationTradingMission =>
   ({
     id: TradingMissionId.make(row.mission_id),
@@ -604,6 +656,7 @@ const toMission = (
     // Filled by the ws layer, which owns the live mark read.
     marketPrices: [],
     missionTimeline,
+    lastControlResult,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }) satisfies OrchestrationTradingMission;
@@ -950,13 +1003,67 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         ORDER BY occurred_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
       `.pipe(Effect.mapError(sqlFail("timeline:validationEvents")));
 
+      // RC06: the control's own durable outcomes, plus the §17.5 emergency
+      // notices RC04 persists — the mission's history is where an operator
+      // reads them without a provider.
+      const controlResults = yield* sql<ControlResultTimelineRow>`
+        SELECT control, status, summary, occurred_at FROM trading_control_results
+        WHERE mission_id = ${missionId}
+        ORDER BY occurred_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:controlResults")));
+      const emergencyNotices = yield* sql<ControlResultTimelineRow>`
+        SELECT 'emergency_close' AS control, 'unknown' AS status, summary, occurred_at
+        FROM trading_event_inbox
+        WHERE mission_id = ${missionId} AND deduplication_key LIKE 'emergency_%'
+        ORDER BY occurred_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:emergencyNotices")));
+
       return buildMissionTimeline({
         wakes,
         stopAdjustments,
         publishes,
         journal,
         validationEvents,
+        controlResults: [...controlResults, ...emergencyNotices],
       });
+    });
+
+  /**
+   * The mission's most recent §14.7 control outcome (RC06): the correlated
+   * completion a dispatched command never proved. Read at read time like the
+   * timeline, for the same reason — the row is history, not current state.
+   */
+  const readLastControlResult = (missionId: string) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        readonly control: string;
+        readonly status: string;
+        readonly summary: string;
+        readonly markets_json: string;
+        readonly request_event_sequence: number | null;
+        readonly occurred_at: number;
+      }>`
+        SELECT control, status, summary, markets_json, request_event_sequence, occurred_at
+        FROM trading_control_results WHERE mission_id = ${missionId}
+        ORDER BY occurred_at DESC LIMIT 1
+      `.pipe(Effect.mapError(sqlFail("lastControlResult")));
+      const row = rows[0];
+      if (row === undefined) return null;
+      const markets: ReadonlyArray<{
+        readonly market: string;
+        readonly outcome: string;
+        readonly positionSize: number | null;
+      }> = parseControlMarketsJson(row.markets_json);
+      return {
+        control: row.control as TradingRiskControl,
+        status: row.status as "completed" | "failed" | "unknown",
+        summary: row.summary,
+        markets,
+        ...(row.request_event_sequence === null
+          ? {}
+          : { requestEventSequence: row.request_event_sequence }),
+        occurredAt: toIso(row.occurred_at),
+      };
     });
 
   /** The mission row's own optimistic-lock version, live. */
@@ -1009,7 +1116,10 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       const strategies = yield* readStrategies(row);
       const timeline = yield* readMissionTimeline(row.mission_id);
       const missionVersion = yield* readMissionVersion(row.mission_id);
-      return Option.some(toMission(row, missionVersion, exec, strategy, strategies, timeline));
+      const lastControlResult = yield* readLastControlResult(row.mission_id);
+      return Option.some(
+        toMission(row, missionVersion, exec, strategy, strategies, timeline, lastControlResult),
+      );
     });
 
   const list: TradingMissionProjectionShape["list"] = () =>
@@ -1026,9 +1136,18 @@ const makeTradingMissionProjection = Effect.gen(function* () {
               readStrategies(row),
               readMissionTimeline(row.mission_id),
               readMissionVersion(row.mission_id),
+              readLastControlResult(row.mission_id),
             ]),
-            ([exec, strategy, strategies, timeline, missionVersion]) =>
-              toMission(row, missionVersion, exec, strategy, strategies, timeline),
+            ([exec, strategy, strategies, timeline, missionVersion, lastControlResult]) =>
+              toMission(
+                row,
+                missionVersion,
+                exec,
+                strategy,
+                strategies,
+                timeline,
+                lastControlResult,
+              ),
           ),
         ),
         { concurrency: "unbounded" },

@@ -16,6 +16,7 @@ const {
   relaunchMock,
   removeListenerMock,
   removeSwitchMock,
+  requestSingleInstanceLockMock,
   setAboutPanelOptionsMock,
   setAppUserModelIdMock,
   setAsDefaultProtocolClientMock,
@@ -38,6 +39,7 @@ const {
   relaunchMock: vi.fn(),
   removeListenerMock: vi.fn(),
   removeSwitchMock: vi.fn(),
+  requestSingleInstanceLockMock: vi.fn(() => true),
   setAboutPanelOptionsMock: vi.fn(),
   setAppUserModelIdMock: vi.fn(),
   setAsDefaultProtocolClientMock: vi.fn(() => true),
@@ -71,6 +73,7 @@ vi.mock("electron", () => ({
     quit: quitMock,
     relaunch: relaunchMock,
     removeListener: removeListenerMock,
+    requestSingleInstanceLock: requestSingleInstanceLockMock,
     runningUnderARM64Translation: false,
     setAboutPanelOptions: setAboutPanelOptionsMock,
     setAsDefaultProtocolClient: setAsDefaultProtocolClientMock,
@@ -148,6 +151,16 @@ describe("ElectronApp", () => {
         error.message,
         'Failed to read Electron app metadata property "app-version".',
       );
+    }).pipe(Effect.provide(ElectronApp.layer)),
+  );
+
+  it.effect("requests Electron's single-instance lock through the service", () =>
+    Effect.gen(function* () {
+      requestSingleInstanceLockMock.mockImplementationOnce(() => false);
+      const electronApp = yield* ElectronApp.ElectronApp;
+
+      assert.strictEqual(yield* electronApp.requestSingleInstanceLock, false);
+      assert.strictEqual(requestSingleInstanceLockMock.mock.calls.length, 1);
     }).pipe(Effect.provide(ElectronApp.layer)),
   );
 

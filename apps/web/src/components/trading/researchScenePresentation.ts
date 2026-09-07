@@ -16,9 +16,18 @@ import type {
   ResearchSceneView,
   TradingChartCandleLike,
 } from "./researchSceneViewTypes.ts";
+import type { ResearchOccurrenceWindow } from "@t3tools/contracts";
+import type { ChartResearchMarkerInput } from "./missionChartGeometry.ts";
 import type { EventStudyEntryBasis } from "@t3tools/trading-contracts/eventSets";
 import { EVENT_STUDY_ENTRY_BASIS_PHRASES } from "@t3tools/trading-contracts/eventSets";
-import { STUDY_CHART_CONTEXT_BARS, STUDY_CHART_MAX_WINDOW_BARS } from "@t3tools/contracts";
+import {
+  RESEARCH_CALCULATION_VERSIONS,
+  STUDY_CHART_CONTEXT_BARS,
+  STUDY_CHART_MAX_WINDOW_BARS,
+  type TradingChartInterval,
+  type TradingChartRange,
+} from "@t3tools/contracts";
+import { autoInterval, sceneAutoFit } from "../../lib/tradingChartRangePolicy";
 
 /**
  * Bars of context either side of a measured occurrence window. Aliased off
@@ -44,34 +53,273 @@ export function activeGraphScenes(
 }
 
 /**
- * The initial mode when a thread holds scenes: calendar shows each measured
- * window where it happened, which is the honest first answer to "did ETH
- * rise after Devcon". Aligned is one click away and Live never moves.
- */
-export function resolveInitialGraphMode(scene: ResearchSceneView | undefined): GraphViewMode {
-  return scene === undefined ? "live" : "calendar";
-}
-
-/**
  * The mode-switch decision when the thread's scene set changes, extracted so
- * the sticky-Live rule is testable: a scene ARRIVING while Live is showing
- * selects Calendar once (the useful first view of new research), and only
- * then. Once the user has chosen any mode, later scene churn never moves
- * them: their choice is stickier than the data. Scenes disappearing entirely
- * hand the graph back to Live, because Calendar and Aligned have nothing to
- * show without them.
+ * the Live-first rule is testable: a scene ARRIVING never moves the graph.
+ * The study is published onto Live — named markers at their exact instants,
+ * one auto-fit of the range — and Calendar and Event aligned stay one click
+ * away. Scenes disappearing entirely hand the graph back to Live, because
+ * Calendar and Aligned have nothing to show without them.
  */
 export function nextGraphViewMode(input: {
   readonly current: GraphViewMode;
   readonly hasScenes: boolean;
   readonly previouslyHadScenes: boolean;
 }): GraphViewMode {
-  if (!input.hasScenes) return "live";
-  if (input.previouslyHadScenes) return input.current;
-  // Scenes just arrived. Auto-select Calendar only from Live: a user who is
-  // somehow already in a research mode (impossible without scenes, but total
-  // is total) stays put.
-  return input.current === "live" ? "calendar" : input.current;
+  // Scenes just arrived: keep whatever the reader is looking at, Live
+  // included. Research decorates the live graph; it does not take it over.
+  if (input.hasScenes) return input.current;
+  // Scenes vanished (cleared, or the thread's last scene was superseded away):
+  // the research modes have nothing to render, so the graph comes home.
+  return "live";
+}
+
+/** The label on the event-aligned stage's baseline reference line. */
+export const BASELINE_REFERENCE_LABEL = "Baseline mean";
+
+/** The exact sentence the aligned stage shows when the report holds no baseline. */
+export const BASELINE_UNAVAILABLE_SENTENCE = "Baseline unavailable for this served window";
+
+/** The dashed reference the aggregate comparison draws, when there is one to draw. */
+export interface BaselineReference {
+  readonly valuePct: number;
+  readonly label: string;
+}
+
+/**
+ * The baseline mean as a drawn reference: one horizontal level across the
+ * horizon axis, labelled as the baseline. Null when the report holds no
+ * baseline (the served window was shorter than the horizon) — and then
+ * NOTHING may draw in its place, because a made-up level would read as a
+ * measurement.
+ */
+export function baselineReference(
+  baseline: { readonly meanReturnPct: number } | null,
+): BaselineReference | null {
+  return baseline === null
+    ? null
+    : { valuePct: baseline.meanReturnPct, label: BASELINE_REFERENCE_LABEL };
+}
+
+/**
+ * The market one scene belongs to, from whichever payload carries it. A scene
+ * is thread-scoped, but the graph that draws it is a market's: selection
+ * filters by this so one market's bars never carry another market's markers.
+ */
+export function sceneMarketOf(scene: {
+  readonly eventStudy?: { readonly market: string } | undefined;
+  readonly strategyReplay?: { readonly thesis: { readonly market: string } } | undefined;
+  readonly annotation?: { readonly market: string } | undefined;
+}): string | null {
+  return (
+    scene.eventStudy?.market ??
+    scene.strategyReplay?.thesis.market ??
+    scene.annotation?.market ??
+    null
+  );
+}
+
+/**
+ * The scene-derived markers the LIVE graph draws. Every occurrence window is
+ * drawn at its exact saved instants: an instantaneous activation
+ * (`startAt === endAt`) becomes a rule at that millisecond; a true span becomes
+ * a band; an occurrence after `now` is flagged `upcoming` so the renderer can
+ * place it in the future gutter. Uncovered occurrences are still handed over —
+ * coverage is the renderer's to say, never a reason to silently drop a
+ * recorded fact.
+ *
+ * A covered occurrence ALSO draws its measured entry and exit as point rules
+ * at the instants the study measured: "plot my entries and exits" is answerable
+ * on Live, not only inside the Calendar view. They are labelled as the study's
+ * own measurements (the accessible name says counterfactual, never a fill) and
+ * never drawn for a window the study could not measure.
+ */
+export function liveResearchMarkers(
+  scene: {
+    readonly sceneId: string;
+    readonly eventStudy?:
+      | {
+          readonly eventSetName: string;
+          readonly occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow>;
+        }
+      | undefined;
+  },
+  now: number,
+): ReadonlyArray<ChartResearchMarkerInput> {
+  const study = scene.eventStudy;
+  if (study === undefined) return [];
+  const markers: Array<ChartResearchMarkerInput> = [];
+  for (const window of study.occurrenceWindows) {
+    const name = window.label ?? study.eventSetName;
+    markers.push({
+      key: `${scene.sceneId}:${window.startAt}`,
+      label: name,
+      startAt: window.startAt,
+      endAt: window.endAt,
+      sourceUrl: window.source,
+      covered: window.covered,
+      upcoming: window.endAt > now,
+    });
+    if (!window.covered || window.entryTime === undefined || window.exitTime === undefined) {
+      continue;
+    }
+    markers.push({
+      key: `${scene.sceneId}:${window.startAt}:entry`,
+      label: `${name} entry`,
+      startAt: window.entryTime,
+      endAt: window.entryTime,
+      sourceUrl: window.source,
+      covered: true,
+      upcoming: false,
+    });
+    markers.push({
+      key: `${scene.sceneId}:${window.startAt}:exit`,
+      label: `${name} exit`,
+      startAt: window.exitTime,
+      endAt: window.exitTime,
+      sourceUrl: window.source,
+      covered: true,
+      upcoming: false,
+    });
+  }
+  return markers;
+}
+
+/**
+ * The accessible name of one research marker: its label, the exact UTC
+ * instant(s), what it means (a historical counterfactual measurement, never a
+ * fill — or an expectation, for an upcoming occurrence), and the authoritative
+ * source the date came from. Composed here so the derivation and the renderer
+ * cannot disagree about what a marker claims.
+ */
+export function researchMarkerAccessibleName(marker: ChartResearchMarkerInput): string {
+  const coverage = marker.covered ? "" : ", not covered by recorded data";
+  const when =
+    marker.startAt === marker.endAt
+      ? `at ${new Date(marker.startAt).toISOString()}`
+      : `from ${new Date(marker.startAt).toISOString()} to ${new Date(marker.endAt).toISOString()}`;
+  const meaning = marker.upcoming
+    ? "upcoming researched occurrence"
+    : "historical counterfactual measurement, not a fill";
+  return `${marker.label} ${when}${coverage}: ${meaning}; source ${marker.sourceUrl}`;
+}
+
+/**
+ * Short coverage notes for occurrences the archive never reached, rendered as
+ * text under the chart — an occurrence older than the recording start cannot
+ * be drawn at the left edge without inventing a position, so it says so
+ * instead. A future occurrence is likewise named as not having happened yet.
+ */
+export function uncoveredOccurrenceNotes(
+  scene: {
+    readonly eventStudy?:
+      | {
+          readonly eventSetName: string;
+          /** The report's own rows, one per window in order, each with its measured reason. */
+          readonly report?:
+            | { readonly rows: ReadonlyArray<{ readonly reason?: string | undefined }> }
+            | undefined;
+          readonly occurrenceWindows: ReadonlyArray<ResearchOccurrenceWindow>;
+        }
+      | undefined;
+  },
+  now: number,
+): ReadonlyArray<string> {
+  const study = scene.eventStudy;
+  if (study === undefined) return [];
+  const notes: Array<string> = [];
+  for (const [index, window] of study.occurrenceWindows.entries()) {
+    if (window.covered) continue;
+    const label = window.label ?? study.eventSetName;
+    const date = new Date(window.startAt).toISOString().slice(0, 10);
+    if (window.endAt > now) {
+      notes.push(`${label} (${date}) has not happened yet`);
+      continue;
+    }
+    // The engine's own reason, when the row carries one: a gap, a forming
+    // entry bar and a pre-archive event are different facts, and folding
+    // them all into "predates recorded data" misstates two of the three.
+    const reason = study.report?.rows[index]?.reason;
+    notes.push(
+      reason === undefined || reason.includes("before the archived window")
+        ? `${label} (${date}) predates recorded data`
+        : `${label} (${date}) not measured: ${reason}`,
+    );
+  }
+  return notes;
+}
+
+/** The range/bars pair a scene's arrival fits the live graph to, once. */
+export interface SceneAutoFitRecommendation {
+  readonly range: TradingChartRange;
+  readonly interval: TradingChartInterval;
+}
+
+/**
+ * The one-time range recommendation for a newly active event-study scene,
+ * pure over dates: the smallest fixed range that holds every occurrence the
+ * graph can actually draw (covered ones inside the archive, upcoming ones in
+ * the future gutter), `all` when none does. An occurrence the archive never
+ * reached can never draw, so it must not stretch the fit; but when nothing is
+ * drawable the whole set decides, because `all` plus the coverage note is the
+ * honest frame for it.
+ */
+export function sceneAutoFitRecommendation(
+  occurrenceWindows: ReadonlyArray<{
+    readonly startAt: number;
+    readonly endAt: number;
+    readonly covered: boolean;
+  }>,
+  now: number,
+): SceneAutoFitRecommendation {
+  const relevant = occurrenceWindows.filter((window) => window.covered || window.endAt > now);
+  const source = relevant.length > 0 ? relevant : occurrenceWindows;
+  const earliest = source.length > 0 ? Math.min(...source.map((w) => w.startAt)) : now;
+  const latest = relevant.length > 0 ? Math.max(...relevant.map((w) => w.endAt)) : now;
+  const range = sceneAutoFit(earliest, latest, now);
+  return { range, interval: autoInterval(range, "event_study_fit") };
+}
+
+/** The once-per-scene gate around {@link sceneAutoFitRecommendation}. */
+export interface SceneAutoFitDecision {
+  readonly apply: boolean;
+  /** The set to keep in the caller's ref: the applied ids, this one included. */
+  readonly appliedSceneIds: ReadonlySet<string>;
+  readonly recommendation?: SceneAutoFitRecommendation;
+}
+
+/**
+ * Whether a scene's auto-fit should be applied NOW: once per active scene id,
+ * ever. Publishing a new scene supersedes the old one, so each new id gets
+ * its one fit; polls and refreshes of the same scene never move the range
+ * again, and a user's own choice after any fit is stickier than the data.
+ */
+export function sceneAutoFitDecision(
+  appliedSceneIds: ReadonlySet<string>,
+  scene: {
+    readonly sceneId: string;
+    readonly eventStudy?:
+      | {
+          readonly occurrenceWindows: ReadonlyArray<{
+            readonly startAt: number;
+            readonly endAt: number;
+            readonly covered: boolean;
+          }>;
+        }
+      | undefined;
+  },
+  now: number,
+): SceneAutoFitDecision {
+  const windows = scene.eventStudy?.occurrenceWindows;
+  if (windows === undefined || appliedSceneIds.has(scene.sceneId)) {
+    return { apply: false, appliedSceneIds };
+  }
+  const applied = new Set(appliedSceneIds);
+  applied.add(scene.sceneId);
+  return {
+    apply: true,
+    appliedSceneIds: applied,
+    recommendation: sceneAutoFitRecommendation(windows, now),
+  };
 }
 
 export interface AlignedPoint {
@@ -122,6 +370,40 @@ export function alignedTracePoints(input: {
       barsSinceEntry: index,
       changePct: ((candle.close - anchor) / anchor) * 100,
     }));
+}
+
+/**
+ * Where a row's hindsight extremum lands on its own aligned trace: x is the
+ * extremum bar's offset from the entry bar (the entry bar's OPEN, whichever
+ * basis anchored the entry), y is the row's measured excursion — the same
+ * long-convention percentage the trace's closes are plotted in, so the mark
+ * sits at the path's extreme, below the close line for a short's low. Null
+ * when the row holds no extremum or its bar falls outside the measured run:
+ * the aligned view never invents a bar the trace does not hold.
+ */
+export function alignedExtremumMark(input: {
+  readonly row: {
+    readonly extremumTime?: number | undefined;
+    readonly excursionReturnPct?: number | undefined;
+  };
+  readonly entryTime: number;
+  readonly entryBasis: EventStudyEntryBasis;
+  readonly intervalMs: number;
+  /** The trace's own last barsSinceEntry; the mark may not claim past it. */
+  readonly lastBar: number;
+}): { readonly barsSinceEntry: number; readonly changePct: number } | null {
+  const at = input.row.extremumTime;
+  const excursion = input.row.excursionReturnPct;
+  if (at === undefined || excursion === undefined || input.intervalMs <= 0) return null;
+  // The close basis anchors the entry at the entry bar's CLOSE, so that bar's
+  // open — bar 0 of the trace — sits one full interval before the entry time.
+  const entryBarOpen =
+    input.entryBasis === "first_closed_bar_after_event"
+      ? input.entryTime - input.intervalMs
+      : input.entryTime;
+  const bars = Math.round((at - entryBarOpen) / input.intervalMs);
+  if (bars < 0 || bars > input.lastBar) return null;
+  return { barsSinceEntry: bars, changePct: excursion };
 }
 
 /**
@@ -192,15 +474,42 @@ export function payloadEntryBasis(payload: EventStudyScenePayload): EventStudyEn
 const fmtDate = (t: number): string => new Date(t).toISOString().slice(0, 16);
 
 /**
+ * Whether a scene's numbers were computed by the current study engine. A
+ * scene persisted at an older calculation version keeps its recorded numbers
+ * forever — they are what was measured then — but it must say it predates the
+ * current semantics rather than passing them off as current, and the fix is
+ * republishing the same recipe (which writes a new scene row), never silently
+ * restamping the old one.
+ */
+export function isLegacyEventStudyScene(
+  payload: EventStudyScenePayload & { readonly calculationVersion?: string | undefined },
+): boolean {
+  return (
+    payload.report.nComplete === undefined ||
+    (payload as { calculationVersion?: string }).calculationVersion !==
+      RESEARCH_CALCULATION_VERSIONS.eventStudy
+  );
+}
+
+/**
  * The honesty block under the graph: every line a reader needs before
  * trusting a number, as data so the renderer cannot drop one quietly.
- * Baseline wording never claims significance.
+ * Baseline wording never claims significance. A legacy-calculation scene
+ * says so on the first line that could otherwise read as current numbers.
  */
-export function studyExplanationLines(payload: EventStudyScenePayload): ReadonlyArray<string> {
+export function studyExplanationLines(
+  payload: EventStudyScenePayload & { readonly calculationVersion?: string },
+): ReadonlyArray<string> {
   const { report } = payload;
   const basis = payloadEntryBasis(payload);
   const lines = [
     `${report.nCovered} of ${report.n} occurrences fall inside archived data`,
+    ...(report.nComplete === undefined
+      ? []
+      : [
+          `${report.nComplete} completed the full horizon, ${report.nPartial ?? 0} truncated, ` +
+            `${report.nUnavailable ?? report.n - report.nCovered} not measurable; aggregates are over complete horizons only`,
+        ]),
     `horizon ${describeHorizon(report.horizonBars, report.horizonMs)} on ${payload.interval} bars`,
     `entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[basis]}`,
     studyRuleSentence(basis),
@@ -208,6 +517,16 @@ export function studyExplanationLines(payload: EventStudyScenePayload): Readonly
       `hit rate ${report.hitRatePercent === null ? "-" : `${report.hitRatePercent}%`}, ` +
       `best ${fmtPct(report.bestReturnPct)}, worst ${fmtPct(report.worstReturnPct)}`,
   ];
+  if (
+    payload.calculationVersion !== undefined &&
+    payload.calculationVersion !== RESEARCH_CALCULATION_VERSIONS.eventStudy
+  ) {
+    lines.push(
+      `computed at calculation version ${payload.calculationVersion}, older than the current ` +
+        `${RESEARCH_CALCULATION_VERSIONS.eventStudy}: the entry-extremum, gap, cutoff and completeness semantics ` +
+        "have since been repaired — republish the same recipe to recompute",
+    );
+  }
   lines.push(
     report.baseline === null
       ? "no baseline: the served window is shorter than the horizon"
@@ -255,6 +574,10 @@ const fmtPct = (value: number | null | undefined): string =>
 export const fmtUsd = (value: number): string =>
   `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
+/** Plain price display, the register the panel's figures use. */
+export const fmtPrice = (value: number): string =>
+  value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+
 /**
  * The signed money figure an event study's percentage maps onto: display
  * arithmetic on a measured return, nothing more.
@@ -272,6 +595,93 @@ export function historicalGrossChangeLabel(notionalUsd: number): string {
   return `historical gross change on ${fmtUsd(notionalUsd)}, before costs`;
 }
 
+// ---------------------------------------------------------------------------
+// the path_extrema metric: hypothetical PnL is display arithmetic, nothing more
+// ---------------------------------------------------------------------------
+
+/**
+ * The assumptions line that rides a path_extrema scene's money figures: each
+ * event is illustrated on the full notional INDEPENDENTLY (no compounding, no
+ * reuse across events), gross of every cost, and the hindsight-perfect figure
+ * is the maximum favorable excursion after entry — the best the path offered,
+ * never a strategy result anyone could have realized.
+ */
+export const PATH_EXTREMA_ASSUMPTIONS_SENTENCE =
+  "hypothetical illustration: each event gets the full notional independently (never compounded or reused), gross — no fees, funding, slippage or liquidation; the hindsight-perfect figure is the maximum favorable excursion after entry, not a realizable strategy result";
+
+/**
+ * The fixed-horizon close PnL on one event's notional: sign-correct for the
+ * direction, so a SHORT profits when price falls (a negative measured return
+ * negates into positive money) and loses when it rises. Pure display
+ * arithmetic on the row's measured terminal returnPct — the notional is the
+ * reader's current illustration, never an allocated position.
+ */
+export function fixedHorizonPnlUsd(input: {
+  readonly notionalUsd: number;
+  readonly returnPct: number;
+  readonly direction: "short" | "long";
+}): number {
+  return (
+    (input.notionalUsd * (input.direction === "short" ? -input.returnPct : input.returnPct)) / 100
+  );
+}
+
+/**
+ * The hindsight-perfect PnL at the extremum on one event's notional: the
+ * excursion is long-convention signed like returnPct, so a short negates it
+ * too. This is the maximum favorable excursion — the best point the path
+ * reached after entry — and every figure it produces must ride
+ * {@link PATH_EXTREMA_ASSUMPTIONS_SENTENCE}: nobody could have known the
+ * extremum in advance, and nobody exits every window at its best tick.
+ */
+export function hindsightPerfectPnlUsd(input: {
+  readonly notionalUsd: number;
+  readonly excursionReturnPct: number;
+  readonly direction: "short" | "long";
+}): number {
+  return (
+    (input.notionalUsd *
+      (input.direction === "short" ? -input.excursionReturnPct : input.excursionReturnPct)) /
+    100
+  );
+}
+
+/** The extremum in the reader's words: a short reads the low, a long the high. */
+export function extremumPhrase(priceField: "low" | "high"): string {
+  return priceField === "low" ? "lowest low" : "highest high";
+}
+
+/**
+ * What one occurrence's timestamps claim, as a phrase the panel can put
+ * beside the time. Legacy rows carry no claim and say exactly that — "recorded
+ * as a span" — rather than a precision nobody declared at the time, and a
+ * date never reads as a midnight it did not establish.
+ */
+export function occurrencePrecisionPhrase(
+  precision: "instant" | "window" | "date" | undefined,
+): string {
+  switch (precision) {
+    case "instant":
+      return "exact instant";
+    case "window":
+      return "exact window";
+    case "date":
+      return "date precision (whole days, no time of day claimed)";
+    default:
+      return "recorded as a span";
+  }
+}
+
+/**
+ * The metric a scene's numbers were measured on; scenes persisted before
+ * metrics existed are forward_return and never reinterpreted.
+ */
+export function payloadStudyMetric(payload: {
+  readonly metric?: "forward_return" | "path_extrema" | undefined;
+}): "forward_return" | "path_extrema" {
+  return payload.metric ?? "forward_return";
+}
+
 /**
  * The calendar chart's study overlay for one occurrence, derived from the
  * server-composed deterministic layers rather than rebuilt from the row: the
@@ -279,27 +689,66 @@ export function historicalGrossChangeLabel(notionalUsd: number): string {
  * label), the measured entry and exit with their prices, and the signed
  * return between them. Null fields mean the scene holds no such layer, and
  * the chart draws nothing for them rather than inventing a position.
+ *
+ * `extremum` is the one piece the deterministic vocabulary does not carry
+ * (the composer emits no extremum layer), so it is derived here from the SAME
+ * report row the layers were composed from — and only when the caller passes
+ * that row. It is the hindsight extremum of a path_extrema occurrence: a
+ * different artifact from the fixed-horizon terminal close, drawn beside it
+ * and labelled as what it is, never folded into the exit.
  */
 export interface OccurrenceStudyOverlay {
   readonly activation: { readonly at: number; readonly label: string } | null;
   readonly entry: { readonly at: number; readonly price: number; readonly label: string } | null;
   readonly exit: { readonly at: number; readonly price: number; readonly label: string } | null;
   readonly returnPct: number | null;
+  readonly extremum: { readonly at: number; readonly price: number; readonly label: string } | null;
 }
 
 /**
- * The horizon rides the exit marker's label because it is the one number a
- * reader needs to tell a horizon-30 exit from a truncated one.
+ * The report-row context the overlay's row-derived pieces need: the row its
+ * layers were composed from, and the path_extrema recipe (price field and
+ * interval) that names what the extremum measured.
+ */
+export interface OccurrenceStudyRowContext {
+  readonly row: {
+    readonly covered: boolean;
+    readonly truncated: boolean;
+    readonly barsCovered?: number | undefined;
+    readonly extremumTime?: number | undefined;
+    readonly extremumPrice?: number | undefined;
+  };
+  readonly priceField: "low" | "high";
+  readonly interval: string;
+}
+
+/**
+ * The horizon and the measured window's end ride the exit marker's label,
+ * because the exit always MEANS the terminal close of what was measured: the
+ * full horizon's close, or — on a truncated row — the close of the last bar
+ * the window actually reached, said as exactly that.
+ */
+function terminalCloseLabel(horizonBars: number, row: OccurrenceStudyRowContext["row"]): string {
+  const truncated = row.truncated && row.barsCovered !== undefined;
+  const bars = truncated ? row.barsCovered! : horizonBars;
+  return `study exit: terminal close after ${bars} bars${truncated ? " (truncated)" : ""}`;
+}
+
+/**
+ * The overlay for one occurrence: layer-bound pieces from the composed scene,
+ * plus the row-derived extremum when its context was passed.
  */
 export function occurrenceStudyOverlay(
   layers: ReadonlyArray<DeterministicSceneLayer>,
   occurrenceIndex: number,
   horizonBars: number,
+  rowContext?: OccurrenceStudyRowContext,
 ): OccurrenceStudyOverlay {
   let activation: OccurrenceStudyOverlay["activation"] = null;
   let entry: OccurrenceStudyOverlay["entry"] = null;
   let exit: OccurrenceStudyOverlay["exit"] = null;
   let returnPct: number | null = null;
+  let extremum: OccurrenceStudyOverlay["extremum"] = null;
   for (const layer of layers) {
     if (layer.kind === "event_span" && layer.occurrenceIndex === occurrenceIndex) {
       // An instantaneous activation (start equal to end) is the rule; a
@@ -308,12 +757,106 @@ export function occurrenceStudyOverlay(
     } else if (layer.kind === "study_entry" && layer.occurrenceIndex === occurrenceIndex) {
       entry = { at: layer.at, price: layer.price, label: "study entry" };
     } else if (layer.kind === "study_exit" && layer.occurrenceIndex === occurrenceIndex) {
-      exit = { at: layer.at, price: layer.price, label: `study exit after ${horizonBars} bars` };
+      exit = {
+        at: layer.at,
+        price: layer.price,
+        label:
+          rowContext === undefined
+            ? `study exit: terminal close after ${horizonBars} bars`
+            : terminalCloseLabel(horizonBars, rowContext.row),
+      };
     } else if (layer.kind === "return_span" && layer.occurrenceIndex === occurrenceIndex) {
       returnPct = layer.returnPct;
     }
   }
-  return { activation, entry, exit, returnPct };
+  if (
+    rowContext !== undefined &&
+    rowContext.row.covered &&
+    rowContext.row.extremumTime !== undefined &&
+    rowContext.row.extremumPrice !== undefined
+  ) {
+    extremum = {
+      at: rowContext.row.extremumTime,
+      price: rowContext.row.extremumPrice,
+      label: extremumBarPhrase(
+        rowContext.priceField,
+        rowContext.interval,
+        rowContext.row.extremumTime,
+      ),
+    };
+  }
+  return { activation, entry, exit, returnPct, extremum };
+}
+
+/**
+ * The extremum's time is the OPEN time of the bar that holds it: the row
+ * claims the bar, never a millisecond inside it, and the phrase says so —
+ * "lowest low of the 1d bar opening 2024-05-01" — never "at" an instant.
+ */
+export function extremumBarPhrase(
+  priceField: "low" | "high",
+  interval: string,
+  at: number,
+): string {
+  return `${extremumPhrase(priceField)} of the ${interval} bar opening ${new Date(at)
+    .toISOString()
+    .slice(0, 10)}`;
+}
+
+/**
+ * The label the chart's extremum rule carries: the hindsight claim and the
+ * measured price in one line, beside — never instead of — the terminal close
+ * marker's own price.
+ */
+export function extremumRuleLabel(input: {
+  readonly priceField: "low" | "high";
+  readonly interval: string;
+  readonly at: number;
+  readonly price: number;
+}): string {
+  return `${extremumPhrase(input.priceField)} (hindsight) ${fmtPrice(input.price)} of the ${
+    input.interval
+  } bar opening ${new Date(input.at).toISOString().slice(0, 10)}`;
+}
+
+/**
+ * The hindsight extremum as a chart research marker: a dotted rule at the
+ * extremum bar's open time, carrying the phrase, the price and the row's
+ * source. Distinct by construction from the study exit's square — the two
+ * artifacts a path_extrema question mixes up.
+ */
+export function extremumRuleMarker(input: {
+  readonly sceneId: string;
+  readonly occurrenceIndex: number;
+  readonly at: number;
+  readonly price: number;
+  readonly priceField: "low" | "high";
+  readonly interval: string;
+  readonly source: string;
+}): ChartResearchMarkerInput {
+  return {
+    key: `${input.sceneId}:extremum:${input.occurrenceIndex}`,
+    label: extremumRuleLabel(input),
+    startAt: input.at,
+    endAt: input.at,
+    sourceUrl: input.source,
+    covered: true,
+    upcoming: false,
+  };
+}
+
+/**
+ * The line the calendar stage adds when the extremum bar and the terminal
+ * close bar are the SAME bar: both markers still draw (the rule through the
+ * square, each with its own label and price), and the sentence says so
+ * instead of letting one visually swallow the other.
+ */
+export function extremumCoincidenceSentence(
+  priceField: "low" | "high",
+  interval: string,
+  at: number,
+): string {
+  return `the ${extremumBarPhrase(priceField, interval, at)} shares its bar with the terminal close: both markers draw there — the rule is the extremum, the square is the horizon's exit`;
 }
 
 /**
@@ -379,4 +922,70 @@ export function turnIntoStrategySentence(market: string, setName: string): strin
 
 export function validateForwardSentence(market: string, setName: string): string {
   return `Validate the "${setName}" idea on ${market} forward on paper. This is my explicit ask for a paper validation: arm one, nothing live.`;
+}
+
+// ---------------------------------------------------------------------------
+// strategy replay: every visible trade draws its entry AND its exit
+// ---------------------------------------------------------------------------
+
+/**
+ * How many replay trades draw on the chart and list at once. A display cap
+ * only: the full counts (taken by the backtest, persisted on the scene) stay
+ * in the showing line beside it, and bounded navigation reaches the rest.
+ */
+export const REPLAY_MARKER_WINDOW = 10;
+
+/** The structural shape of one persisted replay trade the labels read. */
+export interface ReplayTradeLike {
+  readonly entryPrice: number;
+  readonly exitPrice: number;
+  readonly exitReason: string;
+  readonly netUsd: number;
+}
+
+/**
+ * The entry rule's label: the trade's number, the thesis's side (one replay
+ * runs one single-sided thesis, so the side is the thesis's own record, never
+ * an inference from prices), and the measured entry price.
+ */
+export function replayEntryRuleLabel(
+  trade: ReplayTradeLike,
+  index: number,
+  side: "long" | "short",
+): string {
+  return `t${index + 1} entry · ${side} · ${fmtPrice(trade.entryPrice)}`;
+}
+
+/**
+ * The exit rule's label: the exit price, the exit reason, and the net result
+ * after every fee and funding payment — the trade's complete outcome, beside
+ * its entry marker rather than in place of it.
+ */
+export function replayExitRuleLabel(trade: ReplayTradeLike, index: number): string {
+  return `t${index + 1} exit · ${fmtPrice(trade.exitPrice)} · ${trade.exitReason} · net ${fmtUsd(
+    trade.netUsd,
+  )}`;
+}
+
+/** The entry band's label: the trade's own number, on the wash behind the rule. */
+export function replayEntryBandLabel(index: number): string {
+  return `t${index + 1} entry`;
+}
+
+/**
+ * The navigation line over a replay's windowed trades, keeping three counts
+ * distinct: the trades the backtest took, the trades the scene persisted
+ * (capped at persistence, not at display), and the slice currently drawn.
+ */
+export function replayShowingSentence(input: {
+  readonly fromIndex: number;
+  readonly drawn: number;
+  readonly persisted: number;
+  readonly taken: number;
+}): string {
+  const first = input.persisted === 0 ? 0 : input.fromIndex + 1;
+  const last = input.fromIndex + input.drawn;
+  const persistedNote =
+    input.taken > input.persisted ? `; the scene persists the first ${input.persisted}` : "";
+  return `showing trades ${first}–${last} of ${input.taken} taken${persistedNote}`;
 }

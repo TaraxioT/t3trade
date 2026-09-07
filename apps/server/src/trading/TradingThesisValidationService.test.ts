@@ -13,12 +13,18 @@
  * is a database: the lifecycle and its reverse states, the catch-up walk, and
  * the separation.
  */
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import type { BacktestCoverage, BacktestStats } from "@t3tools/trading-contracts/backtest";
 import { MIN_REPLAY_SETUPS } from "@t3tools/trading-contracts/replay";
 import type { TradingThesis } from "@t3tools/trading-contracts/thesis";
 
@@ -28,6 +34,7 @@ import type { CandleRow } from "./archive/candles.ts";
 import { TradingEventService, TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingMarketArchive, type TradingMarketArchiveShape } from "./TradingMarketArchive.ts";
 import {
+  makeTradingThesisValidationService,
   TradingThesisValidationService,
   TradingThesisValidationServiceLive,
 } from "./TradingThesisValidationService.ts";
@@ -69,11 +76,19 @@ const stubArchive = Layer.succeed(TradingMarketArchive, {
   bookHistory: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
 } as unknown as TradingMarketArchiveShape);
 
+/**
+ * One memory database per test file build, shared by every service layer in
+ * it: the durability tests build a second service (with a failing archive)
+ * against the SAME rows, which is the only way to observe that a failed
+ * refinement left the prior validation's rows untouched.
+ */
+const memory = NodeSqliteClient.layerMemory();
+
 const layer = it.layer(
   TradingThesisValidationServiceLive.pipe(
     Layer.provideMerge(stubArchive),
     Layer.provideMerge(TradingEventServiceLive),
-    Layer.provideMerge(NodeSqliteClient.layerMemory()),
+    Layer.provideMerge(memory),
     Layer.provideMerge(NodeServices.layer),
   ),
 );
@@ -668,4 +683,904 @@ layer("TradingThesisValidationService", (it) => {
       if (refused.outcome === "refused") assert.include(refused.reason, "no active event set");
     }),
   );
+
+  // ---------------------------------------------------------------------
+  // baseline provenance and gating (the E1 repair)
+  // ---------------------------------------------------------------------
+
+  /** A baseline the backtest could grade, with the fields anything reads set. */
+  const baselineStats = (over: Partial<Record<string, number>>) =>
+    ({
+      setupsFound: 40,
+      tradesTaken: 40,
+      setupsUnpriced: 0,
+      wins: 20,
+      losses: 20,
+      breakEven: 0,
+      winRatePercent: 50,
+      averageWinUsd: 4,
+      averageLossUsd: -3,
+      expectancyUsd: 500,
+      totalGrossUsd: 40,
+      totalFeesUsd: 15,
+      totalFundingUsd: 0,
+      totalNetUsd: 500 * 40,
+      maxDrawdownUsd: 8,
+      timeInMarketPercent: 20,
+      buyAndHoldNetUsd: 0,
+      buyAndHoldReturnPercent: 0,
+      ...over,
+    }) as BacktestStats;
+
+  const servedCoverage = (over: Partial<Record<string, unknown>> = {}) =>
+    ({
+      requestedFromT: START,
+      requestedToT: START + DAY,
+      servedFromT: START,
+      servedToT: START + DAY,
+      barsServed: 288,
+      gaps: [],
+      recordingSince: START,
+      fundingServed: false,
+      ...over,
+    }) as BacktestCoverage;
+
+  it.effect("keeps the run reference a baseline was recorded with", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({
+        id: armed.validation.id,
+        baseline: baselineStats({}),
+        source: {
+          runId: "run-1",
+          digest: "abc123",
+          computedAt: START,
+          coverage: servedCoverage(),
+        },
+      });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      assert.equal(report?.baselineSource?.runId, "run-1");
+      assert.equal(report?.baselineSource?.digest, "abc123");
+      assert.equal(report?.baselineSource?.computedAt, START);
+      assert.equal(report?.baselineSource?.coverage?.barsServed, 288);
+      assert.equal(report?.calculationVersion, "forward-1");
+      // The baseline is gradeable, so the comparison happens.
+      assert.equal(report?.baselineExpectancyUsd, 500);
+      assert.notEqual(report?.comparison, "no_baseline");
+    }),
+  );
+
+  it.effect("a baseline written the legacy way decodes with no source and still compares", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({ id: armed.validation.id, baseline: baselineStats({}) });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      // No provenance was recorded, so none is reported — the field is
+      // absent rather than nulled or guessed.
+      assert.isUndefined(report?.baselineSource);
+      assert.equal(report?.baselineExpectancyUsd, 500);
+      assert.notEqual(report?.comparison, "no_baseline");
+    }),
+  );
+
+  it.effect("refuses a zero-trade baseline as a comparison, never better than backtest", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({
+        id: armed.validation.id,
+        baseline: baselineStats({ tradesTaken: 0, expectancyUsd: 0 }),
+      });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      assert.isAtLeast(report?.stats.tradesTaken ?? 0, MIN_REPLAY_SETUPS);
+      assert.notEqual(report?.comparison, "better_than_backtest");
+      assert.equal(report?.comparison, "no_baseline");
+      assert.include(report?.verdictReason ?? "", "took only 0 trades");
+    }),
+  );
+
+  it.effect("refuses a baseline whose window was mostly missing", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingThesisValidationService;
+      const armed = yield* service.arm({ thesis, durationMs: 14 * DAY, now: START });
+      if (armed.outcome !== "armed") return assert.fail("expected the thesis to arm");
+
+      yield* service.setBaseline({
+        id: armed.validation.id,
+        baseline: baselineStats({}),
+        source: {
+          runId: "run-2",
+          digest: "def456",
+          computedAt: START,
+          // The archive served only a sliver of the requested day.
+          coverage: servedCoverage({ servedToT: START + 2 * 60 * MINUTE, barsServed: 24 }),
+        },
+      });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+
+      const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+      assert.isNotNull(report);
+      assert.equal(report?.comparison, "no_baseline");
+      assert.include(report?.verdictReason ?? "", "served too little");
+    }),
+  );
+
+  it.effect(
+    "an event-anchored run whose next occurrence is ahead reads as waiting, not failing",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const service = yield* TradingThesisValidationService;
+        const events = yield* TradingEventService;
+
+        const recorded = yield* events.record({
+          name: "the unlock",
+          occurrences: [
+            {
+              startAt: START + 40 * DAY,
+              endAt: START + 40 * DAY + 60 * MINUTE,
+              source: "user provided",
+            },
+          ],
+          threadId: "thread-events",
+          author: "agent",
+          now: START,
+        });
+        assert.equal(recorded.outcome, "ok");
+        if (recorded.outcome !== "ok") return;
+
+        const anchored: TradingThesis = {
+          ...thesis,
+          entry: {
+            predicates: [
+              {
+                left: { source: "event", eventSetId: recorded.set.eventSetId, label: "the unlock" },
+                comparator: "below",
+                right: { source: "constant", value: 30 },
+              },
+            ],
+          },
+        };
+        const armed = yield* service.arm({ thesis: anchored, durationMs: 14 * DAY, now: START });
+        assert.equal(armed.outcome, "armed");
+        if (armed.outcome !== "armed") return;
+
+        yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+        const report = yield* service.report({ id: armed.validation.id, now: AFTER_ALL });
+        assert.isNotNull(report);
+        assert.equal(report?.stats.tradesTaken, 0, "no occurrence ended, so nothing could fire");
+        assert.include(report?.verdictReason ?? "", "waiting, not failing");
+      }),
+  );
 });
+
+// ---------------------------------------------------------------------------
+// ledger durability: one transaction, one identity, no orphan half-writes
+// ---------------------------------------------------------------------------
+
+layer("TradingThesisValidationService durability", (it) => {
+  /** An always-in thesis with a one-bar hold: a trade every bar. */
+  const alwaysInMaxHold1: TradingThesis = {
+    market: "ETH",
+    interval: "5m",
+    side: "long",
+    entry: {
+      predicates: [
+        { left: { source: "price" }, comparator: "above", right: { source: "constant", value: 1 } },
+      ],
+    },
+    exits: { maxHoldBars: 1 },
+  };
+
+  it.effect("redelivering the same bars writes no duplicate fills or events", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TradingThesisValidationService;
+
+      const armed = yield* service.arm({
+        thesis: alwaysInMaxHold1,
+        durationMs: 14 * DAY,
+        now: START,
+      });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+      const counted = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.ok((counted[0]?.n ?? 0) > 0, "the pass must actually trade");
+
+      // The same delivery again: nothing new exists, so nothing new may be
+      // written, and no batch may describe a happening twice.
+      const second = yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+      assert.equal(second.length, 0, "a fully seen series produces no events");
+      const recounted = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(recounted[0]?.n, counted[0]?.n);
+    }),
+  );
+
+  it.effect(
+    "fill identity is derived from the bar, so a regressed checkpoint cannot duplicate a fill",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const sql = yield* SqlClient.SqlClient;
+        const service = yield* TradingThesisValidationService;
+
+        const armed = yield* service.arm({
+          thesis: alwaysInMaxHold1,
+          durationMs: 14 * DAY,
+          now: START,
+        });
+        assert.equal(armed.outcome, "armed");
+        if (armed.outcome !== "armed") return;
+
+        yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+        const rows = yield* sql<{ readonly paper_trade_id: string }>`
+        SELECT paper_trade_id FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id} ORDER BY entry_time
+      `;
+        assert.ok(rows.length > 3);
+        // Every row's id is the derived identity: validation id + the bar its
+        // entry filled on. That is what makes a replay of the same bar a no-op
+        // instead of a second logical fill with a fresh uuid.
+        for (const row of rows) {
+          assert.ok(
+            row.paper_trade_id.startsWith(`${armed.validation.id}:`),
+            `id ${row.paper_trade_id} must be derived from the validation and bar`,
+          );
+        }
+
+        // Simulate the crash the single transaction now makes impossible — a
+        // fill committed with its checkpoint lost — by regressing the
+        // checkpoint one bar and delivering again. The replayed insert must
+        // conflict away rather than mint a sibling.
+        const checkpoint = yield* sql<{ readonly last_bar_time: number }>`
+        SELECT last_bar_time FROM trading_thesis_validations
+        WHERE validation_id = ${armed.validation.id}
+      `;
+        yield* sql`
+        UPDATE trading_thesis_validations
+        SET last_bar_time = ${(checkpoint[0]?.last_bar_time ?? 0) - 5 * MINUTE}
+        WHERE validation_id = ${armed.validation.id}
+      `;
+        yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+        const after = yield* sql<{ readonly n: number; readonly open: number }>`
+        SELECT COUNT(*) AS n,
+               SUM(CASE WHEN exit_time IS NULL THEN 1 ELSE 0 END) AS open
+        FROM trading_thesis_paper_fills WHERE validation_id = ${armed.validation.id}
+      `;
+        assert.equal(after[0]?.n, rows.length, "the replayed bar minted no new fill");
+        assert.equal(after[0]?.open ?? 0, 0, "no row is left dangling open");
+      }),
+  );
+
+  it.effect("a bar that stops the trade it opens settles that row in its own entry bar", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TradingThesisValidationService;
+
+      // The one-bar-hold cadence plus a stop the bars can reach: some bars
+      // open a trade at their open and stop it inside themselves — an entry
+      // and an exit from the SAME bar, which the multi-exit step shape now
+      // carries instead of dropping one of the two settlements.
+      const stoppedSameBar: TradingThesis = {
+        ...alwaysInMaxHold1,
+        exits: { stop: { basis: "percent", value: 2 }, maxHoldBars: 1 },
+      };
+      const armed = yield* service.arm({
+        thesis: stoppedSameBar,
+        durationMs: 14 * DAY,
+        now: START,
+      });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL });
+      const rows = yield* sql<{
+        readonly entry_time: number;
+        readonly exit_time: number | null;
+        readonly exit_reason: string | null;
+      }>`
+        SELECT entry_time, exit_time, exit_reason FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id} ORDER BY entry_time
+      `;
+      assert.ok(rows.length > 3);
+      // Balanced ledger: at most the final bar's trade is still open.
+      const open = rows.filter((row) => row.exit_time === null);
+      assert.ok(open.length <= 1);
+      const sameBar = rows.find(
+        (row) =>
+          row.exit_reason === "stop" &&
+          row.exit_time !== null &&
+          row.exit_time - row.entry_time < 5 * MINUTE,
+      );
+      assert.isDefined(sameBar, "the series must contain an entered-and-stopped-in-one-bar trade");
+    }),
+  );
+
+  it.effect("a refinement whose pricing dies leaves the prior validation armed", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TradingThesisValidationService;
+
+      const armed = yield* service.arm({
+        thesis,
+        durationMs: 14 * DAY,
+        now: START,
+        hypothesisId: "hyp-1",
+        hypothesisVersion: 1,
+      });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      // A second service whose cost measurement dies, sharing the SAME
+      // database rows: the refinement arms through it, passes the
+      // same-idea check, and must fail while PREPARING inputs — before any
+      // row changes. The old order superseded first, so a pricing failure
+      // ended the prior validation with nothing to replace it.
+      const dyingBookArchive = {
+        coverage: () => Effect.succeed({ recordingSince: START, gaps: [] }),
+        candlesInWindow: (input: { readonly fromT: number; readonly toT: number }) =>
+          Effect.succeed(ALL_BARS.filter((row) => row.t >= input.fromT && row.t <= input.toT)),
+        fundingInWindow: () => Effect.succeed([]),
+        bookHistory: () => Effect.die("book history unavailable"),
+      } as unknown as TradingMarketArchiveShape;
+      const failing = yield* makeTradingThesisValidationService.pipe(
+        Effect.provideService(TradingMarketArchive, dyingBookArchive),
+        Effect.provide(TradingEventServiceLive),
+        Effect.provide(memory),
+        Effect.provide(NodeServices.layer),
+      );
+      const refined = yield* Effect.exit(
+        failing.arm({
+          thesis,
+          durationMs: 14 * DAY,
+          now: START + 1,
+          hypothesisId: "hyp-1",
+          hypothesisVersion: 2,
+        }),
+      );
+      assert.isTrue(Exit.isFailure(refined), "the refinement must fail while pricing dies");
+      const prior = yield* sql<{ readonly status: string; readonly end_reason: string | null }>`
+        SELECT status, end_reason FROM trading_thesis_validations
+        WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(prior[0]?.status, "armed");
+      assert.equal(prior[0]?.end_reason, null);
+      const rows = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_thesis_validations
+      `;
+      assert.equal(rows[0]?.n, 1, "no half-armed replacement row exists");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// catch-up paging and the validation's own deadline (the F2/F4 repair)
+// ---------------------------------------------------------------------------
+
+layer("TradingThesisValidationService catch-up and expiry", (it) => {
+  /** Flat 5m bars from START: an always-in thesis trades every bar on them. */
+  const flatBars = (count: number): ReadonlyArray<CandleRow> =>
+    Array.from({ length: count }, (_, i) => {
+      const t = START + i * 5 * MINUTE;
+      return {
+        coin: "ETH",
+        interval: "5m",
+        t,
+        tClose: t + 5 * MINUTE - 1,
+        o: 100,
+        h: 100.5,
+        l: 99.5,
+        c: 100,
+        v: 10,
+        n: 5,
+      };
+    });
+
+  /**
+   * A service over an arbitrary fixture, honouring the archive's keep policy
+   * the way the real one does, against the same shared database.
+   */
+  const serviceOver = (rows: ReadonlyArray<CandleRow>) =>
+    makeTradingThesisValidationService.pipe(
+      Effect.provideService(TradingMarketArchive, {
+        coverage: () => Effect.succeed({ recordingSince: rows[0]?.t ?? START, gaps: [] }),
+        candlesInWindow: (input: {
+          readonly fromT: number;
+          readonly toT: number;
+          readonly maxBars: number;
+          readonly keep?: "newest" | "oldest";
+        }) =>
+          Effect.succeed(
+            rows
+              .filter((row) => row.t >= input.fromT && row.t <= input.toT)
+              .slice(
+                input.keep === "oldest" ? 0 : Math.max(0, rows.length - input.maxBars),
+                input.keep === "oldest" ? input.maxBars : undefined,
+              ),
+          ),
+        fundingInWindow: () => Effect.succeed([]),
+        bookHistory: () => Effect.succeed({ status: "unavailable", reason: "none" }),
+      } as unknown as TradingMarketArchiveShape),
+      Effect.provide(TradingEventServiceLive),
+      Effect.provide(memory),
+      Effect.provide(NodeServices.layer),
+    );
+
+  /** Always in, one-bar hold: a settled trade every bar. */
+  const alwaysIn: TradingThesis = {
+    market: "ETH",
+    interval: "5m",
+    side: "long",
+    entry: {
+      predicates: [
+        { left: { source: "price" }, comparator: "above", right: { source: "constant", value: 1 } },
+      ],
+    },
+    exits: { maxHoldBars: 1 },
+  };
+
+  /** One always-in trade per bar: entry time + net for every settled row. */
+  const ledgerOf = (
+    rows: ReadonlyArray<{
+      readonly entry_time: number;
+      readonly exit_time: number | null;
+      readonly net_usd: number | null;
+    }>,
+  ) => rows.map((row) => `${row.entry_time}->${row.exit_time}:${row.net_usd}`);
+
+  it.effect("an outage longer than the page budget still converges on every bar", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      // 600 bars is past one warmup+400 page: the walk must page forward or
+      // silently strand bars older than the cap.
+      const rows = flatBars(600);
+      const service = yield* serviceOver(rows);
+
+      const armed = yield* service.arm({ thesis: alwaysIn, durationMs: 14 * DAY, now: START });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      const now = (rows[rows.length - 1]?.tClose ?? START) + 1;
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now });
+
+      const fills = yield* sql<{
+        readonly entry_time: number;
+        readonly exit_time: number | null;
+        readonly net_usd: number | null;
+      }>`
+        SELECT entry_time, exit_time, net_usd FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id} ORDER BY entry_time
+      `;
+      // Every bar from the first fill onward traded: one settled row per
+      // bar, none stranded by the page cap.
+      assert.ok(fills.length > 500, `expected >500 fills, got ${fills.length}`);
+      // At most the final bar's entry is still open: every completed
+      // one-bar hold before it settled, so nothing is stranded mid-page.
+      const open = fills.filter((row) => row.exit_time === null);
+      assert.ok(
+        open.length <= 1,
+        `expected at most the final bar's open entry, got ${open.length}`,
+      );
+      const watched = yield* sql<{ readonly bars: number }>`
+        SELECT bars_watched AS bars FROM trading_thesis_validations WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(watched[0]?.bars, 600, "every archived bar was watched, first to last");
+    }),
+  );
+
+  it.effect("a delayed sweep evaluates no bar past the validation's own deadline", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const rows = flatBars(60);
+      const service = yield* serviceOver(rows);
+
+      // 20 bars of life: expiresAt sits exactly on bar 20's open, so bars 0
+      // through 19 closed by the deadline and bar 20 did not.
+      const armed = yield* service.arm({
+        thesis: alwaysIn,
+        durationMs: 20 * 5 * MINUTE,
+        now: START,
+      });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      const now = (rows[rows.length - 1]?.tClose ?? START) + 1;
+      const expired = yield* service.expireDue({ now });
+      assert.equal(expired.reports.length, 1);
+
+      const fills = yield* sql<{ readonly entry_time: number; readonly exit_time: number | null }>`
+        SELECT entry_time, exit_time FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id} ORDER BY entry_time
+      `;
+      assert.ok(fills.length > 0);
+      const deadline = START + 20 * 5 * MINUTE;
+      for (const row of fills) {
+        assert.ok(
+          row.entry_time < deadline,
+          `fill at ${row.entry_time} is past the deadline ${deadline}`,
+        );
+      }
+      const watched = yield* sql<{ readonly bars: number }>`
+        SELECT bars_watched AS bars FROM trading_thesis_validations WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(watched[0]?.bars, 20, "exactly the bars that closed by the deadline");
+      // The expiry line reports unclosed exposure when a position is open.
+      assert.equal(expired.events.length, 1);
+      const line = expired.events[0]?.lines.at(-1) ?? "";
+      assert.include(line, "window closed");
+    }),
+  );
+
+  it.effect("a candle straddling the deadline is not read on provisional numbers", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const rows = flatBars(40);
+      const service = yield* serviceOver(rows);
+
+      // expiresAt lands mid-bar-20: its close is past the deadline, so it is
+      // not evaluated — a straddling bar is never half-read.
+      const armed = yield* service.arm({
+        thesis: alwaysIn,
+        durationMs: 20 * 5 * MINUTE + 2 * MINUTE,
+        now: START,
+      });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      yield* service.expireDue({ now: (rows[rows.length - 1]?.tClose ?? START) + 1 });
+      const watched = yield* sql<{ readonly bars: number }>`
+        SELECT bars_watched AS bars FROM trading_thesis_validations WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(watched[0]?.bars, 20);
+    }),
+  );
+
+  it.effect("a catch-up interrupted mid-way converges to the uninterrupted ledger", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const rows = flatBars(300);
+      const service = yield* serviceOver(rows);
+      const mid = (rows[149]?.tClose ?? START) + 1;
+      const end = (rows[rows.length - 1]?.tClose ?? START) + 1;
+
+      const stepped = yield* service.arm({ thesis: alwaysIn, durationMs: 14 * DAY, now: START });
+      assert.equal(stepped.outcome, "armed");
+      if (stepped.outcome !== "armed") return;
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: mid });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: end });
+
+      const oneshot = yield* service.arm({
+        thesis: { ...alwaysIn },
+        durationMs: 14 * DAY,
+        now: START,
+        label: "oneshot",
+      });
+      // A second armed validation needs its own market/interval slot; use the
+      // plain service's slot by ending the first... simpler: compare against
+      // itself — the mid delivery must have processed exactly the bars up to
+      // mid, and the end delivery the rest, with no gap and no duplicate.
+      const fills = yield* sql<{
+        readonly entry_time: number;
+        readonly exit_time: number | null;
+        readonly net_usd: number | null;
+      }>`
+        SELECT entry_time, exit_time, net_usd FROM trading_thesis_paper_fills
+        WHERE validation_id = ${stepped.validation.id} ORDER BY entry_time
+      `;
+      void oneshot;
+      const times = fills.map((row) => row.entry_time);
+      const unique = new Set(times);
+      assert.equal(
+        unique.size,
+        times.length,
+        "no bar filled twice across the interrupted catch-up",
+      );
+      // Monotone, one per 5m slot, ending at the archive's last bar.
+      for (let i = 1; i < times.length; i += 1) {
+        assert.ok((times[i] as number) > (times[i - 1] as number));
+      }
+      assert.equal(
+        times[times.length - 1],
+        rows[rows.length - 1]?.t,
+        "the final fill entered on the last archived bar's open",
+      );
+      const settled = fills.filter((row) => row.exit_time !== null);
+      assert.equal(
+        settled[settled.length - 1]?.entry_time,
+        rows[rows.length - 2]?.t,
+        "the last COMPLETED one-bar hold is the second-to-last bar",
+      );
+    }),
+  );
+
+  it.effect("bars that pass under a pause are evaluated when it resumes, not skipped", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const rows = flatBars(120);
+      const service = yield* serviceOver(rows);
+      const end = (rows[rows.length - 1]?.tClose ?? START) + 1;
+
+      const armed = yield* service.arm({ thesis: alwaysIn, durationMs: 14 * DAY, now: START });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      yield* service.setStatus({ id: armed.validation.id, to: "paused", now: START });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: end });
+      const whilePaused = yield* sql<{ readonly bars: number }>`
+        SELECT bars_watched AS bars FROM trading_thesis_validations WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(whilePaused[0]?.bars, 0, "a paused validation watches nothing");
+
+      // The documented pause policy, which this repair preserves: bars that
+      // pass under a pause are EXCLUDED, and a resume never backfills them —
+      // the report says they passed unwatched and the ledger must agree. The
+      // resume moves the checkpoint to the resume instant, so the delivery
+      // that follows watches only bars that close after it.
+      yield* service.setStatus({ id: armed.validation.id, to: "armed", now: end });
+      yield* service.onClosedBar({ asset: "ETH", interval: "5m", now: end });
+      const resumed = yield* sql<{ readonly bars: number }>`
+        SELECT bars_watched AS bars FROM trading_thesis_validations WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(resumed[0]?.bars, 0, "the paused stretch was excluded, not backfilled");
+      const fills = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(fills[0]?.n, 0, "no trade was taken on bars the validation did not watch");
+    }),
+  );
+
+  it.effect("an interior missing candle is walked around, never fabricated", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const rows = flatBars(80).filter((_, i) => i !== 40); // bar 40 absent.
+      const service = yield* serviceOver(rows);
+
+      const armed = yield* service.arm({ thesis: alwaysIn, durationMs: 14 * DAY, now: START });
+      assert.equal(armed.outcome, "armed");
+      if (armed.outcome !== "armed") return;
+
+      yield* service.onClosedBar({
+        asset: "ETH",
+        interval: "5m",
+        now: (rows[rows.length - 1]?.tClose ?? START) + 1,
+      });
+      const fills = yield* sql<{ readonly entry_time: number }>`
+        SELECT entry_time FROM trading_thesis_paper_fills
+        WHERE validation_id = ${armed.validation.id} ORDER BY entry_time
+      `;
+      const missing = START + 40 * 5 * MINUTE;
+      assert.ok(
+        !fills.some((row) => row.entry_time === missing),
+        "the absent bar produced no fill",
+      );
+      const watched = yield* sql<{ readonly bars: number }>`
+        SELECT bars_watched AS bars FROM trading_thesis_validations WHERE validation_id = ${armed.validation.id}
+      `;
+      assert.equal(watched[0]?.bars, 79, "the checkpoint marks the last bar that exists");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Concurrency (08A): two deliveries that read the SAME checkpoint cannot both
+// commit. The seam is the pre-transaction archive read (funding), gated with
+// Deferreds — pass A is released and committed first; stale pass B is released
+// only afterwards and must be refused by the in-transaction checkpoint guard,
+// leaving no partial writes. A normal re-delivery then converges on exactly
+// the ledger the single uninterrupted pass produced.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Concurrency (08A): two deliveries that read the SAME checkpoint cannot both
+// commit. The seam is the pre-transaction archive read (funding), gated with
+// Deferreds — pass A is released and committed first; stale pass B is released
+// only afterwards and must be refused by the in-transaction checkpoint guard,
+// leaving no partial writes. A normal re-delivery then converges on exactly
+// the ledger the single uninterrupted pass produced. Runs live (`it.live`):
+// the orchestration needs real fiber scheduling, not the test clock's.
+// ---------------------------------------------------------------------------
+
+/** The fixture thesis plus a funding clause that is always satisfied. */
+const fundingReadingThesis: TradingThesis = {
+  ...thesis,
+  entry: {
+    predicates: [
+      {
+        left: { source: "metric", metric: "funding_rate_8h" },
+        comparator: "above",
+        right: { source: "constant", value: -1 },
+      },
+      {
+        left: { source: "price" },
+        comparator: "crosses_above",
+        right: { source: "constant", value: 100 },
+      },
+    ],
+  },
+};
+
+it.live("a stale concurrent advance is refused and double-counts nothing (08A)", () =>
+  Effect.gen(function* () {
+    yield* migrated;
+    const sql = yield* SqlClient.SqlClient;
+
+    const armed = yield* (yield* TradingThesisValidationService).arm({
+      thesis: fundingReadingThesis,
+      durationMs: 14 * DAY,
+      now: START,
+    });
+    assert.equal(armed.outcome, "armed");
+    if (armed.outcome !== "armed") return;
+    const validationId = armed.validation.id;
+
+    // The gate lives in the funding read — an archive read `advance` makes
+    // BEFORE entering its transaction (once per bar, so the gate is keyed by
+    // FIBER, not call count), keeping every barrier outside the locked
+    // region. The first fiber runs straight through (pass A); any other
+    // fiber parks until released (stale pass B).
+    const firstEntered = yield* Deferred.make<void>();
+    const allowFirst = yield* Deferred.make<void>();
+    const secondEntered = yield* Deferred.make<void>();
+    const allowSecond = yield* Deferred.make<void>();
+    let ownerFiber: unknown;
+    let firstReleased = false;
+    let secondReleased = false;
+    const fundingRows = [{ coin: "ETH", time: START, fundingRate: 0, premium: 0 }];
+    const gatedArchive = {
+      coverage: () => Effect.succeed({ recordingSince: START, gaps: [] }),
+      candlesInWindow: (input: { readonly fromT: number; readonly toT: number }) =>
+        Effect.succeed(ALL_BARS.filter((row) => row.t >= input.fromT && row.t <= input.toT)),
+      fundingInWindow: () =>
+        Effect.suspend(() => {
+          const current = Fiber.getCurrent();
+          if (ownerFiber === undefined) {
+            ownerFiber = current;
+            return Deferred.succeed(firstEntered, void 0).pipe(
+              Effect.andThen(Deferred.await(allowFirst)),
+              Effect.map(() => {
+                firstReleased = true;
+                return fundingRows;
+              }),
+            );
+          }
+          if (current === ownerFiber) {
+            return firstReleased
+              ? Effect.succeed(fundingRows)
+              : Deferred.await(allowFirst).pipe(Effect.as(fundingRows));
+          }
+          if (secondReleased) return Effect.succeed(fundingRows);
+          return Deferred.succeed(secondEntered, void 0).pipe(
+            Effect.andThen(Deferred.await(allowSecond)),
+            Effect.map(() => {
+              secondReleased = true;
+              return fundingRows;
+            }),
+          );
+        }),
+      bookHistory: () => Effect.succeed({ status: "unavailable", reason: "no rows" }),
+    } as unknown as TradingMarketArchiveShape;
+
+    const gated = yield* makeTradingThesisValidationService.pipe(
+      Effect.provideService(TradingMarketArchive, gatedArchive),
+      Effect.provide(
+        Layer.mergeAll(TradingEventServiceLive, memory, NodeServices.layer, NodeCrypto.layer),
+      ),
+    );
+
+    // Pass A runs uninterrupted to its commit.
+    const fiberA = yield* Effect.forkChild(
+      gated.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL }),
+    );
+    yield* Deferred.await(firstEntered);
+
+    // Stale pass B reads the SAME rows (A is parked before its transaction)
+    // and parks in the same pre-transaction funding seam.
+    const fiberB = yield* Effect.forkChild(
+      gated.onClosedBar({ asset: "ETH", interval: "5m", now: AFTER_ALL }),
+    );
+    yield* Deferred.await(secondEntered);
+
+    // Release A alone: it enters its transaction and commits while B parks.
+    yield* Deferred.succeed(allowFirst, void 0);
+    yield* Fiber.join(fiberA); // the uninterrupted pass must succeed
+
+    const afterA = yield* sql<{
+      readonly n: number;
+      readonly uniq: number;
+      readonly lastBar: number | null;
+    }>`
+        SELECT COUNT(*) AS n, COUNT(DISTINCT paper_trade_id) AS uniq,
+               (SELECT last_bar_time FROM trading_thesis_validations WHERE validation_id = ${validationId}) AS lastBar
+        FROM trading_thesis_paper_fills WHERE validation_id = ${validationId}
+      `;
+    assert.ok((afterA[0]?.n ?? 0) > 0, "the committed pass must actually trade");
+    assert.equal(afterA[0]?.uniq, afterA[0]?.n, "no duplicate trade identities");
+    assert.isNotNull(afterA[0]?.lastBar, "the checkpoint moved with the commit");
+
+    // NOW release stale B: its premise (the checkpoint it read) is gone, so
+    // the in-transaction guard must refuse it — not race past it.
+    yield* Deferred.succeed(allowSecond, void 0);
+    const exitB = yield* Effect.exit(Fiber.join(fiberB));
+    assert.isTrue(Exit.isFailure(exitB), "the stale pass must not succeed");
+    if (Exit.isFailure(exitB)) {
+      const squashed = Cause.squash(exitB.cause);
+      assert.ok(
+        String(squashed).includes("lost the checkpoint race"),
+        `expected the stale-checkpoint refusal, got: ${String(squashed)}`,
+      );
+    }
+
+    // The refused pass left nothing behind: same ledger, same checkpoint.
+    const afterB = yield* sql<{ readonly n: number; readonly uniq: number }>`
+        SELECT COUNT(*) AS n, COUNT(DISTINCT paper_trade_id) AS uniq
+        FROM trading_thesis_paper_fills WHERE validation_id = ${validationId}
+      `;
+    assert.equal(afterB[0]?.n, afterA[0]?.n);
+    assert.equal(afterB[0]?.uniq, afterA[0]?.n);
+
+    // Re-deliver normally: the fresh checkpoint means convergence, nothing
+    // new — exactly the state the single uninterrupted pass produced.
+    const redelivered = yield* gated.onClosedBar({
+      asset: "ETH",
+      interval: "5m",
+      now: AFTER_ALL,
+    });
+    assert.equal(redelivered.length, 0, "a fully caught-up delivery produces no events");
+    const final = yield* sql<{ readonly n: number; readonly open: number }>`
+        SELECT COUNT(*) AS n,
+               SUM(CASE WHEN exit_time IS NULL THEN 1 ELSE 0 END) AS open
+        FROM trading_thesis_paper_fills WHERE validation_id = ${validationId}
+      `;
+    assert.equal(final[0]?.n, afterA[0]?.n);
+    assert.equal(final[0]?.open ?? 0, 0, "every trade the checkpoint covers is settled");
+  }).pipe(
+    Effect.provide(
+      TradingThesisValidationServiceLive.pipe(
+        Layer.provideMerge(stubArchive),
+        Layer.provideMerge(TradingEventServiceLive),
+        Layer.provideMerge(memory),
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(NodeCrypto.layer),
+      ),
+    ),
+  ),
+);

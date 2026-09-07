@@ -7,10 +7,13 @@
  * different ideas, however small the difference.
  */
 import { describe, expect, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 
 import {
   describeHypothesis,
   describeHypothesisStatus,
+  HYPOTHESIS_RUN_CALCULATION_VERSION,
+  HypothesisRunSummary,
   renderTradingHypothesisMenu,
   thesesMatch,
 } from "./hypothesis.ts";
@@ -101,6 +104,43 @@ describe("thesesMatch", () => {
 
   it("is false when an optional field is genuinely present on one side", () => {
     expect(thesesMatch(base, { ...base, exits: { ...base.exits, maxHoldBars: 48 } })).toBe(false);
+  });
+});
+
+describe("run provenance (the E1 repair)", () => {
+  /** A run summary exactly as it was written before provenance was kept. */
+  const legacyRun = {
+    runId: "run-1",
+    version: null,
+    market: "ETH",
+    interval: "5m",
+    createdAt: 1,
+    expectancyUsd: 1,
+    tradesTaken: 10,
+    winRatePercent: 50,
+    maxDrawdownUsd: 1,
+    totalNetUsd: 10,
+    barsServed: 100,
+    verdict: "insufficient_sample",
+  };
+
+  it("decodes a run filed before provenance was recorded, with the field absent", () => {
+    const decoded = Schema.decodeUnknownSync(HypothesisRunSummary)(legacyRun);
+    // Absent, not null and not defaulted: an old run explicitly has no
+    // provenance, and a surface says "not recorded" rather than inventing any.
+    expect(decoded.provenance).toBeUndefined();
+  });
+
+  it("decodes a run carrying the calendar it ran on and the calculation version", () => {
+    const decoded = Schema.decodeUnknownSync(HypothesisRunSummary)({
+      ...legacyRun,
+      provenance: {
+        eventSetContentDigests: [{ eventSetId: "set-1", digest: "abc123" }],
+        calculationVersion: HYPOTHESIS_RUN_CALCULATION_VERSION,
+      },
+    });
+    expect(decoded.provenance?.calculationVersion).toBe("hypothesis-run-1");
+    expect(decoded.provenance?.eventSetContentDigests[0]?.eventSetId).toBe("set-1");
   });
 });
 

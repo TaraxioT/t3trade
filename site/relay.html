@@ -1,0 +1,2181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relay &amp; environments · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="How the hosted relay links accounts to environments, provisions endpoints, mints minutes-long credentials, and then steps out of the data path."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+      :root {
+        --void: #060a12; /* page base */
+        --panel: #0b1120; /* raised surface */
+        --panel-2: #0e1526; /* second raise */
+        --edge: rgba(148, 163, 199, 0.13);
+        --edge-strong: rgba(148, 163, 199, 0.24);
+        --chalk: #d8e0ec; /* primary text */
+        --slate: #8a97ad; /* secondary text */
+        --dim: #5c6b84; /* tertiary text */
+        --bid: #2bd576; /* success, long, confirmed */
+        --ask: #ff5d6c; /* risk, refusal, halt */
+        --amber: #ffb224; /* caution, limits, unknown */
+        --flow: #56ccf2; /* data in motion, links, events */
+        --flow-soft: rgba(86, 204, 242, 0.14);
+        --font-body: "IBM Plex Sans", system-ui, sans-serif;
+        --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+        --font-display: "Archivo", system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+      body {
+        background: var(--void);
+        color: var(--chalk);
+        font-family: var(--font-body);
+        font-size: 16.5px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection {
+        background: rgba(86, 204, 242, 0.28);
+      }
+      a {
+        color: var(--flow);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      :focus-visible {
+        outline: 2px solid var(--flow);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      code,
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 0.86em;
+      }
+      code.path {
+        color: var(--slate);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 6px;
+        padding: 0.1em 0.4em;
+        white-space: nowrap;
+      }
+      .wrap {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      /* chrome */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(6, 10, 18, 0.82);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--edge);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+        gap: 16px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--chalk);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        white-space: nowrap;
+      }
+      .brand:hover {
+        text-decoration: none;
+      }
+      .brand .tick {
+        color: var(--bid);
+      }
+      .nav-links {
+        display: flex;
+        gap: 4px;
+      }
+      .nav-links a {
+        color: var(--slate);
+        font-size: 13.5px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        white-space: nowrap;
+      }
+      .nav-links a:hover {
+        color: var(--chalk);
+        background: var(--panel);
+        text-decoration: none;
+      }
+      .nav-links a[aria-current="page"] {
+        color: var(--flow);
+        background: var(--flow-soft);
+      }
+      @media (max-width: 820px) {
+        .nav-links {
+          display: none;
+        }
+        .nav-links.open {
+          display: flex;
+          flex-direction: column;
+          position: absolute;
+          top: 60px;
+          right: 12px;
+          background: var(--panel);
+          border: 1px solid var(--edge);
+          border-radius: 10px;
+          padding: 8px;
+        }
+        .nav-menu-btn {
+          display: inline-flex !important;
+        }
+      }
+      .nav-menu-btn {
+        display: none;
+        color: var(--slate);
+        background: none;
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .footer {
+        border-top: 1px solid var(--edge);
+        margin-top: 96px;
+        padding: 40px 0 56px;
+        color: var(--dim);
+        font-size: 14px;
+      }
+      .footer .cols {
+        display: flex;
+        gap: 32px;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .footer nav {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .footer a {
+        color: var(--slate);
+      }
+      .footer a:hover {
+        color: var(--flow);
+      }
+      .footer .mono {
+        font-size: 12px;
+        letter-spacing: 0.06em;
+      }
+
+      /* type roles */
+      .kicker {
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        letter-spacing: 0.14em;
+        color: var(--flow);
+        text-transform: uppercase;
+      }
+      h1 {
+        font-family: var(--font-display);
+        font-weight: 800;
+        font-stretch: 112%;
+        font-size: clamp(34px, 5.4vw, 58px);
+        line-height: 1.04;
+        letter-spacing: -0.015em;
+        margin: 14px 0 18px;
+        max-width: 18ch;
+      }
+      h2 {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-stretch: 106%;
+        font-size: clamp(24px, 3.2vw, 34px);
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        margin: 0 0 14px;
+        max-width: 26ch;
+      }
+      h3 {
+        font-family: var(--font-body);
+        font-weight: 600;
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+      p {
+        max-width: 66ch;
+        color: var(--chalk);
+      }
+      p.lede {
+        font-size: 19px;
+        color: var(--slate);
+        max-width: 58ch;
+      }
+      .section {
+        padding: 76px 0;
+        border-top: 1px solid var(--edge);
+      }
+      .section:first-of-type {
+        border-top: none;
+      }
+      .icon {
+        width: 1.25em;
+        height: 1.25em;
+        flex: none;
+        vertical-align: -0.25em;
+      }
+
+      /* reveal on scroll */
+      .reveal {
+        opacity: 0;
+        transform: translateY(18px);
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+        transition:
+          opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+          transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .reveal {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* flow ribbon animation */
+      .edge-line {
+        stroke-dasharray: 5 7;
+        animation: march 1.1s linear infinite;
+      }
+      @keyframes march {
+        to {
+          stroke-dashoffset: -12;
+        }
+      }
+      .node-pulse {
+        animation: nodepulse 2.6s ease-in-out infinite;
+      }
+      @keyframes nodepulse {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .edge-line {
+          animation: none;
+          stroke-dasharray: none;
+        }
+        .node-pulse {
+          animation: none;
+          opacity: 0.8;
+        }
+        /* ribbon pulse circles and canvases must also be disabled by page JS (see recipes) */
+      }
+
+      /* ============ page-specific: relay ============ */
+      .hero {
+        padding: 84px 0 26px;
+      }
+      .ribbon-box {
+        margin-top: 36px;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 16px 12px 6px;
+      }
+      .ribbon-box svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .ribbon-cap {
+        text-align: center;
+        color: var(--dim);
+        font-size: 13px;
+        padding: 6px 12px 10px;
+        font-family: var(--font-mono);
+      }
+      /* long file citations must wrap on narrow screens */
+      code.path {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+
+      /* stat strip */
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 16px;
+        margin: 26px 0 8px;
+      }
+      .stat {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 18px 18px 14px;
+      }
+      .stat .n {
+        font-family: var(--font-mono);
+        font-weight: 600;
+        font-size: clamp(30px, 4vw, 44px);
+        line-height: 1;
+        color: var(--chalk);
+      }
+      .stat .n span {
+        font-size: 0.45em;
+        color: var(--slate);
+        margin-left: 4px;
+      }
+      .stat .l {
+        margin-top: 10px;
+        font-size: 13.5px;
+        color: var(--slate);
+        line-height: 1.5;
+      }
+      .stat .l code.path {
+        font-size: 0.82em;
+      }
+      @media (max-width: 760px) {
+        .stats {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      /* split */
+      .split {
+        display: grid;
+        grid-template-columns: 7fr 5fr;
+        gap: 44px;
+        align-items: start;
+      }
+      @media (max-width: 768px) {
+        .split {
+          grid-template-columns: 1fr;
+          gap: 28px;
+        }
+      }
+
+      /* scope panel */
+      .ownpanel {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 20px 22px;
+      }
+      .ownpanel h3 {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 15px;
+      }
+      .ownpanel ul {
+        list-style: none;
+        margin: 10px 0 18px;
+      }
+      .ownpanel li {
+        display: flex;
+        gap: 9px;
+        padding: 5px 0;
+        font-size: 14.5px;
+        color: var(--slate);
+        line-height: 1.5;
+      }
+      .own-yes h3 .icon {
+        color: var(--bid);
+      }
+      .own-no h3 .icon {
+        color: var(--dim);
+      }
+      .own-yes li .icon {
+        color: var(--bid);
+      }
+      .own-no li .icon {
+        color: var(--dim);
+      }
+
+      /* ledger */
+      .ledger {
+        border-top: 1px solid var(--edge);
+        margin-top: 22px;
+      }
+      .ledger .row {
+        display: grid;
+        grid-template-columns: 250px 1fr;
+        gap: 20px;
+        padding: 17px 0;
+      }
+      .ledger .term {
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        color: var(--flow);
+        overflow-wrap: anywhere;
+        padding-top: 3px;
+      }
+      .ledger .desc {
+        font-size: 15px;
+        color: var(--slate);
+        line-height: 1.6;
+      }
+      .ledger .desc code.path {
+        font-size: 0.82em;
+      }
+      @media (max-width: 700px) {
+        .ledger .row {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+      }
+
+      /* bento */
+      .bento {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 16px;
+        margin-top: 26px;
+      }
+      .cell {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 22px;
+      }
+      .cell h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .cell h3 .icon {
+        color: var(--flow);
+      }
+      .cell p {
+        font-size: 14.5px;
+        color: var(--slate);
+        margin-top: 8px;
+      }
+      .cell p + p {
+        margin-top: 8px;
+      }
+      .span7 {
+        grid-column: span 7;
+      }
+      .span5 {
+        grid-column: span 5;
+      }
+      @media (max-width: 860px) {
+        .span7,
+        .span5 {
+          grid-column: span 12;
+        }
+      }
+      .chain {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin-top: 14px;
+      }
+      .chain .chip {
+        background: var(--panel-2);
+      }
+      .chain .arrow {
+        color: var(--dim);
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .tinted {
+        background: var(--panel-2);
+      }
+      .dataset-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      /* chips */
+      .chip {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--chalk);
+        background: var(--panel-2);
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 4px 10px;
+        white-space: nowrap;
+      }
+      .chip.scope {
+        color: var(--flow);
+      }
+      .chips-flow {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin: 18px 0 6px;
+      }
+      .chips-flow .arrow {
+        color: var(--dim);
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+
+      /* timeline */
+      .timeline {
+        border-left: 2px solid var(--edge-strong);
+        margin: 26px 0 0 9px;
+      }
+      .step {
+        position: relative;
+        padding: 0 0 20px 26px;
+      }
+      .step:last-child {
+        padding-bottom: 4px;
+      }
+      .step::before {
+        content: "";
+        position: absolute;
+        left: -8px;
+        top: 5px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--panel);
+        border: 2px solid var(--flow);
+      }
+      .step .stg {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        color: var(--flow);
+      }
+      .step .why {
+        font-size: 14.5px;
+        color: var(--slate);
+        line-height: 1.55;
+        margin-top: 2px;
+      }
+
+      /* callout */
+      .callout {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-left: 3px solid var(--amber);
+        border-radius: 10px;
+        padding: 18px 20px;
+        margin-top: 26px;
+      }
+      .callout h3 {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 15px;
+      }
+      .callout h3 .icon {
+        color: var(--amber);
+      }
+      .callout p {
+        font-size: 14.5px;
+        color: var(--slate);
+        margin-top: 6px;
+      }
+      .callout.quote {
+        border-left-color: var(--flow);
+      }
+      .callout.quote h3 .icon {
+        color: var(--flow);
+      }
+      .callout ul {
+        list-style: none;
+        margin-top: 8px;
+      }
+      .callout li {
+        font-size: 14.5px;
+        color: var(--slate);
+        padding: 3px 0;
+      }
+
+      /* layer cards */
+      .layers {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin-top: 26px;
+      }
+      .layer {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 18px 20px;
+      }
+      .layer h3 {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 15px;
+      }
+      .layer h3 .icon {
+        color: var(--flow);
+      }
+      .layer p {
+        font-size: 13.5px;
+        color: var(--slate);
+        margin-top: 6px;
+        line-height: 1.55;
+      }
+      @media (max-width: 820px) {
+        .layers {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* evidence */
+      .evidence {
+        margin-top: 20px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 34px 44px;
+      }
+      .evidence ul {
+        list-style: none;
+        border-top: 1px solid var(--edge);
+        margin-top: 10px;
+      }
+      .evidence li {
+        padding: 7px 0 7px 16px;
+        position: relative;
+      }
+      .evidence li::before {
+        content: "›";
+        position: absolute;
+        left: 0;
+        color: var(--dim);
+        font-family: var(--font-mono);
+      }
+      @media (max-width: 768px) {
+        .evidence {
+          grid-template-columns: 1fr;
+        }
+      }
+      .neighbors {
+        margin-top: 26px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .neighbors a {
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 7px 13px;
+        font-size: 13.5px;
+        background: var(--panel);
+      }
+      .neighbors a:hover {
+        text-decoration: none;
+        border-color: var(--edge-strong);
+        color: var(--chalk);
+      }
+
+      /* mobile: wide diagrams scroll instead of shrinking below legibility */
+      @media (max-width: 700px) {
+        figure:has(> svg[viewBox]:not(.icon)),
+        div:has(> svg[viewBox]:not(.icon)) {
+          overflow-x: auto;
+        }
+        svg[viewBox]:not(.icon) {
+          min-width: 660px;
+        }
+      }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono,
+        h2 span,
+        h3 span,
+        p span {
+          overflow-wrap: anywhere;
+        }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path,
+        code,
+        .mono,
+        .k,
+        .who,
+        .chip,
+        .path-chip,
+        .file,
+        .fn,
+        .term,
+        .qno,
+        p span,
+        h2 span,
+        h3 span,
+        li span,
+        td,
+        th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre,
+        .terminal,
+        .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html">Risk control</a>
+          <a href="/status.html">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <!-- ================= HERO ================= -->
+      <section class="hero">
+        <div class="wrap">
+          <div class="kicker">Relay &amp; environments</div>
+          <h1>A control plane outside the normal traffic path</h1>
+          <p class="lede">
+            The relay is T3 Connect's hosted control plane. It links accounts to environments,
+            provisions endpoints, and issues short-lived credentials. After connection, normal API
+            and WebSocket traffic goes directly between the client and environment.
+          </p>
+
+          <div class="ribbon-box reveal">
+            <svg
+              viewBox="0 0 900 210"
+              role="img"
+              aria-label="A client links and mints through the relay, then talks to the environment directly while the relay steps out of the path"
+            >
+              <!-- edges -->
+              <path
+                id="rp1"
+                class="edge-line"
+                d="M144,80 C220,80 252,38 336,38"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="rp2"
+                class="edge-line"
+                d="M504,38 C588,38 664,80 756,80"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="rp3"
+                class="edge-line"
+                d="M144,108 H756"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <!-- client -->
+              <g class="node-pulse">
+                <rect
+                  x="8"
+                  y="66"
+                  width="136"
+                  height="56"
+                  rx="10"
+                  fill="var(--panel)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="76"
+                  y="88"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  client
+                </text>
+                <text
+                  x="76"
+                  y="104"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  DPoP proof key
+                </text>
+              </g>
+              <!-- relay -->
+              <g class="node-pulse">
+                <rect
+                  x="336"
+                  y="10"
+                  width="168"
+                  height="56"
+                  rx="10"
+                  fill="var(--panel)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="420"
+                  y="32"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  relay worker
+                </text>
+                <text
+                  x="420"
+                  y="48"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  T3CodeRelay stack
+                </text>
+              </g>
+              <!-- environment -->
+              <g class="node-pulse">
+                <rect
+                  x="756"
+                  y="66"
+                  width="136"
+                  height="56"
+                  rx="10"
+                  fill="var(--panel)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="824"
+                  y="88"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  environment
+                </text>
+                <text
+                  x="824"
+                  y="104"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  https + wss endpoint
+                </text>
+              </g>
+              <!-- edge labels -->
+              <text
+                x="240"
+                y="24"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="10"
+              >
+                link proof + challenge
+              </text>
+              <text
+                x="630"
+                y="24"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="10"
+              >
+                2 min mint proof
+              </text>
+              <text
+                x="450"
+                y="132"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="10"
+              >
+                direct API + WebSocket after connect
+              </text>
+              <text
+                x="450"
+                y="148"
+                text-anchor="middle"
+                fill="var(--dim)"
+                font-family="var(--font-mono)"
+                font-size="9"
+              >
+                the relay is no longer in this path
+              </text>
+              <!-- pulses -->
+              <circle r="3.5" fill="var(--flow)">
+                <animateMotion dur="2.4s" repeatCount="indefinite">
+                  <mpath href="#rp1" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)" opacity=".7">
+                <animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite">
+                  <mpath href="#rp2" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)">
+                <animateMotion dur="3s" repeatCount="indefinite">
+                  <mpath href="#rp3" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)" opacity=".7">
+                <animateMotion dur="3s" begin="1.5s" repeatCount="indefinite">
+                  <mpath href="#rp3" />
+                </animateMotion>
+              </circle>
+            </svg>
+            <div class="ribbon-cap">
+              pairing: client asks the relay to link and mint, then connects straight to the
+              environment
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= A. WHAT IT IS FOR ================= -->
+      <section class="section">
+        <div class="wrap split">
+          <div class="reveal">
+            <h2>The relay establishes trust but does not carry normal traffic</h2>
+            <p>
+              The relay is the hosted control plane for T3 Connect. It helps clients discover and
+              connect to remote environments, manages the cloud-side records those connections need,
+              and delivers optional mobile notifications and Live Activities (<code class="path"
+                >infra/relay/README.md:6-8</code
+              >). It stores control-plane decisions and records: which accounts and environments are
+              linked, which endpoint belongs to each environment, and which credentials remain
+              valid.
+            </p>
+            <p>
+              Its defining constraint is a refusal.
+              <em
+                >"The relay is intentionally not in the hot path for normal T3 Code traffic. After a
+                client connects, regular API and WebSocket traffic goes directly between that client
+                and the selected environment"</em
+              >
+              (<code class="path">infra/relay/README.md:10-11</code>). The relay handles connection
+              setup once. The client and environment then exchange sessions, streaming diffs, and
+              chart payloads directly.
+            </p>
+            <p>
+              The second boundary is credential separation. The environment server and the relay
+              hold <em>"separate credentials and trust boundaries"</em> (<code class="path"
+                >infra/relay/README.md:27-29</code
+              >), a split written down in detail in
+              <code class="path">docs/internals/environment-auth.md</code>. The relay can establish
+              the connection, but it cannot use an environment credential after setup.
+            </p>
+            <p style="margin-top: 18px">
+              <a href="/overview.html">Back to the big picture</a> to see where this plane sits
+              beside the event spine and the exchange.
+            </p>
+          </div>
+          <aside class="ownpanel reveal">
+            <div class="own-yes">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M9 12l2 2l4 -4" /></svg
+                >What it owns
+              </h3>
+              <ul>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M9 12l2 2l4 -4" /></svg
+                  >Linking environments to a cloud account
+                </li>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M9 12l2 2l4 -4" /></svg
+                  >Provisioning and tracking managed endpoints
+                </li>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M9 12l2 2l4 -4" /></svg
+                  >Issuing short-lived connection credentials
+                </li>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M9 12l2 2l4 -4" /></svg
+                  >Listing linked environments and devices
+                </li>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M9 12l2 2l4 -4" /></svg
+                  >APNs token registration, notifications, Live Activities
+                </li>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M9 12l2 2l4 -4" /></svg
+                  >Persisting relay state and traces
+                </li>
+              </ul>
+            </div>
+            <div class="own-no">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M10 10l4 4m0 -4l-4 4" /></svg
+                >What it refuses
+              </h3>
+              <ul>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M10 10l4 4m0 -4l-4 4" /></svg
+                  >Steady-state API or WebSocket traffic
+                </li>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M10 10l4 4m0 -4l-4 4" /></svg
+                  >Acting as the environment's authority
+                </li>
+                <li>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                    <path d="M10 10l4 4m0 -4l-4 4" /></svg
+                  >Accepting an environment access token
+                </li>
+              </ul>
+              <p style="font-size: 13px; color: var(--dim)">
+                Duties listed at <code class="path">infra/relay/README.md:15-29</code>; refusals at
+                <code class="path">infra/relay/README.md:10-11</code> and
+                <code class="path">docs/internals/environment-auth.md:139-141</code>.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ================= B. SHORT-LIVED EVERYTHING ================= -->
+      <section class="section">
+        <div class="wrap">
+          <div class="reveal">
+            <h2>Short-lived everything</h2>
+            <p>
+              Every credential in this boundary is measured with a clock. The relay's client access
+              tokens are DPoP-bound: each carries a <code class="path">cnf.jkt</code> proof-key
+              thumbprint (<code class="path">infra/relay/src/auth/RelayTokens.ts:183</code>), so a
+              stolen token cannot be replayed without the matching private key. The docs put it
+              plainly: relay-brokered clients use this mode
+              <em>"so that a leaked token cannot be replayed without the corresponding key"</em>
+              (<code class="path">docs/internals/environment-auth.md:91-93</code>).
+            </p>
+          </div>
+
+          <div class="stats reveal">
+            <div class="stat">
+              <div class="n">2<span>min</span></div>
+              <div class="l">
+                relay to environment mint and health proofs<br /><code class="path"
+                  >EnvironmentConnector.ts:420,575</code
+                >
+              </div>
+            </div>
+            <div class="stat">
+              <div class="n">5<span>min</span></div>
+              <div class="l">
+                single-purpose WebSocket ticket<br /><code class="path"
+                  >environment-auth.md:95-103</code
+                >
+              </div>
+            </div>
+            <div class="stat">
+              <div class="n">30<span>min</span></div>
+              <div class="l">
+                DPoP-bound client access token<br /><code class="path">RelayTokens.ts:29</code>
+              </div>
+            </div>
+            <div class="stat">
+              <div class="n">1<span>hour</span></div>
+              <div class="l">
+                DPoP-bound environment session; a plain bearer one lasts 30 days<br /><code
+                  class="path"
+                  >environment-auth.md:71-74</code
+                >
+              </div>
+            </div>
+          </div>
+
+          <div class="ledger reveal">
+            <div class="row">
+              <div class="term">t3-relay-dpop-access+jwt</div>
+              <div class="desc">
+                Client access token for relay APIs. TTL is a named constant,
+                <code class="path">RELAY_DPOP_ACCESS_TOKEN_TTL = "30 minutes"</code>. Scopes are
+                capped per client: mobile may hold environment:connect, environment:status, and
+                mobile registration; web gets connect and status only (<code class="path"
+                  >infra/relay/src/auth/RelayTokens.ts:29,63-73</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">t3-link-challenge+jwt</div>
+              <div class="desc">
+                Linking starts with a relay-signed challenge carrying the requested capabilities
+                (notifications, Live Activities, managed tunnels) as booleans; the environment
+                answers with the link proof (<code class="path"
+                  >infra/relay/src/auth/RelayTokens.ts:26-42,122-139</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">mint / health proof</div>
+              <div class="desc">
+                When a client asks for status or connect, the relay signs a JWT for the environment:
+                audience <code class="path">t3-env:&lt;environmentId&gt;</code>, scope
+                environment:status or environment:connect, valid for 2 minutes. The environment
+                answers with its own signed proof over a fresh nonce (<code class="path"
+                  >infra/relay/src/environments/EnvironmentConnector.ts:419-464,575-611</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">t3env_&lt;credentialId&gt;_&lt;secret&gt;</div>
+              <div class="desc">
+                The environment's credential toward the relay. Ids and secret come from joined UUIDs
+                with dashes stripped; only a SHA-256 base64url hash of the whole token is stored,
+                and creating a new one revokes every predecessor for the same environment and public
+                key (<code class="path"
+                  >infra/relay/src/environments/EnvironmentCredentials.ts:87-105,151-175</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">wsTicket</div>
+              <div class="desc">
+                A five-minute, single-purpose ticket minted by
+                <code class="path">POST /api/auth/websocket-ticket</code>. The client authenticates
+                with its real credential in headers, then puts only the ticket in the socket URL, so
+                long-lived tokens and cookies never appear in a URL (<code class="path"
+                  >docs/internals/environment-auth.md:95-103</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">environment session</div>
+              <div class="desc">
+                The long end of the scale, and still bounded: 30 days for a plain bearer exchange,
+                one hour when DPoP-bound. Scope requests must be a subset of the bootstrap grant, so
+                an ordinary paired client cannot exchange its way into admin scopes (<code
+                  class="path"
+                  >docs/internals/environment-auth.md:59-78</code
+                >).
+              </div>
+            </div>
+          </div>
+
+          <div class="reveal" style="margin-top: 24px">
+            <p>
+              On the way in, the relay itself verifies two kinds of bearer credential: Clerk
+              template JWTs generated from the <code class="path">t3-relay</code> template with the
+              shared <code class="path">t3-code-relay</code> audience, and Clerk OAuth tokens issued
+              to the CLI. <code class="path">verifyRelayClientBearerToken</code> tries the template
+              path first and falls back to OAuth (<code class="path"
+                >docs/internals/t3-connect.md:6-11</code
+              >). Its protected-resource metadata then advertises the contract: token endpoint
+              <code class="path">/v1/client/dpop-token</code>, grant type token-exchange, ES256
+              signing, and <code class="path">dpop_bound_access_tokens_required: true</code> (<code
+                class="path"
+                >infra/relay/src/http/Api.ts:355-385</code
+              >).
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= C. THE STACK ================= -->
+      <section class="section">
+        <div class="wrap">
+          <div class="reveal">
+            <h2>One stack, four moving parts</h2>
+            <p>
+              The relay deploys as a single Alchemy stack named
+              <code class="path">T3CodeRelay</code>, built from the Axiom, Cloudflare, and Drizzle
+              providers. It yields the schema snapshot, the Hyperdrive binding, the managed endpoint
+              and API DNS zones, the observability resources, and the Worker itself (<code
+                class="path"
+                >infra/relay/alchemy.run.ts:15-28</code
+              >).
+            </p>
+          </div>
+          <div class="bento">
+            <div class="cell span7 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M6.657 18c-2.572 0 -4.657 -2.007 -4.657 -4.483c0 -2.475 2.085 -4.482 4.657 -4.482c.393 -1.762 1.794 -3.2 3.675 -3.773c1.88 -.572 3.956 -.193 5.444 1c1.488 1.19 2.162 3.007 1.77 4.769h.99c1.913 0 3.464 1.56 3.464 3.486c0 1.927 -1.551 3.487 -3.465 3.487h-11.878"
+                  /></svg
+                >Cloudflare Worker
+              </h3>
+              <p>
+                <code class="path">infra/relay/src/worker.ts</code> wires the Cloudflare bindings,
+                runtime layers, queues, and HTTP API groups: health, metadata, mobile, client,
+                token, dpop, and server handlers (<code class="path"
+                  >infra/relay/README.md:31-43</code
+                >).
+              </p>
+              <p>
+                Two queues ride along: an APNs delivery queue and its dead-letter partner. Batch and
+                message processing run under spans named
+                <code class="path">relay.apn_delivery_queue.process_batch</code> and
+                <code class="path">relay.apn_delivery_queue.process_message</code> (<code
+                  class="path"
+                  >infra/relay/src/worker.ts:122-123,245-260</code
+                >). Mobile push is inherited upstream surface area; this fork keeps it wired but
+                does not develop it.
+              </p>
+            </div>
+            <div class="cell span5 tinted reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18.364 19.364a9 9 0 1 0 -12.728 0" />
+                  <path d="M15.536 16.536a5 5 0 1 0 -7.072 0" />
+                  <path d="M11 13a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /></svg
+                >Diagnostics in Axiom
+              </h3>
+              <p>
+                One OpenTelemetry trace dataset,
+                <code class="path">t3-code-relay-traces-prod</code>, is shared by the Worker, the
+                mobile app, and first-party relay clients. Three dataset-scoped ingest tokens are
+                write-only per producer, and a
+                <code class="path">t3-code-relay-recent-spans-prod</code> view holds recent request
+                and endpoint spans (<code class="path"
+                  >docs/operations/relay-observability.md:5-12</code
+                >).
+              </p>
+              <p>
+                Relay-specific annotations land under <code class="path">attributes.custom</code>,
+                and <code class="path">relay.operation</code> is one of them (<code class="path"
+                  >docs/operations/relay-observability.md:46-48</code
+                >). Responders are told to prefer the view or APL queries over tailing the Worker
+                (<code class="path">docs/operations/relay-observability.md:50-53</code>).
+              </p>
+              <div class="dataset-row">
+                <span class="chip">t3-code-relay-traces-prod</span>
+                <span class="chip">recent-spans view</span>
+                <span class="chip">relay.operation</span>
+              </div>
+            </div>
+            <div class="cell span5 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M4 6a8 3 0 1 0 16 0a8 3 0 1 0 -16 0" />
+                  <path d="M4 6v6a8 3 0 0 0 16 0v-6" />
+                  <path d="M4 12v6a8 3 0 0 0 16 0v-6" /></svg
+                >Postgres behind Access
+              </h3>
+              <p>
+                The database lives on a self-hosted origin behind Cloudflare Access, reached through
+                a Cloudflare Tunnel. Access supplies the origin credential, so the Hyperdrive config
+                declares no port at all; the tunnel's TCP ingress owns it (<code class="path"
+                  >infra/relay/src/db.ts:48-52</code
+                >).
+              </p>
+              <p>
+                Local development reaches the same database through its own tunnel session onto
+                <code class="path">127.0.0.1:5432</code> (<code class="path"
+                  >infra/relay/src/db.ts:77-89</code
+                >).
+              </p>
+              <div class="chain">
+                <span class="chip">Worker</span><span class="arrow">→</span>
+                <span class="chip">Hyperdrive</span><span class="arrow">→</span>
+                <span class="chip">Tunnel</span><span class="arrow">→</span>
+                <span class="chip">Access</span><span class="arrow">→</span>
+                <span class="chip">Postgres</span>
+              </div>
+            </div>
+            <div class="cell span7 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12h-8a1 1 0 1 0 -1 1v8a9 9 0 0 0 9 -9" />
+                  <path d="M16 9a5 5 0 1 0 -7 7" />
+                  <path d="M20.486 9a9 9 0 1 0 -11.482 11.495" /></svg
+                >Caching, deliberately off
+              </h3>
+              <p>Hyperdrive can cache reads, and for this database the answer is no:</p>
+              <p
+                style="border-left: 3px solid var(--amber); padding-left: 14px; color: var(--chalk)"
+              >
+                <em
+                  >"The relay reads credentials, allocations and DPoP proofs. A stale read here is
+                  an auth bug, so this cache stays off."</em
+                >
+              </p>
+              <p>
+                That comment sits directly above
+                <code class="path">caching: { disabled: true }</code> in the Hyperdrive binding,
+                with an origin connection limit of 20 (<code class="path"
+                  >infra/relay/src/db.ts:71-76</code
+                >). The schema is Drizzle with dialect postgres and migrations under
+                <code class="path">infra/relay/migrations/postgres</code> (<code class="path"
+                  >infra/relay/src/db.ts:42-46</code
+                >).
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= D. LINKING ================= -->
+      <section class="section">
+        <div class="wrap split">
+          <div class="reveal">
+            <h2>Linking: eleven gates before a yes</h2>
+            <p>
+              An environment joins an account by presenting a link-proof JWT of type
+              <code class="path">RELAY_LINK_PROOF_TYP</code> from the shared JWT helpers (<code
+                class="path"
+                >infra/relay/src/environments/EnvironmentLinker.ts:6-11</code
+              >). The relay never trusts it wholesale; it walks a staged validation chain, and any
+              failed stage is reported by name in the error (<code class="path"
+                >infra/relay/src/environments/EnvironmentLinker.ts:38-63</code
+              >):
+            </p>
+            <div class="chips-flow">
+              <span class="chip">decode_token</span><span class="arrow">→</span>
+              <span class="chip">decode_payload</span><span class="arrow">→</span>
+              <span class="chip">verify_proof</span><span class="arrow">→</span>
+              <span class="chip">authorize_capabilities</span><span class="arrow">→</span>
+              <span class="chip">validate_descriptor</span><span class="arrow">→</span>
+              <span class="chip">verify_challenge</span><span class="arrow">→</span>
+              <span class="chip">validate_expiration</span><span class="arrow">→</span>
+              <span class="chip">consume_proof_nonce</span><span class="arrow">→</span>
+              <span class="chip">consume_challenge_nonce</span><span class="arrow">→</span>
+              <span class="chip">validate_origin</span><span class="arrow">→</span>
+              <span class="chip">validate_endpoint</span>
+            </div>
+            <p>
+              The relay checks each requested capability: requesting managed tunnels fails unless
+              the proof carries the <code class="path">managed_tunnels</code> scope, and
+              notifications or Live Activities require
+              <code class="path">agent_activity_notifications</code> (<code class="path"
+                >infra/relay/src/environments/EnvironmentLinker.ts:95-107</code
+              >). The endpoint gate requires https for the HTTP base URL and wss for the WebSocket
+              base URL, refusing anything else (<code class="path"
+                >infra/relay/src/environments/EnvironmentLinker.ts:109-117</code
+              >).
+            </p>
+            <p>
+              Only then does the relay upsert the link row, mint an environment credential, and
+              provision the managed endpoint, returning all three results to the caller (<code
+                class="path"
+                >infra/relay/src/environments/EnvironmentLinker.ts:73-91</code
+              >).
+            </p>
+          </div>
+          <aside class="ownpanel reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6"
+                />
+                <path d="M11 16a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                <path d="M8 11v-4a4 4 0 1 1 8 0v4" /></svg
+              >The credential it leaves behind
+            </h3>
+            <p style="margin-top: 10px">
+              Shape only; the secret is shown to the environment once and never stored whole.
+            </p>
+            <div class="dataset-row" style="margin-top: 12px">
+              <span class="chip">t3env_&lt;credentialId&gt;_&lt;secret&gt;</span>
+              <span class="chip">SHA-256 base64url hash stored</span>
+            </div>
+            <ul style="list-style: none; margin-top: 14px">
+              <li
+                style="
+                  display: flex;
+                  gap: 9px;
+                  padding: 5px 0;
+                  font-size: 14.5px;
+                  color: var(--slate);
+                "
+              >
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M9 12l2 2l4 -4" /></svg
+                ><span
+                  >Creation revokes every earlier credential for the same environment and public
+                  key: one live secret per identity (<code class="path"
+                    >EnvironmentCredentials.ts:151-175</code
+                  >)</span
+                >
+              </li>
+              <li
+                style="
+                  display: flex;
+                  gap: 9px;
+                  padding: 5px 0;
+                  font-size: 14.5px;
+                  color: var(--slate);
+                "
+              >
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M9 12l2 2l4 -4" /></svg
+                ><span
+                  >Authentication requires both a non-revoked credential hash and a non-revoked link
+                  row, so unlinking kills the credential's meaning (<code class="path"
+                    >EnvironmentCredentials.ts:179-218</code
+                  >)</span
+                >
+              </li>
+              <li
+                style="
+                  display: flex;
+                  gap: 9px;
+                  padding: 5px 0;
+                  font-size: 14.5px;
+                  color: var(--slate);
+                "
+              >
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M9 12l2 2l4 -4" /></svg
+                ><span
+                  >Token assembly from joined, de-dashed UUIDs at
+                  <code class="path">EnvironmentCredentials.ts:91-102</code></span
+                >
+              </li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ================= E. MANAGED ENDPOINTS ================= -->
+      <section class="section">
+        <div class="wrap">
+          <div class="reveal">
+            <h2>Endpoints from a digest</h2>
+            <p>
+              A managed endpoint is a Cloudflare tunnel with a hostname the relay derives, not one
+              anyone picks. The same environment under the same account always maps to the same
+              name, and production hostnames read
+              <code class="path">prod-&lt;digest&gt;.&lt;RELAY_TUNNEL_ZONE_NAME&gt;</code> while
+              personal Alchemy stages prefix their own sanitized stage name (<code class="path"
+                >infra/relay/README.md:102-108</code
+              >).
+            </p>
+          </div>
+          <div class="ledger reveal">
+            <div class="row">
+              <div class="term">digest input</div>
+              <div class="desc">
+                Exactly <code class="path">stage:userId:environmentId</code>, hashed into the
+                hostname suffix (<code class="path">infra/relay/src/deploymentConfig.ts:88-99</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">endpoint pair</div>
+              <div class="desc">
+                Always <code class="path">https://&lt;hostname&gt;/</code> and
+                <code class="path">wss://&lt;hostname&gt;/ws</code> with
+                <code class="path">providerKind: "cloudflare_tunnel"</code> (<code class="path"
+                  >infra/relay/src/deploymentConfig.ts:112-118</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">deprovisioning</div>
+              <div class="desc">
+                Its own six stages, from claim-release through DNS record and tunnel deletion to
+                allocation removal (<code class="path"
+                  >infra/relay/src/environments/ManagedEndpointProvider.ts:77-84</code
+                >).
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">connect mismatches</div>
+              <div class="desc">
+                When a client asks to connect, the relay re-derives the endpoint and hands over a
+                2-minute proof. Mismatches are hard failures with named reasons: allocation not
+                ready, hostname invalid, endpoint mismatch, or the endpoint simply not being
+                relay-managed (<code class="path"
+                  >infra/relay/src/environments/EnvironmentConnector.ts:45-69</code
+                >).
+              </div>
+            </div>
+          </div>
+          <div class="reveal">
+            <div class="timeline">
+              <div class="step">
+                <div class="stg">derive-environment-hash</div>
+                <div class="why">Hash the stage, user, and environment identity.</div>
+              </div>
+              <div class="step">
+                <div class="stg">check-tunnel-limit</div>
+                <div class="why">Refuse early if the account is at its tunnel budget.</div>
+              </div>
+              <div class="step">
+                <div class="stg">reserve-allocation</div>
+                <div class="why">Claim the row that will own this endpoint.</div>
+              </div>
+              <div class="step">
+                <div class="stg">ensure-tunnel</div>
+                <div class="why">Create the Cloudflare tunnel if absent.</div>
+              </div>
+              <div class="step">
+                <div class="stg">validate-tunnel-response</div>
+                <div class="why">Check the tunnel answered with the identity we asked for.</div>
+              </div>
+              <div class="step">
+                <div class="stg">record-tunnel</div>
+                <div class="why">Persist tunnel id and name against the allocation.</div>
+              </div>
+              <div class="step">
+                <div class="stg">configure-tunnel</div>
+                <div class="why">Point ingress at the environment's origin.</div>
+              </div>
+              <div class="step">
+                <div class="stg">ensure-dns-record</div>
+                <div class="why">Create the hostname in the tunnel zone.</div>
+              </div>
+              <div class="step">
+                <div class="stg">record-dns</div>
+                <div class="why">Persist the record id for later teardown.</div>
+              </div>
+              <div class="step">
+                <div class="stg">get-tunnel-token</div>
+                <div class="why">Fetch the credential the environment runs cloudflared with.</div>
+              </div>
+              <div class="step">
+                <div class="stg">mark-allocation-ready</div>
+                <div class="why">
+                  Flip the endpoint live. Failures report their stage (<code class="path"
+                    >ManagedEndpointProvider.ts:57-75</code
+                  >).
+                </div>
+              </div>
+            </div>
+            <p style="font-size: 13px; color: var(--dim); margin-top: 10px">
+              Provisioning stage names verbatim from
+              <code class="path">infra/relay/src/environments/ManagedEndpointProvider.ts:43-55</code
+              >.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= F. TWO ISSUERS ================= -->
+      <section class="section">
+        <div class="wrap split">
+          <div class="reveal">
+            <h2>Two issuers, zero interchange</h2>
+            <p>
+              Environment server and relay keep separate credentials, issuers, and trust boundaries,
+              deliberately shaped like OAuth so permission checks can be audited against established
+              concepts (<code class="path">docs/internals/environment-auth.md:5-7</code>). The token
+              endpoint profiles RFC 8693 token-exchange vocabulary:
+              <code class="path">subject_token</code>,
+              <code class="path">requested_token_type</code>,
+              <code class="path">issued_token_type</code> (<code class="path"
+                >docs/internals/environment-auth.md:113-119</code
+              >). It is not a general authorization server; the bootstrap token type is private and
+              errors are typed (<code class="path">docs/internals/environment-auth.md:123-127</code
+              >).
+            </p>
+            <p>
+              Authorization is capability-based. Ordinary pairing links grant exactly four
+              client-operation scopes plus read access to relay connectivity; bootstrap credentials
+              add the three administrative ones (<code class="path"
+                >docs/internals/environment-auth.md:25-29</code
+              >). A WebSocket ticket carries its session's scopes, and every RPC method re-checks
+              the one it needs:
+              <em>"Creating a ticket is not authorization to call every RPC method"</em> (<code
+                class="path"
+                >docs/internals/environment-auth.md:105-111</code
+              >).
+            </p>
+            <p>
+              The scope model was born in a hard cutover. Migration
+              <code class="path">031_AuthAuthorizationScopes</code> deleted existing pairing links
+              and sessions rather than silently mapping old role-bearing records to new
+              capabilities; upgraded clients simply pair again (<code class="path"
+                >docs/internals/environment-auth.md:130-135</code
+              >).
+            </p>
+          </div>
+          <div class="reveal">
+            <div class="ownpanel">
+              <h3 style="display: flex; align-items: center; gap: 9px">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"
+                  />
+                  <path d="M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                  <path d="M12 12l0 2.5" /></svg
+                >Capability scopes
+              </h3>
+              <div class="dataset-row" style="margin-top: 14px">
+                <span class="chip scope">orchestration:read</span>
+                <span class="chip scope">orchestration:operate</span>
+                <span class="chip scope">terminal:operate</span>
+                <span class="chip scope">review:write</span>
+                <span class="chip scope">access:read</span>
+                <span class="chip scope">access:write</span>
+                <span class="chip scope">relay:read</span>
+                <span class="chip scope">relay:write</span>
+              </div>
+              <p style="font-size: 13.5px; color: var(--slate); margin-top: 12px">
+                The eight environment-side scopes (<code class="path"
+                  >docs/internals/environment-auth.md:14-23</code
+                >). Pairing grants the first four plus <code class="path">relay:read</code>;
+                bootstrap adds <code class="path">access:read access:write relay:write</code>.
+              </p>
+            </div>
+            <div class="callout quote">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"
+                  />
+                  <path d="M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                  <path d="M12 12l0 2.5" /></svg
+                >The boundary rule
+              </h3>
+              <p>
+                <em
+                  >"An environment access token is not a relay token and cannot be presented to the
+                  relay."</em
+                >
+                (<code class="path">docs/internals/environment-auth.md:139-141</code>). Different
+                issuers, different keys, different trust: a credential from one side is inert paper
+                on the other.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= G. PRODUCTION SHAPE ================= -->
+      <section class="section">
+        <div class="wrap">
+          <div class="reveal">
+            <h2>Production shape: re-verify, do not assume</h2>
+            <p>
+              Repository code is not the complete source of truth for production. The working rule
+              names three layers that must agree before any diagnosis or change: the repository
+              (<code class="path">infra/relay</code> and its docs), the host running the Postgres
+              origin and <code class="path">cloudflared</code>, and the live Cloudflare account with
+              its Workers, DNS, Access, tunnels, Hyperdrive, and queues (AGENTS.md, Relay and
+              production infrastructure).
+            </p>
+            <p>
+              The documented shape is a starting point that must be verified. The fork's default
+              relay URL <code class="path">https://relay.athelstan.xyz</code> and hosted app
+              <code class="path">https://app.athelstan.xyz</code> are fork-patched constants with
+              comments warning <em>"An upstream sync will try to revert them"</em> and directing the
+              reader to keep the fork's values, guarded by tests in both the web and server packages
+              (<code class="path">packages/shared/src/connectAuth.ts:12-32</code>;
+              <code class="path">apps/web/src/cloud/publicConfig.test.ts:15-21</code>;
+              <code class="path">apps/server/src/cloud/publicConfig.test.ts:38-46</code>).
+            </p>
+            <p>
+              Docs can lag, and this area has an example on file. The relay README's deployment
+              section still says the prod stage
+              <em>"owns the retained PlanetScale database"</em> (<code class="path"
+                >infra/relay/README.md:92</code
+              >), while the schema is Drizzle postgres with migrations under
+              <code class="path">infra/relay/migrations/postgres</code> (<code class="path"
+                >infra/relay/src/db.ts:42-46</code
+              >) and operations document a self-hosted Postgres origin behind Access. Treat
+              repository prose as one witness among three.
+            </p>
+          </div>
+          <div class="layers">
+            <div class="layer reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+                  <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2" />
+                  <path d="M10 13l-1 2l1 2" />
+                  <path d="M14 13l1 2l-1 2" /></svg
+                >Repository
+              </h3>
+              <p>
+                <code class="path">infra/relay</code> for the Alchemy stack, Worker, migrations, and
+                contracts; <code class="path">docs/internals</code> and
+                <code class="path">docs/operations</code> for design and procedure. The first
+                witness, read-only.
+              </p>
+            </div>
+            <div class="layer reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+                  <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+                  <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" /></svg
+                >The host
+              </h3>
+              <p>
+                The origin machine runs the Postgres container and
+                <code class="path">cloudflared</code>; the database is bound to loopback, not the
+                public network (AGENTS.md). Inspect before touching; never restart casually.
+              </p>
+            </div>
+            <div class="layer reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M6.657 18c-2.572 0 -4.657 -2.007 -4.657 -4.483c0 -2.475 2.085 -4.482 4.657 -4.482c.393 -1.762 1.794 -3.2 3.675 -3.773c1.88 -.572 3.956 -.193 5.444 1c1.488 1.19 2.162 3.007 1.77 4.769h.99c1.913 0 3.464 1.56 3.464 3.486c0 1.927 -1.551 3.487 -3.465 3.487h-11.878"
+                  /></svg
+                >Cloudflare
+              </h3>
+              <p>
+                Workers, custom domains, DNS, Access, tunnels, Hyperdrive, queues, and logs,
+                discovered through the Cloudflare API and Wrangler. Physical Worker names are
+                generated and may change (AGENTS.md).
+              </p>
+            </div>
+          </div>
+          <div class="callout reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M10.24 3.957l-8.422 14.06a1.989 1.989 0 0 0 1.7 2.983h16.845a1.989 1.989 0 0 0 1.7 -2.983l-8.423 -14.06a1.989 1.989 0 0 0 -3.4 0"
+                />
+                <path d="M12 9v4" />
+                <path d="M12 17h.01" /></svg
+              >Rules of engagement
+            </h3>
+            <ul>
+              <li>
+                Never print secrets: .env files, tunnel tokens, service tokens, database passwords,
+                signer keys, Worker secrets (AGENTS.md).
+              </li>
+              <li>
+                Inspect read-only first: repository, then host, then Cloudflare. Start with the
+                provisioned Axiom view or APL queries instead of tailing the Worker (<code
+                  class="path"
+                  >docs/operations/relay-observability.md:50-53</code
+                >).
+              </li>
+              <li>
+                Do not deploy, migrate, rotate credentials, edit DNS or Access, or restart services
+                unless the request is explicit (AGENTS.md).
+              </li>
+              <li>
+                Production truth lives across three layers. Any single layer, including this page,
+                is a claim.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= H. GO DEEPER ================= -->
+      <section class="section">
+        <div class="wrap">
+          <div class="reveal">
+            <h2>Go deeper</h2>
+            <p>
+              Primary sources for this page. Read them in the repository, not in a summary, before
+              changing any of this behavior.
+            </p>
+          </div>
+          <div class="evidence">
+            <div class="reveal">
+              <h3>Relay plane</h3>
+              <ul>
+                <li><code class="path">infra/relay/README.md</code></li>
+                <li><code class="path">infra/relay/alchemy.run.ts</code></li>
+                <li><code class="path">infra/relay/src/worker.ts</code></li>
+                <li><code class="path">infra/relay/src/db.ts</code></li>
+                <li><code class="path">infra/relay/src/http/Api.ts</code></li>
+                <li><code class="path">infra/relay/src/auth/RelayTokens.ts</code></li>
+              </ul>
+            </div>
+            <div class="reveal">
+              <h3>Environments and docs</h3>
+              <ul>
+                <li><code class="path">infra/relay/src/environments/EnvironmentLinker.ts</code></li>
+                <li>
+                  <code class="path">infra/relay/src/environments/EnvironmentCredentials.ts</code>
+                </li>
+                <li>
+                  <code class="path">infra/relay/src/environments/EnvironmentConnector.ts</code>
+                </li>
+                <li>
+                  <code class="path">infra/relay/src/environments/ManagedEndpointProvider.ts</code>
+                </li>
+                <li><code class="path">docs/internals/environment-auth.md</code></li>
+                <li><code class="path">docs/operations/relay-observability.md</code></li>
+              </ul>
+            </div>
+          </div>
+          <div class="reveal">
+            <h3 style="margin-top: 34px">Continue the atlas</h3>
+            <div class="neighbors">
+              <a href="/providers.html">Provider adapters</a>
+              <a href="/clients.html">Web &amp; desktop</a>
+              <a href="/contracts.html">Contracts</a>
+              <a href="/signer.html">Signer &amp; authority</a>
+              <a href="/overview.html">Big picture</a>
+              <a href="/glossary.html">Glossary</a>
+            </div>
+            <p style="margin-top: 18px">
+              The <a href="/signer.html">Signer &amp; authority</a> page covers the local,
+              deterministic key handling on the environment side of this boundary.
+              <a href="/contracts.html">Contracts</a> holds the wire shapes the relay and its
+              clients share, and <a href="/clients.html">Web &amp; desktop</a> shows how web and
+              desktop consume endpoints and tickets.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/status.html">See the board</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/providers.html">← Provider adapters</a>
+          <a href="/clients.html">Web &amp; desktop →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document
+          .querySelectorAll("animateMotion, animate")
+          .forEach((a) => a.setAttribute("begin", "indefinite"));
+      }
+    </script>
+    <script>
+      (() => {
+        const els = document.querySelectorAll(".reveal");
+        if (
+          !("IntersectionObserver" in window) ||
+          matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach((el) => el.classList.add("in"));
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e, i) => {
+              if (e.isIntersecting) {
+                e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      })();
+    </script>
+  </body>
+</html>

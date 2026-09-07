@@ -1,0 +1,2002 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Missions, watches, wakes · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="How delegated trading authority lives, sleeps, and gets woken: missions as durable authority, watches as typed predicates that fire once, wakes as leased harness runs."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+            :root {
+              --void: #060A12;        /* page base */
+              --panel: #0B1120;       /* raised surface */
+              --panel-2: #0E1526;     /* second raise */
+              --edge: rgba(148,163,199,.13);
+              --edge-strong: rgba(148,163,199,.24);
+              --chalk: #D8E0EC;       /* primary text */
+              --slate: #8A97AD;       /* secondary text */
+              --dim: #5C6B84;         /* tertiary text */
+              --bid: #2BD576;         /* success, long, confirmed */
+              --ask: #FF5D6C;         /* risk, refusal, halt */
+              --amber: #FFB224;       /* caution, limits, unknown */
+              --flow: #56CCF2;        /* data in motion, links, events */
+              --flow-soft: rgba(86,204,242,.14);
+              --font-body: "IBM Plex Sans", system-ui, sans-serif;
+              --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+              --font-display: "Archivo", system-ui, sans-serif;
+            }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            html { scroll-behavior: smooth; }
+            @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+            body {
+              background: var(--void);
+              color: var(--chalk);
+              font-family: var(--font-body);
+              font-size: 16.5px;
+              line-height: 1.65;
+              -webkit-font-smoothing: antialiased;
+            }
+            ::selection { background: rgba(86,204,242,.28); }
+            a { color: var(--flow); text-decoration: none; }
+            a:hover { text-decoration: underline; text-underline-offset: 3px; }
+            :focus-visible { outline: 2px solid var(--flow); outline-offset: 2px; border-radius: 4px; }
+            code, .mono { font-family: var(--font-mono); font-size: .86em; }
+            code.path {
+              color: var(--slate);
+              background: var(--panel);
+              border: 1px solid var(--edge);
+              border-radius: 6px;
+              padding: .1em .4em;
+              white-space: nowrap;
+            }
+            .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+
+            /* chrome */
+            .nav {
+              position: sticky; top: 0; z-index: 50;
+              background: rgba(6,10,18,.82);
+              backdrop-filter: blur(12px);
+              -webkit-backdrop-filter: blur(12px);
+              border-bottom: 1px solid var(--edge);
+            }
+            .nav-inner {
+              display: flex; align-items: center; justify-content: space-between;
+              height: 60px; gap: 16px;
+            }
+            .brand {
+              display: flex; align-items: center; gap: 10px;
+              color: var(--chalk); font-family: var(--font-mono); font-size: 13px;
+              letter-spacing: .08em; white-space: nowrap;
+            }
+            .brand:hover { text-decoration: none; }
+            .brand .tick { color: var(--bid); }
+            .nav-links { display: flex; gap: 4px; }
+            .nav-links a {
+              color: var(--slate); font-size: 13.5px; padding: 6px 10px;
+              border-radius: 8px; white-space: nowrap;
+            }
+            .nav-links a:hover { color: var(--chalk); background: var(--panel); text-decoration: none; }
+            .nav-links a[aria-current="page"] { color: var(--flow); background: var(--flow-soft); }
+            @media (max-width: 820px) {
+              .nav-links { display: none; }
+              .nav-links.open { display: flex; flex-direction: column; position: absolute; top: 60px; right: 12px; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 8px; }
+              .nav-menu-btn { display: inline-flex !important; }
+            }
+            .nav-menu-btn {
+              display: none; color: var(--slate); background: none; border: 1px solid var(--edge);
+              border-radius: 8px; padding: 6px 10px; font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+            }
+
+            .footer {
+              border-top: 1px solid var(--edge); margin-top: 96px; padding: 40px 0 56px;
+              color: var(--dim); font-size: 14px;
+            }
+            .footer .cols { display: flex; gap: 32px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
+            .footer nav { display: flex; flex-direction: column; gap: 8px; }
+            .footer a { color: var(--slate); } .footer a:hover { color: var(--flow); }
+            .footer .mono { font-size: 12px; letter-spacing: .06em; }
+
+            /* type roles */
+            .kicker {
+              font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .14em;
+              color: var(--flow); text-transform: uppercase;
+            }
+            h1 {
+              font-family: var(--font-display); font-weight: 800; font-stretch: 112%;
+              font-size: clamp(34px, 5.4vw, 58px); line-height: 1.04; letter-spacing: -.015em;
+              margin: 14px 0 18px; max-width: 18ch;
+            }
+            h2 {
+              font-family: var(--font-display); font-weight: 700; font-stretch: 106%;
+              font-size: clamp(24px, 3.2vw, 34px); line-height: 1.15; letter-spacing: -.01em;
+              margin: 0 0 14px; max-width: 26ch;
+            }
+            h3 { font-family: var(--font-body); font-weight: 600; font-size: 18px; margin: 0 0 8px; }
+            p { max-width: 66ch; color: var(--chalk); }
+            p.lede { font-size: 19px; color: var(--slate); max-width: 58ch; }
+            .section { padding: 76px 0; border-top: 1px solid var(--edge); }
+            .section:first-of-type { border-top: none; }
+            .icon { width: 1.25em; height: 1.25em; flex: none; vertical-align: -.25em; }
+
+            /* reveal on scroll */
+            .reveal { opacity: 0; transform: translateY(18px); }
+            .reveal.in { opacity: 1; transform: none; transition: opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1); }
+            @media (prefers-reduced-motion: reduce) {
+              .reveal { opacity: 1; transform: none; }
+            }
+
+            /* flow ribbon animation */
+            .edge-line { stroke-dasharray: 5 7; animation: march 1.1s linear infinite; }
+            @keyframes march { to { stroke-dashoffset: -12; } }
+            .node-pulse { animation: nodepulse 2.6s ease-in-out infinite; }
+            @keyframes nodepulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+            @media (prefers-reduced-motion: reduce) {
+              .edge-line { animation: none; stroke-dasharray: none; }
+              .node-pulse { animation: none; opacity: .8; }
+              ribbon pulse circles and canvases must also be disabled by page JS (see recipes)
+            }
+
+            /* ---------- page-specific ---------- */
+            .hero { padding: 72px 0 26px; }
+            .hero h1 .icon { color: var(--flow); width: .9em; height: .9em; }
+            .ribbon-figure {
+              margin-top: 40px; background: var(--panel); border: 1px solid var(--edge);
+              border-radius: 10px; padding: 16px 10px 6px; overflow-x: auto;
+            }
+            .ribbon-figure svg { width: 100%; height: auto; min-width: 720px; display: block; }
+            .ribbon-cap {
+              display: flex; gap: 20px; padding: 10px 10px 8px; color: var(--slate);
+              font-family: var(--font-mono); font-size: 12px; flex-wrap: wrap;
+            }
+
+            /* split */
+            .split { display: grid; grid-template-columns: 7fr 5fr; gap: 40px; align-items: start; }
+            @media (max-width: 820px) { .split { grid-template-columns: 1fr; gap: 28px; } }
+            .split .prose p + p { margin-top: 14px; }
+
+            /* panel ledger (right rail of splits) */
+            .rail {
+              background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+              padding: 22px 22px 8px;
+            }
+            .rail .ledger { margin-top: 14px; }
+            .ledger { border-top: 1px solid var(--edge); }
+            .ledger .row {
+              display: grid; grid-template-columns: minmax(120px, 168px) 1fr; gap: 14px;
+              padding: 13px 0 15px; border-bottom: 1px solid var(--edge);
+            }
+            .ledger .row:last-child { border-bottom: none; }
+            .ledger .k {
+              font-family: var(--font-mono); font-size: 12.5px; color: var(--flow);
+              letter-spacing: .02em; overflow-wrap: anywhere;
+            }
+            .ledger .v { font-size: 14.5px; color: var(--slate); line-height: 1.55; }
+            .ledger .v b { color: var(--chalk); font-weight: 500; }
+
+            /* stat strip */
+            .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 30px 0 8px; }
+            @media (max-width: 860px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+            .stat { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 18px 18px 14px; }
+            .stat .n { font-family: var(--font-mono); font-size: clamp(30px, 4vw, 44px); color: var(--chalk); line-height: 1.05; }
+            .stat .n small { font-size: .45em; color: var(--flow); }
+            .stat .l { margin-top: 8px; font-size: 13.5px; color: var(--slate); line-height: 1.45; }
+
+            /* state diagram */
+            .diag-figure {
+              margin-top: 30px; background: var(--panel); border: 1px solid var(--edge);
+              border-radius: 10px; padding: 16px 10px 4px; overflow-x: auto;
+            }
+            .diag-figure svg { width: 100%; height: auto; min-width: 900px; display: block; }
+            .diag-legend {
+              display: flex; gap: 20px; padding: 10px 10px 8px; color: var(--slate);
+              font-family: var(--font-mono); font-size: 12px; flex-wrap: wrap;
+            }
+            .diag-legend i { display: inline-block; width: 18px; height: 2px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+
+            /* bento */
+            .bento { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; margin-top: 30px; }
+            .cell {
+              background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+              padding: 20px; display: flex; flex-direction: column; gap: 8px;
+            }
+            .cell h3 { display: flex; align-items: center; gap: 9px; font-size: 16px; margin: 0; }
+            .cell h3 .icon { color: var(--flow); }
+            .cell h3 code { font-size: .82em; color: var(--amber); }
+            .cell p { color: var(--slate); font-size: 14.5px; max-width: none; }
+            @media (min-width: 861px) {
+              .c4 { grid-column: span 4; } .c8 { grid-column: span 8; } .c5 { grid-column: span 5; } .c7 { grid-column: span 7; }
+            }
+            @media (max-width: 860px) { .cell { grid-column: span 12; } }
+            .cell .type { font-family: var(--font-mono); font-size: 11.5px; color: var(--amber); letter-spacing: .03em; }
+            .floorbox { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px; }
+            .floorbox .fb { background: var(--panel-2); border: 1px solid var(--edge); border-radius: 10px; padding: 14px 14px 12px; }
+            .floorbox .fb .n { font-family: var(--font-mono); font-size: 26px; color: var(--chalk); }
+            .floorbox .fb .n small { font-size: .5em; color: var(--slate); }
+            .floorbox .fb .l { font-size: 13px; color: var(--slate); margin-top: 4px; line-height: 1.45; }
+            .pairline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+            .pairline .chip {
+              font-family: var(--font-mono); font-size: 12px; color: var(--flow);
+              border: 1px solid rgba(86,204,242,.35); background: var(--flow-soft);
+              border-radius: 999px; padding: 4px 11px; white-space: nowrap;
+            }
+            .pairline .arr { color: var(--slate); font-size: 14px; }
+            .cadence { display: grid; gap: 8px; margin-top: 4px; }
+            .cadence .cr { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--edge); padding-bottom: 8px; font-size: 13.5px; color: var(--slate); }
+            .cadence .cr:last-child { border-bottom: none; padding-bottom: 0; }
+            .cadence .cr b { font-family: var(--font-mono); color: var(--chalk); font-weight: 500; white-space: nowrap; }
+
+            /* timeline */
+            .tl { position: relative; margin-top: 30px; padding-left: 26px; border-left: 2px solid var(--edge-strong); display: grid; gap: 26px; }
+            .tl article { position: relative; }
+            .tl article::before {
+              content: ""; position: absolute; left: -33px; top: 7px; width: 10px; height: 10px;
+              border-radius: 50%; background: var(--void); border: 2px solid var(--flow);
+            }
+            .tl .step-k { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .12em; color: var(--flow); text-transform: uppercase; }
+            .tl h3 { margin: 4px 0 6px; }
+            .tl p { color: var(--slate); font-size: 15.5px; }
+
+            /* callouts */
+            .callout {
+              background: var(--panel); border: 1px solid var(--edge);
+              border-left: 3px solid var(--flow); border-radius: 10px; padding: 18px 20px; margin: 26px 0 0;
+            }
+            .callout.amber { border-left-color: var(--amber); }
+            .callout.ask { border-left-color: var(--ask); }
+            .callout .ct { font-family: var(--font-mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--flow); margin-bottom: 6px; }
+            .callout.amber .ct { color: var(--amber); }
+            .callout.ask .ct { color: var(--ask); }
+            .callout p { font-size: 15.5px; color: var(--chalk); max-width: none; }
+            .callout p + p { margin-top: 10px; }
+            .callout .q { color: var(--slate); font-style: italic; }
+
+            /* inbox lifecycle */
+            .inbox-flow { display: flex; align-items: stretch; gap: 8px; margin: 18px 0 20px; flex-wrap: wrap; }
+            .inbox-flow .st {
+              flex: 1 1 130px; background: var(--panel-2); border: 1px solid var(--edge);
+              border-radius: 10px; padding: 12px 14px; text-align: center;
+            }
+            .inbox-flow .st .n { font-family: var(--font-mono); font-size: 13px; color: var(--flow); }
+            .inbox-flow .st .d { font-size: 12.5px; color: var(--slate); margin-top: 4px; line-height: 1.4; }
+            .inbox-flow .ia { align-self: center; color: var(--slate); flex: none; }
+
+            /* evidence */
+            .evi { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 26px; }
+            @media (max-width: 860px) { .evi { grid-template-columns: 1fr; } }
+            .evi h3 { font-size: 15px; }
+            .evi ul { list-style: none; display: grid; gap: 7px; margin-top: 10px; }
+            .evi li { font-size: 13.5px; color: var(--slate); line-height: 1.5; }
+            .evi li .path { display: inline-block; margin-top: 2px; }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono, h2 span, h3 span, p span { overflow-wrap: anywhere; }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path, code, .mono, .k, .who, .chip, .path-chip, .file, .fn, .term, .qno, p span, h2 span, h3 span, li span, td, th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre, .terminal, .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html">Risk control</a>
+          <a href="/status.html">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="wrap">
+        <div class="kicker">Missions · Watches · Wakes</div>
+        <h1>
+          <svg
+            class="icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M4 13a8 8 0 0 1 7 7a6 6 0 0 0 3 -5a9 9 0 0 0 6 -8a3 3 0 0 0 -3 -3a9 9 0 0 0 -8 6a6 6 0 0 0 -5 3"
+            />
+            <path d="M7 14a6 6 0 0 0 -3 6a6 6 0 0 0 6 -3" />
+            <path d="M14 9a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+          </svg>
+          How missions persist authority, sleep, and wake.
+        </h1>
+        <p class="lede">
+          A mission stores delegated trading authority: an instruction, allocated capital, risk
+          ceilings, and one bound chat. Watches are persisted conditions that can wake it. A wake
+          acquires a one-run decision lease, writes a fresh snapshot into the turn, and resumes the
+          chat.
+        </p>
+
+        <figure class="ribbon-figure reveal">
+          <svg
+            viewBox="0 0 1100 280"
+            role="img"
+            aria-label="The sleep-wake loop: a watch is armed, a candle arrives, the watch fires exactly once, the decision lease is acquired, a wakeup snapshot is composed, the turn starts, and the settled run re-arms coverage"
+          >
+            <defs>
+              <marker
+                id="arrR"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-strong)" />
+              </marker>
+            </defs>
+            <path
+              id="lp1"
+              class="edge-line"
+              d="M300,52 H424"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <path
+              id="lp2"
+              class="edge-line"
+              d="M670,52 H794"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <path
+              id="lp3"
+              class="edge-line"
+              d="M920,80 V190"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <path
+              id="lp4"
+              class="edge-line"
+              d="M800,224 H676"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <path
+              id="lp5"
+              class="edge-line"
+              d="M430,224 H306"
+              stroke="var(--edge-strong)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+            <path
+              id="lp6"
+              class="edge-line"
+              d="M180,196 V84"
+              stroke="var(--flow)"
+              fill="none"
+              stroke-width="2"
+              marker-end="url(#arrR)"
+            />
+
+            <g class="node-pulse">
+              <rect
+                x="60"
+                y="24"
+                width="240"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="180"
+                y="48"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                watch armed
+              </text>
+              <text
+                x="180"
+                y="66"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                trading_watches · active
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="430"
+                y="24"
+                width="240"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="550"
+                y="48"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                candle arrives
+              </text>
+              <text
+                x="550"
+                y="66"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                WS candle delivery §13
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="800"
+                y="24"
+                width="240"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="920"
+                y="48"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                fires once
+              </text>
+              <text
+                x="920"
+                y="66"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                markTriggered + inbox key
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="800"
+                y="196"
+                width="240"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="920"
+                y="220"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                decision lease
+              </text>
+              <text
+                x="920"
+                y="238"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                requestRun · §12.3
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="430"
+                y="196"
+                width="240"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="550"
+                y="220"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                wake snapshot
+              </text>
+              <text
+                x="550"
+                y="238"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                TradingWakeupComposer
+              </text>
+            </g>
+            <g class="node-pulse">
+              <rect
+                x="60"
+                y="196"
+                width="240"
+                height="56"
+                rx="10"
+                fill="var(--panel-2)"
+                stroke="var(--edge-strong)"
+              />
+              <text
+                x="180"
+                y="220"
+                text-anchor="middle"
+                fill="var(--chalk)"
+                font-family="var(--font-mono)"
+                font-size="12"
+              >
+                turn starts
+              </text>
+              <text
+                x="180"
+                y="238"
+                text-anchor="middle"
+                fill="var(--slate)"
+                font-family="var(--font-mono)"
+                font-size="9.5"
+              >
+                thread.turn.start
+              </text>
+            </g>
+
+            <text
+              x="550"
+              y="132"
+              text-anchor="middle"
+              fill="var(--dim)"
+              font-family="var(--font-mono)"
+              font-size="10"
+              letter-spacing="3"
+            >
+              THE SLEEP-WAKE LOOP
+            </text>
+            <text
+              x="550"
+              y="150"
+              text-anchor="middle"
+              fill="var(--dim)"
+              font-family="var(--font-mono)"
+              font-size="9"
+            >
+              the run settles · ensureNotDeaf re-arms the floor
+            </text>
+
+            <circle r="3.5" fill="var(--flow)">
+              <animateMotion dur="2.6s" repeatCount="indefinite">
+                <mpath href="#lp2" />
+              </animateMotion>
+            </circle>
+            <circle r="3.5" fill="var(--flow)" opacity=".7">
+              <animateMotion dur="2.6s" begin="1.3s" repeatCount="indefinite">
+                <mpath href="#lp5" />
+              </animateMotion>
+            </circle>
+          </svg>
+          <div class="ribbon-cap">
+            <span
+              >closed loop: every settled run re-arms coverage before the lease path goes
+              quiet</span
+            >
+            <span><code>TradingTurnCoordinator.ts:437</code></span>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="mission">
+      <div class="wrap">
+        <div class="split">
+          <div class="prose">
+            <h2 class="reveal">A mission is durable, delegated authority.</h2>
+            <p class="reveal">
+              A mission carries an <b>instruction</b> (the mandate), <b>allocated capital</b>, an
+              <b>authority envelope</b> of ceilings and risk policy, a <b>bound agent runtime</b>,
+              called the harness in this subsystem (one provider instance and one chat thread), and
+              the <b>markets</b> it may trade. A model turn is temporary. The mission rows written
+              by <code class="path">TradingMissionService.ts</code> persist after it ends. Its
+              header names the two things it owns: mission creation with the one-active-mission
+              invariant, and the §11.1 status transitions (<code class="path"
+                >TradingMissionService.ts:2-8</code
+              >).
+            </p>
+            <p class="reveal">
+              One installation, one active mission. The invariant is scoped to a user, and upstream
+              T3 is a single-user local server, so the reactor pins one owner,
+              <code class="path">LOCAL_TRADING_USER_ID = "local"</code>, rather than inventing an
+              identity contract the spec has not published (<code class="path"
+                >TradingMissionReactor.ts:136-143</code
+              >). A create that would overlap fails with
+              <code class="path">TradingMissionAlreadyActiveError</code> unless the existing mission
+              is in a permanent terminal state (<code class="path"
+                >TradingMissionService.ts:119-126</code
+              >).
+            </p>
+            <p class="reveal">
+              The explicit form is not the only door. A chat that has never held a mission can
+              publish a plan or place an entry, and the first such call <b>takes authority</b> on
+              the market it names. <code class="path">TradingAuthorityBinding.ts</code> runs the
+              same <code class="path">createMission</code>, so the D4 per-market exclusivity check
+              and the manual-exposure check are the ones already written; The service does not
+              dispatch another command or start another run. The caller is already waiting inside
+              the tool call, and the current turn already needs the authority. "An auto-created
+              mission is a mission" (<code class="path">TradingAuthorityBinding.ts:1-18</code>). It
+              walks <code class="path">initializing → analysing → waiting</code> inline, both edges
+              now, and calls <code class="path">adoptTurn</code> so the chat turn holds the decision
+              lease every execution check asks about (<code class="path"
+                >TradingAuthorityBinding.ts:393-407</code
+              >).
+            </p>
+            <p class="reveal">
+              A held market refuses, and the refusal names the holder. The refusing text quotes the
+              holding chat's title, because the trade home lists positions and a waiting mission is
+              invisible there; the gap is said out loud rather than papered over, and no new
+              navigation is built to close it (<code class="path"
+                >TradingAuthorityBinding.ts:86-112</code
+              >).
+            </p>
+            <div class="callout amber reveal">
+              <div class="ct">D4 · one market, one hand</div>
+              <p>
+                A market can be held by a mission or by the owner's manual trading, never both. The
+                mission side refuses when the market is taken or manually exposed; the manual ticket
+                refuses with <code class="path">market_owned_by_mission</code>, "named so the
+                refusal reads as the rule it is" (<code class="path"
+                  >TradingManualEntryService.ts:13-16</code
+                >).
+              </p>
+            </div>
+          </div>
+          <aside class="rail reveal">
+            <h3 style="display: flex; align-items: center; gap: 9px">
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4 13a8 8 0 0 1 7 7a6 6 0 0 0 3 -5a9 9 0 0 0 6 -8a3 3 0 0 0 -3 -3a9 9 0 0 0 -8 6a6 6 0 0 0 -5 3"
+                />
+                <path d="M7 14a6 6 0 0 0 -3 6a6 6 0 0 0 6 -3" />
+                <path d="M14 9a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /></svg
+              >Mission anatomy
+            </h3>
+            <div class="ledger">
+              <div class="row">
+                <div class="k">instruction</div>
+                <div class="v">
+                  The mandate, in words. Read back to the model on <b>every wake</b>, so it must not
+                  pretend to be a strategy the user never gave (<code class="path"
+                    >TradingAuthorityBinding.ts:160-170</code
+                  >).
+                </div>
+              </div>
+              <div class="row">
+                <div class="k">allocatedCapitalUsd</div>
+                <div class="v">
+                  Sized from the account when unstated; the precedence rule (<code class="path"
+                    >capitalSource</code
+                  >) is frozen onto the envelope (<code class="path"
+                    >TradingMissionService.ts:47-69</code
+                  >).
+                </div>
+              </div>
+              <div class="row">
+                <div class="k">authority envelope</div>
+                <div class="v">
+                  Leverage, gross notional, cumulative-loss, and planned-risk ceilings in
+                  <b>absolute dollars</b>, plus an optional
+                  <code class="path">maxWakes</code> budget.
+                </div>
+              </div>
+              <div class="row">
+                <div class="k">harness binding</div>
+                <div class="v">
+                  <code class="path">provider · providerInstanceId · threadId</code>, frozen for the
+                  mission's life (§10.2): "no restart ever performs automatic provider substitution"
+                  (<code class="path">TradingMissionService.ts:87-96</code>).
+                </div>
+              </div>
+              <div class="row">
+                <div class="k">markets</div>
+                <div class="v">
+                  At least one, extendable mid-mission under the same D4 rules. Releasing the last
+                  market is refused: a mission holding nothing should have ended (<code class="path"
+                    >TradingAuthorityBinding.ts:598-636</code
+                  >).
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+        <p class="reveal" style="margin-top: 34px; color: var(--slate); max-width: 66ch">
+          There is a third shape worth knowing: an <b>observe mission</b> is a mission in every way
+          that matters to the runtime, a row, a thread binding, wakes, a stand-down and a resume,
+          and in no way that reaches the exchange. Its allocation is
+          <code class="path">1</code> dollar, "the nearest thing to nothing it can hold", because a
+          zero allocation would be a mission that cannot work rather than one that must not; every
+          execution call is refused before a size is computed, and the mandate's last clause is the
+          whole mission: "Never trade." (<code class="path">TradingAuthorityBinding.ts:429-431</code
+          >, <code class="path">TradingAuthorityBinding.ts:530-547</code>).
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="statuses">
+      <div class="wrap">
+        <h2 class="reveal">Ten statuses, one table, no invented edges.</h2>
+        <p class="lede reveal">
+          The §11.1 state machine is encoded directly in
+          <code class="path">MissionTransitions.ts</code>. A harness run may not invent transitions,
+          and the deterministic services may only move a mission to
+          <code class="path">blocked</code> for one of the four persisted reasons. A companion test
+          asserts the encoded table equals the published one edge for edge, so the meaning of each
+          edge stays with the spec (<code class="path">MissionTransitions.ts:1-12</code>,
+          <code class="path">MissionTransitions.ts:38-45</code>).
+        </p>
+
+        <div class="stats">
+          <div class="stat reveal">
+            <div class="n">10</div>
+            <div class="l">statuses in the §11.1 table, with no self-transitions</div>
+          </div>
+          <div class="stat reveal">
+            <div class="n">5</div>
+            <div class="l">
+              in the active loop, the only set the runtime may wake of its own accord
+            </div>
+          </div>
+          <div class="stat reveal">
+            <div class="n">3<small>&nbsp;suspended</small></div>
+            <div class="l">
+              paused, agent_unavailable, blocked: authority held, exposure refused
+            </div>
+          </div>
+          <div class="stat reveal">
+            <div class="n">2<small>&nbsp;terminal</small></div>
+            <div class="l">revoked, completed: no outgoing transitions, ever</div>
+          </div>
+        </div>
+
+        <figure class="diag-figure reveal">
+          <svg
+            viewBox="0 0 1000 350"
+            role="img"
+            aria-label="Mission state diagram: an active loop of initializing, analysing, waiting, executing, position_open; any active state may exit to the suspended statuses paused, agent_unavailable, blocked or the terminal statuses revoked, completed; suspended missions resume into analysing"
+          >
+            <defs>
+              <marker
+                id="arrD"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="6.5"
+                markerHeight="6.5"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-strong)" />
+              </marker>
+              <marker
+                id="arrF"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="6.5"
+                markerHeight="6.5"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--flow)" />
+              </marker>
+            </defs>
+            <g font-family="var(--font-mono)">
+              <text x="20" y="24" fill="var(--dim)" font-size="10" letter-spacing="2">
+                ACTIVE LOOP · MAY WAKE ITSELF
+              </text>
+              <text
+                x="856"
+                y="24"
+                fill="var(--amber)"
+                font-size="10"
+                letter-spacing="2"
+                text-anchor="start"
+              >
+                SUSPENDED
+              </text>
+              <text x="856" y="222" fill="var(--dim)" font-size="10" letter-spacing="2">
+                TERMINAL
+              </text>
+
+              <!-- loop nodes -->
+              <g class="node-pulse">
+                <rect
+                  x="20"
+                  y="40"
+                  width="120"
+                  height="38"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(86,204,242,.35)"
+                />
+                <text x="80" y="64" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  initializing
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="190"
+                  y="40"
+                  width="120"
+                  height="38"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(86,204,242,.35)"
+                />
+                <text x="250" y="64" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  analysing
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="360"
+                  y="40"
+                  width="120"
+                  height="38"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(86,204,242,.35)"
+                />
+                <text x="420" y="64" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  waiting
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="530"
+                  y="40"
+                  width="120"
+                  height="38"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(86,204,242,.35)"
+                />
+                <text x="590" y="64" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  executing
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="700"
+                  y="40"
+                  width="120"
+                  height="38"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(86,204,242,.35)"
+                />
+                <text x="760" y="64" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  position_open
+                </text>
+              </g>
+
+              <!-- forward edges -->
+              <path
+                class="edge-line"
+                d="M140,59 H186"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+              <path
+                class="edge-line"
+                d="M310,59 H356"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+              <path
+                class="edge-line"
+                d="M480,59 H526"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+              <path
+                class="edge-line"
+                d="M650,59 H696"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+
+              <!-- return edges -->
+              <path
+                class="edge-line"
+                d="M390,78 C380,116 262,116 252,82"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="1.6"
+                marker-end="url(#arrD)"
+              />
+              <path
+                class="edge-line"
+                d="M590,78 C580,150 440,150 420,82"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="1.6"
+                marker-end="url(#arrD)"
+              />
+              <path
+                class="edge-line"
+                d="M760,78 C750,186 615,186 596,82"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="1.6"
+                marker-end="url(#arrD)"
+              />
+              <path
+                class="edge-line"
+                d="M735,78 C700,222 480,222 450,82"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="1.6"
+                marker-end="url(#arrD)"
+              />
+              <path
+                class="edge-line"
+                d="M715,78 C660,258 330,258 262,82"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="1.6"
+                marker-end="url(#arrD)"
+              />
+
+              <!-- exit bus -->
+              <path
+                class="edge-line"
+                d="M820,59 H852"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <circle cx="856" cy="59" r="3" fill="var(--edge-strong)" />
+              <path d="M856,59 V300" stroke="var(--edge-strong)" fill="none" stroke-width="2" />
+              <path
+                d="M856,39 H876"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+              <path
+                d="M856,93 H876"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+              <path
+                d="M856,147 H876"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+              <path
+                d="M856,253 H876"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+              <path
+                d="M856,307 H876"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+                marker-end="url(#arrD)"
+              />
+
+              <!-- suspended + terminal nodes -->
+              <g class="node-pulse">
+                <rect
+                  x="880"
+                  y="22"
+                  width="112"
+                  height="34"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(255,178,36,.45)"
+                />
+                <text x="936" y="44" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  paused
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="880"
+                  y="76"
+                  width="112"
+                  height="34"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(255,178,36,.45)"
+                />
+                <text x="936" y="92" text-anchor="middle" fill="var(--chalk)" font-size="10">
+                  agent_unavailable
+                </text>
+                <text x="936" y="104" text-anchor="middle" fill="var(--slate)" font-size="7.5">
+                  2 failed runs
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="880"
+                  y="130"
+                  width="112"
+                  height="34"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(255,178,36,.45)"
+                />
+                <text x="936" y="146" text-anchor="middle" fill="var(--chalk)" font-size="10">
+                  blocked
+                </text>
+                <text x="936" y="158" text-anchor="middle" fill="var(--slate)" font-size="7.5">
+                  blockedReason required
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="880"
+                  y="236"
+                  width="112"
+                  height="34"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text x="936" y="258" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  revoked
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="880"
+                  y="290"
+                  width="112"
+                  height="34"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text x="936" y="312" text-anchor="middle" fill="var(--chalk)" font-size="11">
+                  completed
+                </text>
+              </g>
+
+              <!-- resume edge -->
+              <path
+                d="M880,39 C700,330 60,268 186,61"
+                stroke="var(--flow)"
+                fill="none"
+                stroke-width="1.6"
+                stroke-dasharray="4 5"
+                marker-end="url(#arrF)"
+              />
+              <text x="520" y="332" text-anchor="middle" fill="var(--flow)" font-size="9.5">
+                resume revalidates, then analysing (§14.6)
+              </text>
+              <text
+                x="864"
+                y="204"
+                fill="var(--dim)"
+                font-size="8.5"
+                transform="rotate(90 864 204)"
+                text-anchor="middle"
+              >
+                any active state may exit
+              </text>
+            </g>
+          </svg>
+          <div class="diag-legend">
+            <span><i style="background: rgba(86, 204, 242, 0.6)"></i>the active loop</span>
+            <span
+              ><i style="background: rgba(255, 178, 36, 0.6)"></i>suspended: authority held, slot
+              held</span
+            >
+            <span><i style="background: var(--edge-strong)"></i>terminal: no outgoing edges</span>
+            <span><i style="background: var(--flow)"></i>resume path (dashed)</span>
+          </div>
+        </figure>
+
+        <div class="ledger reveal" style="margin-top: 26px">
+          <div class="row">
+            <div class="k">the loop</div>
+            <div class="v">
+              <b>initializing, analysing, waiting, executing, position_open</b>, with edges verbatim
+              from the table: <code class="path">waiting → [analysing, executing]</code>,
+              <code class="path">executing → [position_open, waiting]</code>,
+              <code class="path">position_open → [waiting, analysing, executing]</code> (<code
+                class="path"
+                >MissionTransitions.ts:47-55</code
+              >). One edge has two actors: <code class="path">analysing → waiting</code> is taken
+              both by publishing a plan and by arming a watch while a published plan exists; both
+              take the same edge, the table stays one edge (<code class="path"
+                >MissionTransitions.ts:44-46</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">suspended</div>
+            <div class="v">
+              <b>paused, agent_unavailable, blocked</b> block new discretionary exposure but still
+              hold mission authority, so they continue to occupy the single active-mission slot;
+              each is left only by an explicit user, provider, or harness action (<code class="path"
+                >MissionTransitions.ts:21-26</code
+              >). A paused or blocked mission may still hold a position and its protective orders
+              (<code class="path">MissionTransitions.ts:63-69</code>).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">terminal</div>
+            <div class="v">
+              <b>revoked</b> permanently ends mission authority; <b>completed</b> means the harness
+              declared the objective done. Neither has any outgoing transition (<code class="path"
+                >MissionTransitions.ts:15-19</code
+              >). Waking one would ask the harness to reassess something it has been explicitly told
+              to stop reassessing, so the runtime never does (<code class="path"
+                >MissionTransitions.ts:71-80</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">blockedReason</div>
+            <div class="v">
+              Entering <code class="path">blocked</code> without a persisted reason is rejected, and
+              a reason on any other status is rejected as meaningless:
+              <code class="path">blocked_reason_required</code>,
+              <code class="path">blocked_reason_not_allowed</code> (<code class="path"
+                >MissionTransitions.ts:117-130</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">resume</div>
+            <div class="v">
+              A suspended mission resumes into a fresh harness turn, and §14.6 revalidates account,
+              protection, authority, and provider availability before the harness reassesses (<code
+                class="path"
+                >MissionTransitions.ts:96-100</code
+              >). A mission blocked for cumulative loss is harder to leave: the guard refuses
+              harness self-resume, only an explicit user resume clears it (<code class="path"
+                >TradingExecutionGuard.ts:259-271</code
+              >).
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="watches">
+      <div class="wrap">
+        <h2 class="reveal">A watch is a typed predicate that fires exactly once.</h2>
+        <p class="lede reveal">
+          A watch is a simple, deterministic, typed predicate persisted against the mission that
+          registered it, not against a plan revision: a revision does not touch it (plan 29 step
+          4.2). <code class="path">TradingWatchService.ts</code> owns the lifecycle writes:
+          register, cancel, mark triggered, consume (<code class="path"
+            >TradingWatchService.ts:2-9</code
+          >). The agent runtime arms watches through the
+          <code class="path">trading_watch</code> tool. The server runtime arms others and stamps
+          <code class="path">armedReason</code> so a wake can explain why it happened.
+        </p>
+
+        <div class="callout reveal">
+          <div class="ct">Two durable guards · fires exactly once</div>
+          <p>
+            Firing flips the watch <code class="path">active → triggered</code> through an atomic
+            UPDATE that only wins on an <b>active</b> row, so a concurrent replay, supersede, or
+            cancel drops the firing; and the wake event is persisted with a deduplication key scoped
+            per watch, so a replay after a restart cannot generate a second wake-up. "The evaluator
+            never starts a run itself; the turn coordinator owns the lease and the wake path. A
+            watch firing does not authorize a position (§12.4)" (<code class="path"
+              >WatchEvaluator.ts:11-25</code
+            >).
+          </p>
+        </div>
+
+        <div class="bento">
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 17l6 -6l4 4l8 -8" />
+                <path d="M14 7l7 0l0 7" /></svg
+              >price_cross · candle_close
+            </h3>
+            <p>
+              One level, two confirmations: <code class="path">touch</code> fires the moment the
+              level trades; <code class="path">close</code> waits for the candle to confirm it
+              (<code class="path">trading-contracts/watch.ts:419-421</code>). Candle-close watches
+              are evaluated the moment a WS candle arrives; the slow sweep covers everything
+              price-shaped (<code class="path">WatchEvaluator.ts:4-9</code>).
+            </p>
+          </div>
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" />
+                <path d="M12 7v5l3 3" /></svg
+              >scheduled_reassessment
+            </h3>
+            <p>
+              A clock. The sweep fires it once its <code class="path">runAt</code> has passed (<code
+                class="path"
+                >WatchEvaluator.ts:7-9</code
+              >). A plan's own <code class="path">reassess.afterMinutes</code> is a cadence measured
+              from the look that just ended, floored at 5 minutes: read as a deadline it once
+              produced a wake-at-now hot loop the model could only escape by republishing an
+              unchanged plan (<code class="path">trading-contracts/watch.ts:1305-1329</code>).
+            </p>
+          </div>
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M19 5h-7l-4 14l-3 -6h-2" />
+                <path d="M14 13l6 6" />
+                <path d="M14 19l6 -6" /></svg
+              >pnl_above · pnl_below
+            </h3>
+            <p>
+              Levels in dollars on the winning and losing side of the
+              <b>live position's</b> unrealized PnL, which is exactly why they are position-scoped:
+              zero and meaningless when flat (<code class="path"
+                >trading-contracts/watch.ts:1043-1047</code
+              >). The runtime arms <code class="path">pnl_below</code> at about 70% of the planned
+              loss as a <code class="path">stop_decision</code> wake: thesis broken, or noise? The
+              exchange-native reduce-only stop stays resting as the backstop (<code class="path"
+                >trading-contracts/watch.ts:985-988</code
+              >).
+            </p>
+          </div>
+          <div class="cell c4 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M11.5 12a.5 .5 0 1 0 1 0a.5 .5 0 1 0 -1 0" fill="currentColor" />
+                <path d="M5 12a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" />
+                <path d="M12 3l0 2" />
+                <path d="M3 12l2 0" />
+                <path d="M12 19l0 2" />
+                <path d="M19 12l2 0" /></svg
+              >stop_proximity
+            </h3>
+            <p>
+              The runtime arms a <code class="path">price_cross</code> one ATR ahead of the resting
+              stop while a position is held. A wake from it is the designed moment to decide the
+              stop deliberately, tighten, hold, or exit, before the exchange decides instead (<code
+                class="path"
+                >trading-contracts/watch.ts:980-983</code
+              >).
+            </p>
+          </div>
+          <div class="cell c8 reveal" style="background: var(--panel-2)">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M6 21l6 -5l6 5" />
+                <path d="M12 13v8" />
+                <path
+                  d="M3.294 13.678l.166 .281c.52 .88 1.624 1.265 2.605 .91l14.242 -5.165a1.023 1.023 0 0 0 .565 -1.456l-2.62 -4.705a1.087 1.087 0 0 0 -1.447 -.42l-.056 .032l-12.694 7.618c-1.02 .613 -1.357 1.897 -.76 2.905l-.001 0"
+                />
+                <path d="M14 5l3 5.5" /></svg
+              >prediction_horizon + prediction_invalidation
+            </h3>
+            <div class="pairline">
+              <span class="chip">publish projection</span>
+              <span class="arr">→</span>
+              <span class="chip">horizon clock · byMinutes</span>
+              <span class="arr">+</span>
+              <span class="chip">invalidation · invalidationPrice</span>
+            </div>
+            <p>
+              The only pair the runtime arms from a plan's projection, automatically, on publish.
+              The horizon wake asks "did it happen?"; the invalidation wake says "it didn't, and
+              here is the proof". Between them the mission can genuinely sleep, because the only two
+              things that could change its mind are both armed (<code class="path"
+                >TradingPredictionWatches.ts:1-22</code
+              >, <code class="path">trading-contracts/watch.ts:995-1000</code>).
+            </p>
+          </div>
+          <div class="cell c8 reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12h4l3 8l4 -16l3 8h4" /></svg
+              >The coverage floor: a holding mission is never deaf
+            </h3>
+            <div class="floorbox">
+              <div class="fb">
+                <div class="n">3<small> bars</small></div>
+                <div class="l">
+                  holding a position: 3 bars of the primary timeframe, clamped to 2-15 minutes. A 1m
+                  holder reassesses inside 3 minutes, a 1h holder at the 15-minute cap.
+                </div>
+              </div>
+              <div class="fb">
+                <div class="n">10<small> bars</small></div>
+                <div class="l">
+                  flat with a thesis: 10 bars clamped to 5-30 minutes. Consecutive no-op wakes
+                  stretch it 10m, 20m, 40m, then hourly; any real event resets the count.
+                </div>
+              </div>
+            </div>
+            <p style="margin-top: 10px">
+              Cadence is unconditional for a holder, covered or not: a live 1m mandate once had
+              seven armed watches, took the "covered" branch, and had no runtime-armed reassessment
+              for its entire hold; its only clock was the model's own projection horizon (<code
+                class="path"
+                >trading-contracts/watch.ts:1269-1303</code
+              >, <code class="path">TradingTurnCoordinator.ts:787-797</code>,
+              <code class="path">TradingTurnCoordinator.ts:720-724</code>).
+            </p>
+          </div>
+          <div class="cell c4 reveal" style="background: var(--panel-2)">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 12h-8a1 1 0 1 0 -1 1v8a9 9 0 0 0 9 -9" />
+                <path d="M16 9a5 5 0 1 0 -7 7" />
+                <path d="M20.486 9a9 9 0 1 0 -11.482 11.495" /></svg
+              >Evaluator cadence
+            </h3>
+            <div class="cadence">
+              <div class="cr"><span>sweep interval (price_cross, scheduled)</span><b>2 s</b></div>
+              <div class="cr"><span>follow-set sync (new market armed)</span><b>30 s</b></div>
+              <div class="cr"><span>direct candle intervals subscribed</span><b>5</b></div>
+              <div class="cr"><span>candles embedded in a wake</span><b>5</b></div>
+            </div>
+            <p>
+              <code class="path">WatchEvaluator.ts:90-104</code>; a watch on a newly followed market
+              starts delivery-driven evaluation within half a minute, and the sweep already covers
+              everything until then.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout ask reveal">
+          <div class="ct">Why position-scoped watches retire on flat</div>
+          <p>
+            On the mission this was measured on, four profit targets armed for the first long fired
+            three hours later against an unrelated trade, and two armed for a short fired on a long.
+            Each was evaluated against the live position's PnL, because a
+            <code class="path">pnl_above</code> "asks the position what it is worth and does not ask
+            which position" (<code class="path">TradingMissionReactor.ts:2073-2088</code>).
+            Retirement is wired into both ways a mission goes flat; the first wiring saw only the
+            watchdog shape, so six harness-driven closes in a row retired nothing. A related live
+            finding: a mission was woken 5m43s after its position closed by the target level of the
+            position that no longer existed (<code class="path"
+              >trading-contracts/watch.ts:1019-1026</code
+            >).
+          </p>
+        </div>
+
+        <p class="reveal" style="margin-top: 26px; color: var(--slate); max-width: 66ch">
+          One deliberate consequence runs against intuition:
+          <b>the take-profit target is a wake, not an order</b>. Plan 36 item 6 made it so, and
+          <code class="path">reconcileTakeProtection</code> now withdraws any resting take-profit an
+          earlier build placed. The protective stop remains on the exchange and is non-negotiable.
+          The mission evaluates the profit target when awake (<code class="path"
+            >TradingProtectionService.ts:33-40</code
+          >).
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="wake">
+      <div class="wrap">
+        <h2 class="reveal">A wake is a run, and a run is leased.</h2>
+        <p class="lede reveal">
+          "Wake" is not a notification; it is the act of resuming the bound provider session as a
+          recorded harness run, one at a time per mission.
+          <code class="path">TradingTurnCoordinator.ts</code> is the single gate between an observed
+          event and a started run (<code class="path">TradingTurnCoordinator.ts:1-11</code>).
+        </p>
+
+        <div class="tl">
+          <article class="reveal">
+            <div class="step-k">announce</div>
+            <h3 style="display: flex; align-items: center; gap: 9px">
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"
+                />
+                <path d="M9 17v1a3 3 0 0 0 6 0v-1" /></svg
+              >The evaluator announces, it does not act
+            </h3>
+            <p>
+              On a match it flips the watch <code class="path">active → triggered</code>, persists
+              an inbox event keyed for deduplication, and announces
+              <code class="path">trading.mission-watch-fired</code> on the orchestration stream. The
+              reactor turns that announcement into a run request (<code class="path"
+                >WatchEvaluator.ts:11-14</code
+              >).
+            </p>
+          </article>
+          <article class="reveal">
+            <div class="step-k">queue</div>
+            <h3>A fired watch behind an active run retries</h3>
+            <p>
+              <code class="path">processWatchFired</code> requests a run; on
+              <code class="path">queued_behind_active_run</code> it sleeps 5 seconds and tries
+              again, at most 60 times. The inbox event stays pending either way, so the next run
+              still sees it; the retry stops the moment the event is no longer pending, which means
+              a run claimed it and a follow-up resume would be redundant (<code class="path"
+                >TradingMissionReactor.ts:126-133</code
+              >, <code class="path">TradingMissionReactor.ts:998-1023</code>).
+            </p>
+          </article>
+          <article class="reveal">
+            <div class="step-k">checks</div>
+            <h3>§12.3 pre-run checks, in their listed order</h3>
+            <p>
+              Mission active. Wake budget: runs are the count and the authority version is the
+              epoch; at the cap the mission blocks visibly with
+              <code class="path">wake_budget_exhausted</code>, and a user resume re-issues the
+              envelope, moving the epoch and resetting the counter. Provider binding present.
+              Provider instance available (<code class="path"
+                >TradingTurnCoordinator.ts:1098-1152</code
+              >).
+            </p>
+          </article>
+          <article class="reveal">
+            <div class="step-k">lease</div>
+            <h3>Acquiring the lease is the check</h3>
+            <p>
+              The lease is an INSERT of a <code class="path">starting</code> run. The partial unique
+              index
+              <code class="path" style="white-space: normal; overflow-wrap: anywhere"
+                >idx_trading_harness_runs_one_active_per_mission</code
+              >
+              (migration 035) makes a concurrent second insert a unique violation, which the
+              coordinator catches and reports as <code class="path">queued_behind_active_run</code>:
+              exactly one non-terminal run per mission can ever exist (<code class="path"
+                >TradingTurnCoordinator.ts:272-306</code
+              >). Only after the lease does it claim the pending inbox events, so a superseded event
+              cannot drive a run (<code class="path">TradingTurnCoordinator.ts:1158-1163</code>).
+            </p>
+          </article>
+          <article class="reveal">
+            <div class="step-k">snapshot</div>
+            <h3>The composer writes the turn's opening text</h3>
+            <p>
+              <code class="path">TradingWakeupComposer</code> is the single place that assembles
+              what a resumed turn is told: what woke it, the mark, the position, one cost line, the
+              plan's numbers, the armed set, and pointers at
+              <code class="path">trading_look</code> for everything else. The serialized wakeup is
+              written into the resumed turn's <code class="path">message.text</code>, the same
+              bounded payload whatever the cause. It carries five recent candles, down from eight,
+              because each embedded bar is a line repeated for the life of the thread (<code
+                class="path"
+                >TradingWakeupComposer.ts:1-19</code
+              >, <code class="path">TradingWakeupComposer.ts:101-110</code>).
+            </p>
+          </article>
+          <article class="reveal">
+            <div class="step-k">dispatch</div>
+            <h3>thread.turn.start, never the provider directly</h3>
+            <p>
+              The coordinator dispatches through the orchestration engine; dispatch is the only
+              sanctioned way for trading code to resume a session (§6.3), and the persisted
+              <code class="path">resumeCursor</code> is what makes the resumed turn continue the
+              same conversation (<code class="path">TradingTurnCoordinator.ts:13-18</code>). The
+              turn-end watcher is forked before the dispatch so a fast turn cannot slip past it
+              (<code class="path">TradingTurnCoordinator.ts:1168-1176</code>).
+            </p>
+          </article>
+          <article class="reveal">
+            <div class="step-k">release</div>
+            <h3>The lease leaves with the turn</h3>
+            <p>
+              The watcher waits for the session to run the turn, then for the first session-set
+              where it leaves <code class="path">running</code>;
+              <code class="path">starting</code> is deliberately excluded, or every run would
+              release its lease before the harness said anything. It marks the run
+              <code class="path">completed</code> or <code class="path">failed</code>, flips the
+              run's inbox events to consumed, re-arms coverage, and delivers any operator messages
+              that queued behind the run (<code class="path">TradingTurnCoordinator.ts:350-366</code
+              >, <code class="path">TradingTurnCoordinator.ts:412-438</code>). A dispatched turn
+              that never starts releases the lease after 10 minutes (<code class="path"
+                >TradingTurnCoordinator.ts:368-377</code
+              >).
+            </p>
+          </article>
+        </div>
+
+        <p class="reveal" style="margin-top: 34px; color: var(--slate); max-width: 66ch">
+          The operator is inside the same machinery. Typing into a bound thread used to take the
+          ordinary turn path: no wakeup snapshot, no decision lease, so the operator's turn could
+          race a watch-fired run and work from whatever state the harness had left in its context. A
+          message on an operative mission is an event like any other; it gets the same fresh
+          snapshot, and if the lease is held it is queued and delivered the moment the run releases
+          it (<code class="path">TradingTurnCoordinator.ts:112-131</code>,
+          <code class="path">TradingTurnCoordinator.ts:441-474</code>).
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="sleep">
+      <div class="wrap">
+        <div class="split">
+          <div class="prose">
+            <h2 class="reveal">Publish a projection, then genuinely sleep.</h2>
+            <p class="reveal">
+              A plan's projection says where price is going, by when, and what would prove it wrong.
+              Those three facts are exactly a pair of triggers, a clock and a level, and before this
+              existed the model had to write them itself, which meant a plan could be published with
+              a confident read and nothing armed to wake it. Such a mission either sat blind or was
+              woken by the coverage floor on a cadence that had nothing to do with what it believed
+              (<code class="path">TradingPredictionWatches.ts:3-15</code>).
+            </p>
+            <p class="reveal">
+              So the runtime arms them, and nothing in that path is allowed to fail a publish: the
+              plan is durable before this runs, and a mission whose prediction watches could not be
+              armed wakes on its coverage floor instead, "which is worse but not unsafe" (<code
+                class="path"
+                >TradingPredictionWatches.ts:17-20</code
+              >). A revision that moves the target and leaves the invalidation where it was
+              re-levels through one transaction, so the mission is never momentarily unwatched on
+              the side being moved; an identical level republished keeps its row and its history,
+              and only the version is re-stamped (<code class="path"
+                >TradingPredictionWatches.ts:67-80</code
+              >). A later revision sweeps the prediction watches of the version it replaces, the
+              only armed reasons it may sweep (<code class="path"
+                >trading-contracts/watch.ts:1013-1017</code
+              >).
+            </p>
+            <p class="reveal">
+              Sleeping is the design goal, not an idle state that needs excusing: between the
+              horizon clock and the invalidation level, the only two things that could change the
+              mission's mind are armed, and the coverage floor guarantees it will still be asked
+              whether the read holds (<code class="path">TradingPredictionWatches.ts:12-16</code>).
+            </p>
+          </div>
+          <aside class="rail reveal">
+            <h3 style="display: flex; align-items: center; gap: 9px">
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 6a8 3 0 1 0 16 0a8 3 0 1 0 -16 0" />
+                <path d="M4 6v6a8 3 0 0 0 16 0v-6" />
+                <path d="M4 12v6a8 3 0 0 0 16 0v-6" /></svg
+              >The event inbox
+            </h3>
+            <p style="font-size: 14.5px; color: var(--slate)">
+              Observed facts persist as inbox events keyed for deduplication, then are claimed by
+              the run that consumes them. Deduplication is enforced by the
+              <code class="path">idx_trading_event_inbox_dedupe</code> unique index (migration 035),
+              so reconnects and replays cannot generate a second wake-up (<code class="path"
+                >TradingEventInbox.ts:2-14</code
+              >).
+            </p>
+            <div class="inbox-flow">
+              <div class="st">
+                <div class="n">pending</div>
+                <div class="d">persisted, keyed, waiting for a run</div>
+              </div>
+              <div class="ia">→</div>
+              <div class="st">
+                <div class="n">included_in_run</div>
+                <div class="d">claimed atomically, once the lease is held</div>
+              </div>
+              <div class="ia">→</div>
+              <div class="st">
+                <div class="n">consumed</div>
+                <div class="d">the run that read them has ended</div>
+              </div>
+            </div>
+            <div class="ledger">
+              <div class="row">
+                <div class="k">claim</div>
+                <div class="v">
+                  <code class="path">claimPending</code> flips every pending event for the mission
+                  in one statement, oldest first, so the run owns exactly the set it was started
+                  with and a follow-up event lands as pending for the next run (<code class="path"
+                    >TradingEventInbox.ts:58-67</code
+                  >).
+                </div>
+              </div>
+              <div class="row">
+                <div class="k">guarantee</div>
+                <div class="v">
+                  A queued event is never silently lost, and a run always sees the set it was
+                  started with (<code class="path">TradingEventInbox.ts:5-7</code>).
+                </div>
+              </div>
+              <div class="row">
+                <div class="k">close</div>
+                <div class="v">
+                  The turn-end watcher flips the run's events to consumed as it releases the lease
+                  (<code class="path">TradingTurnCoordinator.ts:427-435</code>).
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="memory">
+      <div class="wrap">
+        <h2 class="reveal">The mission remembers, and the boot sweep does not delete.</h2>
+        <p class="lede reveal">
+          Memory comes in two layers, and both outlive any single turn. The plan document is the
+          workspace's <code class="path">TRADE.md</code>, persistent human-readable trading context,
+          the peer of <code class="path">AGENTS.md</code>: the agent reads it with its native tools
+          and acts through the typed trading tools (<code class="path"
+            >TradingPlanDocument.ts:1-5</code
+          >). The journal is append-only, two operations and no third, because the plan document is
+          replaced on every revision and everything the model wanted to remember across revisions
+          was being lost with it (<code class="path">TradingJournalService.ts:2-10</code>).
+        </p>
+        <div class="ledger reveal" style="margin-top: 26px">
+          <div class="row">
+            <div class="k">trade.md</div>
+            <div class="v">
+              One row per workspace root pins one activated revision, and a restart recovers the
+              active revision, hash, and snapshot from SQLite alone. Drift between the live file and
+              the pinned revision is classified as <b>observable state</b>, not error (<code
+                class="path"
+                >TradingPlanDocument.ts:6-17</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">journal</div>
+            <div class="v">
+              Append one note, read the recent ones back; no update and no delete. A note is refused
+              rather than truncated or silently dropped (<code class="path"
+                >TradingJournalService.ts:2-14</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">strategy versions</div>
+            <div class="v">
+              The composed wakeup carries the current plan's numbers and armed set, so a target or a
+              cadence survives the turn that set it (<code class="path"
+                >TradingWakeupComposer.ts:5-9</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">boot sweep</div>
+            <div class="v">
+              An orphan is a mission whose thread was deleted out from under it while the server was
+              down. Nothing can wake it, nothing can settle it, and it holds authority over its
+              market forever. The sweep withdraws that authority by <b>revoking</b>: mission rows
+              are the permanent record of what was traded (plan 27 H1), and revoking is safe even if
+              the orphan test is ever wrong again (<code class="path"
+                >TradingMissionSweep.ts:2-15</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">exposure first</div>
+            <div class="v">
+              An orphan still holding a position is left alone entirely: revoking it would leave
+              real exposure nobody is authorized to manage. It is reported, not touched; live
+              deletion goes through the reactor's close-then-revoke path instead (<code class="path"
+                >TradingMissionSweep.ts:16-20</code
+              >).
+            </div>
+          </div>
+          <div class="row">
+            <div class="k">lease-gated</div>
+            <div class="v">
+              The sweep only runs while the process holds the trading lease, so a second runtime
+              against the same database cannot revoke missions the live holder still believes in.
+              Idempotent and cheap: on a clean database it finds nothing (<code class="path"
+                >TradingMissionSweep.ts:22-25</code
+              >, <code class="path">TradingMissionSweep.ts:50-60</code>).
+            </div>
+          </div>
+        </div>
+        <div class="callout ask reveal">
+          <div class="ct">The soak a projection rebuild erased</div>
+          <p>
+            An earlier version of the sweep did delete, and read orphanhood off
+            <code class="path">projection_threads</code>: the first projection rebuild made every
+            live mission look orphaned, and the boot sweep erased a running soak. That is the whole
+            reason the sweep now revokes instead of deleting, and why its orphan test being wrong
+            again would cost authority, not history (<code class="path"
+              >TradingMissionSweep.ts:9-15</code
+            >).
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="deeper">
+      <div class="wrap">
+        <h2 class="reveal">Go deeper.</h2>
+        <p class="lede reveal">
+          Every claim above traces to these files. The reading order that repays itself: transitions
+          first, then the evaluator, then the coordinator with the composer open beside it.
+        </p>
+        <div class="evi">
+          <div class="reveal">
+            <h3>Lifecycle</h3>
+            <ul>
+              <li><code class="path">MissionTransitions.ts</code> the §11.1 table, verbatim</li>
+              <li>
+                <code class="path">TradingMissionService.ts</code> creation, transitions, one-active
+                invariant
+              </li>
+              <li>
+                <code class="path">TradingAuthorityBinding.ts</code> authority from a chat turn,
+                observe missions
+              </li>
+              <li><code class="path">TradingMissionSweep.ts</code> boot revocation, lease-gated</li>
+              <li><code class="path">TradingPlanDocument.ts</code> TRADE.md pinning and drift</li>
+            </ul>
+          </div>
+          <div class="reveal">
+            <h3>Cognition</h3>
+            <ul>
+              <li>
+                <code class="path">WatchEvaluator.ts</code> evaluation, firing, the two guards
+              </li>
+              <li><code class="path">TradingWatchService.ts</code> the persisted watch registry</li>
+              <li>
+                <code class="path">TradingTurnCoordinator.ts</code> §12.3, lease, dispatch, release
+              </li>
+              <li><code class="path">TradingWakeupComposer.ts</code> the bounded §12.2 snapshot</li>
+              <li><code class="path">TradingPredictionWatches.ts</code> the auto-armed pair</li>
+              <li><code class="path">TradingEventInbox.ts</code> deduplicated mission events</li>
+            </ul>
+          </div>
+          <div class="reveal">
+            <h3>Contracts</h3>
+            <ul>
+              <li>
+                <code class="path">trading-contracts/watch.ts</code> types, armed reasons, coverage
+                floor
+              </li>
+              <li>
+                <code class="path">TradingMissionReactor.ts:126-133</code> the 5 s × 60 queue retry
+              </li>
+              <li>
+                <code class="path">TradingMissionReactor.ts:2073-2088</code> position-scoped
+                retirement
+              </li>
+              <li>
+                <code class="path">TradingProtectionService.ts:33-40</code> the target as a wake
+              </li>
+              <li><code class="path">TradingPlanWake.test.ts</code> plan-aware wakes under test</li>
+            </ul>
+          </div>
+        </div>
+        <p class="reveal" style="margin-top: 34px; color: var(--slate); max-width: 68ch">
+          Where this connects: the envelope a mission carries is re-checked at every execution
+          preview (<a href="/execution.html">Execution</a>); exhaustion moves a mission to
+          <code class="path">blocked</code> and only an explicit user resume clears it (<a
+            href="/risk.html"
+            >Risk control</a
+          >); the interim signer resolves under the mission's account, fail-closed (<a
+            href="/signer.html"
+            >Signer &amp; authority</a
+          >); observe missions and the keyless archive never reach an order (<a
+            href="/research.html"
+            >Research mode</a
+          >); every step above rides the typed command and event spine (<a href="/architecture.html"
+            >Event spine</a
+          >); and the profit-target and erased-soak stories have case files (<a href="/stories.html"
+            >Failure stories</a
+          >).
+        </p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/status.html">See the board</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/signer.html">← Signer &amp; authority</a>
+          <a href="/research.html">Research mode →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document
+          .querySelectorAll("animateMotion, animate")
+          .forEach((a) => a.setAttribute("begin", "indefinite"));
+      }
+    </script>
+    <script>
+      (() => {
+        const els = document.querySelectorAll(".reveal");
+        if (
+          !("IntersectionObserver" in window) ||
+          matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach((el) => el.classList.add("in"));
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e, i) => {
+              if (e.isIntersecting) {
+                e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      })();
+    </script>
+  </body>
+</html>

@@ -1,28 +1,51 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  alignedExtremumMark,
   OCCURRENCE_CONTEXT_BARS,
   activeGraphScenes,
   aggregateAlignedTrace,
   alignedTracePoints,
   askAboutOccurrenceSentence,
+  BASELINE_REFERENCE_LABEL,
+  BASELINE_UNAVAILABLE_SENTENCE,
+  baselineReference,
   describeHorizon,
+  extremumBarPhrase,
+  extremumCoincidenceSentence,
+  extremumPhrase,
+  extremumRuleLabel,
+  extremumRuleMarker,
+  fixedHorizonPnlUsd,
   fmtUsd,
   grossChangeUsd,
+  hindsightPerfectPnlUsd,
   historicalGrossChangeLabel,
   nextGraphViewMode,
   DERIVED_VS_AUTHORED_SENTENCE,
+  liveResearchMarkers,
   MARKER_LEGEND_SENTENCE,
+  occurrencePrecisionPhrase,
   occurrenceStudyOverlay,
+  PATH_EXTREMA_ASSUMPTIONS_SENTENCE,
   payloadEntryBasis,
+  payloadStudyMetric,
   provenanceTrailLine,
   occurrenceWindow,
-  resolveInitialGraphMode,
+  REPLAY_MARKER_WINDOW,
+  replayEntryBandLabel,
+  replayEntryRuleLabel,
+  replayExitRuleLabel,
+  replayShowingSentence,
+  researchMarkerAccessibleName,
+  sceneAutoFitDecision,
+  sceneAutoFitRecommendation,
   studyExplanationLines,
   studyRuleSentence,
   studyWindowMaxBars,
   STUDY_RULE_SENTENCE,
   turnIntoStrategySentence,
+  uncoveredOccurrenceNotes,
   validateForwardSentence,
 } from "./researchScenePresentation.ts";
 import { EVENT_STUDY_MAX_HORIZON_BARS } from "@t3tools/trading-contracts/eventSets";
@@ -140,21 +163,22 @@ describe("describeHorizon", () => {
   });
 });
 
-describe("resolveInitialGraphMode", () => {
-  it("lands on calendar when research exists, live otherwise", () => {
-    expect(resolveInitialGraphMode(undefined)).toBe("live");
-    expect(resolveInitialGraphMode({ sceneId: "s" } as never)).toBe("calendar");
-  });
-});
-
 describe("nextGraphViewMode (thread-scoped mode-switch state)", () => {
-  it("auto-selects Calendar exactly once, when the first scene arrives on Live", () => {
+  it("a scene arriving never moves the view: publication is Live-first", () => {
+    // The old behavior jumped Live to Calendar on arrival; the unified graph
+    // keeps the reader wherever they are and decorates Live instead.
     expect(
       nextGraphViewMode({ current: "live", hasScenes: true, previouslyHadScenes: false }),
+    ).toBe("live");
+    expect(
+      nextGraphViewMode({ current: "calendar", hasScenes: true, previouslyHadScenes: false }),
     ).toBe("calendar");
+    expect(
+      nextGraphViewMode({ current: "aligned", hasScenes: true, previouslyHadScenes: false }),
+    ).toBe("aligned");
   });
 
-  it("never moves a user who has already chosen: their mode is stickier than the data", () => {
+  it("never moves a reader who already has scenes, whichever mode they chose", () => {
     for (const current of ["live", "calendar", "aligned"] as const) {
       expect(nextGraphViewMode({ current, hasScenes: true, previouslyHadScenes: true })).toBe(
         current,
@@ -172,14 +196,286 @@ describe("nextGraphViewMode (thread-scoped mode-switch state)", () => {
       );
     }
   });
+});
 
-  it("auto-selects again only after a full clear-then-publish cycle", () => {
-    // scenes -> none -> scenes: the arrival is new again, so Calendar wins
-    // from Live, and a user who rode through in Live keeps Live only while
-    // scenes persisted.
-    expect(
-      nextGraphViewMode({ current: "live", hasScenes: true, previouslyHadScenes: false }),
-    ).toBe("calendar");
+describe("liveResearchMarkers (the live graph's scene decoration)", () => {
+  const NOW = 1_800_000_000_000;
+  const RULE_AT = NOW - 40 * DAY; // instantaneous activation, in the past
+  const SPAN_START = NOW - 200 * DAY;
+  const SPAN_END = NOW - 197 * DAY; // a true multi-day span
+  const UPCOMING = NOW + 30 * DAY;
+
+  const scene = {
+    sceneId: "scene-9",
+    eventStudy: {
+      eventSetName: "ETH upgrades",
+      occurrenceWindows: [
+        {
+          startAt: SPAN_START,
+          endAt: SPAN_END,
+          label: "Devcon",
+          source: "https://e.org/devcon",
+          covered: true,
+          entryTime: SPAN_END,
+          exitTime: SPAN_END + 30 * DAY,
+        },
+        {
+          startAt: RULE_AT,
+          endAt: RULE_AT,
+          label: undefined,
+          source: "https://e.org/dencun",
+          covered: true,
+          entryTime: RULE_AT,
+          exitTime: RULE_AT + 30 * DAY,
+        },
+        {
+          startAt: UPCOMING,
+          endAt: UPCOMING + 3 * DAY,
+          label: "Futurera",
+          source: "https://e.org/next",
+          covered: false,
+        },
+        {
+          startAt: NOW - 3_000 * DAY,
+          endAt: NOW - 3_000 * DAY,
+          label: "Frontier",
+          source: "https://e.org/old",
+          covered: false,
+        },
+      ],
+    },
+  } as never;
+
+  const markers = liveResearchMarkers(scene, NOW);
+
+  it("derives one marker per occurrence, plus entry and exit points for the covered ones", () => {
+    expect(markers.map((marker) => marker.key)).toEqual([
+      `scene-9:${SPAN_START}`,
+      `scene-9:${SPAN_START}:entry`,
+      `scene-9:${SPAN_START}:exit`,
+      `scene-9:${RULE_AT}`,
+      `scene-9:${RULE_AT}:entry`,
+      `scene-9:${RULE_AT}:exit`,
+      `scene-9:${UPCOMING}`,
+      `scene-9:${NOW - 3_000 * DAY}`,
+    ]);
+  });
+
+  it("an exact occurrence keeps its exact millisecond; a true span keeps both instants", () => {
+    const rule = markers[3];
+    expect(rule?.startAt).toBe(RULE_AT);
+    expect(rule?.endAt).toBe(RULE_AT);
+    const span = markers[0];
+    expect(span?.startAt).toBe(SPAN_START);
+    expect(span?.endAt).toBe(SPAN_END);
+  });
+
+  it("a covered occurrence's measured entry and exit draw as point rules at their instants", () => {
+    expect(markers[1]).toMatchObject({
+      key: `scene-9:${SPAN_START}:entry`,
+      label: "Devcon entry",
+      startAt: SPAN_END,
+      endAt: SPAN_END,
+      covered: true,
+      upcoming: false,
+    });
+    expect(markers[2]).toMatchObject({
+      key: `scene-9:${SPAN_START}:exit`,
+      label: "Devcon exit",
+      startAt: SPAN_END + 30 * DAY,
+      endAt: SPAN_END + 30 * DAY,
+      covered: true,
+    });
+    // Uncovered occurrences contribute no measured geometry: there is none.
+    expect(markers.filter((marker) => marker.key.endsWith(":entry"))).toHaveLength(2);
+    expect(markers.filter((marker) => marker.key.endsWith(":exit"))).toHaveLength(2);
+  });
+
+  it("labels fall back to the event set's name, carry the source, and flag coverage and upcoming", () => {
+    expect(markers[3]?.label).toBe("ETH upgrades");
+    expect(markers[0]?.label).toBe("Devcon");
+    for (const marker of markers) {
+      expect(marker.sourceUrl.startsWith("https://e.org/")).toBe(true);
+    }
+    expect(markers[6]?.upcoming).toBe(true);
+    expect(markers[0]?.upcoming).toBe(false);
+    expect(markers[6]?.covered).toBe(false);
+    expect(markers[0]?.covered).toBe(true);
+  });
+
+  it("a scene without an event study decorates nothing", () => {
+    expect(liveResearchMarkers({ sceneId: "s" }, NOW)).toEqual([]);
+  });
+
+  it("the accessible name says label, exact UTC instant, meaning and source", () => {
+    const name = researchMarkerAccessibleName({
+      key: "k",
+      label: "Dencun",
+      startAt: RULE_AT,
+      endAt: RULE_AT,
+      sourceUrl: "https://e.org/dencun",
+      covered: true,
+      upcoming: false,
+    });
+    expect(name).toContain("Dencun");
+    expect(name).toContain(new Date(RULE_AT).toISOString());
+    expect(name).toContain("historical counterfactual measurement, not a fill");
+    expect(name).toContain("https://e.org/dencun");
+    const spanName = researchMarkerAccessibleName({
+      key: "k2",
+      label: "Devcon",
+      startAt: SPAN_START,
+      endAt: SPAN_END,
+      sourceUrl: "https://e.org/devcon",
+      covered: true,
+      upcoming: false,
+    });
+    expect(spanName).toContain(`from ${new Date(SPAN_START).toISOString()}`);
+    expect(spanName).toContain(`to ${new Date(SPAN_END).toISOString()}`);
+  });
+
+  it("uncovered occurrences become coverage notes, never fake edge markers", () => {
+    const notes = uncoveredOccurrenceNotes(scene, NOW);
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain("Futurera");
+    expect(notes[0]).toContain("has not happened yet");
+    expect(notes[1]).toContain("Frontier");
+    expect(notes[1]).toContain(new Date(NOW - 3_000 * DAY).toISOString().slice(0, 10));
+    expect(notes[1]).toContain("predates recorded data");
+    // The engine's own reason rides through when the row carries one: a gap
+    // and a forming entry bar are different facts from a pre-archive event,
+    // and the note must not fold all three into "predates recorded data".
+    const withReasons = uncoveredOccurrenceNotes(
+      {
+        sceneId: "scene-r",
+        eventStudy: {
+          eventSetName: "ETH upgrades",
+          report: {
+            rows: [
+              { reason: "a recording gap covers the 1 bar(s) right after this event ended" },
+              {},
+              {},
+            ],
+          },
+          occurrenceWindows: [
+            {
+              startAt: NOW - 1_000 * DAY,
+              endAt: NOW - 1_000 * DAY,
+              source: "https://e.org/gap",
+              covered: false,
+            },
+            {
+              startAt: NOW - 2_000 * DAY,
+              endAt: NOW - 2_000 * DAY,
+              source: "https://e.org/gap2",
+              covered: false,
+            },
+            {
+              startAt: NOW - 4_000 * DAY,
+              endAt: NOW - 4_000 * DAY,
+              source: "https://e.org/old",
+              covered: false,
+            },
+          ],
+        },
+      } as never,
+      NOW,
+    );
+    expect(withReasons[0]).toContain("not measured: a recording gap covers the 1 bar(s)");
+    // Without a row reason the honest default stays the pre-archive sentence.
+    expect(withReasons[1]).toContain("predates recorded data");
+    // A pre-archive reason keeps its established sentence verbatim.
+    expect(withReasons[2]).toContain("predates recorded data");
+    // Covered occurrences say nothing: they draw, they do not explain.
+    expect(uncoveredOccurrenceNotes({}, NOW)).toEqual([]);
+  });
+});
+
+describe("sceneAutoFitRecommendation and its once-per-scene gate", () => {
+  const NOW = Date.UTC(2024, 8, 15); // mid-September 2024: ytd spans ~258 days
+
+  const windows = (starts: ReadonlyArray<number>, covered = true) =>
+    starts.map((startAt) => ({ startAt, endAt: startAt, covered }));
+
+  it("the Ethereum-style multi-year scene recommends all with 1 week bars", () => {
+    // Three upgrades spread over three years: nothing fixed holds them.
+    const recommendation = sceneAutoFitRecommendation(
+      windows([NOW - 3 * 365 * DAY, NOW - 2 * 365 * DAY, NOW - 200 * DAY]),
+      NOW,
+    );
+    expect(recommendation.range).toBe("all");
+    expect(recommendation.interval).toBe("1w");
+  });
+
+  it("a recent scene fits the smallest range that holds it, on study-fit bars", () => {
+    const recommendation = sceneAutoFitRecommendation(windows([NOW - 90 * DAY]), NOW);
+    expect(recommendation.range).toBe("6m");
+    // event_study_fit keeps 6m on weekly bars where browsing would use 1d.
+    expect(recommendation.interval).toBe("1w");
+  });
+
+  it("occurrences the archive never reached do not stretch the fit", () => {
+    // One covered recent occurrence plus one from before recording began:
+    // the uncovered one can never draw, so the fit stays on the drawable one.
+    const recommendation = sceneAutoFitRecommendation(
+      [
+        { startAt: NOW - 60 * DAY, endAt: NOW - 60 * DAY, covered: true },
+        { startAt: NOW - 2_000 * DAY, endAt: NOW - 2_000 * DAY, covered: false },
+      ],
+      NOW,
+    );
+    expect(recommendation.range).toBe("6m");
+  });
+
+  it("with nothing drawable, the whole set decides and the fit lands on all", () => {
+    const recommendation = sceneAutoFitRecommendation(
+      windows([NOW - 400 * DAY, NOW - 800 * DAY], false),
+      NOW,
+    );
+    expect(recommendation.range).toBe("all");
+    expect(recommendation.interval).toBe("1w");
+  });
+
+  it("applies once per active scene id and never twice for the same one", () => {
+    const scene = {
+      sceneId: "scene-1",
+      eventStudy: { occurrenceWindows: windows([NOW - 3 * 365 * DAY]) },
+    } as never;
+    const first = sceneAutoFitDecision(new Set(), scene, NOW);
+    expect(first.apply).toBe(true);
+    expect(first.recommendation).toEqual({ range: "all", interval: "1w" });
+    expect(first.appliedSceneIds.has("scene-1")).toBe(true);
+    // The second call — the next poll, the next refresh — must not move it.
+    const second = sceneAutoFitDecision(first.appliedSceneIds, scene, NOW);
+    expect(second.apply).toBe(false);
+    expect(second.appliedSceneIds).toBe(first.appliedSceneIds);
+    // A NEW scene id (the superseding publish) gets its own one fit.
+    const successor = {
+      sceneId: "scene-2",
+      eventStudy: { occurrenceWindows: windows([NOW - 3 * 365 * DAY]) },
+    } as never;
+    const third = sceneAutoFitDecision(first.appliedSceneIds, successor, NOW);
+    expect(third.apply).toBe(true);
+  });
+
+  it("a scene with no event study never fits anything", () => {
+    const decision = sceneAutoFitDecision(new Set(), { sceneId: "s" }, NOW);
+    expect(decision.apply).toBe(false);
+  });
+});
+
+describe("baselineReference (the event-aligned comparison's drawn reference)", () => {
+  it("is the baseline mean as one labelled level", () => {
+    expect(baselineReference({ meanReturnPct: 1.1 })).toEqual({
+      valuePct: 1.1,
+      label: BASELINE_REFERENCE_LABEL,
+    });
+    expect(BASELINE_REFERENCE_LABEL).toBe("Baseline mean");
+  });
+
+  it("is null when the report holds no baseline: nothing may draw in its place", () => {
+    expect(baselineReference(null)).toBeNull();
+    expect(BASELINE_UNAVAILABLE_SENTENCE).toBe("Baseline unavailable for this served window");
   });
 });
 
@@ -321,12 +617,82 @@ describe("occurrenceStudyOverlay (the calendar chart's semantic layers)", () => 
     const overlay = occurrenceStudyOverlay(layers, 0, 30);
     expect(overlay.activation).toEqual({ at: 1, label: "Merge / Paris" });
     expect(overlay.entry).toEqual({ at: 101, price: 1470.12, label: "study entry" });
-    expect(overlay.exit).toEqual({ at: 801, price: 1552.3, label: "study exit after 30 bars" });
+    expect(overlay.exit).toEqual({
+      at: 801,
+      price: 1552.3,
+      label: "study exit: terminal close after 30 bars",
+    });
     expect(overlay.returnPct).toBe(5.59);
   });
 
-  it("carries the horizon in the exit label, whatever the horizon was", () => {
-    expect(occurrenceStudyOverlay(layers, 0, 7).exit?.label).toBe("study exit after 7 bars");
+  it("the exit label names the terminal close — the horizon's endpoint, never an extremum", () => {
+    // "Study exit" always means the fixed-horizon terminal close; the label
+    // says so, because a path_extrema scene draws a DIFFERENT artifact (the
+    // hindsight extremum) beside it and the two must never read as one.
+    expect(occurrenceStudyOverlay(layers, 0, 7).exit?.label).toBe(
+      "study exit: terminal close after 7 bars",
+    );
+  });
+
+  it("a truncated row's exit label states the window that was actually measured", () => {
+    const overlay = occurrenceStudyOverlay(layers, 0, 30, {
+      row: { covered: true, truncated: true, barsCovered: 18 },
+      priceField: "low",
+      interval: "1d",
+    });
+    expect(overlay.exit?.label).toBe("study exit: terminal close after 18 bars (truncated)");
+    // A complete row states the full horizon.
+    const complete = occurrenceStudyOverlay(layers, 0, 30, {
+      row: { covered: true, truncated: false, barsCovered: 30 },
+      priceField: "low",
+      interval: "1d",
+    });
+    expect(complete.exit?.label).toBe("study exit: terminal close after 30 bars");
+  });
+
+  it("derives the hindsight extremum from the SAME report row, beside the terminal close", () => {
+    const extremumAt = Date.UTC(2024, 10, 12); // 2024-11-12, a 1d bar open
+    const overlay = occurrenceStudyOverlay(layers, 0, 30, {
+      row: {
+        covered: true,
+        truncated: false,
+        barsCovered: 30,
+        extremumTime: extremumAt,
+        extremumPrice: 2_942.6,
+      },
+      priceField: "low",
+      interval: "1d",
+    });
+    // Both artifacts present, each with its own time and price: the extremum
+    // never replaces or folds into the exit.
+    expect(overlay.exit).toEqual({
+      at: 801,
+      price: 1552.3,
+      label: "study exit: terminal close after 30 bars",
+    });
+    expect(overlay.extremum).toEqual({
+      at: extremumAt,
+      price: 2_942.6,
+      label: "lowest low of the 1d bar opening 2024-11-12",
+    });
+  });
+
+  it("an uncovered row, a row without an extremum, or no row at all: extremum null", () => {
+    expect(
+      occurrenceStudyOverlay(layers, 0, 30, {
+        row: { covered: false, truncated: false },
+        priceField: "low",
+        interval: "1d",
+      }).extremum,
+    ).toBeNull();
+    expect(
+      occurrenceStudyOverlay(layers, 0, 30, {
+        row: { covered: true, truncated: false },
+        priceField: "low",
+        interval: "1d",
+      }).extremum,
+    ).toBeNull();
+    expect(occurrenceStudyOverlay(layers, 0, 30).extremum).toBeNull();
   });
 
   it("leaves absent pieces null for an unmeasured occurrence: no invented marker", () => {
@@ -335,6 +701,7 @@ describe("occurrenceStudyOverlay (the calendar chart's semantic layers)", () => 
     expect(overlay.entry).toBeNull();
     expect(overlay.exit).toBeNull();
     expect(overlay.returnPct).toBeNull();
+    expect(overlay.extremum).toBeNull();
   });
 
   it("returns all-null for an occurrence the scene holds nothing for", () => {
@@ -343,7 +710,57 @@ describe("occurrenceStudyOverlay (the calendar chart's semantic layers)", () => 
       entry: null,
       exit: null,
       returnPct: null,
+      extremum: null,
     });
+  });
+});
+
+describe("the hindsight extremum's words and chart marker", () => {
+  const extremumAt = Date.UTC(2024, 4, 1); // 2024-05-01, a 1d bar open
+
+  it("claims the BAR, never an instant inside it, and names the interval", () => {
+    expect(extremumBarPhrase("low", "1d", extremumAt)).toBe(
+      "lowest low of the 1d bar opening 2024-05-01",
+    );
+    expect(extremumBarPhrase("high", "4h", extremumAt)).toBe(
+      "highest high of the 4h bar opening 2024-05-01",
+    );
+    // Never "at <instant>": the row records the bar's open time only.
+    expect(extremumBarPhrase("low", "1d", extremumAt)).not.toContain(" at ");
+  });
+
+  it("the rule label carries the hindsight claim and the measured price together", () => {
+    expect(
+      extremumRuleLabel({ priceField: "low", interval: "1d", at: extremumAt, price: 2_942.6 }),
+    ).toBe("lowest low (hindsight) 2,942.6 of the 1d bar opening 2024-05-01");
+  });
+
+  it("the marker keys by scene and occurrence, rules at the bar's open, covered, sourced", () => {
+    const marker = extremumRuleMarker({
+      sceneId: "scene-7",
+      occurrenceIndex: 2,
+      at: extremumAt,
+      price: 2_942.6,
+      priceField: "low",
+      interval: "1d",
+      source: "https://example.org/fork",
+    });
+    expect(marker).toEqual({
+      key: "scene-7:extremum:2",
+      label: "lowest low (hindsight) 2,942.6 of the 1d bar opening 2024-05-01",
+      startAt: extremumAt,
+      endAt: extremumAt,
+      sourceUrl: "https://example.org/fork",
+      covered: true,
+      upcoming: false,
+    });
+  });
+
+  it("the coincidence sentence says both markers draw when extremum and exit share a bar", () => {
+    const sentence = extremumCoincidenceSentence("low", "1d", extremumAt);
+    expect(sentence).toContain("lowest low of the 1d bar opening 2024-05-01");
+    expect(sentence).toContain("terminal close");
+    expect(sentence).toContain("both markers draw");
   });
 });
 
@@ -399,7 +816,7 @@ describe("prefill sentences", () => {
 });
 
 describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
-  const DAY_1D = DAY;
+  const DAY1D = DAY;
 
   it("a long-horizon scene derives more than 360 bars: the entry must survive the read", () => {
     // A 500-bar horizon on a one-day event window: the window read keeps the
@@ -407,9 +824,9 @@ describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
     // context drops the oldest bars — the entry. 360 would truncate it.
     const bars = studyWindowMaxBars({
       startAt: NOW,
-      endAt: NOW + DAY_1D,
+      endAt: NOW + DAY1D,
       horizonBars: EVENT_STUDY_MAX_HORIZON_BARS,
-      intervalMs: DAY_1D,
+      intervalMs: DAY1D,
     });
     expect(bars).toBeGreaterThan(360);
     expect(bars).toBeLessThanOrEqual(STUDY_CHART_MAX_WINDOW_BARS);
@@ -420,9 +837,9 @@ describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
   it("a small horizon asks only for what its window spans", () => {
     const bars = studyWindowMaxBars({
       startAt: NOW,
-      endAt: NOW + DAY_1D,
+      endAt: NOW + DAY1D,
       horizonBars: 30,
-      intervalMs: DAY_1D,
+      intervalMs: DAY1D,
     });
     expect(bars).toBe(30 + 1 + 12);
   });
@@ -436,9 +853,9 @@ describe("studyWindowMaxBars (the chart window a recipe derives)", () => {
     const windowBars = spanBars + horizonBars + 2 * OCCURRENCE_CONTEXT_BARS; // the pads occurrenceWindow spans
     const asked = studyWindowMaxBars({
       startAt: NOW,
-      endAt: NOW + spanBars * DAY_1D,
+      endAt: NOW + spanBars * DAY1D,
       horizonBars,
-      intervalMs: DAY_1D,
+      intervalMs: DAY1D,
     });
     expect(asked).toBe(windowBars);
     expect(asked).toBeGreaterThanOrEqual(spanBars + horizonBars);
@@ -482,5 +899,199 @@ describe("activeGraphScenes", () => {
 
   it("hands an empty graph back when everything was cleared or superseded", () => {
     expect(activeGraphScenes([sceneWith("cleared"), sceneWith("superseded")])).toEqual([]);
+  });
+});
+
+describe("the hypothetical PnL of a path_extrema study (USD 2,000 short)", () => {
+  const NOTIONAL = 2_000;
+
+  it("a short profits when price falls and loses when it rises; a long is the mirror", () => {
+    // Fall 10%: the short's money is the negated measured return.
+    expect(fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: -10, direction: "short" })).toBe(
+      200,
+    );
+    // Rise 10%: the same short loses.
+    expect(fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: 10, direction: "short" })).toBe(
+      -200,
+    );
+    // A long rides the sign as measured.
+    expect(fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: 10, direction: "long" })).toBe(
+      200,
+    );
+  });
+
+  it("the hindsight-perfect figure negates the long-convention excursion for a short", () => {
+    // The excursion to the lowest low is long-convention negative for a
+    // short's favorable move: -25% becomes +$500 at the extremum.
+    expect(
+      hindsightPerfectPnlUsd({
+        notionalUsd: NOTIONAL,
+        excursionReturnPct: -25,
+        direction: "short",
+      }),
+    ).toBe(500);
+    // An extremum ABOVE the entry (the price never dipped below it) is a loss
+    // at that exit for a short: the arithmetic stays honest in both signs.
+    expect(
+      hindsightPerfectPnlUsd({ notionalUsd: NOTIONAL, excursionReturnPct: 5, direction: "short" }),
+    ).toBe(-100);
+    expect(
+      hindsightPerfectPnlUsd({ notionalUsd: NOTIONAL, excursionReturnPct: 25, direction: "long" }),
+    ).toBe(500);
+  });
+
+  it("two events are illustrated independently: the second never compounds on the first", () => {
+    // Event 1 falls 10% (excursion -25%), event 2 falls 5% (excursion -12%).
+    // Independent allocation means each event's money comes from the SAME
+    // $2,000: $500/$200 and $240/$100 — never $500 then $240 on $2,200.
+    const event1 = {
+      fixed: fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: -10, direction: "short" }),
+      hindsight: hindsightPerfectPnlUsd({
+        notionalUsd: NOTIONAL,
+        excursionReturnPct: -25,
+        direction: "short",
+      }),
+    };
+    const event2 = {
+      fixed: fixedHorizonPnlUsd({ notionalUsd: NOTIONAL, returnPct: -5, direction: "short" }),
+      hindsight: hindsightPerfectPnlUsd({
+        notionalUsd: NOTIONAL,
+        excursionReturnPct: -12,
+        direction: "short",
+      }),
+    };
+    expect(event1).toEqual({ fixed: 200, hindsight: 500 });
+    expect(event2).toEqual({ fixed: 100, hindsight: 240 });
+  });
+
+  it("the assumptions line names independence, gross, and hindsight-perfect in one breath", () => {
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("independently");
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("never compounded or reused");
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain(
+      "no fees, funding, slippage or liquidation",
+    );
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("maximum favorable excursion");
+    expect(PATH_EXTREMA_ASSUMPTIONS_SENTENCE).toContain("not a realizable strategy result");
+  });
+});
+
+describe("precision phrases and the extremum's name", () => {
+  it("says what each precision claims, and 'recorded as a span' for legacy rows", () => {
+    expect(occurrencePrecisionPhrase("instant")).toBe("exact instant");
+    expect(occurrencePrecisionPhrase("window")).toBe("exact window");
+    expect(occurrencePrecisionPhrase("date")).toContain("date precision");
+    // The frozen legacy phrase, verbatim: a span, with no precision claimed.
+    expect(occurrencePrecisionPhrase(undefined)).toBe("recorded as a span");
+  });
+
+  it("names the extremum a short reads and the one a long reads", () => {
+    expect(extremumPhrase("low")).toBe("lowest low");
+    expect(extremumPhrase("high")).toBe("highest high");
+  });
+
+  it("reads a scene's metric, with pre-metric scenes as forward_return", () => {
+    expect(payloadStudyMetric({ metric: "path_extrema" })).toBe("path_extrema");
+    expect(payloadStudyMetric({ metric: "forward_return" })).toBe("forward_return");
+    expect(payloadStudyMetric({})).toBe("forward_return");
+  });
+});
+
+describe("alignedExtremumMark (the requested extreme on the aligned stage)", () => {
+  const ENTRY = NOW; // the entry bar opens here on the open basis
+
+  it("places the extremum at its bar offset, valued by the row's measured excursion", () => {
+    // 9 bars after the entry bar's open, on the open basis: bar 9 of the run.
+    const mark = alignedExtremumMark({
+      row: { extremumTime: ENTRY + 9 * DAY, excursionReturnPct: -25 },
+      entryTime: ENTRY,
+      entryBasis: "first_bar_open_after_event",
+      intervalMs: DAY,
+      lastBar: 30,
+    });
+    expect(mark).toEqual({ barsSinceEntry: 9, changePct: -25 });
+  });
+
+  it("on the close basis, bar 0 is the entry bar's OPEN, one interval before the entry close", () => {
+    // The entry time is the entry bar's CLOSE on the close basis; the bar that
+    // opened one interval earlier is bar 0 of the trace.
+    const entryClose = ENTRY + DAY; // a close stamped at the next bar's open
+    const mark = alignedExtremumMark({
+      row: { extremumTime: ENTRY, excursionReturnPct: -10 },
+      entryTime: entryClose,
+      entryBasis: "first_closed_bar_after_event",
+      intervalMs: DAY,
+      lastBar: 30,
+    });
+    expect(mark).toEqual({ barsSinceEntry: 0, changePct: -10 });
+  });
+
+  it("refuses a bar outside the measured run or a row without an extremum", () => {
+    const common = {
+      entryTime: ENTRY,
+      entryBasis: "first_bar_open_after_event" as const,
+      intervalMs: DAY,
+      lastBar: 30,
+    };
+    // Before the entry bar: the repaired engine never records one, and the
+    // mark never invents a bar the trace does not hold.
+    expect(
+      alignedExtremumMark({
+        ...common,
+        row: { extremumTime: ENTRY - DAY, excursionReturnPct: -5 },
+      }),
+    ).toBeNull();
+    // Past the horizon's last bar.
+    expect(
+      alignedExtremumMark({
+        ...common,
+        row: { extremumTime: ENTRY + 31 * DAY, excursionReturnPct: -5 },
+      }),
+    ).toBeNull();
+    // No extremum recorded at all.
+    expect(alignedExtremumMark({ ...common, row: {} })).toBeNull();
+  });
+});
+
+describe("strategy replay labels and the showing line", () => {
+  const trade = {
+    entryTime: NOW,
+    entryPrice: 61_234.5,
+    exitTime: NOW + 3 * DAY,
+    exitPrice: 59_001.2,
+    exitReason: "stop",
+    netUsd: -42.1,
+  };
+
+  it("labels the entry with the trade number, the thesis side, and the entry price", () => {
+    expect(replayEntryRuleLabel(trade, 2, "long")).toBe("t3 entry · long · 61,234.5");
+    expect(replayEntryBandLabel(2)).toBe("t3 entry");
+  });
+
+  it("labels the exit with its price, its reason, and the net after every cost", () => {
+    expect(replayExitRuleLabel(trade, 2)).toBe("t3 exit · 59,001.2 · stop · net -$42.1");
+    const win = { ...trade, exitPrice: 64_120, exitReason: "target", netUsd: 301.2 };
+    expect(replayExitRuleLabel(win, 0)).toBe("t1 exit · 64,120 · target · net $301.2");
+  });
+
+  it("keeps taken, persisted and drawn counts distinct in the showing line", () => {
+    // 187 taken by the backtest, 200 persisted: the line says both, and the
+    // drawn slice is a third number that navigation moves.
+    expect(replayShowingSentence({ fromIndex: 0, drawn: 10, persisted: 187, taken: 187 })).toBe(
+      "showing trades 1–10 of 187 taken",
+    );
+    expect(replayShowingSentence({ fromIndex: 180, drawn: 7, persisted: 187, taken: 187 })).toBe(
+      "showing trades 181–187 of 187 taken",
+    );
+    expect(replayShowingSentence({ fromIndex: 0, drawn: 10, persisted: 200, taken: 351 })).toBe(
+      "showing trades 1–10 of 351 taken; the scene persists the first 200",
+    );
+    // No trades at all: zero, never a fabricated 1–0.
+    expect(replayShowingSentence({ fromIndex: 0, drawn: 0, persisted: 0, taken: 0 })).toBe(
+      "showing trades 0–0 of 0 taken",
+    );
+  });
+
+  it("the display cap is a window over the persisted trades, never the trades themselves", () => {
+    expect(REPLAY_MARKER_WINDOW).toBe(10);
   });
 });

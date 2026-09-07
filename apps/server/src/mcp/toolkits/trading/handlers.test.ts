@@ -37,6 +37,7 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { TradingWakeupComposerLive } from "../../../trading/TradingWakeupComposer.ts";
 import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
+import { serializeEventConfirmationPayload } from "@t3tools/trading-contracts/eventSets";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import { ServerConfig } from "../../../config.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -4273,6 +4274,8 @@ it.effect("refuses an entry on a keyless install by name, before anything is sen
       assert.equal(entered.result.isError, false);
       assert.equal(entered.result.body.status, "rejected");
       assert.include(entered.result.body.detail, "needs_trading_account");
+      // The refusal is a verdict about the install, not a transient fault.
+      assert.equal(entered.result.body.recovery?.retryable, false);
       // And the refusal happened before any exchange work: nothing was
       // priced against the account, signed, or dispatched.
       assert.equal(
@@ -4488,6 +4491,11 @@ it.live("serves the trading_events menu, records sourced dates, and studies them
         const menu = yield* callTool(BOUND_THREAD, "trading_events", {});
         assert.equal(menu.result.isError, false);
         assert.include(menu.result.body.menu, "record {name");
+        // The menu teaches the timing model and the read-back protocol.
+        assert.include(menu.result.body.menu, "preview");
+        assert.include(menu.result.body.menu, "date precision");
+        assert.include(menu.result.body.menu, "requireReadBack");
+        assert.include(menu.result.body.menu, "confirmationDigest");
 
         // A date with no source is refused before anything is written.
         const unsourced = yield* callTool(BOUND_THREAD, "trading_events", {
@@ -4496,6 +4504,19 @@ it.live("serves the trading_events menu, records sourced dates, and studies them
           occurrences: [{ start: "2024-11-12", end: "2024-11-15", source: "  " }],
         });
         assert.equal(unsourced.result.isError, true);
+
+        // A timed start with no end refuses at the boundary: the old parser
+        // padded it to a fabricated day, and that path is gone.
+        const untimed = yield* callTool(BOUND_THREAD, "trading_events", {
+          action: "record",
+          name: "Devcon",
+          occurrences: [{ start: "2024-11-12T09:30:00Z", source: "https://devcon.org/" }],
+        });
+        assert.equal(untimed.result.isError, true);
+        assert.include(
+          untimed.result.content[0].text,
+          "a timed start with no end cannot invent a duration",
+        );
 
         // Devcon SEA, inside the archive's 90-day reach.
         const recorded = yield* callTool(BOUND_THREAD, "trading_events", {
@@ -4518,6 +4539,10 @@ it.live("serves the trading_events menu, records sourced dates, and studies them
         });
         assert.equal(recorded.result.isError, false);
         assert.equal(recorded.result.body.eventSet.name, "Devcon");
+        // Date-only pairs decode as date-precision spans, stated on the rows.
+        for (const row of recorded.result.body.eventSet.occurrences) {
+          assert.equal(row.timePrecision, "date");
+        }
 
         const eventSetId = recorded.result.body.eventSet.eventSetId as string;
         const studied = yield* callTool(BOUND_THREAD, "trading_events", {
@@ -4543,6 +4568,159 @@ it.live("serves the trading_events menu, records sourced dates, and studies them
         assert.isFalse(uncovered.covered);
       }),
     tradingLayerOverExchange(makeFakeExchange(), archivePath),
+  );
+});
+
+it.effect(
+  "trading_events read-back: preview digests the payload, record confirms the exact one",
+  () => {
+    return withMcpServer(
+      ({ callTool }) =>
+        Effect.gen(function* () {
+          const occurrences = [
+            {
+              start: "2022-09-15T06:42:42Z",
+              end: "2022-09-15T06:42:42Z",
+              source: "https://e.org/forks",
+            },
+            {
+              start: "2024-03-13T13:35:35Z",
+              end: "2024-03-13T13:35:35Z",
+              source: "https://e.org/forks",
+            },
+          ];
+
+          // The preview reads the normalized dates back in order with a digest.
+          const preview = yield* callTool(BOUND_THREAD, "trading_events", {
+            action: "preview",
+            name: "Ethereum hard forks",
+            occurrences,
+          });
+          assert.equal(preview.result.isError, false);
+          assert.equal(preview.result.body.occurrences.length, 2);
+          for (const row of preview.result.body.occurrences) {
+            assert.equal(row.timePrecision, "instant");
+            assert.equal(row.endAt, row.startAt);
+          }
+          const digest = preview.result.body.confirmationDigest as string;
+          assert.match(digest, /^[0-9a-f]{64}$/);
+          // The digest is the pure canonical payload's, hashable by anyone.
+          assert.equal(
+            digest,
+            NodeCrypto.createHash("sha256")
+              .update(
+                serializeEventConfirmationPayload({
+                  threadId: "thread-bound-to-mission",
+                  action: "record",
+                  name: "Ethereum hard forks",
+                  occurrences: [
+                    {
+                      startAt: Date.parse("2022-09-15T06:42:42Z"),
+                      endAt: Date.parse("2022-09-15T06:42:42Z"),
+                      timePrecision: "instant",
+                      source: "https://e.org/forks",
+                    },
+                    {
+                      startAt: Date.parse("2024-03-13T13:35:35Z"),
+                      endAt: Date.parse("2024-03-13T13:35:35Z"),
+                      timePrecision: "instant",
+                      source: "https://e.org/forks",
+                    },
+                  ],
+                }),
+                "utf8",
+              )
+              .digest("hex"),
+          );
+
+          // requireReadBack without a digest names the next call.
+          const noDigest = yield* callTool(BOUND_THREAD, "trading_events", {
+            action: "record",
+            name: "Ethereum hard forks",
+            occurrences,
+            requireReadBack: true,
+          });
+          assert.equal(noDigest.result.isError, true);
+          assert.include(noDigest.result.content[0].text, "no confirmationDigest came with it");
+
+          // A reordered payload does not confirm: the read-back covers the
+          // exact dates, in the order they were read.
+          const reordered = yield* callTool(BOUND_THREAD, "trading_events", {
+            action: "record",
+            name: "Ethereum hard forks",
+            occurrences: [...occurrences].reverse(),
+            requireReadBack: true,
+            confirmationDigest: digest,
+          });
+          assert.equal(reordered.result.isError, true);
+          assert.include(reordered.result.content[0].text, "dates changed since the read-back");
+
+          // The exact payload consumes its confirmation and records.
+          const confirmed = yield* callTool(BOUND_THREAD, "trading_events", {
+            action: "record",
+            name: "Ethereum hard forks",
+            occurrences,
+            requireReadBack: true,
+            confirmationDigest: digest,
+          });
+          assert.equal(confirmed.result.isError, false);
+          assert.equal(confirmed.result.body.eventSet.occurrences.length, 2);
+          for (const row of confirmed.result.body.eventSet.occurrences) {
+            assert.equal(row.timePrecision, "instant");
+          }
+
+          // The same call again is a replay, named as one.
+          const replay = yield* callTool(BOUND_THREAD, "trading_events", {
+            action: "record",
+            name: "Ethereum hard forks",
+            occurrences,
+            requireReadBack: true,
+            confirmationDigest: digest,
+          });
+          assert.equal(replay.result.isError, true);
+          assert.include(replay.result.content[0].text, "already consumed");
+
+          // A confirmation read back in this conversation confirms nothing in
+          // another: the digest is scoped to its thread.
+          const crossThread = yield* callTool(UNBOUND_THREAD, "trading_events", {
+            action: "preview",
+            name: "Ethereum hard forks",
+            occurrences,
+          });
+          const foreignDigest = crossThread.result.body.confirmationDigest as string;
+          const foreignRecord = yield* callTool(BOUND_THREAD, "trading_events", {
+            action: "record",
+            name: "Ethereum hard forks",
+            occurrences,
+            requireReadBack: true,
+            confirmationDigest: foreignDigest,
+          });
+          assert.equal(foreignRecord.result.isError, true);
+          assert.include(
+            foreignRecord.result.content[0].text,
+            "matches no read-back confirmation for this thread",
+          );
+        }),
+      tradingLayerOverExchange(makeFakeExchange()),
+    );
+  },
+);
+
+it.effect("trading_events record without requireReadBack keeps the legacy path", () => {
+  return withMcpServer(
+    ({ callTool }) =>
+      Effect.gen(function* () {
+        // No preview, no digest: the plain record behaves exactly as before.
+        const recorded = yield* callTool(BOUND_THREAD, "trading_events", {
+          action: "record",
+          name: "Devcon",
+          occurrences: [{ start: "2024-11-12", end: "2024-11-15", source: "https://devcon.org/" }],
+        });
+        assert.equal(recorded.result.isError, false);
+        assert.equal(recorded.result.body.eventSet.occurrences.length, 1);
+        assert.equal(recorded.result.body.eventSet.occurrences[0].timePrecision, "date");
+      }),
+    tradingLayerOverExchange(makeFakeExchange()),
   );
 });
 

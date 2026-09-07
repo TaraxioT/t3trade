@@ -17,7 +17,10 @@ import {
   eventStudyReadWindow,
   parseTradingEventsOccurrence,
   renderTradingEventsMenu,
+  resolveEventStudyMetric,
   runEventStudy,
+  serializeEventConfirmationPayload,
+  serializeEventSetContent,
   validateEventOccurrence,
   type TradingEventOccurrence,
 } from "./eventSets.ts";
@@ -523,6 +526,1064 @@ describe("aggregates come from unrounded returns", () => {
   });
 });
 
+describe("the path_extrema metric", () => {
+  /**
+   * A bar whose wick is named: high and low are independent of open and
+   * close, because an excursion is a wick measurement.
+   */
+  const wickBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  /**
+   * A daily bar whose wick is named, stamped on a UTC-midnight grid — the
+   * archive's own 1d convention.
+   */
+  const dailyBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * DAY,
+      closeTime: (index + 1) * DAY - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+  const DAY = 24 * 60 * 60 * 1_000;
+
+  it("a four-week daily study is 28 bars and 28 whole days, close to close", () => {
+    // The canonical request: interval 1d, horizonBars 28. On the close basis
+    // the exit is a full 28 intervals after the entry close — 28 whole days,
+    // not 27, not a padded month.
+    const daily = Array.from({ length: 40 }, (_, i) => dailyBar(i, 100, 102, 98, 100 + i));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 2 * DAY + DAY / 2)],
+      candles: daily,
+      intervalMs: DAY,
+      horizonBars: 28,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(study.horizonBars).toBe(28);
+    expect(study.horizonMs).toBe(28 * DAY);
+    expect(study.rows[0]?.covered).toBe(true);
+    expect(study.rows[0]?.barsCovered).toBe(28);
+    expect((study.rows[0]?.exitTime as number) - (study.rows[0]?.entryTime as number)).toBe(
+      28 * DAY,
+    );
+    // The extremum starts AFTER the entry bar on the close basis: the entry
+    // price is the entry bar's close, a price that existed only once that bar
+    // had elapsed, so the bar's own 98 wick printed before the entry and
+    // cannot be a post-entry extreme. Every bar dips to 98, so the earliest
+    // ELIGIBLE bar (the one after entry) wins the tie.
+    expect(study.rows[0]?.extremumPrice).toBe(98);
+    expect(study.rows[0]?.extremumTime).toBe(3 * DAY);
+  });
+
+  it("a short reads the minimum LOW over the entry..exit bars, on each basis", () => {
+    // Lows: the deepest wick is bar 5's 90; bar 2 sits before the entry and
+    // must not win even though its low (95) is lower than the entry bar's.
+    const candles = [
+      wickBar(0, 100, 102, 99, 101),
+      wickBar(1, 101, 103, 98, 102),
+      wickBar(2, 102, 104, 95, 103),
+      wickBar(3, 103, 105, 97, 104),
+      wickBar(4, 104, 106, 96, 105),
+      wickBar(5, 105, 107, 90, 106),
+      wickBar(6, 106, 108, 94, 107),
+      wickBar(7, 107, 109, 93, 108),
+    ];
+    // Open basis: the event ends at bar 3's open, entry bar 3, horizon 4
+    // covers bars 3..6: the minimum low there is bar 5's 90.
+    const open = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 4,
+      metric: "path_extrema",
+      direction: "short",
+    });
+    const openRow = open.rows[0];
+    expect(openRow?.extremumPrice).toBe(90);
+    expect(openRow?.extremumTime).toBe(5 * MINUTE);
+    // (90 - 103) / 103 = -12.62%, the long-convention excursion.
+    expect(openRow?.excursionReturnPct).toBe(-12.62);
+    // Close basis: the event ends inside bar 3, so bar 3's own close (104) is
+    // the entry and bars 3..7 hold the minimum: bar 5's 90 again.
+    const close = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 4,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    const closeRow = close.rows[0];
+    expect(closeRow?.entryPrice).toBe(104);
+    expect(closeRow?.extremumPrice).toBe(90);
+    expect(closeRow?.extremumTime).toBe(5 * MINUTE);
+    // (90 - 104) / 104 = -13.46% — measured from the basis's own entry.
+    expect(closeRow?.excursionReturnPct).toBe(-13.46);
+  });
+
+  it("a long reads the maximum HIGH, and the terminal return stays separate on the row", () => {
+    // Highs peak at bar 4's 150. Entry bar 3 (open basis), horizon 2 covers
+    // bars 3..4: the maximum high is 150.
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 160, 99, 100),
+      wickBar(2, 100, 102, 99, 100),
+      wickBar(3, 100, 103, 99, 100),
+      wickBar(4, 100, 150, 99, 101),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      metric: "path_extrema",
+      direction: "long",
+    });
+    const row = study.rows[0];
+    // Terminal return: (101 - 100) / 100 = +1% — the close, not the wick.
+    expect(row?.returnPct).toBe(1);
+    // Excursion: (150 - 100) / 100 = +50%, long convention, positive for a
+    // long's favorable move.
+    expect(row?.excursionReturnPct).toBe(50);
+    expect(row?.extremumPrice).toBe(150);
+    expect(row?.extremumTime).toBe(4 * MINUTE);
+    // Both numbers, always, on a covered path_extrema row.
+    expect(row?.returnPct).toBeDefined();
+    expect(row?.excursionReturnPct).toBeDefined();
+  });
+
+  it("a truncated window measures the extremum over the bars it actually got", () => {
+    // Horizon 5 from bar 6 of an 8-bar window: only bars 6..7 exist. The
+    // extremum is theirs (bar 7's low 91), and the truncated flag is unchanged.
+    const candles = [
+      wickBar(0, 100, 102, 99, 101),
+      wickBar(1, 101, 103, 98, 102),
+      wickBar(2, 102, 104, 80, 103),
+      wickBar(3, 103, 105, 97, 104),
+      wickBar(4, 104, 106, 96, 105),
+      wickBar(5, 105, 107, 95, 106),
+      wickBar(6, 106, 108, 92, 107),
+      wickBar(7, 107, 109, 91, 108),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 6 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      metric: "path_extrema",
+      direction: "short",
+    });
+    const row = study.rows[0];
+    expect(row?.truncated).toBe(true);
+    expect(row?.barsCovered).toBe(2);
+    expect(row?.extremumPrice).toBe(91);
+    expect(row?.extremumTime).toBe(7 * MINUTE);
+  });
+
+  it("ties keep the earliest bar that printed the extremum", () => {
+    const candles = [
+      wickBar(0, 100, 102, 90, 101),
+      wickBar(1, 100, 102, 90, 101),
+      wickBar(2, 100, 102, 90, 101),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 0)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(study.rows[0]?.extremumTime).toBe(0);
+  });
+
+  it("reports the excursion aggregates over complete horizons only, and never invents them on a forward-return study", () => {
+    // Two shorts on a 3-bar open-basis horizon: row 1 (from bar 0) covers
+    // bars 0..2, dips to bar 2's low 80 (-20%) and closes at 90 (-10%); row 2
+    // (from bar 3) truncates to bars 3..4, dips only to 99 (-1%) and closes at
+    // 95 (-5%) — the path went LESS far than it ended. The truncated row keeps
+    // its numbers for inspection but leaves the aggregates: one complete
+    // horizon carries the mean, and the counts say which is which.
+    const candles = [
+      wickBar(0, 100, 102, 99, 100),
+      wickBar(1, 100, 102, 99, 90),
+      wickBar(2, 100, 102, 80, 90),
+      wickBar(3, 100, 102, 99, 97),
+      wickBar(4, 100, 102, 99, 95),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 0), occurrence(0, 3 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(study.rows.map((row) => row.excursionReturnPct)).toEqual([-20, -1]);
+    expect(study.rows.map((row) => row.truncated)).toEqual([false, true]);
+    expect(study.nComplete).toBe(1);
+    expect(study.nPartial).toBe(1);
+    expect(study.nUnavailable).toBe(0);
+    expect(study.meanExcursionPct).toBe(-20);
+    expect(study.excursionBeyondTerminalPercent).toBe(100);
+    expect(study.metric).toBe("path_extrema");
+
+    // The default study stays exactly what it was: no metric, no extrema, no
+    // excursion aggregates.
+    const plain = runEventStudy({
+      occurrences: [occurrence(0, 0)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+    });
+    expect(plain.metric).toBeUndefined();
+    expect(plain.meanExcursionPct).toBeUndefined();
+    expect(plain.excursionBeyondTerminalPercent).toBeUndefined();
+    expect(plain.rows[0]?.extremumPrice).toBeUndefined();
+    expect(plain.rows[0]?.excursionReturnPct).toBeUndefined();
+  });
+
+  it("uncovered rows keep their reasons verbatim and never carry an extremum", () => {
+    const candles = Array.from({ length: 5 }, (_, i) => bar(i, 100, 100 + i));
+    const study = runEventStudy({
+      occurrences: [
+        occurrence(0, -10 * MINUTE), // before the archive
+        occurrence(0, 99 * MINUTE), // after the last bar: the future
+      ],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(study.rows.map((row) => row.covered)).toEqual([false, false]);
+    expect(study.rows[0]?.reason).toContain("before the archived window");
+    expect(study.rows[1]?.reason).toContain("still in the future");
+    for (const row of study.rows) {
+      expect(row.extremumTime).toBeUndefined();
+      expect(row.extremumPrice).toBeUndefined();
+      expect(row.excursionReturnPct).toBeUndefined();
+    }
+    expect(study.meanExcursionPct).toBeNull();
+    expect(study.excursionBeyondTerminalPercent).toBeNull();
+  });
+
+  it("carries the occurrence's time precision onto the row", () => {
+    const candles = Array.from({ length: 5 }, (_, i) => bar(i, 100, 100 + i));
+    const study = runEventStudy({
+      occurrences: [
+        { startAt: 0, endAt: 0, timePrecision: "instant", source: "https://example.com/a" },
+        {
+          startAt: MINUTE,
+          endAt: 2 * MINUTE,
+          timePrecision: "date",
+          source: "https://example.com/b",
+        },
+        occurrence(0, 3 * MINUTE), // legacy: no precision claimed
+      ],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+    });
+    expect(study.rows.map((row) => row.timePrecision)).toEqual(["instant", "date", undefined]);
+  });
+});
+
+describe("a 1d archive reaches events a 4h archive cannot", () => {
+  // The canonical four-week study is interval 1d, horizonBars 28 BECAUSE the
+  // fine intervals start recording later: an Ethereum fork from before the 4h
+  // recorder began is a covered row on 1d bars and an honest uncovered row on
+  // 4h bars, reason and all.
+  const DAY_MS = 24 * 60 * 60 * 1_000;
+  const HOUR_MS = 60 * 60 * 1_000;
+  const forkEnd = Date.UTC(2024, 8, 15); // 2024-09-15, before October 2024
+  const fork = [{ startAt: forkEnd - DAY_MS, endAt: forkEnd, source: "https://example.com/fork" }];
+
+  /** A grid bar whose low dips to 100 - (i % 4): the lowest low is 97. */
+  const gridBar = (openTime: number, closeTime: number, i: number): MarketCandle =>
+    ({
+      openTime,
+      closeTime,
+      open: 100,
+      high: 102,
+      low: 100 - (i % 4),
+      close: 100 + (i % 7),
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("covers the pre-October occurrence on 1d bars and reports it uncovered on 4h", () => {
+    // A daily archive recording since 2020: plenty before the fork. The fork
+    // ends on a midnight, so the close basis enters the bar that opens at the
+    // boundary and the extremum is the first lowest low (97) in the range.
+    const daily = Array.from({ length: 2_000 }, (_, i) =>
+      gridBar(Date.UTC(2020, 0, 1) + i * DAY_MS, Date.UTC(2020, 0, 1) + (i + 1) * DAY_MS - 1, i),
+    );
+    const dailyStudy = runEventStudy({
+      occurrences: fork,
+      candles: daily,
+      intervalMs: DAY_MS,
+      horizonBars: 28,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(dailyStudy.rows[0]?.covered).toBe(true);
+    expect(dailyStudy.rows[0]?.extremumPrice).toBe(97); // the lowest low in 28 bars
+
+    // A 4h archive recording only since November 2024: the fork predates it.
+    const fourHour = Array.from({ length: 500 }, (_, i) =>
+      gridBar(
+        Date.UTC(2024, 10, 1) + i * 4 * HOUR_MS,
+        Date.UTC(2024, 10, 1) + (i + 1) * 4 * HOUR_MS - 1,
+        i,
+      ),
+    );
+    const fourHourStudy = runEventStudy({
+      occurrences: fork,
+      candles: fourHour,
+      intervalMs: 4 * HOUR_MS,
+      horizonBars: 168, // 28 days of 4h bars
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(fourHourStudy.rows[0]?.covered).toBe(false);
+    expect(fourHourStudy.rows[0]?.reason).toContain("before the archived window");
+    expect(fourHourStudy.rows[0]?.extremumPrice).toBeUndefined();
+  });
+});
+
+describe("the pre-entry wick never counts on the close basis", () => {
+  /** A wick bar, named high and low independent of open and close. */
+  const wickBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("a short's excursion reads only post-entry lows: −5%, never the pre-entry −50%", () => {
+    // Activation midway through bar 3. Bar 3's low 50 printed before the
+    // close that IS the entry, so it is pre-entry; the eligible lows after
+    // entry bottom at 95. Hand arithmetic: (95 − 100) / 100 = −5%.
+    const candles = [
+      wickBar(0, 100, 102, 99, 101),
+      wickBar(1, 101, 103, 98, 102),
+      wickBar(2, 102, 104, 97, 103),
+      wickBar(3, 103, 120, 50, 100),
+      wickBar(4, 100, 101, 95, 100),
+      wickBar(5, 100, 101, 96, 99),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    const row = study.rows[0];
+    expect(row?.covered).toBe(true);
+    expect(row?.entryPrice).toBe(100);
+    expect(row?.extremumPrice).toBe(95);
+    expect(row?.extremumTime).toBe(4 * MINUTE);
+    expect(row?.excursionReturnPct).toBe(-5);
+  });
+
+  it("the long/high symmetry: a pre-entry spike to 200 never counts", () => {
+    // Same shape, mirrored: bar 3's high 200 elapsed before the entry close,
+    // post-entry highs peak at 150. (150 − 100) / 100 = +50%, never +100%.
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 102, 98, 101),
+      wickBar(2, 100, 103, 97, 102),
+      wickBar(3, 102, 200, 90, 100),
+      wickBar(4, 100, 150, 99, 110),
+      wickBar(5, 110, 140, 99, 120),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "long",
+    });
+    const row = study.rows[0];
+    expect(row?.extremumPrice).toBe(150);
+    expect(row?.extremumTime).toBe(4 * MINUTE);
+    expect(row?.excursionReturnPct).toBe(50);
+  });
+
+  it("an all-unfavorable path reports the adverse excursion without inventing a gain", () => {
+    // A short whose path only rises: every post-entry low sits above the
+    // entry, so the excursion is adverse (positive in the long convention)
+    // and no surface may clamp it into a profit. Lows 102 then 101 → the
+    // lowest post-entry low is 101 → (101 − 100) / 100 = +1%.
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+      wickBar(3, 100, 120, 99, 100),
+      wickBar(4, 100, 110, 102, 105),
+      wickBar(5, 105, 112, 101, 108),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    const row = study.rows[0];
+    expect(row?.extremumPrice).toBe(101);
+    expect(row?.excursionReturnPct).toBe(1);
+    expect(study.meanExcursionPct).toBe(1);
+  });
+
+  it("the terminal bar's extreme is eligible on both bases", () => {
+    // The lowest post-entry low lands on the exit bar itself: the exit bar
+    // elapsed within the horizon, so its wick counts on either basis.
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+      wickBar(3, 100, 101, 99, 100),
+      wickBar(4, 100, 101, 92, 100),
+    ];
+    const close = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(close.rows[0]?.extremumPrice).toBe(92);
+    expect(close.rows[0]?.extremumTime).toBe(4 * MINUTE);
+    const open = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(open.rows[0]?.extremumPrice).toBe(92);
+    expect(open.rows[0]?.extremumTime).toBe(4 * MINUTE);
+  });
+});
+
+describe("expected entry slots, grid runs, and one as-of cutoff", () => {
+  const wickBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("a missing intrabar activation bar is missing data, not a shift to the next candle", () => {
+    // The activation lands inside bar 3's slot and bar 3 is absent. The first
+    // archived close after it is bar 4's, but entering there would silently
+    // move the declared entry — the row refuses.
+    const gappy = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+      // bar 3 missing: the slot the activation's entry close belongs to.
+      wickBar(4, 100, 101, 99, 104),
+      wickBar(5, 100, 101, 99, 105),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 1,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.covered).toBe(false);
+    expect(study.rows[0]?.reason).toContain("recording gap covers the 1 bar(s)");
+    expect(study.rows[0]?.reason).toContain("close");
+    expect(study.meanReturnPct).toBeNull();
+  });
+
+  it("an interior gap truncates the horizon at the gap instead of stretching it", () => {
+    // Entry bar 2, horizon 3 wants bar 5's close over an unbroken grid; bar 4
+    // is missing, so the run ends at bar 3. The row measures one interval,
+    // says why, and leaves the aggregates.
+    const gappy = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 101),
+      wickBar(2, 100, 101, 99, 102),
+      wickBar(3, 100, 101, 99, 103),
+      // bar 4 missing.
+      wickBar(5, 100, 101, 99, 105),
+      wickBar(6, 100, 101, 99, 106),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    const row = study.rows[0];
+    expect(row?.covered).toBe(true);
+    expect(row?.truncated).toBe(true);
+    expect(row?.truncationReason).toContain("internal recording gap");
+    expect(row?.barsCovered).toBe(1);
+    expect(row?.exitPrice).toBe(103);
+    expect(study.nComplete).toBe(0);
+    expect(study.nPartial).toBe(1);
+    expect(study.meanReturnPct).toBeNull();
+    // Bridging the gap would have reported bar 5's close (105) as a 3-bar
+    // exit; the honest row stops at bar 3.
+  });
+
+  it("a missing terminal exit slot with later data is a gap truncation too", () => {
+    // Entry bar 2, horizon 3 wants bar 5; bars 3 and 4 exist, bar 5 is
+    // missing, bar 6 exists. The exit slot is not reachable over an unbroken
+    // grid, and the data after the gap cannot stand in for it.
+    const gappy = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 102),
+      wickBar(3, 100, 101, 99, 103),
+      wickBar(4, 100, 101, 99, 104),
+      // bar 5 missing: the declared exit slot.
+      wickBar(6, 100, 101, 99, 106),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 2 * MINUTE)],
+      candles: gappy,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    const row = study.rows[0];
+    expect(row?.covered).toBe(true);
+    expect(row?.truncated).toBe(true);
+    expect(row?.truncationReason).toContain("internal recording gap");
+    expect(row?.barsCovered).toBe(2);
+    expect(row?.exitPrice).toBe(104);
+  });
+
+  it("an incomplete tail truncates with the tail reason", () => {
+    const candles = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 99, 100),
+    ];
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.rows[0]?.truncated).toBe(true);
+    expect(study.rows[0]?.truncationReason).toContain("archived data ends");
+    expect(study.rows[0]?.barsCovered).toBe(1);
+  });
+
+  it("one as-of cutoff: a forming bar cannot change entries, exits, extrema or baseline", () => {
+    // Six closed bars and a forming seventh whose wild low would win any
+    // extremum it touched. `now` sits at bar 5's close, so bar 6 is excluded
+    // everywhere: the row's extremum stays bar 4's 95, and a horizon that
+    // wanted bar 6 truncates at bar 5 rather than reading the forming close.
+    const closed = [
+      wickBar(0, 100, 101, 99, 100),
+      wickBar(1, 100, 101, 99, 100),
+      wickBar(2, 100, 101, 96, 100),
+      wickBar(3, 100, 101, 99, 100),
+      wickBar(4, 100, 101, 95, 100),
+      wickBar(5, 100, 101, 97, 100),
+    ];
+    const forming = wickBar(6, 100, 101, 10, 93);
+    const now = 6 * MINUTE - 1; // bar 5's closing millisecond
+    const complete = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000)],
+      candles: [...closed, forming],
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      now,
+    });
+    // Entry bar 1 (contains the activation), horizon 3 wants bar 4: complete,
+    // and the extremum over bars 2..4 is bar 4's 95 — the forming low 10
+    // never entered the measurement.
+    expect(complete.rows[0]?.truncated).toBe(false);
+    expect(complete.rows[0]?.extremumPrice).toBe(95);
+    expect(complete.rows[0]?.extremumTime).toBe(4 * MINUTE);
+    expect(complete.baseline?.samples).toBe(3); // windows 0..3, 1..4, 2..5 of the closed grid
+
+    // An exit slot that lands on the forming bar truncates at the cutoff
+    // instead of reading the forming close: entry bar 3, horizon 3 wants bar
+    // 6 (forming) → the row measures bars 4..5 and says the data ends.
+    const exitOnForming = runEventStudy({
+      occurrences: [occurrence(0, 3 * MINUTE + 30_000)],
+      candles: [...closed, forming],
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+      now,
+    });
+    expect(exitOnForming.rows[0]?.truncated).toBe(true);
+    expect(exitOnForming.rows[0]?.truncationReason).toContain("archived data ends");
+    expect(exitOnForming.rows[0]?.exitPrice).toBe(100);
+    expect(exitOnForming.rows[0]?.exitTime).toBe(6 * MINUTE - 1);
+    expect(exitOnForming.nPartial).toBe(1);
+    expect(exitOnForming.meanReturnPct).toBeNull();
+  });
+});
+
+describe("complete horizons carry the aggregates (partial rows stay for inspection)", () => {
+  /** A bar at 1m cadence, open 100 and close named. */
+  const closeBar = (index: number, close: number): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open: 100,
+      high: Math.max(100, close),
+      low: Math.min(100, close),
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("a mixed complete/partial report aggregates the complete row only", () => {
+    // Closes: [100, 100, 105, 110, 100, 100, 100, 103]. Occurrence A ends at
+    // bar 1's open: entry close 100, horizon 2 exits at bar 3's close 110 →
+    // +10%, complete. Occurrence B ends at bar 6's open: entry close 100,
+    // horizon 2 wants bar 8 — only bar 7 exists → +3% over ONE interval,
+    // partial. Every aggregate comes from A alone, and the counts are
+    // unambiguous: 2 recorded, 2 covered, 1 complete, 1 partial, 0 unavailable.
+    const candles = [100, 100, 105, 110, 100, 100, 100, 103].map((close, index) =>
+      closeBar(index, close),
+    );
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE), occurrence(0, 6 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.n).toBe(2);
+    expect(study.nCovered).toBe(2);
+    expect(study.nComplete).toBe(1);
+    expect(study.nPartial).toBe(1);
+    expect(study.nUnavailable).toBe(0);
+    expect(study.rows.map((row) => row.returnPct)).toEqual([10, 3]);
+    expect(study.meanReturnPct).toBe(10);
+    expect(study.medianReturnPct).toBe(10);
+    expect(study.hitRatePercent).toBe(100);
+    expect(study.bestReturnPct).toBe(10);
+    expect(study.worstReturnPct).toBe(10);
+    expect(study.verdict).toContain("1 of those completed the full 2-bar horizon");
+  });
+
+  it("an all-partial study reports no full-horizon mean, never a partial-window number", () => {
+    const candles = [100, 100, 104].map((close, index) => closeBar(index, close));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.nCovered).toBe(1);
+    expect(study.nComplete).toBe(0);
+    expect(study.nPartial).toBe(1);
+    expect(study.meanReturnPct).toBeNull();
+    expect(study.medianReturnPct).toBeNull();
+    expect(study.hitRatePercent).toBeNull();
+    expect(study.bestReturnPct).toBeNull();
+    expect(study.worstReturnPct).toBeNull();
+    expect(study.verdict).toContain("no full-horizon return exists to aggregate");
+  });
+
+  it("an all-unavailable study is not a zero return", () => {
+    const candles = [100, 100].map((close, index) => closeBar(index, close));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, -10 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.nUnavailable).toBe(1);
+    expect(study.meanReturnPct).toBeNull();
+    expect(study.hitRatePercent).toBeNull();
+  });
+});
+
+describe("the baseline asks the same question of the same kind of window", () => {
+  const closeBar = (index: number, close: number): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open: 100,
+      high: Math.max(100, close),
+      low: Math.min(100, close),
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("samples only unbroken windows: a gap that would bridge a sample excludes it", () => {
+    // Five slots with bar 2 missing (0,1,3,4,5): a horizon-2 close-to-close
+    // sample needs three contiguous bars, so only the 3..5 run qualifies —
+    // one sample, and the 0→(would-be)3 window never bridges the gap.
+    const candles = [0, 1, 3, 4, 5].map((index) => closeBar(index, 100 + index));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.baseline?.samples).toBe(1);
+    // The one sample: entry close 103 (bar 3) → exit close 105 (bar 5).
+    expect(study.baseline?.meanReturnPct).toBe(1.94);
+  });
+
+  it("reports no baseline at all when no complete window exists", () => {
+    const candles = [0, 1, 2].map((index) => closeBar(index, 100));
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(study.baseline).toBeNull();
+  });
+});
+
+describe("storage artifacts are normalized; market data is never fabricated", () => {
+  const closeBar = (index: number, close: number): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open: 100,
+      high: Math.max(100, close),
+      low: Math.min(100, close),
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  it("duplicated and out-of-order rows measure identically to the sorted unique grid", () => {
+    const grid = [100, 100, 105, 110, 100].map((close, index) => closeBar(index, close));
+    const shuffled = [
+      grid[3] as MarketCandle,
+      grid[0] as MarketCandle,
+      grid[3] as MarketCandle,
+      grid[4] as MarketCandle,
+      grid[1] as MarketCandle,
+      grid[2] as MarketCandle,
+    ];
+    const tidy = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles: grid,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    const messy = runEventStudy({
+      occurrences: [occurrence(0, MINUTE)],
+      candles: shuffled,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+    });
+    expect(messy.rows[0]?.covered).toBe(true);
+    expect(messy.rows[0]?.returnPct).toBe(tidy.rows[0]?.returnPct);
+    expect(messy.rows[0]?.exitTime).toBe(tidy.rows[0]?.exitTime);
+    expect(messy.baseline).toEqual(tidy.baseline);
+    expect(messy.nComplete).toBe(tidy.nComplete);
+  });
+});
+
+describe("a hit rate needs a recorded threshold", () => {
+  const wickBar = (
+    index: number,
+    open: number,
+    high: number,
+    low: number,
+    close: number,
+  ): MarketCandle =>
+    ({
+      openTime: index * MINUTE,
+      closeTime: index * MINUTE + MINUTE - 1,
+      open,
+      high,
+      low,
+      close,
+      volume: 1,
+      trades: 1,
+    }) as MarketCandle;
+
+  // Two shorts on a 2-bar close-basis horizon from bars 1 and 4: row 1 dips
+  // to 80 (excursion (80-101)/101 = -20.79%), row 2 dips to 90 ((90-100)/100
+  // = -10%). A -15% threshold hits row 1 only, and the matched every-bar
+  // baseline counts the same question over every complete window.
+  const candles = [
+    wickBar(0, 100, 102, 99, 101),
+    wickBar(1, 101, 103, 98, 101),
+    wickBar(2, 100, 102, 80, 95),
+    wickBar(3, 100, 102, 97, 100),
+    wickBar(4, 100, 102, 99, 100),
+    wickBar(5, 100, 102, 90, 97),
+    wickBar(6, 100, 102, 96, 98),
+  ];
+
+  it("counts hits over complete horizons and reports the threshold verbatim", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000), occurrence(0, 4 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+    });
+    expect(study.excursionThresholdPct).toBe(-15);
+    expect(study.rows.map((row) => row.excursionReturnPct)).toEqual([-20.79, -10]);
+    expect(study.thresholdHitCount).toBe(1);
+    expect(study.thresholdDenominator).toBe(2);
+    expect(study.thresholdHitRatePercent).toBe(50);
+    expect(study.thresholdChosenAfterResults).toBeUndefined();
+    // The matched baseline: every complete window's own post-entry dip,
+    // counted against the same threshold. Hand-checked windows (close basis,
+    // entry bar i, post-entry bars i+1..i+2): entry 101 → low 80 hits;
+    // entry 101 → low 80 hits; entry 95 → low 97 adverse; entry 100 → low 90
+    // misses (-10%); entry 100 → low 90 misses → 2 of 5 = 40%.
+    expect(study.baseline?.excursionThresholdHitRatePercent).toBe(40);
+    expect(study.verdict).toContain("threshold was met by 1 of 2 complete horizons");
+    expect(study.verdict).toContain("against 40% of the same every-bar windows");
+  });
+
+  it("records a threshold chosen after the results as such", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+      thresholdChosenAfterResults: true,
+    });
+    expect(study.thresholdChosenAfterResults).toBe(true);
+  });
+
+  it("without a threshold there is no hit count to misread, only the distribution", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, MINUTE + 30_000), occurrence(0, 4 * MINUTE + 30_000)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 2,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+    });
+    expect(study.excursionThresholdPct).toBeUndefined();
+    expect(study.thresholdHitCount).toBeUndefined();
+    expect(study.thresholdHitRatePercent).toBeUndefined();
+    expect(study.baseline?.excursionThresholdHitRatePercent).toBeUndefined();
+    // The distribution itself is fully present on the rows.
+    expect(study.rows.every((row) => row.excursionReturnPct !== undefined)).toBe(true);
+  });
+
+  it("a zero-complete-horizon study reports a null threshold rate, not zero", () => {
+    const study = runEventStudy({
+      occurrences: [occurrence(0, 6 * MINUTE)],
+      candles,
+      intervalMs: MINUTE,
+      horizonBars: 5,
+      entryBasis: "first_closed_bar_after_event",
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+    });
+    expect(study.thresholdDenominator).toBe(0);
+    expect(study.thresholdHitRatePercent).toBeNull();
+  });
+
+  it("the resolver refuses thresholds that do not belong or do not parse", () => {
+    const onForwardReturn = resolveEventStudyMetric({
+      excursionThresholdPct: -15,
+    });
+    expect("reason" in onForwardReturn && onForwardReturn.reason).toContain(
+      "excursionThresholdPct applies only to the path_extrema metric",
+    );
+    const zero = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: 0,
+    });
+    expect("reason" in zero && zero.reason).toContain("finite nonzero percentage");
+    const adverseShort = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: 15,
+    });
+    expect("reason" in adverseShort && adverseShort.reason).toContain("reads adverse for a short");
+    const adverseLong = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "long",
+      excursionThresholdPct: -15,
+    });
+    expect("reason" in adverseLong && adverseLong.reason).toContain("reads adverse for a long");
+    const sound = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "short",
+      excursionThresholdPct: -15,
+    });
+    expect(sound).toEqual({
+      metric: "path_extrema",
+      direction: "short",
+      priceField: "low",
+      excursionThresholdPct: -15,
+    });
+  });
+});
+
+describe("a set's content identity is serializable", () => {
+  it("the same content serializes identically; any amendment changes it", () => {
+    const set = {
+      name: "Ethereum upgrades",
+      occurrences: [
+        {
+          startAt: Date.parse("2022-09-15T06:42:42Z"),
+          endAt: Date.parse("2022-09-15T06:42:42Z"),
+          timePrecision: "instant" as const,
+          label: "The Merge",
+          source: "https://blog.ethereum.org",
+        },
+      ],
+    };
+    const base = serializeEventSetContent(set);
+    expect(serializeEventSetContent(set)).toBe(base);
+    expect(
+      serializeEventSetContent({
+        ...set,
+        occurrences: [...set.occurrences, { startAt: 0, endAt: 1, source: "https://b.dev" }],
+      }),
+    ).not.toBe(base);
+    expect(serializeEventSetContent({ ...set, name: "Renamed" })).not.toBe(base);
+    const merge = set.occurrences[0] as TradingEventOccurrence;
+    expect(
+      serializeEventSetContent({
+        ...set,
+        occurrences: [{ ...merge, source: "https://eips.ethereum.org" }],
+      }),
+    ).not.toBe(base);
+  });
+});
+
+describe("the metric resolver: one rule for both tool boundaries", () => {
+  it("defaults to forward_return and resolves path_extrema's own defaults", () => {
+    expect(resolveEventStudyMetric({})).toEqual({ metric: "forward_return" });
+    expect(resolveEventStudyMetric({ metric: "path_extrema", direction: "short" })).toEqual({
+      metric: "path_extrema",
+      direction: "short",
+      priceField: "low",
+    });
+    expect(resolveEventStudyMetric({ metric: "path_extrema", direction: "long" })).toEqual({
+      metric: "path_extrema",
+      direction: "long",
+      priceField: "high",
+    });
+    expect(
+      resolveEventStudyMetric({ metric: "path_extrema", direction: "long", priceField: "high" }),
+    ).toEqual({ metric: "path_extrema", direction: "long", priceField: "high" });
+  });
+
+  it("refuses a contradictory direction and price field", () => {
+    const shortHigh = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "short",
+      priceField: "high",
+    });
+    expect("reason" in shortHigh && shortHigh.reason).toContain("contradicts direction short");
+    const longLow = resolveEventStudyMetric({
+      metric: "path_extrema",
+      direction: "long",
+      priceField: "low",
+    });
+    expect("reason" in longLow && longLow.reason).toContain("contradicts direction long");
+  });
+
+  it("refuses path_extrema with no direction, and direction on a forward-return study", () => {
+    const noDirection = resolveEventStudyMetric({ metric: "path_extrema" });
+    expect("reason" in noDirection && noDirection.reason).toContain("needs a direction");
+    const stray = resolveEventStudyMetric({ direction: "short" });
+    expect("reason" in stray && stray.reason).toContain(
+      "direction and priceField apply only to the path_extrema metric",
+    );
+  });
+});
+
 describe("the caps and the occurrence validator", () => {
   it("bounds the horizon at both ends before a bar is loaded", () => {
     expect(checkEventStudy({ horizonBars: 0 })).toContain("whole number of bars from 1");
@@ -539,6 +1600,17 @@ describe("the caps and the occurrence validator", () => {
     expect(validateEventOccurrence(occurrence(100, 100))).toBeNull();
   });
 
+  it("refuses an occurrence claiming instant precision with unequal ends", () => {
+    expect(
+      validateEventOccurrence({ ...occurrence(100, 101), timePrecision: "instant" }),
+    ).toContain("must start and end at the same moment");
+    expect(
+      validateEventOccurrence({ ...occurrence(100, 100), timePrecision: "instant" }),
+    ).toBeNull();
+    // Absent precision is a legacy row, never re-derived: unequal ends are fine.
+    expect(validateEventOccurrence(occurrence(100, 101))).toBeNull();
+  });
+
   it("refuses an occurrence with no source", () => {
     expect(validateEventOccurrence({ startAt: 0, endAt: 1, source: "  " })).toContain(
       "source cannot be empty",
@@ -548,44 +1620,34 @@ describe("the caps and the occurrence validator", () => {
 });
 
 describe("the tool's ISO conventions", () => {
-  const parse = (input: { start: string; end?: string; label?: string; source: string }) =>
-    parseTradingEventsOccurrence(input);
+  const parse = (input: {
+    start: string;
+    end?: string;
+    precision?: "instant" | "window" | "date";
+    label?: string;
+    source: string;
+  }) => parseTradingEventsOccurrence(input);
 
-  it("reads a date-only start as UTC midnight, ending at the next one", () => {
+  it("reads a date-only start as a date-precision span of that whole UTC day", () => {
     const parsed = parse({ start: "2024-11-12", source: "url" });
     if (!("occurrence" in parsed)) return;
     expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T00:00:00Z"));
     // The whole day, exclusively: after Devcon means after the LAST day.
     expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-13T00:00:00Z"));
+    expect(parsed.occurrence.timePrecision).toBe("date");
   });
 
   it("a date-only end is the exclusive next midnight of THAT day", () => {
     const parsed = parse({ start: "2024-11-12", end: "2024-11-15", source: "url" });
     if (!("occurrence" in parsed)) return;
     expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-16T00:00:00Z"));
+    expect(parsed.occurrence.timePrecision).toBe("date");
   });
 
-  it("a timed start with no end still ends at its day's exclusive midnight", () => {
-    const parsed = parse({ start: "2024-11-12T09:30:00Z", source: "url" });
-    if (!("occurrence" in parsed)) return;
-    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T09:30:00Z"));
-    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-13T00:00:00Z"));
-  });
-
-  it("a timed end is the instant it names", () => {
-    const parsed = parse({
-      start: "2024-11-12T09:00:00Z",
-      end: "2024-11-12T18:00:00Z",
-      source: "u",
-    });
-    if (!("occurrence" in parsed)) return;
-    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-12T18:00:00Z"));
-  });
-
-  it("an instantaneous event records start and end as the exact same instant", () => {
+  it("a timed start with equal timed ends is an instant, preserved exactly", () => {
     // A protocol activation is a moment, not a day: recording it with equal
-    // timed strings must preserve both instants exactly, never widen the
-    // span to a whole day the way a missing end would.
+    // timed strings must preserve both instants exactly and claim instant
+    // precision, never widen the span to a day it did not span.
     const parsed = parse({
       start: "2022-09-15T06:42:42Z",
       end: "2022-09-15T06:42:42Z",
@@ -594,6 +1656,119 @@ describe("the tool's ISO conventions", () => {
     if (!("occurrence" in parsed)) return;
     expect(parsed.occurrence.startAt).toBe(Date.parse("2022-09-15T06:42:42Z"));
     expect(parsed.occurrence.endAt).toBe(parsed.occurrence.startAt);
+    expect(parsed.occurrence.timePrecision).toBe("instant");
+  });
+
+  it("a timed start with a later timed end is a window", () => {
+    const parsed = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T18:00:00Z",
+      source: "u",
+    });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T09:00:00Z"));
+    expect(parsed.occurrence.endAt).toBe(Date.parse("2024-11-12T18:00:00Z"));
+    expect(parsed.occurrence.timePrecision).toBe("window");
+  });
+
+  it("preserves the exact UTC milliseconds of a timed instant", () => {
+    const parsed = parse({
+      start: "2024-11-12T09:30:00.250Z",
+      end: "2024-11-12T09:30:00.250Z",
+      source: "u",
+    });
+    if (!("occurrence" in parsed)) return;
+    expect(parsed.occurrence.startAt).toBe(Date.parse("2024-11-12T09:30:00.250Z"));
+    expect(parsed.occurrence.endAt).toBe(parsed.occurrence.startAt);
+  });
+
+  it("refuses a timed start with no end rather than inventing a day", () => {
+    // The fabrication this model replaces: a lone timed start used to be
+    // padded to its day's midnight, writing a span the research never gave.
+    const parsed = parse({ start: "2024-11-12T09:30:00Z", source: "url" });
+    if ("reason" in parsed) {
+      expect(parsed.reason).toContain("a timed start with no end cannot invent a duration");
+      expect(parsed.reason).toContain("use a date-only start for date precision");
+    }
+  });
+
+  it("refuses a date-only end beside a timed start as ambiguous", () => {
+    const parsed = parse({ start: "2024-11-12T09:00:00Z", end: "2024-11-15", source: "url" });
+    if ("reason" in parsed) {
+      expect(parsed.reason).toContain("end must be a timed instant when start is timed");
+      expect(parsed.reason).toContain("a date-only end pairs with a date-only start");
+    }
+  });
+
+  it("refuses a timed end beside a date-only start as ambiguous", () => {
+    const parsed = parse({ start: "2024-11-12", end: "2024-11-15T09:00:00Z", source: "url" });
+    if ("reason" in parsed) {
+      expect(parsed.reason).toContain("end must be a date-only date when start is date-only");
+      expect(parsed.reason).toContain("a timed end pairs with a timed start");
+    }
+  });
+
+  it("refuses a date-only start that claims instant or window precision", () => {
+    for (const precision of ["instant", "window"] as const) {
+      const parsed = parse({ start: "2024-11-12", precision, source: "url" });
+      if ("reason" in parsed) {
+        expect(parsed.reason).toContain("a date-only start cannot claim an exact instant");
+        expect(parsed.reason).toContain(
+          "record the timed activation instant, or keep date precision",
+        );
+      }
+    }
+  });
+
+  it("refuses a timed start that claims date precision", () => {
+    const parsed = parse({
+      start: "2022-09-15T06:42:42Z",
+      end: "2022-09-15T06:42:42Z",
+      precision: "date",
+      source: "url",
+    });
+    if ("reason" in parsed)
+      expect(parsed.reason).toContain("a timed instant cannot claim date precision");
+  });
+
+  it("refuses a declared precision the timed shapes contradict", () => {
+    const notInstant = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T18:00:00Z",
+      precision: "instant",
+      source: "u",
+    });
+    if ("reason" in notInstant) {
+      expect(notInstant.reason).toContain('declared precision "instant" does not match the span');
+    }
+    const notWindow = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T09:00:00Z",
+      precision: "window",
+      source: "u",
+    });
+    if ("reason" in notWindow) {
+      expect(notWindow.reason).toContain('declared precision "window" does not match the span');
+    }
+  });
+
+  it("accepts a declared precision the shapes agree with", () => {
+    const date = parse({ start: "2024-11-12", precision: "date", source: "url" });
+    if ("occurrence" in date) expect(date.occurrence.timePrecision).toBe("date");
+    const instant = parse({
+      start: "2022-09-15T06:42:42Z",
+      end: "2022-09-15T06:42:42Z",
+      precision: "instant",
+      source: "url",
+    });
+    if ("occurrence" in instant) expect(instant.occurrence.timePrecision).toBe("instant");
+    const window = parse({
+      start: "2024-11-12T09:00:00Z",
+      end: "2024-11-12T18:00:00Z",
+      precision: "window",
+      source: "url",
+    });
+    if ("occurrence" in window) expect(window.occurrence.timePrecision).toBe("window");
   });
 
   it("refuses a string that is not a date, naming the field", () => {
@@ -601,6 +1776,85 @@ describe("the tool's ISO conventions", () => {
     if ("reason" in bad) expect(bad.reason).toContain("start");
     const badEnd = parse({ start: "2024-11-12", end: "soon after", source: "url" });
     if ("reason" in badEnd) expect(badEnd.reason).toContain("end");
+  });
+});
+
+describe("the read-back confirmation payload", () => {
+  const payload = {
+    threadId: "thread-1",
+    action: "record" as const,
+    name: "Devcon",
+    occurrences: [
+      { startAt: 0, endAt: 0, timePrecision: "instant" as const, source: "https://a.dev" },
+      {
+        startAt: 86_400_000,
+        endAt: 3 * 86_400_000,
+        timePrecision: "date" as const,
+        label: "SEA",
+        source: "https://b.dev",
+      },
+    ],
+  };
+
+  it("serializes the same payload to the same string, order included", () => {
+    expect(serializeEventConfirmationPayload(payload)).toBe(
+      serializeEventConfirmationPayload(payload),
+    );
+    // Order is part of the payload: the same rows in the other order differ.
+    const reordered = {
+      ...payload,
+      occurrences: [...payload.occurrences].reverse(),
+    };
+    expect(serializeEventConfirmationPayload(reordered)).not.toBe(
+      serializeEventConfirmationPayload(payload),
+    );
+  });
+
+  it("changes when anything it covers changes", () => {
+    const base = serializeEventConfirmationPayload(payload);
+    expect(serializeEventConfirmationPayload({ ...payload, threadId: "thread-2" })).not.toBe(base);
+    expect(serializeEventConfirmationPayload({ ...payload, action: "add" })).not.toBe(base);
+    expect(serializeEventConfirmationPayload({ ...payload, name: "Breakpoint" })).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row) => ({ ...row, startAt: row.startAt + 1 })),
+      }),
+    ).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row, i) =>
+          i === 0 ? { ...row, timePrecision: "window" as const } : row,
+        ),
+      }),
+    ).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row, i) =>
+          i === 1 ? { ...row, label: "Bogota" } : row,
+        ),
+      }),
+    ).not.toBe(base);
+    expect(
+      serializeEventConfirmationPayload({
+        ...payload,
+        occurrences: payload.occurrences.map((row, i) =>
+          i === 0 ? { ...row, source: "user provided" } : row,
+        ),
+      }),
+    ).not.toBe(base);
+    // Absent optionals serialize as "" and stay stable.
+    const legacy = {
+      threadId: "thread-1",
+      action: "add" as const,
+      name: "",
+      occurrences: [{ startAt: 0, endAt: 1, source: "u" }],
+    };
+    expect(serializeEventConfirmationPayload(legacy)).toBe(
+      serializeEventConfirmationPayload(legacy),
+    );
   });
 });
 
@@ -739,11 +1993,37 @@ describe("the study's read window", () => {
 });
 
 describe("the menus teach the conventions the parser enforces", () => {
-  it("the events menu states the instant rule and the single-source rule", () => {
+  it("the events menu states the timing, single-source, and read-back rules", () => {
     const menu = renderTradingEventsMenu();
-    expect(menu).toContain("start and end as the same instant");
-    expect(menu).toContain("never several URLs joined into one");
+    // Tight enough to serve as a menu: the look menu's 1,500-char budget is
+    // the discipline here too, raised once to 2,000 when the menu gained the
+    // threshold-honesty and no-hindsight-exit rules the study's semantics
+    // require it to teach — bounded growth for required vocabulary, not an
+    // open cap.
+    expect(menu.length).toBeLessThan(2_000);
+    // The timing model: date precision spans, the instant rule, the refusal
+    // that replaced the +24h fabrication.
+    expect(menu).toContain("date precision");
+    expect(menu).toContain("same instant is an activation");
+    expect(menu).toContain("a timed start with no end is refused");
+    expect(menu).toContain("instant/window/date");
+    expect(menu).toContain("UTC ISO");
+    // One source, never several.
+    expect(menu).toContain("one source per occurrence");
+    expect(menu).toContain("never several joined");
+    // The read-back protocol.
+    expect(menu).toContain("preview");
+    expect(menu).toContain("requireReadBack");
+    expect(menu).toContain("confirmationDigest");
+    // The study conventions another caller needs verbatim.
     expect(menu).toContain("entryBasis");
     expect(menu).toContain("first_closed_bar_after_event");
+    expect(menu).toContain("interval 1m 3m 5m 15m 1h 4h 1d");
+    expect(menu).toContain("a four-week daily study is interval 1d, horizonBars 28");
+    expect(menu).toContain("coarsest interval");
+    // The metric vocabulary, and the hindsight honesty that rides it.
+    expect(menu).toContain("path_extrema");
+    expect(menu).toContain("direction");
+    expect(menu).toContain("hindsight-perfect");
   });
 });

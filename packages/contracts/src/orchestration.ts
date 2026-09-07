@@ -28,6 +28,7 @@ import {
   InternalTradingCommand,
   TradingMissionControlRequestedPayload,
   TradingMissionRiskControlRequestedPayload,
+  TradingMissionControlResultPayload,
   TradingMissionCreateRequestedPayload,
   TradingMissionId,
   TradingMissionRunStartedPayload,
@@ -50,6 +51,7 @@ import {
   TradingManualCloseInput,
   TradingManualCloseResult,
   TradingChartInterval,
+  TradingChartRange,
   TradingMarketChartView,
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
@@ -88,6 +90,7 @@ export type {
 } from "@t3tools/trading-contracts/researchScenes";
 export {
   PER_NOTIONAL_ILLUSTRATION_LABEL,
+  RESEARCH_CALCULATION_VERSIONS,
   RESEARCH_DISCLAIMER,
   STUDY_CHART_CONTEXT_BARS,
   STUDY_CHART_MAX_WINDOW_BARS,
@@ -724,6 +727,14 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
 export const OrchestrationGetTradingMarketChartInput = Schema.Struct({
   market: TrimmedNonEmptyString,
   interval: TradingChartInterval,
+  /**
+   * How much history to serve, resolved to a window by the server. `all`
+   * means everything the archive recorded for the market — the client cannot
+   * know that span, so it cannot compute it. Only honoured on a live read
+   * (no `startTime`/`endTime`); a windowed post-mortem read names its own
+   * span. Absent means the latest bars up to the cap, as before.
+   */
+  range: Schema.optional(TradingChartRange),
   startTime: Schema.optional(Schema.Number),
   endTime: Schema.optional(Schema.Number),
   maxBars: Schema.optional(PositiveInt),
@@ -1267,6 +1278,7 @@ export const OrchestrationEventType = Schema.Literals([
   "trading.mission-stop-adjusted",
   "trading.mission-market-bound",
   "trading.mission-market-released",
+  "trading.mission-control-result",
   "trading.execution-requested",
   "trading.order-place-requested",
 ]);
@@ -1705,6 +1717,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("trading.mission-risk-control-requested"),
     payload: TradingMissionRiskControlRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-control-result"),
+    payload: TradingMissionControlResultPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

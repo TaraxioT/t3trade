@@ -39,7 +39,10 @@ import {
   mapProtectiveStop,
   HyperliquidOrderMapperError,
 } from "@t3tools/hyperliquid/OrderMapper";
-import { readExchangeResponse } from "@t3tools/hyperliquid/ExchangeResponse";
+import {
+  readCancelAcknowledgement,
+  readExchangeResponse,
+} from "@t3tools/hyperliquid/ExchangeResponse";
 import { formatPrice, formatSize } from "@t3tools/hyperliquid/Precision";
 import { deriveCloid, deriveManualCloid } from "@t3tools/hyperliquid/Cloid";
 import { HyperliquidExchangeClient, type SignedAction } from "@t3tools/hyperliquid/ExchangeClient";
@@ -980,7 +983,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
       const action = buildCancelByCloidAction(market.assetIndex, input.cloid);
       const signed = yield* signInNonceLane(action, signer);
-      yield* exchange.submit(signed).pipe(
+      const response = yield* exchange.submit(signed).pipe(
         Effect.mapError(
           (cause) =>
             new TradingExecutionError({
@@ -989,7 +992,20 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
             }),
         ),
       );
-      yield* Effect.logInfo("trading cancel hit the wire", {
+      // RC02: an acknowledged transport is not an acknowledged cancellation.
+      // The exchange can reject the action or the individual order while the
+      // POST succeeds; only an explicit per-order success confirms the cancel,
+      // and anything else is a typed failure the caller must never narrate as
+      // "cancelled". "Not found"/"already cancelled" texts stay unconfirmed
+      // too: proving absence is a canonical order lookup, not text matching.
+      const acknowledgement = readCancelAcknowledgement(response, input.cloid);
+      if (!acknowledgement.acknowledged) {
+        return yield* new TradingExecutionError({
+          stage: "inspect_failed",
+          detail: `cancel of ${input.cloid} was not confirmed: ${acknowledgement.reason}`,
+        });
+      }
+      yield* Effect.logInfo("trading cancel confirmed by the exchange", {
         market: input.market,
         cloid: input.cloid,
       });

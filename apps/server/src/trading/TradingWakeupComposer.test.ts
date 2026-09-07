@@ -350,10 +350,11 @@ layer("TradingWakeupComposer", (it) => {
       });
       // What fired, and where to get everything else.
       assert.include(composed.text, "triggered:");
-      // Plan 38 §1.5: the static fetch pointer replaces `readFirst`.
+      // Plan 38 §1.5: the static fetch pointer replaces `readFirst`, and now
+      // teaches catalog-first by naming the menu call before the fetch call.
       assert.include(
         composed.text,
-        "nothing here but the above — trading_look({fetch:[...]}) ; menu: trading_look({})",
+        "nothing here but the above — menu first: trading_look({}) ; trading_look({fetch:[...]})",
       );
       assert.notInclude(composed.text, "readFirst");
       // Plan 35: one pointer line. The `omitted` paragraph and the
@@ -705,7 +706,7 @@ layer("TradingWakeupComposer", (it) => {
       assert.isAbove(rung1.length, composed.text.length);
       assert.isAbove(rung1.length, 1_300);
       // And the pointer still rides the last line.
-      assert.include(composed.text, "menu: trading_look({})");
+      assert.include(composed.text, "menu first: trading_look({})");
     }),
   );
 

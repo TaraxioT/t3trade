@@ -2,6 +2,8 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { BacktestInterval } from "@t3tools/trading-contracts/thesis";
+
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -11,6 +13,7 @@ import {
   OrchestrationDispatchCommandError,
   OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
+  OrchestrationGetTradingMarketChartInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
   ProjectCreatedPayload,
@@ -27,6 +30,7 @@ import {
   ThreadTurnStartRequestedPayload,
   isProviderSendTurnSupportedImageMimeType,
 } from "./orchestration.ts";
+import { TradingChartInterval } from "./trading.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -1021,3 +1025,60 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("IMAGE/JPEG"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/svg+xml"), false);
 });
+
+// -- the market chart input's range and the chart-only intervals ---------------
+
+const decodeGetTradingMarketChartInput = Schema.decodeUnknownEffect(
+  OrchestrationGetTradingMarketChartInput,
+);
+const decodeTradingChartInterval = Schema.decodeUnknownEffect(TradingChartInterval);
+const decodeBacktestInterval = Schema.decodeUnknownEffect(BacktestInterval);
+
+it.effect("decodes the market chart input with a range and a weekly interval", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeGetTradingMarketChartInput({
+      market: "ETH",
+      interval: "1w",
+      range: "6m",
+    });
+    assert.strictEqual(parsed.market, "ETH");
+    assert.strictEqual(parsed.interval, "1w");
+    assert.strictEqual(parsed.range, "6m");
+    assert.strictEqual(parsed.startTime, undefined);
+    assert.strictEqual(parsed.endTime, undefined);
+  }),
+);
+
+it.effect("accepts every chart range literal and rejects anything else", () =>
+  Effect.gen(function* () {
+    for (const range of ["1d", "1w", "1m", "6m", "ytd", "1y", "all"]) {
+      const parsed = yield* decodeGetTradingMarketChartInput({
+        market: "ETH",
+        interval: "1d",
+        range,
+      });
+      assert.strictEqual(parsed.range, range);
+    }
+    for (const garbage of ["3m", "2y", "max", ""]) {
+      const result = yield* Effect.exit(
+        decodeGetTradingMarketChartInput({ market: "ETH", interval: "1d", range: garbage }),
+      );
+      assert.strictEqual(result._tag, "Failure");
+    }
+  }),
+);
+
+it.effect("the chart interval accepts 1w/1mo while the backtest interval stays closed at 1d", () =>
+  Effect.gen(function* () {
+    assert.strictEqual(yield* decodeTradingChartInterval("1d"), "1d");
+    assert.strictEqual(yield* decodeTradingChartInterval("1w"), "1w");
+    assert.strictEqual(yield* decodeTradingChartInterval("1mo"), "1mo");
+    // Strategy, backtest, watch, and event-study recipes name their interval
+    // with BacktestInterval, which must not admit the chart-only pair.
+    assert.strictEqual(yield* decodeBacktestInterval("1d"), "1d");
+    for (const chartOnly of ["1w", "1mo"]) {
+      const rejected = yield* Effect.exit(decodeBacktestInterval(chartOnly));
+      assert.strictEqual(rejected._tag, "Failure");
+    }
+  }),
+);

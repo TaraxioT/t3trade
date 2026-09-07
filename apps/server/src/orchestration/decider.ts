@@ -1517,6 +1517,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // RC06: the reactor's record of what an applied §14.7 risk control
+    // actually did. The decider does not judge the outcome — the reactor
+    // already talked to the exchange; this only persists and publishes it.
+    case "trading.mission.control-result": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-control-result",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          control: command.control,
+          status: command.status,
+          summary: command.summary,
+          ...(command.markets === undefined ? {} : { markets: command.markets }),
+          ...(command.requestEventSequence === undefined
+            ? {}
+            : { requestEventSequence: command.requestEventSequence }),
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "trading.mission.strategy-published": {
       return {
         ...(yield* withEventBase({

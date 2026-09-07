@@ -109,6 +109,7 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { composerSkillItemId } from "./composerSkillIdentity";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
@@ -1192,7 +1193,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }));
       const query = composerTrigger.query.trim().toLowerCase();
       const skillItems = slashMenuSkills.map((skill) => ({
-        id: `skill:${selectedProvider}:${skill.name}`,
+        id: composerSkillItemId({ provider: selectedProvider, skill }),
         type: "skill" as const,
         provider: selectedProvider,
         skill,
@@ -1212,7 +1213,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (composerTrigger.kind === "skill") {
       return searchProviderSkills(selectedProviderStatus?.skills ?? [], composerTrigger.query).map(
         (skill) => ({
-          id: `skill:${selectedProvider}:${skill.name}`,
+          id: composerSkillItemId({ provider: selectedProvider, skill }),
           type: "skill" as const,
           provider: selectedProvider,
           skill,

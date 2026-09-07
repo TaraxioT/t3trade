@@ -1,0 +1,1768 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Risk control · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="How T3 Trade bounds loss before it is taken: the pure loss budget, the 14-item increase checklist, exhaustion that only the user can clear, exchange-native stops, the bounded emergency close, and seven controls that work without the provider."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+            :root {
+              --void: #060A12;        /* page base */
+              --panel: #0B1120;       /* raised surface */
+              --panel-2: #0E1526;     /* second raise */
+              --edge: rgba(148,163,199,.13);
+              --edge-strong: rgba(148,163,199,.24);
+              --chalk: #D8E0EC;       /* primary text */
+              --slate: #8A97AD;       /* secondary text */
+              --dim: #5C6B84;         /* tertiary text */
+              --bid: #2BD576;         /* success, long, confirmed */
+              --ask: #FF5D6C;         /* risk, refusal, halt */
+              --amber: #FFB224;       /* caution, limits, unknown */
+              --flow: #56CCF2;        /* data in motion, links, events */
+              --flow-soft: rgba(86,204,242,.14);
+              --font-body: "IBM Plex Sans", system-ui, sans-serif;
+              --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+              --font-display: "Archivo", system-ui, sans-serif;
+            }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            html { scroll-behavior: smooth; }
+            @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+            body {
+              background: var(--void);
+              color: var(--chalk);
+              font-family: var(--font-body);
+              font-size: 16.5px;
+              line-height: 1.65;
+              -webkit-font-smoothing: antialiased;
+            }
+            ::selection { background: rgba(86,204,242,.28); }
+            a { color: var(--flow); text-decoration: none; }
+            a:hover { text-decoration: underline; text-underline-offset: 3px; }
+            :focus-visible { outline: 2px solid var(--flow); outline-offset: 2px; border-radius: 4px; }
+            code, .mono { font-family: var(--font-mono); font-size: .86em; }
+            code.path {
+              color: var(--slate);
+              background: var(--panel);
+              border: 1px solid var(--edge);
+              border-radius: 6px;
+              padding: .1em .4em;
+              white-space: nowrap;
+            }
+            .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+
+            /* chrome */
+            .nav {
+              position: sticky; top: 0; z-index: 50;
+              background: rgba(6,10,18,.82);
+              backdrop-filter: blur(12px);
+              -webkit-backdrop-filter: blur(12px);
+              border-bottom: 1px solid var(--edge);
+            }
+            .nav-inner {
+              display: flex; align-items: center; justify-content: space-between;
+              height: 60px; gap: 16px;
+            }
+            .brand {
+              display: flex; align-items: center; gap: 10px;
+              color: var(--chalk); font-family: var(--font-mono); font-size: 13px;
+              letter-spacing: .08em; white-space: nowrap;
+            }
+            .brand:hover { text-decoration: none; }
+            .brand .tick { color: var(--bid); }
+            .nav-links { display: flex; gap: 4px; }
+            .nav-links a {
+              color: var(--slate); font-size: 13.5px; padding: 6px 10px;
+              border-radius: 8px; white-space: nowrap;
+            }
+            .nav-links a:hover { color: var(--chalk); background: var(--panel); text-decoration: none; }
+            .nav-links a[aria-current="page"] { color: var(--flow); background: var(--flow-soft); }
+            @media (max-width: 820px) {
+              .nav-links { display: none; }
+              .nav-links.open { display: flex; flex-direction: column; position: absolute; top: 60px; right: 12px; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 8px; }
+              .nav-menu-btn { display: inline-flex !important; }
+            }
+            .nav-menu-btn {
+              display: none; color: var(--slate); background: none; border: 1px solid var(--edge);
+              border-radius: 8px; padding: 6px 10px; font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+            }
+
+            .footer {
+              border-top: 1px solid var(--edge); margin-top: 96px; padding: 40px 0 56px;
+              color: var(--dim); font-size: 14px;
+            }
+            .footer .cols { display: flex; gap: 32px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
+            .footer nav { display: flex; flex-direction: column; gap: 8px; }
+            .footer a { color: var(--slate); } .footer a:hover { color: var(--flow); }
+            .footer .mono { font-size: 12px; letter-spacing: .06em; }
+
+            /* type roles */
+            .kicker {
+              font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .14em;
+              color: var(--flow); text-transform: uppercase;
+            }
+            h1 {
+              font-family: var(--font-display); font-weight: 800; font-stretch: 112%;
+              font-size: clamp(34px, 5.4vw, 58px); line-height: 1.04; letter-spacing: -.015em;
+              margin: 14px 0 18px; max-width: 18ch;
+            }
+            h2 {
+              font-family: var(--font-display); font-weight: 700; font-stretch: 106%;
+              font-size: clamp(24px, 3.2vw, 34px); line-height: 1.15; letter-spacing: -.01em;
+              margin: 0 0 14px; max-width: 26ch;
+            }
+            h3 { font-family: var(--font-body); font-weight: 600; font-size: 18px; margin: 0 0 8px; }
+            p { max-width: 66ch; color: var(--chalk); }
+            p.lede { font-size: 19px; color: var(--slate); max-width: 58ch; }
+            .section { padding: 76px 0; border-top: 1px solid var(--edge); }
+            .section:first-of-type { border-top: none; }
+            .icon { width: 1.25em; height: 1.25em; flex: none; vertical-align: -.25em; }
+
+            /* reveal on scroll */
+            .reveal { opacity: 0; transform: translateY(18px); }
+            .reveal.in { opacity: 1; transform: none; transition: opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1); }
+            @media (prefers-reduced-motion: reduce) {
+              .reveal { opacity: 1; transform: none; }
+            }
+
+            /* flow ribbon animation */
+            .edge-line { stroke-dasharray: 5 7; animation: march 1.1s linear infinite; }
+            @keyframes march { to { stroke-dashoffset: -12; } }
+            .node-pulse { animation: nodepulse 2.6s ease-in-out infinite; }
+            @keyframes nodepulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+            @media (prefers-reduced-motion: reduce) {
+              .edge-line { animation: none; stroke-dasharray: none; }
+              .node-pulse { animation: none; opacity: .8; }
+              ribbon pulse circles and canvases must also be disabled by page JS (see recipes)
+            }
+
+            /* ---- page-specific CSS (below the marked line) ---- */
+
+            /* hero ribbon frame */
+            .ribbon {
+              margin-top: 36px; background: var(--panel); border: 1px solid var(--edge);
+              border-radius: 10px; padding: 16px 12px 6px;
+            }
+            .ribbon svg { display: block; width: 100%; height: auto; }
+            .ribbon .cap {
+              font-family: var(--font-mono); font-size: 12px; color: var(--slate);
+              letter-spacing: .06em; padding: 8px 6px 10px;
+            }
+
+            /* stat strip */
+            .stat-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 30px; }
+            .stat { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 18px 20px 15px; }
+            .stat .num { font-family: var(--font-mono); font-size: clamp(30px, 4vw, 44px); line-height: 1.05; color: var(--chalk); }
+            .stat .num small { font-size: .42em; color: var(--slate); }
+            .stat .lbl { font-family: var(--font-mono); font-size: 12px; letter-spacing: .09em; text-transform: uppercase; color: var(--slate); margin-top: 8px; }
+            @media (max-width: 760px) { .stat-strip { grid-template-columns: repeat(2, 1fr); } }
+
+            /* split */
+            .split { display: grid; grid-template-columns: 7fr 5fr; gap: 40px; align-items: start; }
+            .split .prose p + p { margin-top: 14px; }
+            @media (max-width: 768px) { .split { grid-template-columns: 1fr; gap: 26px; } }
+
+            /* equation panel */
+            .eqpanel { background: var(--panel-2); border: 1px solid var(--edge); border-radius: 10px; padding: 16px 18px 12px; }
+            .eqpanel .head { font-family: var(--font-mono); font-size: 12px; letter-spacing: .09em; text-transform: uppercase; color: var(--flow); padding-bottom: 10px; }
+            .eq { display: flex; gap: 12px; padding: 9px 0; border-top: 1px solid var(--edge); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; }
+            .eq .tag { color: var(--flow); flex: none; width: 36px; }
+            .eq .body { color: var(--chalk); min-width: 0; }
+            .eq .body .ref { display: block; color: var(--slate); font-size: 11px; margin-top: 2px; }
+
+            /* ledger */
+            .ledger { border-top: 1px solid var(--edge); margin-top: 10px; }
+            .ledger .row { display: grid; grid-template-columns: 250px 1fr; gap: 22px; padding: 13px 0; }
+            .ledger .term { font-family: var(--font-mono); font-size: 13px; color: var(--chalk); line-height: 1.5; }
+            .ledger .term .idx { color: var(--flow); margin-right: 8px; }
+            .ledger .term.exit .idx { color: var(--amber); }
+            .ledger .desc { color: var(--slate); font-size: 15.5px; max-width: 62ch; }
+            .ledger .desc code.path { font-size: .8em; }
+            @media (max-width: 720px) {
+              .ledger .row { grid-template-columns: 1fr; gap: 3px; padding: 11px 0; }
+              .ledger .desc { font-size: 14.5px; }
+            }
+
+            /* timeline */
+            .timeline { border-left: 2px solid var(--edge-strong); margin: 8px 0 0 9px; padding-left: 28px; display: flex; flex-direction: column; gap: 28px; }
+            .step { position: relative; }
+            .step::before {
+              content: ""; position: absolute; left: -35px; top: 7px; width: 10px; height: 10px;
+              border-radius: 50%; background: var(--void); border: 2px solid var(--flow);
+            }
+            .step.ask::before { border-color: var(--amber); }
+            .step .n { font-family: var(--font-mono); font-size: 12px; color: var(--flow); letter-spacing: .08em; }
+            .step.ask .n { color: var(--amber); }
+            .step h3 { margin: 2px 0 6px; }
+            .step p { color: var(--slate); font-size: 15.5px; }
+
+            /* bento */
+            .bento { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; margin-top: 8px; }
+            .cell { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 18px 18px 16px; }
+            .cell.tint { background: var(--panel-2); }
+            .cell h3 { display: flex; align-items: baseline; gap: 9px; font-size: 15.5px; }
+            .cell h3 .icon { color: var(--flow); align-self: center; }
+            .cell p { color: var(--slate); font-size: 14.5px; margin-top: 6px; }
+            .cell .k { font-family: var(--font-mono); font-size: 12.5px; color: var(--chalk); }
+            .s3 { grid-column: span 3; } .s4 { grid-column: span 4; } .s5 { grid-column: span 5; }
+            .s6 { grid-column: span 6; } .s7 { grid-column: span 7; } .s12 { grid-column: span 12; }
+            @media (max-width: 900px) {
+              .s3, .s4, .s5, .s6, .s7 { grid-column: span 6; }
+            }
+            @media (max-width: 620px) {
+              .bento { grid-template-columns: 1fr; }
+              .s3, .s4, .s5, .s6, .s7, .s12 { grid-column: auto; }
+            }
+
+            /* callout */
+            .callout {
+              background: var(--panel); border: 1px solid var(--edge);
+              border-left: 3px solid var(--amber); border-radius: 10px; padding: 18px 20px; margin-top: 30px;
+            }
+            .callout h3 { font-size: 15.5px; }
+            .callout p { color: var(--slate); font-size: 15px; margin-top: 4px; }
+            .callout .icon { color: var(--amber); }
+
+            /* outcome chips */
+            .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+            .chip {
+              font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .05em;
+              padding: 7px 13px; border-radius: 10px; border: 1px solid var(--edge-strong); color: var(--chalk);
+              background: var(--panel);
+            }
+            .chip small { display: block; font-size: 11px; color: var(--slate); letter-spacing: .02em; margin-top: 2px; }
+            .chip.bid { border-color: rgba(43,213,118,.45); } .chip.bid strong { color: var(--bid); font-weight: 600; }
+            .chip.ask { border-color: rgba(255,93,108,.45); } .chip.ask strong { color: var(--ask); font-weight: 600; }
+            .chip.amber { border-color: rgba(255,178,36,.45); } .chip.amber strong { color: var(--amber); font-weight: 600; }
+
+            /* evidence list */
+            .evi { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 44px; margin-top: 6px; }
+            .evi .group h3 { font-size: 14px; font-family: var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--slate); margin-bottom: 4px; }
+            .evi ul { list-style: none; }
+            .evi li { padding: 7px 0; color: var(--slate); font-size: 14.5px; }
+            .evi li .path { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: bottom; }
+            @media (max-width: 760px) { .evi { grid-template-columns: 1fr; } }
+
+            /* mini diagram in bento */
+            .mini { display: block; width: 100%; height: auto; margin-top: 12px; }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono, h2 span, h3 span, p span { overflow-wrap: anywhere; }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path, code, .mono, .k, .who, .chip, .path-chip, .file, .fn, .term, .qno, p span, h2 span, h3 span, li span, td, th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre, .terminal, .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html" aria-current="page">Risk control</a>
+          <a href="/status.html">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <section class="section">
+          <div class="kicker">
+            <svg
+              class="icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+              <path d="M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+              <path d="M13.41 10.59l2.59 -2.59" />
+              <path d="M7 12a5 5 0 0 1 5 -5" />
+            </svg>
+            Risk control
+          </div>
+          <h1>Loss is budgeted before it is taken</h1>
+          <p class="lede">
+            T3 Trade enforces risk limits in code rather than relying on model instructions. Each
+            mission has a fixed cumulative-loss ceiling, a 14-item checklist before any position
+            increase, a persistent block when that budget is exhausted, and protective stops on the
+            exchange. Seven user controls can reduce or remove exposure even when the provider
+            process is unavailable.
+          </p>
+
+          <div class="ribbon reveal">
+            <svg
+              viewBox="0 0 900 120"
+              role="img"
+              aria-label="An intent passes the risk gates from budget to wire"
+            >
+              <path
+                id="rp1"
+                class="edge-line"
+                d="M128,60 H198"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="rp2"
+                class="edge-line"
+                d="M318,60 H388"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="rp3"
+                class="edge-line"
+                d="M508,60 H578"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="rp4"
+                class="edge-line"
+                d="M698,60 H768"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <g class="node-pulse">
+                <rect
+                  x="8"
+                  y="34"
+                  width="120"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="68"
+                  y="56"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  intent
+                </text>
+                <text
+                  x="68"
+                  y="72"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  execution.requested
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="198"
+                  y="34"
+                  width="120"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="258"
+                  y="56"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  budget
+                </text>
+                <text
+                  x="258"
+                  y="72"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  §16.2 · Eq 1-6
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="388"
+                  y="34"
+                  width="120"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(255,178,36,.5)"
+                />
+                <text
+                  x="448"
+                  y="56"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  guard
+                </text>
+                <text
+                  x="448"
+                  y="72"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  §16.4 · guardAction
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="578"
+                  y="34"
+                  width="120"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="638"
+                  y="56"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  preview
+                </text>
+                <text
+                  x="638"
+                  y="72"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  §16.3 · 14 items
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="768"
+                  y="34"
+                  width="120"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="828"
+                  y="56"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  wire
+                </text>
+                <text
+                  x="828"
+                  y="72"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  POST /exchange
+                </text>
+              </g>
+              <circle r="3.5" fill="var(--flow)">
+                <animateMotion dur="2.4s" repeatCount="indefinite">
+                  <mpath href="#rp1" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)" opacity=".7">
+                <animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite">
+                  <mpath href="#rp4" />
+                </animateMotion>
+              </circle>
+            </svg>
+            <div class="cap">
+              one intent, four risk gates: the budget snapshot, the exhaustion guard, the increase
+              checklist, then the signed exchange order
+            </div>
+          </div>
+
+          <div class="stat-strip reveal">
+            <div class="stat">
+              <div class="num">14<small> + 2 exit-only</small></div>
+              <div class="lbl">checklist items, §16.3</div>
+            </div>
+            <div class="stat">
+              <div class="num">6</div>
+              <div class="lbl">pure loss equations, §16.2</div>
+            </div>
+            <div class="stat">
+              <div class="num">3</div>
+              <div class="lbl">max emergency-close attempts, §17.5</div>
+            </div>
+            <div class="stat">
+              <div class="num">7</div>
+              <div class="lbl">user controls without the provider, §14.7</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ 16.2 the loss budget ============ -->
+        <section class="section" id="budget">
+          <h2>The ceiling is arithmetic, not opinion</h2>
+          <div class="split">
+            <div class="prose reveal">
+              <p>
+                A mission's mandate includes its cumulative-loss ceiling in
+                <span class="k">maximumCumulativeLossUsd</span>. Everything the mission has lost, is
+                losing, and has queued to lose is measured against it by one pure function,
+                <span class="k">evaluateLossBudget</span>, in
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:106-138</code>.
+                Property tests pin every equation, and the functions take already-reconciled inputs:
+                they never read the exchange
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:15-17</code>.
+              </p>
+              <p>
+                One reader gathers those inputs: realised PnL and paid fees from the reconciled
+                fills table, open-position risk from the position snapshots, reserved risk from the
+                reservations table, plus the notional of accepted, unfilled resting entries for the
+                aggregate caps
+                <code class="path">apps/server/src/trading/TradingBudgetReader.ts:4-12</code>. The
+                closedPnl in those rows is the exchange's own attribution per fill, not a number T3
+                computes <code class="path">packages/contracts/src/trading.ts:132</code>. Net
+                funding reads as zero until a funding source is wired
+                <code class="path">apps/server/src/trading/TradingBudgetReader.ts:115-118</code>.
+              </p>
+              <p>
+                Two rules materially affect the calculation. First,
+                <strong>profits never raise the ceiling</strong>. Equation 2 clamps realised loss
+                used to <span class="k">max(0, -result)</span>, so a winning stretch drives used
+                toward zero and stops there
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:111-112</code>.
+                The risk policy encodes the same rule in the schema itself:
+                <span class="k">positivePnlExpandsLossBudget: Schema.Literal(false)</span>. Not a
+                boolean that happens to be false; a type that cannot hold true
+                <code class="path">packages/trading-contracts/src/authority.ts:41</code>.
+              </p>
+              <p>
+                Second,
+                <strong
+                  >this budget calculation assigns zero directional risk when the stop price is
+                  missing</strong
+                >. Separate validation still refuses a position increase without a valid stop. When
+                the stop price is unknown, the loss-to-stop term contributes 0, because substituting
+                a $0 stop would book the full notional of a long against the budget and exhaust it
+                instantly
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:39-51</code>.
+                Paid fees are never double-counted either: fees already paid live in the realised
+                result and are never also reserved as unpaid open-position fees
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:8-11</code>.
+              </p>
+            </div>
+            <div class="eqpanel reveal" style="transition-delay: 80ms">
+              <div class="head">The six equations, §16.2</div>
+              <div class="eq">
+                <span class="tag">Eq 1</span
+                ><span class="body"
+                  >realized = closedPnl + netFunding - paidFees<span class="ref"
+                    >lossAccounting.ts:108-109</span
+                  ></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">Eq 2</span
+                ><span class="body"
+                  >lossUsed = max(0, -realized)<span class="ref"
+                    >profits clamp to zero · :111-112</span
+                  ></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">Eq 3</span
+                ><span class="body"
+                  >openRisk = max(0, lossToStop) + exitFee + slipReserve<span class="ref"
+                    >missing stop contributes 0 · :47-60</span
+                  ></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">Eq 4</span
+                ><span class="body"
+                  >pendingRisk = plannedLoss + entryFee + exitFee + slipReserve<span class="ref"
+                    >reserved, unfilled entries · :69-76</span
+                  ></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">Eq 5</span
+                ><span class="body"
+                  >used = lossUsed + openRisk + pendingRisk<span class="ref">:119</span></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">Eq 6</span
+                ><span class="body"
+                  >remaining = max(0, ceiling - used)<span class="ref"
+                    >exhausted when remaining &lt;= 0 · :122,135</span
+                  ></span
+                >
+              </div>
+              <p style="margin-top: 12px; color: var(--slate); font-size: 13.5px">
+                Eq 4 is also the reservation the checklist holds against the budget and the
+                execution service persists before signing
+                <code class="path">apps/server/src/trading/TradingPreviewService.ts:379-393</code>.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ 16.3 the checklist ============ -->
+        <section class="section" id="checklist">
+          <h2>Fourteen questions, in an order that matters</h2>
+          <p>
+            Before any position-increasing action is signed, it runs the §16.3 checklist: 14 items
+            in their listed order, each with its own rejection reason, plus two exit-only items
+            <code class="path">apps/server/src/trading/TradingPreviewService.ts:40-70</code>. The
+            service is pure validation over already-loaded state: it reads no exchange and mutates
+            no tables
+            <code class="path">apps/server/src/trading/TradingPreviewService.ts:10-15</code>. The
+            checklist order affects safety
+            <code class="path">apps/server/src/trading/TradingPreviewService.ts:444</code>.
+          </p>
+          <div class="ledger reveal">
+            <div class="row">
+              <div class="term"><span class="idx">01</span>mission_active</div>
+              <div class="desc">
+                The mission must be executing or holding a position; anything else is refused with a
+                sentence, not a code <code class="path">TradingPreviewService.ts:193-199</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">02</span>entries_allowed</div>
+              <div class="desc">
+                The entries switch is on and the mission is not blocked
+                <code class="path">TradingPreviewService.ts:201-207</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">03</span>harness_run_owns_lease</div>
+              <div class="desc">
+                The requesting harness run holds the decision lease for this mission
+                <code class="path">TradingPreviewService.ts:209-217</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">04</span>direction_permitted</div>
+              <div class="desc">
+                Allowed directions, plus the scale-in, partial-reduction, and reversal flags the
+                authority actually enforces
+                <code class="path">TradingPreviewService.ts:239-272</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">05</span>execution_wallet_approved</div>
+              <div class="desc">
+                An armed execution wallet, fail-closed on null so an unarmed signer is visible
+                before a nonce is spent <code class="path">TradingPreviewService.ts:286-298</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">06</span>account_and_bbo_fresh</div>
+              <div class="desc">
+                BBO observed within 2 seconds, account state within 5
+                <code class="path">TradingPreviewService.ts:300-310</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">07</span>size_and_price_valid</div>
+              <div class="desc">
+                Positive size and positive limit price
+                <code class="path">TradingPreviewService.ts:312-315</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">08</span>exchange_minimum_met</div>
+              <div class="desc">
+                Notional at or above the exchange minimum
+                <code class="path">TradingPreviewService.ts:317-325</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">09</span>leverage_within_limits</div>
+              <div class="desc">
+                Combined existing plus proposed notional over allocated capital, so a scale-in
+                cannot slip under a per-order ceiling
+                <code class="path">TradingPreviewService.ts:339-351</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">10</span>gross_notional_within_authority</div>
+              <div class="desc">
+                The same combined measure against the gross cap, with resting-entry notional counted
+                <code class="path">TradingPreviewService.ts:353-361</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">
+                <span class="idx">11</span>planned_loss_within_per_position_ceiling
+              </div>
+              <div class="desc">
+                What the stop would lose, against the per-position ceiling
+                <code class="path">TradingPreviewService.ts:371-377</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term">
+                <span class="idx">12</span>reservations_plus_proposed_within_budget
+              </div>
+              <div class="desc">
+                The Eq 4 reservation must fit what remains; an exhausted budget permits only exits
+                <code class="path">TradingPreviewService.ts:395-411</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">13</span>no_conflicting_execution_pending</div>
+              <div class="desc">
+                One mid-submission execution at a time, and the rejection names the blocking record,
+                its status, and its age <code class="path">TradingPreviewService.ts:413-421</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">14</span>valid_stop_defined</div>
+              <div class="desc">
+                A stop on the losing side of the entry: the first of its two evaluations
+                <code class="path">TradingPreviewService.ts:423-442</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term exit"><span class="idx">E1</span>position_exists</div>
+              <div class="desc">
+                Exit-only: there must be something to reduce or close; §16.3 has no word for exiting
+                a position you do not hold <code class="path">TradingPreviewService.ts:54-63</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term exit"><span class="idx">E2</span>market_is_eth</div>
+              <div class="desc">
+                Exit-only: an exit must land in the mission's mandated market, the one way the
+                exposure is actually removed
+                <code class="path">TradingPreviewService.ts:64-69</code>
+              </div>
+            </div>
+          </div>
+          <p style="margin-top: 22px; color: var(--slate); max-width: 66ch">
+            An exit runs the nine checks about executing it correctly and drops every check about
+            whether more exposure should be permitted. Those entry rules once blocked exits when
+            risk was already elevated. A blocked mission, disabled entries, or an exhausted budget
+            could each prevent the action needed to reduce exposure
+            <code class="path">apps/server/src/trading/TradingPreviewService.ts:462-483</code>. The
+            exit list also drops the exchange minimum, because refusing to close a dust position is
+            the minimum inverted
+            <code class="path">apps/server/src/trading/TradingPreviewService.ts:515-523</code>.
+          </p>
+          <div class="callout reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"
+                />
+                <path d="M9 17v1a3 3 0 0 0 6 0v-1" />
+              </svg>
+              The stop gate runs twice
+            </h3>
+            <p>
+              Preview checks the stop against the harness's limit price. The execution service then
+              runs the identical <span class="k">checkStopInformation</span> again against the price
+              actually going on the wire, the BBO-derived limit for a marketable IOC, before
+              anything is persisted and before a nonce is spent
+              <code class="path"
+                >apps/server/src/trading/HyperliquidExecutionService.ts:605-624</code
+              >. A position increase is submitted only if both stop checks pass.
+            </p>
+          </div>
+        </section>
+
+        <!-- ============ 16.4 exhaustion ============ -->
+        <section class="section" id="exhaustion">
+          <h2>When the budget is gone, the mission stops</h2>
+          <p>
+            Exhaustion is a computed flag, not a judgement: <span class="k">exhausted</span> when
+            remaining budget is at or below zero
+            <code class="path">packages/trading-contracts/src/lossAccounting.ts:135</code>. What
+            happens next is a fixed sequence run by the execution guard, and it runs to the end
+            regardless of who is watching.
+          </p>
+          <div class="timeline reveal">
+            <div class="step">
+              <span class="n">STEP 1</span>
+              <h3>Block increases at the gate</h3>
+              <p>
+                <span class="k">guardAction</span> refuses every position-increasing action while
+                the budget is exhausted. Cancel, reduce, close, and modify_stop still pass, because
+                §16.4 blocks taking on risk, not managing the risk already open
+                <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:172-184</code>,
+                <code class="path">packages/trading-contracts/src/lossAccounting.ts:145-158</code>.
+              </p>
+            </div>
+            <div class="step">
+              <span class="n">STEP 2</span>
+              <h3>Cancel resting increasing orders</h3>
+              <p>
+                <span class="k">blockForExhaustion</span> reads the mission's resting
+                position-increasing orders and attempts to cancel each one. The cancellation report
+                is returned, never swallowed (RC03), but an unconfirmed cancel does not stop the
+                block: abandoning the safety block because one cancel would not confirm would trade
+                a bounded uncertainty for a mission that keeps increasing exposure
+                <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:196-219</code>.
+              </p>
+            </div>
+            <div class="step ask">
+              <span class="n">STEP 3</span>
+              <h3>Mark the mission blocked</h3>
+              <p>
+                Transition to <span class="k">blocked</span> with reason
+                <span class="k">cumulative_loss_limit</span>
+                <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:221-227</code>.
+              </p>
+            </div>
+            <div class="step">
+              <span class="n">STEP 4</span>
+              <h3>Reconcile every held market</h3>
+              <p>
+                So local order rows reflect the cancels before the blocked status is announced;
+                every market the mission holds, because the exhaustion cancelled orders on all of
+                them
+                <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:240-255</code>.
+              </p>
+            </div>
+            <div class="step ask">
+              <span class="n">STEP 5</span>
+              <h3>Stay blocked until the user says otherwise</h3>
+              <p>
+                <span class="k">guardResume</span> rejects a harness resume: only an explicit user
+                resume after revalidation clears it, and the harness's own resume request is refused
+                while blocked
+                <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:259-271</code>,
+                <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:5-9</code>. No
+                path lets the model spend its way back into a budget it already spent.
+              </p>
+            </div>
+          </div>
+          <div class="callout reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 9v4" />
+                <path
+                  d="M10.363 5.365l-8.106 13.692a2 0 0 0 1.714 2.981h16.058a2 2 0 0 0 1.714 -2.981l-8.106 -13.692a2 2 0 0 0 -3.474 0"
+                />
+              </svg>
+              An error is not a verdict
+            </h3>
+            <p>
+              The guard keeps <span class="k">budget_exhausted</span> and
+              <span class="k">infrastructure_error</span> apart because a stuck execution record was
+              once reported to the harness as budget_exhausted inside a payload that also said
+              <span class="k">exhausted: false</span>, sending it down a recovery path that could
+              never work
+              <code class="path">apps/server/src/trading/TradingExecutionGuard.ts:61-71</code>. A
+              SQL read that fails is not the budget saying no.
+            </p>
+          </div>
+        </section>
+
+        <!-- ============ authority ceilings ============ -->
+        <section class="section" id="authority">
+          <h2>Ceilings in dollars, and they only tighten</h2>
+          <div class="split">
+            <div class="prose reveal">
+              <p>
+                The mandate's four ceilings are maximumLeverage, maximumGrossNotionalUsd,
+                maximumCumulativeLossUsd, and maximumPlannedRiskPerPositionUsd. Testnet defaults for
+                allocated capital C: 20x leverage, 8x C notional, 35% of C cumulative loss, 7% of C
+                per position, with the percentages written as integer math so a mandate never
+                carries a float artifact like 35.000000000000004
+                <code class="path">packages/trading-contracts/src/authority.ts:179-189</code>.
+              </p>
+              <p>
+                An operator can move the four numbers without a rebuild through environment
+                variables: <span class="k">T3_TRADES_AUTHORITY_MAX_LEVERAGE</span>,
+                <span class="k">T3_TRADES_AUTHORITY_MAX_GROSS_NOTIONAL_USD</span>,
+                <span class="k">T3_TRADES_AUTHORITY_MAX_CUMULATIVE_LOSS_USD</span>, and
+                <span class="k">T3_TRADES_AUTHORITY_MAX_PLANNED_RISK_USD</span>
+                <code class="path">apps/server/src/trading/TestnetAuthority.ts:13-16</code>. All
+                four are absolute values, not multiples of capital: an operator raising a ceiling is
+                thinking in dollars about a specific account, not in ratios
+                <code class="path">apps/server/src/trading/TestnetAuthority.ts:18-19</code>. An
+                invalid value falls back to the default instead of preventing mission creation
+                <code class="path">apps/server/src/trading/TestnetAuthority.ts:30-35</code>.
+              </p>
+              <p>
+                The knobs shape size and nothing else. Nothing here can grant direction reversal,
+                switch margin mode, or touch the risk policy: those are authority the user grants
+                explicitly, not a number in the environment
+                <code class="path">apps/server/src/trading/TestnetAuthority.ts:21-23</code>. The
+                risk-policy page of this atlas covers where the mandate itself comes from; see
+                <a href="/signer.html">Signer &amp; authority</a>.
+              </p>
+            </div>
+            <div class="eqpanel reveal" style="transition-delay: 80ms">
+              <div class="head">Defaults per $100 of capital</div>
+              <div class="eq">
+                <span class="tag">lev</span
+                ><span class="body"
+                  >20x maximum leverage<span class="ref">authority.ts:182</span></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">grs</span
+                ><span class="body"
+                  >$800 maximum gross notional<span class="ref"
+                    >8x capital · authority.ts:183</span
+                  ></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">cml</span
+                ><span class="body"
+                  >$35 cumulative loss ceiling<span class="ref"
+                    >roughly four full per-position risks · authority.ts:168-170</span
+                  ></span
+                >
+              </div>
+              <div class="eq">
+                <span class="tag">ppr</span
+                ><span class="body"
+                  >$7 planned risk per position<span class="ref"
+                    >funds a 0.9% stop at the largest entry · authority.ts:171-174</span
+                  ></span
+                >
+              </div>
+              <p style="margin-top: 12px; color: var(--slate); font-size: 13.5px">
+                The gross cap is deliberately sized to what the loss budget can protect, not to what
+                the margin allows
+                <code class="path">packages/trading-contracts/src/authority.ts:163-167</code>.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ protections ============ -->
+        <section class="section" id="protections">
+          <h2>Stops that live on the exchange</h2>
+          <div class="bento">
+            <div class="cell tint s7 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M11.46 20.846a12 12 0 0 1 -7.96 -14.846a12 12 0 0 0 8.5 -3a12 12 0 0 0 8.5 3a12 12 0 0 1 -.09 7.06"
+                  />
+                  <path d="M15 19l2 2l4 -4" />
+                </svg>
+                The invariant
+              </h3>
+              <p>
+                No acknowledged position increase may remain without confirmed exchange-native
+                reduce-only protection beyond the bounded reconciliation window
+                <code class="path">apps/server/src/trading/TradingProtectionService.ts:4-9</code>. A
+                stop in T3 Trade is a real reduce-only trigger order resting on Hyperliquid, not a
+                local promise to act later.
+              </p>
+            </div>
+            <div class="cell s5 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11" />
+                </svg>
+                Linked at birth
+              </h3>
+              <p>
+                An increase and its stop go out in one <span class="k">normalTpsl</span> action. The
+                child is sized to the requested size; reconciliation resizes it to the canonical
+                position
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:626-634</code
+                >.
+              </p>
+            </div>
+            <div class="cell s5 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 9v12m-8 -8a8 8 0 0 0 16 0m1 0h-2m-14 0h-2" />
+                  <path d="M9 6a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+                </svg>
+                Independent replacement stops
+              </h3>
+              <p>
+                When coverage is short after a partial fill, a scale-in, or a parent cancellation
+                that took its children, <span class="k">submitProtectiveStop</span> places an
+                explicitly sized reduce-only stop with <span class="k">na</span> grouping, so it is
+                nobody's child and outlives the parent
+                <code class="path"
+                  >apps/server/src/trading/HyperliquidExecutionService.ts:143-160</code
+                >.
+              </p>
+            </div>
+            <div class="cell tint s7 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
+                  <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
+                </svg>
+                Place, then cancel
+              </h3>
+              <p>
+                The replacement stop is confirmed before the old one is dropped. Overlapping
+                reduce-only protection is harmless because reduce-only orders cannot open exposure;
+                a gap between the cancel and the placement is exactly the window the invariant
+                forbids
+                <code class="path">apps/server/src/trading/TradingProtectionService.ts:23-28</code>.
+              </p>
+            </div>
+            <div class="cell s4 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M4 6a8 3 0 1 0 16 0a8 3 0 1 0 -16 0" />
+                  <path d="M4 6v6a8 3 0 0 0 16 0v-6" />
+                  <path d="M4 12v6a8 3 0 0 0 16 0v-6" />
+                </svg>
+                Coverage is read
+              </h3>
+              <p>
+                A grouped response is not proof: the submitted child may be untriggered, rejected,
+                or already cancelled, so coverage is read back from
+                <span class="k">frontendOpenOrders</span> every time
+                <code class="path">apps/server/src/trading/TradingProtectionService.ts:18-22</code>.
+              </p>
+            </div>
+            <div class="cell s4 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"
+                  />
+                  <path d="M9 17v1a3 3 0 0 0 6 0v-1" />
+                </svg>
+                Take-profit is a wake
+              </h3>
+              <p>
+                The target is deliberately not an exchange-native order anymore;
+                <span class="k">reconcileTakeProtection</span> withdraws take-profit orders that
+                earlier builds rested
+                <code class="path">apps/server/src/trading/TradingProtectionService.ts:33-40</code>.
+              </p>
+            </div>
+            <div class="cell tint s4 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12h-8a1 1 0 1 0 -1 1v8a9 9 0 0 0 9 -9" />
+                  <path d="M16 9a5 5 0 1 0 -7 7" />
+                  <path d="M20.486 9a9 9 0 1 0 -11.482 11.495" />
+                </svg>
+                The watchdog
+              </h3>
+              <p>
+                Every five seconds the reactor's protection guard re-reads coverage. When the window
+                closes uncovered it escalates straight to emergency close and wakes the harness
+                <code class="path">apps/server/src/trading/TradingMissionReactor.ts:2542-2563</code
+                >, cadence
+                <code class="path">apps/server/src/trading/TradingMissionReactor.ts:2888</code>.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ 17.5 emergency close ============ -->
+        <section class="section" id="emergency">
+          <h2>Emergency close follows a bounded sequence</h2>
+          <p>
+            The emergency close runs when full protection cannot be confirmed inside the
+            reconciliation window. §17.5 calls it a deterministic safety action, not a strategy
+            decision: it runs without the harness, in a fixed order, a fixed number of times, and
+            never waits for anyone to wake up and help
+            <code class="path">apps/server/src/trading/TradingEmergencyCloseService.ts:4-7</code>.
+            The order is the specification, and each step exists because of the failure it prevents
+            <code class="path">apps/server/src/trading/TradingEmergencyCloseService.ts:9-32</code>.
+          </p>
+          <div class="timeline reveal">
+            <div class="step ask">
+              <span class="n">01</span>
+              <h3>Block increases</h3>
+              <p>
+                Mark the mission blocked and block every position increase first; otherwise the
+                thing being unwound can grow while it is being unwound.
+              </p>
+            </div>
+            <div class="step">
+              <span class="n">02</span>
+              <h3>Cancel non-reduce-only orders</h3>
+              <p>
+                A resting entry that fills mid-close re-opens the exposure just closed. Reduce-only
+                orders are left alone: they are the protection.
+              </p>
+            </div>
+            <div class="step">
+              <span class="n">03</span>
+              <h3>Read fresh canonical position and BBO</h3>
+              <p>
+                The size closed must be the size that exists now, not the size that existed when the
+                trouble started.
+              </p>
+            </div>
+            <div class="step">
+              <span class="n">04</span>
+              <h3>Submit a reduce-only marketable IOC</h3>
+              <p>For exactly that size, priced off the side it will cross.</p>
+            </div>
+            <div class="step">
+              <span class="n">05</span>
+              <h3>Reconcile fills and the remaining position</h3>
+              <p>Canonical state answers what the attempt actually did.</p>
+            </div>
+            <div class="step">
+              <span class="n">06</span>
+              <h3>Retry with a fresh read and the remaining size</h3>
+              <p>
+                At most three attempts in total
+                <code class="path">TradingEmergencyCloseService.ts:50-51</code>. An IOC fills what
+                it can and cancels the rest, so a partial close is the expected case, not an error.
+              </p>
+            </div>
+            <div class="step ask">
+              <span class="n">07</span>
+              <h3>Still open: say exactly what is left</h3>
+              <p>
+                Keep the mission blocked, preserve whatever protection can be placed, and report the
+                exact remaining size and reason.
+              </p>
+            </div>
+          </div>
+          <div class="chips reveal">
+            <div class="chip bid">
+              <strong>FLAT</strong><small>claimed only from a canonical read</small>
+            </div>
+            <div class="chip ask">
+              <strong>OPEN</strong><small>signed remaining size, from a canonical read</small>
+            </div>
+            <div class="chip amber">
+              <strong>UNKNOWN</strong><small>remainingSize: null, never a guessed number</small>
+            </div>
+          </div>
+          <p style="margin-top: 20px; color: var(--slate); max-width: 66ch">
+            The outcome is a narrow three-way union: flat, open, or unknown, with
+            <span class="k">remainingSize: null</span> whenever the canonical size could not be
+            confirmed
+            <code class="path">apps/server/src/trading/TradingEmergencyCloseService.ts:63-117</code
+            >. One rendering, <span class="k">describeEmergencyCloseOutcome</span>, is shared by
+            every caller so the three reactor call sites cannot disagree (RC04)
+            <code class="path">apps/server/src/trading/TradingEmergencyCloseService.ts:119-133</code
+            >. The full anatomy of an order's path to the exchange is on the
+            <a href="/execution.html">Execution</a> page.
+          </p>
+        </section>
+
+        <!-- ============ 14.7 controls ============ -->
+        <section class="section" id="controls">
+          <h2>Seven controls that do not ask the model</h2>
+          <p>
+            None of the §14.7 controls may require a harness turn: a user who wants out of a
+            position must be able to get out while the provider process is dead, the session is
+            unreachable, or the model is mid-thought
+            <code class="path">apps/server/src/trading/TradingControlService.ts:2-8</code>. The
+            risk-reducing controls therefore take the preview-free reduce-only path, which is safe
+            for a different reason: the exchange itself will not let a reduce-only order open or
+            extend a position
+            <code class="path">apps/server/src/trading/TradingControlService.ts:10-17</code>.
+          </p>
+          <div class="bento">
+            <div class="cell s3 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                </svg>
+                pause
+              </h3>
+              <p>
+                Block new entries, scale-ins, reversals, and re-entry. Protection stays live
+                <code class="path">TradingControlService.ts:144-145</code>.
+              </p>
+            </div>
+            <div class="cell s3 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M4.05 11a8 8 0 1 1 .5 4m-.5 5v-5h5" />
+                </svg>
+                resume
+              </h3>
+              <p>
+                Re-enable a paused mission. A mission blocked for cumulative loss is not resumable
+                here; that is §16.4 <code class="path">TradingControlService.ts:147-148</code>.
+              </p>
+            </div>
+            <div class="cell s3 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M10 10l4 4m0 -4l-4 4" />
+                </svg>
+                cancelEntries
+              </h3>
+              <p>
+                Cancel every resting position-increasing order, protecting any filled slice first.
+                The position itself is left alone
+                <code class="path">TradingControlService.ts:150-156</code>.
+              </p>
+            </div>
+            <div class="cell s3 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 14l11 -11" />
+                  <path d="M10 3h4v4" />
+                  <path d="M10 17v4h4" />
+                  <path d="M21 10l-11 11" />
+                </svg>
+                reducePosition
+              </h3>
+              <p>
+                25 / 50 / 75 / 100 percent of the canonical position, via a reduce-only IOC
+                <code class="path">TradingControlService.ts:158-161</code>.
+              </p>
+            </div>
+            <div class="cell s4 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+                  <path d="M9 12l2 2l4 -4" />
+                </svg>
+                closePosition
+              </h3>
+              <p>
+                Close the canonical position entirely
+                <code class="path">TradingControlService.ts:163-166</code>.
+              </p>
+            </div>
+            <div class="cell s4 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6"
+                  />
+                  <path d="M11 16a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                  <path d="M8 11v-4a4 4 0 1 1 8 0v4" />
+                </svg>
+                revoke
+              </h3>
+              <p>
+                End autonomous authority permanently, preserving any valid protection
+                <code class="path">TradingControlService.ts:168-169</code>.
+              </p>
+            </div>
+            <div class="cell s4 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"
+                  />
+                  <path d="M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                  <path d="M12 12l0 2.5" />
+                </svg>
+                closeAndRevokeMission
+              </h3>
+              <p>
+                Close every held market, then revoke: the one-click way out. Authority ends exactly
+                once, only after canonical flat is confirmed across the whole held set (RC01)
+                <code class="path">TradingControlService.ts:171-181</code>.
+              </p>
+            </div>
+            <div class="cell tint s12 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M16.555 3.843l3.602 3.602a2.877 2.877 0 0 1 0 4.069l-2.643 2.643a2.877 2.877 0 0 1 -4.069 0l-.301 -.301l-6.558 6.558a2 2 0 0 1 -1.239 .578l-.175 .008h-1.172a1 1 0 0 1 -.993 -.883l-.007 -.117v-1.172a2 2 0 0 1 .467 -1.284l.119 -.13l.414 -.414h2v-2h2v-2l2.144 -2.144l-.301 -.301a2.877 2.877 0 0 1 0 -4.069l2.643 -2.643a2.877 2.877 0 0 1 4.069 0"
+                  />
+                  <path d="M15 9h.01" />
+                </svg>
+                What is not bypassed
+              </h3>
+              <p>
+                The buttons bypass discretionary harness reasoning, never T3's safety boundary.
+                Every control still goes through the signer, the nonce lane, canonical
+                reconciliation, and, where it matters most, the protection reconciliation, so
+                cancelling entries cannot strip a partial fill of its stop
+                <code class="path">apps/server/src/trading/TradingControlService.ts:19-24</code>.
+              </p>
+            </div>
+          </div>
+          <div class="callout reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"
+                />
+                <path d="M9 17v1a3 3 0 0 0 6 0v-1" />
+              </svg>
+              An unconfirmed close says unknown
+            </h3>
+            <p>
+              A submitted-but-unconfirmed close must report
+              <span class="k">CLOSE_OUTCOME_UNKNOWN</span>: "Close outcome unknown: an order may
+              have executed; position could not be confirmed." Never a numeric size, never "Already
+              flat", never "Position closed"
+              <code class="path">apps/server/src/trading/TradingControlService.ts:78-84</code>. A
+              reduce makes at most two bounded attempts before reporting back
+              <code class="path">apps/server/src/trading/TradingControlService.ts:227-228</code>.
+            </p>
+          </div>
+        </section>
+
+        <!-- ============ RC06 ============ -->
+        <section class="section" id="rc06">
+          <h2>Each control action leaves a persistent result</h2>
+          <p>
+            Before RC06, the outcome of a risk-control press lived only in server logs: a dispatched
+            command proved the request was accepted, and the reactor's exchange work finished later
+            where nobody could see it
+            <code class="path"
+              >apps/server/src/persistence/Migrations/094_TradingControlResults.ts:9-12</code
+            >. The fix is the append-only <span class="k">trading_control_results</span> table, one
+            row per applied control with the control name, a completed, failed, or unknown status,
+            the composed summary, per-market facts as JSON, and the sequence of the request event it
+            answers
+            <code class="path"
+              >apps/server/src/persistence/Migrations/094_TradingControlResults.ts:15-23</code
+            >. A <span class="k">trading.mission.control-result</span> event rides the same stream
+            as the doorbell that tells the client to refetch.
+          </p>
+          <div class="ledger reveal">
+            <div class="row">
+              <div class="term"><span class="idx">pending</span></div>
+              <div class="desc">
+                The mission strip shows the control name while the result is outstanding: the press
+                is held as pending with its dispatch time until
+                <span class="k">lastControlResult</span> arrives to correlate against it
+                <code class="path"
+                  >apps/web/src/components/trading/useMissionControls.ts:136-145</code
+                >
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">interrupted</span></div>
+              <div class="desc">
+                A press whose result never landed stops waiting after
+                <span class="k">CONTROL_RESULT_TIMEOUT_MILLIS = 30_000</span> and reads as
+                interrupted
+                <code class="path">apps/web/src/components/trading/useMissionControls.ts:68-69</code
+                >,
+                <code class="path"
+                  >apps/web/src/components/trading/useMissionControls.ts:120-121</code
+                >
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">unknown</span></div>
+              <div class="desc">
+                After the timeout the strip renders the control name with the words no final result,
+                outcome unknown
+                <code class="path">apps/web/src/components/trading/MissionStripBar.tsx:140</code>
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">durable</span></div>
+              <div class="desc">
+                Rows are append-only, read latest-first, and deliberately non-authoritative: the
+                exchange stays the truth; this is the record of what T3 Trade's control did about it
+                <code class="path"
+                  >apps/server/src/persistence/Migrations/094_TradingControlResults.ts:19-23</code
+                >
+              </div>
+            </div>
+          </div>
+          <p style="margin-top: 22px; color: var(--slate); max-width: 66ch">
+            The same honesty rule appears at every layer of this page: the budget states what is
+            left, the guard states which side of the gate an action fell on, the emergency close
+            states flat, open, or unknown, and the control strip states that no final result means
+            the outcome is unknown. Where the screens live is covered in
+            <a href="/clients.html">Web &amp; desktop</a>; the stories behind these rules are in
+            <a href="/stories.html">Failure stories</a>, and the invariants they protect are
+            collected in <a href="/invariants.html">Safety invariants</a>.
+          </p>
+        </section>
+
+        <!-- ============ go deeper ============ -->
+        <section class="section" id="deeper">
+          <h2>Go deeper</h2>
+          <div class="evi">
+            <div class="group reveal">
+              <h3>Server, risk services</h3>
+              <ul>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/server/src/trading/TradingPreviewService.ts</code
+                    ></span
+                  >
+                  the §16.3 checklist and both orderings
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/server/src/trading/TradingExecutionGuard.ts</code
+                    ></span
+                  >
+                  exhaustion enforcement and the reduce-only exits
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path">apps/server/src/trading/TradingBudgetReader.ts</code></span
+                  >
+                  assembles the §16.2 snapshot from reconciled tables
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/server/src/trading/TradingProtectionService.ts</code
+                    ></span
+                  >
+                  the stop invariant and its repairs
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/server/src/trading/TradingEmergencyCloseService.ts</code
+                    ></span
+                  >
+                  the bounded §17.5 unwinding
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path">apps/server/src/trading/TestnetAuthority.ts</code></span
+                  >
+                  the operator ceiling knobs
+                </li>
+              </ul>
+            </div>
+            <div class="group reveal" style="transition-delay: 80ms">
+              <h3>Contracts and clients</h3>
+              <ul>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >packages/trading-contracts/src/lossAccounting.ts</code
+                    ></span
+                  >
+                  the six pure equations and the exhaustion permission set
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path">packages/trading-contracts/src/authority.ts</code></span
+                  >
+                  mandate ceilings, defaults, and the risk policy schema
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/server/src/trading/TradingControlService.ts</code
+                    ></span
+                  >
+                  the seven §14.7 controls
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/server/src/persistence/Migrations/094_TradingControlResults.ts</code
+                    ></span
+                  >
+                  durable control outcomes (RC06)
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/web/src/components/trading/useMissionControls.ts</code
+                    ></span
+                  >
+                  press-to-result correlation and the 30-second timeout
+                </li>
+                <li>
+                  <span class="path"
+                    ><code class="path"
+                      >apps/server/src/trading/TradingMissionReactor.ts</code
+                    ></span
+                  >
+                  the five-second watchdog family and the escalation
+                </li>
+              </ul>
+            </div>
+          </div>
+          <p style="margin-top: 26px; color: var(--slate); max-width: 66ch">
+            Neighbouring pages: where the reconciled budget inputs come from is
+            <a href="/reconciliation.html">Reconciliation</a>; what the guards wrap is
+            <a href="/execution.html">Execution</a>; the wire types that carry all of it are
+            <a href="/contracts.html">Contracts</a>; the missions these budgets bound are
+            <a href="/missions.html">Missions watches wakes</a>.
+          </p>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/status.html">See the board</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/execution.html">← Execution</a>
+          <a href="/reconciliation.html">Reconciliation →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document
+          .querySelectorAll("animateMotion, animate")
+          .forEach((a) => a.setAttribute("begin", "indefinite"));
+      }
+    </script>
+    <script>
+      (() => {
+        const els = document.querySelectorAll(".reveal");
+        if (
+          !("IntersectionObserver" in window) ||
+          matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach((el) => el.classList.add("in"));
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e, i) => {
+              if (e.isIntersecting) {
+                e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      })();
+    </script>
+  </body>
+</html>

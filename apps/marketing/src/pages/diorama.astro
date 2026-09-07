@@ -1,0 +1,251 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout
+  title="T3 Trade · Trading Room Diorama"
+  description="An interactive isometric diorama of the T3 Trade trading room: watchlist, chart, mission and order ticket feeding guarded execution into the Hyperliquid testnet exchange, with reconciliation returning canonical state to positions and history."
+  pageClass="page-diorama"
+>
+  <section class="diorama-wrap">
+    <p class="sr-only">
+      An interactive isometric illustration of the T3 Trade trading room. The user's tools -
+      watchlist, chart, mission, order ticket, alerts, positions - feed risk guards, protection and
+      local signing before an order docks into the Hyperliquid testnet exchange, and reconciliation
+      returns canonical state to positions and history. Every station can be explored with pointer
+      drag, wheel zoom, and keyboard station focus.
+    </p>
+    <div class="diorama-host" data-diorama-host>
+      <div class="diorama-loading" data-diorama-loading>
+        <span class="diorama-spinner" aria-hidden="true"></span>
+        <span class="diorama-loading-text">Loading the trading room</span>
+      </div>
+      <div class="diorama-hud" data-diorama-hud></div>
+      <div class="diorama-card" data-diorama-card></div>
+    </div>
+    <div class="diorama-a11y-mount" data-diorama-a11y></div>
+    <noscript>
+      <p class="diorama-noscript">
+        The trading room diorama needs JavaScript and WebGL. The rest of the site works without
+        them.
+      </p>
+    </noscript>
+  </section>
+</Layout>
+
+<style>
+  /* Nav is sticky at top with 12px inner padding, a 36px pill row, and a
+     1px border: the host fills the remaining viewport. Desktop first.
+     The world is the page: thin gutters, no content max-width. */
+  .diorama-wrap {
+    width: 100%;
+    margin: 0 auto;
+    padding: 14px 18px 18px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .diorama-host {
+    position: relative;
+    width: 100%;
+    flex: 1;
+    min-height: 480px;
+    height: calc(100dvh - 61px - 46px);
+    background: #07111f;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: contain;
+  }
+
+  .diorama-host :global(canvas) {
+    display: block;
+  }
+
+  /* HUD overlay plane: fills the host, lets drags pass through, and gives
+     the absolutely positioned cluster a reliable anchor box. */
+  .diorama-hud {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .diorama-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    color: var(--fg-dim);
+    font-size: 13px;
+    background: #07111f;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .diorama-loading[hidden] {
+    display: flex;
+    opacity: 0;
+  }
+
+  .diorama-spinner {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--accent);
+    animation: diorama-spin 0.9s linear infinite;
+  }
+
+  @keyframes diorama-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .diorama-spinner {
+      animation-duration: 2.4s;
+    }
+  }
+
+  .diorama-loading-text {
+    font-family: var(--font-mono);
+    letter-spacing: 0.04em;
+  }
+
+  .diorama-hud,
+  .diorama-card {
+    position: absolute;
+    z-index: 3;
+    pointer-events: none;
+  }
+
+  .diorama-noscript {
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--fg-dim);
+  }
+
+  /* A11y directory mount: real focusable DOM below the canvas. */
+  .diorama-a11y-mount {
+    margin-top: 10px;
+  }
+
+  .diorama-a11y-mount:empty {
+    display: none;
+  }
+
+  @media (max-width: 820px) {
+    .diorama-wrap {
+      padding: 10px 10px 12px;
+    }
+
+    .diorama-host {
+      height: calc(100dvh - 61px - 32px);
+    }
+  }
+</style>
+
+<script>
+  // Lazy bootstrap: fonts first, then idle (or a short fallback), then the
+  // dynamic import so pixi/gsap/howler never touch the landing page budget.
+  // A module-level guard makes double init and double destroy impossible.
+  let disposed = false;
+  let started = false;
+  let teardown: (() => void) | null = null;
+  // Cancels the pending idle/timeout boot handle if the route goes away
+  // between scheduling and boot.
+  let bootHandle: { cancel: () => void } | null = null;
+
+  const boot = (): void => {
+    if (disposed || started) return;
+    started = true;
+    const host = document.querySelector<HTMLElement>("[data-diorama-host]");
+    if (!host) return;
+    import("../diorama/main.js")
+      .then(async (mod) => {
+        if (disposed) return;
+        await mod.initDiorama(host);
+        if (disposed) {
+          mod.destroyDiorama();
+          return;
+        }
+        const loading = host.querySelector<HTMLElement>("[data-diorama-loading]");
+        if (loading) loading.hidden = true;
+        teardown = () => mod.destroyDiorama();
+      })
+      .catch((e: unknown) => {
+        console.warn("[diorama] module load failed", e);
+        const loading = host.querySelector<HTMLElement>("[data-diorama-loading]");
+        if (loading) {
+          loading.textContent = "The trading room could not load in this browser.";
+        }
+      });
+  };
+
+  const destroy = (): void => {
+    if (disposed) return;
+    disposed = true;
+    bootHandle?.cancel();
+    bootHandle = null;
+    teardown?.();
+    teardown = null;
+    removeLifecycleListeners();
+  };
+
+  const schedule = (): void => {
+    if ("requestIdleCallback" in window) {
+      const ric = window.requestIdleCallback(boot, { timeout: 700 });
+      bootHandle = { cancel: () => window.cancelIdleCallback(ric) };
+    } else {
+      const tid = setTimeout(boot, 150);
+      bootHandle = { cancel: () => clearTimeout(tid) };
+    }
+  };
+
+  // Fonts first, but never let a slow font CDN hold the scene hostage. This is
+  // the page's single bounded font wait (main.js may race fonts again on its
+  // side; when fonts are already ready we resolve immediately so the two
+  // waits cannot stack into a visible delay). Already-loaded fonts plus a
+  // motion-tolerant viewer mean no extra wait at all.
+  const fontsAlreadyLoaded = document.fonts.status === "loaded";
+  const fontWaitMs =
+    !matchMedia("(prefers-reduced-motion: reduce)").matches && fontsAlreadyLoaded
+      ? 0
+      : 2500;
+  const fontsReady = fontsAlreadyLoaded
+    ? Promise.resolve()
+    : Promise.race([
+        document.fonts.ready.then(() => undefined),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, fontWaitMs);
+        }),
+      ]);
+  fontsReady.then(schedule);
+
+  // Register the lifecycle teardown listeners once per module instance; the
+  // module persists across client-side routing, so a naive add per visit
+  // would accumulate inert listeners. destroy() removes exactly these.
+  let lifecycleListenersAdded = false;
+  const removeLifecycleListeners = (): void => {
+    if (!lifecycleListenersAdded) return;
+    lifecycleListenersAdded = false;
+    document.removeEventListener("astro:before-swap", destroy);
+    window.removeEventListener("pagehide", destroy);
+    window.removeEventListener("beforeunload", destroy);
+  };
+  if (!lifecycleListenersAdded) {
+    lifecycleListenersAdded = true;
+    document.addEventListener("astro:before-swap", destroy);
+    window.addEventListener("pagehide", destroy);
+    window.addEventListener("beforeunload", destroy);
+  }
+</script>

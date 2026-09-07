@@ -32,6 +32,62 @@ export const CHART_VIEWBOX_WIDTH = 1000;
 export const CHART_VIEWBOX_HEIGHT = 160;
 /** The drawable plot area: viewBox minus the right-edge price-tag gutter. */
 export const PLOT_WIDTH = CHART_VIEWBOX_WIDTH - LABEL_GUTTER_WIDTH; // 880
+
+/**
+ * ViewBox units reserved at the LEFT edge for the price-scale lane.
+ *
+ * The lane holds the grid prices, the named session levels and (while one is
+ * live) the dragged-price readout, right-aligned against the plot edge so
+ * every number sits beside the rule it names. Nothing the geometry places —
+ * candles, lines, fills, rules, bands — starts left of this edge, which is
+ * what keeps the lane genuinely empty rather than merely first in z-order.
+ *
+ * 96 of 1000 at the widths the market panel renders at; the renderer raises
+ * it through {@link LEFT_AXIS_LABEL_MIN_WIDTH_PX} when the frame is too
+ * narrow for that share to hold a whole label.
+ */
+export const LEFT_AXIS_LANE_WIDTH = 96;
+
+/**
+ * The lane's floor in CSS pixels, whatever share of the frame that is.
+ *
+ * A label is fixed-size text — "pd hi 2,461" at 9px mono is ~70px — while the
+ * lane's viewBox share shrinks with the panel. Below this floor the share
+ * would clip the very text the lane exists to make legible, so the renderer
+ * converts the floor into viewBox units against the measured frame width and
+ * the lane takes the larger of the two — the left twin of the right gutter's
+ * own `max(15%, 4.5rem)`.
+ */
+export const LEFT_AXIS_LABEL_MIN_WIDTH_PX = 84;
+
+/**
+ * One character of lane text, in viewBox units at the 1:1 frame the unmeasured
+ * chart assumes. Conservative across both sizes the lane draws (10px grid,
+ * 9px session): it only ever OVERestimates a label's width, so a lane this
+ * says is wide enough always is.
+ */
+export const LEFT_AXIS_LABEL_CHAR_WIDTH = 6;
+
+/** Below this a label is its padding and backing, not its (empty) text. */
+export const LEFT_AXIS_LABEL_MIN_WIDTH_UNITS = 18;
+
+/** The modelled width of one lane label's text, in viewBox units. */
+export function leftAxisLabelWidth(text: string): number {
+  return Math.max(LEFT_AXIS_LABEL_MIN_WIDTH_UNITS, text.length * LEFT_AXIS_LABEL_CHAR_WIDTH);
+}
+
+/**
+ * Normalise a caller's lane width request into a usable plot origin.
+ *
+ * Absent or nonsensical input falls back to the default; a lane wider than
+ * two fifths of the plot is a caller error, not a layout, and is held there
+ * so the plot keeps a majority of its width whatever arrives.
+ */
+function leftAxisLaneUnits(width: number | undefined): number {
+  const requested = width ?? LEFT_AXIS_LANE_WIDTH;
+  if (!Number.isFinite(requested) || requested <= 0) return LEFT_AXIS_LANE_WIDTH;
+  return Math.min(requested, PLOT_WIDTH * 0.4);
+}
 /** Padding above/below the y-domain, as a fraction of the span. */
 export const DOMAIN_PADDING_RATIO = 0.18;
 /** Fewer candles than this and there is no chart to draw. */
@@ -409,6 +465,12 @@ export interface ChartGeometry {
   readonly viewBoxHeight: number;
   readonly plotWidth: number;
   readonly labelGutterWidth: number;
+  /**
+   * The plot's LEFT edge: everything the geometry draws starts at or after it,
+   * and the strip [0, plotLeft) is the reserved lane the axis labels render
+   * into. @see LEFT_AXIS_LANE_WIDTH
+   */
+  readonly plotLeft: number;
   /** Padded lower bound of the y-domain. */
   readonly domainMin: number;
   /** Padded upper bound of the y-domain. */
@@ -478,6 +540,11 @@ export interface ChartGeometry {
   /** Event occurrences as placed bands, clipped to the plot. */
   readonly timeBands: ReadonlyArray<ChartTimeBand>;
   /**
+   * Researched event occurrences, placed on the time axis. Uncovered inputs
+   * (`covered: false`) never appear here — nothing is drawn for them.
+   */
+  readonly researchMarkers: ReadonlyArray<ChartResearchMarker>;
+  /**
    * The research study overlay, placed. Null when the caller passed none;
    * pieces the window could not place (an activation before the first
    * candle) are null rather than pinned, for the same reason an old fill is
@@ -541,6 +608,147 @@ export interface ChartTimeBand {
 export const MIN_EVENT_BAND_WIDTH = 3;
 
 /**
+ * One researched event occurrence from a published scene, drawn on the live
+ * price graph at its exact saved instant.
+ *
+ * The scene-derived seam into the chart, deliberately separate from
+ * `ChartTimeBandInput` (the thesis `eventBands` the calendar of a validation
+ * uses): a research marker is a fact about a wall-clock moment with its own
+ * provenance, not a trade and not part of any thesis. `startAt === endAt`
+ * means an instantaneous activation (a network upgrade) and draws a vertical
+ * rule at the exact millisecond; a genuine multi-instant span draws a band.
+ * `covered` false means the occurrence predates the recorded archive — the
+ * chart must say so, never invent a position at the left edge. `upcoming`
+ * places the next future occurrence in the existing bounded future gutter.
+ */
+export interface ChartResearchMarkerInput {
+  readonly key: string;
+  /** The saved occurrence label, e.g. "Dencun". */
+  readonly label: string;
+  readonly startAt: number;
+  readonly endAt: number;
+  /** The occurrence's single authoritative source URL, linked in the detail. */
+  readonly sourceUrl: string;
+  readonly covered: boolean;
+  readonly upcoming: boolean;
+}
+
+/**
+ * A research occurrence the geometry has placed on the time axis.
+ *
+ * `covered: false` inputs never reach this shape — the geometry draws nothing
+ * for them rather than fabricating a position at the left edge. An
+ * instantaneous occurrence keeps `x1 === x2` at the EXACT x of its saved
+ * millisecond; nothing about label stacking may move a rule. A genuine span
+ * (`endAt > startAt`) is clipped to the plot like an event band. An upcoming
+ * occurrence is clamped into the future gutter, never beyond it.
+ */
+export interface ChartResearchMarker {
+  readonly key: string;
+  readonly label: string;
+  readonly startAt: number;
+  readonly endAt: number;
+  readonly sourceUrl: string;
+  readonly upcoming: boolean;
+  /** True when the occurrence is a genuine span, not an instant. */
+  readonly span: boolean;
+  /** The rule's x (instantaneous), or the band's left edge (span). */
+  readonly x1: number;
+  /** The band's right edge (span); equal to `x1` for an instantaneous rule. */
+  readonly x2: number;
+  /** Where the marker's label sits, after the stacking pass. */
+  readonly labelY: number;
+}
+
+/**
+ * The one sentence every research marker is disclosed by, on the axis and in
+ * the detail. Wording is fixed here so no renderer can drift into calling a
+ * researched measurement a trade.
+ */
+export const RESEARCH_MARKER_NOTE = "Researched event — historical measurement, not a trade";
+
+/** Only http(s) links are links; anything else is prose, never an href. */
+export function isHttpSourceUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * An instant as the research register writes it: exact UTC date and time,
+ * e.g. `2024-03-13 13:00 UTC`. Seconds are included only when the saved
+ * instant has them, so a whole-minute activation reads as one.
+ */
+export function formatUtcInstant(at: number): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  const datePart = `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(
+    date.getUTCDate(),
+  )}`;
+  const timePart =
+    date.getUTCSeconds() === 0
+      ? `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
+      : `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+  return `${datePart} ${timePart} UTC`;
+}
+
+/**
+ * The accessible sentence a research marker carries: the occurrence's name,
+ * its exact UTC instant, the not-a-trade wording, and — only for http(s)
+ * URLs — the source. Accepts the placed marker or the raw input; both carry
+ * the fields it reads.
+ */
+export function researchMarkerAriaLabel(marker: {
+  readonly label: string;
+  readonly startAt: number;
+  readonly sourceUrl: string;
+}): string {
+  const source = isHttpSourceUrl(marker.sourceUrl) ? ` Source: ${marker.sourceUrl}.` : "";
+  return `${marker.label} at ${formatUtcInstant(marker.startAt)}. ${RESEARCH_MARKER_NOTE}.${source}`;
+}
+
+/**
+ * Stack research marker labels into rows when their markers sit close on the
+ * time axis, so two occurrences a few minutes apart still print two readable
+ * lines. Every label keeps its marker's true x; only the y stacks, downward
+ * from the top of the frame in fixed rows. Returns each key's label y.
+ */
+export function layoutResearchMarkerLabels(
+  labels: ReadonlyArray<{ readonly key: string; readonly text: string; readonly x: number }>,
+  options: {
+    /** Estimated width of one character, in viewBox units. */
+    readonly charWidth: number;
+    /** Vertical distance between two stacked rows, in viewBox units. */
+    readonly rowStep: number;
+    /** The first row's y, in viewBox units. */
+    readonly topY: number;
+    readonly frameHeight: number;
+  },
+): ReadonlyMap<string, number> {
+  /** Each row's rightmost occupied x, in drawing order by x. */
+  const rowEnds: number[] = [];
+  const ys = new Map<string, number>();
+  const sorted = [...labels].sort((a, b) => a.x - b.x || a.key.localeCompare(b.key));
+  for (const label of sorted) {
+    const width = Math.max(1, label.text.length) * options.charWidth;
+    let row = rowEnds.findIndex((end) => label.x >= end);
+    if (row < 0) {
+      row = rowEnds.length;
+      rowEnds.push(label.x + width);
+    } else {
+      rowEnds[row] = label.x + width;
+    }
+    // A pathological pile of near-identical instants must still label inside
+    // the frame: the last row absorbs whatever does not fit above it.
+    const maxRow = Math.max(
+      0,
+      Math.floor((options.frameHeight - options.topY - 2) / options.rowStep),
+    );
+    ys.set(label.key, options.topY + Math.min(row, maxRow) * options.rowStep);
+  }
+  return ys;
+}
+
+/**
  * One historical study's overlay on a research window: the activation the
  * study anchored on, the measured entry and exit, and the signed return
  * between them.
@@ -571,6 +779,14 @@ export interface ChartStudyOverlay {
     readonly label: string;
     readonly x: number;
     readonly y: number;
+    /**
+     * True when the measured price fell outside the y-domain and the drawn y
+     * was clamped onto the frame: the `price` field keeps the measurement, and
+     * this flag says the dot's position is a courtesy, not that price — so the
+     * placed marker can never silently claim an axis position it did not
+     * measure.
+     */
+    readonly priceClipped: boolean;
   } | null;
   readonly exit: {
     readonly at: number;
@@ -578,6 +794,8 @@ export interface ChartStudyOverlay {
     readonly label: string;
     readonly x: number;
     readonly y: number;
+    /** @see ChartStudyOverlay.entry.priceClipped */
+    readonly priceClipped: boolean;
   } | null;
   /** The connector between placed entry and exit points, when both placed. */
   readonly returnSpan: {
@@ -724,6 +942,14 @@ export interface ComputeChartGeometryInput {
    */
   readonly eventBands?: ReadonlyArray<ChartTimeBandInput>;
   /**
+   * Researched event occurrences from the thread's active scene, drawn at
+   * their exact saved instants (rule) or spans (band). Separate from
+   * `eventBands`: these carry research provenance and never render as a
+   * fill, order, or execution. An occurrence the archive does not cover
+   * (`covered: false`) draws nothing — the caller reports it in prose.
+   */
+  readonly researchMarkers?: ReadonlyArray<ChartResearchMarkerInput>;
+  /**
    * One historical study's overlay on this window (research charts only):
    * activation rule, measured entry and exit, signed return connector.
    * Placed like the fills, with its own vocabulary; never drawn as a fill.
@@ -734,6 +960,13 @@ export interface ComputeChartGeometryInput {
    * has no opinion on what any of them means. @see ChartZoneInput
    */
   readonly zones?: ReadonlyArray<ChartZoneInput>;
+  /**
+   * How many viewBox units the left price-scale lane reserves, i.e. the plot's
+   * left edge. Defaults to {@link LEFT_AXIS_LANE_WIDTH}; the renderer raises it
+   * on frames whose measured width makes the default share too narrow to hold
+   * a whole label. Clamped against nonsense and against eating the plot.
+   */
+  readonly leftAxisLaneWidth?: number;
 }
 
 /**
@@ -1018,6 +1251,304 @@ export function layoutGutterLabels<T extends { readonly y: number; readonly prio
   }
 
   return placed;
+}
+
+// ---------------------------------------------------------------------------
+// the unified left-axis lane
+// ---------------------------------------------------------------------------
+//
+// The left of the plot used to carry TWO independent label placements — the
+// grid prices above their rules, the session levels below theirs — and each
+// was internally collision-free while the two of them printed on top of each
+// other at the same left edge. One pass over every left-axis label fixes the
+// overlap at its source: the RULES keep their exact y, the labels share one
+// lane, and a label that cannot be placed legibly is suppressed — never its
+// rule.
+
+/** One label candidate for the unified left-axis lane, before collision. */
+export interface LeftAxisLabelEntry {
+  readonly id: string;
+  /** The visible text, used to deduplicate equal or near-equal prices. */
+  readonly text: string;
+  /** The label's true y — its rule's y, in viewBox units. */
+  readonly y: number;
+  /**
+   * Lower wins. The frozen order: 0 the current-price readout while one is
+   * drawn on the left axis (a live drag), 1 a named session level, 2 an
+   * ordinary grid tick. Higher-priority labels are placed first and never
+   * move for a lower-priority one.
+   */
+  readonly priority: number;
+}
+
+/** The unified lane's decision for one entry. */
+export interface LeftAxisLabelPlacement {
+  readonly id: string;
+  readonly y: number;
+}
+
+/** The lane's result: where each surviving label sits, and what was hidden. */
+export interface LeftAxisLayoutResult {
+  readonly placed: ReadonlyArray<LeftAxisLabelPlacement>;
+  /** Entries with no label: duplicates, near-value merges, and those that could not fit. */
+  readonly suppressed: ReadonlySet<string>;
+  /**
+   * Entries whose fact is printed NOWHERE on the lane, in the order they were
+   * tried (priority order): labels with no legible room, and same-priority
+   * levels folded into a near-value neighbour whose text is their sibling's,
+   * not theirs. These are the lane's overflow — the "+N levels" the renderer
+   * discloses, and the names its accessible label carries.
+   *
+   * NOT here: an exact-text duplicate, or a lower-priority entry merged under
+   * a named level — the winner's label prints that price, so the fact is on
+   * the axis even though the entry has no label of its own.
+   */
+  readonly overflow: ReadonlyArray<LeftAxisLabelEntry>;
+}
+
+/** Tolerance for the float comparisons the lane's arithmetic makes. */
+const LEFT_AXIS_EPSILON = 1e-9;
+
+/**
+ * How close two lane entries must sit before they are one fact rather than
+ * two, as a fraction of the lane's own minimum separation — the left twin of
+ * the right gutter's 6-of-18. Close enough that two labels would print as one
+ * smudge; far enough apart that two honestly different prices stay two.
+ */
+export const LEFT_AXIS_MERGE_DISTANCE_RATIO = 1 / 3;
+
+/**
+ * The most legible y in the widest clear stretch of the frame, used only as
+ * the anchored level's last resort when every modelled candidate is taken.
+ */
+function widestGapPlacement(
+  placedYs: ReadonlyArray<number>,
+  inset: number,
+  frameHeight: number,
+  minSeparation: number,
+): number | null {
+  const sorted = [...placedYs].sort((a, b) => a - b);
+  const bounds = [inset, ...sorted, frameHeight - inset];
+  let best: number | null = null;
+  let bestWidth = minSeparation - LEFT_AXIS_EPSILON;
+  for (let i = 1; i < bounds.length; i += 1) {
+    const width = bounds[i]! - bounds[i - 1]!;
+    if (width > bestWidth) {
+      bestWidth = width;
+      best = (bounds[i]! + bounds[i - 1]!) / 2;
+    }
+  }
+  return best;
+}
+
+/**
+ * Lay out every left-axis label in one collision-aware pass.
+ *
+ * Same visible text collapses to one label (the more important entry's
+ * position wins). Entries nearer together than a third of the lane's minimum
+ * separation then merge the same way — a session level at 2,461 and a grid
+ * tick at 2,460 are one label, the named level's — because two labels that
+ * close were always one smudge, and nudging them apart would only pretend
+ * the axis resolved a difference it cannot show.
+ *
+ * Survivors are placed in priority order at their own y wherever that is
+ * legible, else at the nearest legible y within `maxNudge` of it, else not at
+ * all: a lower-priority label that cannot be placed is suppressed rather
+ * than overlapped, its rule is never touched, and it is counted into
+ * `overflow` for the renderer to disclose. The one exception is the lane's
+ * most important NAMED level (the top entry after any dragged readout): it
+ * may drift as far as the frame needs to stay legible rather than be hidden,
+ * because an axis that shows neither its levels nor its count has stopped
+ * being an axis. Labels are held half a separation inside the frame so a
+ * centred line of text cannot clip over the chart's edge.
+ */
+export function layoutLeftAxisLabels(input: {
+  readonly entries: ReadonlyArray<LeftAxisLabelEntry>;
+  readonly frameHeight: number;
+  /** Minimum vertical distance between two placed labels, in viewBox units. */
+  readonly minSeparation: number;
+  /** How far a label may move from its rule, in viewBox units. */
+  readonly maxNudge: number;
+}): LeftAxisLayoutResult {
+  const suppressed = new Set<string>();
+  const overflow: LeftAxisLabelEntry[] = [];
+  if (input.entries.length === 0) return { placed: [], suppressed, overflow };
+
+  // One label per distinct visible text: two entries printing the same
+  // number are one fact, and nudging them apart would only make the axis
+  // look like it has more levels than it has.
+  const byText = new Map<string, LeftAxisLabelEntry>();
+  for (const entry of input.entries) {
+    const existing = byText.get(entry.text);
+    if (existing === undefined) {
+      byText.set(entry.text, entry);
+      continue;
+    }
+    const winner = entry.priority < existing.priority ? entry : existing;
+    suppressed.add((winner === entry ? existing : entry).id);
+    byText.set(entry.text, winner);
+  }
+
+  // Near-value merge, on the y the labels would print at. Sorted top to
+  // bottom, an entry within the merge distance of the cluster's last member
+  // joins it; the cluster's most important member wins the slot and keeps
+  // its own y, and a same-priority loser's fact is printed nowhere — its
+  // sibling's text is not its text — so it counts as overflow.
+  //
+  // The dragged-price readout (priority 0 by the lane's convention) is a
+  // pointer read, not an axis fact: it never merges and never folds anything.
+  // Dragging across a session level must nudge the level's label clear —
+  // folding the level away for as long as the pointer sat on it would hide
+  // the very price the operator is dragging relative to.
+  const mergeDistance = input.minSeparation * LEFT_AXIS_MERGE_DISTANCE_RATIO;
+  const toMerge: LeftAxisLabelEntry[] = [];
+  const unmerged: LeftAxisLabelEntry[] = [];
+  for (const entry of byText.values()) {
+    (entry.priority <= 0 ? unmerged : toMerge).push(entry);
+  }
+  const clusters: LeftAxisLabelEntry[][] = [];
+  for (const entry of [...toMerge].sort((a, b) => a.y - b.y || a.id.localeCompare(b.id))) {
+    const open = clusters[clusters.length - 1];
+    const last = open?.[open.length - 1];
+    if (last !== undefined && Math.abs(entry.y - last.y) < mergeDistance - LEFT_AXIS_EPSILON) {
+      open!.push(entry);
+    } else {
+      clusters.push([entry]);
+    }
+  }
+  const merged: LeftAxisLabelEntry[] = [
+    ...unmerged,
+    ...clusters.map((cluster) => {
+      const winner = cluster.reduce((best, member) =>
+        member.priority < best.priority ? member : best,
+      );
+      for (const member of cluster) {
+        if (member === winner) continue;
+        suppressed.add(member.id);
+        if (member.priority === winner.priority) overflow.push(member);
+      }
+      return winner;
+    }),
+  ];
+
+  // Most important first, top to bottom within a priority: the sweep below
+  // never revisits a placed label, so this order IS the priority order.
+  const order = [...merged].sort(
+    (a, b) => a.priority - b.priority || a.y - b.y || a.id.localeCompare(b.id),
+  );
+  // The most important named level: the first entry after any dragged
+  // readout. It is the one label the lane may bend its nudge bound for.
+  const anchor = order.find((entry) => entry.priority >= 1) ?? null;
+
+  const inset = input.minSeparation / 2;
+  const frameLow = inset;
+  const frameHigh = input.frameHeight - inset;
+  const placed: LeftAxisLabelPlacement[] = [];
+  const placedYs: number[] = [];
+
+  for (const entry of order) {
+    const isAnchor = anchor !== null && entry.id === anchor.id;
+    const lower = Math.max(entry.y - input.maxNudge, frameLow);
+    const upper = Math.min(entry.y + input.maxNudge, frameHigh);
+    if (upper < lower - LEFT_AXIS_EPSILON && !isAnchor) {
+      suppressed.add(entry.id);
+      overflow.push(entry);
+      continue;
+    }
+    const rangeLow = isAnchor ? frameLow : Math.max(lower, frameLow);
+    const rangeHigh = isAnchor ? frameHigh : Math.min(upper, frameHigh);
+
+    // Candidate positions: the true y, the two ends of the nudge range, and
+    // one clear separation outside every placed label. The closest candidate
+    // to the true y wins (ties break downward), so a label drifts from its
+    // rule only as far as it must.
+    placedYs.sort((a, b) => a - b);
+    const candidates = [entry.y, rangeLow, rangeHigh];
+    for (const y of placedYs) {
+      candidates.push(y + input.minSeparation, y - input.minSeparation);
+    }
+    let best: number | null = null;
+    for (const candidate of candidates) {
+      if (candidate < rangeLow - LEFT_AXIS_EPSILON || candidate > rangeHigh + LEFT_AXIS_EPSILON) {
+        continue;
+      }
+      if (placedYs.some((y) => Math.abs(candidate - y) < input.minSeparation - LEFT_AXIS_EPSILON)) {
+        continue;
+      }
+      if (
+        best === null ||
+        Math.abs(candidate - entry.y) < Math.abs(best - entry.y) - LEFT_AXIS_EPSILON ||
+        (Math.abs(candidate - entry.y) < Math.abs(best - entry.y) + LEFT_AXIS_EPSILON &&
+          candidate > best)
+      ) {
+        best = candidate;
+      }
+    }
+    // The anchored level's last resort: the middle of the widest clear
+    // stretch of frame. Reached only when a pathological pile has taken
+    // every modelled candidate; hiding the axis's most important named level
+    // is the one outcome the lane may not choose.
+    if (best === null && isAnchor) {
+      best = widestGapPlacement(placedYs, frameLow, frameHigh, input.minSeparation);
+    }
+    if (best === null) {
+      suppressed.add(entry.id);
+      overflow.push(entry);
+      continue;
+    }
+    placed.push({ id: entry.id, y: best });
+    placedYs.push(best);
+  }
+
+  placed.sort((a, b) => a.y - b.y);
+  return { placed, suppressed, overflow };
+}
+
+/**
+ * The coarsest decimal count a grid step supports: fewest digits that render
+ * every tick of the step distinctly. `2,420`, `2,420.5`, `2,420.51` are then
+ * mixed only when the spacing itself demands it. Ticks are aligned to the
+ * step, so the step's own decimals are sufficient whatever the asset's
+ * magnitude — a $0.000002 step gets six digits and a $50 step gets none.
+ */
+export function gridPriceDecimals(step: number): number {
+  if (!Number.isFinite(step) || step <= 0) return 2;
+  for (let decimals = 0; decimals <= 8; decimals += 1) {
+    const scaled = step * 10 ** decimals;
+    if (scaled >= 1 - LEFT_AXIS_EPSILON && Math.abs(scaled - Math.round(scaled)) < 1e-6) {
+      return decimals;
+    }
+  }
+  return 8;
+}
+
+/**
+ * A grid price at exactly the step's precision, grouped like every other
+ * price on the chart. Minimum AND maximum fraction digits agree, so two
+ * ticks of one scale always print the same shape.
+ */
+export function formatGridPrice(price: number, decimals: number): string {
+  return price.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+/** The grid's default rule count on an unmeasured or roomy frame. */
+export const DEFAULT_GRID_TARGET_LINES = 4;
+
+/**
+ * How many grid rules the frame can honestly carry, from its measured
+ * rendered width. Narrow frames reduce the TICK COUNT — never the 10px/9px
+ * type, which is the smallest this chart reads at.
+ */
+export function gridTickTarget(renderedWidthPx: number): number {
+  if (!Number.isFinite(renderedWidthPx) || renderedWidthPx <= 0) {
+    return DEFAULT_GRID_TARGET_LINES;
+  }
+  if (renderedWidthPx < 360) return 2;
+  if (renderedWidthPx < 560) return 3;
+  return DEFAULT_GRID_TARGET_LINES;
 }
 
 /**
@@ -1453,6 +1984,117 @@ export function dedupeConditions(
   return [...byLevel.values()];
 }
 
+// ---------------------------------------------------------------------------
+// research markers: placement
+// ---------------------------------------------------------------------------
+
+/** One row of stacked research labels: a 9px line plus a hair of leading. */
+export const RESEARCH_LABEL_ROW_STEP = 10;
+/** The first stacked row sits just inside the frame's top edge. */
+export const RESEARCH_LABEL_TOP_Y = 2;
+/** A 9px monospace glyph, in viewBox units at the widths this chart draws. */
+export const RESEARCH_LABEL_CHAR_WIDTH = 7;
+
+/**
+ * Place the research occurrences the chart can draw honestly.
+ *
+ * Mirrors the two placements it rides beside: an instantaneous occurrence is
+ * placed like a fill (dropped before the window's first candle, clamped to
+ * `now` after it) and a span like an event band (clipped at both edges,
+ * dropped when wholly outside). Upcoming occurrences follow the bounded
+ * future-gutter policy, and without a clock there is no gutter, so an
+ * upcoming marker is dropped rather than drawn as record. An uncovered
+ * occurrence (`covered: false`) never becomes a placed marker at all.
+ */
+function placeResearchMarkers(input: {
+  readonly markers: ReadonlyArray<ChartResearchMarkerInput>;
+  readonly xForTime: (t: number) => number;
+  readonly nowX: number;
+  readonly hasClock: boolean;
+  readonly timeStart: number;
+  /** The plot's left edge — the reserved lane starts here and draws nothing. */
+  readonly plotLeft: number;
+}): ReadonlyArray<ChartResearchMarker> {
+  const placed: Array<Omit<ChartResearchMarker, "labelY">> = [];
+
+  for (const marker of input.markers) {
+    const span = marker.endAt > marker.startAt;
+
+    if (marker.upcoming) {
+      // An occurrence that has not happened yet is UNCOVERED by definition —
+      // and still renderable, because what the future gutter draws is the
+      // SOURCED DATE, not a price measurement. Event existence and price
+      // coverage are different facts; gating the gutter on `covered` used to
+      // reject every future event before its own rendering path ran. No
+      // clock, no future gutter: an upcoming occurrence cannot be drawn as
+      // record without one, so it is not drawn.
+      if (!input.hasClock) continue;
+      if (span) {
+        let x1 = clamp(input.xForTime(marker.startAt), input.nowX, PLOT_WIDTH);
+        // The visible-minimum floor must not push the band past the plot's
+        // right edge and into the price gutter.
+        x1 = Math.min(x1, PLOT_WIDTH - MIN_EVENT_BAND_WIDTH);
+        const x2 = Math.max(
+          clamp(input.xForTime(marker.endAt), input.nowX, PLOT_WIDTH),
+          x1 + MIN_EVENT_BAND_WIDTH,
+        );
+        placed.push({ ...marker, span: true, x1, x2 });
+      } else {
+        placed.push({
+          ...marker,
+          span: false,
+          x1: clamp(input.xForTime(marker.startAt), input.nowX, PLOT_WIDTH),
+          x2: clamp(input.xForTime(marker.startAt), input.nowX, PLOT_WIDTH),
+        });
+      }
+      continue;
+    }
+
+    // No coverage means no honest position for a PAST occurrence: never a
+    // rule, never a band, and never a fabricated one at the left edge. The
+    // caller's coverage note is the only disclosure.
+    if (!marker.covered) continue;
+
+    // An occurrence before the window's first candle has no honest x — the
+    // same drop an old fill gets, and the opposite of a left-edge pin.
+    if (marker.startAt < input.timeStart) continue;
+
+    if (span) {
+      const raw1 = input.xForTime(marker.startAt);
+      const raw2 = input.xForTime(marker.endAt);
+      if (raw2 < input.plotLeft || raw1 > PLOT_WIDTH) continue;
+      let x1 = clamp(raw1, input.plotLeft, PLOT_WIDTH);
+      x1 = Math.min(x1, PLOT_WIDTH - MIN_EVENT_BAND_WIDTH);
+      const x2 = Math.max(clamp(raw2, input.plotLeft, PLOT_WIDTH), x1 + MIN_EVENT_BAND_WIDTH);
+      placed.push({ ...marker, span: true, x1, x2 });
+    } else {
+      const raw = input.xForTime(marker.startAt);
+      // Both ends of the visible time domain are validated before anything
+      // draws: an instant whose x falls past the axis end is beyond the loaded
+      // window, and pinning it at the edge would give it a time it did not
+      // happen at. (With a clock the bound is `now`; a covered occurrence is
+      // always in the past, so only the no-clock case ever reaches the drop.)
+      if (raw < input.plotLeft || raw > input.nowX) continue;
+      placed.push({ ...marker, span: false, x1: raw, x2: raw });
+    }
+  }
+
+  const labelYs = layoutResearchMarkerLabels(
+    placed.map((marker) => ({ key: marker.key, text: marker.label, x: marker.x1 })),
+    {
+      charWidth: RESEARCH_LABEL_CHAR_WIDTH,
+      rowStep: RESEARCH_LABEL_ROW_STEP,
+      topY: RESEARCH_LABEL_TOP_Y,
+      frameHeight: CHART_VIEWBOX_HEIGHT,
+    },
+  );
+
+  return placed.map((marker) => ({
+    ...marker,
+    labelY: labelYs.get(marker.key) ?? RESEARCH_LABEL_TOP_Y,
+  }));
+}
+
 /**
  * Compute the full geometry for the chart, or `null` when there are too few
  * candles to draw anything.
@@ -1509,6 +2151,11 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   // `nowX` is where the axis's end lands. With a clock it stops short of the
   // plot's right edge, leaving the future gutter empty; without one it is the
   // right edge, which is the behaviour the review chart depends on.
+  //
+  // The axis's LEFT end is the reserved lane's far edge, not the frame's: the
+  // strip between it and 0 is where the price-scale labels live, and nothing
+  // drawn may enter it (see LEFT_AXIS_LANE_WIDTH).
+  const plotLeft = leftAxisLaneUnits(input.leftAxisLaneWidth);
   const timeStart = candles[0]!.openTime;
   const lastCandleTime = candles[candles.length - 1]!.openTime;
   const hasClock = input.nowMillis !== undefined;
@@ -1552,9 +2199,10 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   const timeEnd = hasClock ? lastCandleTime + barsAhead * barIntervalMillis : lastCandleTime;
   // Where that closing moment lands. The gutter to its right is what holds the
   // scheduled markers and the projection.
-  const axisEndX = hasClock ? PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO) : PLOT_WIDTH;
+  const plotSpan = PLOT_WIDTH - plotLeft;
+  const axisEndX = hasClock ? plotLeft + plotSpan * (1 - FUTURE_GUTTER_RATIO) : PLOT_WIDTH;
   const visibleSpan = hasClock ? barIntervalMillis * candles.length : timeEnd - timeStart;
-  const pixelsPerMilli = visibleSpan > 0 ? axisEndX / visibleSpan : 0;
+  const pixelsPerMilli = visibleSpan > 0 ? (axisEndX - plotLeft) / visibleSpan : 0;
 
   const xForTime = (t: number): number => axisEndX - (timeEnd - t) * pixelsPerMilli;
   // `now` is inside the frame rather than at its anchor: it is one bar's worth
@@ -1607,8 +2255,9 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   for (const candle of candles) {
     if (candle.open === undefined) continue;
     // A bar that has slid off the left edge is dropped rather than drawn
-    // half-outside the frame.
-    if (xForTime(candle.openTime) < -halfWidth) continue;
+    // half-outside the frame — the lane edge, not the frame's, since the lane
+    // is reserved against the plot's own contents too.
+    if (xForTime(candle.openTime) < plotLeft - halfWidth) continue;
     const openY = yForPrice(candle.open);
     const closeY = yForPrice(candle.close);
     bars.push({
@@ -1675,7 +2324,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     if (fill.at < timeStart) continue;
     fillPoints.push({
       key: fill.key,
-      x: clamp(xForTime(fill.at), 0, nowX),
+      x: clamp(xForTime(fill.at), plotLeft, nowX),
       y: clamp(yForPrice(fill.price), 0, CHART_VIEWBOX_HEIGHT),
       price: fill.price,
       kind: fill.kind,
@@ -1753,7 +2402,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
       key: marker.key,
       kind: marker.kind,
       at: marker.at,
-      x: clamp(xForTime(marker.at), 0, nowX),
+      x: clamp(xForTime(marker.at), plotLeft, nowX),
       ...(marker.cause === undefined ? {} : { cause: marker.cause }),
       ...(marker.failed === undefined ? {} : { failed: marker.failed }),
       ...(marker.label === undefined ? {} : { label: marker.label }),
@@ -1773,8 +2422,8 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     // The gutter clamp below only exists with a clock, so an upcoming band
     // past the axis end is dropped without one, exactly like a time marker.
     const clampsIntoGutter = band.upcoming && hasClock;
-    if (raw2 < 0 || (!clampsIntoGutter && raw1 > PLOT_WIDTH)) continue;
-    const floor = clampsIntoGutter ? nowX : 0;
+    if (raw2 < plotLeft || (!clampsIntoGutter && raw1 > PLOT_WIDTH)) continue;
+    const floor = clampsIntoGutter ? nowX : plotLeft;
     let x1 = clamp(raw1, floor, PLOT_WIDTH);
     // A zero-width occurrence (or one pinned flat at an edge) still gets the
     // visible minimum, shifted to stay inside the plot.
@@ -1783,11 +2432,31 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     timeBands.push({ ...band, x1, x2, width: x2 - x1 });
   }
 
+  // --- research markers: scene events, at their exact saved instants. -----
+  const researchMarkers = placeResearchMarkers({
+    markers: input.researchMarkers ?? [],
+    xForTime,
+    nowX,
+    hasClock,
+    timeStart,
+    plotLeft,
+  });
+
   // --- the research study overlay: measurements, never fills. -----------
   // Placed like the fills (dropped before the window's first candle, clamped
   // inside the frame) but drawn as its own vocabulary by the renderer. The
   // entry and exit prices come from bars inside the window, so their y is
   // clamped only for the same off-frame courtesy the mark gets.
+  //
+  // The drawable time domain is the span of the LOADED bars, both ends
+  // validated: a point before the first candle has no honest x, and a point
+  // past the last bar's close is beyond the loaded window — pinning either at
+  // an edge would draw it at a time it did not happen at. The one deliberate
+  // grace is the final bar's own close: without a clock the axis ends at the
+  // last open, but a close-basis exit is stamped at that bar's close and its
+  // bar IS loaded, so the domain runs one interval past the axis end and the
+  // pixel clamp absorbs at most that one bar of overhang.
+  const visibleTimeEnd = hasClock ? timeEnd : lastCandleTime + barIntervalMillis;
   const studyInput = input.studyOverlay ?? null;
   let studyOverlay: ChartStudyOverlay | null = null;
   if (studyInput !== null) {
@@ -1797,19 +2466,21 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
       studyInput.activation.at <= timeEnd
         ? {
             ...studyInput.activation,
-            x: clamp(xForTime(studyInput.activation.at), 0, PLOT_WIDTH),
+            x: clamp(xForTime(studyInput.activation.at), plotLeft, PLOT_WIDTH),
           }
         : null;
     const placeStudyPoint = (
       point: { readonly at: number; readonly price: number; readonly label: string } | null,
-    ) =>
-      point !== null && point.at >= timeStart
-        ? {
-            ...point,
-            x: clamp(xForTime(point.at), 0, PLOT_WIDTH),
-            y: clamp(yForPrice(point.price), 0, CHART_VIEWBOX_HEIGHT),
-          }
-        : null;
+    ) => {
+      if (point === null || point.at < timeStart || point.at > visibleTimeEnd) return null;
+      const rawY = yForPrice(point.price);
+      return {
+        ...point,
+        x: clamp(xForTime(point.at), plotLeft, PLOT_WIDTH),
+        y: clamp(rawY, 0, CHART_VIEWBOX_HEIGHT),
+        priceClipped: rawY < 0 || rawY > CHART_VIEWBOX_HEIGHT,
+      };
+    };
     const entry = placeStudyPoint(studyInput.entry);
     const exit = placeStudyPoint(studyInput.exit);
     const returnSpan =
@@ -1835,6 +2506,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     viewBoxHeight: CHART_VIEWBOX_HEIGHT,
     plotWidth: PLOT_WIDTH,
     labelGutterWidth: LABEL_GUTTER_WIDTH,
+    plotLeft,
     domainMin,
     domainMax,
     timeStart,
@@ -1856,6 +2528,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     timeMarkers,
     pastMarkers,
     timeBands,
+    researchMarkers,
     studyOverlay,
     droppedConditions,
   };

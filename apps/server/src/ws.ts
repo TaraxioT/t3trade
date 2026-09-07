@@ -2356,6 +2356,7 @@ const makeWsRpcLayer = (
                 market: input.market,
                 interval: input.interval,
                 maxBars,
+                ...(input.range !== undefined ? { range: input.range } : {}),
                 ...(input.startTime !== undefined ? { startTime: input.startTime } : {}),
                 ...(input.endTime !== undefined ? { endTime: input.endTime } : {}),
               });

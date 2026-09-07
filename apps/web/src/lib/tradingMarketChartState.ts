@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
   TradingChartInterval,
+  TradingChartRange,
   TradingMarketChartView,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -32,12 +33,16 @@ function tradingMarketChartAtom(
   interval: ChartInterval,
   window: ChartWindow | null,
   maxBars: number | null,
+  range: TradingChartRange | null,
 ) {
   return orchestrationEnvironment.tradingMarketChart({
     environmentId,
     input: {
       market,
       interval,
+      // The server only honours a range on a live read; a windowed read names
+      // its own span, so the range is dropped from its key and its input.
+      ...(window === null && range !== null ? { range } : {}),
       ...(window === null ? {} : { startTime: window.startTime, endTime: window.endTime }),
       ...(maxBars === null ? {} : { maxBars }),
     },
@@ -49,8 +54,11 @@ export function refreshTradingMarketChart(
   market: string,
   interval: ChartInterval,
   window: ChartWindow | null = null,
+  range: TradingChartRange | null = null,
 ): void {
-  appAtomRegistry.refresh(tradingMarketChartAtom(environmentId, market, interval, window, null));
+  appAtomRegistry.refresh(
+    tradingMarketChartAtom(environmentId, market, interval, window, null, range),
+  );
 }
 
 /**
@@ -123,6 +131,12 @@ export interface TradingMarketChartState {
  * `options.window` turns it into the one-shot post-mortem read a finished
  * mission's card makes. The span is closed, so the poll is skipped: re-reading
  * it would return the same bars for as long as the card is mounted.
+ *
+ * `options.range` names how much history a LIVE read asks for, as a symbol the
+ * server resolves (`"all"` is everything the archive recorded); it is part of
+ * the atom key, so a range change re-reads exactly like an interval change.
+ * Callers that omit it keep the previous behavior: the latest bars up to the
+ * server's cap.
  */
 export function useTradingMarketChart(
   environmentId: EnvironmentId,
@@ -131,6 +145,15 @@ export function useTradingMarketChart(
   options: {
     readonly enabled: boolean;
     readonly window?: ChartWindow;
+    /**
+     * How much history the live read asks for, resolved to a window by the
+     * SERVER (`all` is everything the archive recorded — the client cannot
+     * know that span, so it never computes windows itself). Only honoured
+     * when no `window` is set. Part of the atom input, so polling identity
+     * covers it: changing range re-reads under a new key exactly like
+     * changing interval.
+     */
+    readonly range?: TradingChartRange;
     /**
      * Whether this caller drives the 15s poll. Default true.
      *
@@ -155,6 +178,9 @@ export function useTradingMarketChart(
   const polls = options.poll ?? true;
   const chartWindow = options.window ?? null;
   const maxBars = options.maxBars ?? null;
+  // A range only means something on a live read; a windowed read names its
+  // own span and the range is not part of its identity.
+  const range = chartWindow === null ? (options.range ?? null) : null;
   const windowStart = chartWindow?.startTime ?? null;
   const windowEnd = chartWindow?.endTime ?? null;
 
@@ -171,8 +197,8 @@ export function useTradingMarketChart(
       windowStart === null || windowEnd === null
         ? null
         : { startTime: windowStart, endTime: windowEnd };
-    return tradingMarketChartAtom(environmentId, market, interval, bounds, maxBars);
-  }, [enabled, market, environmentId, interval, windowStart, windowEnd, maxBars]);
+    return tradingMarketChartAtom(environmentId, market, interval, bounds, maxBars, range);
+  }, [enabled, market, environmentId, interval, windowStart, windowEnd, maxBars, range]);
 
   const result = useAtomValue(atom);
   const fresh = Option.getOrNull(AsyncResult.value(result));
@@ -201,8 +227,8 @@ export function useTradingMarketChart(
       windowStart === null || windowEnd === null
         ? null
         : { startTime: windowStart, endTime: windowEnd };
-    refreshTradingMarketChart(environmentId, market, interval, bounds);
-  }, [enabled, market, environmentId, interval, windowStart, windowEnd]);
+    refreshTradingMarketChart(environmentId, market, interval, bounds, range);
+  }, [enabled, market, environmentId, interval, windowStart, windowEnd, range]);
 
   const isWindowed = windowStart !== null && windowEnd !== null;
 

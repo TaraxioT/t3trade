@@ -145,6 +145,29 @@
   }
 
   /*
+   * What a left-axis lane label sits on, per theme.
+   *
+   * The lane is reserved ground — no candles, no rules — but the panel's glass
+   * and the chart's own washes show through it, and a 9px number printed on
+   * that directly was the "unreadable left edge". The backing is the card the
+   * panel itself is made of, poured much heavier than a chip's: a label is
+   * bare text with no border, so the fill alone has to lift it clear of the
+   * grid lines it overlaps. Dark gets the stronger mix for the same reason
+   * the chips do — the same alpha over a near-black ground separates nothing.
+   */
+  :root {
+    --mission-chart-lane-backing: color-mix(in srgb, var(--card) 88%, transparent);
+
+    @variant dark {
+      --mission-chart-lane-backing: color-mix(in srgb, var(--card) 92%, transparent);
+    }
+  }
+
+  .mission-lane-label {
+    background: var(--mission-chart-lane-backing);
+  }
+
+  /*
    * The risk/reward slab. Two 15% fills across the full width of the chart
    * card: soft pink and mint on white, two lit bars on black.
    */
@@ -536,6 +559,7 @@
    one, so the fallback holds without reaching for `!important`. */
 @media (prefers-reduced-transparency: reduce) {
   .mission-chip,
+  .mission-lane-label,
   .mission-panel-glass {
     background: var(--card);
     -webkit-backdrop-filter: none;

@@ -44,7 +44,11 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import type { BacktestCosts, BacktestStats } from "@t3tools/trading-contracts/backtest";
+import type {
+  BacktestCosts,
+  BacktestCoverage,
+  BacktestStats,
+} from "@t3tools/trading-contracts/backtest";
 import {
   BACKTEST_FALLBACK_SLIPPAGE_BPS_PER_SIDE,
   BACKTEST_TAKER_FEE_BPS_PER_SIDE,
@@ -52,6 +56,7 @@ import {
 } from "@t3tools/trading-contracts/backtest";
 import {
   EMPTY_FORWARD_STATE,
+  FORWARD_CALCULATION_VERSION,
   FORWARD_INTERVALS,
   forwardWarmupBars,
   isForwardInterval,
@@ -60,6 +65,8 @@ import {
   MIN_VALIDATION_MS,
   settledAsBacktestTrade,
   stepForward,
+  type EventSetContentDigest,
+  type ForwardBaselineSource,
   type ForwardReport,
   type ForwardState,
   type PaperTrade,
@@ -73,6 +80,7 @@ import {
   type ValidationEventKind,
 } from "@t3tools/trading-contracts/forward";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
+import { MIN_REPLAY_SETUPS } from "@t3tools/trading-contracts/replay";
 import {
   describeThesis,
   thesisEventSets,
@@ -132,6 +140,13 @@ export interface ThesisValidation {
   readonly notionalUsd: number;
   readonly costs: BacktestCosts;
   readonly baseline: BacktestStats | null;
+  /**
+   * Identity of the backtest the baseline figures came from, when it was
+   * recorded with one. Null on baselines written before provenance was kept —
+   * and on every legacy row — because absence is the honest reading there,
+   * not a reconstructed guess.
+   */
+  readonly baselineSource: ForwardBaselineSource | null;
   readonly barsWatched: number;
   readonly state: ForwardState;
   readonly lastBarTime: number | null;
@@ -240,10 +255,25 @@ export interface TradingThesisValidationServiceShape {
    * pulling it in here would put a second dependency on a service whose short
    * dependency list is the claim that it cannot trade. The caller runs the
    * backtest and hands the figures over.
+   *
+   * `source` names the backtest they came from — the recorded run's id, a
+   * digest pinning its content, when it ran, and what its window served. It
+   * is optional only for legacy callers; a baseline written without it
+   * decodes with no provenance rather than a fabricated one, and the report
+   * comparison gates on the coverage it carries.
    */
   readonly setBaseline: (input: {
     readonly id: string;
     readonly baseline: BacktestStats;
+    readonly source?:
+      | {
+          readonly runId: string | null;
+          readonly digest: string | null;
+          readonly computedAt: number;
+          readonly coverage?: BacktestCoverage | undefined;
+          readonly eventSetContentDigests?: ReadonlyArray<EventSetContentDigest> | undefined;
+        }
+      | undefined;
   }) => Effect.Effect<void, PersistenceSqlError>;
 
   /**
@@ -388,6 +418,50 @@ const rowJsonString = Schema.fromJsonString(Schema.Unknown);
 const jsonValueFromRow = Schema.decodeUnknownSync(rowJsonString);
 const rowJsonValue = Schema.encodeSync(rowJsonString);
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/**
+ * A baseline row, read either way it was written.
+ *
+ * Rows written since provenance was kept hold `{ stats, runId, digest,
+ * computedAt, coverage?, eventSetContentDigests? }`. Rows written before hold
+ * the bare stats. Both decode; the legacy one simply has no source, and every
+ * reader treats that as "provenance not recorded" rather than filling one in.
+ */
+const decodeBaseline = (
+  raw: string | null,
+): {
+  readonly baseline: BacktestStats | null;
+  readonly source: ForwardBaselineSource | null;
+} => {
+  if (raw === null) return { baseline: null, source: null };
+  const parsed: unknown = jsonValueFromRow(raw);
+  if (!isRecord(parsed)) return { baseline: null, source: null };
+  const stats = parsed.stats;
+  if (stats === undefined || !isRecord(stats)) {
+    // The legacy shape: the whole payload is the stats.
+    return { baseline: parsed as unknown as BacktestStats, source: null };
+  }
+  const computedAt = typeof parsed.computedAt === "number" ? parsed.computedAt : null;
+  if (computedAt === null) return { baseline: stats as unknown as BacktestStats, source: null };
+  return {
+    baseline: stats as unknown as BacktestStats,
+    source: {
+      runId: typeof parsed.runId === "string" ? parsed.runId : null,
+      digest: typeof parsed.digest === "string" ? parsed.digest : null,
+      computedAt,
+      ...(isRecord(parsed.coverage) ? { coverage: parsed.coverage as BacktestCoverage } : {}),
+      ...(Array.isArray(parsed.eventSetContentDigests)
+        ? {
+            eventSetContentDigests:
+              parsed.eventSetContentDigests as ReadonlyArray<EventSetContentDigest>,
+          }
+        : {}),
+    },
+  };
+};
+
 export const makeTradingThesisValidationService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
@@ -407,6 +481,7 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
   const hydrate = (row: ValidationRow) =>
     Effect.gen(function* () {
       const open = yield* openFillFor(row.validation_id);
+      const { baseline, source } = decodeBaseline(row.baseline_json);
       return {
         id: row.validation_id,
         threadId: row.thread_id,
@@ -422,10 +497,8 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         endReason: row.end_reason as ThesisValidationEndReason | null,
         notionalUsd: row.notional_usd,
         costs: jsonValueFromRow(row.costs_json) as BacktestCosts,
-        baseline:
-          row.baseline_json === null
-            ? null
-            : (jsonValueFromRow(row.baseline_json) as BacktestStats),
+        baseline,
+        baselineSource: source,
         barsWatched: row.bars_watched,
         state: toForwardState(row, open[0]),
         lastBarTime: row.last_bar_time,
@@ -527,35 +600,49 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
               "End that one first, or validate this idea on another interval",
           } as const;
         }
-        yield* sql`
-          UPDATE trading_thesis_validations
-          SET status = 'ended', ended_at = ${input.now}, end_reason = 'superseded',
-              updated_at = ${input.now}
-          WHERE validation_id = ${held.validation_id}
-        `.pipe(Effect.mapError(sqlFail("arm.supersede")));
-        superseded = held.validation_id;
       }
-
+      // Everything that can fail OUTSIDE the tables is prepared before any
+      // row changes: a cost measurement or id mint that failed after the
+      // supersede used to leave the prior validation already ended — the
+      // refinement loop's old version destroyed with nothing to replace it.
+      // The supersede and the insert commit together or not at all.
       const id = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const now = input.now;
       const notionalUsd = input.notionalUsd ?? DEFAULT_PAPER_NOTIONAL_USD;
       const costs = yield* measureCosts(input.thesis.market);
 
-      yield* sql`
-        INSERT INTO trading_thesis_validations (
-          validation_id, thread_id, venue, asset, interval, thesis_json, label,
-          status, armed_at, expires_at, ended_at, end_reason, notional_usd,
-          costs_json, baseline_json, bars_watched, pending_entry_signal_time,
-          pending_exit_reason, last_bar_time, hypothesis_id, hypothesis_version,
-          created_at, updated_at
-        ) VALUES (
-          ${id}, ${input.threadId ?? null}, ${DEFAULT_TRADING_VENUE}, ${input.thesis.market},
-          ${input.thesis.interval}, ${encodeThesisJson(input.thesis)}, ${input.label ?? null},
-          'armed', ${now}, ${now + input.durationMs}, NULL, NULL, ${notionalUsd},
-          ${rowJsonValue(costs as unknown)}, NULL, 0, NULL, NULL, NULL,
-          ${input.hypothesisId ?? null}, ${input.hypothesisVersion ?? null}, ${now}, ${now}
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (held !== undefined) {
+              yield* sql`
+              UPDATE trading_thesis_validations
+              SET status = 'ended', ended_at = ${input.now}, end_reason = 'superseded',
+                  updated_at = ${input.now}
+              WHERE validation_id = ${held.validation_id}
+            `.pipe(Effect.mapError(sqlFail("arm.supersede")));
+            }
+            yield* sql`
+            INSERT INTO trading_thesis_validations (
+              validation_id, thread_id, venue, asset, interval, thesis_json, label,
+              status, armed_at, expires_at, ended_at, end_reason, notional_usd,
+              costs_json, baseline_json, bars_watched, pending_entry_signal_time,
+              pending_exit_reason, last_bar_time, hypothesis_id, hypothesis_version,
+              created_at, updated_at
+            ) VALUES (
+              ${id}, ${input.threadId ?? null}, ${DEFAULT_TRADING_VENUE}, ${input.thesis.market},
+              ${input.thesis.interval}, ${encodeThesisJson(input.thesis)}, ${input.label ?? null},
+              'armed', ${now}, ${now + input.durationMs}, NULL, NULL, ${notionalUsd},
+              ${rowJsonValue(costs as unknown)}, NULL, 0, NULL, NULL, NULL,
+              ${input.hypothesisId ?? null}, ${input.hypothesisVersion ?? null}, ${now}, ${now}
+            )
+          `.pipe(Effect.mapError(sqlFail("arm.insert")));
+          }),
         )
-      `.pipe(Effect.mapError(sqlFail("arm.insert")));
+        .pipe(Effect.mapError(sqlFail("arm.transaction")));
+      if (held !== undefined) {
+        superseded = held.validation_id;
+      }
 
       const validation = yield* get(id);
       return validation === null
@@ -584,11 +671,29 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       } satisfies BacktestCosts;
     });
 
-  /** Record the backtest figures a forward run will be scored against. */
-  const setBaseline = (input: { readonly id: string; readonly baseline: BacktestStats }) =>
+  /**
+   * Record the backtest figures a forward run will be scored against, with
+   * the identity of the backtest they came from when the caller knows it.
+   * The JSON shape is additive: a bare-stats payload (how every baseline was
+   * written before provenance existed) still decodes, with no source.
+   */
+  const setBaseline: TradingThesisValidationServiceShape["setBaseline"] = (input) =>
     sql`
       UPDATE trading_thesis_validations
-      SET baseline_json = ${JSON.stringify(input.baseline)}
+      SET baseline_json = ${
+        input.source === undefined
+          ? JSON.stringify(input.baseline)
+          : JSON.stringify({
+              stats: input.baseline,
+              runId: input.source.runId,
+              digest: input.source.digest,
+              computedAt: input.source.computedAt,
+              ...(input.source.coverage === undefined ? {} : { coverage: input.source.coverage }),
+              ...(input.source.eventSetContentDigests === undefined
+                ? {}
+                : { eventSetContentDigests: input.source.eventSetContentDigests }),
+            })
+      }
       WHERE validation_id = ${input.id}
     `.pipe(Effect.mapError(sqlFail("setBaseline")), Effect.asVoid);
 
@@ -726,23 +831,17 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
       if (width === undefined) return quiet;
 
       const warmup = forwardWarmupBars(validation.thesis);
-      // Reach back far enough for every indicator to converge before the first
-      // bar this pass will actually evaluate — which on the first pass is the
-      // bar the validation was armed on, not the live edge.
+      // The validation's own deadline caps evaluation, not the delivery
+      // clock: a sweep hours or days late evaluates only bars that CLOSED by
+      // expiresAt, so processing time never extends the declared window and a
+      // candle straddling the deadline is never read on provisional numbers.
+      const deadline = Math.min(now, validation.expiresAt);
+      // Reach back far enough for every indicator to converge before the
+      // first bar the pass will actually evaluate — which on the first pass is
+      // the bar the validation was armed on, not the live edge.
       const evaluateFrom = validation.lastBarTime ?? validation.armedAt;
       const fromT = evaluateFrom - warmup * width;
-      const rows = yield* archive
-        .candlesInWindow({
-          coin: validation.asset,
-          interval,
-          fromT,
-          toT: now,
-          maxBars: warmup + MAX_CATCHUP_BARS,
-        })
-        .pipe(Effect.mapError(sqlFail("advance.candles")));
-      if (rows.length === 0) return quiet;
 
-      const candles = rows.map(toCandle);
       // Only fetched when a rule actually reads it. A funding operand has to
       // resolve through the SAME stepwise lookup the batch engine uses, or a
       // validation would disagree with the backtest that armed it on the one
@@ -752,14 +851,10 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
             .fundingInWindow({
               coin: validation.asset,
               fromT,
-              toT: now,
+              toT: deadline,
             })
             .pipe(Effect.mapError(sqlFail("advance.funding")))
         : [];
-      // Only bars that have closed. The archiver can store a forming bar, and
-      // a rule read on one fires on numbers that are still moving.
-      const closed = candles.filter((candle) => candle.closeTime <= now);
-      if (closed.length === 0) return quiet;
 
       // The event calendar is re-read on EVERY sweep, not frozen at arm time:
       // a future occurrence is the whole point of arming early (the operand
@@ -774,109 +869,188 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         eventOccurrences = yield* loaded;
       }
 
-      // Bars this validation has not evaluated yet. On the first pass that is
-      // every closed bar since it was armed: a bar that closed between arming
-      // and the first delivery is one the thesis was live for, and skipping it
-      // would quietly shorten the window the report is computed over.
-      const lastSeen = validation.lastBarTime;
-      const firstUnseen = closed.findIndex((candle) =>
-        lastSeen === null ? candle.openTime >= validation.armedAt : candle.openTime > lastSeen,
-      );
-      if (firstUnseen < 0) return quiet;
-
       let state = validation.state;
       let barsWatched = validation.barsWatched;
-      let lastBarTime = lastSeen;
+      let lastBarTime = validation.lastBarTime;
+      let processedAny = false;
 
-      for (let index = Math.max(firstUnseen, 0); index < closed.length; index += 1) {
-        const window = closed.slice(0, index + 1);
-        const tradeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-        const step = stepForward({
-          thesis: validation.thesis,
-          candles: window,
-          state,
-          notionalUsd: validation.notionalUsd,
-          nextTradeId: tradeId,
-          funding: signalFunding,
-          eventOccurrences,
-        });
+      // Every ledger effect of every processed bar, plus the checkpoint, in
+      // ONE transaction: a fill insert without its checkpoint is the exact
+      // inconsistency a redelivery would double-count, and a checkpoint
+      // without its fills would mark bars watched that nobody paid for. The
+      // archive reads above stay outside the transaction; the checkpoint is
+      // re-read inside it so a concurrent advance that committed first is
+      // refused rather than raced past.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const raced = yield* sql<{ readonly last_bar_time: number | null }>`
+            SELECT last_bar_time FROM trading_thesis_validations
+            WHERE validation_id = ${validation.id}
+          `.pipe(Effect.mapError(sqlFail("advance.reread")));
+            const checkpointNow = raced[0]?.last_bar_time ?? null;
+            if (checkpointNow !== validation.lastBarTime) {
+              // Die, not fail: the transaction rolls back either way, and a
+              // defect says "this pass's premise is stale, deliver again" —
+              // the next delivery re-reads the committed checkpoint and
+              // continues from it, having double-counted nothing.
+              return yield* Effect.die(
+                `advance lost the checkpoint race for ${validation.id}: ` +
+                  `${validation.lastBarTime} moved to ${checkpointNow} before commit`,
+              );
+            }
 
-        if (step.entered !== null) {
-          yield* sql`
-            INSERT INTO trading_thesis_paper_fills (
-              paper_trade_id, validation_id, entry_time, entry_price, signal_time,
-              stop_price, target_price, exit_time, exit_price, exit_reason,
-              bars_held, gross_usd, fees_usd, funding_usd, net_usd,
-              adverse_excursion_usd, created_at, updated_at
-            ) VALUES (
-              ${tradeId}, ${validation.id}, ${step.entered.entryTime},
-              ${round4(step.entered.entryPrice)}, ${step.entered.signalTime},
-              ${step.entered.stopPrice === null ? null : round4(step.entered.stopPrice)},
-              ${step.entered.targetPrice === null ? null : round4(step.entered.targetPrice)},
-              NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, 0, ${now}, ${now}
-            )
-          `.pipe(Effect.mapError(sqlFail("advance.enter")));
-          events.push({
-            kind: "paper_entry",
-            line: describePaperEntry({
-              market: validation.asset,
-              direction: validation.thesis.side,
-              price: round4(step.entered.entryPrice),
-            }),
-          });
-        }
+            // Catch-up pages: OLDEST unseen bars first, bounded per read,
+            // resuming from the checkpoint. A newest-keeping capped read
+            // would silently skip every bar older than the cap on an outage
+            // longer than the budget — the bars the run was armed to watch.
+            // A full page may leave more behind it, so the loop continues
+            // from just past the page's last bar until a short page says the
+            // read reached the deadline. Bars the archive never recorded are
+            // simply absent: the checkpoint marks the last bar PROCESSED, and
+            // nothing jumps a gap it cannot see.
+            for (;;) {
+              const rows = yield* archive
+                .candlesInWindow({
+                  coin: validation.asset,
+                  interval,
+                  fromT:
+                    (lastBarTime ?? evaluateFrom) +
+                    (lastBarTime === null ? 0 : width) -
+                    warmup * width,
+                  toT: deadline,
+                  maxBars: warmup + MAX_CATCHUP_BARS,
+                  keep: "oldest",
+                })
+                .pipe(Effect.mapError(sqlFail("advance.candles")));
+              // Only bars that have closed by the deadline. The archiver can
+              // store a forming bar, and a rule read on one fires on numbers
+              // that are still moving.
+              const closed = rows.map(toCandle).filter((candle) => candle.closeTime <= deadline);
+              const firstUnseen = closed.findIndex((candle) =>
+                lastBarTime === null
+                  ? candle.openTime >= validation.armedAt
+                  : candle.openTime > lastBarTime,
+              );
+              if (firstUnseen < 0) break;
+              for (let index = firstUnseen; index < closed.length; index += 1) {
+                const bar = closed[index] as MarketCandle;
+                const window = closed.slice(0, index + 1);
+                // The trade id is DERIVED from the validation and the bar its
+                // entry fills on, not minted: a crash between the fill insert and
+                // the checkpoint replays the same bar, and the same bar must
+                // produce the same id or the retry would mint a second logical
+                // fill. `INSERT ... ON CONFLICT DO NOTHING` makes the replay a
+                // no-op instead of a duplicate.
+                const tradeId = `${validation.id}:${bar.openTime}`;
+                const step = stepForward({
+                  thesis: validation.thesis,
+                  candles: window,
+                  state,
+                  notionalUsd: validation.notionalUsd,
+                  nextTradeId: tradeId,
+                  funding: signalFunding,
+                  eventOccurrences,
+                });
 
-        if (step.exited !== null) {
-          const netUsd = yield* settleFill({
-            validation,
-            tradeId: step.exited.tradeId,
-            entryTime: step.exited.entryTime,
-            entryPrice: step.exited.entryPrice,
-            exitTime: step.exited.exitTime,
-            exitPrice: step.exited.exitPrice,
-            exitReason: step.exited.exitReason,
-            barsHeld: step.exited.barsHeld,
-            adverseExcursionUsd: step.exited.adverseExcursionUsd,
-            now,
-          });
-          events.push({
-            kind: "paper_exit",
-            line: describePaperExit({
-              market: validation.asset,
-              direction: validation.thesis.side,
-              price: round4(step.exited.exitPrice),
-              netUsd,
-              reason: step.exited.exitReason,
-            }),
-          });
-        }
+                if (step.entered !== null) {
+                  yield* sql`
+                INSERT INTO trading_thesis_paper_fills (
+                  paper_trade_id, validation_id, entry_time, entry_price, signal_time,
+                  stop_price, target_price, exit_time, exit_price, exit_reason,
+                  bars_held, gross_usd, fees_usd, funding_usd, net_usd,
+                  adverse_excursion_usd, created_at, updated_at
+                ) VALUES (
+                  ${tradeId}, ${validation.id}, ${step.entered.entryTime},
+                  ${round4(step.entered.entryPrice)}, ${step.entered.signalTime},
+                  ${step.entered.stopPrice === null ? null : round4(step.entered.stopPrice)},
+                  ${step.entered.targetPrice === null ? null : round4(step.entered.targetPrice)},
+                  NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, 0, ${now}, ${now}
+                )
+                ON CONFLICT(paper_trade_id) DO NOTHING
+              `.pipe(Effect.mapError(sqlFail("advance.enter")));
+                  events.push({
+                    kind: "paper_entry",
+                    line: describePaperEntry({
+                      market: validation.asset,
+                      direction: validation.thesis.side,
+                      price: round4(step.entered.entryPrice),
+                    }),
+                  });
+                }
 
-        state = step.state;
-        barsWatched += 1;
-        lastBarTime = (closed[index] as MarketCandle).openTime;
-      }
+                // One bar can close TWO trades (a pending exit at the open plus a
+                // same-bar stop on a position entered at that same open). Every
+                // settlement is persisted, in the causal order the engine
+                // produced; dropping all but the last was the ledger defect.
+                for (const exit of step.exits) {
+                  const netUsd = yield* settleFill({
+                    validation,
+                    tradeId: exit.tradeId,
+                    entryTime: exit.entryTime,
+                    entryPrice: exit.entryPrice,
+                    exitTime: exit.exitTime,
+                    exitPrice: exit.exitPrice,
+                    exitReason: exit.exitReason,
+                    barsHeld: exit.barsHeld,
+                    adverseExcursionUsd: exit.adverseExcursionUsd,
+                    now,
+                  });
+                  events.push({
+                    kind: "paper_exit",
+                    line: describePaperExit({
+                      market: validation.asset,
+                      direction: validation.thesis.side,
+                      price: round4(exit.exitPrice),
+                      netUsd,
+                      reason: exit.exitReason,
+                    }),
+                  });
+                }
 
-      // The open position's running bar count and excursion live on its own
-      // ledger row, so the report reads one place for it.
-      if (state.open !== null) {
-        yield* sql`
-          UPDATE trading_thesis_paper_fills
-          SET bars_held = ${state.open.barsHeld},
-              adverse_excursion_usd = ${round2(state.open.adverseExcursionUsd)},
-              updated_at = ${now}
-          WHERE paper_trade_id = ${state.open.id} AND exit_time IS NULL
-        `.pipe(Effect.mapError(sqlFail("advance.openTrade")));
-      }
+                state = step.state;
+                barsWatched += 1;
+                lastBarTime = bar.openTime;
+                processedAny = true;
+              }
 
-      yield* sql`
-        UPDATE trading_thesis_validations
-        SET bars_watched = ${barsWatched},
-            pending_entry_signal_time = ${state.pendingEntrySignalTime},
-            pending_exit_reason = ${state.pendingExitReason},
-            last_bar_time = ${lastBarTime},
-            updated_at = ${now}
-        WHERE validation_id = ${validation.id}
-      `.pipe(Effect.mapError(sqlFail("advance.state")));
+              // A short page means the read reached the deadline: caught up.
+              // A full page may hold more unseen bars beyond it, so the loop
+              // continues with a fromT derived from the advanced
+              // `lastBarTime`. Termination is structural: any page that does
+              // not break here processed at least one bar (firstUnseen >= 0),
+              // which advances the checkpoint by at least one slot, so the
+              // next read starts strictly later — no page can repeat.
+              if (closed.length < warmup + MAX_CATCHUP_BARS) break;
+            }
+
+            if (!processedAny) return;
+
+            // The open position's running bar count and excursion live on its
+            // own ledger row, so the report reads one place for it.
+            if (state.open !== null) {
+              yield* sql`
+              UPDATE trading_thesis_paper_fills
+              SET bars_held = ${state.open.barsHeld},
+                  adverse_excursion_usd = ${round2(state.open.adverseExcursionUsd)},
+                  updated_at = ${now}
+              WHERE paper_trade_id = ${state.open.id} AND exit_time IS NULL
+            `.pipe(Effect.mapError(sqlFail("advance.openTrade")));
+            }
+
+            yield* sql`
+            UPDATE trading_thesis_validations
+            SET bars_watched = ${barsWatched},
+                pending_entry_signal_time = ${state.pendingEntrySignalTime},
+                pending_exit_reason = ${state.pendingExitReason},
+                last_bar_time = ${lastBarTime},
+                updated_at = ${now}
+            WHERE validation_id = ${validation.id}
+          `.pipe(Effect.mapError(sqlFail("advance.state")));
+          }),
+        )
+        .pipe(Effect.mapError(sqlFail("advance.transaction")));
+      if (!processedAny) return quiet;
 
       // The verdict, taken after the writes above so it reads the same ledger
       // the next `report` will. A validation whose label has never been
@@ -962,8 +1136,29 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
     Effect.gen(function* () {
       const validation = yield* get(input.id);
       if (validation === null) return null;
-      const all = yield* trades(input.id);
-      return composeReport(validation, all);
+      const all = yield* trades(validation.id);
+
+      // An event-anchored thesis whose next occurrence is still ahead has no
+      // signal due yet — every bar so far evaluated before any occurrence
+      // ended, so the operand read undefined and the rule could not fire.
+      // That empty ledger is waiting rather than failing, and the verdict
+      // says which. Read only while the sample is still under the floor and
+      // something could still be waiting: past the floor the run has signals
+      // on record and the calendar no longer changes the sentence.
+      const anchored = thesisEventSets(validation.thesis);
+      const settled = all.filter((trade) => trade.exitTime !== null).length;
+      let awaitingEvent = false;
+      if (anchored.length > 0 && settled < MIN_REPLAY_SETUPS) {
+        const cutoff = validation.lastBarTime ?? input.now;
+        const occurrences = yield* eventService.occurrencesFor(anchored);
+        awaitingEvent = anchored.some(
+          (eventSetId) =>
+            !occurrences.some(
+              (occurrence) => occurrence.eventSetId === eventSetId && occurrence.endAt <= cutoff,
+            ),
+        );
+      }
+      return composeReport(validation, all, { awaitingEvent });
     });
 
   const expireDue: TradingThesisValidationServiceShape["expireDue"] = (input) =>
@@ -995,7 +1190,16 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
         // nothing: "the window closed and here is what it showed" is the whole
         // point of having watched. Composed against the ENDED row so the batch
         // reports the same verdict the final report does.
+        //
+        // An open paper position at expiry is NOT force-closed: there is no
+        // fill to invent and no intra-candle deadline price to read. It stays
+        // an open row the report counts as unclosed exposure, and the expiry
+        // line says so rather than letting a missing settlement read as none.
         const ended = yield* get(row.validation_id);
+        const openAtExpiry =
+          ended === null
+            ? false
+            : (yield* trades(ended.id)).some((trade) => trade.exitTime === null);
         const batch =
           ended === null
             ? null
@@ -1004,7 +1208,11 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
                 advanced,
                 extra: {
                   kind: "expiry",
-                  line: `validation window closed after ${ended.barsWatched} bars`,
+                  line:
+                    `validation window closed after ${ended.barsWatched} bars` +
+                    (openAtExpiry
+                      ? "; one paper position is still open — unclosed exposure, not a settled outcome"
+                      : ""),
                 },
                 now: input.now,
               });
@@ -1057,10 +1265,14 @@ export const makeTradingThesisValidationService = Effect.gen(function* () {
  *
  * Exported and pure so the shape can be tested without a database, and so the
  * expiry path and the on-demand path cannot compose two different reports.
+ * `options.awaitingEvent` — whether the thesis anchors on an event set whose
+ * next occurrence is still ahead — is computed by the caller, which is the
+ * side of the boundary that can read the calendar.
  */
 export function composeReport(
   validation: ThesisValidation,
   all: ReadonlyArray<PaperTrade>,
+  options?: { readonly awaitingEvent?: boolean | undefined },
 ): ForwardReport {
   const settled = all
     .map(settledAsBacktestTrade)
@@ -1086,6 +1298,12 @@ export function composeReport(
     barsWatched: validation.barsWatched,
     hasOpenTrade: open !== null,
     status: validation.status,
+    // Only a baseline whose coverage was recorded can be gated on it; a
+    // legacy baseline carries no coverage and is judged on its figures.
+    ...(validation.baselineSource?.coverage === undefined
+      ? {}
+      : { baselineCoverage: validation.baselineSource.coverage }),
+    ...(options?.awaitingEvent === true ? { awaitingEvent: true } : {}),
   });
 
   return {
@@ -1104,9 +1322,11 @@ export function composeReport(
     baselineExpectancyUsd: validation.baseline?.expectancyUsd ?? null,
     baselineWinRatePercent: validation.baseline?.winRatePercent ?? null,
     baselineTradesTaken: validation.baseline?.tradesTaken ?? null,
+    ...(validation.baselineSource === null ? {} : { baselineSource: validation.baselineSource }),
     comparison,
     verdictReason,
     paperOnly: true,
+    calculationVersion: FORWARD_CALCULATION_VERSION,
   };
 }
 

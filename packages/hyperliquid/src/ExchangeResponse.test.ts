@@ -11,6 +11,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   exchangeResponseType,
   isLiveOnExchange,
+  readCancelAcknowledgement,
   readExchangeResponse,
 } from "./ExchangeResponse.ts";
 
@@ -130,5 +131,95 @@ describe("exchangeResponseType", () => {
     expect(exchangeResponseType(orderResponse([]))).toBe("order");
     expect(exchangeResponseType({ status: "ok", response: { type: "default" } })).toBe("default");
     expect(exchangeResponseType({ status: "err", response: "nope" })).toBeUndefined();
+  });
+});
+
+describe("readCancelAcknowledgement", () => {
+  const cloid = "0x" + "a".repeat(32);
+  const cancelResponse = (statuses: ReadonlyArray<unknown>) => ({
+    status: "ok",
+    response: { type: "cancel", data: { statuses } },
+  });
+
+  it("acknowledges an explicit per-order success", () => {
+    const ack = readCancelAcknowledgement(cancelResponse(["success"]), cloid);
+    expect(ack.acknowledged).toBe(true);
+    expect(ack.reason).toBeUndefined();
+  });
+
+  it("rejects an action-level rejection carried over a successful transport", () => {
+    const ack = readCancelAcknowledgement(
+      { status: "err", response: "Order does not exist" },
+      cloid,
+    );
+    expect(ack.acknowledged).toBe(false);
+    expect(ack.reason).toBe("Order does not exist");
+  });
+
+  it("rejects a per-order error row with the exchange's own words", () => {
+    const ack = readCancelAcknowledgement(
+      cancelResponse([{ error: "Invalid order id or client order id" }]),
+      cloid,
+    );
+    expect(ack.acknowledged).toBe(false);
+    expect(ack.reason).toContain("Invalid order id or client order id");
+  });
+
+  it("rejects a malformed envelope rather than inventing success", () => {
+    expect(readCancelAcknowledgement(null, cloid).reason).toContain("not an object");
+    expect(readCancelAcknowledgement({ status: "ok" }, cloid).reason).toContain("no `response`");
+  });
+
+  it("rejects a cancel envelope with no per-order statuses", () => {
+    // The permissive reader tolerates this for its own purposes; one submitted
+    // cloid must have one explicit acknowledgement.
+    const ack = readCancelAcknowledgement(
+      { status: "ok", response: { type: "cancel", data: {} } },
+      cloid,
+    );
+    expect(ack.acknowledged).toBe(false);
+    expect(ack.reason).toContain("no per-order statuses");
+  });
+
+  it("rejects an unexpected success-shaped ORDER response", () => {
+    const ack = readCancelAcknowledgement(
+      {
+        status: "ok",
+        response: { type: "order", data: { statuses: [{ filled: { totalSz: "0.5", oid: 9 } }] } },
+      },
+      cloid,
+    );
+    expect(ack.acknowledged).toBe(false);
+    expect(ack.reason).toContain("expected a cancel response");
+  });
+
+  it("rejects a wrong-cardinality response for the single submitted cloid", () => {
+    const ack = readCancelAcknowledgement(cancelResponse(["success", "success"]), cloid);
+    expect(ack.acknowledged).toBe(false);
+    expect(ack.reason).toContain("exactly one cancellation status");
+  });
+
+  it("never reads an order-status word as a cancellation success", () => {
+    // Bare waiting strings are recognisable order words: they describe the
+    // order's state, not the cancellation's.
+    for (const row of ["waitingForFill", "waitingForTrigger"]) {
+      const ack = readCancelAcknowledgement(cancelResponse([row]), cloid);
+      expect(ack.acknowledged).toBe(false);
+      expect(ack.reason).toContain("not as cancelled");
+    }
+    const filled = readCancelAcknowledgement(
+      cancelResponse([{ filled: { totalSz: "0.5", avgPx: "3000", oid: 5 } }]),
+      cloid,
+    );
+    expect(filled.acknowledged).toBe(false);
+    expect(filled.reason).toContain("not as cancelled");
+    const resting = readCancelAcknowledgement(cancelResponse([{ resting: { oid: 6 } }]), cloid);
+    expect(resting.acknowledged).toBe(false);
+    expect(resting.reason).toContain("not as cancelled");
+    // An unrecognised bare string (e.g. a free-text rejection) is not a
+    // success either — it surfaces verbatim.
+    const unknown = readCancelAcknowledgement(cancelResponse(["someNewState"]), cloid);
+    expect(unknown.acknowledged).toBe(false);
+    expect(unknown.reason).toBe("someNewState");
   });
 });

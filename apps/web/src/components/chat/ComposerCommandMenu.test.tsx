@@ -134,3 +134,52 @@ describe("ComposerCommandMenu", () => {
     expect(markup).not.toContain("font-medium text-secondary-label");
   });
 });
+
+describe("ComposerCommandMenu skill identity (10B)", () => {
+  const skillItem = (id: string, name: string, path: string) =>
+    ({
+      id,
+      type: "skill",
+      provider: ProviderDriverKind.make("codex"),
+      skill: {
+        name,
+        description: "Review a follow-up",
+        path,
+        enabled: true,
+      },
+      label: name,
+      description: "Review a follow-up",
+    }) as const;
+
+  const render = (items: ReadonlyArray<ReturnType<typeof skillItem>>) =>
+    renderToStaticMarkup(
+      <ComposerCommandMenu
+        items={[...items]}
+        resolvedTheme="dark"
+        isLoading={false}
+        triggerKind="skill"
+        activeItemId={null}
+        onHighlightedItemChange={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+  it("collapses an exactly repeated provider/name/path record to one item", () => {
+    const markup = render([
+      skillItem("a", "review", "user/review/SKILL.md"),
+      skillItem("b", "review", "user/review/SKILL.md"),
+    ]);
+    expect(markup.match(/Review a follow-up/g)?.length).toBe(1);
+  });
+
+  it("keeps same-name skills from different paths as two distinguishable items", () => {
+    const markup = render([
+      skillItem("a", "review", "~/.agent/skills/review/SKILL.md"),
+      skillItem("b", "review", "/repo/.agent/skills/review/SKILL.md"),
+    ]);
+    // Two rows, each carrying its own path context.
+    expect(markup.match(/Review a follow-up/g)?.length).toBe(2);
+    expect(markup).toContain("~/.agent/skills/review/SKILL.md");
+    expect(markup).toContain("/repo/.agent/skills/review/SKILL.md");
+  });
+});

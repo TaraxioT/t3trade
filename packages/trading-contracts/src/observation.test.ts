@@ -7,8 +7,10 @@ import {
   parseTradingLookFetchKey,
   renderTradingLookMenu,
   TRADING_LOOK_CATALOG,
+  TRADING_LOOK_INTERVALS,
   TRADING_LOOK_MAX_ARCHIVE_ROWS,
   TRADING_LOOK_MAX_BARS,
+  TRADING_LOOK_MAX_EVENTS,
   TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS,
   TradingLookInput,
 } from "./observation.ts";
@@ -71,10 +73,44 @@ describe("renderTradingLookMenu", () => {
   // Plan 38 phase 3: the menu grew the derived-metric catalog (§3.3), one
   // line per metric rendered from `DERIVED_METRIC_CATALOG`. Measured 1,252
   // chars then; R3's scan key, its legend clause, and the thirteenth metric
-  // (`vwap_distance`) measure 1,368. The band keeps a deliberate ceiling so
-  // another key's worth of prose has to say so here.
-  it("stays in the 1,250–1,500 band, targeted at ~1,370", () => {
+  // (`vwap_distance`) measure 1,368; the grammar-and-caps suffixes on the
+  // parameterized entries (the discoverability repair: one catalog call must
+  // suffice to compose a legal key) measure 1,429. The band keeps a
+  // deliberate ceiling — the handler test pins the same 1,500 — so another
+  // key's worth of prose has to say so here.
+  it("stays in the 1,250–1,500 band, targeted at ~1,430", () => {
     assert.isTrue(menu.length >= 1_250 && menu.length <= 1_500, `menu is ${menu.length} chars`);
+  });
+
+  // Grammar and caps ride the parameterized entries, composed from the same
+  // constants `parseTradingLookFetchKey` refuses by. This is the "one catalog
+  // call suffices" property: a model holding the menu can compose a legal key
+  // without a refused call teaching it the shape first.
+  it("states each parameterized key's grammar and cap from the parser's constants", () => {
+    assert.include(
+      menu,
+      `candles:tf:n[${TRADING_LOOK_INTERVALS.join("|")};n≤${TRADING_LOOK_MAX_BARS}]`,
+    );
+    assert.include(menu, `funding_stats:W[days 1-${TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS}]`);
+    for (const key of ["funding_series", "oi_premium", "book_history"]) {
+      assert.include(menu, `${key}:n[1-${TRADING_LOOK_MAX_ARCHIVE_ROWS}]`);
+    }
+    assert.include(menu, `events:n[1-${TRADING_LOOK_MAX_EVENTS}]`);
+  });
+
+  // The interval list the menu prints is exactly the set the parser accepts:
+  // every advertised interval parses, a non-member (`4h`, the invalid call
+  // this repair targets) refuses with the same list, and both surfaces quote
+  // one constant so they cannot drift.
+  it("advertises exactly the candle intervals the parser accepts", () => {
+    for (const tf of TRADING_LOOK_INTERVALS) {
+      assert.equal(parseTradingLookFetchKey(`candles:${tf}:10`).base, "candles");
+    }
+    const refused = parseTradingLookFetchKey("candles:4h:10");
+    assert.equal(refused.base, "invalid_params");
+    if (refused.base === "invalid_params") {
+      assert.include(refused.bound, TRADING_LOOK_INTERVALS.join(","));
+    }
   });
 
   it("presents scan as cross-market context, never market selection", () => {

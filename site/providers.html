@@ -1,0 +1,1411 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Provider adapters · T3 Trade System Atlas</title>
+    <meta
+      name="description"
+      content="How five agent runtimes (Codex, Claude, Cursor, Grok, OpenCode) sit behind one ProviderAdapter contract, how one turn crosses the adapter boundary, and why trading code may never spawn a provider."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+            :root {
+              --void: #060A12;        /* page base */
+              --panel: #0B1120;       /* raised surface */
+              --panel-2: #0E1526;     /* second raise */
+              --edge: rgba(148,163,199,.13);
+              --edge-strong: rgba(148,163,199,.24);
+              --chalk: #D8E0EC;       /* primary text */
+              --slate: #8A97AD;       /* secondary text */
+              --dim: #5C6B84;         /* tertiary text */
+              --bid: #2BD576;         /* success, long, confirmed */
+              --ask: #FF5D6C;         /* risk, refusal, halt */
+              --amber: #FFB224;       /* caution, limits, unknown */
+              --flow: #56CCF2;        /* data in motion, links, events */
+              --flow-soft: rgba(86,204,242,.14);
+              --font-body: "IBM Plex Sans", system-ui, sans-serif;
+              --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+              --font-display: "Archivo", system-ui, sans-serif;
+            }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            html { scroll-behavior: smooth; }
+            @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+            body {
+              background: var(--void);
+              color: var(--chalk);
+              font-family: var(--font-body);
+              font-size: 16.5px;
+              line-height: 1.65;
+              -webkit-font-smoothing: antialiased;
+            }
+            ::selection { background: rgba(86,204,242,.28); }
+            a { color: var(--flow); text-decoration: none; }
+            a:hover { text-decoration: underline; text-underline-offset: 3px; }
+            :focus-visible { outline: 2px solid var(--flow); outline-offset: 2px; border-radius: 4px; }
+            code, .mono { font-family: var(--font-mono); font-size: .86em; }
+            code.path {
+              color: var(--slate);
+              background: var(--panel);
+              border: 1px solid var(--edge);
+              border-radius: 6px;
+              padding: .1em .4em;
+              white-space: nowrap;
+            }
+            .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+
+            /* chrome */
+            .nav {
+              position: sticky; top: 0; z-index: 50;
+              background: rgba(6,10,18,.82);
+              backdrop-filter: blur(12px);
+              -webkit-backdrop-filter: blur(12px);
+              border-bottom: 1px solid var(--edge);
+            }
+            .nav-inner {
+              display: flex; align-items: center; justify-content: space-between;
+              height: 60px; gap: 16px;
+            }
+            .brand {
+              display: flex; align-items: center; gap: 10px;
+              color: var(--chalk); font-family: var(--font-mono); font-size: 13px;
+              letter-spacing: .08em; white-space: nowrap;
+            }
+            .brand:hover { text-decoration: none; }
+            .brand .tick { color: var(--bid); }
+            .nav-links { display: flex; gap: 4px; }
+            .nav-links a {
+              color: var(--slate); font-size: 13.5px; padding: 6px 10px;
+              border-radius: 8px; white-space: nowrap;
+            }
+            .nav-links a:hover { color: var(--chalk); background: var(--panel); text-decoration: none; }
+            .nav-links a[aria-current="page"] { color: var(--flow); background: var(--flow-soft); }
+            @media (max-width: 820px) {
+              .nav-links { display: none; }
+              .nav-links.open { display: flex; flex-direction: column; position: absolute; top: 60px; right: 12px; background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 8px; }
+              .nav-menu-btn { display: inline-flex !important; }
+            }
+            .nav-menu-btn {
+              display: none; color: var(--slate); background: none; border: 1px solid var(--edge);
+              border-radius: 8px; padding: 6px 10px; font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+            }
+
+            .footer {
+              border-top: 1px solid var(--edge); margin-top: 96px; padding: 40px 0 56px;
+              color: var(--dim); font-size: 14px;
+            }
+            .footer .cols { display: flex; gap: 32px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
+            .footer nav { display: flex; flex-direction: column; gap: 8px; }
+            .footer a { color: var(--slate); } .footer a:hover { color: var(--flow); }
+            .footer .mono { font-size: 12px; letter-spacing: .06em; }
+
+            /* type roles */
+            .kicker {
+              font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .14em;
+              color: var(--flow); text-transform: uppercase;
+            }
+            h1 {
+              font-family: var(--font-display); font-weight: 800; font-stretch: 112%;
+              font-size: clamp(34px, 5.4vw, 58px); line-height: 1.04; letter-spacing: -.015em;
+              margin: 14px 0 18px; max-width: 18ch;
+            }
+            h2 {
+              font-family: var(--font-display); font-weight: 700; font-stretch: 106%;
+              font-size: clamp(24px, 3.2vw, 34px); line-height: 1.15; letter-spacing: -.01em;
+              margin: 0 0 14px; max-width: 26ch;
+            }
+            h3 { font-family: var(--font-body); font-weight: 600; font-size: 18px; margin: 0 0 8px; }
+            p { max-width: 66ch; color: var(--chalk); }
+            p.lede { font-size: 19px; color: var(--slate); max-width: 58ch; }
+            .section { padding: 76px 0; border-top: 1px solid var(--edge); }
+            .section:first-of-type { border-top: none; }
+            .icon { width: 1.25em; height: 1.25em; flex: none; vertical-align: -.25em; }
+
+            /* reveal on scroll */
+            .reveal { opacity: 0; transform: translateY(18px); }
+            .reveal.in { opacity: 1; transform: none; transition: opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1); }
+            @media (prefers-reduced-motion: reduce) {
+              .reveal { opacity: 1; transform: none; }
+            }
+
+            /* flow ribbon animation */
+            .edge-line { stroke-dasharray: 5 7; animation: march 1.1s linear infinite; }
+            @keyframes march { to { stroke-dashoffset: -12; } }
+            .node-pulse { animation: nodepulse 2.6s ease-in-out infinite; }
+            @keyframes nodepulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+            @media (prefers-reduced-motion: reduce) {
+              .edge-line { animation: none; stroke-dasharray: none; }
+              .node-pulse { animation: none; opacity: .8; }
+              ribbon pulse circles and canvases must also be disabled by page JS (see recipes)
+            }
+
+            /* ---- page-specific CSS (below the marked line) ---- */
+
+            /* hero ribbon frame */
+            .ribbon {
+              margin-top: 36px; background: var(--panel); border: 1px solid var(--edge);
+              border-radius: 10px; padding: 16px 12px 6px;
+            }
+            .ribbon svg { display: block; width: 100%; height: auto; }
+            .ribbon .cap {
+              font-family: var(--font-mono); font-size: 12px; color: var(--slate);
+              letter-spacing: .06em; padding: 8px 6px 10px;
+            }
+
+            /* stat strip */
+            .stat-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 30px; }
+            .stat { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 18px 20px 15px; }
+            .stat .num { font-family: var(--font-mono); font-size: clamp(30px, 4vw, 44px); line-height: 1.05; color: var(--chalk); }
+            .stat .num small { font-size: .42em; color: var(--slate); }
+            .stat .lbl { font-family: var(--font-mono); font-size: 12px; color: var(--slate); letter-spacing: .06em; margin-top: 8px; line-height: 1.5; }
+            .stat .lbl code.path { font-size: .82em; }
+            @media (max-width: 860px) { .stat-strip { grid-template-columns: repeat(2, 1fr); } }
+            @media (max-width: 460px) { .stat-strip { grid-template-columns: 1fr; } }
+
+            /* split */
+            .split { display: grid; grid-template-columns: 7fr 5fr; gap: 40px; align-items: start; }
+            .split .prose p + p { margin-top: 14px; }
+            @media (max-width: 768px) { .split { grid-template-columns: 1fr; gap: 26px; } }
+
+            /* contract surface panel */
+            .contract { background: var(--panel-2); border: 1px solid var(--edge); border-radius: 10px; padding: 16px 18px 14px; }
+            .contract .head { font-family: var(--font-mono); font-size: 12px; letter-spacing: .09em; text-transform: uppercase; color: var(--flow); padding-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+            .contract .head .icon { color: var(--flow); }
+            .ops { display: flex; flex-direction: column; }
+            .op { display: flex; gap: 12px; padding: 6px 0; border-top: 1px solid var(--edge); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; }
+            .op:first-of-type { border-top: none; }
+            .op .sig { color: var(--chalk); min-width: 0; }
+            .op .sig .opt { color: var(--slate); }
+            .op .note { color: var(--slate); font-size: 11px; flex: none; }
+            .contract .foot { font-size: 12px; color: var(--slate); border-top: 1px solid var(--edge); margin-top: 8px; padding-top: 10px; line-height: 1.55; }
+
+            /* timeline */
+            .timeline { border-left: 2px solid var(--edge-strong); margin: 8px 0 0 9px; padding-left: 28px; display: flex; flex-direction: column; gap: 28px; }
+            .step { position: relative; }
+            .step::before {
+              content: ""; position: absolute; left: -35px; top: 7px; width: 10px; height: 10px;
+              border-radius: 50%; background: var(--void); border: 2px solid var(--flow);
+            }
+            .step.seam::before { border-color: var(--amber); }
+            .step .n { font-family: var(--font-mono); font-size: 12px; color: var(--flow); letter-spacing: .08em; }
+            .step.seam .n { color: var(--amber); }
+            .step h3 { margin: 2px 0 6px; }
+            .step p { color: var(--slate); font-size: 15.5px; }
+            .step p + p { margin-top: 8px; }
+
+            /* bento */
+            .bento { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; margin-top: 8px; }
+            .cell { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 18px 18px 16px; }
+            .cell.tint { background: var(--panel-2); }
+            .cell h3 { display: flex; align-items: baseline; gap: 9px; font-size: 15.5px; }
+            .cell h3 .icon { color: var(--flow); align-self: center; }
+            .cell p { color: var(--slate); font-size: 14.5px; margin-top: 6px; }
+            .cell .kind {
+              font-family: var(--font-mono); font-size: 11px; letter-spacing: .05em; color: var(--slate);
+              border: 1px solid var(--edge-strong); border-radius: 8px; padding: 2px 8px; white-space: nowrap;
+            }
+            .cell .spawn {
+              font-family: var(--font-mono); font-size: 12px; color: var(--chalk); background: var(--void);
+              border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; margin-top: 12px;
+              overflow-x: auto; white-space: nowrap;
+            }
+            .cell .spawn .pr { color: var(--flow); }
+            .s4 { grid-column: span 4; } .s5 { grid-column: span 5; }
+            .s6 { grid-column: span 6; } .s7 { grid-column: span 7; } .s12 { grid-column: span 12; }
+            @media (max-width: 900px) {
+              .s4, .s5, .s6, .s7 { grid-column: span 6; }
+            }
+            @media (max-width: 620px) {
+              .bento { grid-template-columns: 1fr; }
+              .s4, .s5, .s6, .s7, .s12 { grid-column: auto; }
+            }
+
+            /* ledger */
+            .ledger { border-top: 1px solid var(--edge); margin-top: 10px; }
+            .ledger .row { display: grid; grid-template-columns: 280px 1fr; gap: 22px; padding: 13px 0; }
+            .ledger .term { font-family: var(--font-mono); font-size: 13px; color: var(--chalk); line-height: 1.6; }
+            .ledger .term .idx { color: var(--flow); margin-right: 8px; }
+            .ledger .desc { color: var(--slate); font-size: 15.5px; max-width: 62ch; }
+            .ledger .desc code.path { font-size: .8em; }
+            @media (max-width: 720px) {
+              .ledger .row { grid-template-columns: 1fr; gap: 3px; padding: 11px 0; }
+              .ledger .desc { font-size: 14.5px; }
+            }
+
+            /* outcome chips */
+            .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+            .chip {
+              font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .05em;
+              padding: 7px 13px; border-radius: 10px; border: 1px solid var(--edge-strong); color: var(--chalk);
+              background: var(--panel);
+            }
+            .chip small { display: block; font-size: 11px; color: var(--slate); letter-spacing: .02em; margin-top: 2px; }
+            .chip.bid { border-color: rgba(43,213,118,.45); } .chip.bid strong { color: var(--bid); font-weight: 600; }
+            .chip.flow { border-color: rgba(86,204,242,.45); } .chip.flow strong { color: var(--flow); font-weight: 600; }
+            .chip.ask { border-color: rgba(255,93,108,.45); } .chip.ask strong { color: var(--ask); font-weight: 600; }
+
+            /* callout */
+            .callout {
+              background: var(--panel); border: 1px solid var(--edge);
+              border-left: 3px solid var(--ask); border-radius: 10px; padding: 18px 20px; margin-top: 30px;
+            }
+            .callout h3 { font-size: 15.5px; display: flex; align-items: baseline; gap: 9px; }
+            .callout .icon { color: var(--ask); align-self: center; }
+            .callout p { color: var(--slate); font-size: 15px; margin-top: 4px; }
+
+            /* evidence list */
+            .evi { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 44px; margin-top: 6px; }
+            .evi .group h3 { font-size: 14px; font-family: var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--slate); margin-bottom: 4px; }
+            .evi ul { list-style: none; }
+            .evi li { padding: 7px 0; color: var(--slate); font-size: 14.5px; }
+            .evi li .path { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: bottom; }
+            @media (max-width: 760px) { .evi { grid-template-columns: 1fr; } }
+
+            /* cross links */
+            .xlinks { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+            .xlink {
+              font-size: 14.5px; color: var(--slate); background: var(--panel); border: 1px solid var(--edge);
+              border-radius: 8px; padding: 8px 14px;
+            }
+            .xlink:hover { color: var(--flow); border-color: var(--edge-strong); text-decoration: none; }
+
+      /* mobile: long identifiers may wrap instead of pushing the page wide */
+      @media (max-width: 700px) {
+        .mono, h2 span, h3 span, p span { overflow-wrap: anywhere; }
+      }
+
+      /* mobile hard guard: chips and code may wrap or scroll, never push the page wide */
+      @media (max-width: 700px) {
+        code.path, code, .mono, .k, .who, .chip, .path-chip, .file, .fn, .term, .qno, p span, h2 span, h3 span, li span, td, th {
+          white-space: normal !important;
+          overflow-wrap: anywhere !important;
+        }
+        pre, .terminal, .codeblock {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          white-space: pre !important;
+        }
+      }
+
+      /* mobile hard guard 2: force split/bento grids to a single shrinkable column */
+      @media (max-width: 700px) {
+        .split, .bento { display: block !important; }
+        .split > *, .bento > *, .cell, .bcell { min-width: 0 !important; max-width: 100% !important; width: 100% !important; margin-left: 0 !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/"><span class="tick">▲</span>T3 TRADE · SYSTEM ATLAS</a>
+        <nav class="nav-links" id="navlinks">
+          <a href="/">Atlas</a>
+          <a href="/overview.html">Big picture</a>
+          <a href="/architecture.html">Event spine</a>
+          <a href="/execution.html">Execution</a>
+          <a href="/risk.html">Risk control</a>
+          <a href="/status.html">Build board</a>
+        </nav>
+        <button
+          class="nav-menu-btn"
+          aria-expanded="false"
+          aria-controls="navlinks"
+          onclick="
+            const n = document.getElementById('navlinks');
+            n.classList.toggle('open');
+            this.setAttribute('aria-expanded', n.classList.contains('open'));
+          "
+        >
+          MENU
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <section class="section">
+          <div class="kicker">
+            <svg
+              class="icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M7 12l5 5l-1.5 1.5a3.536 3.536 0 1 1 -5 -5l1.5 -1.5" />
+              <path d="M17 12l-5 -5l1.5 -1.5a3.536 3.536 0 1 1 5 5l-1.5 1.5" />
+              <path d="M3 21l2.5 -2.5" />
+              <path d="M18.5 5.5l2.5 -2.5" />
+              <path d="M10 11l-2 2" />
+              <path d="M13 14l-2 2" />
+            </svg>
+            Provider adapters
+          </div>
+          <h1>Five agent runtimes, one contract</h1>
+          <p class="lede">
+            A provider is the configured agent runtime behind a thread. The orchestration layer
+            addresses that runtime through a common contract and does not depend on its vendor. Five
+            built-in drivers translate their native protocols, from a typed app-server to stdio
+            CLIs, behind one <code>ProviderAdapter</code> contract. The trading grounding rides the
+            first turn of each session as a prefix, never a replacement for a native prompt.
+          </p>
+
+          <div class="ribbon reveal">
+            <svg
+              viewBox="0 0 900 196"
+              role="img"
+              aria-label="One turn crosses the adapter boundary and returns as orchestration commands"
+            >
+              <!-- forward row -->
+              <path
+                id="pe1"
+                class="edge-line"
+                d="M158,54 H230"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="pe2"
+                class="edge-line"
+                d="M406,54 H478"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="pe3"
+                class="edge-line"
+                d="M654,54 H726"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <!-- boundary crossing -->
+              <path
+                id="pe4"
+                class="edge-line"
+                d="M809,80 V132"
+                stroke="rgba(255,178,36,.5)"
+                fill="none"
+                stroke-width="2"
+              />
+              <!-- return row, right to left -->
+              <path
+                id="pe5"
+                class="edge-line"
+                d="M560,158 H536"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+              <path
+                id="pe6"
+                class="edge-line"
+                d="M300,158 H278"
+                stroke="var(--edge-strong)"
+                fill="none"
+                stroke-width="2"
+              />
+
+              <g class="node-pulse">
+                <rect
+                  x="8"
+                  y="28"
+                  width="150"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="83"
+                  y="50"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  client
+                </text>
+                <text
+                  x="83"
+                  y="66"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  thread.turn.start
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="230"
+                  y="28"
+                  width="176"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="318"
+                  y="50"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  reactor
+                </text>
+                <text
+                  x="318"
+                  y="66"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  ProviderCommandReactor
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="478"
+                  y="28"
+                  width="176"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="566"
+                  y="50"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  registry
+                </text>
+                <text
+                  x="566"
+                  y="66"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  ProviderInstanceRegistry
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="726"
+                  y="28"
+                  width="166"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(255,178,36,.5)"
+                />
+                <text
+                  x="809"
+                  y="50"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  adapter
+                </text>
+                <text
+                  x="809"
+                  y="66"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  prefix · t3-trade MCP
+                </text>
+              </g>
+
+              <g class="node-pulse">
+                <rect
+                  x="560"
+                  y="132"
+                  width="332"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="rgba(255,178,36,.5)"
+                />
+                <text
+                  x="726"
+                  y="154"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  runtime
+                </text>
+                <text
+                  x="726"
+                  y="170"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  codex · claude · cursor · grok · opencode
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="300"
+                  y="132"
+                  width="236"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="418"
+                  y="154"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  ingestion
+                </text>
+                <text
+                  x="418"
+                  y="170"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  ProviderRuntimeIngestion
+                </text>
+              </g>
+              <g class="node-pulse">
+                <rect
+                  x="8"
+                  y="132"
+                  width="270"
+                  height="52"
+                  rx="10"
+                  fill="var(--panel-2)"
+                  stroke="var(--edge-strong)"
+                />
+                <text
+                  x="143"
+                  y="154"
+                  text-anchor="middle"
+                  fill="var(--chalk)"
+                  font-family="var(--font-mono)"
+                  font-size="11"
+                >
+                  clients
+                </text>
+                <text
+                  x="143"
+                  y="170"
+                  text-anchor="middle"
+                  fill="var(--slate)"
+                  font-family="var(--font-mono)"
+                  font-size="9"
+                >
+                  orchestration.subscribeThread
+                </text>
+              </g>
+
+              <circle r="3.5" fill="var(--flow)">
+                <animateMotion dur="2.2s" begin="0s" repeatCount="indefinite">
+                  <mpath href="#pe1" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)">
+                <animateMotion dur="2.2s" begin=".55s" repeatCount="indefinite">
+                  <mpath href="#pe2" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)">
+                <animateMotion dur="2.2s" begin="1.1s" repeatCount="indefinite">
+                  <mpath href="#pe3" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--amber)">
+                <animateMotion dur="1.1s" begin="1.65s" repeatCount="indefinite">
+                  <mpath href="#pe4" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)" opacity=".7">
+                <animateMotion dur="2.2s" begin=".3s" repeatCount="indefinite">
+                  <mpath href="#pe5" />
+                </animateMotion>
+              </circle>
+              <circle r="3.5" fill="var(--flow)" opacity=".7">
+                <animateMotion dur="2.2s" begin=".85s" repeatCount="indefinite">
+                  <mpath href="#pe6" />
+                </animateMotion>
+              </circle>
+            </svg>
+            <div class="cap">
+              ONE TURN, BOTH WAYS. Forward: an intent event reaches the reactor, the registry
+              resolves the instance, the adapter grounds the turn. Back: provider events are
+              re-emitted as commands clients subscribe to. The amber edge is the adapter boundary.
+            </div>
+          </div>
+
+          <div class="stat-strip reveal">
+            <div class="stat">
+              <div class="num">5</div>
+              <div class="lbl">
+                built-in drivers in <code class="path">BUILT_IN_DRIVERS</code><br /><code
+                  class="path"
+                  >apps/server/src/provider/builtInDrivers.ts:47-53</code
+                >
+              </div>
+            </div>
+            <div class="stat">
+              <div class="num">13</div>
+              <div class="lbl">
+                operations on the <code class="path">ProviderAdapterShape</code> contract<br /><code
+                  class="path"
+                  >apps/server/src/provider/Services/ProviderAdapter.ts:47-135</code
+                >
+              </div>
+            </div>
+            <div class="stat">
+              <div class="num">70,000</div>
+              <div class="lbl">
+                char hard bound on the TRADE.md context block (<code class="path"
+                  >PLAN_CONTEXT_MAX_CHARS</code
+                >)<br /><code class="path">docs/internals/providers.md:92-95</code>
+              </div>
+            </div>
+            <div class="stat">
+              <div class="num">24,000</div>
+              <div class="lbl">
+                char cap on buffered assistant text before it spills as one delta<br /><code
+                  class="path"
+                  >apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:101</code
+                >
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>One contract, five translators</h2>
+          <div class="split">
+            <div class="prose reveal">
+              <p>
+                A provider is the agent runtime that does the actual work, and T3 Trade supports
+                several without the orchestration layer knowing which one is behind a thread
+                <code class="path">docs/internals/providers.md:5-6</code>. The unit of registration
+                is the driver: a plain value that declares a <code class="path">driverKind</code>, a
+                <code class="path">configSchema</code>, and a
+                <code class="path">create</code> function that builds an adapter in a child scope
+                <code class="path">docs/internals/providers.md:20-24</code>. The
+                <code class="path">create</code> call returns one
+                <code class="path">ProviderInstance</code> bundling a
+                <code class="path">snapshot</code>, an <code class="path">adapter</code>, and a
+                <code class="path">textGeneration</code> surface
+                <code class="path">apps/server/src/provider/Drivers/CodexDriver.ts:4-8</code>.
+              </p>
+              <p>
+                Two registries separate configuration from live processes. The
+                <code class="path">ProviderInstanceRegistry</code> keys configured instances by
+                <code class="path">ProviderInstanceId</code>: creating one looks up the driver by
+                <code class="path">driverKind</code>, decodes the entry config with that driver's
+                schema, opens a child scope, and calls <code class="path">driver.create</code>
+                <code class="path">docs/internals/providers.md:28-34</code>. The
+                <code class="path">ProviderAdapterRegistry</code> then resolves an instance ID to
+                its live adapter, and <code class="path">ProviderService</code> routes session and
+                turn operations on top so callers name a thread, not an agent
+                <code class="path">docs/internals/providers.md:33-38</code>.
+              </p>
+              <p>
+                This lets the fork support five runtimes without five orchestration paths. Adding a
+                first-party driver means implementing <code class="path">ProviderDriver</code> in a
+                sibling <code class="path">Drivers/&lt;Name&gt;Driver.ts</code>, adding it to the
+                <code class="path">BUILT_IN_DRIVERS</code> array, and ensuring the runtime layer
+                satisfies its declared requirements
+                <code class="path">apps/server/src/provider/builtInDrivers.ts:11-19</code>. No
+                orchestration, contract, or client change is required for the common case
+                <code class="path">docs/internals/providers.md:39-40</code>. Anything configured but
+                missing from the array surfaces as an <code class="path">unavailable</code> shadow
+                snapshot rather than a crash
+                <code class="path">apps/server/src/provider/builtInDrivers.ts:5-9</code>.
+              </p>
+            </div>
+            <div class="contract reveal" style="transition-delay: 80ms">
+              <div class="head">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M5 6a1 1 0 0 1 1 -1h12a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1l0 -12"
+                  />
+                  <path d="M9 9h6v6h-6l0 -6" />
+                  <path d="M3 10h2" />
+                  <path d="M3 14h2" />
+                  <path d="M10 3v2" />
+                  <path d="M14 3v2" />
+                  <path d="M21 10h-2" />
+                  <path d="M21 14h-2" />
+                  <path d="M14 21v-2" />
+                  <path d="M10 21v-2" />
+                </svg>
+                ProviderAdapterShape
+              </div>
+              <div class="ops">
+                <div class="op">
+                  <span class="sig">startSession</span
+                  ><span class="note">open a provider session</span>
+                </div>
+                <div class="op">
+                  <span class="sig">sendTurn</span
+                  ><span class="note">one turn to a live session</span>
+                </div>
+                <div class="op">
+                  <span class="sig">interruptTurn</span
+                  ><span class="note">stop a running turn</span>
+                </div>
+                <div class="op">
+                  <span class="sig">respondToRequest</span
+                  ><span class="note">answer an approval</span>
+                </div>
+                <div class="op">
+                  <span class="sig">respondToUserInput</span
+                  ><span class="note">answer structured input</span>
+                </div>
+                <div class="op">
+                  <span class="sig">stopSession · stopAll</span><span class="note">tear down</span>
+                </div>
+                <div class="op">
+                  <span class="sig">listSessions · hasSession</span
+                  ><span class="note">ownership queries</span>
+                </div>
+                <div class="op">
+                  <span class="sig">readThread · rollbackThread</span
+                  ><span class="note">snapshot and revert turns</span>
+                </div>
+                <div class="op">
+                  <span class="sig">uploadFeedback <span class="opt">(optional)</span></span
+                  ><span class="note">where supported</span>
+                </div>
+                <div class="op">
+                  <span class="sig">streamEvents</span
+                  ><span class="note">canonical runtime event stream</span>
+                </div>
+              </div>
+              <div class="foot">
+                The whole surface every adapter must speak. Implementations "should focus on
+                provider behavior only and avoid cross-provider orchestration concerns."
+                <code class="path"
+                  >apps/server/src/provider/Services/ProviderAdapter.ts:1-9,47-135</code
+                >
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>One turn, traced</h2>
+          <p class="lede" style="margin-bottom: 6px">
+            Clients never call a provider directly. A turn crosses six stages. Only the registry and
+            adapter boundary resolve the provider instance that runs it.
+          </p>
+          <div class="timeline reveal">
+            <div class="step">
+              <div class="n">STEP 1 · CLIENT</div>
+              <h3>The client dispatches a command</h3>
+              <p>
+                The turn begins as <code class="path">thread.turn.start</code> over the RPC method
+                <code class="path">orchestration.dispatchCommand</code>. The client-dispatchable
+                provider-facing set also includes <code class="path">thread.turn.interrupt</code>,
+                <code class="path">thread.approval.respond</code>,
+                <code class="path">thread.user-input.respond</code>,
+                <code class="path">thread.checkpoint.revert</code>,
+                <code class="path">thread.session.stop</code>, and the mode setters
+                <code class="path">thread.runtime-mode.set</code> and
+                <code class="path">thread.interaction-mode.set</code>
+                <code class="path">docs/internals/providers.md:56-61</code>.
+              </p>
+            </div>
+            <div class="step">
+              <div class="n">STEP 2 · ENGINE</div>
+              <h3>The engine persists an intent event</h3>
+              <p>
+                The command becomes a persisted event first, and a server-side reactor performs the
+                provider call <code class="path">docs/internals/providers.md:63-64</code>. The
+                <code class="path">ProviderCommandReactor</code> listens for
+                <code class="path">thread.turn-start-requested</code> intent events and reacts by
+                dispatching <code class="path">thread.turn.start</code> into the provider layer
+                <code class="path"
+                  >apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:59,512,1520</code
+                >.
+              </p>
+            </div>
+            <div class="step">
+              <div class="n">STEP 3 · REGISTRY</div>
+              <h3>The registry resolves the instance</h3>
+              <p>
+                The thread names a provider instance, not a vendor. The registry looks up the driver
+                by <code class="path">driverKind</code>, decodes the entry config with that driver's
+                schema, opens a child scope, and calls <code class="path">driver.create</code>
+                <code class="path">docs/internals/providers.md:28-34</code>. Closing the scope tears
+                the instance down, releasing child processes and snapshot refresh work
+                <code class="path">apps/server/src/provider/Drivers/CodexDriver.ts:16-20</code>.
+              </p>
+            </div>
+            <div class="step seam">
+              <div class="n">STEP 4 · ADAPTER BOUNDARY</div>
+              <h3>The adapter grounds the first turn</h3>
+              <p>
+                On the first turn of each session instance, the adapter adds the workspace trading
+                preamble before the user's text: Hyperliquid testnet is the only venue, market facts
+                come from tools, TRADE.md is persistent plan context, a direct order is direct,
+                exchange actions run through the typed tools, and server refusals are authoritative
+                <code class="path">apps/server/src/provider/TradingSessionProfile.ts:54-61</code>.
+                It is appended to the turn text and never replaces a native prompt
+                <code class="path">docs/internals/providers.md:94-95</code>. The adapter includes
+                the current TRADE.md as a delimited context block. It caps the block at 70,000
+                characters and omits it when it exceeds that limit
+                <code class="path">docs/internals/providers.md:92-95</code>. The trading toolkit is
+                mounted as an ordinary MCP server named <code class="path">t3-trade</code>
+                <code class="path">apps/server/src/provider/TradingSessionProfile.ts:41-42</code>.
+              </p>
+              <p>
+                A turn that failed to send must not swallow the contract: delivery is marked only
+                after the turn dispatched successfully, so the next turn carries the full prefix
+                again
+                <code class="path">apps/server/src/provider/TradingSessionProfile.ts:203-212</code>.
+              </p>
+            </div>
+            <div class="step">
+              <div class="n">STEP 5 · NATIVE RUNTIME</div>
+              <h3>The provider keeps its native session behavior</h3>
+              <p>
+                A trading thread is a native agent session, not a trading persona. Claude runs the
+                stock <code class="path">claude_code</code> preset, Codex keeps its own base
+                instructions, and the CLI-backed adapters change nothing about their native surface:
+                every session keeps its native tools, cwd, sandbox, and approval mode
+                <code class="path">docs/internals/providers.md:83-86</code>.
+              </p>
+            </div>
+            <div class="step">
+              <div class="n">STEP 6 · INGESTION</div>
+              <h3>Events stream back as orchestration commands</h3>
+              <p>
+                The <code class="path">ProviderRuntimeIngestion</code> worker consumes the provider
+                runtime stream and re-emits internal commands such as
+                <code class="path">thread.message.assistant.delta</code> and
+                <code class="path">thread.session.set</code>, which clients observe through
+                <code class="path">orchestration.subscribeThread</code>
+                <code class="path">docs/internals/providers.md:63-65</code>,
+                <code class="path"
+                  >apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:1159,1645</code
+                >. In buffered delivery mode assistant text accumulates up to 24,000 chars; the
+                append that would exceed it spills the whole accumulated text as one delta, and the
+                buffer also flushes at interaction boundaries
+                <code class="path"
+                  >apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:101,1093</code
+                >, <code class="path">docs/internals/providers.md:110-117</code>.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Five protocols behind one adapter contract</h2>
+          <p class="lede" style="margin-bottom: 6px">
+            Each driver translates one native protocol. The distinguishing fact on every card is the
+            thing that protocol forced the adapter to solve.
+          </p>
+          <div class="bento">
+            <div class="cell tint s7 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M8 9l3 3l-3 3" />
+                  <path d="M13 15l3 0" />
+                  <path
+                    d="M3 6a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2l0 -12"
+                  />
+                </svg>
+                Codex <span class="kind">driverKind codex</span>
+              </h3>
+              <p>
+                Speaks the typed app-server protocol from the in-repo package
+                <code class="path">packages/effect-codex-app-server</code>, imported as generated
+                <code class="path">client</code>, <code class="path">errors</code>,
+                <code class="path">rpc</code>, and <code class="path">schema</code> modules
+                <code class="path"
+                  >apps/server/src/provider/Layers/CodexSessionRuntime.ts:34-37</code
+                >. Each instance gets its own <code class="path">CODEX_HOME</code>: two instances
+                with different home paths run fully independent app-server processes with no shared
+                mutable state
+                <code class="path">apps/server/src/provider/Drivers/CodexDriver.ts:10-14</code>.
+              </p>
+              <p>
+                The shadow-home overlay is the distinguishing trick. In
+                <code class="path">authOverlay</code> mode the shared home keeps
+                <code class="path">sessions</code>, <code class="path">sqlite</code>,
+                <code class="path">skills</code>, <code class="path">logs</code>, and the other
+                runtime directories as symlinks into one place, while
+                <code class="path">auth.json</code> and
+                <code class="path">models_cache.json</code> stay private per instance, and
+                <code class="path">auth.json</code> appearing as a symlink is a hard error
+                <code class="path"
+                  >apps/server/src/provider/Drivers/CodexHomeLayout.ts:13,19-34,295-318</code
+                >.
+              </p>
+              <div class="spawn">
+                <span class="pr">CODEX_HOME</span> (shadow) auth.json · models_cache.json private,
+                real files<br /><span class="pr">~/.codex</span> (shared) sessions · sqlite · skills
+                ... symlinked in
+              </div>
+            </div>
+            <div class="cell s5 reveal" style="transition-delay: 70ms">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 19a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+                  <path d="M19 7a2 2 0 1 0 0 -4a2 2 0 0 0 0 4" />
+                  <path d="M11 19h5.5a3.5 3.5 0 0 0 0 -7h-8a3.5 3.5 0 0 1 0 -7h4.5" />
+                </svg>
+                Claude <span class="kind">driverKind claudeAgent</span>
+              </h3>
+              <p>
+                Runs on the Claude Agent SDK. Its snapshot probe may invoke a secondary capability
+                probe that reads Anthropic account and slash-command metadata, so the probe cache is
+                per instance and keyed by binary plus resolved HOME: two concurrent Claude instances
+                never cross-contaminate account metadata. The cache holds one entry for five minutes
+                <code class="path"
+                  >apps/server/src/provider/Drivers/ClaudeDriver.ts:2-11,62,157-167</code
+                >.
+              </p>
+              <div class="spawn">probe key = binary + resolved HOME · TTL 5 min</div>
+            </div>
+            <div class="cell s4 reveal">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M4 13h5" />
+                  <path d="M12 16v-8h3a2 2 0 0 1 2 2v1a2 2 0 0 1 -2 2h-3" />
+                  <path d="M20 8v8" />
+                  <path d="M9 16v-5.5a2.5 2.5 0 0 0 -5 0v5.5" />
+                </svg>
+                Cursor <span class="kind">driverKind cursor</span>
+              </h3>
+              <p>
+                An ACP-based CLI. Spawn shape is <code class="path">cursor-agent</code> with an
+                optional <code class="path">-e endpoint</code> and the
+                <code class="path">acp</code> subcommand, authenticating as
+                <code class="path">cursor_login</code>
+                <code class="path">apps/server/src/provider/acp/CursorAcpSupport.ts:33-47,61</code>.
+                The model catalog and capabilities come exclusively from Cursor's
+                <code class="path">list_available_models</code> extension method during provider
+                checks
+                <code class="path">apps/server/src/provider/Drivers/CursorDriver.ts:152-153</code>.
+              </p>
+              <div class="spawn"><span class="pr">$</span> cursor-agent [-e endpoint] acp</div>
+            </div>
+            <div class="cell s4 reveal" style="transition-delay: 70ms">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11" />
+                </svg>
+                Grok <span class="kind">driverKind grok</span>
+              </h3>
+              <p>
+                Spawns <code class="path">grok agent stdio</code> and injects
+                <code class="path">GROK_OAUTH2_REFERRER=t3code</code> into the environment
+                <code class="path">apps/server/src/provider/acp/GrokAcpSupport.ts:14-18,32-46</code
+                >. Auth resolves to the <code class="path">xai.api_key</code> method when
+                <code class="path">XAI_API_KEY</code> is set, otherwise the cached token method, and
+                an xAI prompt-completion extension rides the session
+                <code class="path">apps/server/src/provider/acp/GrokAcpSupport.ts:48-52,76</code>.
+              </p>
+              <div class="spawn">
+                <span class="pr">$</span> grok agent stdio · GROK_OAUTH2_REFERRER=t3code
+              </div>
+            </div>
+            <div class="cell s4 reveal" style="transition-delay: 140ms">
+              <h3>
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M7 12l5 5l-1.5 1.5a3.536 3.536 0 1 1 -5 -5l1.5 -1.5" />
+                  <path d="M17 12l-5 -5l1.5 -1.5a3.536 3.536 0 1 1 5 5l-1.5 1.5" />
+                  <path d="M3 21l2.5 -2.5" />
+                  <path d="M18.5 5.5l2.5 -2.5" />
+                  <path d="M10 11l-2 2" />
+                  <path d="M13 14l-2 2" />
+                </svg>
+                OpenCode <span class="kind">driverKind opencode</span>
+              </h3>
+              <p>
+                Uses the typed client from <code class="path">@opencode-ai/sdk/v2</code>
+                <code class="path">apps/server/src/provider/opencodeRuntime.ts:14</code>. Two
+                instances with different <code class="path">serverUrl</code> values talk to
+                independent OpenCode servers; without one, scoped child processes are spun up and
+                released when the registry scope closes
+                <code class="path">apps/server/src/provider/Drivers/OpenCodeDriver.ts:6-12</code>.
+                Readiness is the log line below, awaited for up to 30 seconds
+                <code class="path">apps/server/src/provider/opencodeRuntime.ts:51-53</code>.
+              </p>
+              <div class="spawn">opencode server listening · 127.0.0.1 · 30s</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Errors fold into one family</h2>
+          <p class="lede" style="margin-bottom: 6px">
+            Each provider reports failures differently. The adapter maps them into the shared
+            <code class="path">ProviderAdapterError</code> family, so orchestration handles
+            provider-process exits and closed sessions consistently.
+          </p>
+          <div class="ledger reveal">
+            <div class="row">
+              <div class="term"><span class="idx">ACP</span>mapAcpToAdapterError</div>
+              <div class="desc">
+                Both Cursor and Grok run over ACP, so their error translation is centralized: an
+                <code class="path">AcpProcessExitedError</code> becomes
+                <code class="path">ProviderAdapterSessionClosedError</code>, and an
+                <code class="path">AcpRequestError</code> becomes
+                <code class="path">ProviderAdapterRequestError</code> carrying the method and
+                message
+                <code class="path">apps/server/src/provider/acp/AcpAdapterSupport.ts:17-44</code>.
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">CODEX</span>app-server failures</div>
+              <div class="desc">
+                The Codex adapter maps
+                <code class="path">CodexAppServerProcessExitedError</code> and
+                <code class="path">CodexAppServerTransportError</code> to
+                <code class="path">ProviderAdapterSessionClosedError</code>, and wields
+                <code class="path">RequestError</code>,
+                <code class="path">SessionNotFoundError</code>,
+                <code class="path">ValidationError</code>, and
+                <code class="path">ProcessError</code> for the rest
+                <code class="path"
+                  >apps/server/src/provider/Layers/CodexAdapter.ts:39,51-56,72-124</code
+                >.
+              </div>
+            </div>
+            <div class="row">
+              <div class="term"><span class="idx">APPROVAL</span>acpPermissionOutcome</div>
+              <div class="desc">
+                Permission prompts translate the product's approval vocabulary into ACP outcomes
+                before they cross the wire
+                <code class="path">apps/server/src/provider/acp/AcpAdapterSupport.ts:46-56</code>.
+              </div>
+            </div>
+          </div>
+          <div class="chips reveal">
+            <div class="chip bid">
+              <strong>acceptForSession → allow-always</strong
+              ><small>persisted permission for the session</small>
+            </div>
+            <div class="chip flow">
+              <strong>accept → allow-once</strong
+              ><small>single approval, next ask asks again</small>
+            </div>
+            <div class="chip ask">
+              <strong>decline → reject-once</strong
+              ><small>refuse this request, keep the session</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Trading code must not become a sixth runtime</h2>
+          <p>
+            Provider complexity is kept at adapters by a test, not by convention.
+            <code class="path">apps/server/src/trading/ProviderBoundary.test.ts</code> statically
+            scans every TypeScript file under the trading tree and the trading MCP toolkit for seven
+            process-spawning patterns: <code class="path">node:child_process</code> imports,
+            <code class="path">child_process</code> imports, <code class="path">spawn(</code>,
+            <code class="path">exec(</code>, <code class="path">fork(</code>,
+            <code class="path">node-pty</code>, and <code class="path">Command.make</code>
+            <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:20-23,45-53</code>.
+            It also scans for direct <code class="path">claude</code>,
+            <code class="path">codex</code>, and <code class="path">opencode</code> CLI invocations
+            <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:67-71</code>, and
+            forbids trading code from importing a provider adapter from
+            <code class="path">provider/Layers</code> or managing
+            <code class="path">ProviderSessionRuntime</code> state itself
+            <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:112-125</code>.
+          </p>
+          <div class="callout reveal">
+            <h3>
+              <svg
+                class="icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"
+                />
+                <path d="M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+                <path d="M12 12l0 2.5" />
+              </svg>
+              One audited exemption
+            </h3>
+            <p>
+              The boundary exists so that no trading code becomes a second provider runtime. The
+              single module allowed to spawn a process is
+              <code class="path">ArchiveSupervisor.ts</code>, which starts the in-repo market
+              archiver: a script that reads public market data and writes a SQLite file while
+              holding no provider session and no key
+              <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:56-64</code>. The
+              test pins the exemption down: the supervisor must spawn the archiver's
+              <code class="path">archive main.ts</code> with this process's own Node binary, and the
+              provider-CLI scan still applies to it
+              <code class="path">apps/server/src/trading/ProviderBoundary.test.ts:93-102</code>.
+            </p>
+          </div>
+          <div class="evi reveal" style="margin-top: 26px">
+            <div class="group">
+              <h3>Contract and drivers</h3>
+              <ul>
+                <li>
+                  <code class="path">apps/server/src/provider/builtInDrivers.ts:47-53</code> the
+                  five-entry array
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/provider/Services/ProviderAdapter.ts:47-135</code
+                  >
+                  the shared shape
+                </li>
+                <li>
+                  <code class="path">docs/internals/providers.md:8-40</code> driver table and the
+                  no-change recipe
+                </li>
+                <li>
+                  <code class="path">packages/effect-codex-app-server/src/</code> generated
+                  protocol, client, errors
+                </li>
+              </ul>
+            </div>
+            <div class="group">
+              <h3>Turn seam</h3>
+              <ul>
+                <li>
+                  <code class="path">apps/server/src/provider/TradingSessionProfile.ts:41-61</code>
+                  t3-trade MCP name, preamble
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/provider/TradingSessionProfile.ts:166-212</code
+                  >
+                  once per instance, marked only on success
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:59,1520</code
+                  >
+                  intent to call
+                </li>
+                <li>
+                  <code class="path"
+                    >apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:101,1159,1645</code
+                  >
+                  events to commands
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Nuances worth knowing</h2>
+          <div class="bento">
+            <div class="cell s4 reveal">
+              <h3>The three-way trading classification</h3>
+              <p>
+                When authority binds, the driver kind collapses to a
+                <code class="path">TradingProvider</code>: <code class="path">claude</code> and
+                <code class="path">claudeAgent</code> map to claude,
+                <code class="path">opencode</code> maps to opencode, and everything else, including
+                cursor and grok, maps to codex
+                <code class="path">apps/server/src/trading/TradingAuthorityBinding.ts:318-323</code
+                >.
+              </p>
+            </div>
+            <div class="cell tint s4 reveal" style="transition-delay: 70ms">
+              <h3>Chat gets the preamble too</h3>
+              <p>
+                Every thread in the workspace carries the grounding on its first turn per session
+                instance, chat included, because chat is the front door for trading and any thread
+                can take authority on its first plan or execution call
+                <code class="path">apps/server/src/provider/TradingSessionProfile.ts:214-224</code>,
+                <code class="path">docs/internals/providers.md:96-99</code>.
+              </p>
+            </div>
+            <div class="cell s4 reveal" style="transition-delay: 140ms">
+              <h3>Later turns carry one line</h3>
+              <p>
+                The delivered-contract memory is in-process and cleared by every adapter's
+                <code class="path">startSession</code>, so a restart or resume re-delivers one full
+                copy per instance. Subsequent turns name the frame and nothing else: repeating the
+                grounding would not make it more true
+                <code class="path">apps/server/src/provider/TradingSessionProfile.ts:166-201</code>.
+              </p>
+            </div>
+            <div class="cell s7 reveal">
+              <h3>Scope fences are stated as fact, enforced in rows</h3>
+              <p>
+                Analyst and observe sessions get one extra paragraph naming their fence, and the
+                module is explicit that the enforcement is persisted server-side, never prompt-side:
+                the observer refusal reads the mission row's purpose, and the analyst fence reads
+                the persisted analyst registry and the missing mission binding
+                <code class="path">apps/server/src/provider/TradingSessionProfile.ts:116-128</code>,
+                <code class="path">docs/internals/providers.md:103-108</code>.
+              </p>
+            </div>
+            <div class="cell tint s5 reveal" style="transition-delay: 70ms">
+              <h3>The model manifest is a commit, not a release</h3>
+              <p>
+                The picker's legacy section is driven by
+                <code class="path">model-manifest.json</code>, refreshed from the same file on main
+                via raw.githubusercontent.com. Fetches are TTL-gated, run concurrently with provider
+                probes, and never fail a provider check; only the Codex and Claude drivers apply the
+                classification <code class="path">docs/internals/providers.md:42-52</code>.
+              </p>
+            </div>
+          </div>
+          <div class="xlinks reveal">
+            <a class="xlink" href="/research.html">Research mode</a>
+            <a class="xlink" href="/architecture.html">Event spine</a>
+            <a class="xlink" href="/contracts.html">Contracts</a>
+            <a class="xlink" href="/missions.html">Missions watches wakes</a>
+            <a class="xlink" href="/relay.html">Relay &amp; environments</a>
+            <a class="xlink" href="/invariants.html">Safety invariants</a>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap cols">
+        <div style="max-width: 38ch">
+          <div class="mono">T3 TRADE · SYSTEM ATLAS</div>
+          <p style="margin-top: 10px; color: var(--dim)">
+            Written and illustrated by coordinated build agents. Every claim cites the repository.
+            <a href="/status.html">See the board</a>.
+          </p>
+        </div>
+        <nav aria-label="Section neighbors">
+          <div class="mono" style="margin-bottom: 6px">READ NEXT</div>
+          <a href="/research.html">← Research mode</a>
+          <a href="/relay.html">Relay &amp; environments →</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document
+          .querySelectorAll("animateMotion, animate")
+          .forEach((a) => a.setAttribute("begin", "indefinite"));
+      }
+    </script>
+    <script>
+      (() => {
+        const els = document.querySelectorAll(".reveal");
+        if (
+          !("IntersectionObserver" in window) ||
+          matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach((el) => el.classList.add("in"));
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e, i) => {
+              if (e.isIntersecting) {
+                e.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -40px 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      })();
+    </script>
+  </body>
+</html>
