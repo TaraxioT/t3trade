@@ -144,7 +144,6 @@ const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: a
   try {
     return decodeJson(payload) as { readonly result?: any; readonly error?: any };
   } catch (e) {
-    // eslint-disable-next-line
     require("node:fs").appendFileSync(
       "/tmp/mcp-body.txt",
       "BODY<<<" + body + ">>>\nPAYLOAD<<<" + payload + ">>>\n",
