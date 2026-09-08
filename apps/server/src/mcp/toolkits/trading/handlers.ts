@@ -620,9 +620,7 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
     const root = yield* readThreadWorkspaceRoot(sql, scope.threadId);
     if (root !== null) {
       const documents = yield* TradingPlanDocumentService;
-      const current = yield* documents
-        .readCurrent(root)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+      const current = yield* documents.readCurrent(root).pipe(Effect.orElseSucceed(() => null));
       if (current !== null && current.status === "present" && current.activation === "active") {
         cause = undefined;
       }
@@ -1375,35 +1373,39 @@ const MISSION_FETCH_BASES: ReadonlySet<string> = new Set([
 
 /** The market-side fields a fetch key can populate, all optional by nature. */
 type FetchMarketSections = {
-  -readonly [K in keyof Pick<
-    TradingObservation,
-    | "resolvedMarket"
-    | "snapshot"
-    | "orderBook"
-    | "book"
-    | "microstructure"
-    | "candles"
-    | "indicators"
-    | "volatility"
-    | "higherTimeframeVolatility"
-    | "structure"
-    | "structureBrief"
-    | "previousStructureRead"
-    | "levelHistory"
-    | "cost"
-    | "positionCosts"
-    | "account"
-    | "position"
-    | "openOrders"
-  >]?: TradingObservation[K];
+  -readonly [
+    K in keyof Pick<
+      TradingObservation,
+      | "resolvedMarket"
+      | "snapshot"
+      | "orderBook"
+      | "book"
+      | "microstructure"
+      | "candles"
+      | "indicators"
+      | "volatility"
+      | "higherTimeframeVolatility"
+      | "structure"
+      | "structureBrief"
+      | "previousStructureRead"
+      | "levelHistory"
+      | "cost"
+      | "positionCosts"
+      | "account"
+      | "position"
+      | "openOrders"
+    >
+  ]?: TradingObservation[K];
 };
 
 /** The archive-backed fields a fetch key can populate (§2.4). */
 type FetchArchiveSections = {
-  -readonly [K in keyof Pick<
-    TradingObservation,
-    "fundingStats" | "fundingSeries" | "oiPremium" | "bookHistory" | "scan" | "sessionLevels"
-  >]?: TradingObservation[K];
+  -readonly [
+    K in keyof Pick<
+      TradingObservation,
+      "fundingStats" | "fundingSeries" | "oiPremium" | "bookHistory" | "scan" | "sessionLevels"
+    >
+  ]?: TradingObservation[K];
 };
 
 /**

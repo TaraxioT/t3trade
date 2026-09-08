@@ -1057,9 +1057,11 @@ layer("TradingThesisValidationService durability", (it) => {
       } as unknown as TradingMarketArchiveShape;
       const failing = yield* makeTradingThesisValidationService.pipe(
         Effect.provideService(TradingMarketArchive, dyingBookArchive),
-        Effect.provide(TradingEventServiceLive),
-        Effect.provide(memory),
-        Effect.provide(NodeServices.layer),
+        Effect.provide(
+          TradingEventServiceLive.pipe(
+            Layer.provideMerge(Layer.mergeAll(memory, NodeServices.layer)),
+          ),
+        ),
       );
       const refined = yield* Effect.exit(
         failing.arm({
@@ -1133,9 +1135,11 @@ layer("TradingThesisValidationService catch-up and expiry", (it) => {
         fundingInWindow: () => Effect.succeed([]),
         bookHistory: () => Effect.succeed({ status: "unavailable", reason: "none" }),
       } as unknown as TradingMarketArchiveShape),
-      Effect.provide(TradingEventServiceLive),
-      Effect.provide(memory),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        TradingEventServiceLive.pipe(
+          Layer.provideMerge(Layer.mergeAll(memory, NodeServices.layer)),
+        ),
+      ),
     );
 
   /** Always in, one-bar hold: a settled trade every bar. */
@@ -1502,7 +1506,9 @@ it.live("a stale concurrent advance is refused and double-counts nothing (08A)",
     const gated = yield* makeTradingThesisValidationService.pipe(
       Effect.provideService(TradingMarketArchive, gatedArchive),
       Effect.provide(
-        Layer.mergeAll(TradingEventServiceLive, memory, NodeServices.layer, NodeCrypto.layer),
+        TradingEventServiceLive.pipe(
+          Layer.provideMerge(Layer.mergeAll(memory, NodeServices.layer, NodeCrypto.layer)),
+        ),
       ),
     );
 

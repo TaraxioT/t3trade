@@ -852,7 +852,7 @@ const make = Effect.gen(function* () {
       if (workspaceRoot === null) return false;
       const documents = yield* makeTradingPlanDocumentService;
       const active = yield* documents.readActive(workspaceRoot).pipe(
-        Effect.catch(() => Effect.succeed(null)),
+        Effect.orElseSucceed(() => null),
         Effect.catchCause(() => Effect.succeed(null)),
       );
       return active !== null;

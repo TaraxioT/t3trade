@@ -1596,18 +1596,18 @@ const make = Effect.gen(function* () {
       if (batch.hypothesisId !== null) {
         const rows = yield* sql<{ readonly thread_id: string }>`
           SELECT thread_id FROM trading_hypotheses WHERE hypothesis_id = ${batch.hypothesisId}
-        `.pipe(Effect.orDie);
+        `;
         const filed = rows[0]?.thread_id;
         if (filed !== undefined && !threads.includes(filed)) threads.push(filed);
       }
       for (const threadId of threads) {
-        const found = yield* missions.findMissionByThreadId(threadId).pipe(Effect.orDie);
+        const found = yield* missions.findMissionByThreadId(threadId);
         if (found._tag === "Some" && isActiveMissionStatus(found.value.status)) {
           return { missionId: found.value.id, threadId };
         }
       }
       return null;
-    });
+    }).pipe(Effect.orDie);
 
   /** How many validation wakes this mission has been sent in the last hour. */
   const validationWakesInWindow = (missionId: string, observedAt: number) =>

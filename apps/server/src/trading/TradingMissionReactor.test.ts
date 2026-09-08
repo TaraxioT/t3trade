@@ -2165,10 +2165,10 @@ const runEmergencyEntryCase = (options: {
 
       const engine = yield* OrchestrationEngineService;
       const dispatchExecution = (sequence: number) =>
-        Effect.gen(function* () {
-          return yield* engine.dispatch({
+        Effect.flatMap(commandId, (commandId) =>
+          engine.dispatch({
             type: "trading.execution.requested",
-            commandId: yield* commandId,
+            commandId,
             threadId: THREAD_ID,
             missionId: MISSION_ID,
             intent: {
@@ -2186,8 +2186,8 @@ const runEmergencyEntryCase = (options: {
             expectedAuthorityVersion: 1,
             activeHarnessRunId: "run_rc04",
             createdAt: NOW,
-          });
-        });
+          }),
+        );
 
       if (options.entry === "modify_stop") {
         // The position the moved stop protects, as the before-reconcile left it.
