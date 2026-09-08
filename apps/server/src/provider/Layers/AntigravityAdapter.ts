@@ -231,19 +231,29 @@ const resolveClientFilePath = Effect.fn("AntigravityAdapter.resolveClientFilePat
     const { path } = input;
     const resolved = path.resolve(input.requestPath);
     // Follow symlinks on the parent so a link out of the workspace cannot escape it.
-    const parent = yield* input.fileSystem
-      .realPath(path.dirname(resolved))
-      .pipe(Effect.orElseSucceed(() => path.dirname(resolved)));
-    const real = path.join(parent, path.basename(resolved));
-    const roots = yield* Effect.forEach(input.allowedRoots, (root) =>
-      input.fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root)),
-    );
-    if (!roots.some((root) => isInsideRoot(path, root, real))) {
+    const parent = yield* input.fileSystem.realPath(path.dirname(resolved)).pipe(Effect.option);
+    if (Option.isSome(parent)) {
+      const real = path.join(parent.value, path.basename(resolved));
+      const roots = yield* Effect.forEach(input.allowedRoots, (root) =>
+        input.fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root)),
+      );
+      if (!roots.some((root) => isInsideRoot(path, root, real))) {
+        return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+          `Path '${input.requestPath}' is outside the session workspace.`,
+        );
+      }
+      return real;
+    }
+    // The parent does not exist yet, so no symlink on the candidate side can
+    // be followed. The realPath'd roots may live in a different spelling
+    // space than the request on macOS (/var/folders vs /private/var/folders),
+    // so the non-existent-parent case compares unresolved-to-unresolved.
+    if (!input.allowedRoots.some((root) => isInsideRoot(path, path.resolve(root), resolved))) {
       return yield* EffectAcpErrors.AcpRequestError.invalidParams(
         `Path '${input.requestPath}' is outside the session workspace.`,
       );
     }
-    return real;
+    return resolved;
   },
 );
 
