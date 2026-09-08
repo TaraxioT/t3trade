@@ -377,7 +377,7 @@ const ORACLE = [
   "--app-radius-lg: 0.625rem;",
   "--app-radius-xl: 0.875rem;",
   // Panel material (audit fidelity row 15).
-  "--app-mission-panel-surface: color-mix(in srgb, oklch(14.5% 0 0) 97%, #fff);",
+  "--app-mission-panel-surface: color-mix(in srgb, oklch(14.5% 0 none) 97%, #fff);",
   "--app-mission-panel-outline: rgb(255 255 255 / 12%);",
   "--app-mission-panel-opacity: 58%;",
   "--app-mission-panel-bevel: rgb(255 255 255 / 9%);",
