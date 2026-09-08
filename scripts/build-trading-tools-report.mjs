@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 console.log("Building Next-Level Interactive Report for T3 Trade Trading Tools...");
 
@@ -2815,6 +2815,8 @@ if (emDashMatch) {
   console.log("Pre-Flight Check Passed: Zero em-dashes detected.");
 }
 
-const outputPath = path.resolve("artifacts/reports/t3trade-trading-tools-interactive-report.html");
-fs.writeFileSync(outputPath, htmlContent, "utf8");
+const outputPath = NodePath.resolve(
+  "artifacts/reports/t3trade-trading-tools-interactive-report.html",
+);
+NodeFS.writeFileSync(outputPath, htmlContent, "utf8");
 console.log("Successfully wrote updated report to:", outputPath);

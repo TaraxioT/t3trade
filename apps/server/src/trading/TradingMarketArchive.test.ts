@@ -521,71 +521,85 @@ const hydrationBar = (open: number): CandleRow => ({
 });
 
 /**
- * Fork an ensureCoverage call and resolve the request it queues — the proof
- * that the window was NOT answered `already_covered` — by watching the queue
- * file itself, the same event the archiver's watcher wakes on. The fiber is
- * returned for the caller to interrupt: these tests assert the ask, not the
- * writer's answer, and never wait out a 30-second deadline.
+ * Resolve the first queued request by watching the queue file itself, the
+ * same event the archiver's watcher wakes on. The event is the fast path;
+ * the 200ms slice re-read bounds a lost FIRST event — `fs.watch`'s
+ * subscription arms asynchronously, so a queue write in the first
+ * milliseconds after the fork can go unseen — the same slice discipline the
+ * archiver's own writer uses. 5 seconds without the request is the failure.
  */
-const forkedEnsure = async (
-  archive: TradingMarketArchiveShape,
-  input: Parameters<TradingMarketArchiveShape["ensureCoverage"]>[0],
-  hydrationPath: string,
-) => {
-  const fiber = Effect.runFork(archive.ensureCoverage(input));
-  const appeared = await (async () => {
+const awaitQueuedRequest = (hydrationPath: string): Promise<HydrationRequest> =>
+  (async () => {
     const watcher = makeHydrationFileWatcher(hydrationPath);
     if (watcher === null) throw new Error("no watcher on the temp queue");
     try {
+      const deadline = Date.now() + 5_000;
       for (;;) {
         const loaded = loadHydrationQueue(hydrationPath);
         if (loaded.status === "ok" && loaded.queue.requests.length > 0) {
           return loaded.queue.requests[0] as HydrationRequest;
         }
-        const woken = await watcher.waitOrTimeout(5_000);
-        if (!woken) throw new Error("the request never reached the queue");
+        await watcher.waitOrTimeout(200);
+        if (Date.now() >= deadline) throw new Error("the request never reached the queue");
       }
     } finally {
       watcher.close();
     }
   })();
-  return { fiber, appeared };
-};
 
-it("ensureCoverage answers already_covered from stored bars alone, queueing nothing", async () => {
-  const dir = tempDir("market-archive-ensure-covered-");
-  const archivePath = NodePath.join(dir, "archive.sqlite");
-  const hydrationPath = NodePath.join(dir, "queue.json");
-  const writer = openArchiveDatabase(archivePath);
-  const { fromT, toT } = hydrationWindow();
-  upsertCandles(writer, gridOpens(fromT, toT, MINUTE).map(hydrationBar));
-  writer.close();
+/**
+ * Fork an ensureCoverage call and resolve the request it queues — the proof
+ * that the window was NOT answered `already_covered`. The fiber is returned
+ * for the caller to interrupt: these tests assert the ask, not the writer's
+ * answer, and never wait out a 30-second deadline.
+ */
+const forkedEnsure = (
+  archive: TradingMarketArchiveShape,
+  input: Parameters<TradingMarketArchiveShape["ensureCoverage"]>[0],
+  hydrationPath: string,
+) =>
+  Effect.gen(function* () {
+    const fiber = yield* Effect.forkScoped(archive.ensureCoverage(input));
+    const appeared = yield* Effect.promise(() => awaitQueuedRequest(hydrationPath));
+    return { fiber, appeared };
+  });
 
-  const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
-  const answer = await Effect.runPromise(
-    archive.ensureCoverage({
+it.effect("ensureCoverage answers already_covered from stored bars alone, queueing nothing", () =>
+  Effect.gen(function* () {
+    const dir = tempDir("market-archive-ensure-covered-");
+    const archivePath = NodePath.join(dir, "archive.sqlite");
+    const hydrationPath = NodePath.join(dir, "queue.json");
+    const writer = openArchiveDatabase(archivePath);
+    const { fromT, toT } = hydrationWindow();
+    upsertCandles(writer, gridOpens(fromT, toT, MINUTE).map(hydrationBar));
+    writer.close();
+
+    const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
+    const answer = yield* archive.ensureCoverage({
       coin: "ETH",
       interval: "1m",
       fromT,
       toT,
       purpose: "study",
       now: Date.now(),
-    }),
-  );
-  assert.strictEqual(answer.outcome, "already_covered");
-  assert.strictEqual(answer.reason, null);
-  assert.strictEqual(answer.coverage.recordingSince, fromT);
-  // The ordinary case costs no queue work at all.
-  assert.strictEqual(NodeFS.existsSync(hydrationPath), false);
-  NodeFS.rmSync(dir, { recursive: true, force: true });
-});
+    });
+    assert.strictEqual(answer.outcome, "already_covered");
+    assert.strictEqual(answer.reason, null);
+    assert.strictEqual(answer.coverage.recordingSince, fromT);
+    // The ordinary case costs no queue work at all.
+    assert.strictEqual(NodeFS.existsSync(hydrationPath), false);
+    NodeFS.rmSync(dir, { recursive: true, force: true });
+  }),
+);
 
 // The gap-overlap proof: the ask itself. A window whose bars all exist but
 // which a gap record still overlaps must NOT answer `already_covered` — and
 // the direct evidence is that a request was queued for the writer at all.
-it("ensureCoverage never claims coverage while a known gap overlaps the window", async () => {
+// it.live: the queue-file watcher waits on real fs timing by design (see the
+// header); it.effect's frozen clock would turn a missed wake into a hang.
+it.live("ensureCoverage never claims coverage while a known gap overlaps the window", () => {
   const dir = tempDir("market-archive-ensure-gap-");
-  try {
+  return Effect.gen(function* () {
     const archivePath = NodePath.join(dir, "archive.sqlite");
     const hydrationPath = NodePath.join(dir, "queue.json");
     const writer = openArchiveDatabase(archivePath);
@@ -601,113 +615,102 @@ it("ensureCoverage never claims coverage while a known gap overlaps the window",
     writer.close();
 
     const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
-    const { fiber, appeared } = await forkedEnsure(
+    const { fiber, appeared } = yield* forkedEnsure(
       archive,
       { coin: "ETH", interval: "1m", fromT, toT, purpose: "study", now: Date.now() },
       hydrationPath,
     );
     expect(appeared.fromT).toBe(fromT);
     expect(appeared.toT).toBe(toT);
-    await Effect.runPromise(Fiber.interrupt(fiber));
-  } finally {
-    NodeFS.rmSync(dir, { recursive: true, force: true });
-  }
+    yield* Fiber.interrupt(fiber);
+  }).pipe(Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))));
 });
 
 // The Devcon shape at the service seam: an early occurrence older than the
 // source's own history, later occurrences fully archived. The recoverable
 // part is whole, but the window is not complete — so the request goes to the
 // writer instead of answering `already_covered` over history that can never
-// exist.
-it("ensureCoverage does not answer already_covered when the window predates the source", async () => {
-  const dir = tempDir("market-archive-ensure-devcon-");
-  try {
-    const archivePath = NodePath.join(dir, "archive.sqlite");
-    const hydrationPath = NodePath.join(dir, "queue.json");
-    const now = Date.now();
-    const DAY = INTERVAL_MS["1d"];
-    const floor = providerReachFloor("1d", now) as number;
-    const floorOpen = Math.ceil(floor / DAY) * DAY;
-    const fromT = floor - 3 * DAY;
-    const toT = floor + 20 * DAY;
-    const writer = openArchiveDatabase(archivePath);
-    const dayBar = (open: number): CandleRow => ({
-      coin: "ETH",
-      interval: "1d",
-      t: open,
-      tClose: open + DAY - 1,
-      o: 100,
-      h: 101,
-      l: 99,
-      c: 100.5,
-      v: 1,
-      n: 3,
-    });
-    // Every recoverable bar already stored; the pre-floor days are absent
-    // because the source can never serve them.
-    upsertCandles(writer, gridOpens(floorOpen, toT, DAY).map(dayBar));
-    writer.close();
-
-    const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
-    const { fiber, appeared } = await forkedEnsure(
-      archive,
-      { coin: "ETH", interval: "1d", fromT, toT, purpose: "study", now },
-      hydrationPath,
-    );
-    expect(appeared.fromT).toBe(fromT);
-    expect(appeared.toT).toBe(toT);
-    await Effect.runPromise(Fiber.interrupt(fiber));
-  } finally {
-    NodeFS.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-it("ensureCoverage queues the exact window and relays the writer's answer by stable id", async () => {
-  const dir = tempDir("market-archive-ensure-queue-");
-  try {
-    const archivePath = NodePath.join(dir, "archive.sqlite");
-    const hydrationPath = NodePath.join(dir, "queue.json");
-    const { fromT, toT } = hydrationWindow();
-    const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
-
-    const fiber = Effect.runFork(
-      archive.ensureCoverage({
+// exist. Same it.live rationale as the gap-overlap proof above.
+it.live(
+  "ensureCoverage does not answer already_covered when the window predates the source",
+  () => {
+    const dir = tempDir("market-archive-ensure-devcon-");
+    return Effect.gen(function* () {
+      const archivePath = NodePath.join(dir, "archive.sqlite");
+      const hydrationPath = NodePath.join(dir, "queue.json");
+      const now = Date.now();
+      const DAY = INTERVAL_MS["1d"];
+      const floor = providerReachFloor("1d", now) as number;
+      const floorOpen = Math.ceil(floor / DAY) * DAY;
+      const fromT = floor - 3 * DAY;
+      const toT = floor + 20 * DAY;
+      const writer = openArchiveDatabase(archivePath);
+      const dayBar = (open: number): CandleRow => ({
         coin: "ETH",
-        interval: "1m",
-        fromT,
-        toT,
-        purpose: "study",
-        now: Date.now(),
-      }),
+        interval: "1d",
+        t: open,
+        tClose: open + DAY - 1,
+        o: 100,
+        h: 101,
+        l: 99,
+        c: 100.5,
+        v: 1,
+        n: 3,
+      });
+      // Every recoverable bar already stored; the pre-floor days are absent
+      // because the source can never serve them.
+      upsertCandles(writer, gridOpens(floorOpen, toT, DAY).map(dayBar));
+      writer.close();
+
+      const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
+      const { fiber, appeared } = yield* forkedEnsure(
+        archive,
+        { coin: "ETH", interval: "1d", fromT, toT, purpose: "study", now },
+        hydrationPath,
+      );
+      expect(appeared.fromT).toBe(fromT);
+      expect(appeared.toT).toBe(toT);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))),
     );
+  },
+);
 
-    // The writer's eye: watch the queue file itself for the request, the same
-    // event the archiver's watcher wakes on — no sleeps, no polling clock.
-    const appeared = await (async () => {
-      const watcher = makeHydrationFileWatcher(hydrationPath);
-      if (watcher === null) throw new Error("no watcher on the temp queue");
-      try {
-        for (;;) {
-          const loaded = loadHydrationQueue(hydrationPath);
-          if (loaded.status === "ok" && loaded.queue.requests.length > 0) {
-            return loaded.queue.requests[0] as HydrationRequest;
-          }
-          const woken = await watcher.waitOrTimeout(5_000);
-          if (!woken) throw new Error("the request never reached the queue");
-        }
-      } finally {
-        watcher.close();
-      }
-    })();
-    assert.strictEqual(appeared.venue, "hyperliquid");
-    assert.strictEqual(appeared.coin, "ETH");
-    assert.strictEqual(appeared.interval, "1m");
-    assert.strictEqual(appeared.fromT, fromT);
-    assert.strictEqual(appeared.toT, toT);
+// Same it.live rationale as the two proofs above: the watcher and the
+// fiber's 30-second deadline race both run on real time by design.
+it.live(
+  "ensureCoverage queues the exact window and relays the writer's answer by stable id",
+  () => {
+    const dir = tempDir("market-archive-ensure-queue-");
+    return Effect.gen(function* () {
+      const archivePath = NodePath.join(dir, "archive.sqlite");
+      const hydrationPath = NodePath.join(dir, "queue.json");
+      const { fromT, toT } = hydrationWindow();
+      const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
 
-    // The archiver's answer, written the way the archiver writes it.
-    await Effect.runPromise(
-      Effect.sync(() => {
+      const fiber = yield* Effect.forkScoped(
+        archive.ensureCoverage({
+          coin: "ETH",
+          interval: "1m",
+          fromT,
+          toT,
+          purpose: "study",
+          now: Date.now(),
+        }),
+      );
+
+      // The writer's eye: watch the queue file itself for the request, the same
+      // event the archiver's watcher wakes on (slice-bounded, see the helper).
+      const appeared = yield* Effect.promise(() => awaitQueuedRequest(hydrationPath));
+      assert.strictEqual(appeared.venue, "hyperliquid");
+      assert.strictEqual(appeared.coin, "ETH");
+      assert.strictEqual(appeared.interval, "1m");
+      assert.strictEqual(appeared.fromT, fromT);
+      assert.strictEqual(appeared.toT, toT);
+
+      // The archiver's answer, written the way the archiver writes it.
+      yield* Effect.sync(() => {
         const locked = withHydrationQueueLock(hydrationPath, () => {
           const loaded = loadHydrationQueue(hydrationPath);
           if (loaded.status !== "ok") return null;
@@ -723,89 +726,91 @@ it("ensureCoverage queues the exact window and relays the writer's answer by sta
           return true;
         });
         if (!locked.ok || locked.value !== true) throw new Error("the writer could not answer");
-      }),
+      });
+
+      const answer = yield* Fiber.join(fiber);
+      assert.strictEqual(answer.outcome, "partial");
+      assert.strictEqual(answer.coverage.recordingSince, null);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))),
     );
+  },
+);
 
-    const answer = await Effect.runPromise(Fiber.join(fiber));
-    assert.strictEqual(answer.outcome, "partial");
-    assert.strictEqual(answer.coverage.recordingSince, null);
-  } finally {
-    NodeFS.rmSync(dir, { recursive: true, force: true });
-  }
-});
+it.effect("ensureCoverage refuses a malformed queue without erasing pending work", () =>
+  Effect.gen(function* () {
+    const dir = tempDir("market-archive-ensure-malformed-");
+    const archivePath = NodePath.join(dir, "archive.sqlite");
+    const hydrationPath = NodePath.join(dir, "queue.json");
+    const garbage = "{ this is not the queue";
+    NodeFS.writeFileSync(hydrationPath, garbage);
+    const { fromT, toT } = hydrationWindow();
 
-it("ensureCoverage refuses a malformed queue without erasing pending work", async () => {
-  const dir = tempDir("market-archive-ensure-malformed-");
-  const archivePath = NodePath.join(dir, "archive.sqlite");
-  const hydrationPath = NodePath.join(dir, "queue.json");
-  const garbage = "{ this is not the queue";
-  NodeFS.writeFileSync(hydrationPath, garbage);
-  const { fromT, toT } = hydrationWindow();
-
-  const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
-  const answer = await Effect.runPromise(
-    archive.ensureCoverage({
+    const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
+    const answer = yield* archive.ensureCoverage({
       coin: "ETH",
       interval: "1m",
       fromT,
       toT,
       purpose: "study",
       now: Date.now(),
+    });
+    assert.strictEqual(answer.outcome, "unsupported");
+    assert.include(answer.reason, "unreadable");
+    // Unusable state was left exactly as it was found.
+    assert.strictEqual(NodeFS.readFileSync(hydrationPath, "utf8"), garbage);
+    NodeFS.rmSync(dir, { recursive: true, force: true });
+  }),
+);
+
+it.effect(
+  "ensureCoverage answers source_window_exhausted for a window older than the source's history",
+  () =>
+    Effect.gen(function* () {
+      const dir = tempDir("market-archive-ensure-exhausted-");
+      const archivePath = NodePath.join(dir, "archive.sqlite");
+      const hydrationPath = NodePath.join(dir, "queue.json");
+      const now = Date.now();
+      const floor = providerReachFloor("1d", now) as number;
+      const DAY = INTERVAL_MS["1d"];
+
+      const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
+      const answer = yield* archive.ensureCoverage({
+        coin: "ETH",
+        interval: "1d",
+        fromT: floor - 10 * DAY,
+        toT: floor - 1,
+        purpose: "study",
+        now,
+      });
+      // The window's interval and venue are supported; the history is not —
+      // `source_window_exhausted`, distinguishable at the tool surface from
+      // `unsupported` input, and nothing is queued for a fetch that cannot run.
+      assert.strictEqual(answer.outcome, "source_window_exhausted");
+      assert.include(answer.reason, "has not made");
+      assert.strictEqual(NodeFS.existsSync(hydrationPath), false);
+      NodeFS.rmSync(dir, { recursive: true, force: true });
     }),
-  );
-  assert.strictEqual(answer.outcome, "unsupported");
-  assert.include(answer.reason, "unreadable");
-  // Unusable state was left exactly as it was found.
-  assert.strictEqual(NodeFS.readFileSync(hydrationPath, "utf8"), garbage);
-  NodeFS.rmSync(dir, { recursive: true, force: true });
-});
+);
 
-it("ensureCoverage answers source_window_exhausted for a window older than the source's history", async () => {
-  const dir = tempDir("market-archive-ensure-exhausted-");
-  const archivePath = NodePath.join(dir, "archive.sqlite");
-  const hydrationPath = NodePath.join(dir, "queue.json");
-  const now = Date.now();
-  const floor = providerReachFloor("1d", now) as number;
-  const DAY = INTERVAL_MS["1d"];
+it.effect("ensureCoverage refuses an interval the archive does not record", () =>
+  Effect.gen(function* () {
+    const dir = tempDir("market-archive-ensure-interval-");
+    const archivePath = NodePath.join(dir, "archive.sqlite");
+    const hydrationPath = NodePath.join(dir, "queue.json");
+    const { fromT, toT } = hydrationWindow();
 
-  const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
-  const answer = await Effect.runPromise(
-    archive.ensureCoverage({
-      coin: "ETH",
-      interval: "1d",
-      fromT: floor - 10 * DAY,
-      toT: floor - 1,
-      purpose: "study",
-      now,
-    }),
-  );
-  // The window's interval and venue are supported; the history is not —
-  // `source_window_exhausted`, distinguishable at the tool surface from
-  // `unsupported` input, and nothing is queued for a fetch that cannot run.
-  assert.strictEqual(answer.outcome, "source_window_exhausted");
-  assert.include(answer.reason, "has not made");
-  assert.strictEqual(NodeFS.existsSync(hydrationPath), false);
-  NodeFS.rmSync(dir, { recursive: true, force: true });
-});
-
-it("ensureCoverage refuses an interval the archive does not record", async () => {
-  const dir = tempDir("market-archive-ensure-interval-");
-  const archivePath = NodePath.join(dir, "archive.sqlite");
-  const hydrationPath = NodePath.join(dir, "queue.json");
-  const { fromT, toT } = hydrationWindow();
-
-  const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
-  const answer = await Effect.runPromise(
-    archive.ensureCoverage({
+    const archive = makeTradingMarketArchive(archivePath, "hyperliquid", hydrationPath);
+    const answer = yield* archive.ensureCoverage({
       coin: "ETH",
       interval: "2h",
       fromT,
       toT,
       purpose: "chart",
       now: Date.now(),
-    }),
-  );
-  assert.strictEqual(answer.outcome, "unsupported");
-  assert.include(answer.reason, "2h");
-  NodeFS.rmSync(dir, { recursive: true, force: true });
-});
+    });
+    assert.strictEqual(answer.outcome, "unsupported");
+    assert.include(answer.reason, "2h");
+    NodeFS.rmSync(dir, { recursive: true, force: true });
+  }),
+);
