@@ -37,7 +37,7 @@ import { Context, Effect } from "effect";
 import * as Crypto from "effect/Crypto";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import {
   EVENT_SET_MAX_OCCURRENCES,
@@ -230,7 +230,9 @@ const digestOf = (input: {
   readonly name: string;
   readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
 }): string =>
-  createHash("sha256").update(serializeEventConfirmationPayload(input), "utf8").digest("hex");
+  NodeCrypto.createHash("sha256")
+    .update(serializeEventConfirmationPayload(input), "utf8")
+    .digest("hex");
 
 /**
  * The stored precision, narrowed to the union the schema speaks. NULL (every

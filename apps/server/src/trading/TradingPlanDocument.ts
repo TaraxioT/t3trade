@@ -21,7 +21,7 @@
  * @module TradingPlanDocument
  */
 // @effect-diagnostics nodeBuiltinImport:off - sync fs and crypto by design: a bounded document read at turn and guard seams, not an Effect filesystem pipeline.
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -142,7 +142,7 @@ export function tradeDocumentPath(workspaceRoot: string): string {
 
 /** SHA-256 of the document content, hex — the revision identity. */
 export function hashTradeContent(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
+  return NodeCrypto.createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 /**

@@ -747,19 +747,20 @@ describe("reading the queue file: absent, malformed, unreadable", () => {
     });
   });
 
-  it("a waiter times out honestly over unreadable state and never mutates it", async () => {
+  // it.live: the deadline is a real 120ms wall-clock timeout (the header's
+  // "waits are wall-clock by design"); it.effect's frozen clock would never
+  // let the sleep side of the race fire.
+  it.live("a waiter times out honestly over unreadable state and never mutates it", () => {
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hydration-dir."));
     const path = NodePath.join(dir, "queue.json");
-    try {
+    return Effect.gen(function* () {
       NodeFS.mkdirSync(path);
-      const result = await Effect.runPromise(
-        waitForHydrationResult(path, "any-id", Date.now() + 120),
-      );
+      const result = yield* waitForHydrationResult(path, "any-id", Date.now() + 120);
       expect(result).toBeNull();
       expect(NodeFS.statSync(path).isDirectory()).toBe(true);
-    } finally {
-      NodeFS.rmSync(dir, { recursive: true, force: true });
-    }
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true }))),
+    );
   });
 });
 

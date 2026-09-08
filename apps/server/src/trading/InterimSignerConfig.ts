@@ -44,6 +44,7 @@
  */
 import { Context, Effect, Option, Schema } from "effect";
 import * as Layer from "effect/Layer";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { addressFromPrivateKey } from "@t3tools/hyperliquid/Signing";
 import { INTERIM_SIGNER_SECRET_NAME, t3tradeSecretsDir } from "@t3tools/hyperliquid/KeyLocation";
 
@@ -76,13 +77,16 @@ export interface SecretFile {
  * exactly what let the defect through.
  */
 export const readFileText = (path: string): Effect.Effect<SecretFile, SecretFileReadError> =>
-  Effect.tryPromise({
-    try: () =>
-      import("node:fs/promises").then(async (fs) => {
-        const [text, stat] = await Promise.all([fs.readFile(path, "utf8"), fs.stat(path)]);
-        return { text, mode: process.platform === "win32" ? null : stat.mode & 0o777 };
-      }),
-    catch: (cause) => new SecretFileReadError({ path, cause }),
+  Effect.gen(function* () {
+    const platform = yield* HostProcessPlatform;
+    return yield* Effect.tryPromise({
+      try: () =>
+        import("node:fs/promises").then(async (fs) => {
+          const [text, stat] = await Promise.all([fs.readFile(path, "utf8"), fs.stat(path)]);
+          return { text, mode: platform === "win32" ? null : stat.mode & 0o777 };
+        }),
+      catch: (cause) => new SecretFileReadError({ path, cause }),
+    });
   });
 
 /** The key is invalid or the env shape was wrong. */
