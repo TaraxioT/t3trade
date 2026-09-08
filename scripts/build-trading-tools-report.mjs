@@ -1,0 +1,2820 @@
+import fs from "node:fs";
+import path from "node:path";
+
+console.log("Building Next-Level Interactive Report for T3 Trade Trading Tools...");
+
+const htmlContent = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T3 Trade | Trading-Only Tools Architecture and Interactive Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-base: #06080d;
+      --bg-surface: #0c0f17;
+      --bg-elevated: #131824;
+      --bg-glass: rgba(12, 15, 23, 0.85);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --border-glow: rgba(6, 182, 212, 0.35);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-cyan: #06b6d4;
+      --accent-cyan-glow: rgba(6, 182, 212, 0.25);
+      --accent-emerald: #10b981;
+      --accent-emerald-glow: rgba(16, 185, 129, 0.25);
+      --accent-amber: #f59e0b;
+      --accent-amber-glow: rgba(245, 158, 11, 0.25);
+      --accent-rose: #f43f5e;
+      --accent-rose-glow: rgba(244, 63, 94, 0.25);
+      --accent-violet: #8b5cf6;
+      --accent-violet-glow: rgba(139, 92, 246, 0.25);
+      --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --radius-xl: 24px;
+      --transition-fast: 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+      --transition-smooth: 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-x: hidden;
+      min-height: 100vh;
+      background-image:
+        radial-gradient(circle at 10% 8%, rgba(6, 182, 212, 0.05) 0%, transparent 35%),
+        radial-gradient(circle at 90% 50%, rgba(139, 92, 246, 0.05) 0%, transparent 40%),
+        radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(6, 8, 13, 0.96), var(--bg-base));
+      background-size: 100% 100%, 100% 100%, 28px 28px, 100% 100%;
+    }
+
+    .app-container {
+      max-width: 1520px;
+      margin: 0 auto;
+      padding: 32px 24px 100px;
+    }
+
+    /* Ambient Header & HUD Ticker */
+    header {
+      position: relative;
+      padding: 36px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      margin-bottom: 28px;
+      overflow: hidden;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+    }
+    header::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald), var(--accent-amber), var(--accent-violet));
+    }
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+      flex-wrap: wrap;
+      margin-bottom: 22px;
+    }
+    .brand-cluster {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .brand-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--accent-cyan);
+      background: rgba(6, 182, 212, 0.1);
+      border: 1px solid rgba(6, 182, 212, 0.3);
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+    .status-pill {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .live-pulse {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 8px var(--accent-emerald);
+      animation: pulse-ring 2s infinite ease-out;
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 1; }
+      50% { transform: scale(1.4); opacity: 0.4; }
+      100% { transform: scale(0.95); opacity: 1; }
+    }
+
+    h1 {
+      font-size: clamp(30px, 3.8vw, 48px);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.08;
+      margin: 14px 0 10px;
+      background: linear-gradient(135deg, #ffffff 40%, #cbd5e1 80%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .header-lead {
+      color: var(--text-secondary);
+      max-width: 880px;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    /* Live Reactor Ticker HUD */
+    .hud-ticker-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: #090c13;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 16px;
+      margin-top: 20px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      flex-wrap: wrap;
+    }
+    .hud-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .hud-val {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    /* Metrics Grid */
+    .metrics-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+      margin-top: 22px;
+      padding-top: 22px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .metric-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      transition: var(--transition-fast);
+      position: relative;
+      overflow: hidden;
+    }
+    .metric-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+    .metric-label {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .metric-value {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .metric-tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+    .tag-cyan { background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan); }
+    .tag-emerald { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); }
+    .tag-amber { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
+    .tag-rose { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); }
+    .tag-violet { background: rgba(139, 92, 246, 0.15); color: var(--accent-violet); }
+
+    /* Section Cards */
+    .section-box {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      padding: 30px;
+      margin-bottom: 28px;
+      position: relative;
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 22px;
+    }
+    .section-title-wrap h2 {
+      font-size: 21px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-desc {
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin-top: 4px;
+      max-width: 820px;
+    }
+
+    /* Signal Flow Architecture Visual with Animated Canvas */
+    .architecture-diagram {
+      background: #080b12;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      position: relative;
+      overflow: hidden;
+    }
+    #topo-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .flow-pipeline {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(190px, 1fr));
+      gap: 16px;
+      position: relative;
+      z-index: 2;
+    }
+    .flow-node {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      position: relative;
+      cursor: pointer;
+      transition: var(--transition-fast);
+      backdrop-filter: blur(8px);
+    }
+    .flow-node:hover, .flow-node.active {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 24px var(--accent-cyan-glow);
+      transform: translateY(-2px);
+    }
+    .flow-node-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      display: inline-block;
+      font-weight: 600;
+    }
+    .flow-node-title {
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+    .flow-node-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+    .flow-tools-list {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .tool-microchip {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      color: var(--text-secondary);
+    }
+
+    /* Interactive Reactor Loop Progress Widget */
+    .reactor-live-widget {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 16px 20px;
+      background: rgba(244, 63, 94, 0.05);
+      border: 1px solid rgba(244, 63, 94, 0.25);
+      border-radius: var(--radius-md);
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .reactor-pulse-circle {
+      position: relative;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+    }
+    .reactor-svg-ring {
+      transform: rotate(-90deg);
+    }
+    .reactor-ring-bg {
+      stroke: rgba(255, 255, 255, 0.1);
+      fill: none;
+      stroke-width: 3;
+    }
+    .reactor-ring-fill {
+      stroke: var(--accent-rose);
+      fill: none;
+      stroke-width: 3;
+      stroke-dasharray: 100;
+      stroke-dashoffset: 0;
+      transition: stroke-dashoffset 0.1s linear;
+    }
+    .reactor-text-info {
+      flex-grow: 1;
+    }
+    .reactor-title {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent-rose);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .reactor-sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    /* Sticky Navigation & Filter Toolbar */
+    .toolbar-sticky {
+      position: sticky;
+      top: 16px;
+      z-index: 40;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      background: rgba(12, 15, 23, 0.9);
+      backdrop-filter: blur(18px);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 10px 16px;
+      margin-bottom: 24px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+    .tab-pills {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .tab-btn {
+      font-family: var(--font-sans);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 7px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: var(--transition-fast);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tab-btn:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .tab-btn.active {
+      color: var(--text-primary);
+      background: var(--bg-elevated);
+      border-color: var(--border-strong);
+      font-weight: 600;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+    .tab-btn .badge-count {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-muted);
+    }
+    .tab-btn.active .badge-count {
+      background: var(--accent-cyan);
+      color: #06080d;
+      font-weight: 700;
+    }
+
+    .search-filter-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-grow: 1;
+      max-width: 440px;
+    }
+    .search-input-box {
+      position: relative;
+      width: 100%;
+    }
+    .search-input-box input {
+      width: 100%;
+      background: #080b12;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px 8px 34px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      outline: none;
+      transition: var(--transition-fast);
+    }
+    .search-input-box input:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 2px var(--accent-cyan-glow);
+    }
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+
+    /* Tool Grid & Cards */
+    .tools-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .tool-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      transition: var(--transition-smooth);
+    }
+    .tool-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-2px);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+    }
+    .tool-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .tool-name-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tool-title-badge {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--accent-cyan);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .tool-code-name {
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .tool-category-badge {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .tool-desc {
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 16px;
+      flex-grow: 1;
+    }
+
+    /* Behavioral Annotations / Traits */
+    .tool-traits {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .trait-pill {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .trait-readonly { background: rgba(6, 182, 212, 0.1); color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.25); }
+    .trait-destructive { background: rgba(244, 63, 94, 0.1); color: var(--accent-rose); border-color: rgba(244, 63, 94, 0.25); }
+    .trait-safe { background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.25); }
+    .trait-idempotent { background: rgba(139, 92, 246, 0.1); color: var(--accent-violet); border-color: rgba(139, 92, 246, 0.25); }
+    .trait-openworld { background: rgba(245, 158, 11, 0.1); color: var(--accent-amber); border-color: rgba(245, 158, 11, 0.25); }
+
+    /* Schema Snippet Preview */
+    .schema-preview-box {
+      background: #080b12;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      margin-bottom: 16px;
+      overflow-x: auto;
+      max-height: 96px;
+      color: #cbd5e1;
+    }
+
+    .tool-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .action-btn {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 7px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: var(--transition-fast);
+      user-select: none;
+    }
+    .action-btn:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+    .action-btn.primary {
+      background: var(--accent-cyan);
+      color: #06080d;
+      border-color: var(--accent-cyan);
+    }
+    .action-btn.primary:hover {
+      background: #22d3ee;
+      box-shadow: 0 0 14px var(--accent-cyan-glow);
+    }
+
+    /* Interactive Drift Sandbox Widget */
+    .drift-sandbox-card {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      background: #080b12;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      margin-top: 16px;
+    }
+    .drift-doc-col {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .drift-code-preview {
+      background: #0c0f17;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      color: #e2e8f0;
+      height: 140px;
+      overflow-y: auto;
+    }
+
+    /* Modal Simulator */
+    .simulator-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 6, 10, 0.85);
+      backdrop-filter: blur(14px);
+      z-index: 100;
+      padding: 30px;
+      align-items: center;
+      justify-content: center;
+    }
+    .simulator-modal.open {
+      display: flex;
+    }
+    .simulator-window {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xl);
+      width: 100%;
+      max-width: 1160px;
+      max-height: 92vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.7);
+      overflow: hidden;
+      animation: modal-enter 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes modal-enter {
+      from { opacity: 0; transform: scale(0.96) translateY(10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .simulator-header {
+      padding: 18px 24px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .sim-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .sim-tool-name {
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+    }
+    .sim-tool-path {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .sim-close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 6px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+    .sim-close-btn:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .simulator-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      padding: 24px;
+      overflow-y: auto;
+      flex-grow: 1;
+    }
+    .sim-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .sim-pane-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .sim-presets-bar {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .sim-preset-btn {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: var(--transition-fast);
+    }
+    .sim-preset-btn:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+
+    .sim-textarea {
+      width: 100%;
+      height: 290px;
+      background: #080b12;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #e2e8f0;
+      resize: vertical;
+      line-height: 1.5;
+    }
+    .sim-textarea:focus {
+      outline: none;
+      border-color: var(--accent-cyan);
+    }
+
+    .sim-output-box {
+      width: 100%;
+      height: 290px;
+      background: #07090f;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #10b981;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .sim-output-box.error {
+      color: #f43f5e;
+      border-color: rgba(244, 63, 94, 0.4);
+      background: rgba(244, 63, 94, 0.04);
+    }
+
+    .sim-footer {
+      padding: 16px 24px;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .sim-latency-stat {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* trading_look Character Weight & Token Budget Calculator */
+    .look-calculator-wrap {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 20px;
+      margin-top: 16px;
+    }
+    .look-keys-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 8px;
+      max-height: 380px;
+      overflow-y: auto;
+      padding-right: 8px;
+    }
+    .look-key-chip {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      cursor: pointer;
+      transition: var(--transition-fast);
+      user-select: none;
+    }
+    .look-key-chip:hover {
+      border-color: var(--border-strong);
+    }
+    .look-key-chip.selected {
+      border-color: var(--accent-cyan);
+      background: rgba(6, 182, 212, 0.08);
+    }
+    .key-name-col {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .key-name {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .key-type-flag {
+      font-size: 9px;
+      color: var(--text-muted);
+    }
+    .key-cost {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--accent-cyan);
+      background: rgba(6, 182, 212, 0.12);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .budget-summary-panel {
+      background: #080b12;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .budget-bar-container {
+      margin-top: 8px;
+    }
+    .budget-bar-track {
+      width: 100%;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 6px;
+    }
+    .budget-bar-fill {
+      height: 100%;
+      width: 15%;
+      background: linear-gradient(90deg, var(--accent-emerald), var(--accent-cyan));
+      border-radius: 999px;
+      transition: width 0.3s ease;
+    }
+    .budget-bar-fill.warning {
+      background: linear-gradient(90deg, var(--accent-amber), var(--accent-rose));
+    }
+
+    /* Evolution Table */
+    .evolution-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-top: 16px;
+    }
+    .evolution-table th {
+      text-align: left;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      padding: 12px 14px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-strong);
+    }
+    .evolution-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      vertical-align: middle;
+    }
+    .evolution-table tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .legacy-tag {
+      font-family: var(--font-mono);
+      color: #94a3b8;
+      text-decoration: line-through;
+      background: rgba(148, 163, 184, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+    .modern-tag {
+      font-family: var(--font-mono);
+      color: var(--accent-emerald);
+      background: rgba(16, 185, 129, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      display: inline-block;
+      font-weight: 600;
+    }
+    .flaw-text {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    .fix-text {
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+
+    /* Footer */
+    footer {
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    @media (max-width: 960px) {
+      .architecture-diagram { overflow-x: auto; }
+      .flow-pipeline { min-width: 920px; }
+      .tools-grid { grid-template-columns: 1fr; }
+      .simulator-body { grid-template-columns: 1fr; }
+      .look-calculator-wrap { grid-template-columns: 1fr; }
+      .drift-sandbox-card { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+      #topo-canvas { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-container">
+
+  <!-- Header & Ambient Status -->
+  <header>
+    <div class="header-top">
+      <div>
+        <div class="brand-cluster">
+          <div class="brand-eyebrow">
+            <span class="live-pulse"></span>
+            T3 Trade Architecture / Trading-Only MCP Tools
+          </div>
+          <div class="status-pill">
+            <span>Hyperliquid Testnet</span>
+            <span style="color: var(--accent-emerald); font-weight: 700;">Venue #1</span>
+          </div>
+          <div class="status-pill">
+            <span>Strict Tool Lock:</span>
+            <span style="color: var(--accent-cyan); font-weight: 700;">Enabled</span>
+          </div>
+        </div>
+        <h1>Harness-Facing Trading Toolkit</h1>
+        <p class="header-lead">
+          The 13-tool deterministic boundary between AI agent harnesses (Claude Code, OpenAI Codex, Grok, OpenCode)
+          and real-time financial execution. Fully typed Effect contracts, mandatory stop loss derivation,
+          optimistic concurrency versioning, and zero file/terminal access in trading mode.
+        </p>
+      </div>
+      <div>
+        <button class="action-btn primary" id="open-quick-demo-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          Launch Interactive Simulator
+        </button>
+      </div>
+    </div>
+
+    <!-- Live Reactor Ticker HUD -->
+    <div class="hud-ticker-strip">
+      <div class="hud-item">
+        <span>MARKET:</span>
+        <span class="hud-val">SOL-PERP</span>
+      </div>
+      <div class="hud-item">
+        <span>MID:</span>
+        <span class="hud-val" id="hud-mid-price">$142.85</span>
+      </div>
+      <div class="hud-item">
+        <span>SPREAD:</span>
+        <span class="hud-val" style="color: var(--accent-cyan);">2.8 bps</span>
+      </div>
+      <div class="hud-item">
+        <span>8H FUNDING:</span>
+        <span class="hud-val" style="color: var(--accent-emerald);">+0.0042%</span>
+      </div>
+      <div class="hud-item">
+        <span>REACTOR SWEEP:</span>
+        <span class="hud-val" id="hud-sweep-timer" style="color: var(--accent-rose);">2000ms Loop</span>
+      </div>
+    </div>
+
+    <!-- Ticker Metrics -->
+    <div class="metrics-bar">
+      <div class="metric-card">
+        <div class="metric-label">Active Trading Tools</div>
+        <div class="metric-value">13 <span class="metric-tag tag-emerald">Hardened</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Retired Legacy Sprawl</div>
+        <div class="metric-value">11 <span class="metric-tag tag-cyan">Consolidated</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Observation Fetch Keys</div>
+        <div class="metric-value">20+ <span class="metric-tag tag-violet">trading_look</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Order Risk Ceilings</div>
+        <div class="metric-value">5 <span class="metric-tag tag-amber">Enforced</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Reactive Evaluation</div>
+        <div class="metric-value">2,000ms <span class="metric-tag tag-rose">Background</span></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Section 1: System Topology & Signal Flow -->
+  <section class="section-box" id="architecture-section">
+    <div class="section-header">
+      <div class="section-title-wrap">
+        <h2>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+          System Topology and Signal Pipeline
+        </h2>
+        <p class="section-desc">
+          Signals traverse from AI cognition down to exchange-native resting protection. Click any layer node below to highlight its active tools.
+        </p>
+      </div>
+      <div class="sim-presets-bar">
+        <button class="sim-preset-btn" id="topo-reset-btn">Reset View</button>
+      </div>
+    </div>
+
+    <div class="architecture-diagram">
+      <canvas id="topo-canvas"></canvas>
+      <div class="flow-pipeline" id="topo-pipeline">
+        <div class="flow-node" data-layer="harness">
+          <span class="flow-node-badge tag-cyan">Layer 1: Harness</span>
+          <div class="flow-node-title">AI Cognition</div>
+          <div class="flow-node-desc">Claude Code, Codex, Grok, or OpenCode running in isolated session mode with strict tool locks.</div>
+          <div class="flow-tools-list">
+            <span class="tool-microchip">Prompt Grounding</span>
+            <span class="tool-microchip">Lease Token</span>
+          </div>
+        </div>
+
+        <div class="flow-node" data-layer="perception">
+          <span class="flow-node-badge tag-violet">Layer 2: Telemetry</span>
+          <div class="flow-node-title">Unified Look</div>
+          <div class="flow-node-desc">Character-budgeted catalog query replacing 12 fragile endpoints into a single atomic inspection.</div>
+          <div class="flow-tools-list">
+            <span class="tool-microchip">trading_look</span>
+            <span class="tool-microchip">trading_strategy</span>
+          </div>
+        </div>
+
+        <div class="flow-node" data-layer="policy">
+          <span class="flow-node-badge tag-amber">Layer 3: Guardian</span>
+          <div class="flow-node-title">Policy and Risk</div>
+          <div class="flow-node-desc">Server-enforced noise floors, 5 sizing ceilings, SHA-256 TRADE.md drift fence, and authority locks.</div>
+          <div class="flow-tools-list">
+            <span class="tool-microchip">trading_plan</span>
+            <span class="tool-microchip">trading_plan_doc</span>
+            <span class="tool-microchip">trading_journal</span>
+          </div>
+        </div>
+
+        <div class="flow-node" data-layer="reactive">
+          <span class="flow-node-badge tag-rose">Layer 4: Reactor</span>
+          <div class="flow-node-title">Background Loop</div>
+          <div class="flow-node-desc">2,000ms evaluators for price, metric, derived archive statistics, and terminal horizon wakes.</div>
+          <div class="flow-tools-list">
+            <span class="tool-microchip">trading_watch</span>
+          </div>
+        </div>
+
+        <div class="flow-node" data-layer="venue">
+          <span class="flow-node-badge tag-emerald">Layer 5: Venue</span>
+          <div class="flow-node-title">Execution and Archive</div>
+          <div class="flow-node-desc">Hyperliquid testnet L2 books, exchange-confirmed reduce-only stops, plus immutable research DB.</div>
+          <div class="flow-tools-list">
+            <span class="tool-microchip">trading_enter</span>
+            <span class="tool-microchip">trading_exit</span>
+            <span class="tool-microchip">trading_backtest</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Reactor Loop Progress Bar -->
+    <div class="reactor-live-widget">
+      <div class="reactor-pulse-circle">
+        <svg class="reactor-svg-ring" width="36" height="36">
+          <circle class="reactor-ring-bg" cx="18" cy="18" r="14"></circle>
+          <circle class="reactor-ring-fill" id="reactor-timer-fill" cx="18" cy="18" r="14"></circle>
+        </svg>
+      </div>
+      <div class="reactor-text-info">
+        <div class="reactor-title">Reactor Background Evaluator (2,000ms Heartbeat)</div>
+        <div class="reactor-sub" id="reactor-eval-status">
+          Active Watch Predicates: 1 armed. Checking SOL mid (142.85) against target condition...
+        </div>
+      </div>
+      <div>
+        <button class="action-btn" id="simulate-price-tick-btn">
+          Simulate Volatility Tick (+1.8%)
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 2: Sticky Toolbar and Filter Matrix -->
+  <div class="toolbar-sticky" id="tools-toolbar">
+    <div class="tab-pills" id="category-tabs">
+      <button class="tab-btn active" data-cat="all">All Tools <span class="badge-count">13</span></button>
+      <button class="tab-btn" data-cat="perception">Perception <span class="badge-count">2</span></button>
+      <button class="tab-btn" data-cat="execution">Execution <span class="badge-count">2</span></button>
+      <button class="tab-btn" data-cat="strategy">Strategy <span class="badge-count">4</span></button>
+      <button class="tab-btn" data-cat="reactor">Reactive Wakes <span class="badge-count">1</span></button>
+      <button class="tab-btn" data-cat="research">Quantitative Research <span class="badge-count">4</span></button>
+    </div>
+
+    <div class="search-filter-wrap">
+      <div class="search-input-box">
+        <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" id="tool-search-input" placeholder="Search tool names, keys, parameters..." autocomplete="off">
+      </div>
+    </div>
+  </div>
+
+  <!-- Section 3: Interactive Tools Grid -->
+  <div class="tools-grid" id="tools-card-grid">
+    <!-- Rendered dynamically by JavaScript -->
+  </div>
+
+  <!-- Section 4: Deep Dive: trading_look Character Weight & Token Budget Calculator -->
+  <section class="section-box" id="calculator-section">
+    <div class="section-header">
+      <div class="section-title-wrap">
+        <h2>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-emerald)" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+          Context Character and Token Budget Calculator: trading_look
+        </h2>
+        <p class="section-desc">
+          Plan 38 introduced character-priced catalog keys so the agent queries only what is necessary for the current decision, preventing token flooding. Select keys below to measure context footprint.
+        </p>
+      </div>
+      <div class="sim-presets-bar">
+        <button class="sim-preset-btn" id="calc-preset-minimal">Preset: Bare BBO</button>
+        <button class="sim-preset-btn" id="calc-preset-reassess">Preset: Turn Reassessment</button>
+        <button class="sim-preset-btn" id="calc-preset-deep">Preset: Deep Forensic</button>
+        <button class="sim-preset-btn" id="calc-reset-btn">Clear All</button>
+      </div>
+    </div>
+
+    <div class="look-calculator-wrap">
+      <div class="look-keys-grid" id="look-keys-container">
+        <!-- Rendered by JS -->
+      </div>
+
+      <div class="budget-summary-panel">
+        <div class="sim-pane-header">
+          <span>Context Footprint</span>
+          <span id="budget-status-tag" class="metric-tag tag-emerald">Efficient</span>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-label">Total Character Weight</div>
+          <div class="metric-value"><span id="calc-total-chars">0</span> <span style="font-size: 13px; color: var(--text-muted);">chars</span></div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-label">Estimated Token Consumption</div>
+          <div class="metric-value"><span id="calc-total-tokens">0</span> <span style="font-size: 13px; color: var(--text-muted);">tokens (~4 chars/token)</span></div>
+        </div>
+
+        <div class="budget-bar-container">
+          <div class="metric-label" style="display: flex; justify-content: space-between;">
+            <span>Context Window Share (8k target budget)</span>
+            <span id="calc-budget-pct">0%</span>
+          </div>
+          <div class="budget-bar-track">
+            <div class="budget-bar-fill" id="calc-budget-bar"></div>
+          </div>
+        </div>
+
+        <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
+          Note: Calling <code>trading_look({})</code> without arguments returns the schema menu rather than all data. Keys with parameters (such as <code>candles:1h:50</code>) scale linearly by unit.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 5: Interactive Drift Defense Sandbox (TRADE.md Live Protection) -->
+  <section class="section-box" id="drift-sandbox-section">
+    <div class="section-header">
+      <div class="section-title-wrap">
+        <h2>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-amber)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+          Interactive Drift Defense: TRADE.md SHA-256 Pinning
+        </h2>
+        <p class="section-desc">
+          When TRADE.md changes on disk without being activated, the server flags state as drifted. In this state, trading_enter rejects orders to prevent unintended exposure, while trading_exit remains accessible.
+        </p>
+      </div>
+    </div>
+
+    <div class="drift-sandbox-card">
+      <div class="drift-doc-col">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600;">Disk File: TRADE.md</span>
+          <span id="drift-state-badge" class="metric-tag tag-emerald">ACTIVE (PINNED)</span>
+        </div>
+        <pre class="drift-code-preview" id="drift-file-content">## Mission Mandate: SOL
+market: SOL
+max_gross_notional_usd: 2500
+loss_budget_usd: 100
+approved_strategies:
+  - range_scalp
+  - breakout_expansion</pre>
+        <div style="display: flex; gap: 8px;">
+          <button class="action-btn" id="drift-modify-disk-btn">Simulate External Edit on Disk</button>
+          <button class="action-btn primary" id="drift-repin-btn">Activate Current Hash</button>
+        </div>
+      </div>
+
+      <div class="drift-doc-col">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600;">Drift Fence Invariant Check</span>
+          <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">trading_enter precheck</span>
+        </div>
+        <div class="metric-card" style="margin-top: 0;">
+          <div class="metric-label">Active Pinned Hash</div>
+          <div class="metric-value" style="font-size: 12px; word-break: break-all;" id="drift-active-hash">e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</div>
+        </div>
+        <div class="metric-card" style="margin-top: 0;">
+          <div class="metric-label">Current Disk SHA-256</div>
+          <div class="metric-value" style="font-size: 12px; word-break: break-all;" id="drift-current-hash">e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</div>
+        </div>
+        <div id="drift-status-callout" style="padding: 10px; border-radius: 6px; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); font-size: 11px; color: var(--accent-emerald);">
+          Hashes match. trading_enter is authorized to execute.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 6: Evolution Matrix (Legacy 24 Tools to 13 Consolidated Tools) -->
+  <section class="section-box" id="evolution-section">
+    <div class="section-header">
+      <div class="section-title-wrap">
+        <h2>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-violet)" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+          Architecture Evolution: 24 Legacy Tools to 13 Hardened Tools
+        </h2>
+        <p class="section-desc">
+          Plan 29 and Plan 38 eliminated the multi-step quote ceremony and scattered read tools. Review how each legacy tool was subsumed into the hardened architecture.
+        </p>
+      </div>
+    </div>
+
+    <div style="overflow-x: auto;">
+      <table class="evolution-table">
+        <thead>
+          <tr>
+            <th>Legacy Tool (Sprawl)</th>
+            <th>Consolidation Milestone</th>
+            <th>Hardened Successor</th>
+            <th>Critical Flaw Resolved</th>
+          </tr>
+        </thead>
+        <tbody id="evolution-table-body">
+          <!-- Populated by JS -->
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Section 7: Guardrails & Invariants Matrix -->
+  <section class="section-box" id="guardrails-section">
+    <div class="section-header">
+      <div class="section-title-wrap">
+        <h2>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-rose)" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          Server Guardrails, Sizing Ceilings, and Refusal Codes
+        </h2>
+        <p class="section-desc">
+          The server is authoritative; the agent cannot override financial safety invariants. An order request is bound by the strictest of five distinct sizing ceilings.
+        </p>
+      </div>
+    </div>
+
+    <div class="metrics-bar" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+      <div class="metric-card">
+        <span class="metric-tag tag-cyan">Ceiling 1</span>
+        <div class="metric-label" style="margin-top: 8px;">requested</div>
+        <div class="flow-node-desc">The size explicitly requested by the AI harness. Sizing never silently exceeds this value.</div>
+      </div>
+      <div class="metric-card">
+        <span class="metric-tag tag-emerald">Ceiling 2</span>
+        <div class="metric-label" style="margin-top: 8px;">gross_notional</div>
+        <div class="flow-node-desc">The maximum USD total exposure permitted by the active workspace mandate in TRADE.md.</div>
+      </div>
+      <div class="metric-card">
+        <span class="metric-tag tag-amber">Ceiling 3</span>
+        <div class="metric-label" style="margin-top: 8px;">leverage</div>
+        <div class="flow-node-desc">The maximum venue leverage ratio configured for the asset pair (prevents liquidation shock).</div>
+      </div>
+      <div class="metric-card">
+        <span class="metric-tag tag-violet">Ceiling 4</span>
+        <div class="metric-label" style="margin-top: 8px;">account_margin</div>
+        <div class="flow-node-desc">Available collateral in the Hyperliquid testnet wallet. Prevents underfunded order rejections.</div>
+      </div>
+      <div class="metric-card">
+        <span class="metric-tag tag-rose">Ceiling 5</span>
+        <div class="metric-label" style="margin-top: 8px;">planned_loss_ceiling</div>
+        <div class="flow-node-desc">Cumulative drawdown stop: sizeEth * abs(entry - stopPrice) cannot exceed loss budget.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div>T3 Trade MCP Toolkit Specification Section 14.3 / 14.4 / Plan 29 / Plan 38</div>
+    <div>Generated from TypeScript definitions in @t3tools/trading-contracts and apps/server</div>
+  </footer>
+
+</div>
+
+<!-- Interactive Modal Tool Simulator -->
+<div class="simulator-modal" id="sim-modal" role="dialog" aria-modal="true">
+  <div class="simulator-window">
+    <div class="simulator-header">
+      <div class="sim-title-wrap">
+        <span class="metric-tag tag-cyan" id="sim-tool-tag">TOOL</span>
+        <div>
+          <div class="sim-tool-name" id="sim-tool-name">trading_enter</div>
+          <div class="sim-tool-path" id="sim-tool-module">apps/server/src/mcp/toolkits/trading/tools.ts</div>
+        </div>
+      </div>
+      <button class="sim-close-btn" id="sim-close-btn" aria-label="Close modal">&times;</button>
+    </div>
+
+    <div class="simulator-body">
+      <!-- Input Column -->
+      <div class="sim-pane">
+        <div class="sim-pane-header">
+          <span>Input Arguments (Effect Schema)</span>
+          <div class="sim-presets-bar" id="sim-presets-container">
+            <!-- Preset buttons -->
+          </div>
+        </div>
+        <textarea class="sim-textarea" id="sim-input-text" spellcheck="false"></textarea>
+        <div style="display: flex; gap: 8px;">
+          <button class="action-btn primary" id="sim-execute-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            Send Simulated Invocation
+          </button>
+          <button class="action-btn" id="sim-format-btn">Format JSON</button>
+        </div>
+      </div>
+
+      <!-- Output Column -->
+      <div class="sim-pane">
+        <div class="sim-pane-header">
+          <span>Server Response</span>
+          <span id="sim-response-badge" class="metric-tag tag-emerald">200 OK</span>
+        </div>
+        <div class="sim-output-box" id="sim-output-box">// Response will appear here</div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button class="action-btn" id="sim-copy-response-btn">Copy Response</button>
+          <button class="action-btn" id="sim-toggle-refusal-btn">Simulate Guardrail Refusal</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sim-footer">
+      <div class="sim-latency-stat">
+        <span class="live-pulse"></span>
+        Roundtrip simulated time: <span id="sim-latency-val" style="color: var(--text-primary); font-weight: 600;">14ms</span>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button class="action-btn" id="sim-copy-mcp-btn">Copy MCP Tool Schema</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Tool Dataset with exact schemas and contracts from the repo
+  const TRADING_TOOLS = [
+    {
+      id: "trading_look",
+      title: "Look",
+      category: "perception",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:152",
+      contract: "packages/trading-contracts/src/observation.ts",
+      description: "The one read. Replaced 12 fragmented read tools with a single character-priced catalog query. Fetches market snapshot, order book, microstructure, candles, indicators, volatility, structural candidates, levels, active positions, open orders, account margin, published plan, armed watches, pending events, journal notes, trades, calibration, cost, and historical archive data.",
+      traits: { readonly: true, destructive: false, idempotent: true, openWorld: true },
+      paramsSchema: {
+        market: { type: "string", optional: true, description: "Market symbol (defaults to mission market, e.g. SOL)" },
+        missionId: { type: "string", optional: true, description: "Bound mission identifier" },
+        fetch: { type: "string[]", optional: true, description: "Catalog keys: snapshot, book, microstructure, candles:tf:n, indicators:spec, volatility, structure_brief, levels, position, account, plan, watches, journal" },
+        interval: { type: "string", optional: true, description: "Timeframe: 1m, 3m, 5m, 15m, 1h, 4h, 1d" }
+      },
+      defaultInput: {
+        market: "SOL",
+        fetch: ["snapshot", "book", "microstructure", "volatility", "position", "account"],
+        interval: "15m"
+      },
+      presets: [
+        {
+          name: "Standard Market Read",
+          payload: { market: "SOL", fetch: ["snapshot", "book", "microstructure", "volatility"], interval: "15m" }
+        },
+        {
+          name: "Account and Position",
+          payload: { market: "SOL", fetch: ["position", "account", "orders", "plan"] }
+        },
+        {
+          name: "Archive Funding Series",
+          payload: { market: "SOL", fetch: ["funding_stats:7", "funding_series:20", "scan"] }
+        }
+      ],
+      sampleOutput: {
+        timestamp: 1725796800000,
+        market: "SOL",
+        snapshot: {
+          midPrice: 142.85,
+          bestBid: 142.83,
+          bestAsk: 142.87,
+          spreadBps: 2.8,
+          fundingRatePct8h: 0.0042,
+          openInterestUsd: 145020000,
+          volume24hUsd: 890450000
+        },
+        book: {
+          bids: [[142.83, 140.5], [142.80, 220.0], [142.75, 450.2]],
+          asks: [[142.87, 110.2], [142.90, 310.8], [142.95, 520.4]],
+          nearDepthUsd: 145000
+        },
+        microstructure: {
+          bookImbalance: 0.18,
+          effectiveSpreadBps: 2.9,
+          toxicFlowRatio: 0.08,
+          regime: "balanced_accumulation"
+        },
+        volatility: {
+          atr14: 1.85,
+          parkinsonSigma: 0.038,
+          noiseFloorUsd: 0.37
+        },
+        position: {
+          sizeEth: 0,
+          entryPrice: null,
+          unrealizedPnlUsd: 0,
+          liquidationPrice: null
+        },
+        account: {
+          marginBalanceUsd: 5000.0,
+          availableMarginUsd: 4850.0,
+          leverageMax: 10,
+          lossBudgetRemainingUsd: 250.0
+        }
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "unknown_fetch_key",
+        detail: "Key 'orderbook_deep' is not in catalog. Nearest valid key is 'book_full' or 'book'."
+      }
+    },
+    {
+      id: "trading_enter",
+      title: "Enter",
+      category: "execution",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:214",
+      contract: "packages/trading-contracts/src/entry.ts",
+      description: "Direct order entry in one call. Inverts the legacy two-step quote protocol. The harness specifies desired market, side, and protective stop. The server calculates the exact limit price, precision, cloid, and sizes the order against five strict risk ceilings (requested, gross notional, leverage, margin capacity, and loss budget). Refuses stops inside the noise floor.",
+      traits: { readonly: false, destructive: true, idempotent: false, openWorld: true },
+      paramsSchema: {
+        market: { type: "string", required: true, description: "Market symbol (e.g. SOL)" },
+        side: { type: "long | short", required: true, description: "Direction" },
+        stopPrice: { type: "number", required: true, description: "Mandatory reduce-only stop loss trigger" },
+        sizeEth: { type: "number", optional: true, description: "Base size; omitted uses largest allowed by risk ceilings" },
+        urgency: { type: "now | patient", optional: true, description: "'now' = IOC crossing spread; 'patient' = resting maker order" },
+        notes: { type: "string", optional: true, description: "Context note accompanying entry" },
+        missionId: { type: "string", optional: true, description: "Mission identifier" }
+      },
+      defaultInput: {
+        market: "SOL",
+        side: "long",
+        stopPrice: 141.20,
+        sizeEth: 10.0,
+        urgency: "now",
+        notes: "Entering off 15m bullish order block after volume sweep"
+      },
+      presets: [
+        {
+          name: "IOC Market Taker Long",
+          payload: { market: "SOL", side: "long", stopPrice: 141.20, sizeEth: 10.0, urgency: "now" }
+        },
+        {
+          name: "Patient Limit Maker Short",
+          payload: { market: "SOL", side: "short", stopPrice: 144.50, sizeEth: 8.5, urgency: "patient" }
+        },
+        {
+          name: "Auto-Max-Sized Long",
+          payload: { market: "SOL", side: "long", stopPrice: 141.80, urgency: "now" }
+        }
+      ],
+      sampleOutput: {
+        status: "filled",
+        cloid: "0x7f9a2b4e8c10001",
+        market: "SOL",
+        side: "long",
+        fillPrice: 142.87,
+        filledSize: 10.0,
+        constrainedBy: "requested",
+        protectionStatus: "resting_on_exchange",
+        stopOrderId: "0xstop_990142",
+        stopPrice: 141.20,
+        executedNotionalUsd: 1428.70,
+        feePaidUsd: 0.499,
+        timestamp: 1725796812400
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "stop_inside_noise_floor",
+        detail: "Stop price 142.60 is 0.25 USD from market 142.85. Measured 15m noise floor is 0.37 USD (142.48 minimum required distance)."
+      }
+    },
+    {
+      id: "trading_exit",
+      title: "Exit",
+      category: "execution",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:246",
+      contract: "packages/trading-contracts/src/exit.ts",
+      description: "The one tool for reducing, closing, and protecting open risk. Combines close, partial reduction, order cancellation, and trailing stop adjustments into a unified interface. 'move_stop' enforces rate limits, ratcheting (never widening risk), and noise-floor verification.",
+      traits: { readonly: false, destructive: true, idempotent: false, openWorld: true },
+      paramsSchema: {
+        action: { type: "close | reduce | cancel_order | move_stop | release_market", required: true, description: "The exit or protection action" },
+        market: { type: "string", optional: true, description: "Market symbol" },
+        sizeEth: { type: "number", optional: true, description: "Size to reduce in base units" },
+        fraction: { type: "number", optional: true, description: "Fraction of position to reduce (0.1 to 1.0)" },
+        cloid: { type: "string", optional: true, description: "Order ID to cancel" },
+        stopPrice: { type: "number", optional: true, description: "New stop price for move_stop" },
+        expectedPlanUpdatedAt: { type: "number", optional: true, description: "Timestamp lock for move_stop" },
+        urgency: { type: "now | patient", optional: true, description: "Taker vs maker close" }
+      },
+      defaultInput: {
+        action: "move_stop",
+        market: "SOL",
+        stopPrice: 142.90,
+        expectedPlanUpdatedAt: 1725796800000
+      },
+      presets: [
+        {
+          name: "Move Stop to Breakeven",
+          payload: { action: "move_stop", market: "SOL", stopPrice: 142.90, expectedPlanUpdatedAt: 1725796800000 }
+        },
+        {
+          name: "Close Entire Position (IOC)",
+          payload: { action: "close", market: "SOL", urgency: "now" }
+        },
+        {
+          name: "Partial 50% De-Risk",
+          payload: { action: "reduce", market: "SOL", fraction: 0.5 }
+        },
+        {
+          name: "Release Market Authority",
+          payload: { action: "release_market", market: "SOL" }
+        }
+      ],
+      sampleOutput: {
+        status: "confirmed",
+        action: "move_stop",
+        market: "SOL",
+        previousStopPrice: 141.20,
+        newStopPrice: 142.90,
+        exchangeOrderId: "0xstop_990142_rev2",
+        protectionProvenance: "resting_on_exchange",
+        timestamp: 1725796845000
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "stop_adjustment_refused",
+        detail: "Proposed stop 140.50 widens risk beyond active approved stop 141.20. Stops may only ratchet toward profit."
+      }
+    },
+    {
+      id: "trading_plan",
+      title: "Plan",
+      category: "strategy",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:166",
+      contract: "packages/trading-contracts/src/tools.ts",
+      description: "Publish the authoritative trading plan: market, intent, entry zone, stop, target, invalidation criteria, reassessment window, and falsifiable projection. Arms automatic horizon and invalidation wakes. Guarded by expectedMissionVersion to prevent concurrent overwrites.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: false },
+      paramsSchema: {
+        market: { type: "string", required: true, description: "Market symbol" },
+        intent: { type: "long | short | stand_aside", required: true, description: "Strategic posture" },
+        entry: { type: "object", required: true, description: "{ minPrice, maxPrice, orderType }" },
+        stop: { type: "object", required: true, description: "{ price, source, because }" },
+        target: { type: "object", required: true, description: "{ price, basis }" },
+        projection: { type: "object", required: true, description: "{ direction, price, byMinutes, invalidationPrice }" },
+        invalidation: { type: "object", required: true, description: "{ price, condition }" },
+        reassess: { type: "object", required: true, description: "{ afterMinutes, condition }" },
+        expectedMissionVersion: { type: "number", required: true, description: "Optimistic lock version" },
+        because: { type: "string", required: true, description: "Falsifiable thesis prose" }
+      },
+      defaultInput: {
+        market: "SOL",
+        intent: "long",
+        entry: { minPrice: 142.70, maxPrice: 142.90, orderType: "limit" },
+        stop: { price: 141.20, source: "market_structure", because: "15m swing low breach" },
+        target: { price: 146.50, basis: "2.5x ATR resistance level" },
+        projection: { direction: "long", price: 146.50, byMinutes: 120, invalidationPrice: 141.20 },
+        invalidation: { price: 141.20, condition: "15m candle close below swing low" },
+        reassess: { afterMinutes: 45, condition: "volume exhaustion or failure to clear 144.0" },
+        expectedMissionVersion: 1,
+        because: "Clean sweep of Asian session lows with bullish divergence on 15m RSI and negative funding indicating trapped shorts."
+      },
+      presets: [
+        {
+          name: "Publish SOL Breakout Plan",
+          payload: { market: "SOL", intent: "long", expectedMissionVersion: 1, stop: { price: 141.20 }, projection: { direction: "long", price: 146.50, byMinutes: 120, invalidationPrice: 141.20 }, because: "Bullish structure breakout." }
+        },
+        {
+          name: "Stand Aside Plan",
+          payload: { market: "SOL", intent: "stand_aside", expectedMissionVersion: 2, because: "Choppy range before FOMC release; risk to reward unfavourable." }
+        }
+      ],
+      sampleOutput: {
+        status: "published",
+        missionId: "msn_7739a8c1",
+        version: 2,
+        publishedAt: 1725796820000,
+        armedWakes: ["wake_horizon_120m", "wake_inval_141.20"]
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "stale_expected_version",
+        detail: "Published plan version 1 is stale; current mission version is 2. Re-read with trading_look before publishing."
+      }
+    },
+    {
+      id: "trading_plan_document",
+      title: "PlanDocument",
+      category: "strategy",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:356",
+      contract: "packages/trading-contracts/src/planDocument.ts",
+      description: "TRADE.md activation and drift enforcement surface. The user or agent writes TRADE.md with native file tools; this tool pins that revision by SHA-256 hash. If the document changes on disk after activation, trading_enter refuses new exposure with plan_document_drifted until re-activated.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: false },
+      paramsSchema: {
+        action: { type: "show | activate | deactivate", required: true, description: "Action to perform on TRADE.md" },
+        expectedContentHash: { type: "string", optional: true, description: "SHA-256 digest of TRADE.md content (for activate)" },
+        changeNote: { type: "string", optional: true, description: "Audit trail log message describing update" }
+      },
+      defaultInput: {
+        action: "activate",
+        expectedContentHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        changeNote: "Raised max SOL gross exposure from $1,000 to $2,500 following verified backtest."
+      },
+      presets: [
+        { name: "Show Activation Status", payload: { action: "show" } },
+        { name: "Activate Document Hash", payload: { action: "activate", expectedContentHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", changeNote: "Baseline mandate activation" } },
+        { name: "Deactivate (Stand Down)", payload: { action: "deactivate", changeNote: "Pausing automated mandate" } }
+      ],
+      sampleOutput: {
+        state: "active",
+        activeHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        currentDiskHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        revisionCount: 4,
+        governedSince: 1725792000000
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "stale_hash",
+        detail: "Supplied hash e3b0c44... does not match live disk hash 9a88f1c.... Re-read TRADE.md and activate the current hash."
+      }
+    },
+    {
+      id: "trading_strategy",
+      title: "Strategy",
+      category: "strategy",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:232",
+      contract: "packages/trading-contracts/src/playbook.ts",
+      description: "Reads a named playbook strategy. Each returns whenItApplies (setup trigger), ordered procedure[] steps, gates[] that must clear before entry, and standDownIf[] conditions to retire the setup.",
+      traits: { readonly: true, destructive: false, idempotent: true, openWorld: false },
+      paramsSchema: {
+        name: { type: "string", required: true, description: "Playbook name (e.g. range_scalp, breakout_expansion, funding_mean_reversion)" }
+      },
+      defaultInput: {
+        name: "range_scalp"
+      },
+      presets: [
+        { name: "Range Scalp Playbook", payload: { name: "range_scalp" } },
+        { name: "Breakout Expansion", payload: { name: "breakout_expansion" } },
+        { name: "Funding Mean Reversion", payload: { name: "funding_mean_reversion" } }
+      ],
+      sampleOutput: {
+        name: "range_scalp",
+        whenItApplies: "Clear boundary established on 1h bars with book depth support at boundary extremes.",
+        procedure: [
+          "Confirm HTF range boundaries via trading_look levels.",
+          "Wait for sweep of boundary followed by rejection on 5m volume ratio > 1.8.",
+          "Enter on limit inside boundary with stop 1 ATR beyond excursion."
+        ],
+        gates: [
+          "Book imbalance opposing entry must not exceed 0.6.",
+          "Estimated round-trip taker fees must be <= 20% of planned profit target."
+        ],
+        standDownIf: [
+          "Macro news release within 30 minutes.",
+          "Continuous high-volume 15m closes outside range."
+        ],
+        maxHoldDurationMinutes: 180
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "unknown_playbook_name",
+        detail: "Strategy 'ai_momentum_chase' not found. Available strategies: range_scalp, breakout_expansion, funding_mean_reversion."
+      }
+    },
+    {
+      id: "trading_watch",
+      title: "Watch",
+      category: "reactor",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:184",
+      contract: "packages/trading-contracts/src/watch.ts",
+      description: "Arms an asynchronous reactive condition evaluated every 2,000ms by the background engine. Triggers wakes for price crossings (touch or candle close), live metrics (funding rate, open interest, spread, volume ratio), 13 archive-derived metrics, PnL thresholds, or timeouts. One watch fires once and retires.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: false },
+      paramsSchema: {
+        condition: { type: "object", required: true, description: "Predicate schema: price, metric, derived, pnl, giveback, fill, or time" },
+        market: { type: "string", optional: true, description: "Market symbol (defaults to mission market)" },
+        replacesWatchId: { type: "string", optional: true, description: "Atomic swap of an existing watch" },
+        cancel: { type: "boolean", optional: true, description: "Retire active watch" }
+      },
+      defaultInput: {
+        condition: {
+          type: "metric",
+          metric: "volume_ratio",
+          operator: ">=",
+          threshold: 2.0,
+          interval: "5m"
+        },
+        market: "SOL"
+      },
+      presets: [
+        {
+          name: "Volume Spike Wake",
+          payload: { condition: { type: "metric", metric: "volume_ratio", operator: ">=", threshold: 2.0, interval: "5m" }, market: "SOL" }
+        },
+        {
+          name: "Price Level Breakout",
+          payload: { condition: { type: "price", targetPrice: 145.00, direction: "above", confirm: "close", interval: "15m" }, market: "SOL" }
+        },
+        {
+          name: "Funding Sign Flip (Derived)",
+          payload: { condition: { type: "derived", metric: "funding_sign_flip", toSign: "positive" }, market: "SOL" }
+        }
+      ],
+      sampleOutput: {
+        watchId: "wtc_9941a02f",
+        status: "armed",
+        conditionType: "metric",
+        predicate: "SOL volume_ratio(5m) >= 2.0",
+        evaluatesEveryMs: 2000,
+        armedAt: 1725796830000,
+        expiresAt: 1725883230000
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "watch_refused",
+        detail: "Condition price target 142.85 is already satisfied by current market mid 142.85. Watch would fire immediately."
+      }
+    },
+    {
+      id: "trading_journal",
+      title: "Journal",
+      category: "strategy",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:198",
+      contract: "packages/trading-contracts/src/journal.ts",
+      description: "Durable memory for mission reasoning. Notes survive the plan revisions that overwrite the 'because' field. Append notes with tags or omit note to read back the complete historical chronological journal.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: false },
+      paramsSchema: {
+        note: { type: "string", optional: true, description: "Note text to append; omit to read back journal" },
+        tags: { type: "string[]", optional: true, description: "Categorization tags (e.g. ['choppy', 'invalidation_test'])" },
+        missionId: { type: "string", optional: true, description: "Target mission identifier" }
+      },
+      defaultInput: {
+        note: "Observed heavy iceberg resting orders at 144.00 resisting upwards momentum. Trailing stop held firm at 142.90.",
+        tags: ["order_flow", "resistance_check"]
+      },
+      presets: [
+        {
+          name: "Append Observation Note",
+          payload: { note: "Asian high swept with immediate negative delta; holding short posture.", tags: ["sweep", "delta"] }
+        },
+        {
+          name: "Read Back Entire Journal",
+          payload: {}
+        }
+      ],
+      sampleOutput: {
+        entriesCount: 3,
+        entries: [
+          { id: "jrn_03", timestamp: 1725796850000, note: "Observed heavy iceberg resting orders at 144.00 resisting upwards momentum.", tags: ["order_flow", "resistance_check"] },
+          { id: "jrn_02", timestamp: 1725796815000, note: "Filled 10 SOL long at 142.87. Protection confirmed on exchange.", tags: ["entry", "fill"] },
+          { id: "jrn_01", timestamp: 1725796800000, note: "Initiating research on SOL following positive funding reset.", tags: ["setup"] }
+        ]
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "mission_not_found",
+        detail: "Calling session is not bound to an active mission. Read-only analyst sessions do not hold journal memory."
+      }
+    },
+    {
+      id: "trading_backtest",
+      title: "Backtest",
+      category: "research",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:262",
+      contract: "packages/trading-contracts/src/backtest.ts",
+      description: "Historical quantitative research thesis over archived candles and funding rates. Never places an order. Enforces realistic market microstructure: orders fill at the next bar open, pay taker fees on both sides, cross the spread, and account for historical funding. Rejects verdicts with fewer than 20 sample trades.",
+      traits: { readonly: true, destructive: false, idempotent: true, openWorld: true },
+      paramsSchema: {
+        thesis: { type: "object", required: true, description: "Thesis specification: market, interval, side, entry conditions, exit rules" },
+        windowDays: { type: "number", optional: true, description: "Historical window in days (max 180)" },
+        hypothesisId: { type: "string", optional: true, description: "Optional hypothesis link for durable tracking" }
+      },
+      defaultInput: {
+        thesis: {
+          market: "SOL",
+          interval: "5m",
+          side: "long",
+          entry: {
+            rules: [
+              { indicator: "volume_ratio", op: ">=", value: 2.0 },
+              { indicator: "funding_rate_8h", op: "<", value: 0 }
+            ],
+            match: "all"
+          },
+          exits: {
+            stopAtr: 1.0,
+            targetAtr: 2.0,
+            maxHoldBars: 24
+          }
+        },
+        windowDays: 30
+      },
+      presets: [
+        {
+          name: "SOL 5m Busy-Bar Mean Reversion",
+          payload: { thesis: { market: "SOL", interval: "5m", side: "long", entry: { rules: [{ indicator: "volume_ratio", op: ">=", value: 2.0 }] }, exits: { stopAtr: 1.0, targetAtr: 2.0, maxHoldBars: 24 } }, windowDays: 30 }
+        },
+        {
+          name: "ETH 1h Breakout Sweep",
+          payload: { thesis: { market: "ETH", interval: "1h", side: "long", entry: { rules: [{ indicator: "ema_distance", op: ">", value: 1.5 }] }, exits: { stopAtr: 1.5, targetAtr: 3.0, maxHoldBars: 48 } }, windowDays: 60 }
+        }
+      ],
+      sampleOutput: {
+        verdict: "supported",
+        tradesCount: 42,
+        winRatePct: 59.5,
+        expectancyPerTradeBps: 24.8,
+        netReturnPct: 10.42,
+        maxDrawdownPct: 3.8,
+        sharpeRatio: 1.84,
+        buyAndHoldReturnPct: -2.1,
+        totalFeesPaidUsd: 84.0,
+        coverageBars: 8640
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "window_too_large",
+        detail: "Requested 365 days on 1m bars exceeds maximum bar walk limit. Pick a coarser interval such as 5m or 15m."
+      }
+    },
+    {
+      id: "trading_validate",
+      title: "Validate",
+      category: "research",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:278",
+      contract: "packages/trading-contracts/src/forward.ts",
+      description: "Validates a thesis forward on live incoming bars, on paper. Never touches real capital or places venue orders. Evaluates every closed bar against real fee models and tracks paper hit rate, drawdown, and comparison against the original backtest.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: true },
+      paramsSchema: {
+        action: { type: "arm | list | pause | resume | end | report", required: true, description: "Lifecycle action" },
+        thesis: { type: "object", optional: true, description: "Thesis to arm" },
+        durationHours: { type: "number", optional: true, description: "Validation lifetime (12 to 168 hours)" },
+        validationId: { type: "string", optional: true, description: "ID for status/reporting" }
+      },
+      defaultInput: {
+        action: "arm",
+        thesis: {
+          market: "SOL",
+          interval: "5m",
+          side: "long",
+          entry: { rules: [{ indicator: "volume_ratio", op: ">=", value: 2.0 }] },
+          exits: { stopAtr: 1.5, targetAtr: 2.0, maxHoldBars: 24 }
+        },
+        durationHours: 24
+      },
+      presets: [
+        {
+          name: "Arm 24-Hour Paper Validation",
+          payload: { action: "arm", durationHours: 24, thesis: { market: "SOL", interval: "5m", side: "long" } }
+        },
+        {
+          name: "Fetch Live Report",
+          payload: { action: "report", validationId: "val_88301b" }
+        }
+      ],
+      sampleOutput: {
+        validationId: "val_88301b",
+        status: "running",
+        armedAt: 1725796800000,
+        expiresAt: 1725883200000,
+        paperTradesCount: 6,
+        realizedWinRatePct: 66.7,
+        expectancyBps: 28.4,
+        backtestVariancePct: 3.6,
+        verdict: "insufficient_sample (6/20 required for verdict)"
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "validation_refused",
+        detail: "Duration 300 hours exceeds maximum 168 hours (7 days). Choose a duration between 12 and 168 hours."
+      }
+    },
+    {
+      id: "trading_hypothesis",
+      title: "Hypothesis",
+      category: "research",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:297",
+      contract: "packages/trading-contracts/src/hypothesis.ts",
+      description: "Durable lifecycle and lineage tracking for quantitative ideas across versions. Saves v1, writes versioned revisions with change notes, links backtests and forward validations, and records conclusions ('supported' or 'unsupported') without touching capital.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: true },
+      paramsSchema: {
+        action: { type: "save | revise | show | list | observe | shelve | conclude", required: true, description: "Hypothesis lifecycle action" },
+        title: { type: "string", optional: true, description: "Descriptive title for v1" },
+        thesis: { type: "object", optional: true, description: "Quantitative thesis" },
+        hypothesisId: { type: "string", optional: true, description: "Identifier for existing idea" },
+        verdict: { type: "supported | unsupported", optional: true, description: "Conclusion status" },
+        note: { type: "string", optional: true, description: "Revision or conclusion note" }
+      },
+      defaultInput: {
+        action: "save",
+        title: "SOL busy-bar mean reversion",
+        thesis: {
+          market: "SOL",
+          interval: "5m",
+          side: "long",
+          entry: { rules: [{ indicator: "volume_ratio", op: ">=", value: 2.0 }] }
+        },
+        note: "Initial hypothesis formulated after detecting post-sweep liquidation clusters."
+      },
+      presets: [
+        {
+          name: "Save Version 1",
+          payload: { action: "save", title: "SOL busy-bar mean reversion", thesis: { market: "SOL", interval: "5m" } }
+        },
+        {
+          name: "Revise to Version 2",
+          payload: { action: "revise", hypothesisId: "hyp_sol_001", note: "Widened stop to 1.5 ATR to reduce noise exits." }
+        },
+        {
+          name: "Conclude Supported",
+          payload: { action: "conclude", hypothesisId: "hyp_sol_001", verdict: "supported", note: "42 backtest trades and 24h forward paper run verified positive expectancy." }
+        }
+      ],
+      sampleOutput: {
+        hypothesisId: "hyp_sol_001",
+        version: 1,
+        title: "SOL busy-bar mean reversion",
+        status: "testing",
+        createdAt: 1725796800000,
+        versionsCount: 1,
+        linkedRuns: { backtests: 2, validations: 1 }
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "hypothesis_refused",
+        detail: "Hypothesis 'hyp_sol_999' not found. Verify id with trading_hypothesis({ action: 'list' })."
+      }
+    },
+    {
+      id: "trading_events",
+      title: "Events",
+      category: "research",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:317",
+      contract: "packages/trading-contracts/src/eventSets.ts",
+      description: "External event calendar and empirical study engine. Records sourced dates (e.g. protocol hard forks, macroeconomic meetings) with mandatory authoritative URL links. Studies forward market returns over archived candles against an every-bar baseline.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: true },
+      paramsSchema: {
+        action: { type: "record | add | list | show | retire | study", required: true, description: "Event set management or analysis" },
+        eventSetId: { type: "string", optional: true, description: "Identifier of event set" },
+        occurrences: { type: "object[]", optional: true, description: "Array of { start, end, label, source }" },
+        studyParams: { type: "object", optional: true, description: "{ market, interval, horizonBars, metric, direction }" }
+      },
+      defaultInput: {
+        action: "study",
+        eventSetId: "evs_eth_upgrades",
+        studyParams: {
+          market: "ETH",
+          interval: "1d",
+          horizonBars: 28,
+          metric: "path_extrema",
+          direction: "long"
+        }
+      },
+      presets: [
+        {
+          name: "Study Ethereum Hard Forks",
+          payload: { action: "study", eventSetId: "evs_eth_upgrades", studyParams: { market: "ETH", interval: "1d", horizonBars: 28 } }
+        },
+        {
+          name: "Record Sourced Event Set",
+          payload: { action: "record", name: "Fed Rate Decisions 2026", occurrences: [{ start: 1772640000000, label: "FOMC Rate Cut", source: "https://federalreserve.gov/monetarypolicy" }] }
+        }
+      ],
+      sampleOutput: {
+        eventSetId: "evs_eth_upgrades",
+        occurrencesAnalyzed: 8,
+        studyReport: {
+          forwardHorizonBars: 28,
+          averageForwardReturnPct: 12.4,
+          baselineReturnPct: 3.1,
+          excessReturnPct: 9.3,
+          maxFavorableExcursionPct: 18.2,
+          maxAdverseExcursionPct: -4.5,
+          sampleCoverage: "100% of events within archived range"
+        }
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "events_refused",
+        detail: "Event occurrence 'Whale Summit' rejected: mandatory 'source' URL missing. Fabricated dates are prohibited."
+      }
+    },
+    {
+      id: "trading_chart",
+      title: "Chart",
+      category: "research",
+      module: "apps/server/src/mcp/toolkits/trading/tools.ts:336",
+      contract: "packages/trading-contracts/src/researchScenes.ts",
+      description: "Publishes interactive research scenes to the client chart graph mounted above the conversation. Projects event studies, backtest trade executions, or manual annotations onto live charts without duplicating candle storage.",
+      traits: { readonly: false, destructive: false, idempotent: false, openWorld: true },
+      paramsSchema: {
+        action: { type: "publish_event_study | publish_strategy_replay | annotate | show | list | clear", required: true, description: "Scene publication action" },
+        eventSetId: { type: "string", optional: true, description: "Event set identifier" },
+        market: { type: "string", optional: true, description: "Target market" },
+        thesis: { type: "object", optional: true, description: "Strategy thesis for replay" },
+        annotation: { type: "object", optional: true, description: "{ at, text }" },
+        sceneId: { type: "string", optional: true, description: "Scene pointer" }
+      },
+      defaultInput: {
+        action: "publish_event_study",
+        eventSetId: "evs_eth_upgrades",
+        market: "ETH"
+      },
+      presets: [
+        {
+          name: "Publish Event Study Scene",
+          payload: { action: "publish_event_study", eventSetId: "evs_eth_upgrades", market: "ETH" }
+        },
+        {
+          name: "Publish Strategy Trade Replay",
+          payload: { action: "publish_strategy_replay", thesis: { market: "SOL", interval: "5m" } }
+        },
+        {
+          name: "Pin Chart Annotation",
+          payload: { action: "annotate", market: "SOL", annotation: { at: 1725796800000, text: "Key liquidity grab level" } }
+        }
+      ],
+      sampleOutput: {
+        sceneId: "scn_9901ef4a",
+        action: "publish_event_study",
+        market: "ETH",
+        sceneType: "event_study",
+        publishedAt: 1725796850000,
+        markersRendered: 8,
+        disclaimer: "Historical research scene for analytical exploration. Not financial execution."
+      },
+      sampleRefusal: {
+        error: "TradingToolRejectedError",
+        reason: "chart_refused",
+        detail: "Event set 'evs_unknown' has no occurrences within the archived candle history of ETH."
+      }
+    }
+  ];
+
+  // Character Catalog for trading_look
+  const LOOK_CATALOG = [
+    { key: "snapshot", chars: 454, desc: "BBO, spread, 24h volume, 8h funding rate, open interest" },
+    { key: "book", chars: 130, desc: "Top 10 bid and ask book levels with near depth USD" },
+    { key: "book_full", chars: 898, desc: "Deep 20-level order book across both sides" },
+    { key: "microstructure", chars: 599, desc: "Book imbalance, effective spread bps, toxic flow score" },
+    { key: "candles:15m:50", chars: 1900, desc: "50 bars of 15m OHLCV candles (38 chars/bar)" },
+    { key: "indicators:ema20+rsi14", chars: 126, desc: "Priced indicator calculations on active timeframe" },
+    { key: "volatility", chars: 677, desc: "ATR14, Parkinson sigma, server noise floor threshold" },
+    { key: "volatility_htf", chars: 680, desc: "Higher timeframe volatility context" },
+    { key: "structure_brief", chars: 640, desc: "Timeframe alignment and top structural candidate" },
+    { key: "structure", chars: 4375, desc: "Exhaustive candidate scoring and harmonic pivot levels" },
+    { key: "levels", chars: 1136, desc: "Session VWAP, high/low/close pivots, historical touches" },
+    { key: "position", chars: 180, desc: "Current size, entry price, liquidation mark, unrealized PnL" },
+    { key: "position_costs", chars: 900, desc: "Fee attribution, cumulative funding paid, cost basis" },
+    { key: "orders", chars: 46, desc: "Active resting working and protective orders on exchange" },
+    { key: "account", chars: 248, desc: "Available margin, account equity, current leverage cap" },
+    { key: "plan", chars: 1258, desc: "Authoritative published mission plan and projections" },
+    { key: "watches", chars: 2860, desc: "Active reactive watch conditions and armed triggers" },
+    { key: "events:10", chars: 900, desc: "Pending event calendar occurrences (~90 chars/event)" },
+    { key: "journal", chars: 1219, desc: "Chronological mission memory and authored notes" },
+    { key: "trades", chars: 1173, desc: "Completed fills and execution receipts for mission" },
+    { key: "calibration", chars: 1047, desc: "Graded target accuracy against past closed trades" },
+    { key: "funding_stats:7", chars: 140, desc: "7-day archived funding rate statistical breakdown" },
+    { key: "scan", chars: 550, desc: "Cross-market regime context across all archived coins" }
+  ];
+
+  // Evolution Matrix Data
+  const EVOLUTION_DATA = [
+    {
+      legacy: "trading_get_market_structure",
+      plan: "Plan 29 Step 6.1",
+      modern: "trading_look({ fetch: ['structure'] })",
+      flaw: "Forced the model to consume a separate turn and 4,000+ chars before knowing if a setup existed.",
+      fix: "Consolidated into trading_look with compact 'structure_brief' alternative (640 chars)."
+    },
+    {
+      legacy: "trading_estimate_costs",
+      plan: "Plan 29 Step 6.1",
+      modern: "trading_look({ fetch: ['cost'] }) / auto-enter",
+      flaw: "Models frequently checked costs and forgot the quote, or let market conditions drift.",
+      fix: "Cost validation is derived server-side inside trading_enter before submitting."
+    },
+    {
+      legacy: "trading_quote_entry",
+      plan: "Plan 29 Step 6.2",
+      modern: "Abolished (One-Step trading_enter)",
+      flaw: "Two-step ceremony: intermediate quote token routinely expired during harness reasoning.",
+      fix: "Harness names market and stop; server derives pricing and sizes directly in one atomic call."
+    },
+    {
+      legacy: "trading_execute",
+      plan: "Plan 29 Step 6.2",
+      modern: "trading_enter (Single Entry Tool)",
+      flaw: "Demanded monotonic sequence numbers and lease tokens that models routinely hallucinated.",
+      fix: "Server manages sequence allocation, cloid generation, and lease verification internally."
+    },
+    {
+      legacy: "trading_request_entry",
+      plan: "Plan 29 Step 6.2",
+      modern: "trading_enter",
+      flaw: "Redundant duplicate alias for execution that confused agent tool choice.",
+      fix: "Eliminated entirely in favor of single deterministic trading_enter."
+    },
+    {
+      legacy: "trading_adjust_stop",
+      plan: "Plan 29 Step 6.5",
+      modern: "trading_exit({ action: 'move_stop' })",
+      flaw: "Lived apart from position risk tools; could not easily verify position size or exchange ID.",
+      fix: "Unioned into trading_exit; stop order is treated as resting reduce-only exchange protection."
+    },
+    {
+      legacy: "trading_close_position",
+      plan: "Plan 29 Step 6.5",
+      modern: "trading_exit({ action: 'close' })",
+      flaw: "Separate endpoint from reduce and cancel; model had to evaluate multiple exit tools.",
+      fix: "Unified into trading_exit with action discriminator."
+    },
+    {
+      legacy: "trading_reduce_position",
+      plan: "Plan 29 Step 6.5",
+      modern: "trading_exit({ action: 'reduce' })",
+      flaw: "Handled dust and partial sizes differently from close, causing orphaned position dust.",
+      fix: "Server-side dust sweep automatically converts sub-minimum reductions to full close."
+    },
+    {
+      legacy: "trading_cancel_order",
+      plan: "Plan 29 Step 6.5",
+      modern: "trading_exit({ action: 'cancel_order' })",
+      flaw: "Scattered order management across different tool namespaces.",
+      fix: "Consolidated into exit lifecycle with direct cloid targeting."
+    },
+    {
+      legacy: "trading_get_target_calibration",
+      plan: "Plan 29 Step 6.5",
+      modern: "trading_look({ fetch: ['calibration'] })",
+      flaw: "Cost a dedicated conversation turn just to score historical plan calibration.",
+      fix: "Served as an optional catalog key in the primary observation query."
+    },
+    {
+      legacy: "trading_register_watch",
+      plan: "Plan 38 Step 3.1",
+      modern: "trading_watch",
+      flaw: "Polled price triggers only; lacked metric, derived archive statistics, and timeout semantics.",
+      fix: "Replaced with 2,000ms background predicate evaluator supporting 13 derived metrics."
+    }
+  ];
+
+  // DOM Elements
+  const toolsContainer = document.getElementById("tools-card-grid");
+  const searchInput = document.getElementById("tool-search-input");
+  const categoryTabs = document.getElementById("category-tabs");
+  const modal = document.getElementById("sim-modal");
+  const modalCloseBtn = document.getElementById("sim-close-btn");
+  const simToolTag = document.getElementById("sim-tool-tag");
+  const simToolName = document.getElementById("sim-tool-name");
+  const simToolModule = document.getElementById("sim-tool-module");
+  const simInputText = document.getElementById("sim-input-text");
+  const simOutputBox = document.getElementById("sim-output-box");
+  const simPresetsContainer = document.getElementById("sim-presets-container");
+  const simExecuteBtn = document.getElementById("sim-execute-btn");
+  const simFormatBtn = document.getElementById("sim-format-btn");
+  const simCopyResponseBtn = document.getElementById("sim-copy-response-btn");
+  const simToggleRefusalBtn = document.getElementById("sim-toggle-refusal-btn");
+  const simCopyMcpBtn = document.getElementById("sim-copy-mcp-btn");
+  const simResponseBadge = document.getElementById("sim-response-badge");
+  const simLatencyVal = document.getElementById("sim-latency-val");
+  const quickDemoBtn = document.getElementById("open-quick-demo-btn");
+
+  let activeCategory = "all";
+  let searchQuery = "";
+  let currentSimTool = TRADING_TOOLS[1]; // default to trading_enter
+  let isSimulatingRefusal = false;
+
+  // Render Tool Cards
+  function renderTools() {
+    toolsContainer.innerHTML = "";
+    const filtered = TRADING_TOOLS.filter(tool => {
+      const matchesCat = activeCategory === "all" || tool.category === activeCategory;
+      const q = searchQuery.toLowerCase().trim();
+      const matchesSearch = !q ||
+        tool.id.toLowerCase().includes(q) ||
+        tool.title.toLowerCase().includes(q) ||
+        tool.description.toLowerCase().includes(q) ||
+        tool.category.toLowerCase().includes(q);
+      return matchesCat && matchesSearch;
+    });
+
+    if (filtered.length === 0) {
+      toolsContainer.innerHTML = \`
+        <div style="grid-column: 1/-1; padding: 48px; text-align: center; color: var(--text-muted); background: var(--bg-surface); border-radius: var(--radius-lg); border: 1px dashed var(--border-subtle);">
+          No trading tools matched your search query "\${searchQuery}". Try searching for 'look', 'enter', 'watch', or 'backtest'.
+        </div>
+      \`;
+      return;
+    }
+
+    filtered.forEach(tool => {
+      const card = document.createElement("div");
+      card.className = "tool-card";
+      card.id = "card-" + tool.id;
+
+      let catClass = "tag-cyan";
+      if (tool.category === "execution") catClass = "tag-rose";
+      if (tool.category === "strategy") catClass = "tag-amber";
+      if (tool.category === "reactor") catClass = "tag-rose";
+      if (tool.category === "research") catClass = "tag-violet";
+
+      card.innerHTML = \`
+        <div class="tool-card-header">
+          <div class="tool-name-wrap">
+            <span class="tool-title-badge">\${tool.title}</span>
+            <div class="tool-code-name">\${tool.id}</div>
+          </div>
+          <span class="tool-category-badge \${catClass}">\${tool.category}</span>
+        </div>
+
+        <p class="tool-desc">\${tool.description}</p>
+
+        <div class="tool-traits">
+          <span class="trait-pill \${tool.traits.readonly ? 'trait-readonly' : 'trait-destructive'}">
+            \${tool.traits.readonly ? 'Read-Only' : 'Side-Effecting'}
+          </span>
+          <span class="trait-pill \${tool.traits.destructive ? 'trait-destructive' : 'trait-safe'}">
+            \${tool.traits.destructive ? 'Destructive' : 'Non-Destructive'}
+          </span>
+          <span class="trait-pill \${tool.traits.idempotent ? 'trait-idempotent' : 'trait-openworld'}">
+            \${tool.traits.idempotent ? 'Idempotent' : 'Non-Idempotent'}
+          </span>
+          <span class="trait-pill trait-openworld">
+            \${tool.traits.openWorld ? 'Open-World' : 'Closed-World'}
+          </span>
+        </div>
+
+        <div class="schema-preview-box">
+          <span style="color: var(--text-muted); font-size: 10px;">PARAMETERS:</span>
+          <div>\${JSON.stringify(tool.paramsSchema, null, 2)}</div>
+        </div>
+
+        <div class="tool-actions">
+          <button class="action-btn primary open-sim-btn" data-tool-id="\${tool.id}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            Interactive Test
+          </button>
+          <button class="action-btn copy-schema-btn" data-tool-id="\${tool.id}">
+            Copy Schema
+          </button>
+        </div>
+      \`;
+
+      toolsContainer.appendChild(card);
+    });
+
+    // Wire up buttons
+    document.querySelectorAll(".open-sim-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-tool-id");
+        openSimulator(id);
+      });
+    });
+
+    document.querySelectorAll(".copy-schema-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-tool-id");
+        const t = TRADING_TOOLS.find(x => x.id === id);
+        if (t) {
+          navigator.clipboard.writeText(JSON.stringify(t.paramsSchema, null, 2));
+          const orig = btn.innerText;
+          btn.innerText = "Copied!";
+          setTimeout(() => { btn.innerText = orig; }, 1500);
+        }
+      });
+    });
+  }
+
+  // Open Simulator Modal
+  function openSimulator(toolId) {
+    const tool = TRADING_TOOLS.find(t => t.id === toolId) || TRADING_TOOLS[1];
+    currentSimTool = tool;
+    isSimulatingRefusal = false;
+
+    simToolTag.innerText = tool.category.toUpperCase();
+    simToolName.innerText = tool.id;
+    simToolModule.innerText = tool.module;
+    simInputText.value = JSON.stringify(tool.defaultInput, null, 2);
+
+    // Setup Presets
+    simPresetsContainer.innerHTML = "";
+    if (tool.presets && tool.presets.length > 0) {
+      tool.presets.forEach(p => {
+        const b = document.createElement("button");
+        b.className = "sim-preset-btn";
+        b.innerText = p.name;
+        b.addEventListener("click", () => {
+          simInputText.value = JSON.stringify(p.payload, null, 2);
+          executeSimulation();
+        });
+        simPresetsContainer.appendChild(b);
+      });
+    }
+
+    executeSimulation();
+    modal.classList.add("open");
+  }
+
+  function executeSimulation() {
+    let parsedInput = {};
+    try {
+      parsedInput = JSON.parse(simInputText.value);
+    } catch (e) {
+      simOutputBox.className = "sim-output-box error";
+      simResponseBadge.className = "metric-tag tag-rose";
+      simResponseBadge.innerText = "JSON SYNTAX ERROR";
+      simOutputBox.innerText = "SyntaxError: " + e.message;
+      return;
+    }
+
+    // Check if document is drifted and tool is trading_enter
+    if (isDrifted && currentSimTool.id === "trading_enter" && !isSimulatingRefusal) {
+      simOutputBox.className = "sim-output-box error";
+      simResponseBadge.className = "metric-tag tag-rose";
+      simResponseBadge.innerText = "400 DRIFT REFUSAL";
+      simOutputBox.innerText = JSON.stringify({
+        error: "TradingToolRejectedError",
+        reason: "plan_document_drifted",
+        detail: "TRADE.md on disk was modified after activation. trading_enter is locked until trading_plan_document({ action: 'activate' }) confirms the new hash. Risk reductions via trading_exit remain permitted."
+      }, null, 2);
+      return;
+    }
+
+    const randomLatency = Math.floor(Math.random() * 18) + 8;
+    simLatencyVal.innerText = randomLatency + "ms";
+
+    if (isSimulatingRefusal) {
+      simOutputBox.className = "sim-output-box error";
+      simResponseBadge.className = "metric-tag tag-rose";
+      simResponseBadge.innerText = "400 REFUSAL";
+      simOutputBox.innerText = JSON.stringify(currentSimTool.sampleRefusal, null, 2);
+    } else {
+      simOutputBox.className = "sim-output-box";
+      simResponseBadge.className = "metric-tag tag-emerald";
+      simResponseBadge.innerText = "200 SUCCESS";
+      simOutputBox.innerText = JSON.stringify(currentSimTool.sampleOutput, null, 2);
+    }
+  }
+
+  // Simulator Events
+  simExecuteBtn.addEventListener("click", () => {
+    executeSimulation();
+  });
+
+  simFormatBtn.addEventListener("click", () => {
+    try {
+      const v = JSON.parse(simInputText.value);
+      simInputText.value = JSON.stringify(v, null, 2);
+    } catch (e) {}
+  });
+
+  simToggleRefusalBtn.addEventListener("click", () => {
+    isSimulatingRefusal = !isSimulatingRefusal;
+    simToggleRefusalBtn.innerText = isSimulatingRefusal ? "Simulate Success Output" : "Simulate Guardrail Refusal";
+    executeSimulation();
+  });
+
+  simCopyResponseBtn.addEventListener("click", () => {
+    navigator.clipboard.writeText(simOutputBox.innerText);
+    const orig = simCopyResponseBtn.innerText;
+    simCopyResponseBtn.innerText = "Copied!";
+    setTimeout(() => { simCopyResponseBtn.innerText = orig; }, 1500);
+  });
+
+  simCopyMcpBtn.addEventListener("click", () => {
+    const mcpDefinition = {
+      name: currentSimTool.id,
+      description: currentSimTool.description,
+      parameters: currentSimTool.paramsSchema
+    };
+    navigator.clipboard.writeText(JSON.stringify(mcpDefinition, null, 2));
+    const orig = simCopyMcpBtn.innerText;
+    simCopyMcpBtn.innerText = "Copied MCP Definition!";
+    setTimeout(() => { simCopyMcpBtn.innerText = orig; }, 1500);
+  });
+
+  modalCloseBtn.addEventListener("click", () => {
+    modal.classList.remove("open");
+  });
+
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.classList.remove("open");
+  });
+
+  quickDemoBtn.addEventListener("click", () => {
+    openSimulator("trading_enter");
+  });
+
+  // Filter & Search Events
+  categoryTabs.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      categoryTabs.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeCategory = btn.getAttribute("data-cat");
+      renderTools();
+    });
+  });
+
+  searchInput.addEventListener("input", (e) => {
+    searchQuery = e.target.value;
+    renderTools();
+  });
+
+  // Topology node click to filter
+  document.querySelectorAll(".flow-node").forEach(node => {
+    node.addEventListener("click", () => {
+      const layer = node.getAttribute("data-layer");
+      document.querySelectorAll(".flow-node").forEach(n => n.classList.remove("active"));
+      node.classList.add("active");
+
+      let targetCat = "all";
+      if (layer === "perception") targetCat = "perception";
+      if (layer === "policy") targetCat = "strategy";
+      if (layer === "reactive") targetCat = "reactor";
+      if (layer === "venue") targetCat = "execution";
+
+      const matchingTab = categoryTabs.querySelector(\`[data-cat="\${targetCat}"]\`);
+      if (matchingTab) {
+        matchingTab.click();
+        const el = document.getElementById("tools-toolbar");
+        if (el) el.scrollIntoView({ behavior: "smooth" });
+      }
+    });
+  });
+
+  document.getElementById("topo-reset-btn").addEventListener("click", () => {
+    document.querySelectorAll(".flow-node").forEach(n => n.classList.remove("active"));
+    const allTab = categoryTabs.querySelector('[data-cat="all"]');
+    if (allTab) allTab.click();
+  });
+
+  // Render Look Catalog Calculator
+  const lookKeysContainer = document.getElementById("look-keys-container");
+  const calcTotalChars = document.getElementById("calc-total-chars");
+  const calcTotalTokens = document.getElementById("calc-total-tokens");
+  const calcBudgetPct = document.getElementById("calc-budget-pct");
+  const calcBudgetBar = document.getElementById("calc-budget-bar");
+  const budgetStatusTag = document.getElementById("budget-status-tag");
+
+  let selectedKeys = new Set(["snapshot", "book", "microstructure", "volatility", "position", "account"]);
+
+  function renderLookCalculator() {
+    lookKeysContainer.innerHTML = "";
+    LOOK_CATALOG.forEach(item => {
+      const chip = document.createElement("div");
+      chip.className = "look-key-chip" + (selectedKeys.has(item.key) ? " selected" : "");
+      chip.innerHTML = \`
+        <div class="key-name-col">
+          <span class="key-name">\${item.key}</span>
+          <span class="key-type-flag">\${item.desc}</span>
+        </div>
+        <span class="key-cost">\${item.chars} chars</span>
+      \`;
+
+      chip.addEventListener("click", () => {
+        if (selectedKeys.has(item.key)) {
+          selectedKeys.delete(item.key);
+        } else {
+          selectedKeys.add(item.key);
+        }
+        updateBudgetStats();
+        renderLookCalculator();
+      });
+
+      lookKeysContainer.appendChild(chip);
+    });
+    updateBudgetStats();
+  }
+
+  function updateBudgetStats() {
+    let totalChars = 0;
+    LOOK_CATALOG.forEach(item => {
+      if (selectedKeys.has(item.key)) {
+        totalChars += item.chars;
+      }
+    });
+
+    const tokens = Math.round(totalChars / 4);
+    const targetBudgetChars = 32000; // ~8k tokens
+    const pct = Math.min(100, Math.round((totalChars / targetBudgetChars) * 100));
+
+    calcTotalChars.innerText = totalChars.toLocaleString();
+    calcTotalTokens.innerText = "~" + tokens.toLocaleString();
+    calcBudgetPct.innerText = pct + "%";
+    calcBudgetBar.style.width = Math.max(3, pct) + "%";
+
+    if (pct > 60) {
+      calcBudgetBar.className = "budget-bar-fill warning";
+      budgetStatusTag.className = "metric-tag tag-amber";
+      budgetStatusTag.innerText = "Heavy Context";
+    } else {
+      calcBudgetBar.className = "budget-bar-fill";
+      budgetStatusTag.className = "metric-tag tag-emerald";
+      budgetStatusTag.innerText = "Efficient";
+    }
+  }
+
+  document.getElementById("calc-preset-minimal").addEventListener("click", () => {
+    selectedKeys = new Set(["snapshot", "book"]);
+    renderLookCalculator();
+  });
+  document.getElementById("calc-preset-reassess").addEventListener("click", () => {
+    selectedKeys = new Set(["snapshot", "book", "microstructure", "volatility", "position", "orders", "account"]);
+    renderLookCalculator();
+  });
+  document.getElementById("calc-preset-deep").addEventListener("click", () => {
+    selectedKeys = new Set(["snapshot", "book_full", "microstructure", "candles:15m:50", "structure", "levels", "funding_stats:7"]);
+    renderLookCalculator();
+  });
+  document.getElementById("calc-reset-btn").addEventListener("click", () => {
+    selectedKeys = new Set([]);
+    renderLookCalculator();
+  });
+
+  // Render Evolution Table
+  const evolutionTableBody = document.getElementById("evolution-table-body");
+  EVOLUTION_DATA.forEach(row => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = \`
+      <td><span class="legacy-tag">\${row.legacy}</span></td>
+      <td><span class="metric-tag tag-cyan">\${row.plan}</span></td>
+      <td><span class="modern-tag">\${row.modern}</span></td>
+      <td>
+        <div class="flaw-text">Flaw: \${row.flaw}</div>
+        <div class="fix-text">Fix: \${row.fix}</div>
+      </td>
+    \`;
+    evolutionTableBody.appendChild(tr);
+  });
+
+  // Interactive Drift Defense Sandbox Logic
+  let isDrifted = false;
+  const driftFileContent = document.getElementById("drift-file-content");
+  const driftStateBadge = document.getElementById("drift-state-badge");
+  const driftActiveHash = document.getElementById("drift-active-hash");
+  const driftCurrentHash = document.getElementById("drift-current-hash");
+  const driftStatusCallout = document.getElementById("drift-status-callout");
+  const driftModifyDiskBtn = document.getElementById("drift-modify-disk-btn");
+  const driftRepinBtn = document.getElementById("drift-repin-btn");
+
+  const ORIGINAL_CONTENT = \`## Mission Mandate: SOL
+market: SOL
+max_gross_notional_usd: 2500
+loss_budget_usd: 100
+approved_strategies:
+  - range_scalp
+  - breakout_expansion\`;
+
+  const MODIFIED_CONTENT = \`## Mission Mandate: SOL
+market: SOL
+max_gross_notional_usd: 5000 # Modified manually on disk
+loss_budget_usd: 300
+approved_strategies:
+  - range_scalp
+  - breakout_expansion
+  - aggressive_scalp\`;
+
+  const BASE_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const DRIFT_HASH = "9a88f1c572b8d00912fa8394bc1265ea411082098234ea7299a9b1c920199182";
+
+  driftModifyDiskBtn.addEventListener("click", () => {
+    isDrifted = true;
+    driftFileContent.innerText = MODIFIED_CONTENT;
+    driftStateBadge.className = "metric-tag tag-rose";
+    driftStateBadge.innerText = "DRIFTED (WARNING)";
+    driftCurrentHash.innerText = DRIFT_HASH;
+    driftCurrentHash.style.color = "var(--accent-rose)";
+    driftStatusCallout.style.background = "rgba(244, 63, 94, 0.1)";
+    driftStatusCallout.style.borderColor = "rgba(244, 63, 94, 0.3)";
+    driftStatusCallout.style.color = "var(--accent-rose)";
+    driftStatusCallout.innerText = "DRIFT DETECTED: Disk content hash differs from active pinned hash. trading_enter is locked until activated. trading_exit is permitted.";
+  });
+
+  driftRepinBtn.addEventListener("click", () => {
+    isDrifted = false;
+    driftStateBadge.className = "metric-tag tag-emerald";
+    driftStateBadge.innerText = "ACTIVE (PINNED)";
+    driftActiveHash.innerText = driftCurrentHash.innerText;
+    driftCurrentHash.style.color = "var(--text-primary)";
+    driftStatusCallout.style.background = "rgba(16, 185, 129, 0.1)";
+    driftStatusCallout.style.borderColor = "rgba(16, 185, 129, 0.3)";
+    driftStatusCallout.style.color = "var(--accent-emerald)";
+    driftStatusCallout.innerText = "Hash activated via trading_plan_document({ action: 'activate' }). trading_enter authorized.";
+  });
+
+  // Animated Topology Canvas Flow
+  const canvas = document.getElementById("topo-canvas");
+  const ctx = canvas.getContext("2d");
+  let particles = [];
+
+  function resizeCanvas() {
+    canvas.width = canvas.parentElement.clientWidth;
+    canvas.height = canvas.parentElement.clientHeight;
+  }
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+
+  for (let i = 0; i < 24; i++) {
+    particles.push({
+      x: Math.random() * canvas.width,
+      y: 30 + Math.random() * (canvas.height - 60),
+      vx: 1 + Math.random() * 2,
+      vy: (Math.random() - 0.5) * 0.4,
+      radius: 1.5 + Math.random() * 1.5,
+      alpha: 0.2 + Math.random() * 0.6
+    });
+  }
+
+  function animateCanvas() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    particles.forEach(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.x > canvas.width) {
+        p.x = 0;
+        p.y = 30 + Math.random() * (canvas.height - 60);
+      }
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(6, 182, 212, " + p.alpha + ")";
+      ctx.shadowBlur = 6;
+      ctx.shadowColor = "#06b6d4";
+      ctx.fill();
+    });
+
+    requestAnimationFrame(animateCanvas);
+  }
+  animateCanvas();
+
+  // Reactor Heartbeat 2000ms Loop Simulation
+  const reactorTimerFill = document.getElementById("reactor-timer-fill");
+  const reactorEvalStatus = document.getElementById("reactor-eval-status");
+  const simulatePriceTickBtn = document.getElementById("simulate-price-tick-btn");
+  const hudMidPrice = document.getElementById("hud-mid-price");
+
+  let sweepStartTime = Date.now();
+  let currentMidPrice = 142.85;
+
+  function updateReactorLoop() {
+    const elapsed = (Date.now() - sweepStartTime) % 2000;
+    const progress = elapsed / 2000;
+    const offset = 88 * (1 - progress);
+    if (reactorTimerFill) {
+      reactorTimerFill.style.strokeDashoffset = offset;
+    }
+    requestAnimationFrame(updateReactorLoop);
+  }
+  updateReactorLoop();
+
+  simulatePriceTickBtn.addEventListener("click", () => {
+    currentMidPrice = 145.42;
+    hudMidPrice.innerText = "$" + currentMidPrice.toFixed(2);
+    hudMidPrice.style.color = "var(--accent-emerald)";
+    reactorEvalStatus.innerHTML = "<b style='color: var(--accent-emerald)'>WAKE FIRED!</b> Condition 'SOL >= 145.00' triggered at mid $" + currentMidPrice.toFixed(2) + ". AI Harness woken for turn reassessment.";
+  });
+
+  // Initial Boot
+  renderTools();
+  renderLookCalculator();
+</script>
+
+</body>
+</html>
+`;
+
+// Strict Verification of Em-Dash Rule (Section 9.G)
+const emDashMatch = htmlContent.match(/[\u2014\u2013]/g);
+if (emDashMatch) {
+  console.error("FATAL: Em-dash found in generated content! Count:", emDashMatch.length);
+  process.exit(1);
+} else {
+  console.log("Pre-Flight Check Passed: Zero em-dashes detected.");
+}
+
+const outputPath = path.resolve("artifacts/reports/t3trade-trading-tools-interactive-report.html");
+fs.writeFileSync(outputPath, htmlContent, "utf8");
+console.log("Successfully wrote updated report to:", outputPath);
