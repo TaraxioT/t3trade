@@ -1,0 +1,1759 @@
+<!-- Adapted information structure: Copyright 2026 Anthropic PBC · SPDX-License-Identifier: Apache-2.0; original content and T3 Trade styling. -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>The chart becomes the work surface</title>
+    <style>
+      :root {
+        --ivory: #faf9f5;
+        --slate: #141413;
+        --clay: #d97757;
+        --oat: #e3dacc;
+        --olive: #788c5d;
+        --gray-150: #f0eee6;
+        --gray-300: #d1cfc5;
+        --gray-500: #87867f;
+        --gray-700: #3d3d3a;
+        --white: #ffffff;
+
+        --serif: ui-serif, Georgia, "Times New Roman", serif;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: var(--sans);
+        background: var(--ivory);
+        color: var(--gray-700);
+        line-height: 1.55;
+        padding: 56px 32px 120px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .page {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+
+      /* ---------- header ---------- */
+
+      header.page-head {
+        margin-bottom: 48px;
+        max-width: 820px;
+      }
+
+      .eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--gray-500);
+        margin-bottom: 12px;
+      }
+
+      h1 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 38px;
+        line-height: 1.15;
+        color: var(--slate);
+        margin-bottom: 18px;
+        letter-spacing: -0.01em;
+      }
+
+      .prompt-box {
+        background: var(--gray-150);
+        border: 1.5px solid var(--gray-300);
+        border-radius: 12px;
+        padding: 16px 20px;
+        font-size: 14.5px;
+        color: var(--gray-700);
+      }
+      .prompt-box .label {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-500);
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      /* ---------- section chrome ---------- */
+
+      section {
+        margin-bottom: 64px;
+      }
+
+      .sec-head {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        margin-bottom: 8px;
+      }
+      .sec-head .num {
+        font-family: var(--mono);
+        font-size: 12px;
+        background: var(--oat);
+        color: var(--slate);
+        padding: 3px 9px;
+        border-radius: 8px;
+      }
+      .sec-head h2 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 26px;
+        color: var(--slate);
+        letter-spacing: -0.01em;
+      }
+      .sec-intro {
+        font-size: 14.5px;
+        color: var(--gray-500);
+        max-width: 720px;
+        margin-bottom: 28px;
+      }
+
+      /* ---------- summary strip ---------- */
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 16px;
+        margin-bottom: 64px;
+      }
+      @media (max-width: 900px) {
+        .summary {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .summary .cell {
+        background: var(--white);
+        border: 1.5px solid var(--gray-300);
+        border-radius: 12px;
+        padding: 18px 20px;
+      }
+      .summary .k {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-500);
+        margin-bottom: 6px;
+      }
+      .summary .v {
+        font-size: 17px;
+        color: var(--slate);
+        font-weight: 600;
+      }
+      .summary .v.accent {
+        color: var(--clay);
+      }
+
+      /* ---------- milestone timeline ---------- */
+
+      .milestones {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+      .milestone {
+        display: grid;
+        grid-template-columns: 120px 28px 1fr;
+        gap: 0 18px;
+        position: relative;
+      }
+      .milestone .when {
+        text-align: right;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--gray-500);
+        padding-top: 4px;
+      }
+      .milestone .dot-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .milestone .dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--white);
+        border: 3px solid var(--clay);
+        margin-top: 4px;
+        flex-shrink: 0;
+      }
+      .milestone .dot.done {
+        background: var(--olive);
+        border-color: var(--olive);
+      }
+      .milestone .line {
+        width: 2px;
+        flex: 1;
+        background: var(--gray-300);
+        margin: 4px 0;
+      }
+      .milestone:last-child .line {
+        display: none;
+      }
+      .milestone .body {
+        padding-bottom: 36px;
+      }
+      .milestone .body h3 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 19px;
+        color: var(--slate);
+        margin-bottom: 4px;
+      }
+      .milestone .body p {
+        font-size: 14px;
+        color: var(--gray-500);
+        margin-bottom: 10px;
+        max-width: 620px;
+      }
+      .milestone .tags {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .milestone .tag {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        background: var(--gray-150);
+        border: 1px solid var(--gray-300);
+        border-radius: 6px;
+        padding: 3px 8px;
+        color: var(--gray-700);
+      }
+
+      /* ---------- data flow diagram ---------- */
+
+      .diagram {
+        background: var(--white);
+        border: 1.5px solid var(--gray-300);
+        border-radius: 12px;
+        padding: 28px;
+        overflow-x: auto;
+      }
+      .diagram svg {
+        display: block;
+        min-width: 760px;
+      }
+      .diagram text {
+        font-family: var(--mono);
+      }
+      .caption {
+        font-size: 13px;
+        color: var(--gray-500);
+        margin-top: 12px;
+      }
+
+      /* ---------- mockups ---------- */
+
+      .mocks {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 28px;
+      }
+      @media (max-width: 900px) {
+        .mocks {
+          grid-template-columns: 1fr;
+        }
+      }
+      .mock {
+        background: var(--white);
+        border: 1.5px solid var(--gray-300);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .mock .mock-label {
+        padding: 12px 18px;
+        border-bottom: 1.5px solid var(--gray-300);
+        font-family: var(--mono);
+        font-size: 11.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-500);
+        background: var(--gray-150);
+      }
+      .mock .mock-body {
+        padding: 22px;
+      }
+
+      /* task card mock */
+      .card-mock {
+        border: 1.5px solid var(--gray-300);
+        border-radius: 10px;
+        padding: 16px;
+        background: var(--ivory);
+      }
+      .card-mock .cm-title {
+        font-weight: 600;
+        font-size: 15px;
+        color: var(--slate);
+        margin-bottom: 4px;
+      }
+      .card-mock .cm-meta {
+        font-size: 12px;
+        color: var(--gray-500);
+        margin-bottom: 14px;
+      }
+      .card-mock .cm-divider {
+        border-top: 1px dashed var(--gray-300);
+        margin: 14px 0;
+      }
+      .thread {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .comment {
+        display: flex;
+        gap: 10px;
+      }
+      .comment .avatar {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--oat);
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--slate);
+      }
+      .comment .avatar.alt {
+        background: var(--olive);
+        color: var(--white);
+      }
+      .comment .bubble {
+        flex: 1;
+      }
+      .comment .author {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--slate);
+      }
+      .comment .author .time {
+        font-weight: 400;
+        color: var(--gray-500);
+        margin-left: 6px;
+      }
+      .comment .text {
+        font-size: 13px;
+        color: var(--gray-700);
+        margin-top: 2px;
+      }
+      .comment .reply-link {
+        font-size: 11.5px;
+        color: var(--clay);
+        margin-top: 4px;
+        cursor: default;
+      }
+      .comment.nested {
+        margin-left: 36px;
+      }
+      .composer {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 6px;
+      }
+      .composer .field {
+        flex: 1;
+        border: 1.5px solid var(--gray-300);
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        color: var(--gray-500);
+        background: var(--white);
+      }
+      .composer .send {
+        background: var(--clay);
+        color: var(--white);
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      /* sidebar digest mock */
+      .digest {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .digest .row {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        padding: 10px 12px;
+        background: var(--ivory);
+        border: 1.5px solid var(--gray-300);
+        border-radius: 8px;
+      }
+      .digest .row.unread {
+        border-left: 3px solid var(--clay);
+      }
+      .digest .mini-av {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: var(--oat);
+        flex-shrink: 0;
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--slate);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .digest .txt {
+        font-size: 12.5px;
+        color: var(--gray-700);
+        line-height: 1.45;
+      }
+      .digest .txt strong {
+        color: var(--slate);
+      }
+      .digest .txt .on {
+        color: var(--gray-500);
+      }
+
+      /* ---------- code panel ---------- */
+
+      .code-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 28px;
+      }
+      @media (max-width: 980px) {
+        .code-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .code-block {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .code-block .file-label {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--gray-500);
+      }
+      .code {
+        background: var(--slate);
+        border-radius: 12px;
+        padding: 18px 20px;
+        overflow-x: auto;
+        flex: 1;
+      }
+      .code pre {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.65;
+        color: #e8e6de;
+        white-space: pre;
+      }
+      .code .kw {
+        color: var(--clay);
+      }
+      .code .str {
+        color: var(--olive);
+      }
+      .code .cm {
+        color: var(--gray-500);
+      }
+      .code .fn {
+        color: #c9b98a;
+      }
+
+      /* ---------- risk table ---------- */
+
+      .risks {
+        border: 1.5px solid var(--gray-300);
+        border-radius: 12px;
+        overflow: hidden;
+        background: var(--white);
+      }
+      .risks .row {
+        display: grid;
+        grid-template-columns: 1.6fr 90px 1.6fr;
+        gap: 0;
+      }
+      @media (max-width: 780px) {
+        .risks .row {
+          grid-template-columns: 1fr;
+        }
+      }
+      .risks .row + .row {
+        border-top: 1.5px solid var(--gray-300);
+      }
+      .risks .cell {
+        padding: 14px 18px;
+        font-size: 13.5px;
+      }
+      .risks .cell + .cell {
+        border-left: 1.5px solid var(--gray-300);
+      }
+      @media (max-width: 780px) {
+        .risks .cell + .cell {
+          border-left: none;
+          border-top: 1px dashed var(--gray-300);
+        }
+      }
+      .risks .head {
+        background: var(--gray-150);
+        font-weight: 600;
+        color: var(--slate);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .sev {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-weight: 600;
+      }
+      .sev.high {
+        background: #f3d9cc;
+        color: #8a3b1e;
+      }
+      .sev.med {
+        background: var(--oat);
+        color: var(--slate);
+      }
+      .sev.low {
+        background: #e4e9dc;
+        color: #4b5c39;
+      }
+
+      /* ---------- open questions ---------- */
+
+      .open-q {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        max-width: 820px;
+      }
+      .q {
+        background: var(--white);
+        border: 1.5px solid var(--gray-300);
+        border-left: 4px solid var(--clay);
+        border-radius: 10px;
+        padding: 16px 20px;
+      }
+      .q .qt {
+        font-weight: 600;
+        font-size: 15px;
+        color: var(--slate);
+        margin-bottom: 4px;
+      }
+      .q .qd {
+        font-size: 13.5px;
+        color: var(--gray-500);
+      }
+      .q .owner {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--gray-500);
+        margin-top: 8px;
+      }
+
+      :root {
+        --ivory: #f7f8fa;
+        --slate: #17202e;
+        --clay: #325de1;
+        --oat: #e8ecf6;
+        --olive: #42683f;
+        --gray-150: #eef1f6;
+        --gray-300: #d6dce6;
+        --gray-500: #596577;
+        --gray-700: #303b4d;
+        --serif: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      body {
+        padding: 32px 24px 80px;
+      }
+      .page {
+        max-width: 1200px;
+      }
+      header.page-head {
+        max-width: 100%;
+        margin-bottom: 28px;
+      }
+      h1 {
+        font-size: clamp(30px, 4vw, 48px);
+        font-weight: 650;
+        letter-spacing: -0.035em;
+        max-width: 950px;
+      }
+      h2 {
+        font-size: 24px;
+        line-height: 1.25;
+        color: var(--slate);
+        margin: 0 0 18px;
+        font-weight: 650;
+        letter-spacing: -0.025em;
+      }
+      h3 {
+        font-size: 15px;
+        margin: 0 0 8px;
+        color: var(--slate);
+      }
+      p {
+        margin: 12px 0;
+        max-width: 100ch;
+      }
+      ul {
+        padding-left: 22px;
+      }
+      li {
+        padding: 4px 0;
+        max-width: 100ch;
+      }
+      section {
+        margin-bottom: 44px;
+        padding-top: 20px;
+        border-top: 1px solid var(--gray-300);
+        scroll-margin-top: 100px;
+      }
+      a {
+        color: #234dcc;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+        overflow-wrap: anywhere;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        overflow-wrap: anywhere;
+      }
+      pre code {
+        font-size: inherit;
+        overflow-wrap: normal;
+      }
+      .code {
+        margin-top: 8px;
+        color: #edf0f6;
+        padding: 20px;
+        max-width: 100%;
+        font: 12.5px/1.7 var(--mono);
+        white-space: pre;
+        overflow-x: auto;
+      }
+      .code-block {
+        margin: 22px 0;
+      }
+      .file-label {
+        color: var(--gray-500);
+        font: 12px var(--mono);
+      }
+      .prompt {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 18px;
+        background: #eef1f6;
+        color: #253146;
+        font: 13px/1.65 var(--mono);
+        border-radius: 8px;
+        margin: 12px 0;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--gray-300);
+        border-radius: 10px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        min-width: 600px;
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 14px;
+        border-bottom: 1px solid var(--gray-300);
+      }
+      th {
+        background: #eaf0fc;
+        color: #27395d;
+        font-size: 12px;
+        letter-spacing: 0.035em;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td:first-child {
+        font-weight: 600;
+        width: 23%;
+      }
+      .meta {
+        font: 12px var(--mono);
+        color: var(--gray-500);
+        margin: 8px 0 16px;
+      }
+      .gate {
+        margin: 18px 0;
+        padding: 16px 20px;
+        background: #edf2ff;
+        border-left: 3px solid var(--clay);
+        border-radius: 0 8px 8px 0;
+      }
+      .gate p {
+        margin: 0;
+      }
+      .toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        background: #f7f8faf5;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--gray-300);
+        margin-bottom: 22px;
+      }
+      button,
+      select {
+        font: 600 13px var(--sans);
+        padding: 9px 12px;
+        border: 1px solid #a8b4ca;
+        background: white;
+        border-radius: 7px;
+        color: #233759;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #edf2ff;
+      }
+      button:focus-visible,
+      select:focus-visible,
+      a:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid #315ee3;
+        outline-offset: 3px;
+      }
+      summary {
+        padding: 12px 0;
+        cursor: pointer;
+        font-weight: 600;
+        color: #30436a;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        font-size: 13px;
+        margin: 18px 0;
+      }
+      .summary {
+        margin: 28px 0;
+        gap: 12px;
+      }
+      .summary .cell {
+        border: 1px solid var(--gray-300);
+        padding: 16px;
+      }
+      .summary .v {
+        font-size: 16px;
+      }
+      #status {
+        min-height: 20px;
+        font-size: 13px;
+        color: #33415e;
+        margin: 0;
+      }
+      .skip {
+        position: absolute;
+        top: -100px;
+      }
+      .skip:focus {
+        top: 8px;
+        z-index: 20;
+        background: white;
+        padding: 8px;
+      }
+      .preview-toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .preview-toolbar span {
+        font: 11px var(--mono);
+        color: #5a6478;
+      }
+      .instrument-preview {
+        border: 1px solid #bbc5d9;
+        border-radius: 12px;
+        overflow: hidden;
+        background: white;
+      }
+      .preview-header {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        padding: 16px;
+        border-bottom: 1px solid #d6dce6;
+        flex-wrap: wrap;
+      }
+      .preview-header span {
+        font-size: 12px;
+        color: #596577;
+      }
+      .preview-header button {
+        margin-left: auto;
+      }
+      .preview-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 300px;
+      }
+      .preview-chart {
+        min-width: 0;
+      }
+      .rail {
+        display: flex;
+        gap: 20px;
+        padding: 14px;
+        font-size: 12px;
+        border-bottom: 1px solid #e6eaf0;
+      }
+      .rail span {
+        color: #657187;
+      }
+      .empty-plot {
+        height: 260px;
+        display: flex;
+        gap: 12px;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: #546174;
+        background: repeating-linear-gradient(0deg, #fafbfd, #fafbfd 51px, #e8edf5 52px);
+      }
+      .empty-plot span {
+        font-size: 12px;
+      }
+      .signal-lane {
+        min-height: 108px;
+        padding: 18px;
+        border-top: 1px solid #d6dce6;
+        background: #f5f7fc;
+      }
+      .signal-lane p {
+        font-size: 13px;
+        margin: 8px 0;
+      }
+      .preview-footer {
+        padding: 14px;
+        font-size: 12px;
+        border-top: 1px solid #d6dce6;
+      }
+      .preview-chat {
+        border-left: 1px solid #d6dce6;
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .preview-chat p {
+        font-size: 13px;
+      }
+      .preview-stage {
+        font-size: 12px;
+        color: #315ac2;
+        padding: 12px 0;
+      }
+      .preview-composer {
+        margin-top: auto;
+        border: 1px solid #bdc8dc;
+        border-radius: 10px;
+        padding: 18px 12px;
+        color: #657187;
+        font-size: 12px;
+      }
+      #preview-inspector {
+        padding: 20px;
+        border-top: 1px solid #d6dce6;
+        background: #f6f8fc;
+      }
+      footer {
+        font-size: 12px;
+        color: #596577;
+        margin-top: 40px;
+        padding-top: 18px;
+        border-top: 1px solid #d6dce6;
+      }
+      @media (max-width: 760px) {
+        body {
+          padding: 20px 14px 60px;
+        }
+        .summary {
+          grid-template-columns: 1fr 1fr;
+        }
+        .preview-main {
+          grid-template-columns: 1fr;
+        }
+        .preview-chat {
+          border-left: 0;
+          border-top: 1px solid #d6dce6;
+          min-height: 190px;
+        }
+        .empty-plot {
+          height: 220px;
+        }
+        .toolbar {
+          position: relative;
+        }
+        .code {
+          font-size: 11px;
+          padding: 14px;
+        }
+        h2 {
+          font-size: 21px;
+        }
+        .preview-header button {
+          margin-left: 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+      @media print {
+        .toolbar,
+        button,
+        .preview-toolbar,
+        .skip {
+          display: none;
+        }
+        body {
+          padding: 0;
+        }
+        section {
+          break-inside: auto;
+        }
+        pre {
+          white-space: pre-wrap !important;
+        }
+        .table-wrap {
+          overflow: visible;
+        }
+        table {
+          min-width: 0;
+        }
+        a {
+          color: inherit;
+        }
+      }
+    </style>
+  </head>
+  <body data-export-name="unified-graph-ui-prompts.md">
+    <a class="skip" href="#content">Skip to plan</a>
+    <div class="page">
+      <header class="page-head">
+        <div class="eyebrow">T3 Trade · ETHOnline · September 9–11, 2026</div>
+        <h1>The chart becomes the work surface</h1>
+        <div class="prompt-box">
+          An independent UI direction for Forge inside T3 Trade. A dominant instrument, an adjacent
+          conversation, and evidence a judge can follow without reading a wall of text.
+        </div>
+        <nav aria-label="Related plans">
+          <a href="implementation-plan.html">Forge implementation plan and code</a
+          ><a href="unified-graph-ui-prompts.md" download>Markdown prompt pack</a
+          ><a href="#phases">Jump to phase prompts</a>
+        </nav>
+      </header>
+      <div class="summary">
+        <div class="cell">
+          <div class="k">Direction</div>
+          <div class="v">Chart first</div>
+        </div>
+        <div class="cell">
+          <div class="k">UI phases</div>
+          <div class="v">U0 / U1 / U2</div>
+        </div>
+        <div class="cell">
+          <div class="k">Schedule</div>
+          <div class="v">Inside F0 / F4 / F6</div>
+        </div>
+        <div class="cell">
+          <div class="k">New dashboards</div>
+          <div class="v">None</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="download">Export all prompts</button><button id="expand">Expand prompts</button
+        ><button id="collapse">Collapse prompts</button>
+        <nav aria-label="Phases"><a href="#U0">U0</a><a href="#U1">U1</a><a href="#U2">U2</a></nav>
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+      <main id="content">
+        <section id="decision">
+          <h2>Verdict: make the chart the work surface</h2>
+          <p>
+            <strong
+              >The reveal belongs in the instrument, not at the bottom of the transcript.</strong
+            >
+            Make the existing trading thread a two-pane research workspace. The chart occupies
+            roughly two-thirds of the available content width; conversation occupies the rest. Forge
+            is an action and capability inside that workspace, not a separate product tab or
+            dashboard.
+          </p>
+          <p>
+            This is an independent, bold UI direction. It can be implemented alongside Forge without
+            adopting new trading semantics. It uses the same September 9–11 budget: U0 is F0, U1 is
+            F4, U2 is F6. No extra days and no application redesign beyond this path. All finished
+            data surfaces use real sources; the schematic below contains no market data and is only
+            a layout preview.
+          </p>
+        </section>
+        <section>
+          <h2>Evidence-based critique</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Priority</th>
+                  <th>Current evidence</th>
+                  <th>Change and expected effect</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Critical</td>
+                  <td>
+                    Current MarketChartPanel loads Hyperliquid chart data; The Graph integration
+                    does not exist in inspected source. A shared ETH label could hide a source
+                    mismatch.
+                  </td>
+                  <td>
+                    Put source identity in the market header and make source changes explicit.
+                    Ethereum pool observations and Hyperliquid context are different selectable
+                    layers, never silently interchangeable.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Major</td>
+                  <td>
+                    Historical live-unified-graph-all-weekly.png shows the chart compressed below a
+                    long transcript, with repeated market context in the side area. This is
+                    historical evidence, not a fresh runtime measurement.
+                  </td>
+                  <td>
+                    Move chart into the dominant pane and keep the composer always visible beside
+                    it. A generated capability appears where eyes already are, rather than requiring
+                    scrolling.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Major</td>
+                  <td>
+                    MarketChartPanel has Live/Calendar/Event aligned; scenes are event-study/replay
+                    artifacts. Forge will add a different continuous signal lifecycle.
+                  </td>
+                  <td>
+                    Keep one main Live view and place Calendar/Event aligned under Research. A
+                    detector lane is a first-class live instrument, not a research scene
+                    misclassified to reuse rendering.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Major</td>
+                  <td>
+                    Existing chart style includes compact labels and several independent controls;
+                    source and policy state add more information.
+                  </td>
+                  <td>
+                    Group Time range/Bars into one control rail, capability/version into another,
+                    and policy into the inspector. Only one primary action per state; details
+                    progressively disclose.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Critical</td>
+                  <td>
+                    An installed local revision and mined on-chain policy can be different during a
+                    transaction.
+                  </td>
+                  <td>
+                    Show both revisions and current effective fee. Distinguish proposed, submitted
+                    and confirmed by text and event evidence, not an optimistic badge.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Polish</td>
+                  <td>Existing CSS has semantic light/dark tokens and a familiar system font.</td>
+                  <td>
+                    Use existing fonts and tokens; increase hierarchy and stable layout rather than
+                    adding a new visual brand. Reserve accent blue for selection/action and amber
+                    for uncertainty.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section>
+          <h2>Target composition</h2>
+          <p>
+            At 1440×900, collapse the project sidebar to its existing compact mode when the user
+            selects “Focus instrument.” Keep a way back. The remaining content uses
+            <code>minmax(0, 1fr) 360px</code> for instrument and conversation. Inside the
+            instrument, reserve a 240–280px inspector only when opened; otherwise give that width to
+            the chart. At 1920×1080 the conversation can grow to 400px, never steal half the screen.
+            At 1024px the inspector overlays/discloses within the instrument; at 768px stack the
+            panes with a deliberate Chart/Conversation switch and a retained composer. Mobile app
+            implementation remains out of scope.
+          </p>
+          <p>
+            Top to bottom: one market/source header → range/interval rail → real price/volume plot →
+            aligned detector lane → version/policy evidence footer. The conversation shows compact
+            stage receipts and the next requested action; code opens in a drawer. Do not put a
+            second chart or giant fee card into the chat.
+          </p>
+        </section>
+        <section id="preview">
+          <h2>A restrained layout preview</h2>
+          <div class="preview-toolbar">
+            <label for="preview-state">Layout state</label
+            ><select id="preview-state">
+              <option value="empty">No installed capability</option>
+              <option value="building">Building capability</option>
+              <option value="installed">Installed / awaiting actual readings</option>
+              <option value="pending">Policy transaction pending</option>
+              <option value="stale">Source unavailable</option></select
+            ><span>SCHEMATIC · no market data</span>
+          </div>
+          <div
+            class="instrument-preview"
+            aria-label="Proposed instrument layout, illustrative UI only"
+          >
+            <div class="preview-header">
+              <strong>ETH pool activity</strong><span>Ethereum · The Graph</span
+              ><button
+                type="button"
+                id="evidence-toggle"
+                aria-expanded="false"
+                aria-controls="preview-inspector"
+              >
+                Inspect evidence
+              </button>
+            </div>
+            <div class="preview-main">
+              <div class="preview-chart">
+                <div class="rail">Live <span>Research ▾</span><span>Range · Bars</span></div>
+                <div class="empty-plot">
+                  <strong>One shared time axis</strong
+                  ><span>Real pool prices and quote volume render here.</span
+                  ><span>No generated preview values.</span>
+                </div>
+                <div class="signal-lane">
+                  <strong id="preview-lane-title"
+                    >Your next indicator starts with a request.</strong
+                  >
+                  <p id="preview-lane-copy">Ask the agent to build the missing capability.</p>
+                </div>
+                <div class="preview-footer" id="preview-fee">No pool attached</div>
+              </div>
+              <aside class="preview-chat">
+                <strong>Build with the agent</strong>
+                <p id="preview-chat-copy">Describe what the chart cannot yet tell you.</p>
+                <div class="preview-stage" id="preview-stage">
+                  Source → module → tests → install
+                </div>
+                <div class="preview-composer">Ask a question or refine this detector…</div>
+              </aside>
+            </div>
+            <div id="preview-inspector" hidden>
+              <strong>Evidence inspector</strong>
+              <p>
+                In the implementation this opens the selected source window, query hash, module
+                revision and exact transaction receipt. The layout prototype contains no live
+                evidence.
+              </p>
+            </div>
+          </div>
+          <p>
+            The selector previews disclosure and labels only. It does not fetch data, simulate a
+            detector, submit transactions or claim implementation success. The finished app replaces
+            this schematic with actual source state and typed receipts.
+          </p>
+        </section>
+        <section>
+          <h2>Visual system</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Element</th>
+                  <th>Concrete specification</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Surfaces</td>
+                  <td>
+                    Existing --background / --card / --border / --primary; flat main canvas, one
+                    subtly raised inspector. Radius 8px controls, 12px drawer. No glass layers
+                    inside plot.
+                  </td>
+                  <td>Premium through hierarchy, not nested decorative cards.</td>
+                </tr>
+                <tr>
+                  <td>Type</td>
+                  <td>
+                    Existing system sans. 20–24px instrument title, 14px primary data/controls,
+                    12–13px secondary metadata; tabular numerals. Use mono only for hashes/code.
+                  </td>
+                  <td>Readable at demo distance without changing the product’s identity.</td>
+                </tr>
+                <tr>
+                  <td>Spacing</td>
+                  <td>
+                    8px base rhythm; 16px pane padding; 24px between distinct decision groups; 8px
+                    within a group. Minimum 36px pointer controls and visible keyboard focus.
+                  </td>
+                  <td>
+                    Makes relationships consistent and leaves enough room for the actual plot.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Color</td>
+                  <td>
+                    Existing blue accent for active selection/build action; neutral price
+                    comparisons distinguished by stroke/dash and text; amber stale/pending; red
+                    failure; green only confirmed success.
+                  </td>
+                  <td>
+                    Color never alone communicates status; avoid six competing pool/regime colors.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Chart</td>
+                  <td>
+                    Main plot ≥360px tall at 1440×900; detector lane 88–112px; inspector
+                    independently scrolls. Price/volume/signal align on one time axis, with explicit
+                    gaps for missing readings.
+                  </td>
+                  <td>
+                    The new capability visibly changes an instrument. A gap cannot be mistaken for a
+                    zero.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Motion</td>
+                  <td>
+                    Optional one-time 160ms opacity transition on installed lane, no geometry
+                    expansion, no continuous shimmer/pulsing/ticker. Reduced motion removes
+                    transition.
+                  </td>
+                  <td>Installation feels like a result, not a dashboard animation.</td>
+                </tr>
+                <tr>
+                  <td>Density</td>
+                  <td>
+                    One visible newest build receipt; older stages in disclosure. Source freshness
+                    always visible. Code and query in drawer, never wide-open by default.
+                  </td>
+                  <td>Judges see causality immediately; engineers can still inspect proof.</td>
+                </tr>
+                <tr>
+                  <td>Controls</td>
+                  <td>
+                    Primary action changes with state: Build → Review installation (if needed) →
+                    Approve pool → Inspect live policy. Pause stays adjacent to active policy.
+                  </td>
+                  <td>A single clear next action without hiding independent stop controls.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section>
+          <h2>Exact interaction decisions</h2>
+          <ul>
+            <li>
+              <strong>Build:</strong> conversation request starts a real job. Receipt has 4 compact
+              stages and actual elapsed time from server events. Failed test opens the relevant
+              failure; no fake percentage progress. The chart retains its previous data throughout
+              generation.
+            </li>
+            <li>
+              <strong>Install:</strong> successful authorized installation attaches a named lane
+              automatically, without moving the viewport. Empty output says “Installed · waiting for
+              the next indexed window.” Do not draw a placeholder signal. Clicking the version opens
+              the sealed source/test/manifest drawer.
+            </li>
+            <li>
+              <strong>Observe:</strong> three pool traces share a normalized % change mode; the
+              y-axis explicitly says normalized change, not ETH spot price. Optional single-pool
+              actual-price view labels quote token. Selecting a pool highlights its contribution and
+              qualifying volume. The signal lane shows regime text plus a subtle categorical band;
+              gaps are gaps.
+            </li>
+            <li>
+              <strong>Revise:</strong> compare v1/v2 in the same detector lane on the same authentic
+              historical window; show excluded trade count and changed pool eligibility. A pinned
+              “Historical comparison · timestamp” header replaces Live. Return to Live is a clear
+              action. No second competing full chart.
+            </li>
+            <li>
+              <strong>Attach:</strong> a compact inspector says “Observes Ethereum · controls
+              Sepolia.” Show token pair, pool identity, approved funding bounds, effective fee,
+              installed version, confirmed policy version and expiry. Transaction approval explains
+              what will be created/funded. A wallet balance is not a spending grant.
+            </li>
+            <li>
+              <strong>Confirm:</strong> keep the currently effective fee visible while showing the
+              proposed change below. Confirmation comes from receipt + state read-back; no
+              optimistic “live” state. A swap evidence row reports actual fee and policy/hash
+              context, distinct from a quote.
+            </li>
+            <li>
+              <strong>Stop:</strong> direct Pause is persistent whenever policy is enabled.
+              Immediately show local publication paused; separately show on-chain pause
+              pending/confirmed. Revocation/withdrawal live in the same inspector; they are not
+              hidden behind agent conversation.
+            </li>
+            <li>
+              <strong>Existing product:</strong> Research menu retains legacy study navigation and
+              labels. Hyperliquid trading is a contextual destination with existing order/positions
+              controls. When there is active exposure, a compact persistent position strip includes
+              direct reduce/close access; Forge focus cannot hide risk.
+            </li>
+            <li>
+              <strong>Environment:</strong> the active environment owns chat, source, capability and
+              pool. Switching it clears displayed previous-environment reads and loads the selected
+              scope, with explicit loading/unavailable states. Do not show the last environment’s
+              data as the new one.
+            </li>
+          </ul>
+        </section>
+        <section>
+          <h2>UI state acceptance matrix</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>State</th>
+                  <th>What must be visible</th>
+                  <th>What must not happen</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>No capability</td>
+                  <td>Real chart context or honest empty source; one invitation to build</td>
+                  <td>Preinstalled detector masquerading as new.</td>
+                </tr>
+                <tr>
+                  <td>Building/checking</td>
+                  <td>Actual stage and test failures; prior chart remains stable</td>
+                  <td>Timer-driven invented success.</td>
+                </tr>
+                <tr>
+                  <td>Installed awaiting data</td>
+                  <td>Version/hash + waiting reason</td>
+                  <td>Fabricated zero/flat signal.</td>
+                </tr>
+                <tr>
+                  <td>Live</td>
+                  <td>Source timestamp/index lag, current regime and contributing pools</td>
+                  <td>Historical cache labeled current.</td>
+                </tr>
+                <tr>
+                  <td>Historical comparison</td>
+                  <td>Exact source window and both module versions</td>
+                  <td>Historical selection schedules a transaction.</td>
+                </tr>
+                <tr>
+                  <td>Graph stale/unavailable</td>
+                  <td>Last observation age, gap, reason; policy expiry/baseline status</td>
+                  <td>Keeping a green Live badge on cached data.</td>
+                </tr>
+                <tr>
+                  <td>No signer / approval missing</td>
+                  <td>Research works; explicit signing limitation and concrete next step</td>
+                  <td>Blocking chart/build because HL signer is absent.</td>
+                </tr>
+                <tr>
+                  <td>Pending / unknown tx</td>
+                  <td>Current confirmed state plus tx status/hash</td>
+                  <td>Treating desired fee as applied.</td>
+                </tr>
+                <tr>
+                  <td>Paused/revoked</td>
+                  <td>Local vs on-chain status and next allowed action</td>
+                  <td>Model provider needed to stop publication.</td>
+                </tr>
+                <tr>
+                  <td>Revision failure</td>
+                  <td>v1 still installed, readable failing test</td>
+                  <td>Deleting good capability on failed edit.</td>
+                </tr>
+                <tr>
+                  <td>Long names / 1024px / keyboard</td>
+                  <td>Truncated display with full accessible label, logical focus order</td>
+                  <td>
+                    Overflowing page, inaccessible canvas-only evidence or hidden stop button.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section>
+          <h2>Implementation shape</h2>
+          <div class="code-block">
+            <div class="file-label">
+              Proposed components — preserve data ownership in hooks/services
+            </div>
+            <pre class="code"><code>// MarketChartPanel remains the integration boundary.
+// New components render validated server facts, never recompute policy.
+&lt;ForgeInstrumentLayout
+  chart={&lt;PoolActivityChart source={sourceView} selection={windowSelection} /&gt;}
+  signal={&lt;ForgeSignalLane observations={observations} version={installedVersion} /&gt;}
+  conversation={&lt;ExistingThreadConversation /&gt;}
+  inspector={&lt;ForgePoolInspector policy={confirmedPolicy} pending={pendingIntent} /&gt;}
+/&gt;
+// Code above is a composition sketch: implement typed props and actual components.
+// PoolActivityChart may reuse MissionPriceChart primitives; never fake HL candles.</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="file-label">trading.css — additive layout sketch using existing tokens</div>
+            <pre class="code"><code>.forge-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  min-height: 0;
+  gap: 1px;
+  background: var(--border);
+}
+.forge-instrument, .forge-conversation {
+  min-width: 0;
+  min-height: 0;
+  background: var(--background);
+}
+.forge-signal-lane {
+  min-height: 96px;
+  border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 1100px) {
+  .forge-workspace { grid-template-columns: minmax(0, 1fr) 320px; }
+}
+@media (max-width: 800px) {
+  .forge-workspace { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .forge-workspace * { animation: none; transition: none; }
+}</code></pre>
+          </div>
+          <p>
+            Keep selection (time, pool, evidence) local and explicit; fetch data at the existing
+            environment-aware hook boundary. Use server-projected signal data, capped/paginated
+            series and source timestamps. SVG/chart interactions require a keyboard-accessible
+            equivalent evidence list. Never calculate a policy fee from chart pixel position or
+            client-only state.
+          </p>
+        </section>
+        <section id="phases">
+          <h2>Independent UI prompts</h2>
+          <p>
+            Run U0 with F0, U1 with F4 and U2 with F6. Their human gates can be recorded together
+            with those phases, but UI acceptance is explicit. These prompts do not authorize product
+            deployment.
+          </p>
+        </section>
+        <section id="U0">
+          <h2>U0 · Approve the chart-first direction (inside F0)</h2>
+          <p>
+            <strong>Expected:</strong> An agreed instrument/conversation/inspector composition and
+            exact component ownership; no new route or visual framework.
+          </p>
+          <div class="gate">
+            <h3>Human gate</h3>
+            <p>
+              George identifies where to ask, where the new capability appears, which network is
+              observed, which is controlled and how to stop it. Approve the direction or name one
+              blocking layout change before U1.
+            </p>
+          </div>
+          <button data-copy="U0">Copy complete U0 prompt</button>
+          <details>
+            <summary>Read implementation prompt</summary>
+            <pre class="prompt">
+You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9–11, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user&#x27;s current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.
+
+Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
+
+All product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.
+
+Use the phase&#x27;s listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.
+
+Write progress/evidence under /tmp/t3-forge-20260909/U0/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record &#x27;implemented&#x27;, &#x27;automated verified&#x27;, &#x27;real-data verified&#x27; and &#x27;human accepted&#x27; separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human&#x27;s actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.
+
+U0 — Approve the chart-first direction (inside F0)
+This UI phase is part of the main campaign, not extra schedule.
+
+Read MarketChartPanel, MissionPriceChart, ThreadMarketCard/Panel, ChatView integration, trading.css and existing state hooks. Inspect the current app only if the single retained tester stack is already available; otherwise use inspected source/historical evidence and label that limit. Own no production UI edits yet. Compare the schematic with the existing shell at 1440×900, 1920×1080 and 1024px. Freeze chart-first two-pane layout, source labeling, legacy Research menu and persistent controls for active exposure. Identify exact insertion points and any minimum split-layout blocker; do not launch a competing app stack. Return one decisive layout, not several style options.
+
+Expected result:
+An agreed instrument/conversation/inspector composition and exact component ownership; no new route or visual framework.
+
+Human verification, then stop:
+George identifies where to ask, where the new capability appears, which network is observed, which is controlled and how to stop it. Approve the direction or name one blocking layout change before U1.</pre>
+          </details>
+        </section>
+        <section id="U1">
+          <h2>U1 · Implement the instrument and reveal (inside F4)</h2>
+          <p>
+            <strong>Expected:</strong> One stable chart-first screen showing real source → build →
+            installed signal → pool policy, with direct evidence inspection and source-aware labels.
+          </p>
+          <div class="gate">
+            <h3>Human gate</h3>
+            <p>
+              George runs the first request and opens each evidence link; confirms chart/composer
+              stay visible, source/target networks are distinct, a pending fee is not labeled
+              effective, keyboard navigation works, and unavailable data remains readable. Check
+              three viewport widths and active-position controls. Actual pass is required.
+            </p>
+          </div>
+          <button data-copy="U1">Copy complete U1 prompt</button>
+          <details>
+            <summary>Read implementation prompt</summary>
+            <pre class="prompt">
+You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9–11, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user&#x27;s current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.
+
+Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
+
+All product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.
+
+Use the phase&#x27;s listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.
+
+Write progress/evidence under /tmp/t3-forge-20260909/U1/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record &#x27;implemented&#x27;, &#x27;automated verified&#x27;, &#x27;real-data verified&#x27; and &#x27;human accepted&#x27; separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human&#x27;s actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.
+
+U1 — Implement the instrument and reveal (inside F4)
+This UI phase is part of the main campaign, not extra schedule.
+
+Own the bounded chart/thread integration, new ForgeSignalLane, ForgeBuildReceipt, ForgePoolInspector, ForgeVersionDiff, related web state and trading.css. Read implementation F1–F3 contracts; use actual typed server state. Implement the composition and interactions from this UI plan, keep existing source/legacy scene semantics, and never introduce mocked runtime samples. Build progress comes from persisted receipts; install adds the signal lane without moving zoom/composer. Source evidence, generated code/tests and policy receipts are progressive disclosure in one inspector. Installed-vs-confirmed versions remain separate.
+Use current semantic tokens and font. No new chart library, animated graph background or extra sidebar brand. At 1024px collapse the inspector; preserve the conversation/composer. Long labels, errors, historical mode and missing data must fit. Active HL exposure retains direct controls. Follow test-t3-app for every user-visible change, using the campaign&#x27;s sole retained tester. Run focused component/state tests and targeted web check, then commit explicit owned files. Produce screenshots of real data/state and record paths under /tmp/t3-forge-20260909/U1/.
+
+Expected result:
+One stable chart-first screen showing real source → build → installed signal → pool policy, with direct evidence inspection and source-aware labels.
+
+Human verification, then stop:
+George runs the first request and opens each evidence link; confirms chart/composer stay visible, source/target networks are distinct, a pending fee is not labeled effective, keyboard navigation works, and unavailable data remains readable. Check three viewport widths and active-position controls. Actual pass is required.</pre>
+          </details>
+        </section>
+        <section id="U2">
+          <h2>U2 · Finish visual and interaction acceptance (inside F6)</h2>
+          <p>
+            <strong>Expected:</strong> A premium experience whose loading, failure and
+            version-transition states are as coherent as its successful screenshot.
+          </p>
+          <div class="gate">
+            <h3>Human gate</h3>
+            <p>
+              George watches the full demo at 1920×1080 and uses it at 1024px. Without narration,
+              identify current signal version, effective fee and source age; pause with provider
+              stopped; inspect a real swap; return from comparison to Live. Approve U2 only when all
+              applicable matrix states have evidence.
+            </p>
+          </div>
+          <button data-copy="U2">Copy complete U2 prompt</button>
+          <details>
+            <summary>Read implementation prompt</summary>
+            <pre class="prompt">
+You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9–11, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user&#x27;s current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.
+
+Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
+
+All product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.
+
+Use the phase&#x27;s listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.
+
+Write progress/evidence under /tmp/t3-forge-20260909/U2/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record &#x27;implemented&#x27;, &#x27;automated verified&#x27;, &#x27;real-data verified&#x27; and &#x27;human accepted&#x27; separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human&#x27;s actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.
+
+U2 — Finish visual and interaction acceptance (inside F6)
+This UI phase is part of the main campaign, not extra schedule.
+
+Own only focused UI repairs and tests after U1. Exercise every row of the UI state matrix on the retained isolated app with actual backend events; isolated fault injection may provoke errors, but no fixture defaults survive. Use real Graph and real testnet receipts for success states. Confirm v1/v2 same-window comparison, historical/live transitions, expiry status, revoked policy, reload/reconnect, environment separation and unavailable provider. Verify labels at normal projector zoom, responsive page width, contrast (4.5:1 ordinary text), keyboard focus/escape/return focus, semantic live status announcements, accessible evidence alternatives and reduced motion. Avoid a layout that only works with short IDs or one screenshot. Keep failed cases open and repair the original implementation. Commit only the verified fixes.
+
+Expected result:
+A premium experience whose loading, failure and version-transition states are as coherent as its successful screenshot.
+
+Human verification, then stop:
+George watches the full demo at 1920×1080 and uses it at 1024px. Without narration, identify current signal version, effective fee and source age; pause with provider stopped; inspect a real swap; return from comparison to Live. Approve U2 only when all applicable matrix states have evidence.</pre>
+          </details>
+        </section>
+        <section>
+          <h2>Boundaries and evidence</h2>
+          <p>
+            This UI plan is based on inspected repository components, CSS and a historical
+            screenshot; it is not a claim that the current application has been browser-tested.
+            Source implementation and old chart behavior were examined, but no running T3 app was
+            started in this planning task. The final implementation must receive the U1/U2
+            integrated browser pass. The artifact itself is checked as a document, not as a working
+            trading app.
+          </p>
+          <p>
+            Use the same
+            <a
+              href="https://raw.githubusercontent.com/ThariqS/html-effectiveness/main/16-implementation-plan.html"
+              >reference 16 implementation-plan structure</a
+            >: critique → layout contract → code boundaries → phased human gates. The drawing is
+            deliberately a layout schematic, with no invented price or transaction values. The app’s
+            existing semantic tokens determine the shipped light/dark palettes.
+          </p>
+        </section>
+      </main>
+      <footer>
+        Planning artifacts only. No feature implementation, live Graph verification or public-chain
+        deployment is claimed. Human gates remain pending until the implementation campaign provides
+        evidence. Prepared 2026-09-09.
+      </footer>
+    </div>
+    <script id="prompt-data" type="application/json">
+      {
+        "U0": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U0/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nU0 \u2014 Approve the chart-first direction (inside F0)\nThis UI phase is part of the main campaign, not extra schedule.\n\nRead MarketChartPanel, MissionPriceChart, ThreadMarketCard/Panel, ChatView integration, trading.css and existing state hooks. Inspect the current app only if the single retained tester stack is already available; otherwise use inspected source/historical evidence and label that limit. Own no production UI edits yet. Compare the schematic with the existing shell at 1440\u00d7900, 1920\u00d71080 and 1024px. Freeze chart-first two-pane layout, source labeling, legacy Research menu and persistent controls for active exposure. Identify exact insertion points and any minimum split-layout blocker; do not launch a competing app stack. Return one decisive layout, not several style options.\n\nExpected result:\nAn agreed instrument/conversation/inspector composition and exact component ownership; no new route or visual framework.\n\nHuman verification, then stop:\nGeorge identifies where to ask, where the new capability appears, which network is observed, which is controlled and how to stop it. Approve the direction or name one blocking layout change before U1.",
+        "U1": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U1/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nU1 \u2014 Implement the instrument and reveal (inside F4)\nThis UI phase is part of the main campaign, not extra schedule.\n\nOwn the bounded chart/thread integration, new ForgeSignalLane, ForgeBuildReceipt, ForgePoolInspector, ForgeVersionDiff, related web state and trading.css. Read implementation F1\u2013F3 contracts; use actual typed server state. Implement the composition and interactions from this UI plan, keep existing source/legacy scene semantics, and never introduce mocked runtime samples. Build progress comes from persisted receipts; install adds the signal lane without moving zoom/composer. Source evidence, generated code/tests and policy receipts are progressive disclosure in one inspector. Installed-vs-confirmed versions remain separate.\nUse current semantic tokens and font. No new chart library, animated graph background or extra sidebar brand. At 1024px collapse the inspector; preserve the conversation/composer. Long labels, errors, historical mode and missing data must fit. Active HL exposure retains direct controls. Follow test-t3-app for every user-visible change, using the campaign's sole retained tester. Run focused component/state tests and targeted web check, then commit explicit owned files. Produce screenshots of real data/state and record paths under /tmp/t3-forge-20260909/U1/.\n\nExpected result:\nOne stable chart-first screen showing real source \u2192 build \u2192 installed signal \u2192 pool policy, with direct evidence inspection and source-aware labels.\n\nHuman verification, then stop:\nGeorge runs the first request and opens each evidence link; confirms chart/composer stay visible, source/target networks are distinct, a pending fee is not labeled effective, keyboard navigation works, and unavailable data remains readable. Check three viewport widths and active-position controls. Actual pass is required.",
+        "U2": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U2/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nU2 \u2014 Finish visual and interaction acceptance (inside F6)\nThis UI phase is part of the main campaign, not extra schedule.\n\nOwn only focused UI repairs and tests after U1. Exercise every row of the UI state matrix on the retained isolated app with actual backend events; isolated fault injection may provoke errors, but no fixture defaults survive. Use real Graph and real testnet receipts for success states. Confirm v1/v2 same-window comparison, historical/live transitions, expiry status, revoked policy, reload/reconnect, environment separation and unavailable provider. Verify labels at normal projector zoom, responsive page width, contrast (4.5:1 ordinary text), keyboard focus/escape/return focus, semantic live status announcements, accessible evidence alternatives and reduced motion. Avoid a layout that only works with short IDs or one screenshot. Keep failed cases open and repair the original implementation. Commit only the verified fixes.\n\nExpected result:\nA premium experience whose loading, failure and version-transition states are as coherent as its successful screenshot.\n\nHuman verification, then stop:\nGeorge watches the full demo at 1920\u00d71080 and uses it at 1024px. Without narration, identify current signal version, effective fee and source age; pause with provider stopped; inspect a real swap; return from comparison to Live. Approve U2 only when all applicable matrix states have evidence."
+      }
+    </script>
+    <script>
+      const prompts = JSON.parse(document.getElementById("prompt-data").textContent);
+      const status = document.getElementById("status");
+      for (const b of document.querySelectorAll("[data-copy]"))
+        b.addEventListener("click", async () => {
+          const text = prompts[b.dataset.copy];
+          try {
+            await navigator.clipboard.writeText(text);
+            status.textContent =
+              "Copied complete " + b.dataset.copy + " prompt, including shared rules.";
+          } catch {
+            const d = b.nextElementSibling;
+            if (d && d.tagName === "DETAILS") {
+              d.open = true;
+              const range = document.createRange();
+              range.selectNodeContents(d.querySelector("pre"));
+              const selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+            }
+            status.textContent =
+              "Clipboard unavailable. Complete prompt selected; use your copy shortcut.";
+          }
+        });
+      document
+        .getElementById("expand")
+        .addEventListener("click", () =>
+          document.querySelectorAll("details").forEach((x) => (x.open = true)),
+        );
+      document
+        .getElementById("collapse")
+        .addEventListener("click", () =>
+          document.querySelectorAll("details").forEach((x) => (x.open = false)),
+        );
+      document.getElementById("download").addEventListener("click", () => {
+        const text = Object.entries(prompts)
+          .map(([id, p]) => "## " + id + "\n\n" + p)
+          .join("\n\n---\n\n");
+        const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = document.body.dataset.exportName;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        status.textContent = "Exported all complete prompts as Markdown.";
+      });
+      const chooser = document.getElementById("preview-state");
+      if (chooser) {
+        const states = {
+          empty: [
+            "Your next indicator starts with a request.",
+            "Ask the agent to build the missing capability.",
+            "No pool attached",
+            "Describe what the chart cannot yet tell you.",
+            "Source → module → tests → install",
+          ],
+          building: [
+            "Building the requested capability",
+            "The plot stays put. Actual build receipts appear beside it.",
+            "Pool preparation follows installation",
+            "Inspect the generated module and real test results.",
+            "Show only stages confirmed by the server",
+          ],
+          installed: [
+            "Installed · waiting for a source window",
+            "The named indicator will render actual observations here.",
+            "Installed detector and confirmed policy are separate",
+            "Open the sealed source, tests and manifest.",
+            "Installation receipt → current observations",
+          ],
+          pending: [
+            "Detector installed · policy pending",
+            "Keep current observations visible while the transaction confirms.",
+            "Current effective fee stays visible; proposed change is separate",
+            "Open the transaction hash and current confirmed policy.",
+            "Submitted is not confirmed",
+          ],
+          stale: [
+            "Source unavailable",
+            "Keep last source time visible; draw gaps, not invented values.",
+            "Expiry baseline status is read from the fixed policy",
+            "Explain the source failure and offer a direct retry.",
+            "No new observation publication",
+          ],
+        };
+        chooser.addEventListener("change", () => {
+          const s = states[chooser.value];
+          [
+            "preview-lane-title",
+            "preview-lane-copy",
+            "preview-fee",
+            "preview-chat-copy",
+            "preview-stage",
+          ].forEach((id, i) => (document.getElementById(id).textContent = s[i]));
+          status.textContent =
+            "Layout preview: " +
+            chooser.options[chooser.selectedIndex].text +
+            ". No market data is simulated.";
+        });
+        document.getElementById("evidence-toggle").addEventListener("click", (e) => {
+          const el = document.getElementById("preview-inspector");
+          el.hidden = !el.hidden;
+          e.currentTarget.setAttribute("aria-expanded", String(!el.hidden));
+        });
+      }
+    </script>
+  </body>
+</html>
