@@ -16,6 +16,7 @@ import { FollowSetRegistry } from "../../trading/FollowSetRegistry.ts";
 import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
 import { TradingRuntimeLease } from "../../trading/TradingRuntimeLease.ts";
 import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
+import * as ThreadSettlementReactor from "../ThreadSettlementReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
@@ -42,7 +43,7 @@ describe("OrchestrationReactor", () => {
     runtime = null;
   });
 
-  it("starts provider ingestion, provider command, checkpoint, thread deletion, and trading reactors", async () => {
+  it("starts every orchestration reactor", async () => {
     const started: string[] = [];
 
     runtime = ManagedRuntime.make(
@@ -78,6 +79,15 @@ describe("OrchestrationReactor", () => {
           Layer.succeed(ThreadDeletionReactor, {
             start: () => {
               started.push("thread-deletion-reactor");
+              return Effect.void;
+            },
+            drainThrough: () => Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(ThreadSettlementReactor.ThreadSettlementReactor, {
+            start: () => {
+              started.push("thread-settlement-reactor");
               return Effect.void;
             },
             drain: Effect.void,
@@ -136,6 +146,7 @@ describe("OrchestrationReactor", () => {
       "provider-command-reactor",
       "checkpoint-reactor",
       "thread-deletion-reactor",
+      "thread-settlement-reactor",
       "agent-awareness-relay",
       "trading-mission-reactor",
     ]);
@@ -171,6 +182,12 @@ describe("OrchestrationReactor", () => {
             ),
             Layer.provideMerge(
               Layer.succeed(ThreadDeletionReactor, {
+                start: () => Effect.void,
+                drainThrough: () => Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(ThreadSettlementReactor.ThreadSettlementReactor, {
                 start: () => Effect.void,
                 drain: Effect.void,
               }),

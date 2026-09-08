@@ -118,10 +118,6 @@ function useThreadActionExecutor(
           );
           return false;
         }
-        // Settle is the user's final word on a thread — it stops the session
-        // and ends any mission bound to it — so it is never gated on the thread
-        // being quiet first.
-        //
         // Archive keeps its original, narrower guard: never interrupt a
         // thread mid-turn.
         if (

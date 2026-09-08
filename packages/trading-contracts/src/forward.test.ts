@@ -8,6 +8,8 @@
  * So the incremental machine is driven one bar at a time over a series the
  * batch engine has already walked, and the two trade lists are compared whole.
  */
+// @effect-diagnostics globalConsole:off - the char-budget tests print their
+// measured sizes so the number is watched instead of drifting.
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 

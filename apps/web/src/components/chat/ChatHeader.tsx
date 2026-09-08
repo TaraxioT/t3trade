@@ -10,7 +10,6 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { ChangeRequestSettleSource } from "@t3tools/client-runtime/state/thread-settled";
 import { ChevronDownIcon } from "lucide-react";
 import {
   memo,
@@ -54,8 +53,6 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   /** Drafts have no server thread yet, so the title carries no action menu. */
   isServerThread: boolean;
-  /** PR feeding the settled classification, resolved by ChatView. */
-  changeRequest: ChangeRequestSettleSource | null;
   activeProjectName: string | undefined;
   activeProjectCwd: string | null;
   /** Rendered after the thread title, before the actions. Trading's mission pill. */
@@ -126,7 +123,6 @@ export const ChatHeader = memo(function ChatHeader({
   draftId,
   activeThreadTitle,
   isServerThread,
-  changeRequest,
   activeProjectName,
   activeProjectCwd,
   missionSlot,
@@ -205,7 +201,6 @@ export const ChatHeader = memo(function ChatHeader({
   const { openMenu, closeMenu } = useThreadActionMenu({
     threadRef: isServerThread ? activeThreadRef : null,
     projectCwd: activeProjectCwd,
-    changeRequest,
     onStartRename: startRename,
   });
   const titleButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -300,7 +295,7 @@ export const ChatHeader = memo(function ChatHeader({
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
         className={cn(
-          "flex-1",
+          "flex-1 overflow-clip [overflow-clip-margin:2px]",
           missionSlot ? "@3xl/header-actions:max-w-[calc(50%-11rem)]" : undefined,
         )}
       >
@@ -309,7 +304,7 @@ export const ChatHeader = memo(function ChatHeader({
             doesn't answer it. */}
         {activeProjectName ? (
           <>
-            <WorkspaceBreadcrumbItem>
+            <WorkspaceBreadcrumbItem className="shrink">
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -317,7 +312,7 @@ export const ChatHeader = memo(function ChatHeader({
                       type="button"
                       aria-label={`New thread in ${activeProjectName}`}
                       onClick={onNewThreadInProject}
-                      className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                      className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     />
                   }
                 >
@@ -335,7 +330,7 @@ export const ChatHeader = memo(function ChatHeader({
             <WorkspaceBreadcrumbSeparator />
           </>
         ) : null}
-        <WorkspaceBreadcrumbItem current className="flex-1">
+        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
           {renamingTitle !== null ? (
             <input
               autoFocus

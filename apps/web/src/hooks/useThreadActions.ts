@@ -64,18 +64,6 @@ export class ThreadSettlementUnsupportedError extends Schema.TaggedErrorClass<Th
   }
 }
 
-export class ThreadSettleBlockedError extends Schema.TaggedErrorClass<ThreadSettleBlockedError>()(
-  "ThreadSettleBlockedError",
-  {
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-  },
-) {
-  override get message(): string {
-    return "This thread still needs attention. Resolve or interrupt it first, then try again.";
-  }
-}
-
 export class ThreadSnoozeUnsupportedError extends Schema.TaggedErrorClass<ThreadSnoozeUnsupportedError>()(
   "ThreadSnoozeUnsupportedError",
   {
@@ -136,6 +124,26 @@ export class ThreadPinReorderUnsupportedError extends Schema.TaggedErrorClass<Th
   }
 }
 
+export async function requestThreadUnpinConfirmation(input: {
+  enabled: boolean;
+  title: string;
+  confirm: ((message: string) => Promise<boolean>) | null;
+}) {
+  const { confirm } = input;
+  if (!input.enabled || confirm === null) {
+    return AsyncResult.success(true);
+  }
+
+  return settlePromise(() =>
+    confirm(
+      [
+        `Unpin thread "${input.title}"?`,
+        "This will move the thread out of your pinned section.",
+      ].join("\n"),
+    ),
+  );
+}
+
 export function useThreadActions() {
   const closeTerminal = useAtomCommand(terminalEnvironment.close);
   const archiveThreadMutation = useAtomCommand(threadEnvironment.archive, {
@@ -177,6 +185,7 @@ export function useThreadActions() {
   });
   const sidebarThreadSortOrder = useClientSettings((settings) => settings.sidebarThreadSortOrder);
   const confirmThreadDelete = useClientSettings((settings) => settings.confirmThreadDelete);
+  const confirmThreadUnpin = useClientSettings((settings) => settings.confirmThreadUnpin);
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearDraftThread);
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
@@ -485,13 +494,6 @@ export function useThreadActions() {
         );
       }
       const resolved = resolveThreadTarget(target);
-      // Upstream gates settle on `canSettle` — no running session, no open
-      // approval, nothing waiting on the user. This fork does not: settle is
-      // the user's final word on a thread, it stops the session and ends any
-      // mission bound to it, and those are exactly the states a running
-      // mission is always in. Gating here would make the one control meant to
-      // stop a mission the one control that could not. The server settles a
-      // running thread by stopping it in the same command.
       const wokeAt = resolved
         ? threadWokeAt(resolved.thread, { now: new Date().toISOString() })
         : null;
@@ -582,6 +584,26 @@ export function useThreadActions() {
       });
     },
     [unpinThreadMutation],
+  );
+
+  const confirmAndUnpinThread = useCallback(
+    async (target: ScopedThreadRef) => {
+      const localApi = readLocalApi();
+      const resolved = resolveThreadTarget(target);
+      const confirmationResult = await requestThreadUnpinConfirmation({
+        enabled: confirmThreadUnpin,
+        title: resolved?.thread.title ?? "this thread",
+        confirm: localApi ? (message) => localApi.dialogs.confirm(message) : null,
+      });
+      if (confirmationResult._tag === "Failure") {
+        return confirmationResult;
+      }
+      if (!confirmationResult.value) {
+        return AsyncResult.success(undefined);
+      }
+      return unpinThread(target);
+    },
+    [confirmThreadUnpin, resolveThreadTarget, unpinThread],
   );
 
   const reorderPinnedThread = useCallback(
@@ -703,11 +725,13 @@ export function useThreadActions() {
       unsnoozeThread,
       pinThread,
       unpinThread,
+      confirmAndUnpinThread,
       reorderPinnedThread,
     }),
     [
       archiveThread,
       confirmAndDeleteThread,
+      confirmAndUnpinThread,
       deleteThread,
       pinThread,
       reorderPinnedThread,

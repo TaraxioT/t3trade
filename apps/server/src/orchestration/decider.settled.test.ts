@@ -19,6 +19,8 @@ import { projectEvent } from "./projector.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const SETTLED_AT = "2025-12-30T00:00:00.000Z";
+const SETTLE_BLOCKED_MESSAGE =
+  "This thread still needs attention. Resolve or interrupt it first, then try again.";
 
 function makeReadModel(
   settledOverride: OrchestrationThread["settledOverride"],
@@ -79,6 +81,22 @@ function makeSession(status: OrchestrationSession["status"]): OrchestrationSessi
 }
 
 it.layer(NodeServices.layer)("settled thread decider", (it) => {
+  it.effect("rejects an automatic settle when the thread is pinned active", () =>
+    Effect.gen(function* () {
+      const command = {
+        type: "thread.auto-settle" as const,
+        commandId: CommandId.make("cmd-auto-settle"),
+        threadId: ThreadId.make("thread-1"),
+        snapshotSequence: 0,
+      };
+      const pinnedActive = yield* decideOrchestrationCommand({
+        command,
+        readModel: makeReadModel("active"),
+      }).pipe(Effect.flip);
+      expect(pinnedActive._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
   it.effect("settles awake threads without a redundant wake and re-emits idempotently", () =>
     Effect.gen(function* () {
       const event = yield* decideOrchestrationCommand({
@@ -205,6 +223,22 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           "thread.session-stop-requested",
           "thread.settled",
         ]);
+        // Automatic settlement keeps upstream's refusal: a server sweep must
+        // not park a thread whose session is coming alive or working.
+        const autoError = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.auto-settle",
+            commandId: CommandId.make(`cmd-auto-settle-live-${status}`),
+            threadId: ThreadId.make("thread-1"),
+            snapshotSequence: 1,
+          },
+          readModel: makeReadModel(null, null, makeSession(status)),
+        }).pipe(Effect.flip);
+        expect(autoError).toMatchObject({
+          _tag: "OrchestrationThreadSettleBlockedError",
+          threadId: ThreadId.make("thread-1"),
+          message: SETTLE_BLOCKED_MESSAGE,
+        });
       }
       // A session that is already down needs no stop.
       const settled = yield* decideOrchestrationCommand({
@@ -222,7 +256,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
 
   it.effect("settles a thread with an open approval, a user-input request, or a queued turn", () =>
     Effect.gen(function* () {
-      const requestActivity = (kind: string, requestId: string) =>
+      const requestActivity = (kind: string, requestId: string, at: string) =>
         ({
           id: EventId.make(`activity-${requestId}-${kind}`),
           tone: "approval" as const,
@@ -230,8 +264,146 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           summary: kind,
           payload: { requestId },
           turnId: null,
+          createdAt: at,
+        }) as OrchestrationThread["activities"][number];
+
+      // Fork doctrine first: settle is the user's final word, so manual
+      // settle succeeds through exactly the states upstream blocks. Each of
+      // these used to be a rejection, which is what made Settle unusable on
+      // exactly the threads that needed it.
+      for (const kind of ["approval.requested", "user-input.requested"] as const) {
+        const result = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.settle",
+            commandId: CommandId.make(`cmd-settle-open-${kind}`),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel(null, null, null, [requestActivity(kind, `req-${kind}`, NOW)]),
+        });
+        const events = Array.isArray(result) ? result : [result];
+        expect(events.map((event) => event.type)).toEqual(["thread.settled"]);
+      }
+
+      // Automatic settlement keeps upstream's refusals: a server sweep must
+      // not park blocked-on-you work behind a settled override. Open approval
+      // request: auto-settle rejected.
+      const openError = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.auto-settle",
+          commandId: CommandId.make("cmd-auto-settle-pending"),
+          threadId: ThreadId.make("thread-1"),
+          snapshotSequence: 1,
+        },
+        readModel: makeReadModel(null, null, null, [
+          requestActivity("approval.requested", "req-1", NOW),
+        ]),
+      }).pipe(Effect.flip);
+      expect(openError).toMatchObject({
+        _tag: "OrchestrationThreadSettleBlockedError",
+        threadId: ThreadId.make("thread-1"),
+        message: SETTLE_BLOCKED_MESSAGE,
+      });
+
+      // Same request later resolved: settleable again.
+      const settled = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-resolved"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [
+          requestActivity("approval.requested", "req-1", NOW),
+          requestActivity("approval.resolved", "req-1", NOW),
+        ]),
+      });
+      const settledEvents = Array.isArray(settled) ? settled : [settled];
+      expect(settledEvents[0]?.type).toBe("thread.settled");
+
+      // Open user-input request: also rejected for the sweep.
+      const inputError = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.auto-settle",
+          commandId: CommandId.make("cmd-auto-settle-pending-input"),
+          threadId: ThreadId.make("thread-1"),
+          snapshotSequence: 1,
+        },
+        readModel: makeReadModel(null, null, null, [
+          requestActivity("user-input.requested", "req-2", NOW),
+        ]),
+      }).pipe(Effect.flip);
+      expect(inputError).toMatchObject({
+        _tag: "OrchestrationThreadSettleBlockedError",
+        threadId: ThreadId.make("thread-1"),
+        message: SETTLE_BLOCKED_MESSAGE,
+      });
+    }),
+  );
+
+  it.effect("clears an open request when its respond failure marks it stale", () =>
+    Effect.gen(function* () {
+      const activity = (
+        kind: string,
+        requestId: string,
+        payload: Record<string, unknown>,
+      ): OrchestrationThread["activities"][number] =>
+        ({
+          id: EventId.make(`activity-${requestId}-${kind}`),
+          tone: "approval" as const,
+          kind,
+          summary: kind,
+          payload: { requestId, ...payload },
+          turnId: null,
           createdAt: NOW,
         }) as OrchestrationThread["activities"][number];
+
+      // Stale-failure details clear the request, matching the projection flags.
+      const settled = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-stale-failed"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [
+          activity("approval.requested", "req-1", {}),
+          activity("provider.approval.respond.failed", "req-1", {
+            detail: "Unknown pending approval request req-1",
+          }),
+          activity("user-input.requested", "req-2", {}),
+          activity("provider.user-input.respond.failed", "req-2", {
+            detail: "stale pending user-input request req-2",
+          }),
+        ]),
+      });
+      const settledEvents = Array.isArray(settled) ? settled : [settled];
+      expect(settledEvents[0]?.type).toBe("thread.settled");
+
+      // A non-stale respond failure (transient provider error) keeps the
+      // request open: the user can retry, so a sweep still treats it as
+      // blocked-on-you (manual settle remains available).
+      const stillOpen = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.auto-settle",
+          commandId: CommandId.make("cmd-auto-settle-transient-failed"),
+          threadId: ThreadId.make("thread-1"),
+          snapshotSequence: 1,
+        },
+        readModel: makeReadModel(null, null, null, [
+          activity("approval.requested", "req-3", {}),
+          activity("provider.approval.respond.failed", "req-3", {
+            detail: "provider connection reset",
+          }),
+        ]),
+      }).pipe(Effect.flip);
+      expect(stillOpen).toMatchObject({
+        _tag: "OrchestrationThreadSettleBlockedError",
+        threadId: ThreadId.make("thread-1"),
+        message: SETTLE_BLOCKED_MESSAGE,
+      });
+    }),
+  );
+
+  it.effect("bounds the queued-turn grace window against client clock skew", () =>
+    Effect.gen(function* () {
       const userMessage = (createdAt: string): OrchestrationThread["messages"][number] => ({
         id: MessageId.make("message-queued"),
         role: "user",
@@ -242,28 +414,51 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         updatedAt: createdAt,
       });
 
-      // Settle is the user's final word: none of the states that block a
-      // snooze block it. Each of these used to be a rejection, which is what
-      // made Settle unusable on exactly the threads that needed it.
-      const readModels = [
-        makeReadModel(null, null, null, [requestActivity("approval.requested", "req-1")]),
-        makeReadModel(null, null, null, [requestActivity("user-input.requested", "req-2")]),
-        // The decider's clock is the Effect test clock, pinned to the epoch,
-        // so this message is inside the queued-turn grace window.
-        makeReadModel(null, null, null, [], [userMessage("1969-12-31T23:59:30.000Z")]),
-      ];
-      for (const [index, readModel] of readModels.entries()) {
-        const result = yield* decideOrchestrationCommand({
-          command: {
-            type: "thread.settle",
-            commandId: CommandId.make(`cmd-settle-blocked-${index}`),
-            threadId: ThreadId.make("thread-1"),
-          },
-          readModel,
-        });
-        const events = Array.isArray(result) ? result : [result];
-        expect(events.map((event) => event.type)).toEqual(["thread.settled"]);
-      }
+      // The decider's clock is the Effect test clock, pinned to the epoch:
+      // timestamps here are relative to 1970-01-01T00:00:00.000Z.
+
+      // Fork doctrine: a genuinely queued turn is no refusal for the user's
+      // manual settle — it settles the thread instead of hiding the work.
+      const manualQueued = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-queued-manual"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [], [userMessage("1969-12-31T23:59:30.000Z")]),
+      });
+      const manualQueuedEvents = Array.isArray(manualQueued) ? manualQueued : [manualQueued];
+      expect(manualQueuedEvents.map((event) => event.type)).toEqual(["thread.settled"]);
+
+      // Within the grace window: genuinely queued, auto-settle rejected.
+      const queuedError = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.auto-settle",
+          commandId: CommandId.make("cmd-auto-settle-queued"),
+          threadId: ThreadId.make("thread-1"),
+          snapshotSequence: 1,
+        },
+        readModel: makeReadModel(null, null, null, [], [userMessage("1969-12-31T23:59:30.000Z")]),
+      }).pipe(Effect.flip);
+      expect(queuedError).toMatchObject({
+        _tag: "OrchestrationThreadSettleBlockedError",
+        threadId: ThreadId.make("thread-1"),
+        message: SETTLE_BLOCKED_MESSAGE,
+      });
+
+      // Message timestamp far in the FUTURE (client clock ahead of server):
+      // a negative age must not read as queued forever — past the grace
+      // bound in either direction the thread is settleable.
+      const skewed = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-skewed"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [], [userMessage("1970-01-01T01:00:00.000Z")]),
+      });
+      const skewedEvents = Array.isArray(skewed) ? skewed : [skewed];
+      expect(skewedEvents[0]?.type).toBe("thread.settled");
     }),
   );
 
