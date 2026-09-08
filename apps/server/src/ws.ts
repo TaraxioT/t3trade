@@ -2491,11 +2491,9 @@ const makeWsRpcLayer = (
                   followed.map((market) => market.asset),
                 )
               ) {
-                return yield* Effect.fail(
-                  new OrchestrationGetSnapshotError({
-                    message: `Market ${input.market} is neither followed nor held by a mission`,
-                  }),
-                );
+                return yield* new OrchestrationGetSnapshotError({
+                  message: `Market ${input.market} is neither followed nor held by a mission`,
+                });
               }
               // Opening a chart is attention: it starts (or extends) recording
               // for that market, so the next question about it has data. This
@@ -2516,11 +2514,9 @@ const makeWsRpcLayer = (
                 ...(input.endTime !== undefined ? { endTime: input.endTime } : {}),
               });
               if (chart === null) {
-                return yield* Effect.fail(
-                  new OrchestrationGetSnapshotError({
-                    message: `Failed to read market chart for ${input.market}`,
-                  }),
-                );
+                return yield* new OrchestrationGetSnapshotError({
+                  message: `Failed to read market chart for ${input.market}`,
+                });
               }
               return chart;
             }).pipe(

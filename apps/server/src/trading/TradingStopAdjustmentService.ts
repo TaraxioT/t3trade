@@ -141,7 +141,7 @@ const make = Effect.gen(function* () {
       // "cannot measure right now", and the stop the position has is safe.
       const snapshot = yield* gateway
         .getMarketSnapshot(input.market)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+        .pipe(Effect.orElseSucceed(() => null));
       if (snapshot === null) {
         return refuse("market_data_unavailable", "the market snapshot could not be read", noStop);
       }
@@ -164,7 +164,7 @@ const make = Effect.gen(function* () {
         .pipe(Effect.orDie);
       const openOrders = yield* gateway
         .getOpenOrders(address)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+        .pipe(Effect.orElseSucceed(() => null));
       if (openOrders === null) {
         return refuse("market_data_unavailable", "open orders could not be read", noStop);
       }
@@ -211,7 +211,7 @@ const make = Effect.gen(function* () {
           interval: timeframe,
           maxBars: VOLATILITY_LOOKBACK_BARS,
         })
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+        .pipe(Effect.orElseSucceed(() => null));
       if (history === null) {
         return refuse("market_data_unavailable", "candle history could not be read", prices);
       }

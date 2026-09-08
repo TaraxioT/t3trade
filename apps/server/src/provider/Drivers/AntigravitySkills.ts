@@ -86,7 +86,7 @@ const readIfPresent = <A, R>(
     Effect.catchTags({
       PlatformError: (cause) =>
         cause.reason._tag === "NotFound"
-          ? Effect.succeed(undefined)
+          ? Effect.void
           : Effect.fail(
               new AntigravitySkillsProbeError({ reason: "filesystem-error", path, cause }),
             ),

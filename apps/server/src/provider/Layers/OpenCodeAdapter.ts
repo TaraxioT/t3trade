@@ -1687,7 +1687,7 @@ export function makeOpenCodeAdapter(
           }),
           Effect.catchIf(
             (cause) => isOpenCodeNotFound(cause),
-            () => Effect.succeed(undefined),
+            () => Effect.void,
           ),
         );
       let sessionId: string | undefined = candidateSessionId;

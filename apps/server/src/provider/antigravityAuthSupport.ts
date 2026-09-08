@@ -250,7 +250,7 @@ const linkAntigravityUserSkills = Effect.fn("linkAntigravityUserSkills")(functio
       const existing = yield* fs.readLink(link).pipe(
         Effect.map((value): string | undefined => path.resolve(path.dirname(link), value)),
         Effect.catch((error) =>
-          error.reason._tag === "NotFound" ? Effect.succeed(undefined) : Effect.fail(error),
+          error.reason._tag === "NotFound" ? Effect.void : Effect.fail(error),
         ),
       );
       if (existing === target) return;

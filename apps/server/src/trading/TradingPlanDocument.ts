@@ -457,7 +457,7 @@ export const readThreadWorkspaceRoot = Effect.fn("TradingPlanDocument.readThread
   (sql: SqlClient.SqlClient, threadId: string): Effect.Effect<string | null> =>
     readThreadWorkspaceRootStrict(sql, threadId).pipe(
       Effect.map((resolution) => (resolution.status === "resolved" ? resolution.cwd : null)),
-      Effect.catch(() => Effect.succeed(null)),
+      Effect.orElseSucceed(() => null),
     ),
 );
 
@@ -681,20 +681,18 @@ export const makeTradingPlanDocumentService = Effect.gen(function* () {
         WHERE workspace_root = ${realRoot}
         ORDER BY id DESC
       `.pipe(Effect.mapError(asDocumentError));
-      return rows.map(
-        (row): PlanDocumentRevision => ({
-          id: row.id,
-          workspaceRoot: row.workspace_root,
-          kind: row.kind,
-          contentHash: row.content_hash,
-          activatedContent: row.activated_content,
-          activatedAt: row.activated_at,
-          activatedByThreadId: row.activated_by_thread_id,
-          activatedByProvider: row.activated_by_provider,
-          missionId: row.mission_id,
-          changeNote: row.change_note,
-        }),
-      );
+      return rows.map((row): PlanDocumentRevision => ({
+        id: row.id,
+        workspaceRoot: row.workspace_root,
+        kind: row.kind,
+        contentHash: row.content_hash,
+        activatedContent: row.activated_content,
+        activatedAt: row.activated_at,
+        activatedByThreadId: row.activated_by_thread_id,
+        activatedByProvider: row.activated_by_provider,
+        missionId: row.mission_id,
+        changeNote: row.change_note,
+      }));
     });
 
   const notePlanPublication: TradingPlanDocumentService["Service"]["notePlanPublication"] = (
@@ -838,13 +836,12 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
           };
       const workspaceRoot = yield* readThreadWorkspaceRootStrict(sql, threadId).pipe(
         Effect.map((resolution): CwdRead => ({ ok: true, resolution })),
-        Effect.catch(
-          (): Effect.Effect<CwdRead> =>
-            Effect.succeed({ ok: false, cause: "the thread workspace row could not be read" }),
-        ),
-        Effect.catchCause(
-          (): Effect.Effect<CwdRead> =>
-            Effect.succeed({ ok: false, cause: "the thread workspace read died" }),
+        Effect.orElseSucceed((): CwdRead => ({
+          ok: false,
+          cause: "the thread workspace row could not be read",
+        })),
+        Effect.catchCause((): Effect.Effect<CwdRead> =>
+          Effect.succeed({ ok: false, cause: "the thread workspace read died" }),
         ),
       );
       if (!workspaceRoot.ok) return planStateUnreadableRefusal(workspaceRoot.cause);
@@ -868,12 +865,11 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
           };
       const activated = yield* documents.readActive(workspaceRoot.resolution.cwd).pipe(
         Effect.map((pin): PinRead => ({ ok: true, pin })),
-        Effect.catch(
-          (error): Effect.Effect<PinRead> => Effect.succeed({ ok: false, cause: error.message }),
+        Effect.catch((error): Effect.Effect<PinRead> =>
+          Effect.succeed({ ok: false, cause: error.message }),
         ),
-        Effect.catchCause(
-          (): Effect.Effect<PinRead> =>
-            Effect.succeed({ ok: false, cause: "the plan-document read died" }),
+        Effect.catchCause((): Effect.Effect<PinRead> =>
+          Effect.succeed({ ok: false, cause: "the plan-document read died" }),
         ),
       );
       if (!activated.ok) return planStateUnreadableRefusal(activated.cause);
@@ -885,7 +881,7 @@ export const guardPlanDocumentDrift = Effect.fn("TradingPlanDocument.guardPlanDo
         // carried as null here and fenced below: while a pin stands, a read
         // that refuses means the file is no longer the readable bytes that
         // were pinned.
-        Effect.catch(() => Effect.succeed(null)),
+        Effect.orElseSucceed(() => null),
         Effect.catchCause(() => Effect.succeed(null)),
       );
       // A deleted (or renamed-away) TRADE.md while an activation stands is

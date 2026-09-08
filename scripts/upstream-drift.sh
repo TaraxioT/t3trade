@@ -76,7 +76,10 @@ if [[ "$behind" -gt 0 ]]; then
     exit 2
   fi
   # First line is the tree oid; the paths follow until the first blank line.
-  conflicts=$(printf '%s\n' "$merge_output" | tail -n +2 | sed -n '/^$/q;p')
+  # Delete-from-blank-line reads the whole stream (an early-quitting `q`
+  # closes the pipe while printf is still writing; with pipefail that SIGPIPE
+  # kills the whole script once the conflict list outgrows the pipe buffer).
+  conflicts=$(printf '%s\n' "$merge_output" | tail -n +2 | sed '/^$/,$d')
 fi
 
 conflict_count=0

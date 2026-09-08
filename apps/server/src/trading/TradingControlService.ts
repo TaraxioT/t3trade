@@ -1138,12 +1138,10 @@ export const makeTradingControlService = Effect.gen(function* () {
         // The wire contract's done-variant carries a numeric size; an unknown
         // outcome has none, so it travels the existing typed error channel
         // rather than fabricating a number (06A).
-        return yield* Effect.fail(
-          new TradingControlError({
-            reason: "exchange_action_failed",
-            detail: CLOSE_OUTCOME_UNKNOWN,
-          }),
-        );
+        return yield* new TradingControlError({
+          reason: "exchange_action_failed",
+          detail: CLOSE_OUTCOME_UNKNOWN,
+        });
       }
       return {
         outcome: "done",
