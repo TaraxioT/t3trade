@@ -28,7 +28,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { pocAuthorityDefaults } from "@t3tools/trading-contracts/authority";

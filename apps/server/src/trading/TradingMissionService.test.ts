@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import type { TradingHarnessBinding } from "./Schemas.ts";
 

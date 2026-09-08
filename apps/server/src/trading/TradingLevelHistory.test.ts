@@ -13,7 +13,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   LEVEL_HISTORY_WAKEUP_LEVELS,
   readLevelHistory,

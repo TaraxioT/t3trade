@@ -81,6 +81,27 @@ function makeSession(status: OrchestrationSession["status"]): OrchestrationSessi
 }
 
 it.layer(NodeServices.layer)("settled thread decider", (it) => {
+  it.effect("preserves the activity stamp when automatically settling", () =>
+    Effect.gen(function* () {
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.auto-settle",
+          commandId: CommandId.make("cmd-auto-settle-inactive"),
+          threadId: ThreadId.make("thread-1"),
+          snapshotSequence: 0,
+          settledAt: SETTLED_AT,
+        },
+        readModel: makeReadModel(null),
+      });
+      const events = Array.isArray(result) ? result : [result];
+      const settled = events.find((event) => event.type === "thread.settled");
+      expect(settled?.payload.settledAt).toBe(SETTLED_AT);
+      // updatedAt stays the command time so the row still moves on settle.
+      expect(settled?.payload.updatedAt).toBe(settled?.occurredAt);
+      expect(settled?.payload.updatedAt).not.toBe(SETTLED_AT);
+    }),
+  );
+
   it.effect("rejects an automatic settle when the thread is pinned active", () =>
     Effect.gen(function* () {
       const command = {
@@ -88,6 +109,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         commandId: CommandId.make("cmd-auto-settle"),
         threadId: ThreadId.make("thread-1"),
         snapshotSequence: 0,
+        settledAt: SETTLED_AT,
       };
       const pinnedActive = yield* decideOrchestrationCommand({
         command,
@@ -231,6 +253,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
             commandId: CommandId.make(`cmd-auto-settle-live-${status}`),
             threadId: ThreadId.make("thread-1"),
             snapshotSequence: 1,
+            settledAt: NOW,
           },
           readModel: makeReadModel(null, null, makeSession(status)),
         }).pipe(Effect.flip);
@@ -293,6 +316,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           commandId: CommandId.make("cmd-auto-settle-pending"),
           threadId: ThreadId.make("thread-1"),
           snapshotSequence: 1,
+          settledAt: NOW,
         },
         readModel: makeReadModel(null, null, null, [
           requestActivity("approval.requested", "req-1", NOW),
@@ -326,6 +350,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           commandId: CommandId.make("cmd-auto-settle-pending-input"),
           threadId: ThreadId.make("thread-1"),
           snapshotSequence: 1,
+          settledAt: NOW,
         },
         readModel: makeReadModel(null, null, null, [
           requestActivity("user-input.requested", "req-2", NOW),
@@ -335,6 +360,110 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         _tag: "OrchestrationThreadSettleBlockedError",
         threadId: ThreadId.make("thread-1"),
         message: SETTLE_BLOCKED_MESSAGE,
+      });
+    }),
+  );
+
+  it.effect("manual settlement dismisses async questions without starting a turn", () =>
+    Effect.gen(function* () {
+      const question = (requestId: string): OrchestrationThread["activities"][number] => ({
+        id: EventId.make(requestId),
+        kind: "user-input.requested",
+        summary: "Question",
+        tone: "approval",
+        turnId: null,
+        createdAt: "1969-12-31T00:00:00.000Z",
+        payload: { requestId, responseMode: "message" },
+      });
+      const readModel = makeReadModel(null, null, makeSession("ready"), [
+        question("first"),
+        question("second"),
+        question("answered"),
+        {
+          ...question("answered"),
+          id: EventId.make("answer"),
+          createdAt: "1969-12-31T01:00:00.000Z",
+          kind: "user-input.resolved",
+        },
+      ]);
+      const command = {
+        type: "thread.settle" as const,
+        commandId: CommandId.make("settle-async"),
+        threadId: ThreadId.make("thread-1"),
+      };
+      const result = yield* decideOrchestrationCommand({ command, readModel });
+      const events = Array.isArray(result) ? result : [result];
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.settled",
+        "thread.activity-appended",
+        "thread.activity-appended",
+      ]);
+      expect(events.slice(1).map((event) => event.payload)).toEqual(
+        ["first", "second"].map((requestId) => ({
+          threadId: command.threadId,
+          activity: expect.objectContaining({
+            kind: "user-input.resolved",
+            summary: "User input dismissed",
+            payload: { requestId, responseMode: "message" },
+          }),
+        })),
+      );
+      let projected = readModel;
+      for (const [index, event] of events.entries()) {
+        projected = yield* projectEvent(projected, { ...event, sequence: index + 1 });
+      }
+      expect(projected.threads[0]?.settledOverride).toBe("settled");
+      expect(projected.threads[0]?.messages).toEqual([]);
+      const repeated = yield* decideOrchestrationCommand({ command, readModel: projected });
+      expect(repeated).toMatchObject({ type: "thread.settled" });
+    }),
+  );
+
+  it.effect("async questions do not bypass automatic settlement", () =>
+    Effect.gen(function* () {
+      const question: OrchestrationThread["activities"][number] = {
+        id: EventId.make("async-question"),
+        kind: "user-input.requested",
+        summary: "Question",
+        tone: "approval",
+        turnId: null,
+        createdAt: NOW,
+        payload: { requestId: "async-question", responseMode: "message" },
+      };
+      // A sweep never dismisses a question on the user's behalf: automatic
+      // settlement stays blocked while one is open.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.auto-settle",
+          commandId: CommandId.make("settle-auto"),
+          threadId: ThreadId.make("thread-1"),
+          snapshotSequence: 0,
+          settledAt: NOW,
+        },
+        readModel: makeReadModel(null, null, makeSession("ready"), [question]),
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "OrchestrationThreadSettleBlockedError" });
+
+      // Fork doctrine: manual settle is the user's final word — it stops a
+      // running session first and dismisses the question rather than waiting.
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("settle-manual"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, makeSession("running"), [question]),
+      });
+      const events = Array.isArray(result) ? result : [result];
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.session-stop-requested",
+        "thread.settled",
+        "thread.activity-appended",
+      ]);
+      const dismissed = events.at(-1);
+      expect(dismissed).toMatchObject({
+        type: "thread.activity-appended",
+        payload: { activity: { kind: "user-input.resolved" } },
       });
     }),
   );
@@ -386,6 +515,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           commandId: CommandId.make("cmd-auto-settle-transient-failed"),
           threadId: ThreadId.make("thread-1"),
           snapshotSequence: 1,
+          settledAt: NOW,
         },
         readModel: makeReadModel(null, null, null, [
           activity("approval.requested", "req-3", {}),
@@ -437,6 +567,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           commandId: CommandId.make("cmd-auto-settle-queued"),
           threadId: ThreadId.make("thread-1"),
           snapshotSequence: 1,
+          settledAt: NOW,
         },
         readModel: makeReadModel(null, null, null, [], [userMessage("1969-12-31T23:59:30.000Z")]),
       }).pipe(Effect.flip);

@@ -19,7 +19,7 @@ import type {
 } from "@t3tools/trading-contracts/market";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";

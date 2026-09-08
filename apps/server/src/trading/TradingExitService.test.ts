@@ -20,7 +20,7 @@ import type { OrderBook } from "@t3tools/trading-contracts/market";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import type { TradingHarnessBinding } from "./Schemas.ts";
 import { TradingExitService, TradingExitServiceLive } from "./TradingExitService.ts";

@@ -22,6 +22,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { resolveServerBuildIdentifier } from "./ServerBuildIdentifier.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
+import { detectServerEnvironmentMachineKind } from "./ServerEnvironmentMachine.ts";
 
 export class ServerEnvironmentIdPersistenceError extends Schema.TaggedErrorClass<ServerEnvironmentIdPersistenceError>()(
   "ServerEnvironmentIdPersistenceError",
@@ -190,6 +191,7 @@ export const make = Effect.gen(function* () {
   const environmentId = yield* identity.getEnvironmentId;
   const cwdBaseName = path.basename(serverConfig.cwd).trim();
   const label = yield* resolveServerEnvironmentLabel({ cwdBaseName });
+  const machine = yield* detectServerEnvironmentMachineKind();
   const launcher = yield* resolveServiceLauncherMode();
   const serverSelfUpdate = resolveServerSelfUpdateCapability({
     desktopManaged: serverConfig.mode === "desktop",
@@ -206,12 +208,20 @@ export const make = Effect.gen(function* () {
     fork: T3_FORK_NAME,
   });
 
+  // Static is correct: the control fd is known at bootstrap, and the desktop
+  // app and its bundled server ship in one artifact, so a present fd means
+  // the app speaks the requestDesktopUpdate protocol. WSL backends never get
+  // the fd and correctly do not advertise.
+  const desktopAppUpdate =
+    serverSelfUpdate === "desktop-managed" && serverConfig.desktopTelemetryControlFd !== undefined;
+
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
     label,
     platform: {
       os: platformOs(hostPlatform),
       arch: platformArch(hostArchitecture),
+      ...(machine === null ? {} : { machine }),
     },
     serverVersion: packageJson.version,
     fork: T3_FORK_NAME,
@@ -225,14 +235,25 @@ export const make = Effect.gen(function* () {
       pullRequests: true,
       threadSettlement: true,
       threadAutoSettlement: true,
+      threadRestartContinuation: true,
       threadSnooze: true,
       environmentThemes: true,
+      usageLimitSources: true,
+      usagePriceOverrides: true,
       threadPinning: true,
       threadPinReorder: true,
+      threadActiveReorder: true,
       threadTitleRegeneration: true,
       threadPullRequestLinking: true,
+      environmentIcon: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
-      ...(serverSelfUpdate === "boot-service" ? { serverSelfUpdateProgress: true } : {}),
+      ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
+        ? {
+            serverSelfUpdateProgress: true,
+            serverUpdateThreadContinuation: true,
+          }
+        : {}),
+      ...(desktopAppUpdate ? { desktopAppUpdate: true } : {}),
     },
   };
 

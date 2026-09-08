@@ -29,7 +29,7 @@ import { MIN_REPLAY_SETUPS } from "@t3tools/trading-contracts/replay";
 import type { TradingThesis } from "@t3tools/trading-contracts/thesis";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type { CandleRow } from "./archive/candles.ts";
 import { TradingEventService, TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingMarketArchive, type TradingMarketArchiveShape } from "./TradingMarketArchive.ts";

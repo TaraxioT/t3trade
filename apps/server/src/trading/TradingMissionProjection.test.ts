@@ -27,7 +27,7 @@ import { TradingHarnessBinding, TradingMissionControl } from "@t3tools/trading-c
 import { TradingPlanState } from "@t3tools/trading-contracts/strategy";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   buildMissionTimeline,
   MISSION_TIMELINE_LIMIT,

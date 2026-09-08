@@ -36,7 +36,7 @@ import {
 } from "@t3tools/trading-contracts/plan-document";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeTradingEventService } from "./TradingEventService.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";

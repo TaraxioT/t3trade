@@ -10,6 +10,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import * as ThreadSettlementReactor from "../ThreadSettlementReactor.ts";
+import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import { ArchiveSupervisor } from "../../trading/ArchiveSupervisor.ts";
 import { FollowSetRegistry } from "../../trading/FollowSetRegistry.ts";
@@ -23,6 +24,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const checkpointReactor = yield* CheckpointReactor;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
   const threadSettlementReactor = yield* ThreadSettlementReactor.ThreadSettlementReactor;
+  const threadPullRequestReactor = yield* ThreadPullRequestReactor.ThreadPullRequestReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const tradingMissionReactor = yield* TradingMissionReactor;
   const watchEvaluator = yield* WatchEvaluator;
@@ -35,6 +37,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* providerCommandReactor.start();
     yield* checkpointReactor.start();
     yield* threadDeletionReactor.start();
+    yield* threadPullRequestReactor.start();
     yield* threadSettlementReactor.start();
     yield* agentAwarenessRelay.start();
     // The trading runtime only runs while this process holds the trading

@@ -12,7 +12,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { TradingHarnessBinding } from "./Schemas.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
@@ -47,6 +47,10 @@ const stubEngine = Layer.succeed(OrchestrationEngineService, {
       return { sequence: 0 };
     }),
   readEvents: () => Stream.empty,
+  readThreadEvents: () => Stream.empty,
+  getThreadReplayStats: () =>
+    Effect.succeed({ eventCount: 0, payloadBytes: 0, hasCreateEvent: false }),
+  subscribeDomainEvents: Effect.succeed(Stream.empty),
   streamDomainEvents: Stream.empty,
   latestSequence: Effect.succeed(0),
 } as never);
@@ -878,6 +882,10 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
     const queueEngine = Layer.succeed(OrchestrationEngineService, {
       dispatch: () => Effect.succeed({ sequence: 0 }),
       readEvents: () => Stream.empty,
+      readThreadEvents: () => Stream.empty,
+      getThreadReplayStats: () =>
+        Effect.succeed({ eventCount: 0, payloadBytes: 0, hasCreateEvent: false }),
+      subscribeDomainEvents: Effect.succeed(Stream.empty),
       streamDomainEvents: Stream.fromQueue(queue),
       latestSequence: Effect.succeed(0),
     });

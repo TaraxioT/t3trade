@@ -23,6 +23,7 @@
     "swap:icons:1": "node scripts/swap-icons.mjs 1",
     "swap:icons:2": "node scripts/swap-icons.mjs 2",
     "swap:icons:3": "node scripts/swap-icons.mjs 3",
+    "icons:export:android": "node scripts/export-android-icons.ts",
     "build": "vp run --filter './apps/*' --filter './packages/*' --filter './oxlint-plugin-t3code' --filter './scripts' build",
     "build:marketing": "vp run --filter @t3tools/marketing build",
     "build:desktop": "vp run --filter @t3tools/desktop --filter t3 build",
@@ -30,6 +31,9 @@
     "typecheck": "vp run -r --concurrency-limit 2 typecheck",
     "tc": "vp run -r --concurrency-limit 2 typecheck",
     "lint": "vp lint --report-unused-disable-directives",
+    "knip": "knip --preprocessor ./scripts/knip-schemas.ts",
+    "knip:check": "knip --include files,dependencies --no-config-hints && knip --workspace apps/desktop --workspace apps/web --workspace packages/client-runtime --workspace packages/contracts --workspace packages/effect-acp --workspace packages/effect-codex-app-server --workspace packages/shared --workspace packages/ssh --workspace packages/tailscale --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
+    "knip:production": "knip --production --preprocessor ./scripts/knip-schemas.ts",
     "lint:mobile": "node scripts/mobile-native-static-check.ts",
     "test": "vp run -r test",
     "test:fork": "vp run -r test:fork",
@@ -49,25 +53,18 @@
     "dist:desktop:win:arm64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch arm64",
     "dist:desktop:win:x64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64",
     "release:smoke": "node scripts/release-smoke.ts",
-    "connect:announce-ga": "node scripts/announce-connect-ga.ts",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist apps/*/dist-electron packages/*/dist .vite-plus apps/*/.vite-plus packages/*/.vite-plus",
     "sync:repos": "node scripts/sync-reference-repos.ts"
   },
   "devDependencies": {
-    "@babel/plugin-transform-react-jsx": "7.28.6",
     "@effect/tsgo": "catalog:",
-    "@oxlint/plugins": "^1.63.0",
     "@types/node": "catalog:",
     "@typescript/native-preview": "catalog:",
+    "knip": "6.34.0",
     "vite-plus": "catalog:"
   },
   "engines": {
     "node": "^24.13.1"
   },
-  "packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1",
-  "msw": {
-    "workerDirectory": [
-      "apps/web/public"
-    ]
-  }
+  "packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1"
 }

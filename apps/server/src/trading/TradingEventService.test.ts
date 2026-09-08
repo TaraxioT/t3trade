@@ -20,7 +20,7 @@ import {
 } from "@t3tools/trading-contracts/eventSets";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { TradingEventService, TradingEventServiceLive } from "./TradingEventService.ts";
 
 const START = 1_800_000_000_000;
