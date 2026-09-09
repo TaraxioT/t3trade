@@ -902,6 +902,10 @@ describe("subpath exports", () => {
         "./hypothesis",
         // The event calendar an anchored thesis reads its distance from.
         "./eventSets",
+        // The workspace TRADE.md document contract (plan 089/090), and the
+        // research scene windows an authored calendar serves.
+        "./plan-document",
+        "./researchScenes",
       ].sort(),
     );
 

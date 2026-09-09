@@ -39,7 +39,7 @@ import type {
 } from "@t3tools/trading-contracts/account-snapshot";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   TradingAccountProjection,

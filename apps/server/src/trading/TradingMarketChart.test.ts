@@ -29,7 +29,7 @@ import type {
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { TradingEventService, TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingMarketArchive } from "./TradingMarketArchive.ts";
 import { TradingThesisValidationService } from "./TradingThesisValidationService.ts";

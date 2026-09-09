@@ -33,7 +33,7 @@ import {
 import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import * as Schema from "effect/Schema";
 
@@ -100,6 +100,10 @@ const stubEngine = Layer.effect(
           return { sequence: 0 };
         }),
       readEvents: () => Stream.empty,
+      readThreadEvents: () => Stream.empty,
+      getThreadReplayStats: () =>
+        Effect.succeed({ eventCount: 0, payloadBytes: 0, hasCreateEvent: false }),
+      subscribeDomainEvents: Effect.succeed(Stream.empty),
       streamDomainEvents: Stream.fromQueue(queue),
       latestSequence: Effect.succeed(0),
     };

@@ -15,26 +15,29 @@
  * Node standard library only.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { gzipSync } from "node:zlib";
-import path from "node:path";
-import process from "node:process";
-import { fileURLToPath } from "node:url";
+import * as NodeFS from "node:fs";
+import * as NodeZlib from "node:zlib";
+import * as NodePath from "node:path";
+import * as NodeProcess from "node:process";
+import * as NodeURL from "node:url";
 
 const LANDING_BUDGET_BYTES = 12288;
-const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
-const landingHtmlPath = path.join(distDir, "index.html");
-const dioramaHtmlPath = path.join(distDir, "diorama", "index.html");
+const distDir = NodePath.resolve(
+  NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
+  "../dist",
+);
+const landingHtmlPath = NodePath.join(distDir, "index.html");
+const dioramaHtmlPath = NodePath.join(distDir, "diorama", "index.html");
 
 function fail(message) {
   console.error(`route-js-budget: ${message}`);
-  process.exit(1);
+  NodeProcess.exit(1);
 }
 
 /** Collect inline module script bodies and external JS references from HTML. */
 function collectHtmlModules(htmlPath) {
-  if (!existsSync(htmlPath)) return null;
-  const html = readFileSync(htmlPath, "utf8");
+  if (!NodeFS.existsSync(htmlPath)) return null;
+  const html = NodeFS.readFileSync(htmlPath, "utf8");
   const inline = [];
   const roots = new Set();
 
@@ -76,8 +79,8 @@ function resolveReference(specifier, fromDir) {
   if (/^(https?:)?\/\//.test(specifier) || /^[a-z]+:/i.test(specifier)) return null;
   if (specifier.startsWith("/")) return specifier;
   if (specifier.startsWith(".")) {
-    const joined = path.posix.join(fromDir, specifier);
-    return path.posix.normalize(joined);
+    const joined = NodePath.posix.join(fromDir, specifier);
+    return NodePath.posix.normalize(joined);
   }
   // Bare specifier: nothing Vite emits into dist should still have one.
   return null;
@@ -87,12 +90,12 @@ function resolveReference(specifier, fromDir) {
  *  /_astro; /assets is checked as a fallback so an output config change does
  *  not silently break the check. */
 function readAsset(rootRelative) {
-  const direct = path.join(distDir, rootRelative);
-  if (existsSync(direct)) return direct;
-  const basename = path.posix.basename(rootRelative);
+  const direct = NodePath.join(distDir, rootRelative);
+  if (NodeFS.existsSync(direct)) return direct;
+  const basename = NodePath.posix.basename(rootRelative);
   for (const dir of ["_astro", "assets"]) {
-    const candidate = path.join(distDir, dir, basename);
-    if (existsSync(candidate)) return candidate;
+    const candidate = NodePath.join(distDir, dir, basename);
+    if (NodeFS.existsSync(candidate)) return candidate;
   }
   return null;
 }
@@ -118,8 +121,8 @@ function resolveGraph(roots, label) {
     if (!file) fail(`${label} references missing asset ${current}`);
     visited.set(current, file);
 
-    const dir = path.posix.dirname(current);
-    for (const specifier of chunkImports(readFileSync(file, "utf8"))) {
+    const dir = NodePath.posix.dirname(current);
+    for (const specifier of chunkImports(NodeFS.readFileSync(file, "utf8"))) {
       const next = resolveReference(specifier, dir);
       if (next === null || visited.has(next)) continue;
       // Imported-but-never-preloaded chunks are deliberately followed here:
@@ -134,7 +137,7 @@ function resolveGraph(roots, label) {
 }
 
 function gzipBytes(buffer) {
-  return gzipSync(buffer).length;
+  return NodeZlib.gzipSync(buffer).length;
 }
 
 const landing = collectHtmlModules(landingHtmlPath);
@@ -145,7 +148,7 @@ const landingGraph = resolveGraph(landing.roots, "landing");
 let landingTotal = 0;
 for (const body of landing.inline) landingTotal += gzipBytes(body);
 for (const file of landingGraph.values()) {
-  landingTotal += gzipBytes(readFileSync(file));
+  landingTotal += gzipBytes(NodeFS.readFileSync(file));
 }
 
 if (landingTotal > LANDING_BUDGET_BYTES) {
@@ -170,7 +173,7 @@ if (shared.length > 0) {
     if (/pixi|gsap|howler|viewport/.test(key)) {
       fail(`shared chunk ${key} contains scene library code`);
     }
-    const code = readFileSync(dioramaGraph.get(key), "utf8");
+    const code = NodeFS.readFileSync(dioramaGraph.get(key), "utf8");
     if (/from\s+["'](pixi|gsap|howler|pixi-viewport)["']|howler|pixi/i.test(code)) {
       fail(`shared chunk ${key} bundles pixi/gsap/howler/viewport imports`);
     }

@@ -59,6 +59,9 @@ export const readTradingPlanTurnContext = Effect.fn("TradingPlanTurnContext.read
       if (workspaceRoot === null) return null;
 
       const documents = yield* makeTradingPlanDocumentService;
+      // A typed refusal (escape, oversize, encoding) is a fact about the
+      // document, not a reason to fail the turn; the catchCause recovery
+      // below already absorbs the whole failure channel into null.
       const current: CurrentPlanDocument | null = yield* documents.readCurrent(workspaceRoot).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("trading plan document could not be read for turn context", {
@@ -66,9 +69,6 @@ export const readTradingPlanTurnContext = Effect.fn("TradingPlanTurnContext.read
             cause: String(cause),
           }).pipe(Effect.as(null)),
         ),
-        // A typed refusal (escape, oversize, encoding) is a fact about the
-        // document, not a reason to fail the turn.
-        Effect.catch(() => Effect.succeed(null)),
       );
       if (current === null || current.status === "missing") return null;
 

@@ -11,7 +11,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import {
   EVENT_SET_MAX_OCCURRENCES,
@@ -20,7 +20,7 @@ import {
 } from "@t3tools/trading-contracts/eventSets";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { TradingEventService, TradingEventServiceLive } from "./TradingEventService.ts";
 
 const START = 1_800_000_000_000;
@@ -55,7 +55,9 @@ const expectedDigest = (input: {
   readonly name: string;
   readonly occurrences: ReadonlyArray<TradingEventOccurrence>;
 }): string =>
-  createHash("sha256").update(serializeEventConfirmationPayload(input), "utf8").digest("hex");
+  NodeCrypto.createHash("sha256")
+    .update(serializeEventConfirmationPayload(input), "utf8")
+    .digest("hex");
 
 const recorded = Effect.fn("recorded")(function* (name: string, starts: ReadonlyArray<number>) {
   const service = yield* TradingEventService;

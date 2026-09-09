@@ -22,7 +22,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { spawnSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -36,7 +36,7 @@ import {
 } from "@t3tools/trading-contracts/plan-document";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeTradingEventService } from "./TradingEventService.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
@@ -426,7 +426,7 @@ layer("TradingPlanControlPlane — the research boundary", (it) => {
             "process.stdout.write(JSON.stringify(normalized));",
           ].join("\n"),
         );
-        const run = spawnSync(process.execPath, [script], { encoding: "utf8" });
+        const run = NodeChildProcess.spawnSync(process.execPath, [script], { encoding: "utf8" });
         assert.equal(run.status, 0, `the fixture script must run: ${run.stderr}`);
         const dates = JSON.parse(run.stdout) as ReadonlyArray<{
           readonly label: string;

@@ -7,6 +7,27 @@ acceptance criteria were checked against.
 
 ## Current baseline
 
+| Field                       | Value                                                                                                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Upstream repository         | `https://github.com/pingdotgg/t3code.git`                                                                                                                  |
+| Upstream branch             | `main`                                                                                                                                                     |
+| Pinned commit (full SHA)    | `09e8de9c655ae85410bf6b00446f272a01da81c7`                                                                                                                 |
+| Pinned commit (short SHA)   | `09e8de9c6`                                                                                                                                                |
+| Upstream commit date        | 2026-09-07                                                                                                                                                 |
+| Upstream release tag at pin | `v0.0.40`                                                                                                                                                  |
+| Accepted-baseline tag       | `upstream-base/2026-09-07-09e8de9c6`                                                                                                                       |
+| Fork repository             | `https://github.com/TaraxioT/t3trade.git`                                                                                                                  |
+| Fork product line           | `origin/main`                                                                                                                                              |
+| Pinned by                   | Upstream sync to v0.0.40                                                                                                                                   |
+| Pinned on                   | 2026-09-09                                                                                                                                                 |
+| Sync PR                     | none — merged locally on `sync/upstream-2026-09-07-09e8de9c6`, at the user's explicit instruction (direct push to main; repo rule forbids unrequested PRs) |
+| Accepted range              | `f925d6394..09e8de9c6` (879 upstream commits, two batches: v0.0.38 then v0.0.40)                                                                           |
+
+v0.0.40 is the latest stable release; `v0.0.41` nightlies exist but no
+stable tag — the nightly is the next sync candidate, not part of this one.
+
+## Superseded baseline (v0.0.35)
+
 | Field                       | Value                                                    |
 | --------------------------- | -------------------------------------------------------- |
 | Upstream repository         | `https://github.com/pingdotgg/t3code.git`                |

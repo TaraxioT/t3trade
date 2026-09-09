@@ -18,7 +18,7 @@ import { openArchiveDatabase } from "./archive/db.ts";
 import { upsertFunding } from "./archive/funding.ts";
 import { makeTradingMarketArchive } from "./TradingMarketArchive.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import * as Schema from "effect/Schema";
 

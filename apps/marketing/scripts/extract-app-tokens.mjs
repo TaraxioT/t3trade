@@ -28,20 +28,20 @@
  *                 skips everything but the oracle-independent icon diff when
  *                 apps/web is gone.
  */
-import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeModule from "node:module";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
-const scriptDir = dirname(fileURLToPath(import.meta.url));
-const marketingRoot = resolve(scriptDir, "..");
-const repoRoot = resolve(marketingRoot, "..", "..");
+const scriptDir = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
+const marketingRoot = NodePath.resolve(scriptDir, "..");
+const repoRoot = NodePath.resolve(marketingRoot, "..", "..");
 const CHECK = process.argv.includes("--check");
 
-const WEB_INDEX = join(repoRoot, "apps/web/src/index.css");
-const WEB_TRADING = join(repoRoot, "apps/web/src/trading.css");
-const TOKENS_OUT = join(marketingRoot, "src/styles/app-tokens.generated.css");
-const ICONS_OUT = join(marketingRoot, "src/lib/icons.ts");
+const WEB_INDEX = NodePath.join(repoRoot, "apps/web/src/index.css");
+const WEB_TRADING = NodePath.join(repoRoot, "apps/web/src/trading.css");
+const TOKENS_OUT = NodePath.join(marketingRoot, "src/styles/app-tokens.generated.css");
+const ICONS_OUT = NodePath.join(marketingRoot, "src/lib/icons.ts");
 
 /* ------------------------------------------------------------------ */
 /* Minimal CSS block parser: enough for declarations + one nesting     */
@@ -141,7 +141,7 @@ function collectTokens(source) {
       // replica mirrors the default theme, which those blocks replace only
       // when a custom theme is active.
       next = "root";
-    } else if (header === "" ) {
+    } else if (header === "") {
       // stay in context (e.g. layer wrapper around :root)
     } else if (ctx === "root-dark") {
       next = ctx; // nested blocks inside a dark variant stay dark
@@ -186,10 +186,10 @@ let palette = {}; // --color-name -> literal, from tailwindcss/theme.css
 let paletteUsed = new Set(); // tailwind token names cited in output comments
 
 function loadTailwindPalette() {
-  const req = createRequire(join(repoRoot, "apps/web/package.json"));
+  const req = NodeModule.createRequire(NodePath.join(repoRoot, "apps/web/package.json"));
   const pkgPath = req.resolve("tailwindcss/package.json");
-  const themePath = join(dirname(pkgPath), "theme.css");
-  const theme = readFileSync(themePath, "utf8");
+  const themePath = NodePath.join(NodePath.dirname(pkgPath), "theme.css");
+  const theme = NodeFS.readFileSync(themePath, "utf8");
   for (const m of theme.matchAll(/(--color-[\w-]+)\s*:\s*([^;]+);/g)) {
     palette[m[1]] = m[2].trim();
   }
@@ -213,7 +213,9 @@ function evalCalc(expr) {
   if (pct !== 0) return expr;
   const rem = px / PX_PER_REM;
   // Prefer exact rem when it is clean, otherwise px.
-  return Number.isInteger(rem * 1000) ? `${parseFloat(rem.toFixed(4))}rem` : `${parseFloat(px.toFixed(4))}px`;
+  return Number.isInteger(rem * 1000)
+    ? `${parseFloat(rem.toFixed(4))}rem`
+    : `${parseFloat(px.toFixed(4))}px`;
 }
 
 /** --alpha(<color> / <a>) is Tailwind's relative-color syntax; expand the
@@ -245,17 +247,20 @@ function resolveValue(raw, tokens, mode, extraDecls = null, notes = new Set()) {
   const decls = mode === "dark" ? tokens.dark : tokens.light;
   let value = raw;
   for (let depth = 0; depth < 24; depth++) {
-    const next = value.replace(/var\((--[\w-]+)(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/g, (_all, name, fallback) => {
-      if (extraDecls && extraDecls[name] !== undefined) return extraDecls[name];
-      if (decls[name] !== undefined) return decls[name];
-      if (palette[name] !== undefined) {
-        notes.add(name.replace(/^--color-/, ""));
-        return palette[name];
-      }
-      if (tokens.theme[name] !== undefined) return tokens.theme[name];
-      if (fallback !== undefined) return fallback.trim();
-      throw new Error(`unresolved var(${name}) while resolving: ${raw}`);
-    });
+    const next = value.replace(
+      /var\((--[\w-]+)(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/g,
+      (_all, name, fallback) => {
+        if (extraDecls && extraDecls[name] !== undefined) return extraDecls[name];
+        if (decls[name] !== undefined) return decls[name];
+        if (palette[name] !== undefined) {
+          notes.add(name.replace(/^--color-/, ""));
+          return palette[name];
+        }
+        if (tokens.theme[name] !== undefined) return tokens.theme[name];
+        if (fallback !== undefined) return fallback.trim();
+        throw new Error(`unresolved var(${name}) while resolving: ${raw}`);
+      },
+    );
     if (next === value) break;
     value = next;
   }
@@ -327,11 +332,19 @@ function generateTokensCss(tokens) {
     const tail = notes.size > 0 ? `; from Tailwind ${[...notes].join(", ")}` : "";
     emit(out, value, `${comment}${tail}`);
   };
-  panelOut("mission-panel-surface", "var(--mission-panel-surface)", "mission-panel-glass dark; the app's --card straight, nothing mixed in");
+  panelOut(
+    "mission-panel-surface",
+    "var(--mission-panel-surface)",
+    "mission-panel-glass dark; the app's --card straight, nothing mixed in",
+  );
   panelOut("mission-panel-outline", "var(--mission-panel-outline)", "mission-panel-glass dark");
   panelOut("mission-panel-opacity", "var(--mission-panel-opacity)", "mission-panel-glass dark");
   panelOut("mission-panel-bevel", "var(--mission-panel-bevel)", "mission-panel-glass dark");
-  panelOut("mission-panel-shadow", panel["box-shadow"], "mission-panel-glass dark box-shadow, bevel resolved");
+  panelOut(
+    "mission-panel-shadow",
+    panel["box-shadow"],
+    "mission-panel-glass dark box-shadow, bevel resolved",
+  );
   panelOut("glass-blur", "var(--glass-blur)", "index.css :root @variant dark");
   panelOut("glass-saturation", "var(--glass-saturation)", "index.css :root @variant dark");
   lines.push("");
@@ -364,7 +377,7 @@ const ORACLE = [
   "--app-radius-lg: 0.625rem;",
   "--app-radius-xl: 0.875rem;",
   // Panel material (audit fidelity row 15).
-  "--app-mission-panel-surface: color-mix(in srgb, oklch(14.5% 0 0) 97%, #fff);",
+  "--app-mission-panel-surface: color-mix(in srgb, oklch(14.5% 0 none) 97%, #fff);",
   "--app-mission-panel-outline: rgb(255 255 255 / 12%);",
   "--app-mission-panel-opacity: 58%;",
   "--app-mission-panel-bevel: rgb(255 255 255 / 9%);",
@@ -425,8 +438,8 @@ const ICONS = [
 
 /** Pull the literal __iconNode array out of a lucide-react icon module. */
 function readIconNode(lucideEsmDir, kebab) {
-  const file = join(lucideEsmDir, "icons", `${kebab}.js`);
-  const src = readFileSync(file, "utf8");
+  const file = NodePath.join(lucideEsmDir, "icons", `${kebab}.js`);
+  const src = NodeFS.readFileSync(file, "utf8");
   const m = src.match(/const __iconNode = (\[[\s\S]*\]);/);
   if (!m) throw new Error(`no __iconNode literal in ${file}`);
   // A JS literal (unquoted keys), evaluated from the pinned package's own
@@ -440,9 +453,9 @@ function readIconNode(lucideEsmDir, kebab) {
 }
 
 function generateIconsTs(lucideVersion) {
-  const req = createRequire(join(marketingRoot, "package.json"));
+  const req = NodeModule.createRequire(NodePath.join(marketingRoot, "package.json"));
   const pkgPath = req.resolve("lucide-react/package.json");
-  const version = JSON.parse(readFileSync(pkgPath, "utf8")).version;
+  const version = JSON.parse(NodeFS.readFileSync(pkgPath, "utf8")).version;
   if (version !== lucideVersion) {
     console.error(
       `extract-app-tokens: lucide-react is ${version}, expected ${lucideVersion} (the app's lockfile resolution).`,
@@ -450,7 +463,7 @@ function generateIconsTs(lucideVersion) {
     process.exitCode = 1;
     return null;
   }
-  const esmDir = join(dirname(pkgPath), "dist/esm");
+  const esmDir = NodePath.join(NodePath.dirname(pkgPath), "dist/esm");
   const entries = [];
   for (const [name, kebab] of ICONS) {
     const node = readIconNode(esmDir, kebab);
@@ -515,12 +528,12 @@ export function renderIcon(
 const LUCIDE_VERSION = "0.564.0"; // apps/web lockfile resolution of ^0.564.0
 
 function diff(label, onDiskPath, expected) {
-  if (!existsSync(onDiskPath)) {
+  if (!NodeFS.existsSync(onDiskPath)) {
     console.error(`${label}: missing (${onDiskPath}); run node scripts/extract-app-tokens.mjs`);
     process.exitCode = 1;
     return;
   }
-  const onDisk = readFileSync(onDiskPath, "utf8");
+  const onDisk = NodeFS.readFileSync(onDiskPath, "utf8");
   if (onDisk !== expected) {
     console.error(
       `${label}: stale (${onDiskPath}); regenerate with node scripts/extract-app-tokens.mjs`,
@@ -537,18 +550,18 @@ function main() {
   if (CHECK) {
     diff("icons", ICONS_OUT, iconsTs);
   } else {
-    writeFileSync(ICONS_OUT, iconsTs);
+    NodeFS.writeFileSync(ICONS_OUT, iconsTs);
     console.log(`wrote ${ICONS_OUT}`);
   }
 
-  const webPresent = existsSync(WEB_INDEX) && existsSync(WEB_TRADING);
+  const webPresent = NodeFS.existsSync(WEB_INDEX) && NodeFS.existsSync(WEB_TRADING);
   if (!webPresent) {
     console.log("extract-app-tokens: apps/web not present, skipping token check");
     return;
   }
   loadTailwindPalette();
-  const tokens = collectTokens(readFileSync(WEB_INDEX, "utf8"));
-  const trading = collectTokens(readFileSync(WEB_TRADING, "utf8"));
+  const tokens = collectTokens(NodeFS.readFileSync(WEB_INDEX, "utf8"));
+  const trading = collectTokens(NodeFS.readFileSync(WEB_TRADING, "utf8"));
   // Cascade: trading.css is imported at the top of index.css, so index.css's
   // own :root declarations come after it. No token name is declared in both,
   // so a plain merge preserves each file's values.
@@ -558,8 +571,15 @@ function main() {
     theme: { ...trading.theme, ...tokens.theme },
     classes: {
       ".mission-panel-glass": {
-        light: { ...trading.classes[".mission-panel-glass"].light, ...tokens.classes[".mission-panel-glass"].light },
-        dark: { ...trading.classes[".mission-panel-glass"].light, ...tokens.classes[".mission-panel-glass"].dark, ...trading.classes[".mission-panel-glass"].dark },
+        light: {
+          ...trading.classes[".mission-panel-glass"].light,
+          ...tokens.classes[".mission-panel-glass"].light,
+        },
+        dark: {
+          ...trading.classes[".mission-panel-glass"].light,
+          ...tokens.classes[".mission-panel-glass"].dark,
+          ...trading.classes[".mission-panel-glass"].dark,
+        },
       },
     },
   };
@@ -568,8 +588,8 @@ function main() {
   if (CHECK) {
     diff("tokens", TOKENS_OUT, css);
   } else {
-    mkdirSync(dirname(TOKENS_OUT), { recursive: true });
-    writeFileSync(TOKENS_OUT, css);
+    NodeFS.mkdirSync(NodePath.dirname(TOKENS_OUT), { recursive: true });
+    NodeFS.writeFileSync(TOKENS_OUT, css);
     console.log(`wrote ${TOKENS_OUT}`);
   }
   if (!process.exitCode) console.log("extract-app-tokens: ok");

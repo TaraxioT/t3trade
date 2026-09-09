@@ -103,13 +103,14 @@ platforms run from source.
 
 Supported agent providers (install and log in to at least one):
 
-| Provider   | CLI                                                   | Sign in               | Trading missions |
-| ---------- | ----------------------------------------------------- | --------------------- | ---------------- |
-| Claude     | [Claude Code](https://claude.com/product/claude-code) | `claude auth login`   | yes              |
-| Codex      | [Codex CLI](https://developers.openai.com/codex/cli)  | `codex login`         | yes              |
-| OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode auth login` | yes              |
-| Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `agent login`         | coding only      |
-| Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok login`          | coding only      |
+| Provider    | CLI                                                   | Sign in               | Trading missions |
+| ----------- | ----------------------------------------------------- | --------------------- | ---------------- |
+| Claude      | [Claude Code](https://claude.com/product/claude-code) | `claude auth login`   | yes              |
+| Codex       | [Codex CLI](https://developers.openai.com/codex/cli)  | `codex login`         | yes              |
+| OpenCode    | [OpenCode](https://opencode.ai)                       | `opencode auth login` | yes              |
+| Cursor      | [Cursor CLI](https://cursor.com/cli)                  | `agent login`         | coding only      |
+| Grok Build  | [Grok Build CLI](https://x.ai/cli)                    | `grok login`          | coding only      |
+| Antigravity | none — enable in Settings, then Install Antigravity   | Sign in with Google   | coding only      |
 
 Without a signer key, T3 Trade runs in **research mode**. Charts, the
 watchlist, price and metric alerts, backtests, forward validations, missions and

@@ -21,7 +21,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { runMigrations } from "../../../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../../../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { openArchiveDatabase } from "../../../trading/archive/db.ts";
 import { upsertCandles, type CandleRow } from "../../../trading/archive/candles.ts";
 import {

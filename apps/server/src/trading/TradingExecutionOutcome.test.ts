@@ -20,7 +20,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TradingRequestEntryResult } from "@t3tools/trading-contracts/tools";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";

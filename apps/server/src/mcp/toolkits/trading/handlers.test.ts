@@ -42,7 +42,7 @@ import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import { ServerConfig } from "../../../config.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { runMigrations } from "../../../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../../../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type { PublishTradingPlanBody } from "../../../trading/Schemas.ts";
 import {
   makeTradingWorkingOrderService,
@@ -144,7 +144,6 @@ const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: a
   try {
     return decodeJson(payload) as { readonly result?: any; readonly error?: any };
   } catch (e) {
-    // eslint-disable-next-line
     require("node:fs").appendFileSync(
       "/tmp/mcp-body.txt",
       "BODY<<<" + body + ">>>\nPAYLOAD<<<" + payload + ">>>\n",
@@ -189,6 +188,10 @@ const recordingEngine = Layer.succeed(OrchestrationEngineService, {
       return { sequence: dispatchedCommands.length };
     }),
   readEvents: () => Stream.empty,
+  readThreadEvents: () => Stream.empty,
+  getThreadReplayStats: () =>
+    Effect.succeed({ eventCount: 0, payloadBytes: 0, hasCreateEvent: false }),
+  subscribeDomainEvents: Effect.succeed(Stream.empty),
   streamDomainEvents: Stream.empty,
   latestSequence: Effect.succeed(0),
 });

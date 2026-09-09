@@ -22,7 +22,7 @@ Trading safety outranks convenience. Never weaken an execution guard, loss budge
 
 ## Architecture
 
-Clients send typed WebSocket requests. The server converts requests into commands, a pure decider emits persisted events, and projectors build the read model. Queue-backed reactors perform side effects and emit typed receipts. Provider adapters translate Codex, Claude, Cursor, Grok, and OpenCode protocols at the boundary.
+Clients send typed WebSocket requests. The server converts requests into commands, a pure decider emits persisted events, and projectors build the read model. Queue-backed reactors perform side effects and emit typed receipts. Provider adapters translate Codex, Claude, Cursor, Grok, OpenCode, and Antigravity protocols at the boundary.
 
 Trading follows the same rule: typed contracts and deterministic services own policy; the UI presents state and sends intent. Keep exchange calls and provider-specific complexity at adapters. Never move safety decisions into prompt prose or client state.
 
@@ -174,6 +174,18 @@ Prove the changed behavior with the smallest relevant checks:
 - UI work is complete only after an integrated `test-t3-app` browser pass covering loading, empty, success, and error/refusal states that apply.
 
 Before finishing, consider every affected boundary: server, web, desktop wrapper, providers, wire contracts, local versus remote/relay connections, multi-environment behavior, and reverse actions. Mobile applies only when explicitly requested or when a shared-contract change would otherwise leave it uncompilable.
+
+## Documentation
+
+Most code changes do not need an internal documentation change. Agents can read the code.
+
+- `docs/internals/` is for architectural decisions and their reasons, constraints that span components, and implementation traps that are hard to discover from the source. Before adding a paragraph, ask what a maintainer would get wrong without it. If reading the relevant code answers the question, leave it out.
+- Do not document every feature, enumerate fields or methods, narrate control flow, maintain file catalogs, or append PR summaries. Types, tests, and code already record the implementation. The glossary defines shared vocabulary; it is not a feature index.
+- Keep a local implementation explanation in a nearby code comment. Use an internal doc when the reasoning crosses boundaries or needs context the code cannot carry well. Link to the relevant source instead of copying it.
+- When a documented decision or constraint changes, rewrite or remove the affected text. Do not append another account of the new behavior. A new internal page needs a distinct, durable reason to exist.
+- `docs/user/` helps users accomplish tasks. Give each major feature a concise section explaining what it does, how to start, and anything unintuitive. A settings path is useful; descriptions of visible buttons, icons, layouts, animations, or every UI state are not. Before adding text, ask what task or decision it helps the user with.
+- Keep user docs in the shipped product's voice, without implementation details or contributor tooling. Update the relevant feature section when how to use it changes. A UI tweak does not need a documentation entry, and a new control does not need its own page.
+- `docs/operations/` holds maintainer setup, release, and debugging procedures. Keep instructions for operating an installed T3 Trade server in the user guides.
 
 ## Working rules
 

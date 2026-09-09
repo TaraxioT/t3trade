@@ -49,7 +49,7 @@ import type {
 import { isPermittedUnderExhaustion } from "@t3tools/trading-contracts/loss-accounting";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   HyperliquidExecutionService,
   HyperliquidExecutionServiceLive,

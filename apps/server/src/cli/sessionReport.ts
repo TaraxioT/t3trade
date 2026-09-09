@@ -28,7 +28,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import type { ActivityEvidence } from "@t3tools/trading-contracts/policy";
 
 import { resolveBaseDir } from "../os-jank.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   readActivityEvidence,
   readDecisionFunnel,

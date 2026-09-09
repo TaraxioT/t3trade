@@ -23,7 +23,7 @@ export { CLI_PACKAGE_NAME } from "./packageName.ts";
  * Global installs and repo checkouts match none of these and return null.
  * Detection is best-effort; callers must fail closed to a plain `t3` command.
  */
-export function detectCliRunner(entryPath: string): CliRunner | null {
+function detectCliRunner(entryPath: string): CliRunner | null {
   const path = entryPath.replaceAll("\\", "/");
   if (path.includes("/_npx/")) {
     return "npx";
@@ -52,7 +52,7 @@ export function detectCliRunner(entryPath: string): CliRunner | null {
  * type — the fork renamed the package once and would otherwise have gone on
  * telling people to run upstream's.
  */
-export function suggestedPackageSpec(version: string): string {
+function suggestedPackageSpec(version: string): string {
   return version.includes("-nightly.") ? `${CLI_PACKAGE_NAME}@nightly` : CLI_PACKAGE_NAME;
 }
 
