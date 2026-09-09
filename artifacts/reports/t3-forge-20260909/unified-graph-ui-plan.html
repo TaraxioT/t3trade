@@ -1,5 +1,4 @@
-<!-- Adapted information structure: Copyright 2026 Anthropic PBC · SPDX-License-Identifier: Apache-2.0; original content and T3 Trade styling. -->
-<!doctype html>
+<!-- Adapted information structure: Copyright 2026 Anthropic PBC · SPDX-License-Identifier: Apache-2.0; original content and T3 Trade styling. --><!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -1001,7 +1000,7 @@
         </div>
         <div class="cell">
           <div class="k">Schedule</div>
-          <div class="v">Inside F0 / F4 / F6</div>
+          <div class="v">After F3 / inside F4–F6</div>
         </div>
         <div class="cell">
           <div class="k">New dashboards</div>
@@ -1015,23 +1014,183 @@
       </div>
       <p id="status" role="status" aria-live="polite"></p>
       <main id="content">
-        <section id="decision">
+        <section>
+          <h2>Code audit: what was corrected</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Finding</th>
+                  <th>Repository / image evidence</th>
+                  <th>Required correction</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>The first screenshot is a working graph</td>
+                  <td>
+                    <code>artifacts/reports/live-unified-graph-all-weekly.png</code>: ETH weekly
+                    candles, EMA9/EMA21, Shanghai/Capella and Dencun markers, Live/Calendar/Event
+                    aligned and “1 published scene.”
+                  </td>
+                  <td>
+                    Preserve this as the historical visual baseline. Do not describe existing chart
+                    capability as absent merely because The Graph adapter is new. Screenshot does
+                    not establish network or freshness today.
+                  </td>
+                </tr>
+                <tr>
+                  <td>The second screenshot is disconnected</td>
+                  <td>
+                    <code>.playwright-mcp/page-2026-09-02T05-22-39-642Z.png</code>: Trade page,
+                    “Connect an environment to trade”, no projects.
+                  </td>
+                  <td>
+                    Use it only for disconnected-state acceptance, not as corroborating evidence of
+                    the live chart.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Chart placement is structurally coupled to composer</td>
+                  <td>
+                    <code>ChatView.tsx</code>: threadMarketCard around 7916; ComposerSurface.Shell
+                    around 8179; measured composerOverlayHeight and timeline inset around 5189–5239.
+                    <code>ThreadMarketCard.tsx</code>: max-h-[46vh] drawer.
+                  </td>
+                  <td>
+                    Move the instrument slot outside the composer only in focus mode. Preserve the
+                    existing conversation/composer instance and its actual size observer. Remove the
+                    old chart from the drawer in that mode; CSS alone cannot do this.
+                  </td>
+                </tr>
+                <tr>
+                  <td>A bound thread actually has two charts</td>
+                  <td>
+                    <code>ThreadMarketCard.tsx</code> bound branch renders MissionLivePanel
+                    parts="market" and MarketChartPanel. Header comments saying “one chart” are
+                    incomplete.
+                  </td>
+                  <td>
+                    Focused layout uses mutually exclusive Hyperliquid Research / Hyperliquid
+                    Position / Pool activity views. Preserve both original capabilities without
+                    drawing both price charts simultaneously. Do not blend actual fills and research
+                    markers.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Graph-only thread cannot depend on HL focus</td>
+                  <td>
+                    <code>ChatView.tsx</code>: threadMarketCard requires threadMarket;
+                    <code>selectThreadPanel</code> derives that from bound mission or HL market
+                    focus.
+                  </td>
+                  <td>
+                    New Forge thread-context discovery must find a build/source/installation even
+                    when threadMarket is null. Keep HL mission selection unchanged; do not create an
+                    HL mission just to mount Forge.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Unbound chart waits on account load</td>
+                  <td>
+                    <code>ThreadMarketCard.tsx</code>: UnboundMarketBody returns a skeleton before
+                    MarketChartPanel when account data is loading.
+                  </td>
+                  <td>
+                    Focused research/Forge instrument mounts independently of account reads.
+                    Separate account loading/error from source loading; never label account-read
+                    failure “no positions.”
+                  </td>
+                </tr>
+                <tr>
+                  <td>Refresh identity mismatch</td>
+                  <td>
+                    <code>tradingMarketChartState.ts</code>: atom includes maxBars;
+                    refreshTradingMarketChart reconstructs it with null maxBars. MarketChartPanel
+                    passes rangeMaxBars.
+                  </td>
+                  <td>
+                    Scoped implementation fix: refresh the captured current atom, including manual
+                    retry, or carry maxBars through every refresh key. Add a focused timer/retry
+                    identity test. Finding is from source; not claimed runtime reproduced.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Stale data is not surfaced here</td>
+                  <td>
+                    <code>useTradingMarketChart</code> returns stale and retains same-key data;
+                    MarketChartPanel never reads chart.stale.
+                  </td>
+                  <td>
+                    Expose last successful timestamp plus delayed state; clearing stale must follow
+                    a good response. Forge freshness is a separate source policy, not the HL stale
+                    threshold.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Renderer is not a multi-series API</td>
+                  <td>
+                    <code>MissionPriceChart.tsx</code>: single candle input, internal geometry/time
+                    domain, actual/paper markers, global candle/line/EMA preferences.
+                  </td>
+                  <td>
+                    Keep it for HL. Implement small PoolActivityChart plus shared time-domain helper
+                    for three pool lines and signal lane. No coercion into TradingMarketChartView
+                    and no new chart library.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Forge chart inputs were missing</td>
+                  <td>
+                    F1/F2 define swaps and categorical reading, not time-series chart DTO or v1/v2
+                    exclusion diagnostics.
+                  </td>
+                  <td>
+                    U0 verifies/adds exact data read models below. U1 cannot infer missing history,
+                    timestamps, test receipts, pool grants or chain fee attribution.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Width plan ignored the rest of the shell</td>
+                  <td>
+                    ChatView can also show terminal, plan card and RightPanelTabs; viewport width
+                    differs from usable content width.
+                  </td>
+                  <td>
+                    Use available container width. Inspector replaces an interior slot or opens a
+                    drawer, never creates an unconditional third/fourth fixed column. Preserve
+                    file/preview/terminal workflows and native titlebar controls.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section>
           <h2>Verdict: make the chart the work surface</h2>
           <p>
             <strong
-              >The reveal belongs in the instrument, not at the bottom of the transcript.</strong
+              >The visual direction is sound; the original plan was not yet an executable
+              handoff.</strong
             >
-            Make the existing trading thread a two-pane research workspace. The chart occupies
-            roughly two-thirds of the available content width; conversation occupies the rest. Forge
-            is an action and capability inside that workspace, not a separate product tab or
-            dashboard.
+            This revision preserves the working Hyperliquid research graph, adds a separate real
+            Uniswap-pool instrument inside the same thread workspace, and makes data, layout and
+            lifecycle prerequisites explicit. No separate dashboard, no fabricated Graph candles, no
+            loss of the existing weekly/EMA/event-study graph.
           </p>
           <p>
-            This is an independent, bold UI direction. It can be implemented alongside Forge without
-            adopting new trading semantics. It uses the same September 9–11 budget: U0 is F0, U1 is
-            F4, U2 is F6. No extra days and no application redesign beyond this path. All finished
-            data surfaces use real sources; the schematic below contains no market data and is only
-            a layout preview.
+            Reviewed statically against checkout <code>0c8304eb3</code> and both supplied local
+            images. No server, browser session, database, provider or chain transaction was started
+            for this review. Code and image inspection establish structure and visible historical
+            behavior; runtime acceptance remains a future implementation gate.
+          </p>
+          <p>
+            Execute <strong>U0 → U1 → U2</strong> after the Forge backend phases F1–F3. In the
+            original three-day schedule, U0/U1 belong to F4 and U2 to F6. F0 may approve the visual
+            direction but does not complete U0. If F0–F7 have already run, use their actual outputs,
+            run the missing bridge and UI work once, and reverify the affected final demo; do not
+            rerun generation/deployments merely to satisfy old phase labels. This catch-up mode does
+            not claim that late work still fits the original dates.
           </p>
         </section>
         <section>
@@ -1123,21 +1282,61 @@
         <section>
           <h2>Target composition</h2>
           <p>
-            At 1440×900, collapse the project sidebar to its existing compact mode when the user
-            selects “Focus instrument.” Keep a way back. The remaining content uses
-            <code>minmax(0, 1fr) 360px</code> for instrument and conversation. Inside the
-            instrument, reserve a 240–280px inspector only when opened; otherwise give that width to
-            the chart. At 1920×1080 the conversation can grow to 400px, never steal half the screen.
-            At 1024px the inspector overlays/discloses within the instrument; at 768px stack the
-            panes with a deliberate Chart/Conversation switch and a retained composer. Mobile app
-            implementation remains out of scope.
+            Add a focused instrument as the first child of ChatView’s existing main-content row,
+            alongside the <em>existing</em> chat column. Keep MessagesTimeline, ChatComposer,
+            provider banners, file-drop handlers and all their refs in place. There is no
+            ExistingThreadConversation component today; do not create one by extracting the entire
+            8,000-line ChatView for this feature. Make layout a small wrapper/class decision and
+            instrument a focused component.
           </p>
-          <p>
-            Top to bottom: one market/source header → range/interval rail → real price/volume plot →
-            aligned detector lane → version/policy evidence footer. The conversation shows compact
-            stage receipts and the next requested action; code opens in a drawer. Do not put a
-            second chart or giant fee card into the chat.
-          </p>
+          <ul>
+            <li>
+              Normal conversation mode preserves the existing drawer and companion. Focus mode
+              suppresses threadMarketCard in ComposerSurface.Shell and suppresses
+              threadMarketCompanion in both chip and column positions. Mount one focused instrument,
+              not a hidden duplicate. Timeline and composer remain at stable React positions across
+              focus changes.
+            </li>
+            <li>
+              ComposerOverlayHeight continues to measure only the actual composer/banners in focus
+              mode, not the external instrument. Do not subtract a guessed chart height from
+              composerTimelineInset. Verify last message, scroll-to-end pill, attachments and
+              pending questions after the measured height changes.
+            </li>
+            <li>
+              Use 360px conversation only when remaining container width can also provide ≥560px
+              instrument; 400px at roomy widths. Below 920px available width, use Chart/Conversation
+              tabs in the same workspace, with a persistent accessible composer/command entry and
+              risk controls; retain the same composer instance and draft. Do not insist on a
+              two-pane split at 1024px viewport with an open sidebar/right panel.
+            </li>
+            <li>
+              The optional 260px inspector is allowed inline only when the plot still has ≥520px;
+              otherwise use an accessible drawer in the instrument. Opening existing
+              code/file/preview RightPanelTabs can force compact instrument mode, never crush all
+              panes together. Terminal opening similarly reduces measured height; use one scroll
+              container per region.
+            </li>
+            <li>
+              The focused chart stage has explicit container height with min-height:0 ancestors and
+              its own flex allocation; do not inherit the drawer’s max-h-[46vh] or change global
+              .trading-graph-viewport, which is shared by Trade home and legacy views. Pass a
+              focus-specific className for the stage and make ResearchScenePanel content scroll
+              inside the same bounded region.
+            </li>
+            <li>
+              Focus preference is environment+thread scoped. Reuse scopedThreadKey identity, add a
+              new map without resetting existing cardCollapsedByThreadKey/collapsedByThreadKey or
+              global candle/EMA preferences. Draft hero remains unchanged until a real thread/build
+              context exists. Exiting focus restores prior drawer choices.
+            </li>
+            <li>
+              Keep one selected instrument mounted through width/focus reflow using CSS placement.
+              When switching instrument kind necessarily unmounts a renderer, persist its
+              range/bars/view/selectedScene/fit state in the per-context parent/store and restore
+              it. Close transient hover/popovers; never reset range on a new reading.
+            </li>
+          </ul>
         </section>
         <section id="preview">
           <h2>A restrained layout preview</h2>
@@ -1156,7 +1355,7 @@
             aria-label="Proposed instrument layout, illustrative UI only"
           >
             <div class="preview-header">
-              <strong>ETH pool activity</strong><span>Ethereum · The Graph</span
+              <strong>Pool activity</strong><span>Ethereum · The Graph</span
               ><button
                 type="button"
                 id="evidence-toggle"
@@ -1168,7 +1367,9 @@
             </div>
             <div class="preview-main">
               <div class="preview-chart">
-                <div class="rail">Live <span>Research ▾</span><span>Range · Bars</span></div>
+                <div class="rail">
+                  Pool Live <span>Version comparison</span><span>15m · 1h · 6h · 24h</span>
+                </div>
                 <div class="empty-plot">
                   <strong>One shared time axis</strong
                   ><span>Real pool prices and quote volume render here.</span
@@ -1205,6 +1406,157 @@
             detector, submit transactions or claim implementation success. The finished app replaces
             this schematic with actual source state and typed receipts.
           </p>
+        </section>
+        <section>
+          <h2>Required handoff: make the UI data available</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Owner / phase</th>
+                  <th>Required deliverable before UI relies on it</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>F1 → U0</td>
+                  <td>
+                    Source catalog + thread context, normalized real source observations, verified
+                    identities and complete/stale/unavailable metadata. Chart point aggregation with
+                    provenance, bounded window read and pagination; no invented OHLC. Before
+                    installation, source data is queryable without a capability ID.
+                  </td>
+                </tr>
+                <tr>
+                  <td>F2 → U0</td>
+                  <td>
+                    Build-stage/test/install receipts with timestamps, candidate/installed hash
+                    distinction, immutable versions, source query/hash, latest/history observations.
+                    Generated output diagnostics identify actual contributing/excluded swaps or
+                    point to a stored evaluation evidence record. Keep raw details out of catalog
+                    responses.
+                  </td>
+                </tr>
+                <tr>
+                  <td>F3 → U0</td>
+                  <td>
+                    Pool grant/proposal, position ID/liquidity, local publication status, on-chain
+                    owner/operator/paused/revision/expiry snapshot with as-of block and staleness;
+                    tx lifecycle and actual Swap LP/total fee attribution. Direct
+                    pause/revoke/withdraw commands and authenticated receipt reads.
+                  </td>
+                </tr>
+                <tr>
+                  <td>U0 bridge</td>
+                  <td>
+                    Discover actual equivalent names first. Add missing read-model
+                    fields/endpoints/tests in the responsible server/contracts/client-runtime slice;
+                    one owner. If upstream phases already satisfy the shape, reuse it. Do not fake
+                    it in React or repeat successful deployments.
+                  </td>
+                </tr>
+                <tr>
+                  <td>F5 → U2</td>
+                  <td>
+                    Two immutable version evaluation records for identical authentic window,
+                    per-pool before/after eligibility and volume, qualifying anchors, excluded trade
+                    counts/IDs, and confirmed live policy/hash relation. If F5 comes later, U1
+                    renders honest comparison-unavailable until it exists.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="code-block">
+            <div class="file-label">
+              Proposed bounded UI transport contract — actual runtime schemas are required
+            </div>
+            <pre class="code"><code>interface ForgeInstrumentInput {
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly capabilityId: string | null;
+  readonly fromMs: number;
+  readonly toMs: number;
+  readonly maxPoints: number; // 1..720; three series share the same domain
+}
+interface ForgeChartPoint {
+  readonly atMs: number;
+  readonly priceQuotePerBaseMicros: string | null;
+  readonly normalizedChangeBps: number | null;
+  readonly quoteVolumeMicros: string | null; // null when data is unavailable
+  readonly evidenceId: string;
+  readonly complete: boolean;
+}
+interface ForgePoolSeries {
+  readonly poolId: string;
+  readonly quoteSymbol: string;
+  readonly normalizationAnchorAtMs: number | null;
+  readonly points: readonly ForgeChartPoint[];
+}
+// getForgeInstrument -&gt; scope + source health + available window + three series
+//   + installed version + categorical observations + latest build summary.
+// getForgeEvidence({threadId,evidenceId,cursor,limit&lt;=100}) -&gt; typed source,
+//   test, artifact or evaluation detail. Version comparison uses two stored
+//   evaluation IDs sharing one evidence ID, never independently fetched latest.
+// getForgePool({threadId,poolId}) -&gt; actual pool/authority/tx snapshot.
+// getForgeThreadContext({threadId}) -&gt; build/source/capability discovery,
+//   including no-HL-focus and pre-install cases.
+// Names are proposed: map to equivalent already-built Forge APIs when present.</code></pre>
+          </div>
+          <ul>
+            <li>
+              Aggregation must describe whether points are observed swap endpoints or completed time
+              buckets. Quote volume counts each swap once in its bucket; categorical signal
+              observations are not averaged. Use one server-returned explicit UTC domain and
+              preserve gaps. Normalization anchor is an actual observation at/before requested start
+              within a declared age; a missing anchor gives null, not a fabricated 0%. Limits
+              exceeding coverage return an explicit truncated/incomplete reason.
+            </li>
+            <li>
+              The maximum available Graph history is the captured/queryable source coverage (core
+              plan caps authentic comparisons at 24h). Pool view uses a simple 15m/1h/6h/24h window
+              menu and fixed documented sample cadence. Do not reuse HL All/weekly/monthly controls
+              to imply years of Graph history. No Graph candles or EMA generation is required for
+              this hackathon.
+            </li>
+            <li>
+              Include exact scope IDs, source chain/deployment, window/time units, hash references
+              and errors in matching runtime schemas. Add producer/consumer registration in
+              packages/contracts/{trading,orchestration,rpc,ipc}.ts, server/ws.ts/runtime layers,
+              and client-runtime/state/orchestration.ts; web hooks call environment-aware transport.
+              Normal remote connections use the same authenticated RPC path; no new relay endpoints
+              or local-file assumptions.
+            </li>
+            <li>
+              Generated diagnostics should include raw/qualifying trade count and quote volume,
+              eligibility reason, movement and selected anchor/end IDs for each pool. Validation
+              checks IDs belong to that input and counters/amounts are bounded. Host comparison
+              compares sealed outputs; the browser never independently reconstructs detector
+              semantics. Do not silently invent diagnostics if the module version did not emit them.
+            </li>
+            <li>
+              Legacy HL data network cannot be inferred from screenshot or application execution
+              mode. archive/config.ts and archive/info.ts support mainnet and testnet;
+              TradingMarketChart prefers archived candles and can source a current header
+              separately. Label Hyperliquid archive/current snapshot distinctly. Add source metadata
+              at actual server read boundaries if exact network is displayed; otherwise say network
+              not reported, never guess.
+            </li>
+            <li>
+              Every read key includes environment, thread, source, capability/version, domain and
+              maxPoints where applicable. A single mounted hook owns live refresh (receipt
+              invalidation plus bounded fallback or one 15s poll); historical comparisons do not
+              poll. Cancel/ignore previous-scope late results and clear lastGood on key change. For
+              a pool snapshot whose expiry passes while offline, show “last confirmed; expected
+              baseline after expiry”, not a newly confirmed on-chain claim.
+            </li>
+            <li>
+              Graph source failure must not blank the HL instrument; HL/account failure must not
+              block Forge. Preserve valid same-key cached data with explicit age/error; never treat
+              complete=false as an empty market. Provider-unavailable should leave existing
+              installed detector/controls usable where their own dependencies work.
+            </li>
+          </ul>
         </section>
         <section>
           <h2>Visual system</h2>
@@ -1301,61 +1653,140 @@
           <h2>Exact interaction decisions</h2>
           <ul>
             <li>
-              <strong>Build:</strong> conversation request starts a real job. Receipt has 4 compact
-              stages and actual elapsed time from server events. Failed test opens the relevant
-              failure; no fake percentage progress. The chart retains its previous data throughout
-              generation.
+              <strong>Entry:</strong> a thread with a Forge build/source/installation offers Focus
+              instrument even without an HL market row. First explicit Forge build may open focus
+              once if the user has not dismissed it; restore that choice thereafter. Normal
+              coding/draft hero routes stay unchanged.
             </li>
             <li>
-              <strong>Install:</strong> successful authorized installation attaches a named lane
-              automatically, without moving the viewport. Empty output says “Installed · waiting for
-              the next indexed window.” Do not draw a placeholder signal. Clicking the version opens
-              the sealed source/test/manifest drawer.
+              <strong>Source/view:</strong> choose HL Research, HL Position when applicable, or Pool
+              activity. Inside HL Research keep Live and the Research menu with Calendar/Event
+              aligned. Inside pools use Live or Version comparison. These are different data domains
+              within one workspace, not overlapping venue-less ETH series.
             </li>
             <li>
-              <strong>Observe:</strong> three pool traces share a normalized % change mode; the
-              y-axis explicitly says normalized change, not ETH spot price. Optional single-pool
-              actual-price view labels quote token. Selecting a pool highlights its contribution and
-              qualifying volume. The signal lane shows regime text plus a subtle categorical band;
-              gaps are gaps.
+              <strong>Build/install:</strong> display real persisted stages, actual test receipt and
+              sealed bundle. Installation adds an available lane only after a valid reading; before
+              that show installed/waiting. Keep selected time domain and composer position. A failed
+              candidate cannot replace the installed version.
             </li>
             <li>
-              <strong>Revise:</strong> compare v1/v2 in the same detector lane on the same authentic
-              historical window; show excluded trade count and changed pool eligibility. A pinned
-              “Historical comparison · timestamp” header replaces Live. Return to Live is a clear
-              action. No second competing full chart.
+              <strong>Compare:</strong> choose stored v1/v2 evaluations of identical authentic
+              evidence. Show per-pool eligibility/volume and open real excluded trade IDs. Label
+              historical time. F5 owns generation of these records; U1 only renders unavailable
+              until they exist. Return to Live performs a current read, not a historical policy
+              update.
             </li>
             <li>
-              <strong>Attach:</strong> a compact inspector says “Observes Ethereum · controls
-              Sepolia.” Show token pair, pool identity, approved funding bounds, effective fee,
-              installed version, confirmed policy version and expiry. Transaction approval explains
-              what will be created/funded. A wallet balance is not a spending grant.
+              <strong>Pool:</strong> one inspector shows observes Ethereum / executes Sepolia,
+              source age, granted limits, installed module, confirmed policy and effective fee as of
+              the last read. Submitted/reverted/unknown remain distinct. Open actual chain receipt
+              in the user’s browser; private bundle evidence stays on authenticated transport.
             </li>
             <li>
-              <strong>Confirm:</strong> keep the currently effective fee visible while showing the
-              proposed change below. Confirmation comes from receipt + state read-back; no
-              optimistic “live” state. A swap evidence row reports actual fee and policy/hash
-              context, distinct from a quote.
+              <strong>Stop:</strong> direct Pause blocks local future intents immediately and
+              separately tracks on-chain confirmation. Revoke/withdraw remain available without the
+              provider. Active HL risk stays independently visible and uses existing control
+              services.
             </li>
             <li>
-              <strong>Stop:</strong> direct Pause is persistent whenever policy is enabled.
-              Immediately show local publication paused; separately show on-chain pause
-              pending/confirmed. Revocation/withdrawal live in the same inspector; they are not
-              hidden behind agent conversation.
+              <strong>Failure:</strong> each dependency owns its error. A connected source can work
+              with no signer/provider; missing source cannot become a green last-good read. Show
+              stale data with timestamp and retry. Disconnected environment matches the second
+              screenshot: connect instruction, no fabricated market.
             </li>
             <li>
-              <strong>Existing product:</strong> Research menu retains legacy study navigation and
-              labels. Hyperliquid trading is a contextual destination with existing order/positions
-              controls. When there is active exposure, a compact persistent position strip includes
-              direct reduce/close access; Forge focus cannot hide risk.
-            </li>
-            <li>
-              <strong>Environment:</strong> the active environment owns chat, source, capability and
-              pool. Switching it clears displayed previous-environment reads and loads the selected
-              scope, with explicit loading/unavailable states. Do not show the last environment’s
-              data as the new one.
+              <strong>Accessibility:</strong> source tabs/menu, chart evidence list, drawer
+              focus/escape/return focus and selected version are keyboard-accessible. Reduced motion
+              disables new reveal effects. Avoid changing global legacy animation behavior unless
+              touched by the focused acceptance.
             </li>
           </ul>
+        </section>
+        <section>
+          <h2>Preservation contract for the September 2 graph</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Behavior to preserve</th>
+                  <th>Exact acceptance and code seam</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Weekly real candles and overlays</td>
+                  <td>
+                    HL Research → Live → All + 1 week retains actual archive aggregation, volume,
+                    candle/line and EMA9/EMA21 toggles. TradingMarketChart + chartAggregation +
+                    tradingChartRangePolicy + MissionPriceChart + missionChartModeStore. Do not
+                    rebuild these as Graph lines.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Publication and scene controls</td>
+                  <td>
+                    New study stays on Live, count and scene selector remain reachable,
+                    exact-instant rules and real span bands remain sourced; Open on graph explicitly
+                    selects Calendar and reframes. Keep source links, uncovered occurrence notes,
+                    baseline-unavailable and hindsight warnings.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Research navigation</td>
+                  <td>
+                    Moving Calendar/Event aligned into a menu is presentation only. Preserve
+                    semantic mode values, keyboard navigation, selection by scene ID, fixed recipe
+                    labels, scene clear/supersede behavior and scope filtering. Range/Bars only
+                    affect HL Live, never re-run a research recipe.
+                  </td>
+                </tr>
+                <tr>
+                  <td>State through reflow</td>
+                  <td>
+                    Persist range/bars/view/selectedScene plus once-per-scene fit/pending monthly
+                    promotion across focus toggle and source switch in same context; respect
+                    explicit Open refit. Scope changes reset context. Do not promote a user’s
+                    manually changed range on a later response.
+                  </td>
+                </tr>
+                <tr>
+                  <td>One active instrument</td>
+                  <td>
+                    HL Position preserves fills, stops, targets, pending orders and direct risk UI;
+                    HL Research preserves historical study semantics; Graph pools preserve their own
+                    identities and no order-drag behavior. Switching changes the selected body, not
+                    financial authority.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Risk outside selected plot</td>
+                  <td>
+                    Use existing AccountPositionsPanel and useMissionControls/manual close paths;
+                    keep all selected-environment active exposure and working orders discoverable,
+                    not only ETH. Fold only after a successful empty read. Account loading/error
+                    remains visible and provides existing control destination.
+                  </td>
+                </tr>
+                <tr>
+                  <td>No accidental read multiplication</td>
+                  <td>
+                    Collapsed/unmounted legacy drawer has no chart poll. Focused Graph does not
+                    mount hidden HL chart. Position/status sharing retains poll:false for borrowed
+                    reads; no second ticker merely for a duplicate header.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Legacy scenes vs short Graph history</td>
+                  <td>
+                    Do not overlay year-spanning HL event-study geometry on Graph’s short history
+                    just because both say ETH. A scene link explicitly selects HL Research and the
+                    saved scene; returning to pool view restores its own domain.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
         <section>
           <h2>UI state acceptance matrix</h2>
@@ -1434,76 +1865,98 @@
           <h2>Implementation shape</h2>
           <div class="code-block">
             <div class="file-label">
-              Proposed components — preserve data ownership in hooks/services
+              Proposed scoped selection — separate identity, do not broaden HL MarketRef
             </div>
-            <pre class="code"><code>// MarketChartPanel remains the integration boundary.
-// New components render validated server facts, never recompute policy.
-&lt;ForgeInstrumentLayout
-  chart={&lt;PoolActivityChart source={sourceView} selection={windowSelection} /&gt;}
-  signal={&lt;ForgeSignalLane observations={observations} version={installedVersion} /&gt;}
-  conversation={&lt;ExistingThreadConversation /&gt;}
-  inspector={&lt;ForgePoolInspector policy={confirmedPolicy} pending={pendingIntent} /&gt;}
-/&gt;
-// Code above is a composition sketch: implement typed props and actual components.
-// PoolActivityChart may reuse MissionPriceChart primitives; never fake HL candles.</code></pre>
+            <pre class="code"><code>type InstrumentSelection =
+  | { readonly kind: &quot;hyperliquid-research&quot;; readonly asset: string }
+  | { readonly kind: &quot;hyperliquid-position&quot;; readonly asset: string }
+  | { readonly kind: &quot;forge-pools&quot;; readonly sourceId: string;
+      readonly capabilityId: string | null };
+// State key: scopedThreadKey({ environmentId, threadId }) + kind + source/asset.
+// This is layout selection, not mission authority or execution permission.</code></pre>
           </div>
           <div class="code-block">
-            <div class="file-label">trading.css — additive layout sketch using existing tokens</div>
-            <pre class="code"><code>.forge-workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  min-height: 0;
-  gap: 1px;
-  background: var(--border);
+            <div class="file-label">
+              ChatView patch boundary — structural guide, not invented drop-in components
+            </div>
+            <pre class="code"><code>// Existing main-content flex row:
+// 1. Add focusedInstrument node before the existing chat-column div.
+// 2. Keep that existing chat-column subtree in the same position, with its
+//    MessagesTimeline and ChatComposer refs/props unchanged.
+// 3. In ComposerSurface.Shell render:
+//      {focusInstrument ? null : threadMarketCard}
+// 4. In BOTH current companion positions render:
+//      {focusInstrument ? null : existingCompanionExpression}
+// 5. New ThreadInstrumentPanel switches one body by InstrumentSelection:
+//    HL research -&gt; MarketChartPanel with full legacy props + controlled state
+//    HL position -&gt; existing MissionLivePanel parts=&quot;market&quot;
+//    Forge       -&gt; new PoolActivityChart + ForgeSignalLane
+// 6. Render direct account risk controls separately; mission status/log remains
+//    accessible in an inspector. Never mount parts=&quot;market&quot; just for its ledger.</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="file-label">
+              Exact shared time mapping for the NEW pool plot and signal lane
+            </div>
+            <pre
+              class="code"
+            ><code>export function timeFraction(atMs: number, fromMs: number, toMs: number): number | null {
+  if (!Number.isFinite(atMs) || !Number.isFinite(fromMs) ||
+      !Number.isFinite(toMs) || toMs &lt;= fromMs || atMs &lt; fromMs || atMs &gt; toMs) {
+    return null;
+  }
+  return (atMs - fromMs) / (toMs - fromMs);
 }
-.forge-instrument, .forge-conversation {
-  min-width: 0;
-  min-height: 0;
-  background: var(--background);
-}
-.forge-signal-lane {
-  min-height: 96px;
-  border-top: 1px solid var(--border);
-  font-variant-numeric: tabular-nums;
-}
-@media (max-width: 1100px) {
-  .forge-workspace { grid-template-columns: minmax(0, 1fr) 320px; }
-}
-@media (max-width: 800px) {
-  .forge-workspace { grid-template-columns: minmax(0, 1fr); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .forge-workspace * { animation: none; transition: none; }
-}</code></pre>
+// Parent supplies identical fromMs/toMs and left/right pixel gutters to both.
+// Each draws x = plotLeft + fraction * plotWidth; null means outside domain.
+// Historical comparison uses the same immutable evidence/window for v1/v2.
+// No equal-index spacing for irregular swaps; no extrapolation across gaps.</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="file-label">
+              Existing HL hook refresh correction — proposed implementation
+            </div>
+            <pre
+              class="code"
+            ><code>// Inside useTradingMarketChart, atom already includes every request parameter.
+const refresh = useCallback(() =&gt; {
+  if (enabled) appAtomRegistry.refresh(atom);
+}, [enabled, atom]);
+// Timer and manual retry use this callback. Verify the public refresh helper&#x27;s
+// other callers before changing its signature; do not silently remove it.</code></pre>
           </div>
           <p>
-            Keep selection (time, pool, evidence) local and explicit; fetch data at the existing
-            environment-aware hook boundary. Use server-projected signal data, capped/paginated
-            series and source timestamps. SVG/chart interactions require a keyboard-accessible
-            equivalent evidence list. Never calculate a policy fee from chart pixel position or
-            client-only state.
+            Keep pool normalized-line preferences separate from useMissionChartMode, so choosing a
+            pool trace cannot change the HL candle/EMA setting. PoolActivityChart is a small SVG
+            with accessible evidence rows, not an extension of order-drag geometry. Disable HL
+            arm-at-price and drag-stop affordances on Graph pools. The existing thread chart uses
+            armable=false; preserve Trade home’s actual notify action only on its matching HL
+            source.
           </p>
         </section>
         <section id="phases">
           <h2>Independent UI prompts</h2>
           <p>
-            Run U0 with F0, U1 with F4 and U2 with F6. Their human gates can be recorded together
-            with those phases, but UI acceptance is explicit. These prompts do not authorize product
-            deployment.
+            Run U0 after F3, then U1; U2 follows F5. In the integrated campaign U0/U1 are F4 and U2
+            is F6. If the main pack already finished, run only missing bridge/UI work and reverify
+            affected final evidence. Their human gates can be recorded together with those phases,
+            but UI acceptance is explicit. These prompts do not authorize product deployment.
           </p>
         </section>
         <section id="U0">
-          <h2>U0 · Approve the chart-first direction (inside F0)</h2>
+          <h2>U0 · Verify and complete the post-Forge UI handoff</h2>
           <p>
-            <strong>Expected:</strong> An agreed instrument/conversation/inspector composition and
-            exact component ownership; no new route or visual framework.
+            <strong>Expected:</strong> A checked handoff manifest with exact implemented names,
+            sample real recorded response references and no missing required U1 fields. The legacy
+            graph remains untouched. Comparison explicitly unavailable until F5 provides it.
           </p>
           <div class="gate">
             <h3>Human gate</h3>
             <p>
-              George identifies where to ask, where the new capability appears, which network is
-              observed, which is controlled and how to stop it. Approve the direction or name one
-              blocking layout change before U1.
+              George reviews the input/output mapping and a real recorded source response; confirms
+              existing weekly graph remains an independent source, the new instrument opens without
+              an HL mission, and unavailable fields are honest. Approve U0 or identify a missing
+              prerequisite. Do not proceed with U1 dependent work while the bridge is incomplete.
             </p>
           </div>
           <button data-copy="U0">Copy complete U0 prompt</button>
@@ -1512,7 +1965,7 @@
             <pre class="prompt">
 You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9–11, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user&#x27;s current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.
 
-Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
+Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Preserve unrelated checkout changes and stage only intended paths. The reviewed baseline is 0c8304eb3; resolve symbols in the actual post-Forge checkout rather than assuming line numbers are stable. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
 
 All product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.
 
@@ -1520,31 +1973,50 @@ Use the phase&#x27;s listed file ownership; treat new names as intended targets,
 
 Write progress/evidence under /tmp/t3-forge-20260909/U0/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record &#x27;implemented&#x27;, &#x27;automated verified&#x27;, &#x27;real-data verified&#x27; and &#x27;human accepted&#x27; separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human&#x27;s actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.
 
-U0 — Approve the chart-first direction (inside F0)
-This UI phase is part of the main campaign, not extra schedule.
+Review boundary: this plan was corrected through static code/image inspection without starting a server. That does not satisfy future implementation browser gates. Do not start any server if the user still prohibits runtime work when executing this prompt; complete independent work and explicitly leave browser acceptance pending.
 
-Read MarketChartPanel, MissionPriceChart, ThreadMarketCard/Panel, ChatView integration, trading.css and existing state hooks. Inspect the current app only if the single retained tester stack is already available; otherwise use inspected source/historical evidence and label that limit. Own no production UI edits yet. Compare the schematic with the existing shell at 1440×900, 1920×1080 and 1024px. Freeze chart-first two-pane layout, source labeling, legacy Research menu and persistent controls for active exposure. Identify exact insertion points and any minimum split-layout blocker; do not launch a competing app stack. Return one decisive layout, not several style options.
+U0 — Verify and complete the post-Forge UI handoff
+Sequence: after F1–F3; first part of F4, or catch-up after the main pack. Depends on backend outputs, not just an F0 visual approval.
+
+Owned files: narrowly missing Forge read-model/contracts/server/client-runtime APIs and their tests; new UI selection/state types. No layout implementation yet. One owner handles shared schema registrations. Progress: /tmp/t3-forge-20260909/U0/.
+
+Read the UI plan&#x27;s Code audit, Required handoff and Preservation contract. Inspect the actual completed F1–F3 code and evidence. Build a checklist mapping each required DTO/command to its implemented symbol, route, schema, test and evidence. Do not accept a phase label as evidence. Required inputs: source/build discovery with threadMarket=null; pre-install real pool series; complete source provenance/health/coverage; immutable build/test/install/version receipts; aligned bounded chart samples; categorical observations; installed-vs-confirmed pool policy/tx snapshot; direct pause/revoke/withdraw APIs. F5 comparison records may still be unavailable at this point; expose that state honestly.
+
+Add only missing bridge work: getForgeThreadContext/getForgeInstrument/getForgeEvidence/getForgePool or existing equivalent names, matching runtime schemas, ws/RPC/ipc/client-runtime registrations, environment/thread authorization and cache identities. Define maxPoints&lt;=720, explicit UTC domain, &lt;=24h available real coverage, per-pool quote units, provenance references, source status and paginated details. Pool chart points must come from real observations, never coerce them into HL candles. Source access must work with no HL market focus and while account/provider/signing is unavailable.
+
+If diagnostics are absent, update the SDK/test/read model contract so generated readings or sealed evaluation evidence expose real qualifying/excluded counts, volume, anchors and trade IDs. Older modules without diagnostics display &#x27;detail unavailable&#x27;; do not fabricate fields. Do not hand-edit a supposedly agent-generated detector or repeat successful public deployments. For already-built main-pack outputs, reuse actual artifacts/receipts and repair only missing prerequisites.
+
+Inspect legacy chart network attribution at the source: do not infer mainnet/testnet from a screenshot. Plan and implement only metadata needed for labels if absent, keeping candle source and current snapshot source distinguishable. Freeze focus/source state keyed by environment+thread+instrument. Draft hero and HL mission authority remain unchanged.
+
+Required checks: focused source-series/diagnostic/schema/auth tests, same-input normalized output, gaps and missing anchor, pagination/cap, cross-environment refusal, late result isolation, no-HL-focus discovery, installed/confirmed mismatch. Targeted checks only for changed packages. No browser is needed for this backend gate; no live external writes to obtain duplicate evidence.
 
 Expected result:
-An agreed instrument/conversation/inspector composition and exact component ownership; no new route or visual framework.
+A checked handoff manifest with exact implemented names, sample real recorded response references and no missing required U1 fields. The legacy graph remains untouched. Comparison explicitly unavailable until F5 provides it.
 
 Human verification, then stop:
-George identifies where to ask, where the new capability appears, which network is observed, which is controlled and how to stop it. Approve the direction or name one blocking layout change before U1.</pre>
+George reviews the input/output mapping and a real recorded source response; confirms existing weekly graph remains an independent source, the source/instrument read resolves without an HL mission, and unavailable fields are honest. Approve U0 or identify a missing prerequisite. Do not proceed with U1 dependent work while the bridge is incomplete.
+</pre>
           </details>
         </section>
         <section id="U1">
-          <h2>U1 · Implement the instrument and reveal (inside F4)</h2>
+          <h2>U1 · Mount one focused instrument</h2>
           <p>
-            <strong>Expected:</strong> One stable chart-first screen showing real source → build →
-            installed signal → pool policy, with direct evidence inspection and source-aware labels.
+            <strong>Expected:</strong> One executable chart-first workspace retaining the
+            screenshot&#x27;s real weekly/EMA/event scene, and a distinct new real-pool instrument.
+            One chart/poll owner, one composer, no unprovided DTO assumptions. v2 comparison may
+            await F5.
           </p>
           <div class="gate">
             <h3>Human gate</h3>
             <p>
-              George runs the first request and opens each evidence link; confirms chart/composer
-              stay visible, source/target networks are distinct, a pending fee is not labeled
-              effective, keyboard navigation works, and unavailable data remains readable. Check
-              three viewport widths and active-position controls. Actual pass is required.
+              Using the sole retained test-t3-app stack only when runtime is authorized, George
+              checks the legacy ETH Live/All/1-week chart, EMA/candle toggles, published
+              count/scene/Open/Calendar/Event-aligned/source links; switches to real pools and back
+              with state retained; opens focus with no HL market; checks Graph/account failures
+              independently. Confirm last message/composer/attachments/pending user input at wide
+              and compact widths with terminal/right panel open, active positions still
+              controllable, no duplicate charts/requests. If runtime is prohibited, report this gate
+              pending rather than accepted.
             </p>
           </div>
           <button data-copy="U1">Copy complete U1 prompt</button>
@@ -1553,7 +2025,7 @@ George identifies where to ask, where the new capability appears, which network 
             <pre class="prompt">
 You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9–11, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user&#x27;s current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.
 
-Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
+Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Preserve unrelated checkout changes and stage only intended paths. The reviewed baseline is 0c8304eb3; resolve symbols in the actual post-Forge checkout rather than assuming line numbers are stable. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
 
 All product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.
 
@@ -1561,32 +2033,53 @@ Use the phase&#x27;s listed file ownership; treat new names as intended targets,
 
 Write progress/evidence under /tmp/t3-forge-20260909/U1/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record &#x27;implemented&#x27;, &#x27;automated verified&#x27;, &#x27;real-data verified&#x27; and &#x27;human accepted&#x27; separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human&#x27;s actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.
 
-U1 — Implement the instrument and reveal (inside F4)
-This UI phase is part of the main campaign, not extra schedule.
+Review boundary: this plan was corrected through static code/image inspection without starting a server. That does not satisfy future implementation browser gates. Do not start any server if the user still prohibits runtime work when executing this prompt; complete independent work and explicitly leave browser acceptance pending.
 
-Own the bounded chart/thread integration, new ForgeSignalLane, ForgeBuildReceipt, ForgePoolInspector, ForgeVersionDiff, related web state and trading.css. Read implementation F1–F3 contracts; use actual typed server state. Implement the composition and interactions from this UI plan, keep existing source/legacy scene semantics, and never introduce mocked runtime samples. Build progress comes from persisted receipts; install adds the signal lane without moving zoom/composer. Source evidence, generated code/tests and policy receipts are progressive disclosure in one inspector. Installed-vs-confirmed versions remain separate.
-Use current semantic tokens and font. No new chart library, animated graph background or extra sidebar brand. At 1024px collapse the inspector; preserve the conversation/composer. Long labels, errors, historical mode and missing data must fit. Active HL exposure retains direct controls. Follow test-t3-app for every user-visible change, using the campaign&#x27;s sole retained tester. Run focused component/state tests and targeted web check, then commit explicit owned files. Produce screenshots of real data/state and record paths under /tmp/t3-forge-20260909/U1/.
+U1 — Mount one focused instrument without breaking the existing graph
+Sequence: after U0; remainder of F4 or catch-up. F5 is not required to mount v1. Progress: /tmp/t3-forge-20260909/U1/.
+
+Owned files: bounded ChatView layout integration; ThreadMarketCard/ThreadMarketPanel composition; new ThreadInstrumentPanel/PoolActivityChart/ForgeSignalLane/ForgeBuildReceipt/ForgePoolInspector/ForgeVersionDiff and focused state; tradingMarketChartState.ts refresh fix; focus-specific trading.css; focused tests. Do not refactor the entire ChatView or implement a new chat editor.
+
+Implement focus as an instrument slot beside the existing chat-column subtree. Keep MessagesTimeline and ChatComposer mounted with their existing refs, send paths, approval/input banners, attachments, provider controls and timeline measurements. In focus mode suppress the drawer chart and both companion mount locations. Do not leave hidden duplicate charts/polls. Preserve draft hero and normal coding/right-panel/terminal workflows.
+
+Instrument selection is HL Research, HL Position when applicable, or Forge pools. Retain MarketChartPanel/MissionPriceChart for HL Research with real candles, volume, EMA, study markers, scene selector/count/Open and all existing range/recipe semantics. HL Position uses the existing mission chart and controls; do not blend actual orders with research geometry. Forge pools use their own small real-data SVG + signal lane with an explicit shared time mapping and gutters, bounded source history and no HL arm-at-price/stop-drag handlers. No new chart library or fake candles. The current renderer has no general zoom API; preserve actual range/bars/source/selection, not an invented zoom system.
+
+Lift/persist only the state needed across reflow/source selection: range,bars,view,selectedSceneId and once-per-scene fit/monthly-promotion state per context. Respect explicit Open on graph refit, manual range changes and clearing scenes. Keep global HL candle/EMA preferences unchanged. One chart body mounts at a time; one hook owns each live refresh. Fix the existing maxBars refresh mismatch by refreshing the captured atom (or matching every input parameter), and display chart.stale with last successful timestamp. Add a direct timer/retry identity test; do not just test the pure range resolver.
+
+Chart/account loading are independent. A null account read is unknown, not no exposure. Keep existing AccountPositionsPanel/manual close and useMissionControls paths available for all selected-environment positions/working orders even when pools are selected. Avoid mounting MissionLivePanel parts=market merely to obtain its positions. Mission status/agent log and plan remain accessible; collapse large plan content in focus mode without hiding safety banners or changing commands.
+
+Use available container width: &gt;=920px supports instrument+360px conversation; smaller uses Chart/Conversation focus within the same workspace, keeping draft and controls accessible. Inspector opens inline only when the plot retains &gt;=520px; otherwise a keyboard-accessible drawer. Existing RightPanelTabs or terminal may trigger compact layout. Composer observer measures its own actual height after chart removal; never subtract a magic number or let external chart height become timeline end padding. Pass focus-specific sizing; do not globally change Trade-home chart height classes.
+
+Render receipt-backed build progress and real v1 source/lane/pool status. F5 diagnostics unavailable means a disabled comparison with reason, not mock v2. Distinguish installed detector, submitted intent and confirmed/effective pool state as of a chain read. Stale/expiry while offline is &#x27;last confirmed / expected baseline&#x27;, not fresh confirmation. Implement light/dark, text status, accessible evidence list and reduced motion without continuous animation.
+
+Required checks: new ThreadInstrumentPanel.test.tsx and forgeInstrumentState.test.ts; new tradingMarketChartState.test.ts timer/manual refresh identity + stale/key-reset cases; affected MarketChartPanel.test.tsx, ThreadMarketCard.test.tsx, threadMarketPanelState.test.ts, researchScenePresentation.test.ts, missionChartGeometry.test.ts, marketChartOverlays.test.ts, ChatView.logic.test.ts/composerFooterLayout.test.ts and rightPanelStore.test.ts only where touched. Add stateful mounting/resize/selection assertions; existing static-render stubs alone cannot prove preserved state or geometry. Run targeted web/client-runtime checks, not repository-wide tests.
 
 Expected result:
-One stable chart-first screen showing real source → build → installed signal → pool policy, with direct evidence inspection and source-aware labels.
+One executable chart-first workspace retaining the screenshot&#x27;s real weekly/EMA/event scene, and a distinct new real-pool instrument. One chart/poll owner, one composer, no unprovided DTO assumptions. v2 comparison may await F5.
 
 Human verification, then stop:
-George runs the first request and opens each evidence link; confirms chart/composer stay visible, source/target networks are distinct, a pending fee is not labeled effective, keyboard navigation works, and unavailable data remains readable. Check three viewport widths and active-position controls. Actual pass is required.</pre>
+Using the sole retained test-t3-app stack only when runtime is authorized, George checks the legacy ETH Live/All/1-week chart, EMA/candle toggles, published count/scene/Open/Calendar/Event-aligned/source links; switches to real pools and back with state retained; opens focus with no HL market; checks Graph/account failures independently. Confirm last message/composer/attachments/pending user input at wide and compact widths with terminal/right panel open, active positions still controllable, no duplicate charts/requests. If runtime is prohibited, report this gate pending rather than accepted.
+</pre>
           </details>
         </section>
         <section id="U2">
-          <h2>U2 · Finish visual and interaction acceptance (inside F6)</h2>
+          <h2>U2 · Verify the complete unification</h2>
           <p>
-            <strong>Expected:</strong> A premium experience whose loading, failure and
-            version-transition states are as coherent as its successful screenshot.
+            <strong>Expected:</strong> The legacy real-data graph and newly generated pool
+            capability coexist in a single usable thread workspace with correct source/view
+            identity, stable state and complete evidence. Passing static/component checks is
+            separate from passing the actual user experience.
           </p>
           <div class="gate">
             <h3>Human gate</h3>
             <p>
-              George watches the full demo at 1920×1080 and uses it at 1024px. Without narration,
-              identify current signal version, effective fee and source age; pause with provider
-              stopped; inspect a real swap; return from comparison to Live. Approve U2 only when all
-              applicable matrix states have evidence.
+              George repeats the legacy screenshot flow and the two-request Forge demo. Identify
+              source network, view/time domain, installed version, confirmed policy, data age and
+              actual receipt without narration. Switch source and environment, open a scene, inspect
+              a qualifying/excluded swap, stop the provider and still pause policy. Approve the full
+              unification only after runtime evidence exists; if no-server instruction still
+              applies, leave this human runtime gate pending. Reverify final F7 demo after any late
+              UI fix, without fabricating fresh pool creation or generation.
             </p>
           </div>
           <button data-copy="U2">Copy complete U2 prompt</button>
@@ -1595,7 +2088,7 @@ George runs the first request and opens each evidence link; confirms chart/compo
             <pre class="prompt">
 You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9–11, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user&#x27;s current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.
 
-Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
+Use GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product&#x27;s real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Preserve unrelated checkout changes and stage only intended paths. The reviewed baseline is 0c8304eb3; resolve symbols in the actual post-Forge checkout rather than assuming line numbers are stable. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.
 
 All product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.
 
@@ -1603,36 +2096,41 @@ Use the phase&#x27;s listed file ownership; treat new names as intended targets,
 
 Write progress/evidence under /tmp/t3-forge-20260909/U2/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record &#x27;implemented&#x27;, &#x27;automated verified&#x27;, &#x27;real-data verified&#x27; and &#x27;human accepted&#x27; separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human&#x27;s actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.
 
-U2 — Finish visual and interaction acceptance (inside F6)
-This UI phase is part of the main campaign, not extra schedule.
+Review boundary: this plan was corrected through static code/image inspection without starting a server. That does not satisfy future implementation browser gates. Do not start any server if the user still prohibits runtime work when executing this prompt; complete independent work and explicitly leave browser acceptance pending.
 
-Own only focused UI repairs and tests after U1. Exercise every row of the UI state matrix on the retained isolated app with actual backend events; isolated fault injection may provoke errors, but no fixture defaults survive. Use real Graph and real testnet receipts for success states. Confirm v1/v2 same-window comparison, historical/live transitions, expiry status, revoked policy, reload/reconnect, environment separation and unavailable provider. Verify labels at normal projector zoom, responsive page width, contrast (4.5:1 ordinary text), keyboard focus/escape/return focus, semantic live status announcements, accessible evidence alternatives and reduced motion. Avoid a layout that only works with short IDs or one screenshot. Keep failed cases open and repair the original implementation. Commit only the verified fixes.
+U2 — Verify unification after revision and close the demo
+Sequence: after U1 and actual F5 v2/evidence outputs; part of F6 or post-main-pack catch-up. Progress: /tmp/t3-forge-20260909/U2/.
+
+Owned files: focused repairs to the U1 slice and its tests; no new feature families. Read original acceptance and the full preservation/state matrices. Reuse actual main-pack source/contract/artifact outputs; do not blindly rerun deployments or consume another grant.
+
+Verify identical real source window for v1/v2, true exclusion diagnostics with actual transaction links, immutable version history, and return-to-Live using a fresh current read. Confirm selected historical evidence cannot create a policy intent. Confirm installed/confirmed version mismatch during submitted or failed tx, actual swap LP/total fee attribution, snapshot as-of/expiry wording and no fake fee update. Two real fee outcomes are still a backend/demo gate, not something UI can manufacture.
+
+Run focused regression checks for refresh key, source switching, late results, stale display, single chart ownership, no-HL-focus entry, per-thread focus/state restoration and study publication/clear/auto-fit. Cover all UI states: disconnected, loading, empty, real success, failed tests, awaiting data, historical, stale, no signer/provider/Docker, reverted/unknown tx, local/on-chain paused/revoked. Use isolated fault injection for errors only; success uses actual source and chain receipts.
+
+Future integrated acceptance follows test-t3-app with exactly one retained isolated stack/browser, only when authorized. Inspect 1920x1080 and 1440x900 plus 1024px with project sidebar/right panel/terminal both open and closed; width is measured within content. Verify keyboard navigation/drawer escape-return focus/evidence alternatives and reduced motion; retain draft, send/stop/approval controls and last timeline message. Confirm current HL positions/working orders remain discoverable with source or account errors, controls work without provider, and ordinary coding/Trade home/completed-mission review are not relaid out by global styles.
 
 Expected result:
-A premium experience whose loading, failure and version-transition states are as coherent as its successful screenshot.
+The legacy real-data graph and newly generated pool capability coexist in a single usable thread workspace with correct source/view identity, stable state and complete evidence. Passing static/component checks is separate from passing the actual user experience.
 
 Human verification, then stop:
-George watches the full demo at 1920×1080 and uses it at 1024px. Without narration, identify current signal version, effective fee and source age; pause with provider stopped; inspect a real swap; return from comparison to Live. Approve U2 only when all applicable matrix states have evidence.</pre>
+George repeats the legacy screenshot flow and the two-request Forge demo. Identify source network, view/time domain, installed version, confirmed policy, data age and actual receipt without narration. Switch source and environment, open a scene, inspect a qualifying/excluded swap, stop the provider and still pause policy. Approve the full unification only after runtime evidence exists; if no-server instruction still applies, leave this human runtime gate pending. Reverify final F7 demo after any late UI fix, without fabricating fresh pool creation or generation.
+</pre>
           </details>
         </section>
         <section>
           <h2>Boundaries and evidence</h2>
           <p>
-            This UI plan is based on inspected repository components, CSS and a historical
-            screenshot; it is not a claim that the current application has been browser-tested.
-            Source implementation and old chart behavior were examined, but no running T3 app was
-            started in this planning task. The final implementation must receive the U1/U2
-            integrated browser pass. The artifact itself is checked as a document, not as a working
-            trading app.
+            This revision was checked against source and both local images at
+            <code>0c8304eb3</code>. No server or browser was launched, per the user’s instruction.
+            No live data was queried, no SQLite state touched, no product source changed. The review
+            identifies source-level defects and missing plan contracts; it does not certify a
+            running UI.
           </p>
           <p>
-            Use the same
-            <a
-              href="https://raw.githubusercontent.com/ThariqS/html-effectiveness/main/16-implementation-plan.html"
-              >reference 16 implementation-plan structure</a
-            >: critique → layout contract → code boundaries → phased human gates. The drawing is
-            deliberately a layout schematic, with no invented price or transaction values. The app’s
-            existing semantic tokens determine the shipped light/dark palettes.
+            Implementation U0/U1/U2 must later use test-t3-app and actual source/transaction
+            receipts for the applicable human gates. The current review’s no-server constraint is
+            not a claim those runtime gates have passed. Original reference 16 information structure
+            is retained. Copy/export content is kept identical to the Markdown phase pack.
           </p>
         </section>
       </main>
@@ -1644,9 +2142,9 @@ George watches the full demo at 1920×1080 and uses it at 1024px. Without narrat
     </div>
     <script id="prompt-data" type="application/json">
       {
-        "U0": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U0/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nU0 \u2014 Approve the chart-first direction (inside F0)\nThis UI phase is part of the main campaign, not extra schedule.\n\nRead MarketChartPanel, MissionPriceChart, ThreadMarketCard/Panel, ChatView integration, trading.css and existing state hooks. Inspect the current app only if the single retained tester stack is already available; otherwise use inspected source/historical evidence and label that limit. Own no production UI edits yet. Compare the schematic with the existing shell at 1440\u00d7900, 1920\u00d71080 and 1024px. Freeze chart-first two-pane layout, source labeling, legacy Research menu and persistent controls for active exposure. Identify exact insertion points and any minimum split-layout blocker; do not launch a competing app stack. Return one decisive layout, not several style options.\n\nExpected result:\nAn agreed instrument/conversation/inspector composition and exact component ownership; no new route or visual framework.\n\nHuman verification, then stop:\nGeorge identifies where to ask, where the new capability appears, which network is observed, which is controlled and how to stop it. Approve the direction or name one blocking layout change before U1.",
-        "U1": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U1/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nU1 \u2014 Implement the instrument and reveal (inside F4)\nThis UI phase is part of the main campaign, not extra schedule.\n\nOwn the bounded chart/thread integration, new ForgeSignalLane, ForgeBuildReceipt, ForgePoolInspector, ForgeVersionDiff, related web state and trading.css. Read implementation F1\u2013F3 contracts; use actual typed server state. Implement the composition and interactions from this UI plan, keep existing source/legacy scene semantics, and never introduce mocked runtime samples. Build progress comes from persisted receipts; install adds the signal lane without moving zoom/composer. Source evidence, generated code/tests and policy receipts are progressive disclosure in one inspector. Installed-vs-confirmed versions remain separate.\nUse current semantic tokens and font. No new chart library, animated graph background or extra sidebar brand. At 1024px collapse the inspector; preserve the conversation/composer. Long labels, errors, historical mode and missing data must fit. Active HL exposure retains direct controls. Follow test-t3-app for every user-visible change, using the campaign's sole retained tester. Run focused component/state tests and targeted web check, then commit explicit owned files. Produce screenshots of real data/state and record paths under /tmp/t3-forge-20260909/U1/.\n\nExpected result:\nOne stable chart-first screen showing real source \u2192 build \u2192 installed signal \u2192 pool policy, with direct evidence inspection and source-aware labels.\n\nHuman verification, then stop:\nGeorge runs the first request and opens each evidence link; confirms chart/composer stay visible, source/target networks are distinct, a pending fee is not labeled effective, keyboard navigation works, and unavailable data remains readable. Check three viewport widths and active-position controls. Actual pass is required.",
-        "U2": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Current upstream-merge work is unrelated: preserve it, avoid compatibility archaeology, stage only your intended paths. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U2/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nU2 \u2014 Finish visual and interaction acceptance (inside F6)\nThis UI phase is part of the main campaign, not extra schedule.\n\nOwn only focused UI repairs and tests after U1. Exercise every row of the UI state matrix on the retained isolated app with actual backend events; isolated fault injection may provoke errors, but no fixture defaults survive. Use real Graph and real testnet receipts for success states. Confirm v1/v2 same-window comparison, historical/live transitions, expiry status, revoked policy, reload/reconnect, environment separation and unavailable provider. Verify labels at normal projector zoom, responsive page width, contrast (4.5:1 ordinary text), keyboard focus/escape/return focus, semantic live status announcements, accessible evidence alternatives and reduced motion. Avoid a layout that only works with short IDs or one screenshot. Keep failed cases open and repair the original implementation. Commit only the verified fixes.\n\nExpected result:\nA premium experience whose loading, failure and version-transition states are as coherent as its successful screenshot.\n\nHuman verification, then stop:\nGeorge watches the full demo at 1920\u00d71080 and uses it at 1024px. Without narration, identify current signal version, effective fee and source age; pause with provider stopped; inspect a real swap; return from comparison to Live. Approve U2 only when all applicable matrix states have evidence."
+        "U0": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Preserve unrelated checkout changes and stage only intended paths. The reviewed baseline is 0c8304eb3; resolve symbols in the actual post-Forge checkout rather than assuming line numbers are stable. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U0/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nReview boundary: this plan was corrected through static code/image inspection without starting a server. That does not satisfy future implementation browser gates. Do not start any server if the user still prohibits runtime work when executing this prompt; complete independent work and explicitly leave browser acceptance pending.\n\nU0 \u2014 Verify and complete the post-Forge UI handoff\nSequence: after F1\u2013F3; first part of F4, or catch-up after the main pack. Depends on backend outputs, not just an F0 visual approval.\n\nOwned files: narrowly missing Forge read-model/contracts/server/client-runtime APIs and their tests; new UI selection/state types. No layout implementation yet. One owner handles shared schema registrations. Progress: /tmp/t3-forge-20260909/U0/.\n\nRead the UI plan's Code audit, Required handoff and Preservation contract. Inspect the actual completed F1\u2013F3 code and evidence. Build a checklist mapping each required DTO/command to its implemented symbol, route, schema, test and evidence. Do not accept a phase label as evidence. Required inputs: source/build discovery with threadMarket=null; pre-install real pool series; complete source provenance/health/coverage; immutable build/test/install/version receipts; aligned bounded chart samples; categorical observations; installed-vs-confirmed pool policy/tx snapshot; direct pause/revoke/withdraw APIs. F5 comparison records may still be unavailable at this point; expose that state honestly.\n\nAdd only missing bridge work: getForgeThreadContext/getForgeInstrument/getForgeEvidence/getForgePool or existing equivalent names, matching runtime schemas, ws/RPC/ipc/client-runtime registrations, environment/thread authorization and cache identities. Define maxPoints<=720, explicit UTC domain, <=24h available real coverage, per-pool quote units, provenance references, source status and paginated details. Pool chart points must come from real observations, never coerce them into HL candles. Source access must work with no HL market focus and while account/provider/signing is unavailable.\n\nIf diagnostics are absent, update the SDK/test/read model contract so generated readings or sealed evaluation evidence expose real qualifying/excluded counts, volume, anchors and trade IDs. Older modules without diagnostics display 'detail unavailable'; do not fabricate fields. Do not hand-edit a supposedly agent-generated detector or repeat successful public deployments. For already-built main-pack outputs, reuse actual artifacts/receipts and repair only missing prerequisites.\n\nInspect legacy chart network attribution at the source: do not infer mainnet/testnet from a screenshot. Plan and implement only metadata needed for labels if absent, keeping candle source and current snapshot source distinguishable. Freeze focus/source state keyed by environment+thread+instrument. Draft hero and HL mission authority remain unchanged.\n\nRequired checks: focused source-series/diagnostic/schema/auth tests, same-input normalized output, gaps and missing anchor, pagination/cap, cross-environment refusal, late result isolation, no-HL-focus discovery, installed/confirmed mismatch. Targeted checks only for changed packages. No browser is needed for this backend gate; no live external writes to obtain duplicate evidence.\n\nExpected result:\nA checked handoff manifest with exact implemented names, sample real recorded response references and no missing required U1 fields. The legacy graph remains untouched. Comparison explicitly unavailable until F5 provides it.\n\nHuman verification, then stop:\nGeorge reviews the input/output mapping and a real recorded source response; confirms existing weekly graph remains an independent source, the source/instrument read resolves without an HL mission, and unavailable fields are honest. Approve U0 or identify a missing prerequisite. Do not proceed with U1 dependent work while the bridge is incomplete.\n",
+        "U1": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Preserve unrelated checkout changes and stage only intended paths. The reviewed baseline is 0c8304eb3; resolve symbols in the actual post-Forge checkout rather than assuming line numbers are stable. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U1/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nReview boundary: this plan was corrected through static code/image inspection without starting a server. That does not satisfy future implementation browser gates. Do not start any server if the user still prohibits runtime work when executing this prompt; complete independent work and explicitly leave browser acceptance pending.\n\nU1 \u2014 Mount one focused instrument without breaking the existing graph\nSequence: after U0; remainder of F4 or catch-up. F5 is not required to mount v1. Progress: /tmp/t3-forge-20260909/U1/.\n\nOwned files: bounded ChatView layout integration; ThreadMarketCard/ThreadMarketPanel composition; new ThreadInstrumentPanel/PoolActivityChart/ForgeSignalLane/ForgeBuildReceipt/ForgePoolInspector/ForgeVersionDiff and focused state; tradingMarketChartState.ts refresh fix; focus-specific trading.css; focused tests. Do not refactor the entire ChatView or implement a new chat editor.\n\nImplement focus as an instrument slot beside the existing chat-column subtree. Keep MessagesTimeline and ChatComposer mounted with their existing refs, send paths, approval/input banners, attachments, provider controls and timeline measurements. In focus mode suppress the drawer chart and both companion mount locations. Do not leave hidden duplicate charts/polls. Preserve draft hero and normal coding/right-panel/terminal workflows.\n\nInstrument selection is HL Research, HL Position when applicable, or Forge pools. Retain MarketChartPanel/MissionPriceChart for HL Research with real candles, volume, EMA, study markers, scene selector/count/Open and all existing range/recipe semantics. HL Position uses the existing mission chart and controls; do not blend actual orders with research geometry. Forge pools use their own small real-data SVG + signal lane with an explicit shared time mapping and gutters, bounded source history and no HL arm-at-price/stop-drag handlers. No new chart library or fake candles. The current renderer has no general zoom API; preserve actual range/bars/source/selection, not an invented zoom system.\n\nLift/persist only the state needed across reflow/source selection: range,bars,view,selectedSceneId and once-per-scene fit/monthly-promotion state per context. Respect explicit Open on graph refit, manual range changes and clearing scenes. Keep global HL candle/EMA preferences unchanged. One chart body mounts at a time; one hook owns each live refresh. Fix the existing maxBars refresh mismatch by refreshing the captured atom (or matching every input parameter), and display chart.stale with last successful timestamp. Add a direct timer/retry identity test; do not just test the pure range resolver.\n\nChart/account loading are independent. A null account read is unknown, not no exposure. Keep existing AccountPositionsPanel/manual close and useMissionControls paths available for all selected-environment positions/working orders even when pools are selected. Avoid mounting MissionLivePanel parts=market merely to obtain its positions. Mission status/agent log and plan remain accessible; collapse large plan content in focus mode without hiding safety banners or changing commands.\n\nUse available container width: >=920px supports instrument+360px conversation; smaller uses Chart/Conversation focus within the same workspace, keeping draft and controls accessible. Inspector opens inline only when the plot retains >=520px; otherwise a keyboard-accessible drawer. Existing RightPanelTabs or terminal may trigger compact layout. Composer observer measures its own actual height after chart removal; never subtract a magic number or let external chart height become timeline end padding. Pass focus-specific sizing; do not globally change Trade-home chart height classes.\n\nRender receipt-backed build progress and real v1 source/lane/pool status. F5 diagnostics unavailable means a disabled comparison with reason, not mock v2. Distinguish installed detector, submitted intent and confirmed/effective pool state as of a chain read. Stale/expiry while offline is 'last confirmed / expected baseline', not fresh confirmation. Implement light/dark, text status, accessible evidence list and reduced motion without continuous animation.\n\nRequired checks: new ThreadInstrumentPanel.test.tsx and forgeInstrumentState.test.ts; new tradingMarketChartState.test.ts timer/manual refresh identity + stale/key-reset cases; affected MarketChartPanel.test.tsx, ThreadMarketCard.test.tsx, threadMarketPanelState.test.ts, researchScenePresentation.test.ts, missionChartGeometry.test.ts, marketChartOverlays.test.ts, ChatView.logic.test.ts/composerFooterLayout.test.ts and rightPanelStore.test.ts only where touched. Add stateful mounting/resize/selection assertions; existing static-render stubs alone cannot prove preserved state or geometry. Run targeted web/client-runtime checks, not repository-wide tests.\n\nExpected result:\nOne executable chart-first workspace retaining the screenshot's real weekly/EMA/event scene, and a distinct new real-pool instrument. One chart/poll owner, one composer, no unprovided DTO assumptions. v2 comparison may await F5.\n\nHuman verification, then stop:\nUsing the sole retained test-t3-app stack only when runtime is authorized, George checks the legacy ETH Live/All/1-week chart, EMA/candle toggles, published count/scene/Open/Calendar/Event-aligned/source links; switches to real pools and back with state retained; opens focus with no HL market; checks Graph/account failures independently. Confirm last message/composer/attachments/pending user input at wide and compact widths with terminal/right panel open, active positions still controllable, no duplicate charts/requests. If runtime is prohibited, report this gate pending rather than accepted.\n",
+        "U2": "You are implementing T3 Forge for ETHOnline in /Users/george/Workspace/t3trade. This is a hackathon build scoped to September 9\u201311, 2026. Read AGENTS.md and the authoritative artifacts/reports/t3-forge-20260909/implementation-plan.html, plus the independent unified-graph-ui-plan.html. The user's current Forge direction supersedes the older continuity/fork-rehearsal, broad-polish, no-Uniswap and obsolete Luna-development mandates only where explicitly stated. Do not execute those old campaigns.\n\nUse GPT/GLM for development and direct focused checks; the in-app provider is used only to exercise the product's real agent capability. Read .repos/effect-smol/LLMS.md before Effect-heavy changes. Preserve unrelated checkout changes and stage only intended paths. The reviewed baseline is 0c8304eb3; resolve symbols in the actual post-Forge checkout rather than assuming line numbers are stable. No PR, push, production deployment or mainnet signing. Public mainnet reads are allowed; only the configured Uniswap public testnet may be written. Do not repurpose Hyperliquid signers or weaken any existing trading guard.\n\nAll product numbers and transaction evidence must be real. Fixtures belong only to automated tests. Authentic historical windows are explicitly historical and cannot drive live fee policy. Missing access/data produces a named unavailable state. No Node vm/host import fallback for generated code. No model-authored unrestricted Solidity. One approved fixed hook only.\n\nUse the phase's listed file ownership; treat new names as intended targets, verify the actual repository seams. Existing shared schemas/RPCs must be updated across server, web, desktop and client-runtime; mobile only as needed to avoid broken shared compilation. Add focused tests and targeted package checks. For user-visible changes follow test-t3-app using one retained isolated stack/browser for the entire campaign, owned by the designated tester. Do not test development by asking the application to modify this repository.\n\nWrite progress/evidence under /tmp/t3-forge-20260909/U2/ with exact checkout, tested SHA, commands/cwds/exits, actual receipts, redacted screenshots and open failures. Record 'implemented', 'automated verified', 'real-data verified' and 'human accepted' separately. Never mark a phase accepted yourself. When checks pass, commit only the phase implementation and durable behavior docs (not temporary evidence). Return the concrete human verification steps and wait for the human's actual pass/fail before beginning any dependent phase. If the gate fails, repair this phase and repeat its relevant checks. An elapsed timeout is not approval.\n\nReview boundary: this plan was corrected through static code/image inspection without starting a server. That does not satisfy future implementation browser gates. Do not start any server if the user still prohibits runtime work when executing this prompt; complete independent work and explicitly leave browser acceptance pending.\n\nU2 \u2014 Verify unification after revision and close the demo\nSequence: after U1 and actual F5 v2/evidence outputs; part of F6 or post-main-pack catch-up. Progress: /tmp/t3-forge-20260909/U2/.\n\nOwned files: focused repairs to the U1 slice and its tests; no new feature families. Read original acceptance and the full preservation/state matrices. Reuse actual main-pack source/contract/artifact outputs; do not blindly rerun deployments or consume another grant.\n\nVerify identical real source window for v1/v2, true exclusion diagnostics with actual transaction links, immutable version history, and return-to-Live using a fresh current read. Confirm selected historical evidence cannot create a policy intent. Confirm installed/confirmed version mismatch during submitted or failed tx, actual swap LP/total fee attribution, snapshot as-of/expiry wording and no fake fee update. Two real fee outcomes are still a backend/demo gate, not something UI can manufacture.\n\nRun focused regression checks for refresh key, source switching, late results, stale display, single chart ownership, no-HL-focus entry, per-thread focus/state restoration and study publication/clear/auto-fit. Cover all UI states: disconnected, loading, empty, real success, failed tests, awaiting data, historical, stale, no signer/provider/Docker, reverted/unknown tx, local/on-chain paused/revoked. Use isolated fault injection for errors only; success uses actual source and chain receipts.\n\nFuture integrated acceptance follows test-t3-app with exactly one retained isolated stack/browser, only when authorized. Inspect 1920x1080 and 1440x900 plus 1024px with project sidebar/right panel/terminal both open and closed; width is measured within content. Verify keyboard navigation/drawer escape-return focus/evidence alternatives and reduced motion; retain draft, send/stop/approval controls and last timeline message. Confirm current HL positions/working orders remain discoverable with source or account errors, controls work without provider, and ordinary coding/Trade home/completed-mission review are not relaid out by global styles.\n\nExpected result:\nThe legacy real-data graph and newly generated pool capability coexist in a single usable thread workspace with correct source/view identity, stable state and complete evidence. Passing static/component checks is separate from passing the actual user experience.\n\nHuman verification, then stop:\nGeorge repeats the legacy screenshot flow and the two-request Forge demo. Identify source network, view/time domain, installed version, confirmed policy, data age and actual receipt without narration. Switch source and environment, open a scene, inspect a qualifying/excluded swap, stop the provider and still pause policy. Approve the full unification only after runtime evidence exists; if no-server instruction still applies, leave this human runtime gate pending. Reverify final F7 demo after any late UI fix, without fabricating fresh pool creation or generation.\n"
       }
     </script>
     <script>
