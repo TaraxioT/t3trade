@@ -91,7 +91,11 @@
 // panel's header and the chart can never show two different marks. No figure is
 // invented: a missing denominator omits a figure rather than guessing.
 
-import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationTradingMission,
+  ResearchSceneView,
+} from "@t3tools/contracts";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
@@ -136,6 +140,7 @@ import {
   deriveOrderLedger,
   type WatchStreamRow,
 } from "./tradingPresentation";
+import { liveResearchMarkers, uncoveredOccurrenceNotes } from "./researchScenePresentation";
 import { AgentLog } from "./MissionAgentLog";
 import {
   CARD_CLASS,
@@ -197,12 +202,7 @@ export function panelWantsChart(state: PanelState): boolean {
   return state !== "complete";
 }
 
-export function MissionLivePanel({
-  mission,
-  environmentId,
-  parts,
-  chartClassName,
-}: {
+export function MissionLivePanel(props: {
   readonly mission: OrchestrationTradingMission;
   readonly environmentId: EnvironmentId;
   /**
@@ -226,7 +226,9 @@ export function MissionLivePanel({
   readonly parts: "market" | "status" | "positions" | "chart" | "info";
   /** Sizing override for the chart presentation when rendered in parts="chart". */
   readonly chartClassName?: string | undefined;
+  readonly studyOverlayScene?: ResearchSceneView | null | undefined;
 }): ReactNode {
+  const { mission, environmentId, parts, chartClassName, studyOverlayScene } = props;
   const state = readPanelState(mission);
   const wantsMarket =
     parts === "market" || parts === "positions" || parts === "chart" || parts === "info";
@@ -245,6 +247,15 @@ export function MissionLivePanel({
     const id = window.setInterval(() => setNowMillis(Date.now()), TICK_INTERVAL_MILLIS);
     return () => window.clearInterval(id);
   }, []);
+
+  const researchMarkers = useMemo(
+    () => (studyOverlayScene ? liveResearchMarkers(studyOverlayScene, nowMillis) : undefined),
+    [studyOverlayScene, nowMillis],
+  );
+  const coverageNotes = useMemo(
+    () => (studyOverlayScene ? uncoveredOccurrenceNotes(studyOverlayScene, nowMillis) : undefined),
+    [studyOverlayScene, nowMillis],
+  );
 
   // --- Derivations from the projection. -------------------------------------
   const position =
@@ -661,6 +672,8 @@ export function MissionLivePanel({
           overflowCount={droppedConditions}
           firedWatchIds={[...recentlyFired]}
           className={chartClassName}
+          researchMarkers={researchMarkers}
+          coverageNotes={coverageNotes}
         />
       </section>
     );

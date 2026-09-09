@@ -40,6 +40,7 @@ import {
   MIN_VISIBLE_BARS,
   type ChartLevelKind,
   type ChartZoneInput,
+  type ChartResearchMarkerInput,
 } from "./missionChartGeometry";
 import {
   formatDuration,
@@ -360,6 +361,8 @@ export function ChartSlot(props: {
   readonly threadRef: ScopedThreadRef;
   /** Sizing for the chart slot. Defaults to CHART_HEIGHT_CLASS ("h-[200px] min-h-0 w-full"). */
   readonly className?: string | undefined;
+  readonly researchMarkers?: ReadonlyArray<ChartResearchMarkerInput> | undefined;
+  readonly coverageNotes?: ReadonlyArray<string> | undefined;
 }): ReactNode {
   const { data, isLoading, error, className } = props;
   const heightClass = className ?? CHART_HEIGHT_CLASS;
@@ -395,47 +398,60 @@ export function ChartSlot(props: {
   }
   if (data !== null) {
     return (
-      <MissionPriceChart
-        // The tail of the fetched series, widened when an older fill would
-        // otherwise fall off the left edge. See VISIBLE_BARS.
-        candles={selectVisibleCandles(data.candles, VISIBLE_BARS, earliestFillAt(props.fills))}
-        entryPrice={props.entryPrice}
-        stopPrice={props.stopPrice}
-        targetPrice={props.targetPrice}
-        liquidationPrice={props.liquidationPrice}
-        entryTime={props.entryTime}
-        markPrice={props.markPrice}
-        pnlSign={props.pnlSign}
-        conditions={props.conditions}
-        fills={props.fills}
-        pendingOrder={props.pendingOrder}
-        nowMillis={props.nowMillis}
-        {...(props.triggerExpiryAt === null ? {} : { triggerExpiryAt: props.triggerExpiryAt })}
-        projection={props.projection}
-        timeMarkers={props.timeMarkers}
-        pastMarkers={props.pastMarkers}
-        draggableKinds={props.draggableKinds}
-        onLevelDragEnd={props.onLevelDragEnd}
-        refusedLevel={
-          props.refusedStop === null
-            ? null
-            : {
-                kind: "stop",
-                planPrice: props.refusedStop.planPrice,
-                detail: props.refusedStop.detail,
-              }
-        }
-        positionSize={props.positionSize}
-        overflowCount={props.overflowCount ?? null}
-        firedWatchIds={props.firedWatchIds}
-        {...(props.zones === undefined ? {} : { zones: props.zones })}
-        {...(thesis === null ? {} : { thesis })}
-        {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
-        {...(prefill === null || thesis === null
-          ? {}
-          : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
-        className={heightClass}
-      />
+      <>
+        <MissionPriceChart
+          // The tail of the fetched series, widened when an older fill would
+          // otherwise fall off the left edge. See VISIBLE_BARS.
+          candles={selectVisibleCandles(data.candles, VISIBLE_BARS, earliestFillAt(props.fills))}
+          entryPrice={props.entryPrice}
+          stopPrice={props.stopPrice}
+          targetPrice={props.targetPrice}
+          liquidationPrice={props.liquidationPrice}
+          entryTime={props.entryTime}
+          markPrice={props.markPrice}
+          pnlSign={props.pnlSign}
+          conditions={props.conditions}
+          fills={props.fills}
+          pendingOrder={props.pendingOrder}
+          nowMillis={props.nowMillis}
+          {...(props.triggerExpiryAt === null ? {} : { triggerExpiryAt: props.triggerExpiryAt })}
+          projection={props.projection}
+          timeMarkers={props.timeMarkers}
+          pastMarkers={props.pastMarkers}
+          draggableKinds={props.draggableKinds}
+          onLevelDragEnd={props.onLevelDragEnd}
+          refusedLevel={
+            props.refusedStop === null
+              ? null
+              : {
+                  kind: "stop",
+                  planPrice: props.refusedStop.planPrice,
+                  detail: props.refusedStop.detail,
+                }
+          }
+          positionSize={props.positionSize}
+          overflowCount={props.overflowCount ?? null}
+          firedWatchIds={props.firedWatchIds}
+          {...(props.zones === undefined ? {} : { zones: props.zones })}
+          {...(thesis === null ? {} : { thesis })}
+          {...(data.eventBands === undefined ? {} : { eventBands: data.eventBands })}
+          {...(prefill === null || thesis === null
+            ? {}
+            : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
+          {...(props.researchMarkers !== undefined && props.researchMarkers.length > 0
+            ? { researchMarkers: props.researchMarkers }
+            : {})}
+          className={heightClass}
+        />
+        {props.coverageNotes !== undefined && props.coverageNotes.length > 0 ? (
+          <div
+            className="px-1 pt-0.5 text-[10px] text-muted-foreground"
+            data-testid="mission-chart-coverage-notes"
+          >
+            {props.coverageNotes.join(" · ")}
+          </div>
+        ) : null}
+      </>
     );
   }
   return <Skeleton className={heightClass} />;

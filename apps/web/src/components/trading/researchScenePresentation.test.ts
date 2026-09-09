@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  compatibleStudyScenes,
   alignedExtremumMark,
   OCCURRENCE_CONTEXT_BARS,
   activeGraphScenes,
@@ -1093,5 +1094,46 @@ describe("strategy replay labels and the showing line", () => {
 
   it("the display cap is a window over the persisted trades, never the trades themselves", () => {
     expect(REPLAY_MARKER_WINDOW).toBe(10);
+  });
+});
+
+describe("compatibleStudyScenes", () => {
+  const ethStudy = {
+    sceneId: "scene-eth-study",
+    eventStudy: { market: "ETH" },
+  };
+  const ethStudyLower = {
+    sceneId: "scene-eth-lower",
+    eventStudy: { market: "eth" },
+  };
+  const btcStudy = {
+    sceneId: "scene-btc-study",
+    eventStudy: { market: "BTC" },
+  };
+  const ethAnnotation = {
+    sceneId: "scene-eth-annotation",
+    annotation: { market: "ETH" },
+  };
+  const ethReplay = {
+    sceneId: "scene-eth-replay",
+    strategyReplay: { thesis: { market: "ETH" } },
+  };
+
+  it("handles null, undefined, and empty scene arrays gracefully", () => {
+    expect(compatibleStudyScenes(null, "ETH")).toEqual([]);
+    expect(compatibleStudyScenes(undefined, "ETH")).toEqual([]);
+    expect(compatibleStudyScenes([], "ETH")).toEqual([]);
+  });
+
+  it("filters strictly to active event studies on the specified market, matching case-insensitively", () => {
+    const scenes = [ethStudy, ethStudyLower, btcStudy, ethAnnotation, ethReplay];
+    const compatibleEth = compatibleStudyScenes(scenes, "ETH");
+    expect(compatibleEth.map((s) => s.sceneId)).toEqual(["scene-eth-study", "scene-eth-lower"]);
+
+    const compatibleBtc = compatibleStudyScenes(scenes, "btc");
+    expect(compatibleBtc.map((s) => s.sceneId)).toEqual(["scene-btc-study"]);
+
+    const compatibleSol = compatibleStudyScenes(scenes, "SOL");
+    expect(compatibleSol).toEqual([]);
   });
 });

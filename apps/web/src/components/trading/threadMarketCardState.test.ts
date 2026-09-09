@@ -94,4 +94,66 @@ describe("threadMarketCardState", () => {
       pendingPromotionSceneId: "scene-eth-funding",
     });
   });
+
+  it("defaults study overlay to null (Off) and isolates by scope without leaking", () => {
+    const scopeEth = "env-1:thread-1:ETH";
+    const scopeBtc = "env-1:thread-1:BTC";
+    const scopeOtherEnv = "env-2:thread-1:ETH";
+
+    const { setStudyOverlay } = useThreadMarketCardStore.getState();
+
+    // Defaults to undefined in store
+    expect(useThreadMarketCardStore.getState().studyOverlayByScope[scopeEth]).toBeUndefined();
+
+    // Set ETH study overlay
+    setStudyOverlay(scopeEth, "study-eth-drawdown");
+
+    let state = useThreadMarketCardStore.getState();
+    expect(state.studyOverlayByScope[scopeEth]).toBe("study-eth-drawdown");
+    expect(state.studyOverlayByScope[scopeBtc]).toBeUndefined();
+    expect(state.studyOverlayByScope[scopeOtherEnv]).toBeUndefined();
+
+    // Set BTC to a different study
+    setStudyOverlay(scopeBtc, "study-btc-halving");
+    state = useThreadMarketCardStore.getState();
+    expect(state.studyOverlayByScope[scopeEth]).toBe("study-eth-drawdown");
+    expect(state.studyOverlayByScope[scopeBtc]).toBe("study-btc-halving");
+
+    // Setting ETH to null ("Off") leaves BTC untouched
+    setStudyOverlay(scopeEth, null);
+    state = useThreadMarketCardStore.getState();
+    expect(state.studyOverlayByScope[scopeEth]).toBeNull();
+    expect(state.studyOverlayByScope[scopeBtc]).toBe("study-btc-halving");
+  });
+
+  it("preserves study overlay across Mission/Research toggles and keeps it distinct from research view scene selection", () => {
+    const scopeEth = "env-1:thread-1:ETH";
+    const { setGraphMode, setStudyOverlay, setResearchSceneId } =
+      useThreadMarketCardStore.getState();
+
+    // Mission mode has an active study overlay
+    setGraphMode(scopeEth, "mission");
+    setStudyOverlay(scopeEth, "overlay-study-123");
+
+    // Research view has its own separate scene
+    setResearchSceneId(scopeEth, "research-scene-456");
+
+    let state = useThreadMarketCardStore.getState();
+    expect(state.studyOverlayByScope[scopeEth]).toBe("overlay-study-123");
+    expect(state.researchViewByScope[scopeEth]?.selectedSceneId).toBe("research-scene-456");
+
+    // Toggle to Research
+    setGraphMode(scopeEth, "research");
+    state = useThreadMarketCardStore.getState();
+    expect(state.graphModeByScope[scopeEth]).toBe("research");
+    expect(state.studyOverlayByScope[scopeEth]).toBe("overlay-study-123");
+    expect(state.researchViewByScope[scopeEth]?.selectedSceneId).toBe("research-scene-456");
+
+    // Toggle back to Mission
+    setGraphMode(scopeEth, "mission");
+    state = useThreadMarketCardStore.getState();
+    expect(state.graphModeByScope[scopeEth]).toBe("mission");
+    expect(state.studyOverlayByScope[scopeEth]).toBe("overlay-study-123");
+    expect(state.researchViewByScope[scopeEth]?.selectedSceneId).toBe("research-scene-456");
+  });
 });
