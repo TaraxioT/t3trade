@@ -7,10 +7,13 @@
  * are pinned in ResearchScenePanel.test.tsx; what is pinned here is the shell
  * that owns them.
  */
+import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { MarketChartPanel } from "./MarketChartPanel";
+import { useThreadMarketCardStore } from "./threadMarketCardState";
 
 const DAY = 24 * 60 * 60 * 1_000;
 const T0 = 1_710_000_000_000;
@@ -155,8 +158,8 @@ vi.mock("../../lib/tradingResearchScenesState", () => ({
     options: { readonly enabled: boolean },
   ) =>
     options.enabled
-      ? { scenes: mocks.scenesState, isLoading: false, error: null }
-      : { scenes: [], isLoading: false, error: null },
+      ? { scenes: mocks.scenesState, isLoading: false, error: null, refresh: vi.fn() }
+      : { scenes: [], isLoading: false, error: null, refresh: vi.fn() },
 }));
 
 vi.mock("./composerPrefill", () => ({ useComposerPrefill: () => null }));
@@ -173,7 +176,7 @@ const render = (threaded: boolean, className?: string, asset = "ETH") =>
       asset={asset}
       armable={false}
       {...(className === undefined ? {} : { className })}
-      {...(threaded ? { threadRef: { threadId: "thread-1" } as never } : {})}
+      {...(threaded ? { threadRef: { environmentId: "env", threadId: "thread-1" } as never } : {})}
     />,
   );
 
@@ -597,5 +600,220 @@ describe("MarketChartPanel: selection is the panel's market, keyed by identity",
     }>;
     expect(markers.every((marker) => String(marker.key).startsWith("scene-1:"))).toBe(true);
     mocks.scenesState = [SCENE];
+  });
+});
+
+describe("MarketChartPanel mounted regression: research state retention & lifecycle", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    useThreadMarketCardStore.setState({ researchViewByScope: {}, graphModeByScope: {} });
+    mocks.scenesState = [SCENE];
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves user range/bars choices across Research -> Mission -> Research unmount/remount", () => {
+    let renderer!: ReactTestRenderer;
+
+    // 1. Mount MarketChartPanel in a thread with a published event study
+    act(() => {
+      renderer = create(
+        <MarketChartPanel
+          environmentId={"env-1" as never}
+          asset="ETH"
+          threadRef={{ environmentId: "env-1", threadId: "thread-1" } as never}
+        />,
+      );
+    });
+
+    // On initial mount, scene-1 auto-fits to its recommended range ("all") and bars ("1w")
+    const allBtn = renderer.root.findByProps({ "data-testid": "market-chart-range-all" });
+    expect(allBtn.props["aria-pressed"]).toBe(true);
+
+    // 2. User manually chooses a different range ("1w") and interval ("1h")
+    act(() => {
+      const range1wBtn = renderer.root.findByProps({ "data-testid": "market-chart-range-1w" });
+      range1wBtn.props.onClick();
+
+      const barsSelect = renderer.root.findByProps({ "data-testid": "market-chart-bars" });
+      barsSelect.props.onChange({ target: { value: "1h" } });
+    });
+
+    // Verify user choices took effect
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1w" }).props["aria-pressed"],
+    ).toBe(true);
+    expect(renderer.root.findByProps({ "data-testid": "market-chart-bars" }).props.value).toBe(
+      "1h",
+    );
+
+    // 3. User switches to Mission (unmounting MarketChartPanel)
+    act(() => {
+      renderer.unmount();
+    });
+
+    // 4. User switches back to Research (remounting MarketChartPanel)
+    act(() => {
+      renderer = create(
+        <MarketChartPanel
+          environmentId={"env-1" as never}
+          asset="ETH"
+          threadRef={{ environmentId: "env-1", threadId: "thread-1" } as never}
+        />,
+      );
+    });
+
+    // Confirm automatic fitting does NOT overwrite user choices!
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1w" }).props["aria-pressed"],
+    ).toBe(true);
+    expect(renderer.root.findByProps({ "data-testid": "market-chart-bars" }).props.value).toBe(
+      "1h",
+    );
+
+    act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it("newly published scene auto-fits once, while explicit open re-fits an existing scene", () => {
+    let renderer!: ReactTestRenderer;
+
+    // 1. Mount with scene-1 and set custom range
+    act(() => {
+      renderer = create(
+        <MarketChartPanel
+          environmentId={"env-1" as never}
+          asset="ETH"
+          threadRef={{ environmentId: "env-1", threadId: "thread-1" } as never}
+        />,
+      );
+    });
+
+    // User chooses 1d
+    act(() => {
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1d" }).props.onClick();
+    });
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1d" }).props["aria-pressed"],
+    ).toBe(true);
+
+    // 2. Explicit Open on graph action re-triggers fit and navigates to calendar view
+    act(() => {
+      const openBtn = renderer.root.findByProps({ "data-testid": "market-chart-open-scene" });
+      openBtn.props.onClick();
+    });
+
+    // Switched to calendar view
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-view-calendar" }).props[
+        "aria-selected"
+      ],
+    ).toBe(true);
+
+    // Switch back to live view to check range
+    act(() => {
+      renderer.root.findByProps({ "data-testid": "market-chart-view-live" }).props.onClick();
+    });
+    // Range re-fitted to "all"
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-all" }).props["aria-pressed"],
+    ).toBe(true);
+
+    // Set back to 1d
+    act(() => {
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1d" }).props.onClick();
+    });
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1d" }).props["aria-pressed"],
+    ).toBe(true);
+
+    // 3. A newly published scene (scene-2) arrives
+    const SCENE_2 = {
+      ...SCENE_RECORD,
+      sceneId: "scene-2",
+      title: "Second ETH study",
+    } as never;
+    mocks.scenesState = [SCENE, SCENE_2];
+
+    // Select the new scene
+    act(() => {
+      renderer.root.findByProps({ "data-testid": "market-chart-scene-select" }).props.onChange({
+        target: { value: "scene-2" },
+      });
+    });
+
+    // Novel scene-2 triggers auto-fit
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-all" }).props["aria-pressed"],
+    ).toBe(true);
+
+    act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it("market A -> B -> A preserves destination scope's saved scene and configuration", () => {
+    let renderer!: ReactTestRenderer;
+
+    // Start with ETH in thread-1
+    act(() => {
+      renderer = create(
+        <MarketChartPanel
+          environmentId={"env-1" as never}
+          asset="ETH"
+          threadRef={{ environmentId: "env-1", threadId: "thread-1" } as never}
+        />,
+      );
+    });
+
+    // Choose 1w on ETH
+    act(() => {
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1w" }).props.onClick();
+    });
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1w" }).props["aria-pressed"],
+    ).toBe(true);
+
+    // Switch to BTC (market B)
+    act(() => {
+      renderer.update(
+        <MarketChartPanel
+          environmentId={"env-1" as never}
+          asset="BTC"
+          threadRef={{ environmentId: "env-1", threadId: "thread-1" } as never}
+        />,
+      );
+    });
+
+    // Choose 1m on BTC
+    act(() => {
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1m" }).props.onClick();
+    });
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1m" }).props["aria-pressed"],
+    ).toBe(true);
+
+    // Switch back to ETH (market A)
+    act(() => {
+      renderer.update(
+        <MarketChartPanel
+          environmentId={"env-1" as never}
+          asset="ETH"
+          threadRef={{ environmentId: "env-1", threadId: "thread-1" } as never}
+        />,
+      );
+    });
+
+    // ETH's range 1w is preserved and was not cleared by switching to BTC and back
+    expect(
+      renderer.root.findByProps({ "data-testid": "market-chart-range-1w" }).props["aria-pressed"],
+    ).toBe(true);
+
+    act(() => {
+      renderer.unmount();
+    });
   });
 });

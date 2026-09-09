@@ -6,7 +6,8 @@
 //
 // 1. Graph presentation mode: "mission" | "research".
 //    Per thread and market: defaulting to "mission" on first use.
-// 2. Research graph controls: view, range, bars, selectedSceneId.
+// 2. Research graph controls: view, range, bars, selectedSceneId, auto-fit,
+//    and pending promotion.
 //    Scoped by environment, thread, and market so switching views or markets
 //    preserves study configuration without leaking across scopes.
 
@@ -26,6 +27,8 @@ export interface ThreadResearchViewState {
   readonly range: TradingChartRange;
   readonly bars: ChartInterval | null;
   readonly selectedSceneId: string | null;
+  readonly appliedAutoFitIds: ReadonlyArray<string>;
+  readonly pendingPromotionSceneId: string | null;
 }
 
 export const DEFAULT_RESEARCH_VIEW_STATE: ThreadResearchViewState = {
@@ -33,6 +36,8 @@ export const DEFAULT_RESEARCH_VIEW_STATE: ThreadResearchViewState = {
   range: "1d",
   bars: null,
   selectedSceneId: null,
+  appliedAutoFitIds: [],
+  pendingPromotionSceneId: null,
 };
 
 export function threadMarketScopeKey(
@@ -51,6 +56,14 @@ interface ThreadMarketCardStoreState {
   readonly setResearchRange: (scopeKey: string, range: StateUpdater<TradingChartRange>) => void;
   readonly setResearchBars: (scopeKey: string, bars: StateUpdater<ChartInterval | null>) => void;
   readonly setResearchSceneId: (scopeKey: string, sceneId: StateUpdater<string | null>) => void;
+  readonly setResearchAppliedAutoFitIds: (
+    scopeKey: string,
+    appliedIds: StateUpdater<ReadonlyArray<string>>,
+  ) => void;
+  readonly setResearchPendingPromotion: (
+    scopeKey: string,
+    sceneId: StateUpdater<string | null>,
+  ) => void;
 }
 
 export const useThreadMarketCardStore = create<ThreadMarketCardStoreState>()(
@@ -109,6 +122,31 @@ export const useThreadMarketCardStore = create<ThreadMarketCardStoreState>()(
             },
           };
         }),
+      setResearchAppliedAutoFitIds: (scopeKey, appliedIds) =>
+        set((state) => {
+          const current = state.researchViewByScope[scopeKey] ?? DEFAULT_RESEARCH_VIEW_STATE;
+          const currentApplied = current.appliedAutoFitIds ?? [];
+          const nextApplied =
+            typeof appliedIds === "function" ? appliedIds(currentApplied) : appliedIds;
+          return {
+            researchViewByScope: {
+              ...state.researchViewByScope,
+              [scopeKey]: { ...current, appliedAutoFitIds: nextApplied },
+            },
+          };
+        }),
+      setResearchPendingPromotion: (scopeKey, sceneId) =>
+        set((state) => {
+          const current = state.researchViewByScope[scopeKey] ?? DEFAULT_RESEARCH_VIEW_STATE;
+          const currentPending = current.pendingPromotionSceneId ?? null;
+          const nextPending = typeof sceneId === "function" ? sceneId(currentPending) : sceneId;
+          return {
+            researchViewByScope: {
+              ...state.researchViewByScope,
+              [scopeKey]: { ...current, pendingPromotionSceneId: nextPending },
+            },
+          };
+        }),
     }),
     { name: "t3-thread-market-card" },
   ),
@@ -132,6 +170,12 @@ export function useThreadResearchViewState(scopeKey: string | null | undefined) 
   const setResearchRange = useThreadMarketCardStore((state) => state.setResearchRange);
   const setResearchBars = useThreadMarketCardStore((state) => state.setResearchBars);
   const setResearchSceneId = useThreadMarketCardStore((state) => state.setResearchSceneId);
+  const setResearchAppliedAutoFitIds = useThreadMarketCardStore(
+    (state) => state.setResearchAppliedAutoFitIds,
+  );
+  const setResearchPendingPromotion = useThreadMarketCardStore(
+    (state) => state.setResearchPendingPromotion,
+  );
 
   const researchState = rawState ?? DEFAULT_RESEARCH_VIEW_STATE;
 
@@ -140,6 +184,10 @@ export function useThreadResearchViewState(scopeKey: string | null | undefined) 
     range: researchState.range,
     bars: researchState.bars,
     selectedSceneId: researchState.selectedSceneId,
+    appliedAutoFitIds:
+      researchState.appliedAutoFitIds ?? DEFAULT_RESEARCH_VIEW_STATE.appliedAutoFitIds,
+    pendingPromotionSceneId:
+      researchState.pendingPromotionSceneId ?? DEFAULT_RESEARCH_VIEW_STATE.pendingPromotionSceneId,
     setView: (view: StateUpdater<GraphViewMode>) => {
       if (scopeKey) setResearchView(scopeKey, view);
     },
@@ -151,6 +199,12 @@ export function useThreadResearchViewState(scopeKey: string | null | undefined) 
     },
     setSelectedSceneId: (sceneId: StateUpdater<string | null>) => {
       if (scopeKey) setResearchSceneId(scopeKey, sceneId);
+    },
+    setAppliedAutoFitIds: (appliedIds: StateUpdater<ReadonlyArray<string>>) => {
+      if (scopeKey) setResearchAppliedAutoFitIds(scopeKey, appliedIds);
+    },
+    setPendingPromotionSceneId: (sceneId: StateUpdater<string | null>) => {
+      if (scopeKey) setResearchPendingPromotion(scopeKey, sceneId);
     },
   };
 }
