@@ -77,6 +77,7 @@ import {
   type GraphViewMode,
 } from "./researchScenePresentation.ts";
 import { useTradingResearchScenes } from "../../lib/tradingResearchScenesState";
+import { threadMarketScopeKey, useThreadResearchViewState } from "./threadMarketCardState";
 
 /** The graph's three views, in tab order. Live is first and is the home. */
 const VIEW_MODES: ReadonlyArray<GraphViewMode> = ["live", "calendar", "aligned"];
@@ -115,11 +116,30 @@ export function MarketChartPanel({
    */
   threadRef?: ScopedThreadRef | undefined;
 }) {
-  // Range and Bars are two states because they are two questions: how much
-  // history, and how wide each bar is. `bars === null` is Auto.
-  const [range, setRange] = useState<TradingChartRange>("1d");
-  const [bars, setBars] = useState<ChartInterval | null>(null);
-  const [view, setView] = useState<GraphViewMode>("live");
+  const threadScopeKey = threadRef
+    ? threadMarketScopeKey(threadRef.environmentId, threadRef.threadId, asset)
+    : null;
+
+  // When docked in a thread, state is preserved across view mode toggles and
+  // scoped to the current environment, thread, and market.
+  const [localRange, setLocalRange] = useState<TradingChartRange>("1d");
+  const [localBars, setLocalBars] = useState<ChartInterval | null>(null);
+  const [localView, setLocalView] = useState<GraphViewMode>("live");
+  const [localSelectedSceneId, setLocalSelectedSceneId] = useState<string | null>(null);
+
+  const scoped = useThreadResearchViewState(threadScopeKey);
+
+  const range = threadScopeKey ? scoped.range : localRange;
+  const setRange = threadScopeKey ? scoped.setRange : setLocalRange;
+
+  const bars = threadScopeKey ? scoped.bars : localBars;
+  const setBars = threadScopeKey ? scoped.setBars : setLocalBars;
+
+  const view = threadScopeKey ? scoped.view : localView;
+  const setView = threadScopeKey ? scoped.setView : setLocalView;
+
+  const selectedSceneId = threadScopeKey ? scoped.selectedSceneId : localSelectedSceneId;
+  const setSelectedSceneId = threadScopeKey ? scoped.setSelectedSceneId : setLocalSelectedSceneId;
 
   // The policy clock is per mount, not per poll: range arithmetic (YTD spans,
   // servability, bar budgets) moves on calendar scales, and a mount-stable
@@ -179,7 +199,7 @@ export function MarketChartPanel({
       ),
     [activeScenes, asset],
   );
-  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  // selectedSceneId moved to scoped/local state above
   // One-time auto-fit per active scene id (declared here because the market
   // and environment resets below clear it). The gate is a ref of applied ids
   // around the pure decision, so polls and refreshes of the same scene never
@@ -193,11 +213,16 @@ export function MarketChartPanel({
   // A market or environment switch invalidates a prior selection and every
   // fit already applied: fits are per market context, and a scene id selected
   // under another asset is not this asset's scene even if the thread holds it.
+  const prevMarketContextRef = useRef(`${environmentId}:${asset}`);
   useEffect(() => {
-    setSelectedSceneId(null);
-    appliedAutoFitRef.current = new Set();
-    pendingPromotionRef.current = null;
-  }, [asset, environmentId]);
+    const currentMarketContext = `${environmentId}:${asset}`;
+    if (prevMarketContextRef.current !== currentMarketContext) {
+      prevMarketContextRef.current = currentMarketContext;
+      setSelectedSceneId(null);
+      appliedAutoFitRef.current = new Set();
+      pendingPromotionRef.current = null;
+    }
+  }, [asset, environmentId, setSelectedSceneId]);
   const marketStudyScenes = useMemo(
     () => marketScenes.filter((scene) => scene.eventStudy !== undefined),
     [marketScenes],
@@ -266,7 +291,7 @@ export function MarketChartPanel({
   // stickiness is testable without a running effect loop.
   const hadScenesRef = useRef(hasScenes);
   useEffect(() => {
-    setView((current) =>
+    setView((current: GraphViewMode) =>
       nextGraphViewMode({ current, hasScenes, previouslyHadScenes: hadScenesRef.current }),
     );
     hadScenesRef.current = hasScenes;
