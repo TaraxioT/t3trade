@@ -51,6 +51,8 @@ export function threadMarketScopeKey(
 interface ThreadMarketCardStoreState {
   readonly graphModeByScope: Readonly<Record<string, ThreadMarketGraphMode>>;
   readonly setGraphMode: (scopeKey: string, mode: ThreadMarketGraphMode) => void;
+  readonly studyOverlayByScope: Readonly<Record<string, string | null>>;
+  readonly setStudyOverlay: (scopeKey: string, sceneId: StateUpdater<string | null>) => void;
   readonly researchViewByScope: Readonly<Record<string, ThreadResearchViewState>>;
   readonly setResearchView: (scopeKey: string, view: StateUpdater<GraphViewMode>) => void;
   readonly setResearchRange: (scopeKey: string, range: StateUpdater<TradingChartRange>) => void;
@@ -74,6 +76,18 @@ export const useThreadMarketCardStore = create<ThreadMarketCardStoreState>()(
         set((state) => ({
           graphModeByScope: { ...state.graphModeByScope, [scopeKey]: mode },
         })),
+      studyOverlayByScope: {},
+      setStudyOverlay: (scopeKey, sceneId) =>
+        set((state) => {
+          const current = state.studyOverlayByScope[scopeKey] ?? null;
+          const nextSceneId = typeof sceneId === "function" ? sceneId(current) : sceneId;
+          return {
+            studyOverlayByScope: {
+              ...state.studyOverlayByScope,
+              [scopeKey]: nextSceneId,
+            },
+          };
+        }),
       researchViewByScope: {},
       setResearchView: (scopeKey, view) =>
         set((state) => {
@@ -157,6 +171,15 @@ export const useThreadMarketCardStore = create<ThreadMarketCardStoreState>()(
  */
 export function useThreadMarketGraphMode(scopeKey: string): ThreadMarketGraphMode {
   return useThreadMarketCardStore((state) => state.graphModeByScope[scopeKey] ?? "mission");
+}
+
+/**
+ * Returns the selected study overlay scene id for a given scope, defaulting to null ("Off").
+ */
+export function useThreadStudyOverlay(scopeKey: string | null | undefined): string | null {
+  return useThreadMarketCardStore((state) =>
+    scopeKey ? (state.studyOverlayByScope[scopeKey] ?? null) : null,
+  );
 }
 
 /**

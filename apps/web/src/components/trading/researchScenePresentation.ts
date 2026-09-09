@@ -119,6 +119,28 @@ export function sceneMarketOf(scene: {
 }
 
 /**
+ * Event-study scenes compatible with a given market.
+ *
+ * Scoped to active event studies whose recorded market matches the selected asset.
+ * Annotations and strategy replays have no event study occurrence windows to draw,
+ * so they are never offered as study overlays.
+ */
+export function compatibleStudyScenes<
+  T extends {
+    readonly eventStudy?: { readonly market: string } | undefined;
+    readonly strategyReplay?: { readonly thesis: { readonly market: string } } | undefined;
+    readonly annotation?: { readonly market: string } | undefined;
+  },
+>(scenes: ReadonlyArray<T> | null | undefined, market: string): ReadonlyArray<T> {
+  if (!scenes || scenes.length === 0) return [];
+  const upper = market.toUpperCase();
+  return scenes.filter(
+    (scene) =>
+      scene.eventStudy !== undefined && (sceneMarketOf(scene) ?? "").toUpperCase() === upper,
+  );
+}
+
+/**
  * The scene-derived markers the LIVE graph draws. Every occurrence window is
  * drawn at its exact saved instants: an instantaneous activation
  * (`startAt === endAt`) becomes a rule at that millisecond; a true span becomes

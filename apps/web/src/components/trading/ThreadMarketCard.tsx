@@ -2,6 +2,7 @@ import {
   threadMarketScopeKey,
   useThreadMarketCardStore,
   useThreadMarketGraphMode,
+  useThreadStudyOverlay,
   type ThreadMarketGraphMode,
 } from "./threadMarketCardState";
 /**
@@ -36,11 +37,14 @@ import {
 import type {
   EnvironmentId,
   OrchestrationTradingMission,
+  ResearchSceneView,
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useCallback } from "react";
+import { useCallback, useEffect, useMemo } from "react";
+import { useTradingResearchScenes } from "../../lib/tradingResearchScenesState";
+import { compatibleStudyScenes } from "./researchScenePresentation";
 
 import { useTradingAccountView } from "../../lib/tradingAccountState";
 import { refreshTradingThreadMarket } from "../../lib/tradingThreadMarketState";
@@ -176,6 +180,50 @@ function MarketSwitcher({
  * Provides a small, existing-style selector to switch between the mission
  * chart and the unified research graph without stacking them simultaneously.
  */
+function StudyOverlaySelector({
+  studies,
+  selectedSceneId,
+  onSelect,
+}: {
+  readonly studies: ReadonlyArray<ResearchSceneView>;
+  readonly selectedSceneId: string | null;
+  readonly onSelect: (sceneId: string | null) => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
+      <span className="text-[11px] font-medium text-muted-foreground">Study</span>
+      <select
+        aria-label="Study overlay"
+        data-testid="mission-study-selector"
+        className="min-w-0 max-w-40 truncate rounded-md border border-border/60 bg-transparent px-1.5 py-0.5 font-mono text-[10.5px] text-foreground"
+        value={selectedSceneId ?? ""}
+        onChange={(event) => {
+          const value = event.target.value;
+          onSelect(value === "" ? null : value);
+        }}
+      >
+        <option value="" data-testid="mission-study-option-off">
+          Off
+        </option>
+        {selectedSceneId !== null && !studies.some((s) => s.sceneId === selectedSceneId) ? (
+          <option value={selectedSceneId} disabled>
+            Loading study…
+          </option>
+        ) : null}
+        {studies.map((study) => (
+          <option
+            key={study.sceneId}
+            value={study.sceneId}
+            data-testid={"mission-study-option-" + study.sceneId}
+          >
+            {study.title}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function ThreadGraphSwitcher({
   selected,
   onSelect,
@@ -258,6 +306,45 @@ export function ThreadMarketCard({
   const graphMode = useThreadMarketGraphMode(scopeKey);
   const setGraphMode = useThreadMarketCardStore((state) => state.setGraphMode);
 
+  const scenes = useTradingResearchScenes(environmentId, threadId, {
+    enabled: mission !== null,
+  });
+  const activeScenes = scenes.scenes ?? [];
+  const compatibleStudies = useMemo(
+    () => compatibleStudyScenes(activeScenes, asset),
+    [activeScenes, asset],
+  );
+
+  const selectedOverlayId = useThreadStudyOverlay(scopeKey);
+  const setStudyOverlay = useThreadMarketCardStore((state) => state.setStudyOverlay);
+
+  // Requirement 7: If a selected scene is removed, handle that explicitly.
+  // A loading/error response must not be mistaken for confirmed removal.
+  useEffect(() => {
+    if (
+      selectedOverlayId !== null &&
+      scenes.scenes !== null &&
+      !scenes.isLoading &&
+      scenes.error === null &&
+      !compatibleStudies.some((s) => s.sceneId === selectedOverlayId)
+    ) {
+      setStudyOverlay(scopeKey, null);
+    }
+  }, [
+    selectedOverlayId,
+    scenes.scenes,
+    scenes.isLoading,
+    scenes.error,
+    compatibleStudies,
+    scopeKey,
+    setStudyOverlay,
+  ]);
+
+  const activeStudyScene = useMemo(() => {
+    if (selectedOverlayId === null) return null;
+    return compatibleStudies.find((s) => s.sceneId === selectedOverlayId) ?? null;
+  }, [compatibleStudies, selectedOverlayId]);
+
   // The switcher writes the thread's focus row, which `selectThreadPanel` then
   // reads back to pick `asset`. Failing to write costs the tab press and
   // nothing else - the card keeps drawing the market it was drawing.
@@ -329,6 +416,13 @@ export function ThreadMarketCard({
               </span>
             ) : null}
             <MarketSwitcher markets={mission.markets} selected={asset} onSelect={selectMarket} />
+            {compatibleStudies.length > 0 && graphMode === "mission" ? (
+              <StudyOverlaySelector
+                studies={compatibleStudies}
+                selectedSceneId={selectedOverlayId}
+                onSelect={(id) => setStudyOverlay(scopeKey, id)}
+              />
+            ) : null}
             <ThreadGraphSwitcher
               selected={graphMode}
               onSelect={(mode) => setGraphMode(scopeKey, mode)}
@@ -361,6 +455,7 @@ export function ThreadMarketCard({
                   environmentId={environmentId}
                   parts="chart"
                   chartClassName="trading-graph-viewport w-full min-h-0"
+                  studyOverlayScene={activeStudyScene}
                 />
               ) : (
                 <MarketChartPanel
