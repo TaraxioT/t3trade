@@ -11,9 +11,9 @@ Open either HTML file directly; CSS, JavaScript and prompt content are inline. C
 
 This pack supersedes the old continuity/fork-rehearsal and broad-polish roadmap for the scoped Forge campaign. It does not execute those plans, implement the features or claim the live dependencies have passed. Core uses current real Graph observations and real public-testnet transactions; authentic historical comparisons are labeled and cannot drive live policy. Every implementation phase requires an actual human gate. All gates start pending.
 
-Artifact checks: HTML anchors/local links/prompt JSON, exact HTML-to-Markdown prompt parity and JavaScript syntax passed. Isolated JavaScript checks for copy/export, prompt disclosure, layout-state selection and evidence disclosure also passed; these are not browser tests. Visual browser verification was attempted through both in-app-browser creation and browser discovery; the tools reported no browser available. Actual browser rendering, responsive behavior and pointer/keyboard interactions therefore remain unverified. Product implementation/live-dependency checks are future phase gates, not completed tests.
+Artifact checks: HTML anchors/local links/prompt JSON, exact HTML-to-Markdown prompt parity and JavaScript syntax passed. Isolated JavaScript checks for copy/export, prompt disclosure, layout-state selection and evidence disclosure also passed; these are not browser tests. Product implementation/live-dependency checks are future phase gates, not completed tests.
 
-No report deployment was requested or performed. Existing site deployment conventions were inspected; these files remain local until explicitly published through an approved target.
+Deployed 2026-09-09 to Cloudflare Pages project `t3-forge-plan` at https://t3-forge-plan.pages.dev (index plus the four files above, byte-identical to this directory at `df96165b3`; redeploy with `wrangler pages deploy <dir> --project-name t3-forge-plan --branch main`). First real-browser verification happened on the deployed site: both plans render, `.html` links 308 to pretty URLs that serve 200, and the prompt-disclosure control opens the full U0/U1/U2 prompt text. Copy-to-clipboard and responsive behavior remain unverified.
 
 ## Static unification review — 2026-09-09
 
