@@ -126,6 +126,10 @@ export function MarketChartPanel({
   const [localBars, setLocalBars] = useState<ChartInterval | null>(null);
   const [localView, setLocalView] = useState<GraphViewMode>("live");
   const [localSelectedSceneId, setLocalSelectedSceneId] = useState<string | null>(null);
+  const [localAppliedAutoFitIds, setLocalAppliedAutoFitIds] = useState<ReadonlyArray<string>>([]);
+  const [localPendingPromotionSceneId, setLocalPendingPromotionSceneId] = useState<string | null>(
+    null,
+  );
 
   const scoped = useThreadResearchViewState(threadScopeKey);
 
@@ -140,6 +144,18 @@ export function MarketChartPanel({
 
   const selectedSceneId = threadScopeKey ? scoped.selectedSceneId : localSelectedSceneId;
   const setSelectedSceneId = threadScopeKey ? scoped.setSelectedSceneId : setLocalSelectedSceneId;
+
+  const appliedAutoFitIds = threadScopeKey ? scoped.appliedAutoFitIds : localAppliedAutoFitIds;
+  const setAppliedAutoFitIds = threadScopeKey
+    ? scoped.setAppliedAutoFitIds
+    : setLocalAppliedAutoFitIds;
+
+  const pendingPromotionSceneId = threadScopeKey
+    ? scoped.pendingPromotionSceneId
+    : localPendingPromotionSceneId;
+  const setPendingPromotionSceneId = threadScopeKey
+    ? scoped.setPendingPromotionSceneId
+    : setLocalPendingPromotionSceneId;
 
   // The policy clock is per mount, not per poll: range arithmetic (YTD spans,
   // servability, bar budgets) moves on calendar scales, and a mount-stable
@@ -199,30 +215,24 @@ export function MarketChartPanel({
       ),
     [activeScenes, asset],
   );
-  // selectedSceneId moved to scoped/local state above
-  // One-time auto-fit per active scene id (declared here because the market
-  // and environment resets below clear it). The gate is a ref of applied ids
-  // around the pure decision, so polls and refreshes of the same scene never
-  // move the range again.
-  const appliedAutoFitRef = useRef<ReadonlySet<string>>(new Set());
-  // The all + 1w fit can outrun the bar budget once the archive's own
-  // recording start is known — only the response can say. When the fit chose
-  // all + 1w, this holds the scene id whose response may still promote to
-  // monthly bars; the reader moving Range or Bars cancels it.
-  const pendingPromotionRef = useRef<string | null>(null);
-  // A market or environment switch invalidates a prior selection and every
-  // fit already applied: fits are per market context, and a scene id selected
-  // under another asset is not this asset's scene even if the thread holds it.
+
+  // A market or environment switch invalidates a prior selection and applied fits
+  // ONLY when un-scoped (trade home, no thread). When docked in a thread, state is
+  // keyed per (environment, thread, asset), so switching markets preserves each
+  // market scope's saved scene and auto-fit state.
   const prevMarketContextRef = useRef(`${environmentId}:${asset}`);
   useEffect(() => {
     const currentMarketContext = `${environmentId}:${asset}`;
     if (prevMarketContextRef.current !== currentMarketContext) {
       prevMarketContextRef.current = currentMarketContext;
-      setSelectedSceneId(null);
-      appliedAutoFitRef.current = new Set();
-      pendingPromotionRef.current = null;
+      if (!threadScopeKey) {
+        setLocalSelectedSceneId(null);
+        setLocalAppliedAutoFitIds([]);
+        setLocalPendingPromotionSceneId(null);
+      }
     }
-  }, [asset, environmentId, setSelectedSceneId]);
+  }, [asset, environmentId, threadScopeKey]);
+
   const marketStudyScenes = useMemo(
     () => marketScenes.filter((scene) => scene.eventStudy !== undefined),
     [marketScenes],
@@ -248,9 +258,7 @@ export function MarketChartPanel({
     scenes.refresh();
     setSelectedSceneId(sceneId);
     setView("calendar");
-    const nextApplied = new Set(appliedAutoFitRef.current);
-    nextApplied.delete(sceneId);
-    appliedAutoFitRef.current = nextApplied;
+    setAppliedAutoFitIds((prev) => prev.filter((id) => id !== sceneId));
   };
 
   const armAtPrice = (price: number) => {
@@ -302,29 +310,39 @@ export function MarketChartPanel({
   // that comes back does not re-fit unless the reader explicitly opens it).
   useEffect(() => {
     if (activeStudyScene === null) return;
-    const decision = sceneAutoFitDecision(appliedAutoFitRef.current, activeStudyScene, Date.now());
+    const appliedSet = new Set(appliedAutoFitIds);
+    const decision = sceneAutoFitDecision(appliedSet, activeStudyScene, Date.now());
     if (!decision.apply || decision.recommendation === undefined) return;
-    appliedAutoFitRef.current = decision.appliedSceneIds;
+    setAppliedAutoFitIds(Array.from(decision.appliedSceneIds));
     setRange(decision.recommendation.range);
     setBars(decision.recommendation.interval);
-    pendingPromotionRef.current =
+    setPendingPromotionSceneId(
       decision.recommendation.range === "all" && decision.recommendation.interval === "1w"
         ? activeStudyScene.sceneId
-        : null;
-  }, [activeStudyScene]);
+        : null,
+    );
+  }, [
+    activeStudyScene,
+    appliedAutoFitIds,
+    setAppliedAutoFitIds,
+    setRange,
+    setBars,
+    setPendingPromotionSceneId,
+  ]);
+
   useEffect(() => {
     const recordingSince = data?.recordingSince;
-    const sceneId = pendingPromotionRef.current;
+    const sceneId = pendingPromotionSceneId;
     if (recordingSince === undefined || sceneId === null) return;
     // The reader moved on from the fitted pair: promotion is moot, drop it.
     if (range !== "all" || bars !== "1w") {
-      pendingPromotionRef.current = null;
+      setPendingPromotionSceneId(null);
       return;
     }
     if (!promoteAllToMonthly(recordingSince, Date.now(), STUDY_CHART_MAX_WINDOW_BARS)) return;
-    pendingPromotionRef.current = null;
+    setPendingPromotionSceneId(null);
     setBars("1mo");
-  }, [data, range, bars]);
+  }, [data, range, bars, pendingPromotionSceneId, setPendingPromotionSceneId, setBars]);
 
   // The live graph's scene decoration: named markers at their exact instants
   // (an instantaneous activation a rule, a true span a band, an upcoming

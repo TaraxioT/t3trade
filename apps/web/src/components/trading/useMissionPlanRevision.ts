@@ -60,28 +60,35 @@ export interface PlanRevisionState {
   readonly refusedStop: { readonly planPrice: number; readonly detail: string } | null;
 }
 
-const DEFAULT_PLAN_REVISION_STATE: PlanRevisionState = {
+export const DEFAULT_PLAN_REVISION_STATE: PlanRevisionState = {
   isBusy: false,
   lockLost: false,
   error: null,
   refusedStop: null,
 };
 
+export function missionRevisionScopeKey(
+  environmentId: EnvironmentId,
+  missionId: TradingMissionId,
+): string {
+  return `${environmentId}:${missionId}`;
+}
+
 interface PlanRevisionStore {
-  readonly byMissionId: Readonly<Record<string, PlanRevisionState>>;
-  readonly setRevisionState: (missionId: string, state: PlanRevisionState) => void;
-  readonly clearRevisionState: (missionId: string) => void;
+  readonly byScopeKey: Readonly<Record<string, PlanRevisionState>>;
+  readonly setRevisionState: (scopeKey: string, state: PlanRevisionState) => void;
+  readonly clearRevisionState: (scopeKey: string) => void;
 }
 
 export const usePlanRevisionStore = create<PlanRevisionStore>()((set) => ({
-  byMissionId: {},
-  setRevisionState: (missionId, state) =>
+  byScopeKey: {},
+  setRevisionState: (scopeKey, state) =>
     set((s) => ({
-      byMissionId: { ...s.byMissionId, [missionId]: state },
+      byScopeKey: { ...s.byScopeKey, [scopeKey]: state },
     })),
-  clearRevisionState: (missionId) =>
+  clearRevisionState: (scopeKey) =>
     set((s) => ({
-      byMissionId: { ...s.byMissionId, [missionId]: DEFAULT_PLAN_REVISION_STATE },
+      byScopeKey: { ...s.byScopeKey, [scopeKey]: DEFAULT_PLAN_REVISION_STATE },
     })),
 }));
 
@@ -104,16 +111,15 @@ export function useMissionPlanRevision(
   missionId: TradingMissionId,
   environmentId: EnvironmentId,
 ): MissionPlanRevision {
+  const scopeKey = missionRevisionScopeKey(environmentId, missionId);
   const dispatch = useAtomCommand(orchestrationEnvironment.reviseTradingPlan);
-  const state = usePlanRevisionStore(
-    (s) => s.byMissionId[missionId] ?? DEFAULT_PLAN_REVISION_STATE,
-  );
+  const state = usePlanRevisionStore((s) => s.byScopeKey[scopeKey] ?? DEFAULT_PLAN_REVISION_STATE);
   const setRevisionState = usePlanRevisionStore((s) => s.setRevisionState);
   const clearRevisionState = usePlanRevisionStore((s) => s.clearRevisionState);
 
   const revise = useCallback<MissionPlanRevision["revise"]>(
     (plan, drag, missionVersion) => {
-      setRevisionState(missionId, {
+      setRevisionState(scopeKey, {
         isBusy: true,
         lockLost: false,
         error: null,
@@ -127,7 +133,7 @@ export function useMissionPlanRevision(
         .then((result) => {
           const failure = describeControlFailure(result);
           if (failure !== null) {
-            setRevisionState(missionId, {
+            setRevisionState(scopeKey, {
               isBusy: false,
               lockLost: false,
               error: failure,
@@ -140,7 +146,7 @@ export function useMissionPlanRevision(
           if (revision.outcome === "rejected") {
             // The model republished under the drag. Not a retry: the operator
             // drags again against what is now there.
-            setRevisionState(missionId, {
+            setRevisionState(scopeKey, {
               isBusy: false,
               lockLost: revision.reason === "stale_mission_state",
               error:
@@ -152,7 +158,7 @@ export function useMissionPlanRevision(
             return;
           }
           const stop = revision.stop;
-          setRevisionState(missionId, {
+          setRevisionState(scopeKey, {
             isBusy: false,
             lockLost: false,
             error: null,
@@ -169,7 +175,7 @@ export function useMissionPlanRevision(
           refreshTradingMissions(environmentId);
         })
         .catch(() => {
-          setRevisionState(missionId, {
+          setRevisionState(scopeKey, {
             isBusy: false,
             lockLost: false,
             error: "The revision could not be sent.",
@@ -177,12 +183,12 @@ export function useMissionPlanRevision(
           });
         });
     },
-    [dispatch, environmentId, missionId, setRevisionState],
+    [dispatch, environmentId, missionId, scopeKey, setRevisionState],
   );
 
   const dismiss = useCallback(() => {
-    clearRevisionState(missionId);
-  }, [clearRevisionState, missionId]);
+    clearRevisionState(scopeKey);
+  }, [clearRevisionState, scopeKey]);
 
   return { ...state, revise, dismiss };
 }

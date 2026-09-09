@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { threadMarketScopeKey, useThreadMarketCardStore } from "./threadMarketCardState";
+import {
+  DEFAULT_RESEARCH_VIEW_STATE,
+  threadMarketScopeKey,
+  useThreadMarketCardStore,
+} from "./threadMarketCardState";
 
 describe("threadMarketCardState", () => {
   it("computes canonical scope keys", () => {
@@ -40,14 +44,23 @@ describe("threadMarketCardState", () => {
     const scopeEth = "env-1:thread-1:ETH";
     const scopeBtc = "env-1:thread-1:BTC";
 
-    const { setGraphMode, setResearchView, setResearchRange, setResearchBars, setResearchSceneId } =
-      useThreadMarketCardStore.getState();
+    const {
+      setGraphMode,
+      setResearchView,
+      setResearchRange,
+      setResearchBars,
+      setResearchSceneId,
+      setResearchAppliedAutoFitIds,
+      setResearchPendingPromotion,
+    } = useThreadMarketCardStore.getState();
 
     // 1. Configure ETH research view
     setResearchView(scopeEth, "calendar");
     setResearchRange(scopeEth, "1w");
     setResearchBars(scopeEth, "1h");
     setResearchSceneId(scopeEth, "scene-eth-funding");
+    setResearchAppliedAutoFitIds(scopeEth, ["scene-eth-funding"]);
+    setResearchPendingPromotion(scopeEth, "scene-eth-funding");
 
     // 2. ETH research view is configured
     let state = useThreadMarketCardStore.getState();
@@ -56,6 +69,8 @@ describe("threadMarketCardState", () => {
       range: "1w",
       bars: "1h",
       selectedSceneId: "scene-eth-funding",
+      appliedAutoFitIds: ["scene-eth-funding"],
+      pendingPromotionSceneId: "scene-eth-funding",
     });
 
     // 3. BTC research view remains untouched at default
@@ -75,6 +90,8 @@ describe("threadMarketCardState", () => {
       range: "1w",
       bars: "1h",
       selectedSceneId: "scene-eth-funding",
+      appliedAutoFitIds: ["scene-eth-funding"],
+      pendingPromotionSceneId: "scene-eth-funding",
     });
   });
 });

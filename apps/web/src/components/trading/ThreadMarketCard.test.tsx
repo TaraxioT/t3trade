@@ -67,8 +67,11 @@ vi.mock("./threadMarketCardState", async (importOriginal) => {
     threadMarketScopeKey: (env: string, thread: string, asset: string) =>
       `${env}:${thread}:${asset}`,
     useThreadMarketGraphMode: () => cardStateStore.graphMode,
-    useThreadMarketCardStore: (selector: (state: any) => any) =>
+    useThreadMarketCardStore: <T,>(
+      selector: (state: ReturnType<typeof actual.useThreadMarketCardStore.getState>) => T,
+    ): T =>
       selector({
+        ...actual.useThreadMarketCardStore.getState(),
         graphModeByScope: { "env-1:thread-1:ETH": cardStateStore.graphMode },
         setGraphMode: cardStateStore.setGraphMode,
       }),
