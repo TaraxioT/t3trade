@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
-import * as NodeSqliteClient from "../NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const HELD_INDEX = "idx_trading_mission_markets_held";
 const LOOKUP_INDEX = "idx_trading_mission_markets_mission";

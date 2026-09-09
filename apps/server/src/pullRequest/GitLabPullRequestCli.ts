@@ -504,6 +504,10 @@ function actionArgs(
       return ["rebase"];
     case "reopen":
       return ["reopen"];
+    // Never reached: this host does not declare the action, so the service refuses it first.
+    case "revert":
+    case "approve-workflows":
+      throw new Error(`GitLab merge request action ${action} is unsupported`);
   }
 }
 
@@ -1144,7 +1148,7 @@ export const make = Effect.gen(function* () {
     getMergeRequestDiffFileContents: (input) =>
       Effect.gen(function* () {
         if (input.commit !== undefined && !isCommitSha(input.commit)) {
-          return yield* Effect.fail(new GitLabDiffCommitError({ command: "glab", cwd: input.cwd }));
+          return yield* new GitLabDiffCommitError({ command: "glab", cwd: input.cwd });
         }
         const refs = yield* input.commit === undefined
           ? getDiffRefs(input)

@@ -21,14 +21,14 @@ import { assert, it } from "@effect/vitest";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { spawnSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { pocAuthorityDefaults } from "@t3tools/trading-contracts/authority";
@@ -472,7 +472,7 @@ layer("TradingPlanWake — the activated revision governs the wake", (it) => {
 
       // The agent's half: run the named script inside the workspace, then
       // read the result back — before any trading call is attempted.
-      const run = spawnSync("sh", ["scripts/signal.sh"], {
+      const run = NodeChildProcess.spawnSync("sh", ["scripts/signal.sh"], {
         cwd: dir,
         env: { ...process.env, T3_MARK: String(MARK) },
       });

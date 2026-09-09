@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { PublishTradingPlanBody } from "./Schemas.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";

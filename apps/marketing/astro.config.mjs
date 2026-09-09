@@ -1,6 +1,7 @@
 import { defineConfig } from "astro/config";
 
 export default defineConfig({
+  site: "https://t3.codes",
   server: {
     port: Number(process.env.PORT ?? 4173),
   },
@@ -27,8 +28,7 @@ export default defineConfig({
           // render-pipe extension registrations can execute after Application
           // init, and the diorama renders blank (no graphics pipe) in
           // production.
-          manualChunks: (id) =>
-            id.includes("pixi") ? "dioramaScene" : undefined,
+          manualChunks: (id) => (id.includes("pixi") ? "dioramaScene" : undefined),
         },
       },
     },

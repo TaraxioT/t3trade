@@ -5,7 +5,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import Migration0041 from "./041_TradingInboxSummaryRepair.ts";
 import { runMigrations } from "../Migrations.ts";
-import * as NodeSqliteClient from "../NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 // One database per block: `it.layer` builds its layer once, and a test that
 // leaves the schema half-migrated would otherwise be the next test's starting

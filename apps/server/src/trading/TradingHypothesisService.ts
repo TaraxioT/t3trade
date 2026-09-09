@@ -27,7 +27,7 @@ import * as Crypto from "effect/Crypto";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import { BacktestReport } from "@t3tools/trading-contracts/backtest";
 import type { ThesisValidationStatus } from "@t3tools/trading-contracts/forward";
@@ -56,7 +56,7 @@ import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/
  * here reaches anything but a digest.
  */
 export const contentDigestHex = (serialized: string): string =>
-  createHash("sha256").update(serialized, "utf8").digest("hex");
+  NodeCrypto.createHash("sha256").update(serialized, "utf8").digest("hex");
 
 const decodeThesisJson = Schema.decodeUnknownSync(Schema.fromJsonString(TradingThesis));
 const encodeThesisJson = Schema.encodeUnknownSync(Schema.fromJsonString(TradingThesis));

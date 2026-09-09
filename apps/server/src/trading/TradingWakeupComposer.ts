@@ -1038,13 +1038,13 @@ const make = Effect.gen(function* () {
 
       const documents = yield* makeTradingPlanDocumentService;
       const active = yield* documents.readActive(workspaceRoot).pipe(
-        Effect.catch(() => Effect.succeed(null)),
+        Effect.orElseSucceed(() => null),
         Effect.catchCause(() => Effect.succeed(null)),
       );
       if (active === null) return undefined;
 
       const current = yield* documents.readCurrent(workspaceRoot).pipe(
-        Effect.catch(() => Effect.succeed(null)),
+        Effect.orElseSucceed(() => null),
         Effect.catchCause(() => Effect.succeed(null)),
       );
       // A workspace whose root no longer resolves still carries the pinned

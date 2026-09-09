@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { clearAllSessionProfiles, isTradingAnalystThread } from "../provider/SessionProfile.ts";
 import { TradingAnalystService, TradingAnalystServiceLive } from "./TradingAnalystService.ts";
 

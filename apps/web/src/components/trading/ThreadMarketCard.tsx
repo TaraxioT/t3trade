@@ -225,6 +225,7 @@ export function ThreadMarketCard({
       aria-label={`${asset} market`}
       data-testid="thread-market-card"
       data-open={isOpen ? "true" : "false"}
+      data-composer-banner-surface="attached"
       className="chat-composer-market-drawer pointer-events-auto px-3 pt-2 sm:px-4"
     >
       <button

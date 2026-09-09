@@ -25,7 +25,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { isPermittedUnderPlanDrift } from "@t3tools/trading-contracts/plan-document";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   guardPlanDocumentDrift,
   hashTradeContent,

@@ -239,7 +239,7 @@ export const makeTradingManualEntryService = Effect.gen(function* () {
             readonly owner: { readonly mission_id: string; readonly status: string } | null;
           } => ({ owner: row }),
         ),
-        Effect.catch(() => Effect.succeed({ owner: null, readFailed: true as const })),
+        Effect.orElseSucceed(() => ({ owner: null, readFailed: true as const })),
       );
       if ("readFailed" in ownershipRead) {
         return refused(

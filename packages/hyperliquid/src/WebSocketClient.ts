@@ -122,6 +122,12 @@ export class HyperliquidWebSocketClient extends Context.Service<
 const makeHyperliquidWebSocketClient = Effect.gen(function* () {
   const endpoints = yield* HyperliquidEndpoints;
 
+  // The raw socket callbacks below fire outside Effect's context. The
+  // fire-and-forget deliveries they fork require no services, so carrying the
+  // (empty) surrounding context through `Effect.runForkWith` keeps them on the
+  // same runtime rather than invoking a detached global one.
+  const socketServices = yield* Effect.context<never>();
+
   // One PubSub fans every inbound message to every active subscriber. Shut down
   // with the layer so a dropped scope does not leak the queue.
   const inbound = yield* Effect.acquireRelease(
@@ -221,14 +227,14 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
         // §18.2 trigger #2: a reconnect happened. The socket has resubscribed;
         // consumers re-read canonical state from the Info API. Fire-and-forget:
         // a slow consumer must not block the socket loop.
-        Effect.runFork(PubSub.publish(reconnectSignal, undefined));
+        Effect.runForkWith(socketServices)(PubSub.publish(reconnectSignal, undefined));
       }
     };
 
     ws.onmessage = (event) => {
       if (typeof event.data !== "string") return;
       // Detached: the onmessage callback must not block on PubSub publish.
-      Effect.runFork(handleFrame(event.data));
+      Effect.runForkWith(socketServices)(handleFrame(event.data));
     };
 
     ws.onclose = () => {
