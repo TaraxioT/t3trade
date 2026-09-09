@@ -201,6 +201,7 @@ export function MissionLivePanel({
   mission,
   environmentId,
   parts,
+  chartClassName,
 }: {
   readonly mission: OrchestrationTradingMission;
   readonly environmentId: EnvironmentId;
@@ -211,19 +212,25 @@ export function MissionLivePanel({
    * and the order ledger under it. It lives in the market card above the
    * composer, where the trader's eye already is.
    *
+   * `chart` is only the mission chart presentation with its plan levels.
+   *
+   * `info` is the persistent mission information: risk/reward bar, revision
+   * notes, and positions/order ledger.
+   *
    * `status` is what the mission is doing and what it has said: the status
    * strip and the agent log. It lives in the panel beside the chat, where the
    * log can take every pixel the strip leaves.
    *
-   * Two mounts rather than one component drawing both, because they sit in two
-   * columns. They share the projection, the chart atom and the selection
-   * store, so neither can disagree with the other.
+   * `positions` is one held market's ledger and nothing else.
    */
-  readonly parts: "market" | "status" | "positions";
+  readonly parts: "market" | "status" | "positions" | "chart" | "info";
+  /** Sizing override for the chart presentation when rendered in parts="chart". */
+  readonly chartClassName?: string | undefined;
 }): ReactNode {
   const state = readPanelState(mission);
-  const wantsMarket = parts === "market" || parts === "positions";
-  const wantsChartFeed = parts === "market";
+  const wantsMarket =
+    parts === "market" || parts === "positions" || parts === "chart" || parts === "info";
+  const wantsChartFeed = parts === "market" || parts === "chart";
   const wantsStatus = parts === "status";
 
   // --- Ticker: the panel's clock. -------------------------------------------
@@ -326,7 +333,8 @@ export function MissionLivePanel({
   // run history, showed one line of text saying it was thinking. Only
   // `complete` sits it out: that mission is reported by the summary card in the
   // timeline, and a second chart of the same finished trade is a duplicate.
-  const wantsChart = panelWantsChart(state);
+  const wantsChart =
+    panelWantsChart(state) && (parts === "market" || parts === "chart" || parts === "status");
   // The same rule the runtime resolves its own candles with: the interval the
   // mandate names, else 1m. Following the plan's `timeframes[0]` instead meant
   // a plan published on 15m drew a 15m chart of a mission the runtime was
@@ -622,6 +630,81 @@ export function MissionLivePanel({
     );
   }
 
+  if (parts === "chart") {
+    return (
+      <section className={cn(CARD_CLASS, "flex flex-none flex-col pt-2")}>
+        <ChartSlotWithBadge
+          threadRef={{ environmentId, threadId: mission.threadId }}
+          zones={projectionZones}
+          data={chart.data}
+          isLoading={chart.isLoading}
+          error={chart.error}
+          entryPrice={entryPrice}
+          stopPrice={stopPrice}
+          targetPrice={targetPrice}
+          liquidationPrice={position?.liquidationPrice ?? null}
+          entryTime={entryMillis}
+          markPrice={markPrice}
+          pnlSign={pnlSign}
+          conditions={chartConditions}
+          fills={fillMarkers}
+          pendingOrder={pendingOrder}
+          nowMillis={nowMillis}
+          triggerExpiryAt={triggerExpiryAt}
+          projection={planProjection}
+          timeMarkers={timeMarkers}
+          pastMarkers={pastMarkers}
+          draggableKinds={draggableKinds}
+          onLevelDragEnd={onLevelDragEnd}
+          refusedStop={revision.refusedStop}
+          positionSize={position?.size ?? null}
+          overflowCount={droppedConditions}
+          firedWatchIds={[...recentlyFired]}
+          className={chartClassName}
+        />
+      </section>
+    );
+  }
+
+  if (parts === "info") {
+    return (
+      <div
+        data-testid="mission-info-parts"
+        data-panel-state={state}
+        className="mission-panel group/panel flex w-full flex-col gap-3"
+      >
+        <section className={cn(CARD_CLASS, "flex flex-none flex-col")}>
+          <RiskRewardBar
+            riskUsd={plan?.maxLossUsd ?? null}
+            rewardUsd={targetProfitUsd}
+            isStandAside={plan?.isStandAside === true}
+          />
+          <RevisionNote revision={revision} />
+        </section>
+
+        <section
+          data-testid="mission-positions"
+          data-market={mission.market}
+          className={cn(CARD_CLASS, POSITIONS_HEIGHT_CLASS, "flex flex-none flex-col")}
+        >
+          <PositionsCard
+            rows={orderRows}
+            market={mission.market}
+            leverageLabel={leverage === null ? null : formatLeverage(leverage)}
+            position={position}
+            markPrice={markPrice}
+            stopPrice={stopPrice}
+            plan={plan}
+            roiPercent={roiPercent}
+            pnlToneClass={pnlToneClass}
+            nowMillis={nowMillis}
+            staleLabel={delayedRead ?? (chart.stale ? "delayed" : null)}
+          />
+        </section>
+      </div>
+    );
+  }
+
   if (wantsMarket) {
     return (
       <div
@@ -661,6 +744,7 @@ export function MissionLivePanel({
             positionSize={position?.size ?? null}
             overflowCount={droppedConditions}
             firedWatchIds={[...recentlyFired]}
+            className={chartClassName}
           />
           <RiskRewardBar
             riskUsd={plan?.maxLossUsd ?? null}

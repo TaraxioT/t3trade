@@ -1,3 +1,9 @@
+import {
+  threadMarketScopeKey,
+  useThreadMarketCardStore,
+  useThreadMarketGraphMode,
+  type ThreadMarketGraphMode,
+} from "./threadMarketCardState";
 /**
  * The market, where the trader is already looking.
  *
@@ -164,6 +170,66 @@ function MarketSwitcher({
   );
 }
 
+/**
+ * Mission / Research presentation switcher for a mission-bound thread.
+ *
+ * Provides a small, existing-style selector to switch between the mission
+ * chart and the unified research graph without stacking them simultaneously.
+ */
+function ThreadGraphSwitcher({
+  selected,
+  onSelect,
+}: {
+  readonly selected: ThreadMarketGraphMode;
+  readonly onSelect: (mode: ThreadMarketGraphMode) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Graph presentation"
+      data-testid="thread-graph-switcher"
+      className="flex shrink-0 items-center gap-0.5 rounded-md bg-muted/50 p-0.5"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={selected === "mission"}
+        data-graph-mode="mission"
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect("mission");
+        }}
+        className={cn(
+          "rounded px-2 py-0.5 text-xs font-medium",
+          selected === "mission"
+            ? "bg-background text-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        Mission
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={selected === "research"}
+        data-graph-mode="research"
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect("research");
+        }}
+        className={cn(
+          "rounded px-2 py-0.5 text-xs font-medium",
+          selected === "research"
+            ? "bg-background text-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        Research
+      </button>
+    </div>
+  );
+}
+
 export interface ThreadMarketCardProps {
   readonly environmentId: EnvironmentId;
   readonly asset: string;
@@ -187,6 +253,10 @@ export function ThreadMarketCard({
   const collapsed = useThreadMarketCardCollapsed(threadKey);
   const setCollapsed = useThreadMarketPanelStore((state) => state.setCardCollapsed);
   const isOpen = !collapsed;
+
+  const scopeKey = threadMarketScopeKey(environmentId, threadId, asset);
+  const graphMode = useThreadMarketGraphMode(scopeKey);
+  const setGraphMode = useThreadMarketCardStore((state) => state.setGraphMode);
 
   // The switcher writes the thread's focus row, which `selectThreadPanel` then
   // reads back to pick `asset`. Failing to write costs the tab press and
@@ -228,24 +298,26 @@ export function ThreadMarketCard({
       data-composer-banner-surface="attached"
       className="chat-composer-market-drawer pointer-events-auto px-3 pt-2 sm:px-4"
     >
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-1 text-left"
-        aria-expanded={isOpen}
-        onClick={() => setCollapsed(threadKey, isOpen)}
-        data-testid="thread-market-card-toggle"
-      >
-        {isOpen ? (
-          <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <span className="text-sm font-semibold text-foreground">{asset}</span>
-        <MarketQuote
-          environmentId={environmentId}
-          asset={asset}
-          missionMark={shown?.marketPrice ?? null}
-        />
+      <div className="flex w-full min-w-0 items-center gap-2 px-1 py-1">
+        <button
+          type="button"
+          className="flex min-w-0 items-center gap-2 rounded-md text-left"
+          aria-expanded={isOpen}
+          onClick={() => setCollapsed(threadKey, isOpen)}
+          data-testid="thread-market-card-toggle"
+        >
+          {isOpen ? (
+            <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
+          <span className="text-sm font-semibold text-foreground">{asset}</span>
+          <MarketQuote
+            environmentId={environmentId}
+            asset={asset}
+            missionMark={shown?.marketPrice ?? null}
+          />
+        </button>
         {mission === null ? null : (
           <div className="ml-auto flex items-center gap-2">
             {/* The same label the server's `direct_order` records carry: this
@@ -257,9 +329,13 @@ export function ThreadMarketCard({
               </span>
             ) : null}
             <MarketSwitcher markets={mission.markets} selected={asset} onSelect={selectMarket} />
+            <ThreadGraphSwitcher
+              selected={graphMode}
+              onSelect={(mode) => setGraphMode(scopeKey, mode)}
+            />
           </div>
         )}
-      </button>
+      </div>
       {/* Unmounted rather than hidden while folded: see the module note. The
           cap is on the drawer, so a mission with a long ledger scrolls inside
           it instead of pushing the composer down the column. The x axis is
@@ -278,23 +354,27 @@ export function ThreadMarketCard({
             />
           ) : (
             <div className="flex flex-col gap-3">
-              {/* One chart, of the market the switcher selected. */}
+              {/* Only the selected graph presentation mounts. */}
+              {graphMode === "mission" ? (
+                <MissionLivePanel
+                  mission={shown ?? mission}
+                  environmentId={environmentId}
+                  parts="chart"
+                  chartClassName="trading-graph-viewport w-full min-h-0"
+                />
+              ) : (
+                <MarketChartPanel
+                  environmentId={environmentId}
+                  asset={asset}
+                  armable={false}
+                  threadRef={{ environmentId, threadId }}
+                />
+              )}
+              {/* Persistent mission information: risk information, revision/refusal feedback, and order ledger/positions stay visible regardless of selected graph. */}
               <MissionLivePanel
                 mission={shown ?? mission}
                 environmentId={environmentId}
-                parts="market"
-              />
-              {/* The thread's unified research graph beneath the mission
-                  panels: a bound mission must not cut the conversation off
-                  from the studies it published. The mission's own position,
-                  stop and target data stays in the panels above — this chart
-                  is the research half, and its markers are measurements, so
-                  the two can never be read as one picture of exposure. */}
-              <MarketChartPanel
-                environmentId={environmentId}
-                asset={asset}
-                armable={false}
-                threadRef={{ environmentId, threadId }}
+                parts="info"
               />
               {/* And what is on the mission's other markets, listed under it.
                   A market with nothing on it draws nothing rather than an

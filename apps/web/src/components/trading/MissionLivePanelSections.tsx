@@ -358,19 +358,22 @@ export function ChartSlot(props: {
    * markers can write a question into its composer.
    */
   readonly threadRef: ScopedThreadRef;
+  /** Sizing for the chart slot. Defaults to CHART_HEIGHT_CLASS ("h-[200px] min-h-0 w-full"). */
+  readonly className?: string | undefined;
 }): ReactNode {
-  const { data, isLoading, error } = props;
+  const { data, isLoading, error, className } = props;
+  const heightClass = className ?? CHART_HEIGHT_CLASS;
   const thesis = data?.thesis ?? null;
   const prefill = useComposerPrefill(props.threadRef);
 
   if (data === null && isLoading) {
-    return <Skeleton className={CHART_HEIGHT_CLASS} />;
+    return <Skeleton className={heightClass} />;
   }
   if (data === null && error !== null) {
     return (
       <div
         className={cn(
-          CHART_HEIGHT_CLASS,
+          heightClass,
           "flex items-center justify-center text-xs text-muted-foreground",
         )}
       >
@@ -382,7 +385,7 @@ export function ChartSlot(props: {
     return (
       <div
         className={cn(
-          CHART_HEIGHT_CLASS,
+          heightClass,
           "flex items-center justify-center text-xs text-muted-foreground",
         )}
       >
@@ -431,11 +434,11 @@ export function ChartSlot(props: {
         {...(prefill === null || thesis === null
           ? {}
           : { onAskAboutMarker: askAboutPaperMarker(prefill, thesis.headline) })}
-        className={CHART_HEIGHT_CLASS}
+        className={heightClass}
       />
     );
   }
-  return <Skeleton className={CHART_HEIGHT_CLASS} />;
+  return <Skeleton className={heightClass} />;
 }
 
 /**

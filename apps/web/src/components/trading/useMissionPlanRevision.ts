@@ -17,7 +17,8 @@ import type {
   TradingMissionId,
 } from "@t3tools/contracts";
 import type { TradingPlanState } from "@t3tools/trading-contracts/strategy";
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
+import { create } from "zustand";
 
 import { refreshTradingMissions } from "../../lib/tradingMissionsState";
 import { orchestrationEnvironment } from "../../state/orchestration";
@@ -59,6 +60,31 @@ export interface PlanRevisionState {
   readonly refusedStop: { readonly planPrice: number; readonly detail: string } | null;
 }
 
+const DEFAULT_PLAN_REVISION_STATE: PlanRevisionState = {
+  isBusy: false,
+  lockLost: false,
+  error: null,
+  refusedStop: null,
+};
+
+interface PlanRevisionStore {
+  readonly byMissionId: Readonly<Record<string, PlanRevisionState>>;
+  readonly setRevisionState: (missionId: string, state: PlanRevisionState) => void;
+  readonly clearRevisionState: (missionId: string) => void;
+}
+
+export const usePlanRevisionStore = create<PlanRevisionStore>()((set) => ({
+  byMissionId: {},
+  setRevisionState: (missionId, state) =>
+    set((s) => ({
+      byMissionId: { ...s.byMissionId, [missionId]: state },
+    })),
+  clearRevisionState: (missionId) =>
+    set((s) => ({
+      byMissionId: { ...s.byMissionId, [missionId]: DEFAULT_PLAN_REVISION_STATE },
+    })),
+}));
+
 /** The eight authored fields, with exactly one leaf replaced. */
 export function applyPlanDrag(plan: TradingPlanState, drag: PlanDragTarget): TradingPlanState {
   switch (drag.kind) {
@@ -79,16 +105,15 @@ export function useMissionPlanRevision(
   environmentId: EnvironmentId,
 ): MissionPlanRevision {
   const dispatch = useAtomCommand(orchestrationEnvironment.reviseTradingPlan);
-  const [state, setState] = useState<PlanRevisionState>({
-    isBusy: false,
-    lockLost: false,
-    error: null,
-    refusedStop: null,
-  });
+  const state = usePlanRevisionStore(
+    (s) => s.byMissionId[missionId] ?? DEFAULT_PLAN_REVISION_STATE,
+  );
+  const setRevisionState = usePlanRevisionStore((s) => s.setRevisionState);
+  const clearRevisionState = usePlanRevisionStore((s) => s.clearRevisionState);
 
   const revise = useCallback<MissionPlanRevision["revise"]>(
     (plan, drag, missionVersion) => {
-      setState({
+      setRevisionState(missionId, {
         isBusy: true,
         lockLost: false,
         error: null,
@@ -102,7 +127,7 @@ export function useMissionPlanRevision(
         .then((result) => {
           const failure = describeControlFailure(result);
           if (failure !== null) {
-            setState({
+            setRevisionState(missionId, {
               isBusy: false,
               lockLost: false,
               error: failure,
@@ -115,7 +140,7 @@ export function useMissionPlanRevision(
           if (revision.outcome === "rejected") {
             // The model republished under the drag. Not a retry: the operator
             // drags again against what is now there.
-            setState({
+            setRevisionState(missionId, {
               isBusy: false,
               lockLost: revision.reason === "stale_mission_state",
               error:
@@ -127,7 +152,7 @@ export function useMissionPlanRevision(
             return;
           }
           const stop = revision.stop;
-          setState({
+          setRevisionState(missionId, {
             isBusy: false,
             lockLost: false,
             error: null,
@@ -144,7 +169,7 @@ export function useMissionPlanRevision(
           refreshTradingMissions(environmentId);
         })
         .catch(() => {
-          setState({
+          setRevisionState(missionId, {
             isBusy: false,
             lockLost: false,
             error: "The revision could not be sent.",
@@ -152,17 +177,12 @@ export function useMissionPlanRevision(
           });
         });
     },
-    [dispatch, environmentId, missionId],
+    [dispatch, environmentId, missionId, setRevisionState],
   );
 
   const dismiss = useCallback(() => {
-    setState({
-      isBusy: false,
-      lockLost: false,
-      error: null,
-      refusedStop: null,
-    });
-  }, []);
+    clearRevisionState(missionId);
+  }, [clearRevisionState, missionId]);
 
   return { ...state, revise, dismiss };
 }

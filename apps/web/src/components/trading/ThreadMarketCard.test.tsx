@@ -38,6 +38,43 @@ vi.mock("react", async (importOriginal) => ({
   useCallback: (factory: unknown) => factory,
 }));
 
+const cardStateStore = vi.hoisted(() => {
+  let graphMode: "mission" | "research" = "mission";
+  const setGraphModeCalls: Array<[scopeKey: string, mode: "mission" | "research"]> = [];
+  return {
+    get graphMode() {
+      return graphMode;
+    },
+    set graphMode(m: "mission" | "research") {
+      graphMode = m;
+    },
+    setGraphModeCalls,
+    setGraphMode: (scopeKey: string, mode: "mission" | "research") => {
+      setGraphModeCalls.push([scopeKey, mode]);
+      cardStateStore.graphMode = mode;
+    },
+    reset: () => {
+      graphMode = "mission";
+      setGraphModeCalls.length = 0;
+    },
+  };
+});
+
+vi.mock("./threadMarketCardState", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./threadMarketCardState")>();
+  return {
+    ...actual,
+    threadMarketScopeKey: (env: string, thread: string, asset: string) =>
+      `${env}:${thread}:${asset}`,
+    useThreadMarketGraphMode: () => cardStateStore.graphMode,
+    useThreadMarketCardStore: (selector: (state: any) => any) =>
+      selector({
+        graphModeByScope: { "env-1:thread-1:ETH": cardStateStore.graphMode },
+        setGraphMode: cardStateStore.setGraphMode,
+      }),
+  };
+});
+
 vi.mock("./threadMarketPanelStore", () => ({
   useThreadMarketCardCollapsed: () => store.collapsed,
   useThreadMarketPanelStore: () => store.setCardCollapsed,
@@ -60,7 +97,9 @@ vi.mock("./MarketChartPanel", () => ({
   MarketChartPanel: () => <div data-testid="market-chart-stub" />,
 }));
 vi.mock("./MissionLivePanel", () => ({
-  MissionLivePanel: () => <div data-testid="mission-live-stub" />,
+  MissionLivePanel: ({ parts }: { parts?: string }) => (
+    <div data-testid={`mission-live-stub-${parts ?? "default"}`} data-parts={parts} />
+  ),
 }));
 vi.mock("./ThreadMarketPanel", () => ({
   MarketQuote: () => <span data-testid="market-quote-stub" />,
@@ -87,11 +126,14 @@ interface TestIdProps {
   readonly children?: unknown;
 }
 
-const findToggle = (section: ReactElement<TestIdProps>): ReactElement<TestIdProps> => {
-  for (const node of Children.toArray(section.props.children as ReactNode)) {
-    if (!isValidElement(node)) continue;
-    const element = node as ReactElement<TestIdProps>;
+const findToggle = (root: ReactElement<TestIdProps>): ReactElement<TestIdProps> => {
+  const queue: unknown[] = [root];
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!isValidElement(next)) continue;
+    const element = next as ReactElement<TestIdProps>;
     if (element.props["data-testid"] === "thread-market-card-toggle") return element;
+    queue.push(...Children.toArray(element.props.children as ReactNode));
   }
   throw new Error("toggle button not rendered");
 };
@@ -170,8 +212,73 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     expect(Children.toArray(folded.props.children as ReactNode)).toHaveLength(1);
   });
 
+  it("for a bound mission, defaults to Mission graph and mounts only mission chart", () => {
+    cardStateStore.reset();
+    const markup = render(false, {
+      market: "ETH",
+      markets: ["ETH"],
+      status: "position_open",
+      mandateOrigin: "user_chat",
+      marketPrice: 2000,
+      marketPrices: [],
+      positions: [],
+      strategies: [],
+      orders: [],
+      recentFills: [],
+      inFlightExecution: null,
+    });
+
+    // Graph switcher is rendered and has Mission selected
+    expect(markup).toContain('data-testid="thread-graph-switcher"');
+    expect(markup).toContain('data-graph-mode="mission"');
+    expect(markup).toContain('data-graph-mode="research"');
+
+    // Only mission chart mounts, not the research chart
+    expect(markup).toContain('data-testid="mission-live-stub-chart"');
+    expect(markup).not.toContain('data-testid="market-chart-stub"');
+
+    // Persistent mission info is mounted
+    expect(markup).toContain('data-testid="mission-live-stub-info"');
+  });
+
+  it("switching to Research mounts only research chart while keeping mission info accessible", () => {
+    cardStateStore.reset();
+    cardStateStore.graphMode = "research";
+
+    const markup = render(false, {
+      market: "ETH",
+      markets: ["ETH"],
+      status: "position_open",
+      mandateOrigin: "user_chat",
+      marketPrice: 2000,
+      marketPrices: [],
+      positions: [],
+      strategies: [],
+      orders: [],
+      recentFills: [],
+      inFlightExecution: null,
+    });
+
+    // Only research chart mounts, not the mission chart
+    expect(markup).toContain('data-testid="market-chart-stub"');
+    expect(markup).not.toContain('data-testid="mission-live-stub-chart"');
+
+    // Mission info remains accessible in Research view
+    expect(markup).toContain('data-testid="mission-live-stub-info"');
+  });
+
+  it("for an unbound research thread, does not render the Mission/Research selector", () => {
+    const markup = render(false, null);
+
+    // No selector
+    expect(markup).not.toContain('data-testid="thread-graph-switcher"');
+    // Unbound body renders research chart and account positions
+    expect(markup).toContain('data-testid="market-chart-stub"');
+    expect(markup).toContain('data-testid="account-positions-stub"');
+  });
+
   it("backs the drawer surface and the graph viewport with real stylesheet rules", () => {
-    const stylesheet = NodeFS.readFileSync(new URL("../../index.css", import.meta.url), "utf8");
+    const stylesheet = NodeFS.readFileSync(new URL("../../trading.css", import.meta.url), "utf8");
     // Whitespace-stripped so formatter line wrapping cannot break the check.
     const compact = stylesheet.replace(/\s+/g, "");
 
@@ -185,6 +292,6 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     expect(compact).toContain(".trading-graph-viewport{");
     expect(compact).toContain("clamp(300px,46vh,470px)");
     expect(compact).toContain("clamp(200px,30vh,280px)");
-    expect(compact).toContain(".trading-graph-inspector{");
+    expect(compact).toContain(".trading-graph-viewport-research{");
   });
 });
