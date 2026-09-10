@@ -48,6 +48,8 @@ const cardStateStore = vi.hoisted(() => {
   let error: string | null = null;
   const setGraphModeCalls: Array<[scopeKey: string, mode: "mission" | "research"]> = [];
   const setStudyOverlayCalls: Array<[scopeKey: string, sceneId: string | null]> = [];
+  const researchScenesCalls: Array<{ enabled: boolean }> = [];
+  const refresh = vi.fn();
   return {
     get graphMode() {
       return graphMode;
@@ -81,6 +83,8 @@ const cardStateStore = vi.hoisted(() => {
     },
     setGraphModeCalls,
     setStudyOverlayCalls,
+    researchScenesCalls,
+    refresh,
     setGraphMode: (scopeKey: string, mode: "mission" | "research") => {
       setGraphModeCalls.push([scopeKey, mode]);
       cardStateStore.graphMode = mode;
@@ -97,6 +101,8 @@ const cardStateStore = vi.hoisted(() => {
       error = null;
       setGraphModeCalls.length = 0;
       setStudyOverlayCalls.length = 0;
+      researchScenesCalls.length = 0;
+      refresh.mockClear();
     },
   };
 });
@@ -127,15 +133,17 @@ vi.mock("../../lib/tradingResearchScenesState", () => ({
     _environmentId: unknown,
     _threadId: unknown,
     options: { readonly enabled: boolean },
-  ) =>
-    options.enabled
+  ) => {
+    cardStateStore.researchScenesCalls.push({ enabled: options.enabled });
+    return options.enabled
       ? {
           scenes: cardStateStore.scenes,
           isLoading: cardStateStore.isLoading,
           error: cardStateStore.error,
-          refresh: vi.fn(),
+          refresh: cardStateStore.refresh,
         }
-      : { scenes: [], isLoading: false, error: null, refresh: vi.fn() },
+      : { scenes: [], isLoading: false, error: null, refresh: cardStateStore.refresh };
+  },
 }));
 
 vi.mock("./threadMarketPanelStore", () => ({
@@ -177,6 +185,20 @@ const PROPS: ThreadMarketCardProps = {
   threadId: "thread-1" as ThreadMarketCardProps["threadId"],
 };
 
+const BOUND_MISSION = {
+  market: "ETH",
+  markets: ["ETH"],
+  status: "position_open",
+  mandateOrigin: "user_chat",
+  marketPrice: 2000,
+  marketPrices: [],
+  positions: [],
+  strategies: [],
+  orders: [],
+  recentFills: [],
+  inFlightExecution: null,
+};
+
 const render = (collapsed: boolean, mission?: unknown) => {
   store.collapsed = collapsed;
   return renderToStaticMarkup(<ThreadMarketCard {...PROPS} mission={(mission ?? null) as never} />);
@@ -199,6 +221,26 @@ const findToggle = (root: ReactElement<TestIdProps>): ReactElement<TestIdProps> 
     queue.push(...Children.toArray(element.props.children as ReactNode));
   }
   throw new Error("toggle button not rendered");
+};
+
+const findRetry = (root: ReactElement<TestIdProps>): ReactElement<TestIdProps> => {
+  const queue: unknown[] = [root];
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!isValidElement(next)) continue;
+    const element = next as ReactElement<TestIdProps>;
+    if (element.props["data-testid"] === "mission-study-retry") return element;
+    if (typeof element.type === "function") {
+      try {
+        const rendered = (element.type as (props: unknown) => ReactNode)(element.props);
+        if (rendered) queue.push(rendered);
+      } catch {
+        // ignore
+      }
+    }
+    queue.push(...Children.toArray(element.props.children as ReactNode));
+  }
+  throw new Error("retry button not rendered");
 };
 
 describe("ThreadMarketCard: attached to the composer's glass shell", () => {
@@ -277,19 +319,7 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
 
   it("for a bound mission, defaults to Mission graph and mounts only mission chart", () => {
     cardStateStore.reset();
-    const markup = render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    const markup = render(false, BOUND_MISSION);
 
     // Graph switcher is rendered and has Mission selected
     expect(markup).toContain('data-testid="thread-graph-switcher"');
@@ -308,19 +338,7 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     cardStateStore.reset();
     cardStateStore.graphMode = "research";
 
-    const markup = render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    const markup = render(false, BOUND_MISSION);
 
     // Only research chart mounts, not the mission chart
     expect(markup).toContain('data-testid="market-chart-stub"');
@@ -348,19 +366,7 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
       { sceneId: "scene-btc-halving", title: "BTC Halving", eventStudy: { market: "BTC" } },
     ];
 
-    const markup = render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    const markup = render(false, BOUND_MISSION);
 
     expect(markup).toContain('data-testid="mission-study-selector"');
     expect(markup).toContain('data-testid="mission-study-option-off"');
@@ -372,26 +378,14 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     expect(markup).not.toContain("BTC Halving");
   });
 
-  it("does not render Study selector when there are no compatible event studies for the mission's asset", () => {
+  it("does not render Study selector when there are no compatible event studies and no selection", () => {
     cardStateStore.reset();
     cardStateStore.scenes = [
       { sceneId: "scene-btc-halving", title: "BTC Halving", eventStudy: { market: "BTC" } },
       { sceneId: "scene-eth-note", title: "ETH Note", annotation: { market: "ETH" } },
     ];
 
-    const markup = render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    const markup = render(false, BOUND_MISSION);
 
     expect(markup).not.toContain('data-testid="mission-study-selector"');
   });
@@ -403,19 +397,7 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
       { sceneId: "scene-eth-spike", title: "ETH Funding Spike", eventStudy: { market: "ETH" } },
     ];
 
-    const markup = render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    const markup = render(false, BOUND_MISSION);
 
     expect(markup).not.toContain('data-testid="mission-study-selector"');
     expect(markup).toContain('data-testid="market-chart-stub"');
@@ -428,57 +410,209 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     // 1. Loading state: must NOT clear overlay
     cardStateStore.isLoading = true;
     cardStateStore.scenes = [];
-    render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    render(false, BOUND_MISSION);
     expect(cardStateStore.setStudyOverlayCalls).toEqual([]);
 
     // 2. Error state: must NOT clear overlay
     cardStateStore.isLoading = false;
     cardStateStore.error = "Network timeout";
-    render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    render(false, BOUND_MISSION);
     expect(cardStateStore.setStudyOverlayCalls).toEqual([]);
 
     // 3. Confirmed removal (!isLoading && error === null && scenes loaded but missing scene):
     // must explicitly reset to null (Off)
     cardStateStore.error = null;
     cardStateStore.scenes = [];
-    render(false, {
-      market: "ETH",
-      markets: ["ETH"],
-      status: "position_open",
-      mandateOrigin: "user_chat",
-      marketPrice: 2000,
-      marketPrices: [],
-      positions: [],
-      strategies: [],
-      orders: [],
-      recentFills: [],
-      inFlightExecution: null,
-    });
+    render(false, BOUND_MISSION);
     expect(cardStateStore.setStudyOverlayCalls).toEqual([["env-1:thread-1:ETH", null]]);
+  });
+
+  it("disabled, loading, and error states do not clear the saved selection", () => {
+    cardStateStore.reset();
+    cardStateStore.studyOverlay = "scene-eth-spike";
+
+    // 1. Loading: not cleared
+    cardStateStore.isLoading = true;
+    cardStateStore.scenes = [];
+    render(false, BOUND_MISSION);
+    expect(cardStateStore.setStudyOverlayCalls).toEqual([]);
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+
+    // 2. Error: not cleared
+    cardStateStore.isLoading = false;
+    cardStateStore.error = "Server unreachable";
+    render(false, BOUND_MISSION);
+    expect(cardStateStore.setStudyOverlayCalls).toEqual([]);
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+
+    // 3. Disabled (graphMode === "research"): not cleared
+    cardStateStore.error = null;
+    cardStateStore.graphMode = "research";
+    render(false, BOUND_MISSION);
+    expect(cardStateStore.setStudyOverlayCalls).toEqual([]);
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+
+    // 4. Disabled (collapsed): not cleared
+    cardStateStore.graphMode = "mission";
+    render(true, BOUND_MISSION);
+    expect(cardStateStore.setStudyOverlayCalls).toEqual([]);
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+  });
+
+  it("exercises ownership: exactly one active scene polling owner in expanded presentations", () => {
+    cardStateStore.reset();
+
+    // In Expanded Mission: ThreadMarketCard reader is enabled, MarketChartPanel is unmounted
+    const missionMarkup = render(false, BOUND_MISSION);
+    expect(missionMarkup).toContain('data-testid="mission-live-stub-chart"');
+    expect(missionMarkup).not.toContain('data-testid="market-chart-stub"');
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(true);
+
+    // In Expanded Research: ThreadMarketCard reader is disabled, MarketChartPanel is mounted
+    cardStateStore.graphMode = "research";
+    const researchMarkup = render(false, BOUND_MISSION);
+    expect(researchMarkup).toContain('data-testid="market-chart-stub"');
+    expect(researchMarkup).not.toContain('data-testid="mission-live-stub-chart"');
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(false);
+  });
+
+  it("does not poll scenes while collapsed", () => {
+    cardStateStore.reset();
+    const markup = render(true, BOUND_MISSION);
+    expect(markup).not.toContain('data-testid="market-chart-stub"');
+    expect(markup).not.toContain('data-testid="mission-live-stub-chart"');
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(false);
+  });
+
+  it("survives transition Mission -> Research -> collapse -> expand preserving overlay selection", () => {
+    cardStateStore.reset();
+    cardStateStore.studyOverlay = "scene-eth-spike";
+    cardStateStore.scenes = [
+      { sceneId: "scene-eth-spike", title: "ETH Funding Spike", eventStudy: { market: "ETH" } },
+    ];
+
+    // 1. Expanded Mission: enabled, overlay selected
+    const markup1 = render(false, BOUND_MISSION);
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(true);
+    expect(markup1).toContain('data-testid="mission-study-selector"');
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+
+    // 2. Switch to Research: reader disabled, selection preserved
+    cardStateStore.graphMode = "research";
+    render(false, BOUND_MISSION);
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(false);
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+
+    // 3. Collapse: reader disabled, selection preserved
+    render(true, BOUND_MISSION);
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(false);
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+
+    // 4. Expand (still in research): reader disabled, selection preserved
+    render(false, BOUND_MISSION);
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(false);
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+
+    // 5. Switch back to Mission: reader re-enabled, selection still intact
+    cardStateStore.graphMode = "mission";
+    const markup5 = render(false, BOUND_MISSION);
+    expect(cardStateStore.researchScenesCalls.at(-1)?.enabled).toBe(true);
+    expect(markup5).toContain('data-testid="mission-study-selector"');
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+  });
+
+  it("shows compact loading state when saved selection is awaiting data, keeping Off usable", () => {
+    cardStateStore.reset();
+    cardStateStore.studyOverlay = "scene-pending";
+    cardStateStore.isLoading = true;
+    cardStateStore.scenes = [];
+
+    const markup = render(false, BOUND_MISSION);
+
+    expect(markup).toContain('data-testid="mission-study-selector"');
+    expect(markup).toContain('data-testid="mission-study-option-loading"');
+    expect(markup).toContain("Loading study…");
+    expect(markup).toContain('data-testid="mission-study-loading"');
+    expect(markup).toContain('data-testid="mission-study-option-off"');
+    expect(cardStateStore.studyOverlay).toBe("scene-pending");
+  });
+
+  it("visibly distinguishes cached-data failure with Not Refreshed and retry option while keeping Off usable", () => {
+    cardStateStore.reset();
+    cardStateStore.studyOverlay = "scene-eth-spike";
+    cardStateStore.scenes = [
+      { sceneId: "scene-eth-spike", title: "ETH Funding Spike", eventStudy: { market: "ETH" } },
+    ];
+    cardStateStore.error = "Connection lost";
+
+    const markup = render(false, BOUND_MISSION);
+
+    expect(markup).toContain('data-testid="mission-study-selector"');
+    expect(markup).toContain('data-testid="mission-study-option-scene-eth-spike"');
+    expect(markup).toContain('data-testid="mission-study-not-refreshed"');
+    expect(markup).toContain("Not refreshed");
+    expect(markup).toContain('data-testid="mission-study-retry"');
+    expect(markup).toContain('data-testid="mission-study-option-off"');
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+  });
+
+  it("retry invokes the scene refresh operation", () => {
+    cardStateStore.reset();
+    cardStateStore.studyOverlay = "scene-eth-spike";
+    cardStateStore.scenes = [
+      { sceneId: "scene-eth-spike", title: "ETH Funding Spike", eventStudy: { market: "ETH" } },
+    ];
+    cardStateStore.error = "Failed to load scenes";
+
+    const tree = ThreadMarketCard({ ...PROPS, mission: BOUND_MISSION as never });
+    if (!isValidElement<TestIdProps>(tree)) throw new Error("card did not render");
+    const retryBtn = findRetry(tree);
+    expect(cardStateStore.refresh).not.toHaveBeenCalled();
+    retryBtn.props.onClick?.();
+    expect(cardStateStore.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("successful recovery clears failure feedback while retaining selection", () => {
+    cardStateStore.reset();
+    cardStateStore.studyOverlay = "scene-eth-spike";
+    cardStateStore.scenes = [
+      { sceneId: "scene-eth-spike", title: "ETH Funding Spike", eventStudy: { market: "ETH" } },
+    ];
+    cardStateStore.error = "Network timeout";
+
+    // During failure: Not refreshed badge and retry button are present
+    const failureMarkup = render(false, BOUND_MISSION);
+    expect(failureMarkup).toContain('data-testid="mission-study-not-refreshed"');
+    expect(failureMarkup).toContain('data-testid="mission-study-retry"');
+
+    // After successful recovery: error cleared, scenes present
+    cardStateStore.error = null;
+    const recoveredMarkup = render(false, BOUND_MISSION);
+    expect(recoveredMarkup).not.toContain('data-testid="mission-study-not-refreshed"');
+    expect(recoveredMarkup).not.toContain('data-testid="mission-study-retry"');
+    expect(recoveredMarkup).not.toContain('data-testid="mission-study-unavailable-badge"');
+    expect(cardStateStore.studyOverlay).toBe("scene-eth-spike");
+    expect(recoveredMarkup).toContain('data-testid="mission-study-option-scene-eth-spike"');
+  });
+
+  it("shows unavailable rather than implying Off when there is no usable study data upon failure", () => {
+    cardStateStore.reset();
+    cardStateStore.studyOverlay = "scene-missing";
+    cardStateStore.scenes = [];
+    cardStateStore.isLoading = false;
+    cardStateStore.error = "500 Internal Error";
+
+    const markup = render(false, BOUND_MISSION);
+
+    expect(markup).toContain('data-testid="mission-study-selector"');
+    // Must NOT imply Off: option is Unavailable and value is scene-missing
+    expect(markup).toContain('data-testid="mission-study-option-unavailable"');
+    expect(markup).toContain("Unavailable");
+    expect(markup).toContain('data-testid="mission-study-unavailable-badge"');
+    expect(markup).toContain('data-testid="mission-study-retry"');
+    // Off must remain usable
+    expect(markup).toContain('data-testid="mission-study-option-off"');
+    expect(cardStateStore.studyOverlay).toBe("scene-missing");
   });
 
   it("backs the drawer surface and the graph viewport with real stylesheet rules", () => {

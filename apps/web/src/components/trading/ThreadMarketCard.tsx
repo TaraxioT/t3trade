@@ -183,12 +183,24 @@ function MarketSwitcher({
 function StudyOverlaySelector({
   studies,
   selectedSceneId,
+  isLoading,
+  error,
   onSelect,
+  onRetry,
 }: {
   readonly studies: ReadonlyArray<ResearchSceneView>;
   readonly selectedSceneId: string | null;
+  readonly isLoading: boolean;
+  readonly error: string | null;
   readonly onSelect: (sceneId: string | null) => void;
+  readonly onRetry: () => void;
 }) {
+  const hasUsableStudy =
+    selectedSceneId !== null && studies.some((s) => s.sceneId === selectedSceneId);
+  const isAwaitingData = selectedSceneId !== null && !hasUsableStudy && isLoading;
+  const isUnavailable = selectedSceneId !== null && !hasUsableStudy && !isLoading;
+  const isCachedFailure = selectedSceneId !== null && hasUsableStudy && error !== null;
+
   return (
     <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
       <span className="text-[11px] font-medium text-muted-foreground">Study</span>
@@ -205,9 +217,14 @@ function StudyOverlaySelector({
         <option value="" data-testid="mission-study-option-off">
           Off
         </option>
-        {selectedSceneId !== null && !studies.some((s) => s.sceneId === selectedSceneId) ? (
-          <option value={selectedSceneId} disabled>
+        {isAwaitingData ? (
+          <option value={selectedSceneId} disabled data-testid="mission-study-option-loading">
             Loading study…
+          </option>
+        ) : null}
+        {isUnavailable ? (
+          <option value={selectedSceneId} disabled data-testid="mission-study-option-unavailable">
+            Unavailable
           </option>
         ) : null}
         {studies.map((study) => (
@@ -220,6 +237,40 @@ function StudyOverlaySelector({
           </option>
         ))}
       </select>
+      {isAwaitingData ? (
+        <span
+          className="text-[10px] text-muted-foreground animate-pulse"
+          data-testid="mission-study-loading"
+        >
+          Loading…
+        </span>
+      ) : null}
+      {isCachedFailure ? (
+        <span
+          className="rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+          data-testid="mission-study-not-refreshed"
+        >
+          Not refreshed
+        </span>
+      ) : null}
+      {isUnavailable && error !== null ? (
+        <span
+          className="rounded bg-destructive/10 px-1 py-0.5 text-[10px] font-medium text-destructive"
+          data-testid="mission-study-unavailable-badge"
+        >
+          Unavailable
+        </span>
+      ) : null}
+      {error !== null && selectedSceneId !== null ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded px-1 py-0.5 text-[10px] font-medium text-muted-foreground underline hover:text-foreground"
+          data-testid="mission-study-retry"
+        >
+          Retry
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -306,8 +357,10 @@ export function ThreadMarketCard({
   const graphMode = useThreadMarketGraphMode(scopeKey);
   const setGraphMode = useThreadMarketCardStore((state) => state.setGraphMode);
 
+  const isOverlayReaderEnabled = isOpen && graphMode === "mission" && mission !== null;
+
   const scenes = useTradingResearchScenes(environmentId, threadId, {
-    enabled: mission !== null,
+    enabled: isOverlayReaderEnabled,
   });
   const activeScenes = scenes.scenes ?? [];
   const compatibleStudies = useMemo(
@@ -318,10 +371,15 @@ export function ThreadMarketCard({
   const selectedOverlayId = useThreadStudyOverlay(scopeKey);
   const setStudyOverlay = useThreadMarketCardStore((state) => state.setStudyOverlay);
 
-  // Requirement 7: If a selected scene is removed, handle that explicitly.
-  // A loading/error response must not be mistaken for confirmed removal.
+  const handleRetry = useCallback(() => {
+    scenes.refresh();
+  }, [scenes]);
+
+  // If a selected scene is removed, handle that explicitly.
+  // A loading/error response, or a disabled reader must not be mistaken for confirmed removal.
   useEffect(() => {
     if (
+      isOverlayReaderEnabled &&
       selectedOverlayId !== null &&
       scenes.scenes !== null &&
       !scenes.isLoading &&
@@ -331,6 +389,7 @@ export function ThreadMarketCard({
       setStudyOverlay(scopeKey, null);
     }
   }, [
+    isOverlayReaderEnabled,
     selectedOverlayId,
     scenes.scenes,
     scenes.isLoading,
@@ -416,11 +475,15 @@ export function ThreadMarketCard({
               </span>
             ) : null}
             <MarketSwitcher markets={mission.markets} selected={asset} onSelect={selectMarket} />
-            {compatibleStudies.length > 0 && graphMode === "mission" ? (
+            {(compatibleStudies.length > 0 || selectedOverlayId !== null) &&
+            graphMode === "mission" ? (
               <StudyOverlaySelector
                 studies={compatibleStudies}
                 selectedSceneId={selectedOverlayId}
+                isLoading={scenes.isLoading}
+                error={scenes.error}
                 onSelect={(id) => setStudyOverlay(scopeKey, id)}
+                onRetry={handleRetry}
               />
             ) : null}
             <ThreadGraphSwitcher
