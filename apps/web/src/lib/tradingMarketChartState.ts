@@ -49,18 +49,6 @@ function tradingMarketChartAtom(
   });
 }
 
-export function refreshTradingMarketChart(
-  environmentId: EnvironmentId,
-  market: string,
-  interval: ChartInterval,
-  window: ChartWindow | null = null,
-  range: TradingChartRange | null = null,
-): void {
-  appAtomRegistry.refresh(
-    tradingMarketChartAtom(environmentId, market, interval, window, null, range),
-  );
-}
-
 /**
  * How often a mounted chart re-reads the projection.
  *
@@ -111,6 +99,13 @@ export interface TradingMarketChartState {
    * tick failed outright and the hook is holding the previous view.
    */
   readonly stale: boolean;
+  /**
+   * Epoch millis of the last successful read of THIS series, or null before
+   * the first one. Advances only on success, so a failed poll keeps the
+   * previous stamp — the pair a caller needs to say "stale, last ok HH:MM".
+   * Reset when the atom identity changes, like the retained view below.
+   */
+  readonly lastSuccessAt: number | null;
   readonly refresh: () => void;
 }
 
@@ -209,26 +204,33 @@ export function useTradingMarketChart(
   // retained view is dropped whenever the atom identity changes, so a different
   // market/interval/window never renders the previous one's bars.
   const lastGood = useRef<TradingMarketChartView | null>(null);
+  const lastSuccessAt = useRef<number | null>(null);
   const lastAtom = useRef<TradingMarketChartAtom | null>(null);
   if (lastAtom.current !== atom) {
     lastAtom.current = atom;
     lastGood.current = null;
+    lastSuccessAt.current = null;
   }
   if (fresh !== null) lastGood.current = fresh;
+  // A failure carrying its previous success keeps `lastGood` (the atom still
+  // reports that value) but must not advance the last-success stamp: the read
+  // failed, and the stamp is what "stale since" is measured against.
+  if (AsyncResult.isSuccess(result)) lastSuccessAt.current = Date.now();
 
   const data = fresh ?? lastGood.current;
   const stale = data !== null && (fresh === null || fresh.stale === true);
 
+  // Refresh the exact atom instance this render reads. Rebuilding the key here
+  // once dropped `maxBars`, so a chart that asked for a wide window refreshed
+  // a differently-keyed family entry and its own subscription never
+  // revalidated — both the 15s poll and any manual retry went to the wrong
+  // cache entry. The captured atom is by construction the panel-facing one.
   const refresh = useCallback(() => {
     if (!enabled || market === null) {
       return;
     }
-    const bounds =
-      windowStart === null || windowEnd === null
-        ? null
-        : { startTime: windowStart, endTime: windowEnd };
-    refreshTradingMarketChart(environmentId, market, interval, bounds, range);
-  }, [enabled, market, environmentId, interval, windowStart, windowEnd, range]);
+    appAtomRegistry.refresh(atom);
+  }, [enabled, market, atom]);
 
   const isWindowed = windowStart !== null && windowEnd !== null;
 
@@ -248,6 +250,7 @@ export function useTradingMarketChart(
       result._tag === "Failure" && data === null ? "Failed to load trading market chart." : null,
     isLoading: result.waiting,
     stale,
+    lastSuccessAt: lastSuccessAt.current,
     refresh,
   };
 }
