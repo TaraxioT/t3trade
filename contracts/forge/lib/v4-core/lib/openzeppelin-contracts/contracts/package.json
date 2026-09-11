@@ -1,0 +1,32 @@
+{
+  "name": "@openzeppelin/contracts",
+  "version": "5.0.2",
+  "description": "Secure Smart Contract library for Solidity",
+  "keywords": [
+    "contracts",
+    "ethereum",
+    "security",
+    "smart",
+    "solidity",
+    "zeppelin"
+  ],
+  "homepage": "https://openzeppelin.com/contracts/",
+  "bugs": {
+    "url": "https://github.com/OpenZeppelin/openzeppelin-contracts/issues"
+  },
+  "license": "MIT",
+  "author": "OpenZeppelin Community <maintainers@openzeppelin.org>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenZeppelin/openzeppelin-contracts.git"
+  },
+  "files": [
+    "**/*.sol",
+    "/build/contracts/*.json",
+    "!/mocks/**/*"
+  ],
+  "scripts": {
+    "prepack": "bash ../scripts/prepack.sh",
+    "prepare-docs": "cd ..; npm run prepare-docs"
+  }
+}

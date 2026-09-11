@@ -1,0 +1,21 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+# Pinned to the exact solc version required by the pinned dependency
+# Uniswap/v4-core@v4.0.0 (commit e50237c43811bd9b526eff40f26772152a42daba).
+# The frozen artifact hash in the F3 evidence depends on this exact setting.
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 4294967295
+bytecode_hash = "none"
+verbosity = 3
+
+[profile.default.fuzz]
+runs = 512
+max_test_rejects = 65536
+
+[fmt]
+line_length = 100
