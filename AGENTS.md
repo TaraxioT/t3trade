@@ -12,7 +12,7 @@ Trading safety outranks convenience. Never weaken an execution guard, loss budge
 
 ## Product boundaries
 
-- Hyperliquid testnet is the only execution target. Do not introduce a mainnet path implicitly.
+- Hyperliquid testnet is the only execution target for trading. The one narrow exception is T3 Forge: the fixed, reviewed Uniswap v4 fee-hook may be deployed and driven on the Ethereum Sepolia public testnet under its own dedicated authority and the F0-approved spend grant; it never repurposes Hyperliquid signers or weakens a trading guard. Do not introduce a mainnet path implicitly.
 - The exchange is authoritative for positions, orders, and fills. Local state records T3 Trade's decisions and actions.
 - Every confirmed exposure increase must have exchange-native protection. Failure paths must not leave a position silently unprotected.
 - Signing is local and deterministic. Never log, expose, copy unnecessarily, or commit signer material.
