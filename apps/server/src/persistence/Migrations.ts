@@ -112,6 +112,7 @@ import Migration0097 from "./Migrations/097_RepairAutomaticSettlementTimestamps.
 import Migration0098 from "./Migrations/098_ProjectionProjectIcon.ts";
 import Migration0099 from "./Migrations/099_ProjectionThreadBranchPullRequest.ts";
 import Migration0100 from "./Migrations/100_ProjectionThreadsActiveOrderKey.ts";
+import Migration0101 from "./Migrations/101_ForgeSourceEvidence.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -231,6 +232,7 @@ export const migrationEntries = [
   [98, "ProjectionProjectIcon", Migration0098],
   [99, "ProjectionThreadBranchPullRequest", Migration0099],
   [100, "ProjectionThreadsActiveOrderKey", Migration0100],
+  [101, "ForgeSourceEvidence", Migration0101],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

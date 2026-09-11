@@ -70,8 +70,24 @@ import { TradingHypothesisServiceLive } from "./TradingHypothesisService.ts";
 import { TradingThesisValidationServiceLive } from "./TradingThesisValidationService.ts";
 import { TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingResearchSceneServiceLive } from "./TradingResearchSceneService.ts";
+import { ForgeSourceStoreLive } from "./forge/ForgeSourceStore.ts";
+import {
+  ForgeGraphConfigLive,
+  ForgeGraphSourceLive,
+  ForgeGraphTransportLive,
+} from "./forge/GraphSource.ts";
+import { ForgeSourceReadsLive } from "./forge/ForgeSourceReads.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
+
+// The Forge Graph source with its config and transport composed once, so
+// every Forge consumer (reads now, builder/reactor later) shares one instance.
+// The transport rides the same node-backed HTTP layer the Hyperliquid clients
+// use, so no new HTTP requirement leaks out of the trading layer.
+const forgeGraphSource = ForgeGraphSourceLive.pipe(
+  Layer.provide(ForgeGraphConfigLive),
+  Layer.provide(ForgeGraphTransportLive.pipe(Layer.provide(httpWithNode))),
+);
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 const resolverWithInfo = HyperliquidMarketResolverLive.pipe(Layer.provide(infoWithHttp));
 const gatewayWithRead = HyperliquidGatewayLive.pipe(
@@ -350,4 +366,12 @@ export const TradingLayerLive = Layer.mergeAll(
   // conversation knows what to draw. Rings the same account doorbell, so it
   // is built on the projection instance every other trading read shares.
   TradingThreadMarketServiceLive.pipe(Layer.provide(TradingAccountProjectionLive)),
+  // T3 Forge: The Graph observation source, its evidence store, and the
+  // read models. SQL + its own HTTP transport only — nothing here can reach
+  // an order, a signer, or Hyperliquid, so mounting it changes no trading
+  // guard. One shared source/store instance feeds the reads and any later
+  // Forge consumer.
+  forgeGraphSource,
+  ForgeSourceStoreLive,
+  ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
 ).pipe(Layer.provideMerge(infoWithHttp));
