@@ -34,4 +34,5 @@ export * from "./replay.ts";
 export * from "./researchScenes.ts";
 export * from "./forge.ts";
 export * from "./researchEvidence.ts";
+export * from "./graphStudyFeatures.ts";
 export * from "./observation.ts";

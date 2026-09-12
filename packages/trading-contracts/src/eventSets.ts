@@ -462,6 +462,19 @@ export const EventStudyRow = Schema.Struct({
   truncated: Schema.Boolean,
   /** Bars actually measured, horizonBars when not truncated. */
   barsCovered: Schema.optional(Schema.Number),
+  /**
+   * Net blockchain flow over the entry-to-exit window, signed long
+   * convention, in the Graph dataset's declared quote unit (integer
+   * micro-units). Present only on rows whose study consumed a Graph-derived
+   * dataset covering the window; absent on every earlier row. Distinct
+   * participants and trade counts ride beside it so a report can separate
+   * "size moved" from "many small actors moved".
+   */
+  netFlowMicros: Schema.optional(Schema.Number),
+  /** Distinct transacting addresses in the same Graph-derived window. */
+  graphParticipants: Schema.optional(Schema.Number),
+  /** Swap count in the same Graph-derived window. */
+  graphTradeCount: Schema.optional(Schema.Number),
 });
 export type EventStudyRow = typeof EventStudyRow.Type;
 
@@ -1466,6 +1479,14 @@ export function parseTradingEventsOccurrence(
 export const TradingEventsInput = Schema.Struct({
   /** Attribution, never authority: an event set takes no mission state. */
   missionId: Schema.optional(Schema.String),
+  /**
+   * Study Graph-derived data instead of the Hyperliquid archive: bars are
+   * aggregated from retained, pinned Uniswap swap observations for this
+   * vetted pool, and every row carries the window's net flow, distinct
+   * participants, and trade count from the SAME retained bytes. Absent (the
+   * default) means the archive study unchanged.
+   */
+  graphSource: Schema.optional(Schema.Struct({ poolId: Schema.String.check(Schema.isNonEmpty()) })),
   action: Schema.optional(TradingEventsAction),
   /** Required by everything except `record`, `preview` and `list`. */
   eventSetId: Schema.optional(Schema.String),

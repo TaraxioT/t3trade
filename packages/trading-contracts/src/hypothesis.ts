@@ -115,6 +115,21 @@ export const HypothesisRunProvenance = Schema.Struct({
    */
   eventSetContentDigests: Schema.Array(EventSetContentDigest),
   calculationVersion: Schema.String,
+  /**
+   * The Graph datasets a run's study actually read, when it read any.
+   * Immutable manifest references (id + content digest): a rerun over the
+   * same retained bytes reproduces the same reference, so two runs of the
+   * same hypothesis can differ in data, provably. Absent on runs that used
+   * only the Hyperliquid archive.
+   */
+  graphDatasets: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        datasetId: Schema.String,
+        contentSha256: Schema.String,
+      }),
+    ),
+  ),
 });
 export type HypothesisRunProvenance = typeof HypothesisRunProvenance.Type;
 

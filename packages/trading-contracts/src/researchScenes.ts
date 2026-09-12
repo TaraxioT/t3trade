@@ -175,6 +175,22 @@ export const EventStudyScenePayload = Schema.Struct({
    */
   priceSource: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed("hyperliquid"))),
   /**
+   * The Graph dataset this scene's bars and per-row blockchain features came
+   * from, when they did: the dataset's immutable id and content digest, plus
+   * the deployment it was captured from. A reader can walk from a rendered
+   * bar back to the retained evidence bytes. Absent on archive-sourced
+   * scenes (the default), and `priceSource` then names the archive.
+   */
+  graphDataset: Schema.optional(
+    Schema.Struct({
+      datasetId: Schema.String,
+      contentSha256: Schema.String,
+      deploymentOrPackageId: Schema.String,
+      chainId: Schema.String,
+      pinnedBlock: Schema.NullOr(Schema.String),
+    }),
+  ),
+  /**
    * The notional the user asked to illustrate against, when they did. Part
    * of the RECIPE, not the result: the returns are the deterministic output,
    * and any money figure the graph shows is display arithmetic on them,
@@ -572,6 +588,13 @@ export type TradingChartAction = typeof TradingChartAction.Type;
 
 /** The thesis source for a replay: inline, or the latest version of an idea. */
 export const TradingChartInput = Schema.Struct({
+  /**
+   * Publish the event study over Graph-derived data instead of the
+   * Hyperliquid archive (same meaning as `trading_events`' `graphSource`):
+   * the scene names the dataset it rendered, and every row carries its
+   * Graph-derived flow features.
+   */
+  graphSource: Schema.optional(Schema.Struct({ poolId: Schema.String.check(Schema.isNonEmpty()) })),
   /** Attribution, never authority: a scene takes no mission state. */
   missionId: Schema.optional(Schema.String),
   action: Schema.optional(TradingChartAction),
