@@ -913,10 +913,7 @@ const handlerSandbox = Layer.succeed(ForgeCapabilitySandbox, {
  * the approved route registry. The broadcaster stays UNWIRED so the swap
  * action runs the serviceOption None path.
  */
-const provideExec = (
-  stateRoot: string,
-  quote: SwapQuoteOutcome,
-): Layer.Layer<McpInvocationContext.McpInvocationContext> =>
+const provideExec = (stateRoot: string, quote: SwapQuoteOutcome) =>
   Layer.mergeAll(
     Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScope),
     stubGateway,
@@ -956,10 +953,13 @@ const provideExec = (
  * every call in the body — handler calls, direct service calls, raw SQL —
  * runs against that same graph so state persists between them.
  */
+/** Everything the execution graph provides — what `call` may require. */
+type ExecGraphServices = Layer.Success<ReturnType<typeof provideExec>>;
+
 const execSuite = async <A>(
   stateRoot: string,
   quote: SwapQuoteOutcome,
-  body: (call: <B, E>(effect: Effect.Effect<B, E>) => Promise<B>) => Promise<A>,
+  body: (call: <B, E>(effect: Effect.Effect<B, E, ExecGraphServices>) => Promise<B>) => Promise<A>,
 ): Promise<A> => {
   // ONE runtime over ONE memory database: every call in the body — handler
   // calls, direct service calls, raw SQL — runs against the same built graph
@@ -977,7 +977,7 @@ const execSuite = async <A>(
 /** Propose (via the tool) + approve (the direct user path) + one persisted
  *  swap proposal row, so the swap action has real state to work from. */
 const seedExecutedEnvelope = async (
-  call: <B, E>(effect: Effect.Effect<B, E>) => Promise<B>,
+  call: <B, E>(effect: Effect.Effect<B, E, ExecGraphServices>) => Promise<B>,
   stateRoot: string,
 ): Promise<{ readonly envelopeId: string }> => {
   await seedExecutionBundle(await storeAt(stateRoot));
