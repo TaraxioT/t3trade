@@ -364,13 +364,28 @@ export const makeUniswapQuoteService = Effect.gen(function* () {
           reason: `invalid-slippage: maxSlippageBps must be an integer in [0, ${EXECUTION_ENVELOPE_MAX_SLIPPAGE_BPS}]`,
         };
       }
-      if (input.quoteTtlMs !== undefined && !Number.isFinite(input.quoteTtlMs)) {
+      if (!Number.isSafeInteger(input.now) || input.now < 0) {
         return {
           status: "refused" as const,
-          reason: "invalid-ttl: quoteTtlMs must be a finite number",
+          reason: "invalid-clock: now must be a nonnegative safe integer",
+        };
+      }
+      if (
+        input.quoteTtlMs !== undefined &&
+        (!Number.isSafeInteger(input.quoteTtlMs) || input.quoteTtlMs < 0)
+      ) {
+        return {
+          status: "refused" as const,
+          reason: "invalid-ttl: quoteTtlMs must be a nonnegative safe integer",
         };
       }
       const ttlMs = Math.max(QUOTE_TTL_MIN_MS, input.quoteTtlMs ?? QUOTE_TTL_DEFAULT_MS);
+      if (!Number.isSafeInteger(input.now + ttlMs)) {
+        return {
+          status: "refused" as const,
+          reason: "invalid-ttl: expiry exceeds the safe integer range",
+        };
+      }
 
       // One read-only eth_call against the route's quoter at the chain head.
       // The same failure/redaction discipline as the adapter's callView: an
@@ -420,6 +435,12 @@ export const makeUniswapQuoteService = Effect.gen(function* () {
       }
       // Exact floor: amountOut * (1 - bps/10000), truncated, never rounded up.
       const minAmountOutRaw = (amountOut * BigInt(10_000 - slippageBps)) / 10_000n;
+      if (minAmountOutRaw === 0n) {
+        return {
+          status: "refused" as const,
+          reason: "quote-unavailable: slippage rounds minimum output to zero",
+        };
+      }
 
       const record: SwapQuoteRecord = {
         quoteId: swapQuoteId({
@@ -478,4 +499,4 @@ export const UniswapQuoteServiceLive = Layer.effect(UniswapQuoteService, makeUni
  * second check.
  */
 export const validateQuoteFresh = (record: SwapQuoteRecord, asOfMs: number): boolean =>
-  asOfMs < record.expiresAtMs;
+  Number.isSafeInteger(asOfMs) && asOfMs >= record.quotedAtMs && asOfMs < record.expiresAtMs;

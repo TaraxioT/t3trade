@@ -539,6 +539,45 @@ describe("UniswapQuoteService.quoteExactInput", () => {
     }),
   );
 
+  it.effect("rejects invalid clocks and expiry arithmetic before RPC", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeTransport(() => "0x" + word(10n));
+      const service = yield* UniswapQuoteService.pipe(Effect.provide(quoteLayer(fake.shape)));
+      for (const now of [-1, Number.NaN, Number.POSITIVE_INFINITY, NOW + 0.5]) {
+        const outcome = yield* service.quoteExactInput({
+          routeId: ROUTE_ID,
+          amountInRaw: "1",
+          now,
+        });
+        assert.include(refusedReason(outcome), "invalid-clock");
+      }
+      for (const quoteTtlMs of [-1, 0.5, Number.MAX_SAFE_INTEGER]) {
+        const outcome = yield* service.quoteExactInput({
+          routeId: ROUTE_ID,
+          amountInRaw: "1",
+          now: NOW,
+          quoteTtlMs,
+        });
+        assert.include(refusedReason(outcome), "invalid-ttl");
+      }
+      assert.equal(fake.calls.length, 0);
+    }),
+  );
+
+  it.effect("refuses a positive output whose slippage floor is zero", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeTransport(() => "0x" + word(1n) + word(210000n));
+      const service = yield* UniswapQuoteService.pipe(Effect.provide(quoteLayer(fake.shape)));
+      const outcome = yield* service.quoteExactInput({
+        routeId: ROUTE_ID,
+        amountInRaw: "1",
+        now: NOW,
+        maxSlippageBps: 1,
+      });
+      assert.include(refusedReason(outcome), "slippage rounds minimum output to zero");
+    }),
+  );
+
   it.effect("enforces the ttl floor and honors an explicit ttl", () =>
     Effect.gen(function* () {
       const fake = makeFakeTransport(() => "0x" + word(10n));
@@ -692,6 +731,9 @@ describe("validateQuoteFresh", () => {
       assert.equal(outcome.status, "quoted");
       if (outcome.status !== "quoted") return;
       const record = outcome.record;
+      assert.equal(validateQuoteFresh(record, NOW - 1), false);
+      assert.equal(validateQuoteFresh(record, Number.NEGATIVE_INFINITY), false);
+      assert.equal(validateQuoteFresh(record, Number.NaN), false);
       assert.equal(validateQuoteFresh(record, NOW), true);
       assert.equal(validateQuoteFresh(record, NOW + 4_999), true);
       assert.equal(validateQuoteFresh(record, NOW + 5_000), false);
