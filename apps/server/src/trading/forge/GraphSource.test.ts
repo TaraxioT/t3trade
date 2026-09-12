@@ -971,3 +971,27 @@ it.effect("feeds the reactor a real source capture with retained per-pool proven
     }).pipe(Effect.provide(layer));
   }),
 );
+
+it.effect("refuses invalid chart bounds before querying the source", () =>
+  Effect.gen(function* () {
+    yield* runMigrations({});
+    const reads = yield* ForgeSourceReads;
+    for (const maxPoints of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = yield* reads.readPoolSeries({
+        poolId: POOL_005,
+        startUtcMs: WINDOW.startedAt * 1000,
+        endUtcMs: WINDOW.endedAt * 1000,
+        maxPoints,
+      });
+      assert.equal(result.status, "unavailable");
+    }
+    for (const startUtcMs of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = yield* reads.readPoolSeries({
+        poolId: POOL_005,
+        startUtcMs,
+        endUtcMs: WINDOW.endedAt * 1000,
+      });
+      assert.equal(result.status, "unavailable");
+    }
+  }).pipe(Effect.provide(readsLayer(deadTransport))),
+);

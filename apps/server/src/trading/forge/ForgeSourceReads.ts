@@ -167,6 +167,17 @@ export const makeForgeSourceReads = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const endUtcMs = input.endUtcMs ?? now;
       const startUtcMs = input.startUtcMs ?? endUtcMs - DEFAULT_SERIES_WINDOW_MS;
+      if (!Number.isSafeInteger(startUtcMs) || !Number.isSafeInteger(endUtcMs) || startUtcMs < 0) {
+        return unavailableSeries(
+          "series domain must contain non-negative safe integer UTC milliseconds",
+        );
+      }
+      if (
+        input.maxPoints !== undefined &&
+        (!Number.isSafeInteger(input.maxPoints) || input.maxPoints < 1)
+      ) {
+        return unavailableSeries("maxPoints must be a positive safe integer");
+      }
       if (startUtcMs >= endUtcMs) {
         return unavailableSeries("series domain start must be before its end");
       }
