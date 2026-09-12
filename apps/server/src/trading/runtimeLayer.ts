@@ -112,6 +112,7 @@ import {
   SignedTransactionBroadcasterUnavailable,
   UniswapTestnetAdapterLive,
 } from "./forge/UniswapTestnetAdapter.ts";
+import { SwapRouteConfigLive, UniswapQuoteServiceLive } from "./forge/UniswapQuoteService.ts";
 import {
   ForgeGrantGuardLive,
   ForgeIntentLedgerSqliteLive,
@@ -212,19 +213,27 @@ const detectorSchedulerStart = DetectorSchedulerStartLive.pipe(
 // top. The broadcaster is the honest refusal — no signer is wired, so every
 // broadcast still fails closed at that seam.
 const forgeDurable = Layer.mergeAll(ForgeIntentLedgerSqliteLive, ForgeGrantGuardLive);
+// The ONE Sepolia JSON-RPC transport, named so the adapter and the quote
+// service below share a single memoized instance (layer memoization is by
+// reference — an inline pipe in each consumer would build a second transport
+// and fork the RPC seam). It resolves the target itself, so its config
+// requirement is satisfied here and leaks into no consumer.
+const forgeSepoliaTransport = ForgeSepoliaTransportLive.pipe(
+  Layer.provide(ForgeTestnetConfigLive),
+  Layer.provide(httpWithNode),
+);
 const forgeAdapter = UniswapTestnetAdapterLive.pipe(
   Layer.provide(ForgeTestnetConfigLive),
-  // The transport reads the Sepolia target itself (its own config
-  // requirement must be satisfied HERE, or it leaks into every consumer's
-  // requirements channel).
-  Layer.provide(
-    ForgeSepoliaTransportLive.pipe(
-      Layer.provide(ForgeTestnetConfigLive),
-      Layer.provide(httpWithNode),
-    ),
-  ),
+  Layer.provide(forgeSepoliaTransport),
   Layer.provideMerge(forgeDurable),
   Layer.provideMerge(SignedTransactionBroadcasterUnavailable),
+);
+// P5 exact-input quotes over the SAME transport instance: an eth_call read
+// through the approved-route registry. Signer-free by construction — nothing
+// here can reach an order, a signature, or Hyperliquid.
+const forgeQuoteService = UniswapQuoteServiceLive.pipe(
+  Layer.provide(SwapRouteConfigLive),
+  Layer.provide(forgeSepoliaTransport),
 );
 const forgeFeePolicy = FeePolicyServiceLive.pipe(
   Layer.provide(forgeAdapter),
@@ -564,6 +573,11 @@ export const TradingLayerLive = Layer.mergeAll(
   detectorSchedulerStart,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
   graphResearchServices,
+  // P5 quote service: exact-input Sepolia quotes over the approved-route
+  // registry, riding the same memoized Sepolia transport the forge adapter
+  // uses (see forgeQuoteService). Additive — a read-only eth_call, so
+  // mounting it changes no trading guard and adds no requirements here.
+  forgeQuoteService,
   // External research evidence: the durable source-revision store, the
   // GitHub releases connector over it, and the explicit import path from
   // retained revisions into the authored event calendar. Additive — SQL and
