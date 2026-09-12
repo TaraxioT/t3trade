@@ -78,6 +78,11 @@ import {
   TradingWatchlistView,
 } from "./trading.ts";
 import {
+  ExecutionEnvelope,
+  ExecutionEnvelopeStatus,
+  PersistedProposalRecord,
+  SwapIntentRecord,
+  DecimalIntegerString,
   FORGE_MAX_SERIES_POINTS,
   FORGE_MAX_WINDOW_SECONDS,
   ForgeCapabilityCatalogEntry,
@@ -142,6 +147,9 @@ export const ORCHESTRATION_WS_METHODS = {
   getForgePoolSeries: "orchestration.getForgePoolSeries",
   getForgeEvidence: "orchestration.getForgeEvidence",
   getForgePoolState: "orchestration.getForgePoolState",
+  getForgeExecutionState: "orchestration.getForgeExecutionState",
+  forgeExecutionRevoke: "orchestration.forgeExecutionRevoke",
+  forgeDetectorControl: "orchestration.forgeDetectorControl",
   forgePause: "orchestration.forgePause",
   forgeUnpause: "orchestration.forgeUnpause",
   forgeRevoke: "orchestration.forgeRevoke",
@@ -2683,6 +2691,37 @@ export const ForgeControlResult = Schema.Union([
 ]);
 export type ForgeControlResult = typeof ForgeControlResult.Type;
 
+export const ForgeExecutionEnvelopeView = Schema.Struct({
+  envelopeId: TradingId,
+  environmentId: TradingId,
+  capabilityId: Schema.NullOr(TradingId),
+  revision: NonNegativeInt,
+  status: ExecutionEnvelopeStatus,
+  envelope: Schema.NullOr(ExecutionEnvelope),
+  proposedAtMs: UnixMillis,
+  approvedAtMs: Schema.NullOr(UnixMillis),
+  approvedVia: Schema.NullOr(Schema.String),
+  revokedAtMs: Schema.NullOr(UnixMillis),
+});
+export type ForgeExecutionEnvelopeView = typeof ForgeExecutionEnvelopeView.Type;
+
+export const ForgeExecutionStateView = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("unavailable"), reason: TrimmedNonEmptyString }),
+  Schema.Struct({ status: Schema.Literal("none"), reason: TrimmedNonEmptyString }),
+  Schema.Struct({
+    status: Schema.Literal("ok"),
+    envelope: ForgeExecutionEnvelopeView,
+    proposals: Schema.Array(PersistedProposalRecord),
+    intents: Schema.Array(SwapIntentRecord),
+    budget: Schema.Struct({
+      remainingInputCapRaw: DecimalIntegerString,
+      settledRaw: DecimalIntegerString,
+      inFlightRaw: DecimalIntegerString,
+    }),
+  }),
+]);
+export type ForgeExecutionStateView = typeof ForgeExecutionStateView.Type;
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
@@ -2811,6 +2850,30 @@ export const OrchestrationRpcSchemas = {
   getForgePoolState: {
     input: OrchestrationGetForgePoolStateInput,
     output: ForgePoolStateView,
+  },
+  getForgeExecutionState: {
+    input: Schema.Struct({ capabilityId: TrimmedNonEmptyString }),
+    output: ForgeExecutionStateView,
+  },
+  forgeExecutionRevoke: {
+    input: Schema.Struct({
+      capabilityId: TrimmedNonEmptyString,
+      envelopeId: TrimmedNonEmptyString,
+    }),
+    output: Schema.Struct({
+      applied: Schema.Boolean,
+      reason: Schema.optional(TrimmedNonEmptyString),
+    }),
+  },
+  forgeDetectorControl: {
+    input: Schema.Struct({
+      capabilityId: TrimmedNonEmptyString,
+      action: Schema.Literals(["arm", "disarm"]),
+    }),
+    output: Schema.Struct({
+      applied: Schema.Boolean,
+      reason: Schema.optional(TrimmedNonEmptyString),
+    }),
   },
   forgePause: {
     input: OrchestrationForgeControlInput,

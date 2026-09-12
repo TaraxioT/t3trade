@@ -58,3 +58,18 @@ read, so the mandate shown is a documented stand-in and is labelled as one.
 Supply the key and restart the server. See the interim signer key section of the
 README. Nothing else changes: the research surfaces behave identically, and the
 research-mode line disappears.
+
+## Research detectors
+
+Ask the agent to combine a configured external source with Graph-backed swap
+facts and build a detector for your condition. Open **Research detectors** in
+that conversation to inspect its reading, explanation, source references and
+last evaluation. Installation does not start monitoring: use **Arm** to start
+scheduled evaluation and **Disarm** to stop it, even when the agent is offline.
+Arming grants no permission to spend. Missing evidence produces an unknown
+reading; an expired or stale reading is not a current match.
+
+**Execution details** shows retained proposals, spending limits and swap drafts.
+You can revoke an approved envelope directly. Uniswap swap submission is not
+enabled in this release: a retained draft or `submit-refused` result means no
+swap was executed. Adding the Hyperliquid key does not enable Uniswap signing.

@@ -81,12 +81,15 @@ describe("RPC authorization scopes", () => {
       ORCHESTRATION_WS_METHODS.getForgePoolSeries,
       ORCHESTRATION_WS_METHODS.getForgeEvidence,
       ORCHESTRATION_WS_METHODS.getForgePoolState,
+      ORCHESTRATION_WS_METHODS.getForgeExecutionState,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
     }
     // The direct controls build standing intent state on the fee-policy
     // service (provider-independent, but a write like every other one).
     for (const method of [
+      ORCHESTRATION_WS_METHODS.forgeExecutionRevoke,
+      ORCHESTRATION_WS_METHODS.forgeDetectorControl,
       ORCHESTRATION_WS_METHODS.forgePause,
       ORCHESTRATION_WS_METHODS.forgeUnpause,
       ORCHESTRATION_WS_METHODS.forgeRevoke,

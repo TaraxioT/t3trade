@@ -223,6 +223,7 @@ import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
 import { TradingPlanDocumentCard } from "./trading/TradingPlanDocumentCard";
 import { ThreadMarketCard } from "./trading/ThreadMarketCard";
+import { DetectorPanel } from "./trading/DetectorPanel";
 import { ThreadMarketPanel } from "./trading/ThreadMarketPanel";
 import { selectThreadPanel } from "./trading/threadMarketPanelState";
 import { useTradingThreadMarketFocus } from "~/lib/tradingThreadMarketState";
@@ -8179,6 +8180,12 @@ export default function ChatView(props: ChatViewProps) {
                       {/* The market graph is the shell's topmost attachment:
                           banners and the sync pill stay above the shell, this
                           drawer docks inside it, above the composer host. */}
+                      {!isDraftHeroState ? (
+                        <DetectorPanel
+                          key={routeThreadKey}
+                          threadRef={{ environmentId, threadId }}
+                        />
+                      ) : null}
                       {threadMarketCard}
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">

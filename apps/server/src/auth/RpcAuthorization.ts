@@ -73,6 +73,9 @@ export const RPC_REQUIRED_SCOPES = {
   // The direct controls build unsigned intents on the fee-policy service with
   // no agent provider in the loop. They change standing intent state, so they
   // are operates, like every other standing-state write.
+  [ORCHESTRATION_WS_METHODS.getForgeExecutionState]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.forgeExecutionRevoke]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_WS_METHODS.forgeDetectorControl]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.forgePause]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.forgeUnpause]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.forgeRevoke]: AuthOrchestrationOperateScope,

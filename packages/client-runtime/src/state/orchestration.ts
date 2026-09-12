@@ -238,6 +238,18 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     // in the loop; the caller needs the refusal (or the built intent) on
     // screen, which is why these are RPC commands rather than dispatched
     // orchestration commands.
+    forgeExecutionState: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:forge-execution-state",
+      tag: ORCHESTRATION_WS_METHODS.getForgeExecutionState,
+    }),
+    forgeExecutionRevoke: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:forge-execution-revoke",
+      tag: ORCHESTRATION_WS_METHODS.forgeExecutionRevoke,
+    }),
+    forgeDetectorControl: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:forge-detector-control",
+      tag: ORCHESTRATION_WS_METHODS.forgeDetectorControl,
+    }),
     forgePause: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:trading:forge-pause",
       tag: ORCHESTRATION_WS_METHODS.forgePause,

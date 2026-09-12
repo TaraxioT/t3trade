@@ -1,3 +1,4 @@
+import { forgeExecutionStateView, forgeExecutionRevokeView } from "./trading/executionBridge.ts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -113,6 +114,7 @@ import {
 import { TradingEventService } from "./trading/TradingEventService.ts";
 import {
   forgeControlView,
+  forgeDetectorControlView,
   forgeEvidenceView,
   forgePoolSeriesView,
   forgePoolStateView,
@@ -2328,6 +2330,33 @@ const makeWsRpcLayer = (
         // fee-policy service. The service mints a fresh idempotency key per
         // call, so each attempt is its own operation identity; nothing here
         // signs or broadcasts — the refusing broadcaster is wired below.
+        [ORCHESTRATION_WS_METHODS.getForgeExecutionState]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getForgeExecutionState,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeExecutionStateView({ ...input, environmentId });
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.forgeExecutionRevoke]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.forgeExecutionRevoke,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeExecutionRevokeView({ ...input, environmentId });
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.forgeDetectorControl]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.forgeDetectorControl,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeDetectorControlView({ ...input, environmentId });
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.forgePause]: (_input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.forgePause,

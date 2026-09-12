@@ -1345,6 +1345,32 @@ export const WsOrchestrationGetForgePoolStateRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationGetForgeExecutionStateRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getForgeExecutionState,
+  {
+    payload: OrchestrationRpcSchemas.getForgeExecutionState.input,
+    success: OrchestrationRpcSchemas.getForgeExecutionState.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+export const WsOrchestrationForgeExecutionRevokeRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.forgeExecutionRevoke,
+  {
+    payload: OrchestrationRpcSchemas.forgeExecutionRevoke.input,
+    success: OrchestrationRpcSchemas.forgeExecutionRevoke.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationForgeDetectorControlRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.forgeDetectorControl,
+  {
+    payload: OrchestrationRpcSchemas.forgeDetectorControl.input,
+    success: OrchestrationRpcSchemas.forgeDetectorControl.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationForgePauseRpc = Rpc.make(ORCHESTRATION_WS_METHODS.forgePause, {
   payload: OrchestrationRpcSchemas.forgePause.input,
   success: OrchestrationRpcSchemas.forgePause.output,
@@ -1587,6 +1613,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetForgePoolSeriesRpc,
   WsOrchestrationGetForgeEvidenceRpc,
   WsOrchestrationGetForgePoolStateRpc,
+  WsOrchestrationGetForgeExecutionStateRpc,
+  WsOrchestrationForgeExecutionRevokeRpc,
+  WsOrchestrationForgeDetectorControlRpc,
   WsOrchestrationForgePauseRpc,
   WsOrchestrationForgeUnpauseRpc,
   WsOrchestrationForgeRevokeRpc,

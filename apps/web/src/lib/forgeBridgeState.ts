@@ -95,7 +95,7 @@ const DISABLED_THREAD_CONTEXT_ATOM: ForgeThreadContextAtom = Atom.make(
  * retained data is on screen — the error is surfaced and the view is marked
  * stale, so retained data can never masquerade as a healthy live signal.
  */
-function useRetainedAtomValue<View, E>(
+export function useRetainedAtomValue<View, E>(
   atom: Atom.Atom<AsyncResult.AsyncResult<View, E>>,
 ): {
   readonly data: View | null;

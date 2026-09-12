@@ -619,7 +619,7 @@ const detectorEvaluationsView = (input: {
           ),
         );
       items.push(
-        latest === null
+        latest === null || latest.version !== capability.version
           ? {
               status: "noEvaluation" as const,
               capabilityId: capability.capabilityId,
@@ -773,3 +773,20 @@ export const forgeControlView = (
           : yield* feePolicy.requestRevoke({ environmentId });
     return mapControlResult(result);
   });
+
+/** Direct detector standing control; never grants execution authority. */
+export const forgeDetectorControlView = Effect.fn("forgeDetectorControlView")(function* (input: {
+  readonly environmentId: string;
+  readonly capabilityId: string;
+  readonly action: "arm" | "disarm";
+}) {
+  const store = yield* Effect.serviceOption(ForgeCapabilityStore);
+  if (Option.isNone(store)) return { applied: false, reason: STORE_UNWIRED_REASON };
+  const applied = yield* store.value[input.action]({
+    environmentId: input.environmentId,
+    capabilityId: input.capabilityId,
+  }).pipe(Effect.mapError((cause) => toSnapshotError("Failed to change detector standing", cause)));
+  return applied
+    ? { applied: true }
+    : { applied: false, reason: "Capability is not actively installed" };
+});

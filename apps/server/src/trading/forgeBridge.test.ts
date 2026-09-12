@@ -55,6 +55,7 @@ import type { ForgeHookState, ForgeIntentRecord } from "./forge/UniswapTestnetAd
 import {
   DETECTOR_RUNS_UNWIRED_REASON,
   forgeControlView,
+  forgeDetectorControlView,
   forgeEvidenceView,
   forgePoolSeriesView,
   forgePoolStateView,
@@ -711,6 +712,11 @@ const capabilityStoreLayer = (input: {
     >
   >;
   readonly builds?: ReadonlyArray<ForgeBuildReceipt>;
+  readonly control?: (input: {
+    environmentId: string;
+    capabilityId: string;
+    action: "arm" | "disarm";
+  }) => boolean;
 }) =>
   Layer.succeed(
     ForgeCapabilityStore,
@@ -735,8 +741,8 @@ const capabilityStoreLayer = (input: {
       pause: () => die,
       resume: () => die,
       uninstall: () => die,
-      arm: () => die,
-      disarm: () => die,
+      arm: (args) => Effect.sync(() => input.control?.({ ...args, action: "arm" }) ?? false),
+      disarm: (args) => Effect.sync(() => input.control?.({ ...args, action: "disarm" }) ?? false),
       recordEvaluation: () => die,
       proposePool: () => die,
       approvePool: () => die,
@@ -1027,6 +1033,37 @@ describe("forgeThreadContextView", () => {
     }),
   );
 
+  it.effect("a replacement version does not inherit the previous version's reading", () =>
+    Effect.gen(function* () {
+      const view = yield* forgeThreadContextView({
+        environmentId: "env-1",
+        threadId: undefined,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            okSources,
+            capabilityStoreLayer({
+              catalog: [{ ...V2_ENTRY, version: V2_ENTRY.version + 1 }],
+              manifests: { [V2_ENTRY.capabilityId]: V2_MANIFEST_JSON },
+              active: {
+                [V2_ENTRY.capabilityId]: {
+                  ...V2_ACTIVE,
+                  version: V2_ENTRY.version + 1,
+                  armed: false,
+                },
+              },
+            }),
+            detectorRunStoreLayer({ latest: committedV2Record() }),
+          ),
+        ),
+      );
+      assert.equal(view.detectorEvaluations?.status, "ok");
+      if (view.detectorEvaluations?.status !== "ok") return;
+      assert.equal(view.detectorEvaluations.items[0]?.status, "noEvaluation");
+      assert.equal(view.detectorEvaluations.items[0]?.version, V2_ENTRY.version + 1);
+    }),
+  );
+
   it.effect("an installed v2 capability with no committed run serves the named absence", () =>
     Effect.gen(function* () {
       const view = yield* forgeThreadContextView({
@@ -1301,6 +1338,62 @@ describe("forgeControlView", () => {
       assert.strictEqual(refused.status, "refused");
       if (refused.status !== "refused") return;
       assert.strictEqual(refused.reason, "locally-paused");
+    }),
+  );
+});
+
+describe("direct detector standing controls", () => {
+  it.effect("refuses an unwired store without inventing standing", () =>
+    Effect.gen(function* () {
+      const result = yield* forgeDetectorControlView({
+        environmentId: "env",
+        capabilityId: "cap",
+        action: "disarm",
+      });
+      assert.equal(result.applied, false);
+    }),
+  );
+  it.effect("forwards both actions in the connected environment without a provider", () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        environmentId: string;
+        capabilityId: string;
+        action: "arm" | "disarm";
+      }> = [];
+      yield* Effect.gen(function* () {
+        for (const action of ["arm", "disarm"] as const) {
+          const result = yield* forgeDetectorControlView({
+            environmentId: "connected",
+            capabilityId: "installed",
+            action,
+          });
+          assert.equal(result.applied, true);
+        }
+        const missing = yield* forgeDetectorControlView({
+          environmentId: "connected",
+          capabilityId: "missing",
+          action: "arm",
+        });
+        assert.equal(missing.applied, false);
+      }).pipe(
+        Effect.provide(
+          capabilityStoreLayer({
+            catalog: [],
+            control: (input) => {
+              calls.push(input);
+              return input.capabilityId === "installed";
+            },
+          }),
+        ),
+      );
+      assert.deepEqual(
+        calls.map((call) => [call.environmentId, call.action]),
+        [
+          ["connected", "arm"],
+          ["connected", "disarm"],
+          ["connected", "arm"],
+        ],
+      );
     }),
   );
 });
