@@ -33,4 +33,5 @@ export * from "./policy.ts";
 export * from "./replay.ts";
 export * from "./researchScenes.ts";
 export * from "./forge.ts";
+export * from "./researchEvidence.ts";
 export * from "./observation.ts";
