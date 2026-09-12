@@ -4429,6 +4429,12 @@ export const handlers = {
             const read = yield* graphResearchOption.value.loadStudyDataset({
               environmentId: scope.environmentId,
               poolId: input.graphSource.poolId,
+              // Explicit lineage: when the caller names the retained dataset a
+              // prior study measured, the loader reuses exactly those bytes or
+              // refuses — it never silently acquires a different capture.
+              ...(input.graphSource.datasetId === undefined
+                ? {}
+                : { datasetId: input.graphSource.datasetId }),
               market: input.market,
               entryBasis,
               occurrences: set.occurrences,
@@ -4507,7 +4513,10 @@ export const handlers = {
           const graphSentence =
             graphDataset === undefined
               ? ""
-              : ` Price and flow source: The Graph (${graphDataset.quoteSymbol} quote units), dataset ${graphDataset.manifest.id} (${graphDataset.manifest.status}, ${graphDataset.manifest.coverage.rows} observations, pinned at block ${graphDataset.manifest.pin?.blockNumber ?? "multiple"}).`;
+              : ` Price and flow source: The Graph (${graphDataset.quoteSymbol} quote units), dataset ${graphDataset.manifest.id} (${graphDataset.manifest.status}${graphDataset.reused ? ", reused from retention" : ""}, ${graphDataset.manifest.coverage.rows} observations, pinned at block ${graphDataset.manifest.pin?.blockNumber ?? "multiple"}).` +
+                (graphDataset.partialReason === undefined
+                  ? ""
+                  : ` Acquisition stopped early: ${graphDataset.partialReason}; rows outside the covered span are reported uncovered, not extrapolated.`);
           return eventsResult({
             study: featureStudy,
             outcome:
@@ -4677,6 +4686,12 @@ export const handlers = {
             const read = yield* graphResearchOption.value.loadStudyDataset({
               environmentId: scope.environmentId,
               poolId: input.graphSource.poolId,
+              // Explicit lineage: when the caller names the retained dataset a
+              // prior study measured, the loader reuses exactly those bytes or
+              // refuses — it never silently acquires a different capture.
+              ...(input.graphSource.datasetId === undefined
+                ? {}
+                : { datasetId: input.graphSource.datasetId }),
               market: input.market,
               entryBasis,
               occurrences: set.occurrences,
@@ -4867,7 +4882,10 @@ export const handlers = {
             },
             outcome:
               `${report.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence} ` +
-              `Published to this thread's graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
+              (graphDataset === undefined
+                ? ""
+                : ` Price and flow source: The Graph dataset ${graphDataset.manifest.id} (${graphDataset.manifest.status}${graphDataset.reused ? ", reused from retention" : ""}).`) +
+              ` Published to this thread's graph: ${coveredWindows} of ${occurrenceWindows.length} occurrence window(s) covered, ` +
               "calendar and event-aligned views — press Open on graph to focus it. " +
               `${RESEARCH_DISCLAIMER}`,
           });

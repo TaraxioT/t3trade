@@ -1486,9 +1486,18 @@ export const TradingEventsInput = Schema.Struct({
    * aggregated from retained, pinned Uniswap swap observations for this
    * vetted pool, and every row carries the window's net flow, distinct
    * participants, and trade count from the SAME retained bytes. Absent (the
-   * default) means the archive study unchanged.
+   * default) means the archive study unchanged. An optional `datasetId`
+   * reuses one specific retained dataset — the lineage path a publication
+   * takes to guarantee it rendered the exact capture an earlier study
+   * measured; the service refuses when that dataset does not cover the
+   * study's window or fails integrity verification.
    */
-  graphSource: Schema.optional(Schema.Struct({ poolId: Schema.String.check(Schema.isNonEmpty()) })),
+  graphSource: Schema.optional(
+    Schema.Struct({
+      poolId: Schema.String.check(Schema.isNonEmpty()),
+      datasetId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+    }),
+  ),
   action: Schema.optional(TradingEventsAction),
   /** Required by everything except `record`, `preview` and `list`. */
   eventSetId: Schema.optional(Schema.String),

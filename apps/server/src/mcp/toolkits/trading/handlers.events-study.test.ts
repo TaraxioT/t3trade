@@ -753,6 +753,7 @@ const graphHandlerDataset = (): GraphStudyDataset => {
     candles: observationsToCandles(observations, { intervalMs: GRAPH_HOUR }),
     quoteDecimals: 6,
     quoteSymbol: "USDC",
+    reused: false,
     manifest: {
       id: "dataset-graph-handler",
       environmentId: "env-study-graph",
@@ -847,6 +848,66 @@ it.live(
     );
   },
 );
+
+it.live("publishing with an explicit datasetId forwards the lineage to the loader", () => {
+  const calls: Array<Parameters<GraphResearchServiceShape["loadStudyDataset"]>[0]> = [];
+  const dataset = graphHandlerDataset();
+  return Effect.gen(function* () {
+    yield* runMigrations({});
+    const events = yield* TradingEventService;
+    const recorded = yield* events.record({
+      name: "Graph lineage release",
+      occurrences: [
+        {
+          startAt: GRAPH_START - 1000,
+          endAt: GRAPH_START,
+          source: "https://example.com/lineage",
+        },
+      ],
+      threadId: "thread-study-graph",
+      author: "agent",
+      now: GRAPH_START + 5 * GRAPH_HOUR,
+    });
+    assert.equal(recorded.outcome, "ok");
+    const eventSetId = recorded.outcome === "ok" ? recorded.set.eventSetId : "";
+    // The study acquires on its own (no datasetId forwarded); publication
+    // then names the dataset the study reported, and the loader receives
+    // exactly that identity — the handler never invents or drops it.
+    const studied = yield* handlers.trading_events({
+      action: "study",
+      eventSetId,
+      market: "ETH",
+      interval: "1h",
+      horizonBars: 2,
+      graphSource: { poolId: GRAPH_POOL },
+    });
+    assert.include("outcome" in studied ? studied.outcome : "", `dataset ${dataset.manifest.id}`);
+    assert.isUndefined(calls[0]?.datasetId);
+    const published = yield* handlers.trading_chart({
+      action: "publish_event_study",
+      eventSetId,
+      market: "ETH",
+      interval: "1h",
+      horizonBars: 2,
+      graphSource: { poolId: GRAPH_POOL, datasetId: dataset.manifest.id },
+    });
+    const scene = "scene" in published ? published.scene : undefined;
+    assert.isDefined(scene, debugJson(published));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1]?.datasetId, dataset.manifest.id);
+    assert.equal(scene?.eventStudy?.graphDataset?.datasetId, dataset.manifest.id);
+  }).pipe(
+    Effect.provide(
+      graphHandlerLayers({
+        loadStudyDataset: (input) =>
+          Effect.sync(() => {
+            calls.push(input);
+            return { status: "ok" as const, dataset };
+          }),
+      }),
+    ),
+  );
+});
 
 it.live("both Graph study handlers refuse unavailable evidence without archive fallback", () =>
   Effect.gen(function* () {

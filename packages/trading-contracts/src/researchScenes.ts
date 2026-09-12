@@ -592,9 +592,18 @@ export const TradingChartInput = Schema.Struct({
    * Publish the event study over Graph-derived data instead of the
    * Hyperliquid archive (same meaning as `trading_events`' `graphSource`):
    * the scene names the dataset it rendered, and every row carries its
-   * Graph-derived flow features.
+   * Graph-derived flow features. An optional `datasetId` publishes from one
+   * specific retained dataset — the lineage path that guarantees the scene
+   * renders the exact capture an earlier study measured instead of silently
+   * acquiring a different one; the service refuses when that dataset does
+   * not cover the study's window or fails integrity verification.
    */
-  graphSource: Schema.optional(Schema.Struct({ poolId: Schema.String.check(Schema.isNonEmpty()) })),
+  graphSource: Schema.optional(
+    Schema.Struct({
+      poolId: Schema.String.check(Schema.isNonEmpty()),
+      datasetId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+    }),
+  ),
   /** Attribution, never authority: a scene takes no mission state. */
   missionId: Schema.optional(Schema.String),
   action: Schema.optional(TradingChartAction),
