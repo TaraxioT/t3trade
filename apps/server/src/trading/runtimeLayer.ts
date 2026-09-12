@@ -93,6 +93,7 @@ import {
 } from "./forge/GraphSource.ts";
 import { ForgeSourceReadsLive } from "./forge/ForgeSourceReads.ts";
 import { DetectorFactWindowLive } from "./forge/DetectorFactWindow.ts";
+import { ExecutionPolicyServiceLive } from "./forge/ExecutionPolicyService.ts";
 import { GraphResearchService, makeGraphResearchService } from "./research/GraphResearchService.ts";
 import { ExternalSourceStoreLive } from "./research/ExternalSourceStore.ts";
 import {
@@ -175,6 +176,17 @@ const forgeWindow = ForgeSourceWindowLive.pipe(
 const detectorFactWindow = DetectorFactWindowLive.pipe(
   Layer.provide(ForgeSourceStoreLive),
   Layer.provide(ExternalSourceStoreLive),
+);
+// P5.3: the execution-policy evaluator and durable envelope store (migration
+// 106 tables) over the SAME store, sandbox, and detector-run instances the
+// wiring above builds (layer memoization — no second anything). Envelope
+// approval stays a direct user-service act; this service only proposes and
+// persists. SQL + contained runs only — nothing here reaches an order, a
+// signer, or an exchange.
+const executionPolicyService = ExecutionPolicyServiceLive.pipe(
+  Layer.provide(forgeStore),
+  Layer.provide(forgeSandbox),
+  Layer.provide(DetectorRunStoreLive),
 );
 const forgeBuilder = ForgeCapabilityBuilderLive.pipe(
   Layer.provide(forgeStore),
@@ -567,6 +579,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // SQL-backed forge services use. Additive — nothing here reaches an order,
   // a signer, or an exchange.
   DetectorRunStoreLive,
+  // P5.3 execution-policy evaluator + envelope store (migration 106). Built
+  // on the shared forge store/sandbox/detector-run instances; the SqlClient
+  // rides the same ambient provision the other SQL-backed services use.
+  executionPolicyService,
   // The periodic sweep that enqueues v2 evaluations for armed detectors with
   // no provider turn in the loop. Starts and stops with this layer; every
   // tick re-checks the lease, so only the trading-lease owner ever enqueues.

@@ -205,7 +205,7 @@ test("unknown modes refuse by name", async () => {
   const run = await drive("evaluate-v3", { "sdk.ts": V2_SDK, "detector.ts": V2_DETECTOR });
   assert.ok(run.error instanceof Error);
   assert.equal(run.error.message, "unknown runner mode");
-  assert.deepEqual(MODES, ["typecheck", "test", "evaluate", "evaluate-v2"]);
+  assert.deepEqual(MODES, ["typecheck", "test", "evaluate", "evaluate-v2", "evaluate-policy"]);
 });
 
 // -- shared modes over both bundle generations ---------------------------------
@@ -320,6 +320,135 @@ export const detect: Detect = () => ({ result: { status: "not-matched", evidence
   );
   assert.ok(oversizeOutput.error instanceof Error);
   assert.equal(oversizeOutput.error.message, "invalid output size");
+});
+
+// -- evaluate-policy ------------------------------------------------------------
+
+// The policy-side SDK additions the generated policy imports from ./sdk. The
+// detector-side types are shared, so this fixture extends V2_SDK with the
+// policy vocabulary (envelope opaque to the runner; the host validates it).
+const POLICY_SDK = `${V2_SDK}
+export type DetectorResultForPolicy =
+  | { readonly status: "matched"; readonly occurrenceKey: string; readonly validUntilMs: number }
+  | { readonly status: "not-matched"; readonly explanation: string }
+  | { readonly status: "unknown"; readonly explanation: string };
+export type PersistedProposalSummary = {
+  readonly stageKey: string;
+  readonly kind: "wait" | "price" | "swap" | "stop-future-actions" | "complete";
+  readonly amountInRaw?: string;
+  readonly occurredAtMs: number;
+};
+export type PolicyInput = {
+  readonly policySchemaVersion: 2;
+  readonly asOfMs: number;
+  readonly envelope: unknown;
+  readonly detectorEvaluation: {
+    readonly evaluationId: string;
+    readonly asOfMs: number;
+    readonly result: DetectorResultForPolicy;
+  };
+  readonly priorProposals: ReadonlyArray<PersistedProposalSummary>;
+  readonly remainingInputCapRaw: string;
+  readonly priorState?: unknown;
+};
+export type PolicyOutput = { readonly proposal: unknown; readonly nextState: unknown };
+export type Propose = (input: PolicyInput) => PolicyOutput;
+`;
+
+const V2_POLICY = `import type { PolicyInput, PolicyOutput, Propose } from "./sdk";
+export const propose: Propose = (input: PolicyInput): PolicyOutput => {
+  const prior = input.priorState as { runs?: number } | null | undefined;
+  const runs = ((prior === null || prior === undefined ? 0 : prior.runs) ?? 0) + 1;
+  const evaluation = input.detectorEvaluation;
+  if (evaluation.result.status !== "matched") return { proposal: { kind: "wait" }, nextState: { runs } };
+  return {
+    proposal: {
+      kind: "swap",
+      candidateId: "cand_1",
+      amountInRaw: "1000000",
+      quoteId: "sq_1",
+      occurrenceKey: evaluation.result.occurrenceKey,
+      stageKey: "entry",
+      detectorEvaluationId: evaluation.evaluationId,
+    },
+    nextState: { runs },
+  };
+};
+`;
+
+const policyInput = (priorState, stageKeys) =>
+  JSON.stringify({
+    policySchemaVersion: 2,
+    asOfMs: 1_700_000_060_000,
+    envelope: { revision: 1 },
+    detectorEvaluation: {
+      evaluationId: "dtev_1",
+      asOfMs: 1_700_000_050_000,
+      result: { status: "matched", occurrenceKey: "occ-1", validUntilMs: 1_700_000_120_000 },
+    },
+    priorProposals: (stageKeys ?? []).map((stageKey) => ({
+      stageKey,
+      kind: "swap",
+      amountInRaw: "1000000",
+      occurredAtMs: 1_700_000_055_000,
+    })),
+    remainingInputCapRaw: "9000000",
+    ...(priorState === undefined ? {} : { priorState }),
+  });
+
+test("evaluate-policy runs the sync propose export and echoes { proposal, nextState }", async () => {
+  const first = await drive(
+    "evaluate-policy",
+    { "sdk.ts": POLICY_SDK, "policy.ts": V2_POLICY },
+    policyInput(undefined, []),
+  );
+  assert.equal(first.error, undefined);
+  assert.equal(first.exitCode, undefined);
+  assert.deepEqual(JSON.parse(first.stdout), {
+    proposal: {
+      kind: "swap",
+      candidateId: "cand_1",
+      amountInRaw: "1000000",
+      quoteId: "sq_1",
+      occurrenceKey: "occ-1",
+      stageKey: "entry",
+      detectorEvaluationId: "dtev_1",
+    },
+    nextState: { runs: 1 },
+  });
+
+  // priorState flows through: the second run carries the first's counter.
+  const second = await drive(
+    "evaluate-policy",
+    { "sdk.ts": POLICY_SDK, "policy.ts": V2_POLICY },
+    policyInput({ runs: 41 }, []),
+  );
+  assert.deepEqual(JSON.parse(second.stdout).nextState, { runs: 42 });
+});
+
+test("evaluate-policy refuses an async propose by name", async () => {
+  const asyncPolicy = `${V2_POLICY.replace("export const propose: Propose", "const proposeImpl: Propose")}`;
+  const asyncWrap = `${asyncPolicy}\nexport const propose = async (input: Parameters<Propose>[0]) => proposeImpl(input);\nexport type Propose2 = typeof propose;\n`;
+  const run = await drive(
+    "evaluate-policy",
+    {
+      "sdk.ts": POLICY_SDK,
+      "policy.ts": asyncWrap,
+    },
+    policyInput(undefined, []),
+  );
+  assert.ok(run.error instanceof Error, "the async guard must throw");
+  assert.equal(run.error.message, "propose must be synchronous");
+});
+
+test("evaluate-policy refuses a policy without the propose export by name", async () => {
+  const run = await drive(
+    "evaluate-policy",
+    { "sdk.ts": POLICY_SDK, "policy.ts": "export const notPropose = 1;\n" },
+    policyInput(undefined, []),
+  );
+  assert.ok(run.error instanceof Error, "the missing-export guard must throw");
+  assert.equal(run.error.message, "propose export missing");
 });
 
 // -- v1 evaluate unchanged -------------------------------------------------------

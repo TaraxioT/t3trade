@@ -220,16 +220,26 @@ export const DETECTOR_SDK_SCHEMA_VERSION = 2;
  *
  * Types, the state-envelope helpers, the toy test harness, and the SYNC entry
  * signature ONLY — mirroring `detectorProgram.ts` in trading-contracts field
- * for field. The invariants containment enforces and this SDK assumes: NO
+ * for field, plus (since P5.3) the execution-policy vocabulary mirroring
+ * `executionPolicy.ts`: the envelope, the proposal union, the bounded
+ * detector-result summary, the prior-proposal summary, `PolicyInput` /
+ * `PolicyOutput`, and the SYNC `Propose` entry the optional `policy.ts`
+ * artifact exports. The state-envelope helpers are shared between the two
+ * entries — same wrapper, same byte cap, separate lineages.
+ *
+ * The invariants containment enforces and this SDK assumes: NO
  * clock (`asOfMs` is the only time a detector ever sees), NO network or fetch,
- * NO environment or process access, NO host callbacks. `detect` is
- * synchronous and pure over the sealed input — the same input, including
- * `priorState`, must produce the same `{ result, nextState }`. Changing this
- * contract is a detector SDK schema-version bump, never an in-place edit.
+ * NO environment or process access, NO host callbacks. `detect` and `propose`
+ * are synchronous and pure over the sealed input — the same input, including
+ * `priorState`, must produce the same output. Changing this contract is a
+ * detector SDK schema-version bump, never an in-place edit; the policy
+ * additions below are additive types, so a bundle that declares the sdk
+ * artifact hash against these bytes is simply a newer-generation bundle.
  */
 export const FORGE_SDK_SOURCE_V2 = `/**
  * T3 Forge detector-program SDK — schema version ${DETECTOR_SDK_SCHEMA_VERSION}.
- * Host-owned contract; a detector imports nothing else.
+ * Host-owned contract; a detector (and, when your bundle declares one, your
+ * execution policy) imports nothing else.
  *
  * Invariants: you have NO clock (asOfMs is the only time you will ever see),
  * NO network or fetch, NO environment or process access, and NO host
@@ -434,6 +444,103 @@ export async function runRegisteredTests(): Promise<number> {
 /** The entrypoint every detector exports. Synchronous and pure: the same
  *  input — including priorState — must produce the same result and nextState. */
 export type Detect = (input: DetectorProgramInput) => DetectorProgramOutput;
+
+// -- execution-policy vocabulary (mirrors trading-contracts executionPolicy) --
+
+/** An EVM address the execution vocabulary keys on: 0x + exactly 40 hex chars. */
+export type ExecutionEvmAddress = string;
+
+/** One predeclared swap an envelope authorizes. Amount-free: caps live on the envelope. */
+export type SwapCandidate = {
+  readonly candidateId: string;
+  readonly chainId: string;
+  readonly tokenIn: ExecutionEvmAddress;
+  readonly tokenOut: ExecutionEvmAddress;
+  readonly recipient: ExecutionEvmAddress;
+  readonly label?: string;
+};
+
+/** The immutable user-approved grant the policy proposes INSIDE. The host
+ *  verifies every field before the input reaches you; you can never widen it. */
+export type ExecutionEnvelope = {
+  readonly revision: number;
+  readonly environmentId: string;
+  readonly accountId: string;
+  readonly expiresAtMs: number;
+  readonly detectorBundleSha256: string;
+  readonly policyBundleSha256: string;
+  readonly candidates: ReadonlyArray<SwapCandidate>;
+  readonly inputCapTotalRaw: string;
+  readonly inputCapPerSwapRaw: string;
+  readonly maxGasWei: string;
+  readonly maxSlippageBps: number;
+  readonly maxTransactions: number;
+  readonly maxConcurrentIntents: number;
+};
+
+/** One decision you emit. The host validates it against the envelope and the
+ *  budget before persisting; a swap proposal carries no spending authority of
+ *  its own — never expect the host to clamp an out-of-cap amount to fit. */
+export type ExecutionProposal =
+  | { readonly kind: "wait" }
+  | { readonly kind: "price"; readonly candidateId: string; readonly reason: string }
+  | {
+      readonly kind: "swap";
+      readonly candidateId: string;
+      readonly amountInRaw: string;
+      readonly quoteId: string;
+      readonly occurrenceKey: string;
+      readonly stageKey: string;
+      readonly detectorEvaluationId: string;
+    }
+  | { readonly kind: "stop-future-actions"; readonly reason: string }
+  | { readonly kind: "complete"; readonly summary: string };
+
+/** The bounded three-shape detector summary you receive. Only a matched
+ *  evaluation ever reaches propose(); the other outcomes are valid
+ *  non-actions the host returns without running you. */
+export type DetectorResultForPolicy =
+  | { readonly status: "matched"; readonly occurrenceKey: string; readonly validUntilMs: number }
+  | { readonly status: "not-matched"; readonly explanation: string }
+  | { readonly status: "unknown"; readonly explanation: string };
+
+/** One already-persisted proposal, newest-last, at most 20 of them. */
+export type PersistedProposalSummary = {
+  readonly stageKey: string;
+  readonly kind: "wait" | "price" | "swap" | "stop-future-actions" | "complete";
+  readonly amountInRaw?: string;
+  readonly occurredAtMs: number;
+};
+
+/** Everything you are fed, exactly (policy schema version 2). */
+export type PolicyInput = {
+  readonly policySchemaVersion: 2;
+  readonly asOfMs: number;
+  readonly envelope: ExecutionEnvelope;
+  readonly detectorEvaluation: {
+    readonly evaluationId: string;
+    readonly asOfMs: number;
+    readonly result: DetectorResultForPolicy;
+  };
+  readonly priorProposals: ReadonlyArray<PersistedProposalSummary>;
+  readonly remainingInputCapRaw: string;
+  readonly priorState?: unknown;
+};
+
+/** What you return: one proposal plus the state carried to your next run.
+ *  nextState is a DetectorStateEnvelope — the SAME wrapper and byte cap the
+ *  detector uses, but a SEPARATE lineage: your state rows never mix with the
+ *  detector's. */
+export type PolicyOutput = {
+  readonly proposal: ExecutionProposal;
+  readonly nextState: unknown;
+};
+
+/** The entrypoint every execution policy exports. Synchronous and pure: the
+ *  same input — including priorState — must produce the same proposal and
+ *  nextState. No clock (asOfMs is the only time you see), no network or fetch,
+ *  no environment or process access, no host callbacks. */
+export type Propose = (input: PolicyInput) => PolicyOutput;
 `;
 
 /** The v2 authoring brief's data-schema prose, rendered once. */
@@ -666,6 +773,13 @@ export function validateAuthoredDetectorArtifacts(input: {
       return { status: "refused", reason: `${path} is empty` };
     }
   }
+  // A declared execution policy is a program too: empty bytes are not one.
+  // Generated tests for policy.ts stay OPTIONAL (the artifact closure does
+  // not require them) — only the program file itself must be non-empty.
+  const declaresPolicy = parsed.artifacts.some((artifact) => artifact.role === "execution-policy");
+  if (declaresPolicy && (input.contents["policy.ts"] ?? "").trim() === "") {
+    return { status: "refused", reason: "policy.ts is empty" };
+  }
   // The sdk role pins the SDK generation: its declared hash must be the exact
   // bytes this server mounts at sdk.ts.
   const sdkArtifact = parsed.artifacts.find((artifact) => artifact.role === "sdk");
@@ -684,13 +798,19 @@ export function validateAuthoredDetectorArtifacts(input: {
     }
   }
   // Imports: the authored program may reference the SDK, the detector entry,
-  // and the optional modules its manifest declared — nothing else.
+  // and the optional modules its manifest declared — nothing else. A declared
+  // execution policy widens the set with ./policy exactly as a declared
+  // transform widens it with ./transform (policy.ts imports ./sdk; other
+  // authored files may import ./policy).
   const allowedImports = new Set<string>(["./sdk", "./detector"]);
   if (parsed.artifacts.some((artifact) => artifact.role === "transform")) {
     allowedImports.add("./transform");
   }
   if (parsed.artifacts.some((artifact) => artifact.role === "state-schema")) {
     allowedImports.add("./state-schema");
+  }
+  if (declaresPolicy) {
+    allowedImports.add("./policy");
   }
   for (const path of names) {
     if (!path.endsWith(".ts")) continue;

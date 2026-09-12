@@ -70,6 +70,20 @@ digest and re-pin the printed `t3-forge-runner@sha256:<digest>` before any
 v2 capability runs — the server refuses v2 entrypoints against an old image
 with a plain `nonzero_exit`/`invalid_request` failure, never a fallback.
 
+## Execution-policy mode
+
+`forge-evaluate-policy` is a fifth shim: it reads a sealed policy-program input
+JSON (`PolicyProgramInputV2` — envelope, detector evaluation, prior proposals,
+remaining budget, prior state) from stdin, requires the compiled `policy.ts`,
+and calls its exported `propose` — which must be synchronous; an async return
+or a missing export is a named error (`propose must be synchronous` /
+`propose export missing`), the same guard style as `detect`. The stdout is the
+`{ proposal, nextState }` JSON under the shared output cap. Generated tests for
+`policy.ts` are optional by the artifact closure, so the smoke bundle carries
+none and the evaluate compile simply excludes `*.test.ts` as everywhere else.
+Same rebuild rule as above: the mode exists only in an image rebuilt after
+this shim was added.
+
 ## No model-authored Dockerfile is ever built
 
 The only Dockerfile in play is the host-reviewed one in this directory, fed a

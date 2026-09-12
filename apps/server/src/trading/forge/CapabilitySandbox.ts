@@ -50,6 +50,21 @@ export function forgeSha256Hex(content: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Entrypoints — the pinned runner image's contract
+// ---------------------------------------------------------------------------
+
+/**
+ * The execution-policy evaluation head: the runner image's `evaluate-policy`
+ * mode shim (compiled `policy.ts`, sync `propose` export, `{ proposal,
+ * nextState }` stdout). Its siblings — the typecheck/test/evaluate and
+ * detector-v2 heads — live in `CapabilityBuilder.ts` beside the SDK sources
+ * they pin; this one lives here so the policy evaluator depends on the
+ * sandbox alone. Distinct heads so a scripted runner (and the image itself)
+ * can never confuse one step for another.
+ */
+export const FORGE_RUNNER_EVALUATE_POLICY = ["forge-evaluate-policy"] as const;
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 

@@ -880,6 +880,80 @@ const goodDetectorArtifacts = (version = 1): Record<string, string> => ({
   "manifest.json": v2ManifestJson(version),
 });
 
+/** A fixture execution policy: entry on the first matched evaluation, exit on
+ * a NEW one, the same swap re-emitted for a re-run of the same evaluation (the
+ * host collapses that onto the existing stage). Two stages, evidence-driven. */
+const v2PolicySource = [
+  'import type { DetectorStateEnvelope, PolicyInput, PolicyOutput, Propose } from "./sdk";',
+  "export const propose: Propose = (input: PolicyInput): PolicyOutput => {",
+  "  const envelope = input.priorState as DetectorStateEnvelope | null | undefined;",
+  "  const prior = (envelope === null || envelope === undefined ? {} : envelope.state) as {",
+  "    entryFor?: string;",
+  "    runs?: number;",
+  "  };",
+  "  const runs = (prior.runs ?? 0) + 1;",
+  "  const carry = { ...prior, runs };",
+  "  const evaluation = input.detectorEvaluation;",
+  "  const result = evaluation.result;",
+  '  if (result.status !== "matched")',
+  '    return { proposal: { kind: "wait" }, nextState: { stateSchemaVersion: 1, state: carry } };',
+  "  const matched = result;",
+  "  const candidate = input.envelope.candidates[0];",
+  "  if (candidate === undefined)",
+  '    return { proposal: { kind: "wait" }, nextState: { stateSchemaVersion: 1, state: carry } };',
+  '  const hasEntry = input.priorProposals.some((proposal) => proposal.stageKey === "entry");',
+  "  const swap = (stageKey: string) => ({",
+  '    kind: "swap" as const,',
+  "    candidateId: candidate.candidateId,",
+  '    amountInRaw: "1000000000000000",',
+  '    quoteId: "sq_fixture",',
+  "    occurrenceKey: matched.occurrenceKey,",
+  "    stageKey,",
+  "    detectorEvaluationId: evaluation.evaluationId,",
+  "  });",
+  "  if (!hasEntry)",
+  "    return {",
+  '      proposal: swap("entry"),',
+  "      nextState: { stateSchemaVersion: 1, state: { ...carry, entryFor: evaluation.evaluationId } },",
+  "    };",
+  "  if (prior.entryFor === evaluation.evaluationId)",
+  "    // Same evaluation, entry already proposed: re-emit the identical swap so",
+  "    // the host's stage uniqueness collapses it, never double-proposes.",
+  '    return { proposal: swap("entry"), nextState: { stateSchemaVersion: 1, state: carry } };',
+  "  return {",
+  '    proposal: swap("exit"),',
+  "    nextState: {",
+  "      stateSchemaVersion: 1,",
+  "      state: { ...carry, entryFor: prior.entryFor, exitFor: evaluation.evaluationId },",
+  "    },",
+  "  };",
+  "};",
+].join("\n");
+
+const v2ManifestJsonWithPolicy = (version: number, capabilityId = DETECTOR_CAPABILITY): string =>
+  JSON.stringify({
+    manifestVersion: 2,
+    capabilityId,
+    version,
+    semantics: "boolean-flag detector with a two-stage execution policy",
+    requiredSourceIds: ["src_graph_1"],
+    outputFactKeys: ["flag"],
+    artifacts: [
+      { role: "sdk", path: "sdk.ts", sha256: forgeSha256Hex(FORGE_SDK_SOURCE_V2) },
+      { role: "detector", path: "detector.ts", sha256: forgeSha256Hex(v2DetectorSource) },
+      { role: "acceptance", path: "detector.test.ts", sha256: forgeSha256Hex(v2DetectorTest) },
+      { role: "execution-policy", path: "policy.ts", sha256: forgeSha256Hex(v2PolicySource) },
+    ],
+    createdAtMs: 1_700_000_000_000,
+  });
+
+const goodPolicyArtifacts = (version = 1): Record<string, string> => ({
+  "detector.ts": v2DetectorSource,
+  "detector.test.ts": v2DetectorTest,
+  "policy.ts": v2PolicySource,
+  "manifest.json": v2ManifestJsonWithPolicy(version),
+});
+
 const v2EvidenceRef = {
   id: "ev_1",
   environmentId: DETECTOR_ENV,
@@ -1135,6 +1209,83 @@ describe("detector v2 static artifact validation", () => {
     });
     assert.equal(oversized.status, "refused");
     if (oversized.status === "refused") assert.include(oversized.reason, "cap");
+  });
+
+  it("accepts a bundle declaring an execution policy, and gates policy.ts exactly like a program", () => {
+    // The declared bundle: detector + tests + policy.ts under the sdk pin.
+    const good = validateAuthoredDetectorArtifacts({
+      contents: goodPolicyArtifacts(1),
+      expectedCapabilityId: DETECTOR_CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(good.status, "ok");
+
+    // An undeclared policy.ts file is an unexpected file: the bundle must be
+    // exactly the declared role set.
+    const undeclared = validateAuthoredDetectorArtifacts({
+      contents: { ...goodPolicyArtifacts(1), "manifest.json": v2ManifestJson(1) },
+      expectedCapabilityId: DETECTOR_CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(undeclared.status, "refused");
+    if (undeclared.status === "refused")
+      assert.include(undeclared.reason, "detector bundle must be exactly");
+
+    // A hostile import from policy.ts refuses by name, whatever the manifest says.
+    const hostilePolicy = v2PolicySource.replace(
+      'import type { DetectorStateEnvelope, PolicyInput, PolicyOutput, Propose } from "./sdk";',
+      'import { read } from "node:fs";\nimport type { Propose } from "./sdk";\nexport const r = read;',
+    );
+    const hostile = validateAuthoredDetectorArtifacts({
+      contents: {
+        ...goodPolicyArtifacts(1),
+        "policy.ts": hostilePolicy,
+        "manifest.json": v2ManifestJsonWithPolicy(1).replace(
+          forgeSha256Hex(v2PolicySource),
+          forgeSha256Hex(hostilePolicy),
+        ),
+      },
+      expectedCapabilityId: DETECTOR_CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(hostile.status, "refused");
+    if (hostile.status === "refused") assert.include(hostile.reason, "node:fs");
+
+    // An undeclared optional module import refuses: ./policy is in the set
+    // only because this manifest declares the role, and ./transform is not.
+    const undeclaredTransform = validateAuthoredDetectorArtifacts({
+      contents: {
+        ...goodPolicyArtifacts(1),
+        "policy.ts": `${v2PolicySource}import type { Never } from "./transform";\nexport const never: Never | null = null;\n`,
+        "manifest.json": v2ManifestJsonWithPolicy(1).replace(
+          forgeSha256Hex(v2PolicySource),
+          forgeSha256Hex(
+            `${v2PolicySource}import type { Never } from "./transform";\nexport const never: Never | null = null;\n`,
+          ),
+        ),
+      },
+      expectedCapabilityId: DETECTOR_CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(undeclaredTransform.status, "refused");
+    if (undeclaredTransform.status === "refused")
+      assert.include(undeclaredTransform.reason, "./transform");
+
+    // Empty policy bytes are not a program.
+    const empty = validateAuthoredDetectorArtifacts({
+      contents: {
+        ...goodPolicyArtifacts(1),
+        "policy.ts": "   ",
+        "manifest.json": v2ManifestJsonWithPolicy(1).replace(
+          forgeSha256Hex(v2PolicySource),
+          forgeSha256Hex("   "),
+        ),
+      },
+      expectedCapabilityId: DETECTOR_CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(empty.status, "refused");
+    if (empty.status === "refused") assert.include(empty.reason, "policy.ts is empty");
   });
 });
 
@@ -1503,6 +1654,169 @@ describe("the v2 SDK string compiles and runs under the runner's tsc contract", 
       const output = detect(matchedCase.input);
       assert.deepEqual(output.result, matchedCase.expected.result);
       assert.deepEqual(output.nextState, matchedCase.expected.nextState);
+    } finally {
+      await NodeFs.rm(workDir, { recursive: true, force: true });
+      await NodeFs.rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it("compiles FORGE_SDK_SOURCE_V2 with a fixture policy under --strict, and the sync propose entry runs", async () => {
+    const resolved = resolveTsc();
+    if (resolved === null)
+      assert.fail("a local typescript compiler must exist to compile the SDK string");
+    const tscPath = resolved;
+    const workDir = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-sdk-policy-"));
+    const outDir = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-sdk-policy-out-"));
+    try {
+      await NodeFs.writeFile(NodePath.join(workDir, "sdk.ts"), FORGE_SDK_SOURCE_V2, "utf8");
+      await NodeFs.writeFile(NodePath.join(workDir, "policy.ts"), v2PolicySource, "utf8");
+      const compiled = spawnSync(
+        process.execPath,
+        [
+          tscPath,
+          "--strict",
+          "--target",
+          "ES2022",
+          "--lib",
+          "ES2022",
+          "--module",
+          "commonjs",
+          "--moduleResolution",
+          "node",
+          "--ignoreDeprecations",
+          "6.0",
+          "--skipLibCheck",
+          "--outDir",
+          outDir,
+          NodePath.join(workDir, "policy.ts"),
+          NodePath.join(workDir, "sdk.ts"),
+        ],
+        { encoding: "utf8", maxBuffer: 64 * 1024, cwd: workDir },
+      );
+      assert.equal(
+        compiled.status,
+        0,
+        `the v2 SDK policy vocabulary must compile under the runner's flags: ${compiled.stdout}${compiled.stderr}`,
+      );
+
+      const policyJs = NodePath.join(outDir, "policy.js");
+      const imported = (await import(pathToFileURL(policyJs).href)) as unknown as {
+        readonly propose?: (input: unknown) => {
+          readonly proposal: unknown;
+          readonly nextState: unknown;
+        };
+        readonly default?: {
+          readonly propose: (input: unknown) => {
+            readonly proposal: unknown;
+            readonly nextState: unknown;
+          };
+        };
+      };
+      const propose = imported.propose ?? imported.default?.propose;
+      assert.isDefined(propose, "the compiled policy must export propose");
+      if (propose === undefined) throw new Error("unreachable");
+
+      // First matched evaluation, no prior proposals or state: the entry swap.
+      const input = {
+        policySchemaVersion: 2 as const,
+        asOfMs: 1_700_000_060_000,
+        envelope: {
+          revision: 1,
+          environmentId: DETECTOR_ENV,
+          accountId: "acct-1",
+          expiresAtMs: 1_700_000_600_000,
+          detectorBundleSha256: "a".repeat(64),
+          policyBundleSha256: "b".repeat(64),
+          candidates: [
+            {
+              candidateId: "cand_1",
+              chainId: "11155111",
+              tokenIn: "0x" + "a".repeat(40),
+              tokenOut: "0x" + "b".repeat(40),
+              recipient: "0x" + "c".repeat(40),
+            },
+          ],
+          inputCapTotalRaw: "1000000000000000000",
+          inputCapPerSwapRaw: "100000000000000",
+          maxGasWei: "200000000000000000",
+          maxSlippageBps: 50,
+          maxTransactions: 4,
+          maxConcurrentIntents: 2,
+        },
+        detectorEvaluation: {
+          evaluationId: "dtev_first",
+          asOfMs: 1_700_000_050_000,
+          result: {
+            status: "matched" as const,
+            occurrenceKey: "occ-1",
+            validUntilMs: 1_700_000_120_000,
+          },
+        },
+        priorProposals: [],
+        remainingInputCapRaw: "1000000000000000000",
+      };
+      const entry = propose(input);
+      assert.deepEqual(entry.proposal, {
+        kind: "swap",
+        candidateId: "cand_1",
+        amountInRaw: "1000000000000000",
+        quoteId: "sq_fixture",
+        occurrenceKey: "occ-1",
+        stageKey: "entry",
+        detectorEvaluationId: "dtev_first",
+      });
+      assert.deepEqual(entry.nextState, {
+        stateSchemaVersion: 1,
+        state: { runs: 1, entryFor: "dtev_first" },
+      });
+
+      // The same evaluation re-seen with its own committed state and the
+      // entry in priorProposals: the IDENTICAL swap re-emitted (idempotent).
+      const replay = propose({
+        ...input,
+        priorProposals: [
+          {
+            stageKey: "entry",
+            kind: "swap" as const,
+            amountInRaw: "1000000000000000",
+            occurredAtMs: 1_700_000_055_000,
+          },
+        ],
+        priorState: { stateSchemaVersion: 1, state: { runs: 1, entryFor: "dtev_first" } },
+      });
+      assert.deepEqual(replay.proposal, entry.proposal);
+
+      // A NEW matched evaluation: the exit stage, a different proposal.
+      const exit = propose({
+        ...input,
+        detectorEvaluation: {
+          evaluationId: "dtev_second",
+          asOfMs: 1_700_000_090_000,
+          result: {
+            status: "matched" as const,
+            occurrenceKey: "occ-2",
+            validUntilMs: 1_700_000_150_000,
+          },
+        },
+        priorProposals: [
+          {
+            stageKey: "entry",
+            kind: "swap" as const,
+            amountInRaw: "1000000000000000",
+            occurredAtMs: 1_700_000_055_000,
+          },
+        ],
+        priorState: { stateSchemaVersion: 1, state: { runs: 1, entryFor: "dtev_first" } },
+      });
+      assert.deepEqual(exit.proposal, {
+        kind: "swap",
+        candidateId: "cand_1",
+        amountInRaw: "1000000000000000",
+        quoteId: "sq_fixture",
+        occurrenceKey: "occ-2",
+        stageKey: "exit",
+        detectorEvaluationId: "dtev_second",
+      });
     } finally {
       await NodeFs.rm(workDir, { recursive: true, force: true });
       await NodeFs.rm(outDir, { recursive: true, force: true });

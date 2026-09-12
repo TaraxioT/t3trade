@@ -19,6 +19,7 @@ import { Schema } from "effect";
 import { DetectorEvaluationRecordV2, detectorEvaluationId } from "./detectorProgram.ts";
 import { EvidenceRef } from "./researchEvidence.ts";
 import {
+  DetectorResultForPolicy,
   EXECUTION_ENVELOPE_CANDIDATES_MAX,
   EXECUTION_ENVELOPE_MAX_CONCURRENT_INTENTS,
   EXECUTION_ENVELOPE_MAX_SLIPPAGE_BPS,
@@ -28,6 +29,15 @@ import {
   ExecutionIntentStatus,
   ExecutionProposal,
   type ExecutionRefusal,
+  PersistedProposalRecord,
+  PersistedProposalStatus,
+  POLICY_EXPLANATION_MAX_CHARS,
+  POLICY_PRIOR_PROPOSALS_MAX,
+  PolicyProgramInputV2,
+  PolicyProgramOutputV2,
+  PersistedProposalSummary,
+  proposalId,
+  serializeProposalIdentity,
   SwapCandidate,
   SwapQuoteRecord,
   remainingInputBudget,
@@ -576,5 +586,249 @@ describe("legacy compatibility", () => {
         committedAtMs: 1_700_000_061_000,
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sealed policy-program I/O and persisted proposal records (P5.3)
+// ---------------------------------------------------------------------------
+
+/** A minimal matched-evaluation summary for the policy input fixtures. */
+const matchedEvaluation = {
+  evaluationId: "dtev_1",
+  asOfMs: 1_700_000_060_000,
+  result: {
+    status: "matched",
+    occurrenceKey: "occ-1",
+    validUntilMs: 1_700_000_120_000,
+  },
+} as const;
+
+const priorProposal = {
+  stageKey: "entry",
+  kind: "swap",
+  amountInRaw: "1000000000000000",
+  occurredAtMs: 1_700_000_100_000,
+} as const;
+
+const policyInput = {
+  policySchemaVersion: 2,
+  asOfMs: 1_700_000_150_000,
+  envelope,
+  detectorEvaluation: matchedEvaluation,
+  priorProposals: [priorProposal],
+  remainingInputCapRaw: "900000000000000000",
+} as const;
+
+describe("the detector result mirror for policy input", () => {
+  it("decodes all three shapes", () => {
+    assert.isTrue(decode(DetectorResultForPolicy, matchedEvaluation.result));
+    assert.isTrue(
+      decode(DetectorResultForPolicy, { status: "not-matched", explanation: "flag not set" }),
+    );
+    assert.isTrue(
+      decode(DetectorResultForPolicy, { status: "unknown", explanation: "source lagging" }),
+    );
+  });
+
+  it("bounds the authoritative full result and refuses over-long explanations", () => {
+    // The authoritative DetectionResult carries facts and evidence arrays the
+    // mirror must not pass through: decoding the full result yields exactly
+    // the bounded shape (structural decode drops what the mirror does not
+    // declare), so nothing beyond the bound can cross this boundary.
+    const fullResult: unknown = {
+      status: "matched",
+      occurrenceKey: "occ-1",
+      evidenceIds: ["ev_1"],
+      facts: [
+        {
+          id: "fact_1",
+          key: "flag",
+          entityId: "pool-a",
+          value: { kind: "boolean", value: true },
+          evidence: [],
+        },
+      ],
+      validUntilMs: 1,
+    };
+    const bounded = Schema.decodeUnknownSync(DetectorResultForPolicy)(fullResult);
+    assert.deepStrictEqual(bounded, { status: "matched", occurrenceKey: "occ-1", validUntilMs: 1 });
+    // A shape the mirror does not declare at all still refuses.
+    assert.isFalse(decode(DetectorResultForPolicy, { status: "matched", occurrenceKey: "occ-1" }));
+    const exactly = "x".repeat(POLICY_EXPLANATION_MAX_CHARS);
+    assert.isTrue(decode(DetectorResultForPolicy, { status: "unknown", explanation: exactly }));
+    assert.isFalse(
+      decode(DetectorResultForPolicy, {
+        status: "not-matched",
+        explanation: `${exactly}x`,
+      }),
+    );
+  });
+});
+
+describe("the sealed policy program input", () => {
+  it("round-trips with and without a prior state", () => {
+    assert.isTrue(decode(PolicyProgramInputV2, policyInput));
+    assert.isTrue(
+      decode(PolicyProgramInputV2, {
+        ...policyInput,
+        priorState: { stateSchemaVersion: 1, state: { count: 2 } },
+      }),
+    );
+  });
+
+  it("refuses the wrong schema generation and a non-2 literal", () => {
+    assert.isFalse(decode(PolicyProgramInputV2, { ...policyInput, policySchemaVersion: 1 }));
+    assert.isFalse(decode(PolicyProgramInputV2, { ...policyInput, policySchemaVersion: 3 }));
+  });
+
+  it("bounds the prior-proposals window at exactly 20", () => {
+    const window = (count: number) => ({
+      ...policyInput,
+      priorProposals: Array.from({ length: count }, (_, index) => ({
+        stageKey: `stage-${index}`,
+        kind: "swap" as const,
+        amountInRaw: "1",
+        occurredAtMs: 1,
+      })),
+    });
+    assert.isTrue(decode(PolicyProgramInputV2, window(POLICY_PRIOR_PROPOSALS_MAX)));
+    assert.isFalse(decode(PolicyProgramInputV2, window(POLICY_PRIOR_PROPOSALS_MAX + 1)));
+  });
+
+  it("refuses malformed envelopes, remaining caps, and summaries", () => {
+    assert.isFalse(
+      decode(PolicyProgramInputV2, {
+        ...policyInput,
+        envelope: { ...envelope, revision: 0 },
+      }),
+    );
+    assert.isFalse(decode(PolicyProgramInputV2, { ...policyInput, remainingInputCapRaw: "1.5" }));
+    // A summary's amount must be exact when present, and its kind is closed.
+    assert.isFalse(
+      decode(PolicyProgramInputV2, {
+        ...policyInput,
+        priorProposals: [{ ...priorProposal, amountInRaw: "0.5" }],
+      }),
+    );
+    assert.isFalse(
+      decode(PolicyProgramInputV2, {
+        ...policyInput,
+        priorProposals: [{ ...priorProposal, kind: "swop" }],
+      }),
+    );
+  });
+});
+
+describe("the policy program output", () => {
+  it("round-trips a swap proposal with its next state", () => {
+    assert.isTrue(
+      decode(PolicyProgramOutputV2, {
+        proposal: proposals.swap,
+        nextState: { stateSchemaVersion: 1, state: { stages: 1 } },
+      }),
+    );
+  });
+
+  it("refuses a detection result where a proposal belongs", () => {
+    assert.isFalse(
+      decode(PolicyProgramOutputV2, {
+        proposal: matchedEvaluation.result,
+        nextState: null,
+      }),
+    );
+    assert.isFalse(decode(PolicyProgramOutputV2, { proposal: { kind: "wait" } }));
+  });
+});
+
+describe("the persisted proposal record", () => {
+  const record = {
+    proposalId: "pprop_1",
+    envelopeRevision: 1,
+    environmentId: "env-1",
+    capabilityId: "net-flow-detector",
+    detectorEvaluationId: "dtev_1",
+    proposal: proposals.swap,
+    proposedAtMs: 1_700_000_150_000,
+    status: "proposed",
+  } as const;
+
+  it("round-trips, and decodes every status", () => {
+    assert.isTrue(decode(PersistedProposalRecord, record));
+    for (const status of ["proposed", "rejected", "executing", "executed", "superseded"] as const) {
+      assert.isTrue(decode(PersistedProposalStatus, status));
+    }
+    assert.isFalse(decode(PersistedProposalStatus, "confirmed"));
+    assert.isFalse(decode(PersistedProposalStatus, "quoted"));
+  });
+
+  it("requires the capability id pattern and a positive revision", () => {
+    assert.isFalse(
+      decode(PersistedProposalRecord, { ...record, capabilityId: "not a capability id" }),
+    );
+    assert.isFalse(decode(PersistedProposalRecord, { ...record, envelopeRevision: 0 }));
+  });
+});
+
+describe("the proposal content identity", () => {
+  const identity = {
+    envelopeRevision: 1,
+    capabilityId: "net-flow-detector",
+    detectorEvaluationId: "dtev_1",
+    stageKey: "entry",
+    proposedAtMs: 1_700_000_150_000,
+  } as const;
+
+  it("is deterministic and pprop_-shaped", () => {
+    assert.strictEqual(proposalId(identity), proposalId(identity));
+    assert.match(proposalId(identity), /^pprop_[0-9a-f]{24}$/);
+  });
+
+  it("changes when any identity component changes, and null is a distinct stage slot", () => {
+    const baseline = proposalId(identity);
+    type ProposalIdentity = Parameters<typeof proposalId>[0];
+    const changed = (patch: Partial<ProposalIdentity>): string =>
+      proposalId({ ...identity, ...patch });
+    assert.notStrictEqual(changed({ envelopeRevision: 2 }), baseline);
+    assert.notStrictEqual(changed({ capabilityId: "other-detector" }), baseline);
+    assert.notStrictEqual(changed({ detectorEvaluationId: "dtev_2" }), baseline);
+    assert.notStrictEqual(changed({ stageKey: "exit" }), baseline);
+    assert.notStrictEqual(changed({ proposedAtMs: identity.proposedAtMs + 1 }), baseline);
+    // A non-swap proposal's null stage is its own identity, never equal to a
+    // named stage (and never a string "null").
+    const nullStage = changed({ stageKey: null });
+    assert.notStrictEqual(nullStage, baseline);
+    assert.notStrictEqual(nullStage, changed({ stageKey: "null" }));
+  });
+
+  it("agrees with the platform SHA-256 over the canonical identity serialization", async () => {
+    const referenceSha256Hex = async (value: string): Promise<string> => {
+      const digest = await globalThis.crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(value),
+      );
+      return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    };
+    const samples: Array<Parameters<typeof proposalId>[0]> = [
+      identity,
+      {
+        envelopeRevision: 12,
+        capabilityId: "a-rather-longer-capability-identifier",
+        detectorEvaluationId: "dtev_abcdefghijklmnopqrstuvwxyz0123456789",
+        stageKey: null,
+        proposedAtMs: 1_799_999_999_999,
+      },
+      {
+        envelopeRevision: 1,
+        capabilityId: "x",
+        detectorEvaluationId: "d",
+        stageKey: "a-stage-key-of-considerable-length-for-padding-boundaries",
+        proposedAtMs: 0,
+      },
+    ];
+    for (const sample of samples) {
+      const expected = `pprop_${(await referenceSha256Hex(serializeProposalIdentity(sample))).slice(0, 24)}`;
+      assert.strictEqual(proposalId(sample), expected);
+    }
   });
 });

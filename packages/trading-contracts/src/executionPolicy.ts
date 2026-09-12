@@ -46,6 +46,7 @@ import { Schema } from "effect";
 import { sha256 } from "@noble/hashes/sha2";
 
 import { TradingId, UnixMillis } from "./primitives.ts";
+import { FORGE_CAPABILITY_ID_PATTERN } from "./observation.ts";
 import { ChainIdString, DecimalIntegerString, Sha256Hex } from "./researchEvidence.ts";
 
 // ---------------------------------------------------------------------------
@@ -448,3 +449,190 @@ export const EXECUTION_REFUSALS: readonly ExecutionRefusal[] = Object.freeze([
   "paused",
   "broadcaster-missing",
 ]);
+
+// ---------------------------------------------------------------------------
+// Sealed policy-program I/O (the generated execution policy's boundary)
+// ---------------------------------------------------------------------------
+
+/**
+ * The bound on a `not-matched`/`unknown` explanation inside the policy input.
+ * The full `DetectionResult` carries fact and evidence arrays the sealed input
+ * must not bloat with; the mirror below keeps only the bounded summary (the
+ * `ForgeDetectorResultSummary` discipline).
+ */
+export const POLICY_EXPLANATION_MAX_CHARS = 500;
+
+/** The bound on the prior-proposals window the host seals into the input. */
+export const POLICY_PRIOR_PROPOSALS_MAX = 20;
+
+/**
+ * The three-shape detector result the policy program sees — a deliberate
+ * local mirror of the `ForgeDetectorResultSummary` shape (itself the bounded
+ * mirror of `researchEvidence.ts`'s authoritative `DetectionResult`), restated
+ * here so this module keeps its dependency surface unchanged and avoids any
+ * cross-package import cycle. `matched` carries the occurrence identity and
+ * how long the match stands; the other two carry the program's own bounded
+ * "why". Keep the three statuses and their meaning in sync with the
+ * authoritative vocabulary.
+ */
+export const DetectorResultForPolicy = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("matched"),
+    occurrenceKey: TradingId,
+    validUntilMs: UnixMillis,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("not-matched"),
+    explanation: Schema.String.check(Schema.isMaxLength(POLICY_EXPLANATION_MAX_CHARS)),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unknown"),
+    explanation: Schema.String.check(Schema.isMaxLength(POLICY_EXPLANATION_MAX_CHARS)),
+  }),
+]);
+export type DetectorResultForPolicy = typeof DetectorResultForPolicy.Type;
+
+/**
+ * One already-persisted proposal, bounded for the sealed input: the stage it
+ * took, what kind it was, its input amount when it was a swap, and when it
+ * occurred. No quote, no identity fields — the policy reasons over its own
+ * history, it does not re-derive it.
+ */
+export const PersistedProposalSummary = Schema.Struct({
+  stageKey: Schema.String.check(Schema.isNonEmpty()),
+  kind: Schema.Literals(["wait", "price", "swap", "stop-future-actions", "complete"]),
+  amountInRaw: Schema.optional(DecimalIntegerString),
+  occurredAtMs: UnixMillis,
+});
+export type PersistedProposalSummary = typeof PersistedProposalSummary.Type;
+
+/**
+ * Everything a generated execution policy is fed, exactly. The host seals
+ * this; the policy program has no clock, no fetch, and no view outside it.
+ *
+ * - `asOfMs` — the host-provided evaluation clock, the ONLY time the policy
+ *   ever sees (the same rule as the detector input).
+ * - `envelope` — the host-verified, immutable, user-approved grant. The
+ *   program proposes INSIDE it; it can never widen it.
+ * - `detectorEvaluation` — the latest committed detector evaluation, bounded
+ *   through {@link DetectorResultForPolicy}. Only a `matched` evaluation ever
+ *   reaches the policy (the other outcomes are valid non-actions the host
+ *   returns without running the program).
+ * - `priorProposals` — the newest-last bounded window of this envelope's
+ *   already-persisted proposals, so a deterministic policy can see what it
+ *   already decided.
+ * - `remainingInputCapRaw` — the host-computed remaining spend (settled +
+ *   in-flight deducted). Informative for the program; the host re-checks any
+ *   proposed amount against the envelope caps itself and NEVER clamps.
+ * - `priorState` — the policy's own carried state (a SEPARATE lineage from
+ *   the detector's state; the same envelope wrapper and byte cap apply, but
+ *   the rows never mix).
+ */
+export const PolicyProgramInputV2 = Schema.Struct({
+  policySchemaVersion: Schema.Literal(2),
+  asOfMs: UnixMillis,
+  envelope: ExecutionEnvelope,
+  detectorEvaluation: Schema.Struct({
+    evaluationId: TradingId,
+    asOfMs: UnixMillis,
+    result: DetectorResultForPolicy,
+  }),
+  priorProposals: Schema.Array(PersistedProposalSummary).check(
+    Schema.isMaxLength(POLICY_PRIOR_PROPOSALS_MAX),
+  ),
+  remainingInputCapRaw: DecimalIntegerString,
+  priorState: Schema.optional(Schema.Unknown),
+});
+export type PolicyProgramInputV2 = typeof PolicyProgramInputV2.Type;
+
+/**
+ * What a policy program returns: one proposal and the state it wants carried
+ * to the next evaluation. The host validates the proposal against the
+ * envelope and the budget, and the next state against the envelope contract
+ * (the detector state envelope, same 256 KiB cap), before persisting either.
+ */
+export const PolicyProgramOutputV2 = Schema.Struct({
+  proposal: ExecutionProposal,
+  nextState: Schema.Unknown,
+});
+export type PolicyProgramOutputV2 = typeof PolicyProgramOutputV2.Type;
+
+// ---------------------------------------------------------------------------
+// Persisted proposal records
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a persisted proposal stands. One-way: `proposed → executing →
+ * executed`, with `proposed → rejected` / `proposed|executing → superseded`
+ * as the honest exits. No proposal row is ever deleted; the swap-kind stage
+ * uniqueness is a storage predicate (a partial unique index over
+ * `(envelope_id, stage_key)` where the stage is present).
+ */
+export const PersistedProposalStatus = Schema.Literals([
+  "proposed",
+  "rejected",
+  "executing",
+  "executed",
+  "superseded",
+]);
+export type PersistedProposalStatus = typeof PersistedProposalStatus.Type;
+
+/**
+ * One persisted policy proposal: the decision, its identity, and the
+ * committed detector evaluation it was derived from. `proposalId` is
+ * content-derived (see {@link proposalId}) so a replay of the same evaluation
+ * at the same stage collapses instead of double-proposing.
+ */
+export const PersistedProposalRecord = Schema.Struct({
+  proposalId: TradingId,
+  envelopeRevision: Schema.Int.check(Schema.isGreaterThan(0)),
+  environmentId: TradingId,
+  capabilityId: Schema.String.check(Schema.isPattern(FORGE_CAPABILITY_ID_PATTERN)),
+  detectorEvaluationId: TradingId,
+  proposal: ExecutionProposal,
+  proposedAtMs: UnixMillis,
+  status: PersistedProposalStatus,
+});
+export type PersistedProposalRecord = typeof PersistedProposalRecord.Type;
+
+/**
+ * The canonical serialization a proposal's content identity is taken over: a
+ * fixed-shape array under a version tag (the `serializeDetectorEvaluationIdentity`
+ * precedent — never an object, whose key order a serializer could reorder).
+ * `stageKey` is the proposal's stage when it is swap-kind, null otherwise.
+ */
+export function serializeProposalIdentity(input: {
+  readonly envelopeRevision: number;
+  readonly capabilityId: string;
+  readonly detectorEvaluationId: string;
+  readonly stageKey: string | null;
+  readonly proposedAtMs: number;
+}): string {
+  return JSON.stringify([
+    "trading_execution.proposal.v1",
+    input.envelopeRevision,
+    input.capabilityId,
+    input.detectorEvaluationId,
+    input.stageKey,
+    input.proposedAtMs,
+  ]);
+}
+
+/**
+ * The content identity of one persisted proposal: `pprop_` plus the first 24
+ * hex characters of the SHA-256 over the canonical identity serialization. A
+ * re-evaluation of the same detector evaluation at the same stage and clock
+ * collapses to the same id (idempotent); a changed evaluation, stage, or
+ * clock does not. The host still treats the (envelope, stage) pair as the
+ * authoritative replay guard — the identity makes the common replay collapse,
+ * the storage predicate makes the race impossible.
+ */
+export function proposalId(input: {
+  readonly envelopeRevision: number;
+  readonly capabilityId: string;
+  readonly detectorEvaluationId: string;
+  readonly stageKey: string | null;
+  readonly proposedAtMs: number;
+}): string {
+  return `pprop_${sha256Hex(serializeProposalIdentity(input)).slice(0, 24)}`;
+}

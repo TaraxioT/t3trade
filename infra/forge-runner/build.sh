@@ -312,6 +312,68 @@ EOF
     *) die "smoke failed: forge-evaluate-v2 printed no JSON (got '$out')" ;;
   esac
 
+  # -- execution-policy fixtures: sdk.ts + policy.ts (the policy entry). The
+  # generated tests for policy.ts are optional by the artifact closure, so the
+  # smoke bundle carries none: evaluate-policy compiles without them.
+  smoke_policy_dir=$(mktemp -d "${TMPDIR:-/tmp}/forge-runner-smoke-policy.XXXXXX")
+  trap 'rm -rf "$smoke_dir" "$smoke_v2_dir" "$smoke_policy_dir"' EXIT INT TERM
+  cat >"$smoke_policy_dir/sdk.ts" <<'EOF'
+export type DetectorResultForPolicy =
+  | { readonly status: "matched"; readonly occurrenceKey: string; readonly validUntilMs: number }
+  | { readonly status: "not-matched"; readonly explanation: string }
+  | { readonly status: "unknown"; readonly explanation: string };
+export type PersistedProposalSummary = {
+  readonly stageKey: string;
+  readonly kind: "wait" | "price" | "swap" | "stop-future-actions" | "complete";
+  readonly amountInRaw?: string;
+  readonly occurredAtMs: number;
+};
+export type PolicyInput = {
+  readonly policySchemaVersion: 2;
+  readonly asOfMs: number;
+  readonly envelope: unknown;
+  readonly detectorEvaluation: {
+    readonly evaluationId: string;
+    readonly asOfMs: number;
+    readonly result: DetectorResultForPolicy;
+  };
+  readonly priorProposals: ReadonlyArray<PersistedProposalSummary>;
+  readonly remainingInputCapRaw: string;
+  readonly priorState?: unknown;
+};
+export type PolicyOutput = { readonly proposal: unknown; readonly nextState: unknown };
+export type Propose = (input: PolicyInput) => PolicyOutput;
+EOF
+  cat >"$smoke_policy_dir/policy.ts" <<'EOF'
+import type { PolicyInput, PolicyOutput, Propose } from "./sdk";
+export const propose: Propose = (input: PolicyInput): PolicyOutput => ({
+  proposal: { kind: "wait" },
+  nextState: { runs: 1 },
+});
+EOF
+  cat >"$smoke_policy_dir/evaluate-policy-input.json" <<'EOF'
+{"policySchemaVersion":2,"asOfMs":1,"envelope":{},"detectorEvaluation":{"evaluationId":"dtev_1","asOfMs":1,"result":{"status":"matched","occurrenceKey":"occ","validUntilMs":2}},"priorProposals":[],"remainingInputCapRaw":"1"}
+EOF
+  chmod -R a+rX "$smoke_policy_dir"
+
+  run_args_policy="--rm --network none --read-only --cap-drop ALL
+    --security-opt no-new-privileges --user 65534:65534 --memory 512m --cpus 1
+    --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m
+    --mount type=bind,source=$smoke_policy_dir,target=/work,readonly
+    --workdir /work --env HOME=/tmp"
+
+  echo
+  echo "==> smoke: forge-evaluate-policy"
+  # shellcheck disable=SC2086
+  docker run $run_args_policy "$IMAGE_TAG" forge-typecheck < /dev/null ||
+    die "smoke failed: policy forge-typecheck exited nonzero"
+  out=$(docker run $run_args_policy "$IMAGE_TAG" forge-evaluate-policy < "$smoke_policy_dir/evaluate-policy-input.json") ||
+    die "smoke failed: forge-evaluate-policy exited nonzero"
+  case "$out" in
+    '{'*) echo "    forge-evaluate-policy: $out" ;;
+    *) die "smoke failed: forge-evaluate-policy printed no JSON (got '$out')" ;;
+  esac
+
   echo
   echo "==> smoke passed"
 fi

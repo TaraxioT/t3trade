@@ -22,6 +22,7 @@ import {
   FORGE_SANDBOX_MAX_INPUT_BYTES,
   FORGE_SANDBOX_MAX_OUTPUT_BYTES,
   ForgeSignalOutput,
+  PolicyProgramOutputV2,
 } from "@t3tools/trading-contracts";
 
 import {
@@ -34,6 +35,7 @@ import {
   ForgeSandboxError,
   ForgeContainerRunner,
   forgeSha256Hex,
+  FORGE_RUNNER_EVALUATE_POLICY,
   isDigestPinnedImageRef,
   isSafeSandboxPath,
   type ForgeContainerRunRequest,
@@ -484,5 +486,92 @@ describe("detector-program (v2) runs", () => {
     assert.equal(stdinFailure.kind, "invalid_request");
     assert.include(stdinFailure.reason, "input cap");
     assert.isEmpty(runner.requests);
+  });
+});
+
+describe("execution-policy runs", () => {
+  // The policy bundle's declared role paths (policy.ts rides the v2 role
+  // mapping) plus the manifest — exactly the file set the evaluator mounts.
+  const policyFiles = [
+    { path: "detector.ts", content: "export const detect = 1;" },
+    { path: "detector.test.ts", content: "export const t = 1;" },
+    { path: "policy.ts", content: "export const propose = 1;" },
+    { path: "manifest.json", content: "{}" },
+  ];
+  const policyOutput = JSON.stringify({
+    proposal: { kind: "wait" },
+    nextState: { stateSchemaVersion: 1, state: { runs: 1 } },
+  });
+  const policyInput = JSON.stringify({
+    policySchemaVersion: 2,
+    asOfMs: 1,
+    envelope: { revision: 1 },
+    detectorEvaluation: {
+      evaluationId: "dtev_1",
+      asOfMs: 1,
+      result: { status: "matched", occurrenceKey: "occ-1", validUntilMs: 2 },
+    },
+    priorProposals: [],
+    remainingInputCapRaw: "1",
+  });
+
+  it("the policy entrypoint head is its own pinned constant", () => {
+    assert.deepEqual(FORGE_RUNNER_EVALUATE_POLICY, ["forge-evaluate-policy"]);
+    assert.notEqual(FORGE_RUNNER_EVALUATE_POLICY[0], "forge-evaluate-v2");
+    // policy.ts rides the same v2 path vocabulary the roles derive.
+    assert.include(FORGE_DETECTOR_BUNDLE_PATHS, "policy.ts");
+  });
+
+  it("stages the policy file set and dispatches the forge-evaluate-policy entrypoint", async () => {
+    const runner = makeScriptedRunner({
+      "forge-evaluate-policy": Effect.succeed({
+        exitCode: 0,
+        stdout: policyOutput,
+        stderr: "",
+        killed: null,
+      }),
+    });
+    const sandbox = await sandboxWith(runner);
+    const decoded = (await Effect.runPromise(
+      sandbox.runEvaluation({
+        files: policyFiles,
+        entrypoint: [...FORGE_RUNNER_EVALUATE_POLICY],
+        stdinJson: policyInput,
+        decodeResult: Schema.decodeUnknownSync(PolicyProgramOutputV2),
+      }),
+    )) as { readonly proposal: { readonly kind: string }; readonly nextState: unknown };
+    assert.equal(decoded.proposal.kind, "wait");
+    assert.equal(runner.requests.length, 1);
+    const request = runner.requests[0];
+    assert.equal(request?.entrypoint[0], "forge-evaluate-policy");
+    assert.deepEqual(
+      request?.files.map((file) => file.path),
+      ["detector.ts", "detector.test.ts", "policy.ts", "manifest.json"],
+    );
+    // The evaluation budget and output cap are the same as every evaluation.
+    assert.equal(request?.timeoutMs, 2_000);
+    assert.equal(request?.outputLimitBytes, FORGE_SANDBOX_MAX_OUTPUT_BYTES);
+  });
+
+  it("fails closed when the policy output does not decode", async () => {
+    const runner = makeScriptedRunner({
+      "forge-evaluate-policy": Effect.succeed({
+        exitCode: 0,
+        // A detection result where a proposal belongs.
+        stdout: JSON.stringify({ result: { status: "matched" }, nextState: null }),
+        stderr: "",
+        killed: null,
+      }),
+    });
+    const sandbox = await sandboxWith(runner);
+    const failure = await expectFailure(
+      sandbox.runEvaluation({
+        files: policyFiles,
+        entrypoint: [...FORGE_RUNNER_EVALUATE_POLICY],
+        stdinJson: policyInput,
+        decodeResult: Schema.decodeUnknownSync(PolicyProgramOutputV2),
+      }),
+    );
+    assert.equal(failure.kind, "invalid_result");
   });
 });
