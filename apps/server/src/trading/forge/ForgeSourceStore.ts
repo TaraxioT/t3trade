@@ -22,7 +22,7 @@ import {
   ForgeSwapObservation,
   type ForgeSwapObservation as ForgeSwapObservationType,
 } from "@t3tools/trading-contracts";
-import { toPersistenceSqlError, type PersistenceSqlError } from "../../persistence/Errors.ts";
+import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Errors.ts";
 
 /** The most evidence rows one listing read will return. */
 const MAX_LISTED_EVIDENCE = 100;
@@ -35,9 +35,10 @@ export interface ForgeEvidenceInsert {
 
 export interface ForgeSourceStoreShape {
   /**
-   * Persist one retained fetch. Idempotent on `evidenceId`: re-inserting the
-   * same window replaces the payload, so a retried capture cannot fork the
-   * evidence trail.
+   * Persist one retained fetch. Immutable: an id already present is never
+   * replaced. Re-inserting identical content is an idempotent no-op; the
+   * same id with different payload bytes fails with an evidence-id
+   * collision, so a content-derived id can never silently change meaning.
    */
   readonly insert: (evidence: ForgeEvidenceInsert) => Effect.Effect<void, PersistenceSqlError>;
 
@@ -46,13 +47,21 @@ export interface ForgeSourceStoreShape {
     evidenceId: string,
   ) => Effect.Effect<ForgeEvidenceRecord | null, PersistenceSqlError>;
 
-  /** The full evidence: provenance plus the normalized observations. */
+  /**
+   * The full evidence: provenance plus the normalized observations.
+   * `payloadIntact` compares the decoded observation count against the
+   * row's claim only — digest verification belongs to the consumer that
+   * knows the digest formula, since ids and digests are content-derived
+   * by callers and insert refuses collisions.
+   */
   readonly readObservations: (evidenceId: string) => Effect.Effect<
     {
       readonly record: ForgeEvidenceRecord;
       readonly observations: ReadonlyArray<ForgeSwapObservationType>;
       /** What the row claims; a shortfall against `observations` is visible. */
       readonly claimedCount: number;
+      /** True when the payload decoded exactly as many rows as claimed. */
+      readonly payloadIntact: boolean;
       readonly queryCapture?: ForgeQueryCapture;
     } | null,
     PersistenceSqlError
@@ -138,23 +147,40 @@ const parseEvidencePayload = (raw: string): unknown => {
 export const makeForgeSourceStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  const collisionError = (evidenceId: string) =>
+    new PersistenceSqlError({
+      operation: "ForgeSourceStore.insert",
+      detail: `evidence id collision: payload differs under an existing id (${evidenceId})`,
+    });
+
   const insert: ForgeSourceStoreShape["insert"] = ({ record, observations, queryCapture }) =>
-    sql`
-      INSERT INTO forge_source_evidence (
-        evidence_id, environment_id, pool_id, historical, endpoint, deployment,
-        pinned_block, pinned_block_hash, window_start, window_end, fetched_at_ms,
-        digest, observation_count, payload_json
-      ) VALUES (
-        ${record.evidenceId}, ${record.environmentId}, ${record.poolId},
-        ${record.historical ? 1 : 0}, ${record.endpoint}, ${record.deployment},
-        ${record.pinnedBlock}, ${record.pinnedBlockHash ?? null}, ${record.windowStart},
-        ${record.windowEnd}, ${record.fetchedAtMs}, ${record.digest},
-        ${observations.length}, ${encodeEvidencePayload(observations, queryCapture)}
-      )
-      ON CONFLICT (evidence_id) DO UPDATE SET
-        observation_count = excluded.observation_count,
-        payload_json = excluded.payload_json
-    `.pipe(Effect.asVoid, Effect.mapError(sqlFail("insert")));
+    Effect.gen(function* () {
+      const payload = encodeEvidencePayload(observations, queryCapture);
+      // Immutability with idempotent retries: a conflict never writes, so
+      // after the statement the row is either exactly this payload (no-op
+      // success) or something else (a content-derived id changed meaning,
+      // which must fail loudly rather than replace history).
+      yield* sql`
+        INSERT INTO forge_source_evidence (
+          evidence_id, environment_id, pool_id, historical, endpoint, deployment,
+          pinned_block, pinned_block_hash, window_start, window_end, fetched_at_ms,
+          digest, observation_count, payload_json
+        ) VALUES (
+          ${record.evidenceId}, ${record.environmentId}, ${record.poolId},
+          ${record.historical ? 1 : 0}, ${record.endpoint}, ${record.deployment},
+          ${record.pinnedBlock}, ${record.pinnedBlockHash ?? null}, ${record.windowStart},
+          ${record.windowEnd}, ${record.fetchedAtMs}, ${record.digest},
+          ${observations.length}, ${payload}
+        )
+        ON CONFLICT (evidence_id) DO NOTHING
+      `.pipe(Effect.asVoid, Effect.mapError(sqlFail("insert")));
+      const existing = yield* sql<{ readonly payload_json: string }>`
+        SELECT payload_json FROM forge_source_evidence WHERE evidence_id = ${record.evidenceId}
+      `.pipe(Effect.mapError(sqlFail("insert")));
+      if (existing[0]?.payload_json !== payload) {
+        return yield* collisionError(record.evidenceId);
+      }
+    });
 
   const readRecord: ForgeSourceStoreShape["readRecord"] = (evidenceId) =>
     sql<EvidenceRow>`
@@ -200,6 +226,7 @@ export const makeForgeSourceStore = Effect.gen(function* () {
         record,
         observations,
         claimedCount: row.observation_count,
+        payloadIntact: observations.length === row.observation_count,
         ...(decodedCapture === null ? {} : { queryCapture: decodedCapture }),
       };
     });
