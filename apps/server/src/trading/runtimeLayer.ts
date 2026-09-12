@@ -91,6 +91,7 @@ import {
   ForgeGraphTransportLive,
 } from "./forge/GraphSource.ts";
 import { ForgeSourceReadsLive } from "./forge/ForgeSourceReads.ts";
+import { DetectorFactWindowLive } from "./forge/DetectorFactWindow.ts";
 import { GraphResearchService, makeGraphResearchService } from "./research/GraphResearchService.ts";
 import { ExternalSourceStoreLive } from "./research/ExternalSourceStore.ts";
 import {
@@ -166,6 +167,13 @@ const forgeWindow = ForgeSourceWindowLive.pipe(
   Layer.provide(forgeGraphSource),
   Layer.provide(ForgeSourceStoreLive),
 );
+// The sealed fact-set window for detector-program (v2) jobs, over the same
+// shared evidence stores the research paths read — one instance, referenced
+// by the reactor through serviceOption so nothing can fork it.
+const detectorFactWindow = DetectorFactWindowLive.pipe(
+  Layer.provide(ForgeSourceStoreLive),
+  Layer.provide(ExternalSourceStoreLive),
+);
 const forgeBuilder = ForgeCapabilityBuilderLive.pipe(
   Layer.provide(forgeStore),
   Layer.provide(forgeSandbox),
@@ -175,6 +183,11 @@ const forgeReactor = ForgeReactorLive.pipe(
   Layer.provide(forgeSandbox),
   Layer.provide(forgeWindow),
   Layer.provide(forgeStoreConfig),
+  // v2 detector jobs' commit boundary and sealed window. DetectorRunStoreLive
+  // is the same layer reference the merge below mounts, so layer memoization
+  // shares the one instance — no second detector store exists.
+  Layer.provide(DetectorRunStoreLive),
+  Layer.provide(detectorFactWindow),
 );
 
 // T3 Forge F3: the durable intent machinery. SQLite ledger + immutable grant

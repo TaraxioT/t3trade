@@ -16,8 +16,14 @@ import { createHash } from "node:crypto";
 import * as NodeFs from "node:fs/promises";
 import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { FORGE_SDK_SCHEMA_VERSION, type ForgeSwapObservation } from "@t3tools/trading-contracts";
+import {
+  FORGE_SDK_SCHEMA_VERSION,
+  detectorEvaluationId,
+  type ForgeSwapObservation,
+} from "@t3tools/trading-contracts";
 
 import {
   ForgeCapabilitySandbox,
@@ -33,7 +39,11 @@ import {
   ForgeCapabilityStoreLive,
   type ForgeCapabilityStoreShape,
 } from "./CapabilityStore.ts";
-import { FORGE_RUNNER_EVALUATE, FORGE_SDK_SOURCE } from "./CapabilityBuilder.ts";
+import {
+  FORGE_RUNNER_EVALUATE,
+  FORGE_RUNNER_EVALUATE_V2,
+  FORGE_SDK_SOURCE,
+} from "./CapabilityBuilder.ts";
 import { FORGE_SWAPS_QUERY } from "./GraphSource.ts";
 import {
   ForgeReactor,
@@ -44,6 +54,26 @@ import {
   type ForgeSourceWindowProviderShape,
 } from "./ForgeReactor.ts";
 import { forgeAggregatePoolWindow, forgeMoveBps } from "./ForgeReactor.ts";
+import { DetectorFactWindowLive } from "./DetectorFactWindow.ts";
+import {
+  DetectorRunStore,
+  DetectorRunStoreLive,
+  type DetectorRunStoreShape,
+} from "./DetectorRunStore.ts";
+import {
+  ForgeSourceStore,
+  ForgeSourceStoreLive,
+  type ForgeSourceStoreShape,
+} from "./ForgeSourceStore.ts";
+import {
+  ExternalSourceStore,
+  ExternalSourceStoreLive,
+  type ExternalSourceRevision,
+  type ExternalSourceStoreShape,
+} from "../research/ExternalSourceStore.ts";
+import createEvidenceTable from "../../persistence/Migrations/101_ForgeSourceEvidence.ts";
+import createRevisionsTable from "../../persistence/Migrations/103_ExternalSourceRevisions.ts";
+import createDetectorTables from "../../persistence/Migrations/105_DetectorRuns.ts";
 
 const ENV = "env_reactor";
 const CAPABILITY = "wash-detector";
@@ -690,4 +720,665 @@ it("preserves unreadable job history instead of replacing it", async () => {
   } finally {
     await NodeFs.rm(root, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// The detector-program (v2) job path
+// ---------------------------------------------------------------------------
+//
+// The CONTAINED contract (real runner image, real tsc) is P4.2's coverage;
+// here the container is the scripted fake returning a crafted
+// DetectorProgramOutputV2, and what is under test is the reactor's ordering
+// discipline: armed gate → sealed window from RETAINED evidence → state read
+// → contained run → validated output → the one atomic DetectorRunStore
+// commit, with the v1 pool-window path byte-identical beside it.
+
+const V2_ENV = "env_reactor_v2";
+const V2_CAP = "flag-detector";
+
+/** The scripted detector container: parses stdin, answers from `respond`. */
+const makeDetectorRunner = (
+  respond: (
+    input: unknown,
+    run: number,
+  ) => { readonly result: unknown; readonly nextState: unknown },
+  options?: { readonly beforeRespond?: () => Promise<void> },
+) => {
+  const stdins: Array<string> = [];
+  const filePaths: Array<ReadonlyArray<string>> = [];
+  const runner: ForgeContainerRunnerShape = {
+    available: Effect.succeed(true),
+    run: (request: ForgeContainerRunRequest) =>
+      request.entrypoint[0] === FORGE_RUNNER_EVALUATE_V2[0]
+        ? Effect.promise(async () => {
+            await options?.beforeRespond?.();
+            stdins.push(request.stdin ?? "");
+            filePaths.push(request.files.map((file) => file.path));
+            const output = respond(JSON.parse(request.stdin ?? "{}"), stdins.length);
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify(output),
+              stderr: "",
+              killed: null,
+            };
+          })
+        : Effect.sync(() => ({ exitCode: 0, stdout: "", stderr: "", killed: null })),
+  };
+  return { runner, stdins, filePaths };
+};
+
+/** A staged v2 bundle in the P4.2 route-around shape (four hashed paths). */
+const detectorContents = (requiredSourceIds: ReadonlyArray<string>): Record<string, string> => {
+  const contents: Record<string, string> = {
+    "detector.ts":
+      'import type { Detect } from "./sdk";\nexport const detect: Detect = (input) => ({ result: { status: "not-matched", evidenceIds: [], explanation: "fixture" }, nextState: { stateSchemaVersion: 1, state: { seen: input.asOfMs > 0 } } });',
+    "detector.test.ts": 'import { test } from "./sdk";\ntest("fixture", () => {});',
+    "sdk.ts": "export const sdkFixture = 1;",
+  };
+  contents["manifest.json"] = JSON.stringify({
+    manifestVersion: 2,
+    capabilityId: V2_CAP,
+    version: 1,
+    semantics: "fixture detector",
+    requiredSourceIds,
+    outputFactKeys: ["flag"],
+    artifacts: [
+      { role: "sdk", path: "sdk.ts", sha256: sha256(contents["sdk.ts"] ?? "") },
+      { role: "detector", path: "detector.ts", sha256: sha256(contents["detector.ts"] ?? "") },
+      {
+        role: "acceptance",
+        path: "detector.test.ts",
+        sha256: sha256(contents["detector.test.ts"] ?? ""),
+      },
+    ],
+    createdAtMs: 1_700_000_000_000,
+  });
+  return contents;
+};
+
+/** Stage + install a v2 bundle; arming stays the caller's separate act. */
+const installDetector = async (
+  store: ForgeCapabilityStoreShape,
+  requiredSourceIds: ReadonlyArray<string>,
+): Promise<void> => {
+  const contents = detectorContents(requiredSourceIds);
+  const hashedPaths = ["detector.test.ts", "detector.ts", "manifest.json", "sdk.ts"];
+  const bundleSha256 = sha256(hashedPaths.map((path) => contents[path] ?? "").join("\n"));
+  const staged = await Effect.runPromise(
+    store.stageVersion(
+      V2_ENV,
+      {
+        capabilityId: V2_CAP,
+        version: 1,
+        bundleSha256,
+        artifacts: hashedPaths.map((path) => ({
+          path,
+          sha256: sha256(contents[path] ?? ""),
+          bytes: Buffer.byteLength(contents[path] ?? "", "utf8"),
+        })),
+        manifest: {
+          capabilityId: V2_CAP,
+          version: 1,
+          schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+          description: "[detector-program v2] fixture detector",
+        },
+        createdAtMs: 1_000,
+      },
+      contents,
+    ),
+  );
+  assert.equal(staged.status, "staged");
+  const installed = await Effect.runPromise(
+    store.install({
+      environmentId: V2_ENV,
+      capabilityId: V2_CAP,
+      version: 1,
+      bundleSha256,
+      expectedActiveVersion: null,
+    }),
+  );
+  assert.equal(installed.status, "installed");
+};
+
+const v2Observation = (suffix: string, timestamp: number): ForgeSwapObservation => ({
+  chain: "ethereum-mainnet",
+  poolId: ("0x" + "1".repeat(40)) as `0x${string}`,
+  observationId: `0x${suffix.repeat(64)}:0`,
+  transactionHash: `0x${suffix.repeat(64)}`,
+  logIndex: 0,
+  timestamp,
+  sender: "0xa",
+  recipient: "0xb",
+  amount0: "1000000",
+  amount1: "-500",
+  sqrtPriceX96: "1",
+  tick: 0,
+  baseIsToken1: true,
+  priceQuotePerBase: { numerator: "2000", denominator: "1" },
+  priceQuotePerBaseMicros: 2_000_000_000,
+  quoteVolumeRaw: "1000000",
+  quoteVolumeMicros: 1_000_000,
+});
+
+const V2_REVISION: ExternalSourceRevision = {
+  revisionId: "rev-fixture",
+  environmentId: V2_ENV,
+  sourceKind: "github-releases",
+  documentIdentity: "github-release:o/r:v1.0.0",
+  sourceUrl: "https://github.com/o/r/releases/tag/v1.0.0",
+  contentSha256: "a".repeat(64),
+  publishedAtMs: 1_000,
+  timePrecision: "instant",
+  firstObservedAtMs: 2_000,
+  captureMs: 2_000,
+  correctionOf: null,
+  retracted: false,
+};
+
+interface V2Helpers {
+  readonly reactor: ForgeReactorShape;
+  readonly store: ForgeCapabilityStoreShape;
+  readonly graph: ForgeSourceStoreShape;
+  readonly external: ExternalSourceStoreShape;
+  readonly runs: DetectorRunStoreShape;
+  readonly sql: SqlClient.SqlClient;
+}
+
+/**
+ * Build the v2 reactor inside one layer graph with the real SQL services
+ * (migrations included) and run `body` with every helper over the SAME
+ * in-memory client — one writer by construction.
+ */
+const withDetectorReactor = async <A>(
+  stateRoot: string,
+  runner: ForgeContainerRunnerShape,
+  body: (helpers: V2Helpers) => Promise<A>,
+  options?: { readonly detectorRunsLayer?: Layer.Layer<DetectorRunStore> | undefined },
+): Promise<A> => {
+  const sql = NodeSqliteClient.layerMemory();
+  const layers = Layer.mergeAll(
+    ForgeReactorLive.pipe(
+      Layer.provide(ForgeCapabilityStoreLive),
+      Layer.provide(ForgeCapabilitySandboxLive),
+      Layer.provide(Layer.succeed(ForgeCapabilityStoreConfig, { stateRoot })),
+      Layer.provide(
+        Layer.succeed(ForgeSandboxConfig, {
+          imageRef: IMAGE,
+          buildBudgetMs: 30_000,
+          evaluationBudgetMs: 2_000,
+        }),
+      ),
+      Layer.provide(Layer.succeed(ForgeContainerRunner, runner)),
+      Layer.provide(Layer.succeed(ForgeSourceWindowProvider, makeWindowPort([]))),
+      Layer.provide(options?.detectorRunsLayer ?? DetectorRunStoreLive),
+      Layer.provide(
+        DetectorFactWindowLive.pipe(
+          Layer.provide(ForgeSourceStoreLive),
+          Layer.provide(ExternalSourceStoreLive),
+        ),
+      ),
+    ),
+    ForgeCapabilityStoreLive.pipe(
+      Layer.provide(Layer.succeed(ForgeCapabilityStoreConfig, { stateRoot })),
+    ),
+    DetectorRunStoreLive,
+    ForgeSourceStoreLive,
+    ExternalSourceStoreLive,
+  ).pipe(
+    // provideMerge: satisfies every member's SqlClient requirement AND keeps
+    // the client in the final context for the direct-SQL race fixtures below.
+    Layer.provideMerge(sql),
+  );
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      yield* createEvidenceTable;
+      yield* createRevisionsTable;
+      yield* createDetectorTables;
+      const reactor = yield* ForgeReactor;
+      const store = yield* ForgeCapabilityStore;
+      const graph = yield* ForgeSourceStore;
+      const external = yield* ExternalSourceStore;
+      const runs = yield* DetectorRunStore;
+      const sqlClient = yield* SqlClient.SqlClient;
+      return yield* Effect.promise(() =>
+        body({ reactor, store, graph, external, runs, sql: sqlClient }),
+      );
+    }).pipe(Effect.provide(layers)),
+  );
+};
+
+/** The default fixture evidence: one retained dataset plus one document. */
+const seedV2Evidence = async (helpers: V2Helpers, datasetId: string): Promise<void> => {
+  const observations = [v2Observation("e", 1_700_000_010)];
+  await Effect.runPromise(
+    helpers.graph.insert({
+      record: {
+        evidenceId: datasetId,
+        environmentId: V2_ENV,
+        poolId: observations[0]!.poolId,
+        historical: true,
+        endpoint: "https://example.test",
+        deployment: "dep-1",
+        pinnedBlock: 1_000,
+        pinnedBlockHash: "0x" + "cd".repeat(32),
+        windowStart: 1_700_000_000,
+        windowEnd: 1_700_000_100,
+        fetchedAtMs: 1_700_000_200_000,
+        digest: createHash("sha256").update(JSON.stringify(observations)).digest("hex"),
+        observationCount: observations.length,
+      },
+      observations,
+    }),
+  );
+  await Effect.runPromise(
+    helpers.external.insert({ revision: V2_REVISION, payloadJson: '{"id":1}' }),
+  );
+};
+
+describe("the detector-program (v2) job", () => {
+  it("commits revision 0 from retained evidence with a content-derived id and a stable input digest", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-v2-"));
+    try {
+      const datasetId = `ds_${"e".repeat(21)}`;
+      const { runner, stdins, filePaths } = makeDetectorRunner(() => ({
+        result: { status: "not-matched", evidenceIds: [], explanation: "flag not set" },
+        nextState: { stateSchemaVersion: 1, state: { count: 1 } },
+      }));
+      const latest = await withDetectorReactor(root, runner, async (helpers) => {
+        await seedV2Evidence(helpers, datasetId);
+        await installDetector(helpers.store, [
+          `graph-dataset:${datasetId}`,
+          "external:github-releases:github-release:o/r:v1.0.0",
+        ]);
+        await Effect.runPromise(helpers.store.arm({ environmentId: V2_ENV, capabilityId: V2_CAP }));
+
+        const job = await Effect.runPromise(
+          helpers.reactor.enqueueEvaluation({
+            environmentId: V2_ENV,
+            threadId: "th_v2",
+            capabilityId: V2_CAP,
+            programKind: 2,
+          }),
+        );
+        assert.equal(job.programKind, 2);
+        await Effect.runPromise(helpers.reactor.drain());
+
+        const jobs = await Effect.runPromise(helpers.reactor.listJobs({ environmentId: V2_ENV }));
+        assert.equal(jobs[0]?.status, "complete");
+        assert.include(jobs[0]?.detail ?? "", "committed at state revision 0");
+
+        const state = await Effect.runPromise(helpers.runs.readState(V2_ENV, V2_CAP));
+        assert.isNotNull(state);
+        assert.equal(state?.stateRevision, 0);
+        return Effect.runPromise(helpers.runs.latestEvaluation(V2_ENV, V2_CAP));
+      });
+
+      // One contained run, mounting the bundle exactly as staged.
+      assert.equal(stdins.length, 1);
+      assert.deepEqual([...(filePaths[0] ?? [])].sort(), [
+        "detector.test.ts",
+        "detector.ts",
+        "manifest.json",
+        "sdk.ts",
+      ]);
+      const stdin = JSON.parse(stdins[0] ?? "{}") as {
+        readonly programSchemaVersion: number;
+        readonly asOfMs: number;
+        readonly inputDigest: string;
+        readonly facts: ReadonlyArray<{ readonly key: string }>;
+        readonly sources: ReadonlyArray<{ readonly sourceId: string }>;
+        readonly priorState?: unknown;
+      };
+      assert.equal(stdin.programSchemaVersion, 2);
+      assert.isUndefined(stdin.priorState);
+      // The sealed window carried both sources and only bounded facts.
+      assert.deepEqual(
+        stdin.sources.map((source) => source.sourceId),
+        [`graph-dataset:${datasetId}`, "external:github-releases:github-release:o/r:v1.0.0"],
+      );
+      assert.equal(stdin.facts.length, 6);
+
+      // The digest is a rebuild from the identical sealed bytes: same
+      // {asOfMs, facts, sources, priorState} in, same digest out.
+      const rebuilt = createHash("sha256")
+        .update(
+          JSON.stringify({
+            asOfMs: stdin.asOfMs,
+            facts: stdin.facts,
+            sources: stdin.sources,
+            priorState: stdin.priorState,
+          }),
+        )
+        .digest("hex");
+      assert.equal(stdin.inputDigest, rebuilt);
+
+      assert.isNotNull(latest);
+      assert.equal(
+        latest?.evaluationId,
+        detectorEvaluationId({
+          environmentId: V2_ENV,
+          capabilityId: V2_CAP,
+          version: 1,
+          stateRevision: 0,
+          inputDigest: rebuilt,
+        }),
+      );
+      assert.deepEqual(latest?.evidenceIds, [datasetId, "rev-fixture"]);
+      assert.equal(latest?.result.status, "not-matched");
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("advances the state revision on a second sequential job, feeding the committed state back", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-v2-"));
+    try {
+      const datasetId = `ds_${"f".repeat(21)}`;
+      const { runner, stdins } = makeDetectorRunner((_input, run) => ({
+        result: { status: "not-matched", evidenceIds: [], explanation: "flag not set" },
+        nextState: { stateSchemaVersion: 1, state: { count: run } },
+      }));
+      await withDetectorReactor(root, runner, async (helpers) => {
+        await seedV2Evidence(helpers, datasetId);
+        await installDetector(helpers.store, [`graph-dataset:${datasetId}`]);
+        await Effect.runPromise(helpers.store.arm({ environmentId: V2_ENV, capabilityId: V2_CAP }));
+
+        for (let index = 0; index < 2; index += 1) {
+          await Effect.runPromise(
+            helpers.reactor.enqueueEvaluation({
+              environmentId: V2_ENV,
+              capabilityId: V2_CAP,
+              programKind: 2,
+            }),
+          );
+          await Effect.runPromise(helpers.reactor.drain());
+        }
+
+        const state = await Effect.runPromise(helpers.runs.readState(V2_ENV, V2_CAP));
+        assert.equal(state?.stateRevision, 1);
+        const listed = await Effect.runPromise(helpers.runs.listEvaluations(V2_ENV, V2_CAP));
+        assert.equal(listed.length, 2);
+        assert.deepEqual(
+          listed.map((record) => record.stateRevision),
+          [1, 0],
+        );
+      });
+      // The second run received the first run's committed envelope.
+      const second = JSON.parse(stdins[1] ?? "{}") as { readonly priorState?: unknown };
+      assert.deepEqual(second.priorState, { stateSchemaVersion: 1, state: { count: 1 } });
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails named state-revision-conflict when the state row advances mid-run, corrupting nothing", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-v2-"));
+    try {
+      const datasetId = `ds_${"7".repeat(21)}`;
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      // The gate parks ONLY the third run; the first two commits proceed so
+      // the initial enqueue/drain pairs complete.
+      let runnerCalls = 0;
+      const gateThirdRunOnly = () => {
+        runnerCalls += 1;
+        return runnerCalls <= 2 ? Promise.resolve() : gate;
+      };
+      const { runner } = makeDetectorRunner(
+        () => ({
+          result: { status: "not-matched", evidenceIds: [], explanation: "flag not set" },
+          nextState: { stateSchemaVersion: 1, state: { count: 99 } },
+        }),
+        { beforeRespond: gateThirdRunOnly },
+      );
+      await withDetectorReactor(root, runner, async (helpers) => {
+        await seedV2Evidence(helpers, datasetId);
+        await installDetector(helpers.store, [`graph-dataset:${datasetId}`]);
+        await Effect.runPromise(helpers.store.arm({ environmentId: V2_ENV, capabilityId: V2_CAP }));
+
+        // Two committed revisions first.
+        for (let index = 0; index < 2; index += 1) {
+          await Effect.runPromise(
+            helpers.reactor.enqueueEvaluation({
+              environmentId: V2_ENV,
+              capabilityId: V2_CAP,
+              programKind: 2,
+            }),
+          );
+          await Effect.runPromise(helpers.reactor.drain());
+        }
+
+        // The third job reads state at revision 1, then parks inside the
+        // container while a concurrent writer (here: direct SQL, standing in
+        // for any racing committer) advances the row.
+        await Effect.runPromise(
+          helpers.reactor.enqueueEvaluation({
+            environmentId: V2_ENV,
+            capabilityId: V2_CAP,
+            programKind: 2,
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await Effect.runPromise(helpers.sql`
+          UPDATE forge_detector_state SET state_revision = 50 WHERE capability_id = ${V2_CAP}
+        `);
+        release?.();
+        await Effect.runPromise(helpers.reactor.drain());
+
+        const jobs = await Effect.runPromise(helpers.reactor.listJobs({ environmentId: V2_ENV }));
+        assert.equal(jobs[0]?.status, "failed");
+        assert.include(jobs[0]?.detail ?? "", "state-revision-conflict");
+        // Nothing corrupted: still two evaluations, and the winner's state row
+        // stands untouched at the revision the losing commit refused against.
+        const listed = await Effect.runPromise(helpers.runs.listEvaluations(V2_ENV, V2_CAP));
+        assert.equal(listed.length, 2);
+        const state = await Effect.runPromise(helpers.runs.readState(V2_ENV, V2_CAP));
+        assert.equal(state?.stateRevision, 50);
+      });
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an un-armed capability by name and a paused one by pause semantics", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-v2-"));
+    try {
+      const datasetId = `ds_${"8".repeat(21)}`;
+      const { runner, stdins } = makeDetectorRunner(() => ({
+        result: { status: "not-matched", evidenceIds: [], explanation: "flag not set" },
+        nextState: { stateSchemaVersion: 1, state: {} },
+      }));
+      await withDetectorReactor(root, runner, async (helpers) => {
+        await seedV2Evidence(helpers, datasetId);
+        await installDetector(helpers.store, [`graph-dataset:${datasetId}`]);
+        // Installed but NOT armed: installation alone never evaluates.
+        await Effect.runPromise(
+          helpers.reactor.enqueueEvaluation({
+            environmentId: V2_ENV,
+            capabilityId: V2_CAP,
+            programKind: 2,
+          }),
+        );
+        await Effect.runPromise(helpers.reactor.drain());
+        let jobs = await Effect.runPromise(helpers.reactor.listJobs({ environmentId: V2_ENV }));
+        assert.equal(jobs[0]?.status, "failed");
+        assert.include(jobs[0]?.detail ?? "", "not armed");
+        assert.isEmpty(
+          (await Effect.runPromise(helpers.runs.listEvaluations(V2_ENV, V2_CAP))).map(
+            (record) => record,
+          ),
+        );
+        assert.isNull(await Effect.runPromise(helpers.runs.readState(V2_ENV, V2_CAP)));
+        assert.equal(stdins.length, 0);
+
+        // Armed but paused: the pause gate holds before the armed gate matters.
+        await Effect.runPromise(helpers.store.arm({ environmentId: V2_ENV, capabilityId: V2_CAP }));
+        await Effect.runPromise(
+          helpers.store.pause({ environmentId: V2_ENV, capabilityId: V2_CAP }),
+        );
+        await Effect.runPromise(
+          helpers.reactor.enqueueEvaluation({
+            environmentId: V2_ENV,
+            capabilityId: V2_CAP,
+            programKind: 2,
+          }),
+        );
+        await Effect.runPromise(helpers.reactor.drain());
+        jobs = await Effect.runPromise(helpers.reactor.listJobs({ environmentId: V2_ENV }));
+        assert.equal(jobs[0]?.status, "failed");
+        assert.include(jobs[0]?.detail ?? "", "paused");
+      });
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("commits an unknown result over a partially-missing window — unknown is a result, not a failure", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-v2-"));
+    try {
+      const datasetId = `ds_${"9".repeat(21)}`;
+      const { runner, stdins } = makeDetectorRunner(() => ({
+        result: {
+          status: "unknown",
+          missingSourceIds: ["external:github-releases:never-captured"],
+          explanation: "a required source is absent",
+        },
+        nextState: { stateSchemaVersion: 1, state: {} },
+      }));
+      await withDetectorReactor(root, runner, async (helpers) => {
+        await seedV2Evidence(helpers, datasetId);
+        await installDetector(helpers.store, [
+          `graph-dataset:${datasetId}`,
+          "external:github-releases:never-captured",
+        ]);
+        await Effect.runPromise(helpers.store.arm({ environmentId: V2_ENV, capabilityId: V2_CAP }));
+
+        await Effect.runPromise(
+          helpers.reactor.enqueueEvaluation({
+            environmentId: V2_ENV,
+            capabilityId: V2_CAP,
+            programKind: 2,
+          }),
+        );
+        await Effect.runPromise(helpers.reactor.drain());
+
+        const jobs = await Effect.runPromise(helpers.reactor.listJobs({ environmentId: V2_ENV }));
+        assert.equal(jobs[0]?.status, "complete");
+        const latest = await Effect.runPromise(helpers.runs.latestEvaluation(V2_ENV, V2_CAP));
+        assert.equal(latest?.result.status, "unknown");
+        // Only the resolved source's evidence is committed.
+        assert.deepEqual(latest?.evidenceIds, [datasetId]);
+        const state = await Effect.runPromise(helpers.runs.readState(V2_ENV, V2_CAP));
+        assert.equal(state?.stateRevision, 0);
+      });
+      // The program saw one source and no facts from the missing one.
+      const stdin = JSON.parse(stdins[0] ?? "{}") as {
+        readonly sources: ReadonlyArray<{ readonly sourceId: string }>;
+      };
+      assert.equal(stdin.sources.length, 1);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("maps a replayed commit outcome to a completed job (dedup), never a second row", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-v2-"));
+    try {
+      const datasetId = `ds_${"a".repeat(21)}`;
+      const { runner, stdins } = makeDetectorRunner(() => ({
+        result: { status: "not-matched", evidenceIds: [], explanation: "flag not set" },
+        nextState: { stateSchemaVersion: 1, state: {} },
+      }));
+      // The replay CAS semantics live in DetectorRunStore.test.ts; here the
+      // seam is synthesized (commitRun always reports a replay) to pin the
+      // REACTOR's mapping: replay is a completed job with a replay note.
+      const replayingRuns = Layer.succeed(DetectorRunStore, {
+        readState: () => Effect.succeed(null),
+        commitRun: () => Effect.succeed({ status: "replayed" as const }),
+        latestEvaluation: () => Effect.succeed(null),
+        listEvaluations: () => Effect.succeed([]),
+      } satisfies DetectorRunStoreShape);
+      await withDetectorReactor(
+        root,
+        runner,
+        async (helpers) => {
+          await seedV2Evidence(helpers, datasetId);
+          await installDetector(helpers.store, [`graph-dataset:${datasetId}`]);
+          await Effect.runPromise(
+            helpers.store.arm({ environmentId: V2_ENV, capabilityId: V2_CAP }),
+          );
+          await Effect.runPromise(
+            helpers.reactor.enqueueEvaluation({
+              environmentId: V2_ENV,
+              capabilityId: V2_CAP,
+              programKind: 2,
+            }),
+          );
+          await Effect.runPromise(helpers.reactor.drain());
+          const jobs = await Effect.runPromise(helpers.reactor.listJobs({ environmentId: V2_ENV }));
+          assert.equal(jobs[0]?.status, "complete");
+          assert.include(jobs[0]?.detail ?? "", "replayed");
+        },
+        { detectorRunsLayer: replayingRuns },
+      );
+      assert.equal(stdins.length, 1);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a cancelled queued v2 job never runs and writes no rows", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-v2-"));
+    try {
+      const datasetId = `ds_${"b".repeat(21)}`;
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { runner, stdins } = makeDetectorRunner(
+        () => ({
+          result: { status: "not-matched", evidenceIds: [], explanation: "flag not set" },
+          nextState: { stateSchemaVersion: 1, state: {} },
+        }),
+        { beforeRespond: () => gate },
+      );
+      await withDetectorReactor(root, runner, async (helpers) => {
+        await seedV2Evidence(helpers, datasetId);
+        await installDetector(helpers.store, [`graph-dataset:${datasetId}`]);
+        await Effect.runPromise(helpers.store.arm({ environmentId: V2_ENV, capabilityId: V2_CAP }));
+
+        // The first job parks inside the container; the second waits queued.
+        await Effect.runPromise(
+          helpers.reactor.enqueueEvaluation({
+            environmentId: V2_ENV,
+            capabilityId: V2_CAP,
+            programKind: 2,
+          }),
+        );
+        const second = await Effect.runPromise(
+          helpers.reactor.enqueueEvaluation({
+            environmentId: V2_ENV,
+            capabilityId: V2_CAP,
+            programKind: 2,
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        assert.isTrue(await Effect.runPromise(helpers.reactor.cancel({ jobId: second.jobId })));
+        release?.();
+        await Effect.runPromise(helpers.reactor.drain());
+
+        const jobs = await Effect.runPromise(helpers.reactor.listJobs({ environmentId: V2_ENV }));
+        const byId = new Map(jobs.map((job) => [job.jobId, job]));
+        assert.equal(byId.get(second.jobId)?.status, "cancelled");
+        // Only the first job ran and committed.
+        assert.equal(stdins.length, 1);
+        const listed = await Effect.runPromise(helpers.runs.listEvaluations(V2_ENV, V2_CAP));
+        assert.equal(listed.length, 1);
+      });
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

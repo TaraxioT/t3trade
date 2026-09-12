@@ -22,15 +22,26 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import { Schema } from "effect";
+import * as Clock from "effect/Clock";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as NodePath from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import {
+  CapabilityManifestV2,
+  DetectorEvaluationRecordV2,
   FORGE_CAPABILITY_ARTIFACT_PATHS,
   ForgeJobKind,
   ForgeJobStatus,
   ForgeSignalOutput,
+  DetectorProgramInputV2,
+  DetectorProgramOutputV2,
+  DetectorStateEnvelope,
+  detectorArtifactPaths,
+  decodeDetectorState,
+  detectorEvaluationId,
+  encodeDetectorState,
   type ForgeEvaluationEvidence,
   type ForgePoolWindow,
   type ForgeSignalInput,
@@ -38,6 +49,7 @@ import {
   type ForgeSwapObservation,
 } from "@t3tools/trading-contracts";
 import { UnixMillis } from "@t3tools/trading-contracts/primitives";
+import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 
 import {
   ForgeCapabilitySandbox,
@@ -49,16 +61,21 @@ import {
   ForgeCapabilityStore,
   ForgeCapabilityStoreConfig,
   ForgeCapabilityStoreLive,
+  versionProgramKind,
   type ForgeCapabilityStoreShape,
   type ForgeStoreError,
   safeJoinStorePath,
 } from "./CapabilityStore.ts";
 import {
   FORGE_RUNNER_EVALUATE,
+  FORGE_RUNNER_EVALUATE_V2,
   FORGE_SDK_SOURCE,
   validateDiagnosticsAgainstInput,
 } from "./CapabilityBuilder.ts";
 import { validateForgeCapabilityQuery } from "./CapabilityQuery.ts";
+import { DetectorFactWindow } from "./DetectorFactWindow.ts";
+import { DetectorRunStore } from "./DetectorRunStore.ts";
+import { forgeJsonEncode } from "./ForgeJsonEncode.ts";
 
 // ---------------------------------------------------------------------------
 // Host aggregation: observations in, exact pool windows out
@@ -175,6 +192,10 @@ export const ForgeSourceWindowProviderUnavailableLive = Layer.succeed(ForgeSourc
  * The persisted job record: the wire `ForgeJob` fields plus the capability
  * the job evaluates — the one field the wire shape does not carry, persisted
  * beside it so a restart still knows what each job was for.
+ *
+ * `programKind` is OPTIONAL on purpose (trap 8): an absent field is a v1
+ * job, so every existing forge-jobs.json file keeps decoding after this
+ * field exists. Only v2 enqueues ever write it.
  */
 export const ForgeReactorJobRecord = Schema.Struct({
   jobId: Schema.String.check(Schema.isNonEmpty()),
@@ -187,6 +208,7 @@ export const ForgeReactorJobRecord = Schema.Struct({
   completedAtMs: Schema.optional(UnixMillis),
   detail: Schema.optional(Schema.String),
   capabilityId: Schema.String.check(Schema.isNonEmpty()),
+  programKind: Schema.optional(Schema.Literals([1, 2])),
 });
 export type ForgeReactorJobRecord = typeof ForgeReactorJobRecord.Type;
 
@@ -197,6 +219,23 @@ const JobsFile = Schema.Struct({
 /** The one decoder a contained evaluation runs: the SDK's output contract. */
 const decodeForgeSignalOutput = (value: unknown): unknown =>
   Schema.decodeUnknownSync(ForgeSignalOutput)(value);
+
+/** The detector-program (v2) output decoder — module-level, outside generators. */
+const decodeDetectorProgramOutput = (value: unknown): unknown =>
+  Schema.decodeUnknownSync(DetectorProgramOutputV2)(value);
+
+/**
+ * The bundle's authoritative v2 manifest, decoded from the stored
+ * `manifest.json` bytes, or null when they are not a v2 manifest. Same
+ * discriminator as `versionProgramKind`: the `manifestVersion === 2` literal.
+ */
+const decodeDetectorManifestV2 = (raw: string): CapabilityManifestV2 | null => {
+  try {
+    return Schema.decodeUnknownSync(CapabilityManifestV2)(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+};
 
 const jobsPath = (stateRoot: string, environmentId: string): string =>
   safeJoinStorePath(stateRoot, [environmentId, "forge-jobs.json"]);
@@ -234,11 +273,18 @@ const makeSequentialJobQueue = (
 // ---------------------------------------------------------------------------
 
 export interface ForgeReactorShape {
-  /** Enqueue the first (or next) evaluation of a capability. Persisted immediately. */
+  /**
+   * Enqueue the first (or next) evaluation of a capability. Persisted
+   * immediately. `programKind: 2` enqueues a detector-program (v2) job;
+   * absent means the v1 pool-window path. Install-time auto-enqueue stays
+   * v1-only — arming a v2 detector is the user's step, and un-armed never
+   * evaluates, so installation alone must never queue a v2 job.
+   */
   readonly enqueueEvaluation: (input: {
     readonly environmentId: string;
     readonly threadId?: string | undefined;
     readonly capabilityId: string;
+    readonly programKind?: 2 | undefined;
   }) => Effect.Effect<ForgeReactorJobRecord, never>;
   /** Wait for every queued job to finish (receipts are durable by then). */
   readonly drain: () => Effect.Effect<void>;
@@ -265,6 +311,12 @@ export const makeForgeReactor = Effect.gen(function* () {
   const windows = yield* ForgeSourceWindowProvider;
   const { stateRoot } = yield* ForgeCapabilityStoreConfig;
   const fs = yield* Effect.promise(() => import("node:fs/promises"));
+  // The v2 job path's services, ambiently optional (the ForgeAcceptance
+  // pattern): a wiring without them keeps every v1 job working, and a v2 job
+  // fails named instead of silently skipping. One wiring provides the real
+  // instances (see runtimeLayer), so no second store can fork the payload.
+  const detectorRuns = yield* Effect.serviceOption(DetectorRunStore);
+  const factWindows = yield* Effect.serviceOption(DetectorFactWindow);
 
   // One writer at a time per environment: enqueue and the running job's own
   // patches are both read-modify-write over the same file, and an interleaved
@@ -332,6 +384,228 @@ export const makeForgeReactor = Effect.gen(function* () {
     readonly digest?: string | undefined;
   }): string => `feval_${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
 
+  // -- the detector-program (v2) job: armed gate → sealed input → contained
+  //    run → validated output → atomic DetectorRunStore commit --------------
+
+  /**
+   * One v2 evaluation job. Reachable ONLY for a job whose record carries
+   * `programKind: 2` AND whose installed bundle's manifest decodes as v2;
+   * the armed gate has already held in `runJob` before this runs.
+   *
+   * Ordering discipline: the committed state is read BEFORE the window is
+   * built and the program runs, and the commit's revision CAS is the only
+   * write. Every refusal fails the job with a named reason — a v2 job never
+   * silently skips.
+   */
+  const runDetectorProgramJob = (
+    job: ForgeReactorJobRecord,
+    active: { readonly version: number; readonly bundleSha256: string; readonly armed: boolean },
+    failJob: (reason: string) => Effect.Effect<void>,
+  ): Effect.Effect<void, ForgeStoreError | PersistenceSqlError> =>
+    Effect.gen(function* () {
+      if (Option.isNone(detectorRuns) || Option.isNone(factWindows)) {
+        yield* failJob(
+          "the detector v2 services (DetectorRunStore, DetectorFactWindow) are not wired; refusing to evaluate",
+        );
+        return;
+      }
+      const runStore = detectorRuns.value;
+      const factWindow = factWindows.value;
+
+      // The bundle's own manifest decides the read vocabulary and names the
+      // required sources. Read it through the hash-verifying artifact path.
+      const manifestJson = yield* store.readArtifact({
+        environmentId: job.environmentId,
+        capabilityId: job.capabilityId,
+        version: active.version,
+        path: "manifest.json",
+      });
+      if (manifestJson === null) {
+        yield* failJob(`artifact manifest.json of v${active.version} is missing from the store`);
+        return;
+      }
+      if (versionProgramKind(manifestJson) !== "v2") {
+        yield* failJob(
+          `the installed v${active.version} bundle of ${job.capabilityId} is not a detector-program v2 bundle`,
+        );
+        return;
+      }
+      const manifest = decodeDetectorManifestV2(manifestJson);
+      if (manifest === null) {
+        yield* failJob(`the installed v2 manifest of ${job.capabilityId} does not decode`);
+        return;
+      }
+      const paths = detectorArtifactPaths(manifest);
+      if ("refusal" in paths) {
+        yield* failJob(`the installed v2 manifest is invalid: ${paths.refusal}`);
+        return;
+      }
+
+      // The sandbox receives the bundle files exactly as the builder staged
+      // them: every declared role path plus manifest.json, all hash-verified
+      // reads over the widened v2 allowlist (sdk.ts included — the staged
+      // bytes ARE the host SDK).
+      const files: Array<ForgeSandboxFile> = [];
+      for (const path of [...paths.paths, "manifest.json"]) {
+        const content = yield* store.readArtifact({
+          environmentId: job.environmentId,
+          capabilityId: job.capabilityId,
+          version: active.version,
+          path,
+        });
+        if (content === null) {
+          yield* failJob(`artifact ${path} of v${active.version} is missing from the store`);
+          return;
+        }
+        files.push({ path, content });
+      }
+
+      // Prior state: the last committed envelope, or nothing on the first
+      // run. A state row that no longer decodes is an operational failure —
+      // named, never guessed past.
+      const snapshot = yield* runStore.readState(job.environmentId, job.capabilityId);
+      let priorState: unknown = undefined;
+      if (snapshot !== null) {
+        const decoded = decodeDetectorState(snapshot.stateBytes);
+        if (!decoded.ok) {
+          yield* failJob(
+            `the committed detector state of ${job.capabilityId} does not decode (${decoded.failure})`,
+          );
+          return;
+        }
+        priorState = decoded.envelope;
+      }
+      const stateRevision = snapshot === null ? 0 : snapshot.stateRevision + 1;
+
+      // The sealed input. asOfMs is the ONLY clock the program ever sees.
+      const asOfMs = yield* Clock.currentTimeMillis;
+      const window = yield* factWindow.buildWindow({
+        environmentId: job.environmentId,
+        requiredSourceIds: manifest.requiredSourceIds,
+        asOfMs,
+      });
+      if (window.status === "unavailable") {
+        yield* failJob(`the sealed fact window is unavailable: ${window.reason}`);
+        return;
+      }
+      // The digest covers everything the program sees except itself: the
+      // clock, the sealed facts and sources, and the prior state. Same
+      // retained bytes at the same clock and revision reproduce it; any
+      // change moves the evaluation identity.
+      const inputDigest = createHash("sha256")
+        .update(
+          forgeJsonEncode({
+            asOfMs,
+            facts: window.facts,
+            sources: window.sources,
+            priorState,
+          }),
+        )
+        .digest("hex");
+      const programInput = {
+        programSchemaVersion: 2 as const,
+        asOfMs,
+        inputDigest,
+        facts: [...window.facts],
+        sources: [...window.sources],
+        ...(priorState === undefined ? {} : { priorState }),
+      };
+      // The frozen input schema is the boundary contract: an input that
+      // fails it never crosses into containment.
+      if (!Schema.is(DetectorProgramInputV2)(programInput)) {
+        yield* failJob("the sealed detector input failed its own contract");
+        return;
+      }
+
+      const run = yield* sandbox
+        .runEvaluation({
+          files,
+          entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
+          stdinJson: forgeJsonEncode(programInput),
+          decodeResult: decodeDetectorProgramOutput,
+        })
+        .pipe(Effect.exit);
+      if (run._tag === "Failure") {
+        const squashed = yield* Effect.sync(() => run.cause);
+        yield* failJob(
+          `the contained detector evaluation failed: ${String(squashed).slice(0, 300)}`,
+        );
+        return;
+      }
+      const output = run.value as DetectorProgramOutputV2;
+
+      // The next state must be a valid envelope under the byte cap; the
+      // record carries the envelope, the store the canonical bytes.
+      if (!Schema.is(DetectorStateEnvelope)(output.nextState)) {
+        yield* failJob("the detector's next state is not a state envelope");
+        return;
+      }
+      const encoded = encodeDetectorState(output.nextState);
+      if (!encoded.ok) {
+        yield* failJob(
+          `the detector's next state failed the envelope contract (${encoded.failure})`,
+        );
+        return;
+      }
+
+      const evaluationId = detectorEvaluationId({
+        environmentId: job.environmentId,
+        capabilityId: job.capabilityId,
+        version: active.version,
+        stateRevision,
+        inputDigest,
+      });
+      const record: DetectorEvaluationRecordV2 = {
+        manifestVersion: 2,
+        evaluationId,
+        environmentId: job.environmentId,
+        capabilityId: job.capabilityId,
+        version: active.version,
+        stateRevision,
+        inputDigest,
+        asOfMs,
+        result: output.result,
+        state: output.nextState,
+        evidenceIds: window.sources.map((source) => source.evidenceId),
+        committedAtMs: Date.now(),
+      };
+      // The schema re-check pins the id to the identity fields one more time
+      // before the commit; a mis-stated record can never be persisted.
+      if (!Schema.is(DetectorEvaluationRecordV2)(record)) {
+        yield* failJob("the assembled detector evaluation record failed its contract");
+        return;
+      }
+
+      // COMMIT — DetectorRunStore.commitRun is the one atomic write: the
+      // evaluation row and the state advance land together or not at all.
+      // The committed record's evidenceIds + inputDigest ARE the durable
+      // source watermark (plan 03:66): which retained bytes this detector
+      // ran over at which revision is recoverable from the record alone,
+      // with no second watermark to keep in sync.
+      const commit = yield* runStore.commitRun({
+        record,
+        stateBytes: encoded.serialized,
+      });
+      if (commit.status === "refused") {
+        // A revision conflict is recoverable by a later enqueue (the winner
+        // advanced the state; the next job re-reads it); a collision is a
+        // hard integrity failure. Both fail the job named.
+        yield* failJob(`the detector commit was refused: ${commit.reason} (${commit.detail})`);
+        return;
+      }
+      const detail =
+        commit.status === "replayed"
+          ? `evaluation ${evaluationId} already committed; replayed`
+          : `evaluation ${evaluationId} committed at state revision ${stateRevision}`;
+      yield* Effect.promise(() =>
+        patchJob(job.environmentId, job.jobId, {
+          status: "complete",
+          completedAtMs: Date.now(),
+          detail,
+        }),
+      );
+    });
+
   // -- one job's work: bundle bytes → window → contained run → validation → commit
   const runJob = (job: ForgeReactorJobRecord): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -385,6 +659,23 @@ export const makeForgeReactor = Effect.gen(function* () {
             detail: reason,
           }),
         );
+
+      // The detector-program (v2) dispatch: an armed, installed v2 capability
+      // rides its own job path below and returns before any v1 code runs.
+      // The v1 branch below stays byte-identical to what it always was.
+      if (job.programKind === 2) {
+        // The reactor-level guarantee behind "un-armed capabilities never
+        // evaluate": installation is not arming, and this gate holds before
+        // any read, run, or write of the v2 path.
+        if (!active.armed) {
+          yield* failJob(
+            `${job.capabilityId} is not armed; un-armed detector capabilities never evaluate`,
+          );
+          return;
+        }
+        yield* runDetectorProgramJob(job, active, failJob);
+        return;
+      }
 
       // The installed bundle's own bytes decide what this evaluation runs and
       // which query the window executes. Read them BEFORE fetching the
@@ -562,6 +853,7 @@ export const makeForgeReactor = Effect.gen(function* () {
     environmentId,
     threadId,
     capabilityId,
+    programKind,
   }) =>
     Effect.gen(function* () {
       const job: ForgeReactorJobRecord = {
@@ -572,6 +864,9 @@ export const makeForgeReactor = Effect.gen(function* () {
         ...(threadId === undefined ? {} : { threadId }),
         createdAtMs: Date.now(),
         capabilityId,
+        // Absent for v1 (the field decodes as undefined for every old record);
+        // only a v2 enqueue ever writes 2.
+        ...(programKind === undefined ? {} : { programKind }),
       };
       yield* Effect.promise(() =>
         withJobsLock(environmentId, async () => {
