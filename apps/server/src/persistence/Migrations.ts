@@ -116,6 +116,7 @@ import Migration0101 from "./Migrations/101_ForgeSourceEvidence.ts";
 import Migration0102 from "./Migrations/102_ForgeIntentLedger.ts";
 import Migration0103 from "./Migrations/103_ExternalSourceRevisions.ts";
 import Migration0104 from "./Migrations/104_EventSetImports.ts";
+import Migration0105 from "./Migrations/105_DetectorRuns.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -239,6 +240,7 @@ export const migrationEntries = [
   [102, "ForgeIntentLedger", Migration0102],
   [103, "ExternalSourceRevisions", Migration0103],
   [104, "EventSetImports", Migration0104],
+  [105, "DetectorRuns", Migration0105],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

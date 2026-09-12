@@ -28,6 +28,8 @@ import { randomUUID } from "node:crypto";
 import * as NodeCrypto from "node:crypto";
 
 import {
+  CapabilityManifestV2,
+  detectorArtifactPaths,
   FORGE_CAPABILITY_ARTIFACT_PATHS,
   FORGE_MAX_LISTED_ITEMS,
   ForgeBuildReceipt,
@@ -191,7 +193,13 @@ export interface ForgeInstallEvent {
   readonly capabilityId: string;
   readonly version: number;
   readonly bundleSha256: string;
-  readonly kind: "install" | "pause" | "resume" | "uninstall";
+  /**
+   * `arm`/`disarm` gate the detector's standing, independent of pause:
+   * pausing pauses evaluation of an installed capability, arming says the
+   * installed version is allowed to stand as a detector at all. An uninstall
+   * resets armed — a reinstall must be re-armed deliberately.
+   */
+  readonly kind: "install" | "pause" | "resume" | "uninstall" | "arm" | "disarm";
   readonly atMs: number;
 }
 
@@ -294,6 +302,8 @@ export interface ForgeCapabilityStoreShape {
       readonly version: number;
       readonly bundleSha256: string;
       readonly status: ForgeCapabilityStatus;
+      /** Detector standing; false by default — installation never arms. */
+      readonly armed: boolean;
     } | null,
     ForgeStoreError
   >;
@@ -306,6 +316,22 @@ export interface ForgeCapabilityStoreShape {
     readonly capabilityId: string;
   }) => Effect.Effect<boolean, ForgeStoreError>;
   readonly uninstall: (input: {
+    readonly environmentId: string;
+    readonly capabilityId: string;
+  }) => Effect.Effect<boolean, ForgeStoreError>;
+  /**
+   * Arm the installed capability's detector standing. Refuses (false) unless
+   * an active installed version exists: uninstalled cannot arm, paused CAN —
+   * pausing pauses evaluation, arming gates the standing, and they compose.
+   * Idempotent: arming an armed capability is a no-op success. Arming does
+   * NOT evaluate anything; scheduling belongs to the reactor.
+   */
+  readonly arm: (input: {
+    readonly environmentId: string;
+    readonly capabilityId: string;
+  }) => Effect.Effect<boolean, ForgeStoreError>;
+  /** Disarm: always allowed while the capability is actively installed. Idempotent. */
+  readonly disarm: (input: {
     readonly environmentId: string;
     readonly capabilityId: string;
   }) => Effect.Effect<boolean, ForgeStoreError>;
@@ -393,6 +419,80 @@ const decodeEvaluation = (value: unknown): ForgeEvaluationEvidence | null => {
 
 const isMissingFile = (error: unknown): boolean =>
   typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+
+// -- detector-program (v2) read support --------------------------------------
+
+/**
+ * The bundle's authoritative v2 manifest, decoded from the stored
+ * `contents["manifest.json"]` (staged byte-exact by the builder), or null.
+ * The `manifestVersion === 2` literal in the schema IS the discriminator:
+ * v1 bundles decode to null here and keep the v1 read vocabulary.
+ */
+const decodeDetectorManifest = (
+  contents: Readonly<Record<string, string>>,
+): CapabilityManifestV2 | null => {
+  const raw = contents["manifest.json"];
+  if (raw === undefined) return null;
+  try {
+    return Schema.decodeUnknownSync(CapabilityManifestV2)(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Discriminate a stored version's program kind from its `manifest.json`
+ * bytes — the same discriminator `readArtifact` dispatches on. Callers pass
+ * the contents' manifest bytes (the v1-typed version header cannot carry it:
+ * its `schemaVersion` is pinned to 1 by the staging shape).
+ */
+export function versionProgramKind(manifestJson: string | undefined | null): "v1" | "v2" {
+  if (manifestJson === undefined || manifestJson === null) return "v1";
+  try {
+    const parsed: unknown = JSON.parse(manifestJson);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)["manifestVersion"] === 2
+    ) {
+      return "v2";
+    }
+  } catch {
+    // Not JSON: the v1 four-artifact vocabulary.
+  }
+  return "v1";
+}
+
+/**
+ * Hash re-verification on read. The v1 record and the v2 staging shape both
+ * carry the four required paths in `version.artifacts` with bytes+sha256; a
+ * v2 OPTIONAL path (transform, state-schema, query, policy) is declared only
+ * in the bundle's v2 manifest, which pins its sha256. A path with no
+ * declaration at all, or bytes that no longer match, is a tampered store.
+ */
+const readVerifiedArtifact = (
+  stored: ForgeStoredVersion,
+  path: string,
+  detectorManifest: CapabilityManifestV2 | undefined,
+): string => {
+  const content = stored.contents[path];
+  if (content === undefined) {
+    throw new ForgeStoreError("stored artifact no longer matches its checked hash");
+  }
+  const digest = NodeCrypto.createHash("sha256").update(content).digest("hex");
+  const artifact = stored.version.artifacts.find((candidate) => candidate.path === path);
+  if (artifact !== undefined) {
+    if (Buffer.byteLength(content, "utf8") !== artifact.bytes || digest !== artifact.sha256) {
+      throw new ForgeStoreError("stored artifact no longer matches its checked hash");
+    }
+    return content;
+  }
+  const declared = detectorManifest?.artifacts.find((candidate) => candidate.path === path);
+  if (declared === undefined || digest !== declared.sha256) {
+    throw new ForgeStoreError("stored artifact no longer matches its checked hash");
+  }
+  return content;
+};
 
 export const makeForgeCapabilityStore = Effect.gen(function* () {
   const { stateRoot } = yield* ForgeCapabilityStoreConfig;
@@ -642,21 +742,24 @@ export const makeForgeCapabilityStore = Effect.gen(function* () {
     path,
   }) =>
     io("readArtifact", async () => {
-      // Sanitized surface: flat artifact names only, always under the store.
-      if (!(FORGE_CAPABILITY_ARTIFACT_PATHS as readonly string[]).includes(path)) return null;
       const stored = await readStoredVersion(environmentId, capabilityId, version);
       if (stored === null) return null;
-      const content = stored.contents[path];
-      const artifact = stored.version.artifacts.find((candidate) => candidate.path === path);
-      if (
-        content === undefined ||
-        artifact === undefined ||
-        Buffer.byteLength(content, "utf8") !== artifact.bytes ||
-        NodeCrypto.createHash("sha256").update(content).digest("hex") !== artifact.sha256
-      ) {
-        throw new ForgeStoreError("stored artifact no longer matches its checked hash");
+      // The bundle's own manifest.json decides the vocabulary: a
+      // detector-program v2 manifest widens the allowed set to its declared
+      // role paths (plus manifest.json itself); everything else — including a
+      // bundle whose v2 manifest no longer decodes — keeps the exact v1
+      // four-path allowlist, which refuses v2 paths. Fail closed.
+      const detectorManifest = decodeDetectorManifest(stored.contents);
+      if (detectorManifest === null) {
+        if (!(FORGE_CAPABILITY_ARTIFACT_PATHS as readonly string[]).includes(path)) return null;
+        return readVerifiedArtifact(stored, path, undefined);
       }
-      return content;
+      const paths = detectorArtifactPaths(detectorManifest);
+      if ("refusal" in paths) {
+        throw new ForgeStoreError(`stored detector manifest is invalid: ${paths.refusal}`);
+      }
+      if (![...paths.paths, "manifest.json"].includes(path)) return null;
+      return readVerifiedArtifact(stored, path, detectorManifest);
     });
 
   // -- installation -------------------------------------------------------------
@@ -682,6 +785,23 @@ export const makeForgeCapabilityStore = Effect.gen(function* () {
       if (event.kind === "resume" || event.kind === "install") return false;
     }
     return false;
+  };
+
+  /**
+   * Whether the detector standing is armed, folded from the install log in
+   * order. `arm`/`disarm` flip it; an `uninstall` resets it to false — an
+   * uninstalled capability has no standing, so armed never survives as the
+   * default of a later reinstall. Armed is false by default: installation
+   * and arming are separate human acts.
+   */
+  const armed = (installLog: ReadonlyArray<ForgeInstallEvent>, capabilityId: string): boolean => {
+    const events = installLog.filter((event) => event.capabilityId === capabilityId);
+    let value = false;
+    for (const event of events) {
+      if (event.kind === "arm") value = true;
+      else if (event.kind === "disarm" || event.kind === "uninstall") value = false;
+    }
+    return value;
   };
 
   const install: ForgeCapabilityStoreShape["install"] = ({
@@ -793,6 +913,7 @@ export const makeForgeCapabilityStore = Effect.gen(function* () {
         status: (paused(history.installLog, capabilityId)
           ? "paused"
           : "installed") as ForgeCapabilityStatus,
+        armed: armed(history.installLog, capabilityId),
       };
     });
 
@@ -830,6 +951,34 @@ export const makeForgeCapabilityStore = Effect.gen(function* () {
   const pause = lifecycleEvent("pause");
   const resume = lifecycleEvent("resume");
   const uninstall = lifecycleEvent("uninstall");
+
+  /**
+   * The arming gate, on the same append-only log pause/resume use. Refuses
+   * (false) without an active installation; a paused capability CAN arm —
+   * the two gates are independent and both must open for evaluation later.
+   */
+  const standingEvent =
+    (kind: "arm" | "disarm"): ForgeCapabilityStoreShape["arm"] =>
+    ({ environmentId, capabilityId }) =>
+      io(kind, async () => {
+        const history = await readHistory(environmentId);
+        const current = replayActive(history.installLog, capabilityId);
+        if (current === null) return false;
+        if (armed(history.installLog, capabilityId) === (kind === "arm")) return true;
+        history.installLog.push({
+          environmentId,
+          capabilityId,
+          version: current.version,
+          bundleSha256: current.bundleSha256,
+          kind,
+          atMs: Date.now(),
+        });
+        await writeHistory(environmentId, history);
+        return true;
+      });
+
+  const arm = standingEvent("arm");
+  const disarm = standingEvent("disarm");
 
   const listCatalog: ForgeCapabilityStoreShape["listCatalog"] = (environmentId) =>
     io("listCatalog", async () => {
@@ -1045,6 +1194,8 @@ export const makeForgeCapabilityStore = Effect.gen(function* () {
     pause,
     resume,
     uninstall,
+    arm,
+    disarm,
     listCatalog,
     recordEvaluation,
     latestEvaluation,

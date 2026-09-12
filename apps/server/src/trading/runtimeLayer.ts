@@ -84,6 +84,7 @@ import { TradingThesisValidationServiceLive } from "./TradingThesisValidationSer
 import { TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingResearchSceneServiceLive } from "./TradingResearchSceneService.ts";
 import { ForgeSourceStoreLive } from "./forge/ForgeSourceStore.ts";
+import { DetectorRunStoreLive } from "./forge/DetectorRunStore.ts";
 import {
   ForgeGraphConfigLive,
   ForgeGraphSourceLive,
@@ -524,6 +525,11 @@ export const TradingLayerLive = Layer.mergeAll(
   ForgeAcceptanceLive,
   forgeReactor,
   ForgeSourceStoreLive,
+  // Durable v2 detector runs: committed evaluations + revision-CAS state on
+  // the shared SqlClient (migration 105), the same ambient shape the other
+  // SQL-backed forge services use. Additive — nothing here reaches an order,
+  // a signer, or an exchange.
+  DetectorRunStoreLive,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
   graphResearchServices,
   // External research evidence: the durable source-revision store, the

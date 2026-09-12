@@ -30,6 +30,7 @@ import {
   forgeSignerSecretsRoot,
   ForgeStoreError,
   safeJoinStorePath,
+  versionProgramKind,
 } from "./CapabilityStore.ts";
 import * as NodeCrypto from "node:crypto";
 
@@ -571,4 +572,285 @@ it("allocates beyond retained versions and preserves corrupt sealed bytes", asyn
   } finally {
     await NodeFs.rm(root, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Arming (installation is not standing)
+// ---------------------------------------------------------------------------
+
+describe("arming", () => {
+  it("refuses to arm a capability that is not actively installed", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-store-arm-"));
+    try {
+      const store = await storeWith(root);
+      const prepared = hashedVersion(artifactContents());
+      await Effect.runPromise(store.stageVersion(ENV, prepared.version, prepared.contents));
+      // Staged but never installed: no standing to arm.
+      assert.isFalse(
+        await Effect.runPromise(store.arm({ environmentId: ENV, capabilityId: "wash-detector" })),
+      );
+      assert.isNull(
+        await Effect.runPromise(
+          store.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+        ),
+      );
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("armed is false on install, flips with arm/disarm, and survives restarts", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-store-arm-"));
+    try {
+      const store = await storeWith(root);
+      await stageAndInstall(store, 1, null);
+      let state = await Effect.runPromise(
+        store.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+      );
+      assert.isNotNull(state);
+      assert.isFalse(state?.armed);
+
+      assert.isTrue(
+        await Effect.runPromise(store.arm({ environmentId: ENV, capabilityId: "wash-detector" })),
+      );
+      state = await Effect.runPromise(
+        store.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+      );
+      assert.isTrue(state?.armed);
+
+      // Restart: the armed standing replays from the append-only install log.
+      const reopened = await storeWith(root);
+      state = await Effect.runPromise(
+        reopened.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+      );
+      assert.isTrue(state?.armed);
+      // Arming an armed capability is an idempotent no-op success.
+      assert.isTrue(
+        await Effect.runPromise(
+          reopened.arm({ environmentId: ENV, capabilityId: "wash-detector" }),
+        ),
+      );
+
+      assert.isTrue(
+        await Effect.runPromise(
+          reopened.disarm({ environmentId: ENV, capabilityId: "wash-detector" }),
+        ),
+      );
+      state = await Effect.runPromise(
+        reopened.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+      );
+      assert.isFalse(state?.armed);
+
+      // Disarm also survives a restart.
+      const reopenedAgain = await storeWith(root);
+      state = await Effect.runPromise(
+        reopenedAgain.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+      );
+      assert.isFalse(state?.armed);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("paused and armed hold together: pausing pauses evaluation, arming gates standing", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-store-arm-"));
+    try {
+      const store = await storeWith(root);
+      await stageAndInstall(store, 1, null);
+      assert.isTrue(
+        await Effect.runPromise(store.pause({ environmentId: ENV, capabilityId: "wash-detector" })),
+      );
+      assert.isTrue(
+        await Effect.runPromise(store.arm({ environmentId: ENV, capabilityId: "wash-detector" })),
+      );
+      const state = await Effect.runPromise(
+        store.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+      );
+      assert.equal(state?.status, "paused");
+      assert.isTrue(state?.armed);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uninstall resets armed: a reinstall must be re-armed deliberately", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-store-arm-"));
+    try {
+      const store = await storeWith(root);
+      await stageAndInstall(store, 1, null);
+      assert.isTrue(
+        await Effect.runPromise(store.arm({ environmentId: ENV, capabilityId: "wash-detector" })),
+      );
+      assert.isTrue(
+        await Effect.runPromise(
+          store.uninstall({ environmentId: ENV, capabilityId: "wash-detector" }),
+        ),
+      );
+      // Uninstalled cannot arm.
+      assert.isFalse(
+        await Effect.runPromise(store.arm({ environmentId: ENV, capabilityId: "wash-detector" })),
+      );
+      assert.equal((await stageAndInstall(store, 1, null)).status, "installed");
+      const state = await Effect.runPromise(
+        store.activeState({ environmentId: ENV, capabilityId: "wash-detector" }),
+      );
+      assert.isNotNull(state);
+      assert.isFalse(state?.armed);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Detector-program (v2) reads
+// ---------------------------------------------------------------------------
+
+const DETECTOR = "flag-detector";
+const sha256Of = (value: string): string =>
+  NodeCrypto.createHash("sha256").update(value).digest("hex");
+
+/** A staged v2 bundle in the P4.2 route-around shape: four hashed required
+ *  paths in the version record, optional artifacts riding in contents. */
+const detectorBundle = (): {
+  readonly version: ForgeCapabilityVersion;
+  readonly contents: Record<string, string>;
+} => {
+  const contents: Record<string, string> = {
+    "detector.ts": "export const detect = 1;",
+    "detector.test.ts": 'test("ok", () => {});',
+    "sdk.ts": "export const sdk = 1;",
+    // Optional role, declared in the manifest but not in the version record's
+    // four-entry artifacts array.
+    "transform.ts": "export const transform = 1;",
+    // Present in contents but declared nowhere: reads must refuse it.
+    "extra.ts": "// not declared by any role",
+  };
+  const roleOf = (path: string): "sdk" | "detector" | "acceptance" | "transform" =>
+    path === "sdk.ts"
+      ? "sdk"
+      : path === "detector.ts"
+        ? "detector"
+        : path === "detector.test.ts"
+          ? "acceptance"
+          : "transform";
+  contents["manifest.json"] = JSON.stringify({
+    manifestVersion: 2,
+    capabilityId: DETECTOR,
+    version: 1,
+    semantics: "boolean-flag detector",
+    requiredSourceIds: ["src_graph_1"],
+    outputFactKeys: ["flag"],
+    artifacts: ["sdk.ts", "detector.ts", "detector.test.ts", "transform.ts"].map((path) => ({
+      role: roleOf(path),
+      path,
+      sha256: sha256Of(contents[path] ?? ""),
+    })),
+    createdAtMs: 1_700_000_000_000,
+  });
+  const hashedPaths = ["detector.test.ts", "detector.ts", "manifest.json", "sdk.ts"];
+  return {
+    version: {
+      capabilityId: DETECTOR,
+      version: 1,
+      bundleSha256: sha256Of(hashedPaths.map((path) => contents[path] ?? "").join("\n")),
+      artifacts: hashedPaths.map((path) => ({
+        path,
+        sha256: sha256Of(contents[path] ?? ""),
+        bytes: Buffer.byteLength(contents[path] ?? "", "utf8"),
+      })),
+      // The v1-typed header the current staging shape forces; the
+      // authoritative v2 manifest is the byte-exact contents["manifest.json"].
+      manifest: {
+        capabilityId: DETECTOR,
+        version: 1,
+        schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+        description: "[detector-program v2] boolean-flag detector",
+      },
+      createdAtMs: 1_000,
+    },
+    contents,
+  };
+};
+
+describe("detector v2 artifact reads", () => {
+  it("reads declared v2 paths and refuses undeclared ones", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-store-v2-"));
+    try {
+      const store = await storeWith(root);
+      const bundle = detectorBundle();
+      const staged = await Effect.runPromise(
+        store.stageVersion(ENV, bundle.version, bundle.contents),
+      );
+      assert.equal(staged.status, "staged");
+      const read = (path: string): Promise<string | null> =>
+        Effect.runPromise(
+          store.readArtifact({ environmentId: ENV, capabilityId: DETECTOR, version: 1, path }),
+        );
+      // Required v2 path, verified through the version record.
+      assert.equal(await read("detector.ts"), bundle.contents["detector.ts"]);
+      // Optional v2 path, verified through the manifest's declared sha256.
+      assert.equal(await read("transform.ts"), bundle.contents["transform.ts"]);
+      assert.equal(await read("sdk.ts"), bundle.contents["sdk.ts"]);
+      assert.equal(await read("manifest.json"), bundle.contents["manifest.json"]);
+      // Undeclared extra, and v1-only paths: refused.
+      assert.isNull(await read("extra.ts"));
+      assert.isNull(await read("signal.ts"));
+      assert.isNull(await read("../history.json"));
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a manifest-declared path whose bytes were changed", async () => {
+    const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-store-v2-"));
+    try {
+      const store = await storeWith(root);
+      const bundle = detectorBundle();
+      await Effect.runPromise(store.stageVersion(ENV, bundle.version, bundle.contents));
+      // Tamper the optional artifact on disk: its manifest-declared hash must
+      // catch what the version record's four entries do not cover.
+      const path = NodePath.join(root, ENV, "bundles", DETECTOR, "v1.json");
+      const saved = JSON.parse(await NodeFs.readFile(path, "utf8")) as {
+        contents: Record<string, string>;
+      };
+      saved.contents["transform.ts"] = "changed bytes";
+      await NodeFs.writeFile(path, JSON.stringify(saved));
+      const result = await Effect.runPromise(
+        store
+          .readArtifact({
+            environmentId: ENV,
+            capabilityId: DETECTOR,
+            version: 1,
+            path: "transform.ts",
+          })
+          .pipe(Effect.flip),
+      );
+      assert.instanceOf(result, ForgeStoreError);
+      assert.match(result.message, /no longer matches its checked hash/);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("versionProgramKind", () => {
+  it("discriminates on the manifest.json manifestVersion discriminator", () => {
+    const v2 = JSON.stringify({
+      manifestVersion: 2,
+      capabilityId: DETECTOR,
+      version: 1,
+      semantics: "s",
+      requiredSourceIds: [],
+      outputFactKeys: [],
+      artifacts: [],
+      createdAtMs: 1,
+    });
+    assert.equal(versionProgramKind(v2), "v2");
+    const v1 = JSON.stringify({ schemaVersion: 1, description: "v1 bundle" });
+    assert.equal(versionProgramKind(v1), "v1");
+    assert.equal(versionProgramKind("not json"), "v1");
+    assert.equal(versionProgramKind(undefined), "v1");
+    assert.equal(versionProgramKind(null), "v1");
+  });
 });

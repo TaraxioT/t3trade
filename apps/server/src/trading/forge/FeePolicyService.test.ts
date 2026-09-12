@@ -313,7 +313,12 @@ const serviceLayer = (
           const readOnlyStore: Pick<ForgeCapabilityStoreShape, "activeState" | "latestEvaluation"> =
             {
               activeState: () =>
-                Effect.succeed({ version: 1, bundleSha256: BUNDLE_HASH, status: "installed" }),
+                Effect.succeed({
+                  version: 1,
+                  bundleSha256: BUNDLE_HASH,
+                  status: "installed",
+                  armed: false,
+                }),
               latestEvaluation: () =>
                 Effect.gen(function* () {
                   const record = yield* source
