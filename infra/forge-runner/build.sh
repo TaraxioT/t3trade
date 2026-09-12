@@ -200,7 +200,7 @@ EOF
   # The sandbox argv, mirrored: no network, read-only root, dropped
   # capabilities, non-root user, writable noexec /tmp for tsc output, the
   # workdir mounted read-only.
-  run_args="--rm --network none --read-only --cap-drop ALL
+  run_args="--rm --interactive --network none --read-only --cap-drop ALL
     --security-opt no-new-privileges --user 65534:65534 --memory 512m --cpus 1
     --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m
     --mount type=bind,source=$smoke_dir,target=/work,readonly
@@ -288,7 +288,7 @@ EOF
 EOF
   chmod -R a+rX "$smoke_v2_dir"
 
-  run_args_v2="--rm --network none --read-only --cap-drop ALL
+  run_args_v2="--rm --interactive --network none --read-only --cap-drop ALL
     --security-opt no-new-privileges --user 65534:65534 --memory 512m --cpus 1
     --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m
     --mount type=bind,source=$smoke_v2_dir,target=/work,readonly
@@ -356,7 +356,7 @@ EOF
 EOF
   chmod -R a+rX "$smoke_policy_dir"
 
-  run_args_policy="--rm --network none --read-only --cap-drop ALL
+  run_args_policy="--rm --interactive --network none --read-only --cap-drop ALL
     --security-opt no-new-privileges --user 65534:65534 --memory 512m --cpus 1
     --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m
     --mount type=bind,source=$smoke_policy_dir,target=/work,readonly
