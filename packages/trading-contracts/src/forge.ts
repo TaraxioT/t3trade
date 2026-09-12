@@ -375,6 +375,22 @@ export type ForgeAnchorCandidate = typeof ForgeAnchorCandidate.Type;
  * the result alone. `duplicatesDropped` counts same-key rows the fetch
  * collapsed, so a re-serving page is visible rather than silent.
  */
+/** Credential-free request bytes retained for reproducible research captures. */
+export const ForgeQueryCapture = Schema.Struct({
+  query: Schema.String,
+  variables: Schema.Array(
+    Schema.Struct({
+      pool: Schema.String,
+      first: Schema.Number,
+      cursor: Schema.String,
+      block: Schema.Number,
+      from: Schema.String,
+      to: Schema.String,
+    }),
+  ),
+});
+export type ForgeQueryCapture = typeof ForgeQueryCapture.Type;
+
 export const ForgeWindowFetch = Schema.Struct({
   poolId: PoolRef,
   status: ForgeFetchStatus,
@@ -401,6 +417,7 @@ export const ForgeWindowFetch = Schema.Struct({
   lagBlocks: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   /** Rows dropped because (chain, transaction, log) was already present. */
   duplicatesDropped: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  queryCapture: Schema.optional(ForgeQueryCapture),
   /** SHA-256 over the canonical fetch artifact. */
   sourceDigest: Schema.optional(Schema.String),
 }).check(

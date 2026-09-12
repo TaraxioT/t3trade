@@ -60,7 +60,7 @@ describe("fact values", () => {
   it("refuses floats and empty units in decimal facts", () => {
     expect(decode(FactValue, { kind: "decimal", value: 1.5, unit: "raw-units" })).toEqual(false);
     expect(decode(FactValue, { kind: "decimal", value: "1.5", unit: "raw-units" })).toEqual(false);
-    expect(decode(FactValue, { kind: "decimal", value: "-3", unit: "raw-units" })).toEqual(false);
+    expect(decode(FactValue, { kind: "decimal", value: "-3", unit: "raw-units" })).toEqual(true);
     expect(decode(FactValue, { kind: "decimal", value: "3", unit: " " })).toEqual(false);
   });
 });

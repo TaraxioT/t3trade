@@ -465,12 +465,14 @@ export const EventStudyRow = Schema.Struct({
   /**
    * Net blockchain flow over the entry-to-exit window, signed long
    * convention, in the Graph dataset's declared quote unit (integer
-   * micro-units). Present only on rows whose study consumed a Graph-derived
+   * micro-units, emitted as an exact signed decimal string; legacy numbers still decode). Present only on rows whose study consumed a Graph-derived
    * dataset covering the window; absent on every earlier row. Distinct
    * participants and trade counts ride beside it so a report can separate
    * "size moved" from "many small actors moved".
    */
-  netFlowMicros: Schema.optional(Schema.Number),
+  netFlowMicros: Schema.optional(
+    Schema.Union([Schema.String.check(Schema.isPattern(/^(0|-?[1-9][0-9]*)$/)), Schema.Number]),
+  ),
   /** Distinct transacting addresses in the same Graph-derived window. */
   graphParticipants: Schema.optional(Schema.Number),
   /** Swap count in the same Graph-derived window. */

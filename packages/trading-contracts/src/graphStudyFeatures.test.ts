@@ -10,7 +10,13 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import type { ForgeSwapObservation } from "./forge.ts";
-import { computeGraphWindowFeatures, observationsToCandles } from "./graphStudyFeatures.ts";
+import {
+  attachGraphStudyFeatures,
+  computeGraphWindowFeatures,
+  observationsToCandles,
+} from "./graphStudyFeatures.ts";
+
+import { runEventStudy } from "./eventSets.ts";
 
 const MINUTE = 60_000;
 
@@ -33,7 +39,7 @@ const swap = (
   priceQuotePerBase: { numerator: "2000", denominator: "1" },
   priceQuotePerBaseMicros: over.priceQuotePerBaseMicros ?? 2_000_000,
   quoteVolumeMicros: over.quoteVolumeMicros ?? 500,
-  quoteVolumeRaw: "500",
+  quoteVolumeRaw: over.quoteVolumeRaw ?? "500",
 });
 
 describe("observationsToCandles", () => {
@@ -72,83 +78,53 @@ describe("observationsToCandles", () => {
   });
 });
 
-describe("computeGraphWindowFeatures", () => {
-  const occurrence = { startAt: 0, endAt: 1_000, source: "test" };
-
-  it("signs net flow by base direction with exact micros and counts distinct senders", () => {
-    // baseIsToken0: amount0 is the base delta. +2000 (buy), -800 (sell),
-    // +100 (buy) from two different senders.
+describe("Graph study flow", () => {
+  it("counts buys positive using the pool-signed base leg and exact raw sums", () => {
     const features = computeGraphWindowFeatures({
-      occurrences: [occurrence],
       observations: [
-        swap({ timestamp: 10, amount0: "2000", quoteVolumeMicros: 1000, sender: "0xa" }),
-        swap({ timestamp: 20, amount0: "-800", quoteVolumeMicros: 400, sender: "0xb" }),
-        swap({ timestamp: 30, amount0: "100", quoteVolumeMicros: 50, sender: "0xa" }),
+        swap({ timestamp: 10, amount0: "-2", quoteVolumeRaw: "9007199254740993", sender: "0xAb" }),
+        swap({ timestamp: 20, amount0: "1", quoteVolumeRaw: "2", sender: "0xab" }),
+        swap({ timestamp: 30, amount1: "-1", baseIsToken1: true, quoteVolumeRaw: "10" }),
+        swap({ timestamp: 60, quoteVolumeRaw: "999" }),
       ],
-      intervalMs: MINUTE,
-      horizonBars: 1,
+      windowFromMs: 0,
+      windowToMs: MINUTE - 1,
+      quoteDecimals: 6,
     });
-    expect(features).toHaveLength(1);
-    const feature = features[0]!;
-    expect(feature.netFlowMicros).toBe(1000 - 400 + 50);
-    expect(feature.participants).toBe(2);
-    expect(feature.tradeCount).toBe(3);
-    expect(feature.windowFromMs).toBe(0);
-    expect(feature.windowToMs).toBe(MINUTE);
+    expect(features.netFlowMicros).toBe("9007199254741001");
+    expect(features.participants).toBe(2);
+    expect(features.tradeCount).toBe(3);
   });
 
-  it("respects baseIsToken1: the base delta follows the declared slot", () => {
-    const features = computeGraphWindowFeatures({
-      occurrences: [occurrence],
-      observations: [
-        swap({
-          timestamp: 10,
-          amount0: "-5000",
-          amount1: "2000",
-          baseIsToken1: true,
-          quoteVolumeMicros: 700,
-        }),
+  it("uses the actual close-entry and truncated exit, excluding pre-entry swaps and gaps", () => {
+    const observations = [
+      swap({ timestamp: 60, amount0: "-1", quoteVolumeRaw: "900" }),
+      swap({ timestamp: 120, amount0: "-1", quoteVolumeRaw: "10" }),
+      swap({ timestamp: 240, amount0: "-1", quoteVolumeRaw: "1000" }),
+    ];
+    const report = runEventStudy({
+      occurrences: [
+        { startAt: 0, endAt: 90_000, source: "test" },
+        { startAt: 900_000, endAt: 900_000, source: "future" },
       ],
+      candles: observationsToCandles(observations, { intervalMs: MINUTE }),
       intervalMs: MINUTE,
-      horizonBars: 1,
+      horizonBars: 3,
+      entryBasis: "first_closed_bar_after_event",
+      now: 600_000,
     });
-    expect(features[0]!.netFlowMicros).toBe(700);
+    const result = attachGraphStudyFeatures(report, observations, 6);
+    expect(result.rows[0]?.truncated).toBe(true);
+    expect(result.rows[0]?.netFlowMicros).toBe("10");
+    expect(result.rows[0]?.graphTradeCount).toBe(1);
+    expect(result.rows[1]?.netFlowMicros).toBeUndefined();
   });
 
-  it("excludes swaps outside the grid window and stops early past it", () => {
-    const features = computeGraphWindowFeatures({
-      occurrences: [occurrence],
-      observations: [
-        swap({ timestamp: 0 }), // before ceil(0/1000) = 0 → included (boundary)
-        swap({ timestamp: MINUTE / 1000 + 5 }), // past windowTo
-        swap({ timestamp: 30 }),
-      ],
-      intervalMs: MINUTE,
-      horizonBars: 1,
-    });
-    expect(features[0]!.tradeCount).toBe(2);
-  });
-
-  it("reports count-zero features for an occurrence with no swaps, never invented flow", () => {
-    const features = computeGraphWindowFeatures({
-      occurrences: [occurrence],
-      observations: [],
-      intervalMs: MINUTE,
-      horizonBars: 1,
-    });
-    expect(features[0]!.netFlowMicros).toBe(0);
-    expect(features[0]!.participants).toBe(0);
-    expect(features[0]!.tradeCount).toBe(0);
-  });
-
-  it("aligns windows to the occurrence's grid slot, not its raw start", () => {
-    const features = computeGraphWindowFeatures({
-      occurrences: [{ ...occurrence, startAt: 90_000 }],
-      observations: [swap({ timestamp: 60 })], // inside the aligned slot
-      intervalMs: MINUTE,
-      horizonBars: 1,
-    });
-    expect(features[0]!.windowFromMs).toBe(MINUTE);
-    expect(features[0]!.tradeCount).toBe(1);
+  it("orders same-second swaps by log index for candle open and close", () => {
+    const first = { ...swap({ timestamp: 60, priceQuotePerBaseMicros: 1_000_000 }), logIndex: 1 };
+    const last = { ...swap({ timestamp: 60, priceQuotePerBaseMicros: 3_000_000 }), logIndex: 2 };
+    const candles = observationsToCandles([last, first], { intervalMs: MINUTE });
+    expect(candles[0]?.open).toBe(1);
+    expect(candles[0]?.close).toBe(3);
   });
 });

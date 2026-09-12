@@ -31,7 +31,7 @@
  */
 import { Schema } from "effect";
 
-import { EvmAddress, TradingId, UnixMillis } from "./primitives.ts";
+import { TradingId, UnixMillis } from "./primitives.ts";
 
 // ---------------------------------------------------------------------------
 // Shared value primitives
@@ -44,6 +44,12 @@ export type Sha256Hex = typeof Sha256Hex.Type;
 /** An exact non-negative decimal integer, carried as its decimal string. */
 export const DecimalIntegerString = Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]*)$/));
 export type DecimalIntegerString = typeof DecimalIntegerString.Type;
+
+/** Signed exact quantities, such as net flow and returns in scaled units. */
+export const SignedDecimalIntegerString = Schema.String.check(
+  Schema.isPattern(/^(0|-?[1-9][0-9]*)$/),
+);
+export type SignedDecimalIntegerString = typeof SignedDecimalIntegerString.Type;
 
 /** A chain id as the chain itself reports it (decimal string, e.g. "1"). */
 export const ChainIdString = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/));
@@ -92,7 +98,7 @@ export const FactValue = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("decimal"),
-    value: DecimalIntegerString,
+    value: SignedDecimalIntegerString,
     unit: Schema.String.check(Schema.isPattern(/\S/)),
   }),
   Schema.Struct({
