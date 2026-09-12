@@ -20,24 +20,30 @@
  *   a field is a leaf in both or an object selection in both);
  * - the variable definitions are the same set (name + type) as the
  *   reference's, so the host's pagination and block-pinning code can drive
- *   the generated query unchanged.
- *
- * Argument VALUES are not compared: the host never trusts the query for
- * safety. It pins blocks itself, supplies every variable, and refuses any
- * response whose served `_meta` block does not echo the pin — so a query
- * that dropped its `block` argument fails closed at fetch time, never
- * silently.
+ *   the generated query unchanged;
+ * - at every field, the ARGUMENTS are structurally identical to the
+ *   reference's: same argument names, identical literal values, and the same
+ *   variable references. This is what binds every collection root to the
+ *   host-supplied `$block`/`$first`/cursor variables — a generated query
+ *   that substitutes its own literal `block:` on the swaps root while
+ *   keeping `_meta(block: { number: $block })` would pass metadata pinning
+ *   yet read a different block, and GraphQL responses never echo collection
+ *   arguments back, so this AST check is the only place the substitution is
+ *   caught. Refused here, never at fetch time.
  *
  * @module CapabilityQuery
  */
 import { Kind, parse } from "graphql";
 import type {
+  ArgumentNode,
   DefinitionNode,
   DocumentNode,
   FieldNode,
+  ObjectFieldNode,
   OperationDefinitionNode,
   SelectionNode,
   TypeNode,
+  ValueNode,
   VariableDefinitionNode,
 } from "graphql";
 
@@ -221,6 +227,8 @@ function compareSelectionSets(
   for (const [name, field] of candidateFields) {
     const referenceField = referenceFields.get(name)!;
     const nextPath = path === "" ? name : `${path}.${name}`;
+    const argumentsMismatch = compareArguments(referenceField, field, nextPath);
+    if (argumentsMismatch !== null) return { ok: false, reason: argumentsMismatch };
     const hasChildren = field.selectionSet !== undefined;
     const referenceHasChildren = referenceField.selectionSet !== undefined;
     if (hasChildren !== referenceHasChildren) {
@@ -276,4 +284,116 @@ function fieldMap(
     fields.set(name, selection);
   }
   return fields;
+}
+
+// ---------------------------------------------------------------------------
+// Arguments — structural identity with the reference at every field
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare one field's arguments against the reference field's. The sets of
+ * argument names must be identical, and each value must be structurally
+ * equal: literals of the same kind and value, variable references to the
+ * same variable, and object/list values equal element-by-element. Returns
+ * the refusal reason, or null when the arguments match.
+ */
+function compareArguments(reference: FieldNode, candidate: FieldNode, path: string): string | null {
+  const referenceArgs = (reference.arguments ?? []) as ReadonlyArray<ArgumentNode>;
+  const candidateArgs = (candidate.arguments ?? []) as ReadonlyArray<ArgumentNode>;
+  const byName = new Map<string, ArgumentNode>();
+  for (const argument of candidateArgs) {
+    if (byName.has(argument.name.value)) {
+      return fieldError(path, `passes argument "${argument.name.value}" more than once`);
+    }
+    byName.set(argument.name.value, argument);
+  }
+  for (const referenceArg of referenceArgs) {
+    const candidateArg = byName.get(referenceArg.name.value);
+    if (candidateArg === undefined) {
+      return fieldError(
+        path,
+        `must pass the argument "${referenceArg.name.value}" exactly as the pinned query does`,
+      );
+    }
+    const mismatch = compareValues(referenceArg.value, candidateArg.value);
+    if (mismatch !== null) {
+      return fieldError(
+        path,
+        `must pass "${referenceArg.name.value}" ${mismatch}, like the pinned query does`,
+      );
+    }
+  }
+  for (const name of byName.keys()) {
+    if (!referenceArgs.some((argument) => argument.name.value === name)) {
+      return fieldError(
+        path,
+        `passes argument "${name}", which the pinned query does not pass here`,
+      );
+    }
+  }
+  return null;
+}
+
+/** Structural equality of two GraphQL value nodes: null means equal. */
+function compareValues(reference: ValueNode, candidate: ValueNode): string | null {
+  if (reference.kind !== candidate.kind) {
+    return `as a ${reference.kind.replace("Value", " value")}, not a ${candidate.kind.replace("Value", " value")}`;
+  }
+  switch (reference.kind) {
+    case Kind.VARIABLE:
+      return reference.name.value === (candidate as typeof reference).name.value
+        ? null
+        : `as the variable $${reference.name.value}`;
+    case Kind.INT:
+    case Kind.FLOAT:
+    case Kind.STRING:
+    case Kind.BOOLEAN:
+    case Kind.ENUM:
+      return reference.value === (candidate as typeof reference).value
+        ? null
+        : `as the literal ${JSON.stringify(reference.value)}`;
+    case Kind.NULL:
+      return null;
+    case Kind.LIST: {
+      const referenceItems = reference.values as ReadonlyArray<ValueNode>;
+      const candidateItems = (candidate as typeof reference).values as ReadonlyArray<ValueNode>;
+      if (referenceItems.length !== candidateItems.length) {
+        return `as a list of ${referenceItems.length} item(s)`;
+      }
+      for (let index = 0; index < referenceItems.length; index += 1) {
+        const mismatch = compareValues(referenceItems[index]!, candidateItems[index]!);
+        if (mismatch !== null) return `as a list whose item ${index} is ${mismatch}`;
+      }
+      return null;
+    }
+    case Kind.OBJECT: {
+      const referenceFields = reference.fields as ReadonlyArray<ObjectFieldNode>;
+      const candidateFields = (candidate as typeof reference)
+        .fields as ReadonlyArray<ObjectFieldNode>;
+      const byName = new Map<string, ObjectFieldNode>();
+      for (const field of candidateFields) {
+        if (byName.has(field.name.value)) {
+          return `as an object without duplicate "${field.name.value}" keys`;
+        }
+        byName.set(field.name.value, field);
+      }
+      // Extra keys are reported first so the refusal names exactly what the
+      // generated query substituted (e.g. `number_gte` for `number`).
+      for (const name of byName.keys()) {
+        if (!referenceFields.some((field) => field.name.value === name)) {
+          return `as an object without the extra key "${name}"`;
+        }
+      }
+      for (const referenceField of referenceFields) {
+        const candidateField = byName.get(referenceField.name.value);
+        if (candidateField === undefined) {
+          return `as an object carrying the key "${referenceField.name.value}"`;
+        }
+        const mismatch = compareValues(referenceField.value, candidateField.value);
+        if (mismatch !== null)
+          return `as an object whose "${referenceField.name.value}" is ${mismatch}`;
+      }
+      return null;
+    }
+  }
 }

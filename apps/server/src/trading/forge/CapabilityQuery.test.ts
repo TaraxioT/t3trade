@@ -198,6 +198,88 @@ const FIELD_DIRECTIVE = `query ForgeSwaps($pool: String!, $first: Int!, $cursor:
   _meta(block: { number: $block }) { deployment block { number hash } }
 }`;
 
+// Argument tampering: `_meta` keeps the host pin, one collection root does
+// not. These would all pass a metadata-echo check at fetch time — the AST
+// comparison is the only line of defense.
+
+const SWAPS_LITERAL_BLOCK = `query ForgeSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(
+    first: $first
+    where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }
+    block: { number: 9999999 }
+    orderBy: id
+    orderDirection: asc
+  ) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
+const META_LITERAL_BLOCK = `query ForgeSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(
+    first: $first
+    where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }
+    block: { number: $block }
+    orderBy: id
+    orderDirection: asc
+  ) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: 1 }) { deployment block { number hash } }
+}`;
+
+const BLOCK_KEY_CHANGED = `query ForgeSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(
+    first: $first
+    where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }
+    block: { number_gte: $block }
+    orderBy: id
+    orderDirection: asc
+  ) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
+const ORDER_BY_CHANGED = `query ForgeSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(
+    first: $first
+    where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }
+    block: { number: $block }
+    orderBy: timestamp
+    orderDirection: asc
+  ) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
+const WHERE_SHAPE_CHANGED = `query ForgeSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(
+    first: $first
+    where: { pool: $pool, id_gte: $cursor, timestamp_gte: $from, timestamp_lte: $to }
+    block: { number: $block }
+    orderBy: id
+    orderDirection: asc
+  ) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
+const FIRST_LITERAL = `query ForgeSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(
+    first: 1000
+    where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }
+    block: { number: $block }
+    orderBy: id
+    orderDirection: asc
+  ) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
 describe("validateForgeCapabilityQuery", () => {
   it("accepts the pinned reference query itself", () => {
     expectOk(FORGE_SWAPS_QUERY);
@@ -257,11 +339,41 @@ describe("validateForgeCapabilityQuery", () => {
 
   it("refuses multiple operations and leaf/object shape mismatches", () => {
     expectRefusal(`query A { swaps { id } } query B { swaps { id } }`, "exactly one operation");
-    // `transaction` must stay an object selection; making it a leaf changes shape.
+    // `transaction` must stay an object selection; making it a leaf changes
+    // shape. (All reference arguments present, so the argument gate stays
+    // quiet and the shape defect is what the refusal names.)
     expectRefusal(
-      `query Q($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) { swaps(first: $first) { id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction } _meta(block: { number: $block }) { deployment block { number hash } } }`,
+      `query Q($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) { swaps(first: $first, where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }, block: { number: $block }, orderBy: id, orderDirection: asc) { id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction } _meta(block: { number: $block }) { deployment block { number hash } } }`,
       "transaction",
       "subfields",
     );
+  });
+
+  // Argument-value enforcement: a pinned `_meta` does not prove every
+  // collection used the pin, because GraphQL responses never echo collection
+  // arguments. These tampered variants would sail through a metadata-echo
+  // check; the AST comparison must refuse each one.
+  it("refuses a swaps root pinned to its own literal block while _meta keeps the host pin", () => {
+    expectRefusal(SWAPS_LITERAL_BLOCK, "block", "number");
+  });
+
+  it("refuses _meta pinned to a literal block instead of the host-supplied variable", () => {
+    expectRefusal(META_LITERAL_BLOCK, "_meta", "block");
+  });
+
+  it("refuses a block argument with a different key than number", () => {
+    expectRefusal(BLOCK_KEY_CHANGED, "number_gte");
+  });
+
+  it("refuses a changed orderBy literal", () => {
+    expectRefusal(ORDER_BY_CHANGED, "orderBy");
+  });
+
+  it("refuses a where-filter key substitution", () => {
+    expectRefusal(WHERE_SHAPE_CHANGED, "where", "id_gte");
+  });
+
+  it("refuses a literal page size replacing the host-controlled $first", () => {
+    expectRefusal(FIRST_LITERAL, "first");
   });
 });
