@@ -341,6 +341,7 @@ const TradingExecutionLayerLive = Layer.mergeAll(
 // provides, so the merge builds it in parallel safely.
 const graphResearchServices = Layer.effect(GraphResearchService, makeGraphResearchService).pipe(
   Layer.provide(forgeGraphSource),
+  Layer.provide(ForgeSourceStoreLive),
 );
 
 export const TradingLayerLive = Layer.mergeAll(

@@ -18,6 +18,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
   ForgeEvidenceRecord,
+  ForgeQueryCapture,
   ForgeSwapObservation,
   type ForgeSwapObservation as ForgeSwapObservationType,
 } from "@t3tools/trading-contracts";
@@ -28,6 +29,7 @@ const MAX_LISTED_EVIDENCE = 100;
 
 export interface ForgeEvidenceInsert {
   readonly record: ForgeEvidenceRecord;
+  readonly queryCapture?: ForgeQueryCapture;
   readonly observations: ReadonlyArray<ForgeSwapObservationType>;
 }
 
@@ -51,6 +53,7 @@ export interface ForgeSourceStoreShape {
       readonly observations: ReadonlyArray<ForgeSwapObservationType>;
       /** What the row claims; a shortfall against `observations` is visible. */
       readonly claimedCount: number;
+      readonly queryCapture?: ForgeQueryCapture;
     } | null,
     PersistenceSqlError
   >;
@@ -109,9 +112,19 @@ const decodeObservation = (value: unknown): ForgeSwapObservationType | null => {
   }
 };
 
+const decodeQueryCapture = (value: unknown): ForgeQueryCapture | null => {
+  try {
+    return Schema.decodeUnknownSync(ForgeQueryCapture)(value);
+  } catch {
+    return null;
+  }
+};
+
 /** The observations payload as stored — one deterministic JSON string. */
-const encodeEvidencePayload = (observations: ReadonlyArray<ForgeSwapObservationType>): string =>
-  JSON.stringify({ observations });
+const encodeEvidencePayload = (
+  observations: ReadonlyArray<ForgeSwapObservationType>,
+  queryCapture: ForgeQueryCapture | undefined,
+): string => JSON.stringify({ observations, queryCapture });
 
 /** Parsed payload, or null when the row is corrupt. */
 const parseEvidencePayload = (raw: string): unknown => {
@@ -125,7 +138,7 @@ const parseEvidencePayload = (raw: string): unknown => {
 export const makeForgeSourceStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  const insert: ForgeSourceStoreShape["insert"] = ({ record, observations }) =>
+  const insert: ForgeSourceStoreShape["insert"] = ({ record, observations, queryCapture }) =>
     sql`
       INSERT INTO forge_source_evidence (
         evidence_id, environment_id, pool_id, historical, endpoint, deployment,
@@ -136,7 +149,7 @@ export const makeForgeSourceStore = Effect.gen(function* () {
         ${record.historical ? 1 : 0}, ${record.endpoint}, ${record.deployment},
         ${record.pinnedBlock}, ${record.pinnedBlockHash ?? null}, ${record.windowStart},
         ${record.windowEnd}, ${record.fetchedAtMs}, ${record.digest},
-        ${observations.length}, ${encodeEvidencePayload(observations)}
+        ${observations.length}, ${encodeEvidencePayload(observations, queryCapture)}
       )
       ON CONFLICT (evidence_id) DO UPDATE SET
         observation_count = excluded.observation_count,
@@ -178,7 +191,17 @@ export const makeForgeSourceStore = Effect.gen(function* () {
           if (decoded !== null) observations.push(decoded);
         }
       }
-      return { record, observations, claimedCount: row.observation_count };
+      const rawCapture =
+        payload === null ? undefined : (payload as { queryCapture?: unknown }).queryCapture;
+      // A capture that fails to decode makes provenance unavailable without
+      // hiding intact observations.
+      const decodedCapture = rawCapture === undefined ? null : decodeQueryCapture(rawCapture);
+      return {
+        record,
+        observations,
+        claimedCount: row.observation_count,
+        ...(decodedCapture === null ? {} : { queryCapture: decodedCapture }),
+      };
     });
 
   const listRecent: ForgeSourceStoreShape["listRecent"] = ({ environmentId, poolId, limit }) =>

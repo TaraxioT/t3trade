@@ -1,3 +1,4 @@
+import { attachGraphStudyFeatures } from "@t3tools/trading-contracts";
 import { ForgeAcceptance } from "../../../trading/forge/ForgeAcceptance.ts";
 import { GraphResearchService } from "../../../trading/research/GraphResearchService.ts";
 /**
@@ -4356,7 +4357,10 @@ export const handlers = {
           const archive = yield* TradingMarketArchive;
           // The read gate, same as a backtest: an unverifiable writer lock
           // refuses before any archive read is made.
-          const ownership = archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`);
+          const ownership =
+            input.graphSource === undefined
+              ? archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`)
+              : null;
           if (ownership !== null) {
             return yield* refuse(ownership);
           }
@@ -4382,7 +4386,7 @@ export const handlers = {
             entryBasis,
           });
           const ensureWindow =
-            hydrationWindow === null
+            input.graphSource !== undefined || hydrationWindow === null
               ? null
               : yield* archive
                   .ensureCoverage({
@@ -4425,6 +4429,8 @@ export const handlers = {
             const read = yield* graphResearchOption.value.loadStudyDataset({
               environmentId: scope.environmentId,
               poolId: input.graphSource.poolId,
+              market: input.market,
+              entryBasis,
               occurrences: set.occurrences,
               intervalMs: width,
               horizonBars,
@@ -4490,29 +4496,18 @@ export const handlers = {
             resolvedMetric.metric === "path_extrema"
               ? ` Metric: path extrema for a ${resolvedMetric.direction} on the ${resolvedMetric.priceField} — the excursion to that extremum is hindsight-perfect (maximum favorable excursion after entry), not a realizable result.`
               : "";
-          let featureStudy = study;
-          if (graphDataset !== undefined) {
-            const featuresByStart = new Map(
-              graphDataset.features.map((feature) => [feature.startAt, feature]),
-            );
-            featureStudy = {
-              ...study,
-              rows: study.rows.map((row) => {
-                const feature = featuresByStart.get(row.startAt);
-                if (feature === undefined) return row;
-                return {
-                  ...row,
-                  netFlowMicros: feature.netFlowMicros,
-                  graphParticipants: feature.participants,
-                  graphTradeCount: feature.tradeCount,
-                };
-              }),
-            };
-          }
+          const featureStudy =
+            graphDataset === undefined
+              ? study
+              : attachGraphStudyFeatures(
+                  study,
+                  graphDataset.observations,
+                  graphDataset.quoteDecimals,
+                );
           const graphSentence =
             graphDataset === undefined
               ? ""
-              : ` Price and flow source: The Graph dataset ${graphDataset.manifest.id} (${graphDataset.manifest.status}, ${graphDataset.manifest.coverage.rows} observations, pinned at block ${graphDataset.manifest.pin?.blockNumber ?? "multiple"}).`;
+              : ` Price and flow source: The Graph (${graphDataset.quoteSymbol} quote units), dataset ${graphDataset.manifest.id} (${graphDataset.manifest.status}, ${graphDataset.manifest.coverage.rows} observations, pinned at block ${graphDataset.manifest.pin?.blockNumber ?? "multiple"}).`;
           return eventsResult({
             study: featureStudy,
             outcome:
@@ -4616,7 +4611,10 @@ export const handlers = {
           const archive = yield* TradingMarketArchive;
           // The read gate, same as a backtest: an unverifiable writer lock
           // refuses before any archive read is made.
-          const ownership = archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`);
+          const ownership =
+            input.graphSource === undefined
+              ? archiveOwnershipRefusal(`${archiveDatabasePath()}.writer.lock`)
+              : null;
           if (ownership !== null) {
             return yield* refuse(ownership);
           }
@@ -4640,7 +4638,7 @@ export const handlers = {
             entryBasis,
           });
           const ensureWindow =
-            hydrationWindow === null
+            input.graphSource !== undefined || hydrationWindow === null
               ? null
               : yield* archive
                   .ensureCoverage({
@@ -4679,6 +4677,8 @@ export const handlers = {
             const read = yield* graphResearchOption.value.loadStudyDataset({
               environmentId: scope.environmentId,
               poolId: input.graphSource.poolId,
+              market: input.market,
+              entryBasis,
               occurrences: set.occurrences,
               intervalMs: width,
               horizonBars,
@@ -4731,36 +4731,28 @@ export const handlers = {
               : {}),
           });
           if (graphDataset !== undefined) {
-            const featuresByStart = new Map(
-              graphDataset.features.map((feature) => [feature.startAt, feature]),
+            report = attachGraphStudyFeatures(
+              report,
+              graphDataset.observations,
+              graphDataset.quoteDecimals,
             );
-            report = {
-              ...report,
-              rows: report.rows.map((row) => {
-                const feature = featuresByStart.get(row.startAt);
-                if (feature === undefined) return row;
-                return {
-                  ...row,
-                  netFlowMicros: feature.netFlowMicros,
-                  graphParticipants: feature.participants,
-                  graphTradeCount: feature.tradeCount,
-                };
-              }),
-            };
           }
           const servedFromT = candles[0]?.openTime ?? now;
           const servedToT = candles[candles.length - 1]?.openTime ?? now;
           // The scene's provenance: the study's own bounded window, the bars
           // actually served inside it, and the archive's recording start — one
           // scoped coverage read, never a full-archive walk.
-          const coverageDetail = yield* archive
-            .coverage({
-              coin: input.market,
-              interval,
-              fromT: studyWindow.fromT,
-              toT: studyWindow.toT,
-            })
-            .pipe(Effect.orDie);
+          const coverageDetail =
+            graphDataset === undefined
+              ? yield* archive
+                  .coverage({
+                    coin: input.market,
+                    interval,
+                    fromT: studyWindow.fromT,
+                    toT: studyWindow.toT,
+                  })
+                  .pipe(Effect.orDie)
+              : null;
           // The windows the client fetches per occurrence: the event span
           // plus the measured horizon, so Calendar mode draws each occurrence
           // with its own entry and exit bars without shipping years of bars.
@@ -4844,7 +4836,7 @@ export const handlers = {
                   report,
                   occurrenceWindows,
                   archiveBounds: {
-                    recordingSince: coverageDetail.recordingSince,
+                    recordingSince: coverageDetail?.recordingSince ?? null,
                     fromT: servedFromT,
                     toT: servedToT,
                   },

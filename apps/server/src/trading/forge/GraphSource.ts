@@ -39,6 +39,7 @@ import {
   forgeRatioMicros,
   ForgeSourceHealth,
   ForgeWindowFetch,
+  type ForgeQueryCapture,
   type ForgeSourceConfig,
   type ForgePoolIdentity,
 } from "@t3tools/trading-contracts";
@@ -636,6 +637,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       // query sent is the caller's validated bundle bytes when provided —
       // verbatim, never rewritten — and the reference otherwise.
       const executedQuery = input.query ?? FORGE_SWAPS_QUERY;
+      const executedVariables: Array<ForgeQueryCapture["variables"][number]> = [];
       const observations: Array<ForgeSwapObservation> = [];
       const seen = new Set<string>();
       let duplicatesDropped = 0;
@@ -643,19 +645,18 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       let rowsRead = 0;
       let pinnedBlockHash: string | undefined;
       while (true) {
+        const variables = {
+          pool: pool.poolId,
+          first: source.pageSize,
+          cursor,
+          block: pinnedBlock,
+          from: String(Math.max(0, input.startedAt - FORGE_ANCHOR_CANDIDATE_WINDOW_SECONDS)),
+          to: String(input.endedAt),
+        };
+        executedVariables.push(variables);
         const page = yield* postOrError(
           source.endpoint,
-          {
-            query: executedQuery,
-            variables: {
-              pool: pool.poolId,
-              first: source.pageSize,
-              cursor,
-              block: pinnedBlock,
-              from: String(Math.max(0, input.startedAt - FORGE_ANCHOR_CANDIDATE_WINDOW_SECONDS)),
-              to: String(input.endedAt),
-            },
-          },
+          { query: executedQuery, variables },
           settings.apiKey!,
         );
         if (!page.ok) {
@@ -828,6 +829,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         ...(probe.lagBlocks === null ? {} : { lagBlocks: probe.lagBlocks }),
         ...(duplicatesDropped === 0 ? {} : { duplicatesDropped }),
         sourceDigest: digest,
+        queryCapture: { query: executedQuery, variables: executedVariables },
       };
       // Self-check: the envelope the adapter built must satisfy the contract
       // it claims to be. A construction bug surfaces as unavailable here

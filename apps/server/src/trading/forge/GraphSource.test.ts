@@ -354,6 +354,14 @@ it.effect("paginates with an id_gt cursor until the short page, pinned to one bl
     // The window query is bounded to the anchor buffer on the low side.
     assert.equal(swapsCalls[0]?.body.variables.from, String(WINDOW.startedAt - 300));
     assert.equal(swapsCalls[0]?.body.variables.to, String(WINDOW.endedAt));
+    assert.deepEqual(fetch.queryCapture, {
+      query: swapsCalls[0]!.body.query,
+      // The fake transport records variables as untyped JSON; the capture
+      // types them, so the assertion compares values through that lens.
+      variables: swapsCalls.map((call) => call.body.variables) as unknown as NonNullable<
+        typeof fetch.queryCapture
+      >["variables"],
+    });
   }),
 );
 

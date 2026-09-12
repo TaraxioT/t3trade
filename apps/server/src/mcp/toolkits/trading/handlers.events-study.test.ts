@@ -43,6 +43,12 @@ import { RESEARCH_CALCULATION_VERSIONS } from "@t3tools/trading-contracts/resear
 import { TradingThreadMarketService } from "../../../trading/TradingThreadMarketService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { handlers } from "./handlers.ts";
+import {
+  GraphResearchService,
+  type GraphResearchServiceShape,
+  type GraphStudyDataset,
+} from "../../../trading/research/GraphResearchService.ts";
+import { observationsToCandles, type ForgeSwapObservation } from "@t3tools/trading-contracts";
 
 const DAY = 24 * 60 * 60 * 1_000;
 
@@ -688,3 +694,200 @@ it.live("a failed publish surfaces as a refusal, never as graph success", () => 
     ),
   );
 });
+
+/** The Graph handler seam must never hydrate or read the market archive. */
+const graphHandlerLayers = (graph: GraphResearchServiceShape) => {
+  const memory = NodeSqliteClient.layerMemory();
+  const archive = makeTradingMarketArchive(
+    "/unused/graph-test.sqlite",
+    "hyperliquid",
+    "/unused/queue.json",
+  );
+  return Layer.mergeAll(
+    Layer.succeed(TradingMarketArchive, {
+      ...archive,
+      ensureCoverage: () => Effect.die("Graph study must not hydrate the archive"),
+      candlesInWindow: () => Effect.die("Graph study must not read archive candles"),
+      coverage: () => Effect.die("Graph study must not read archive coverage"),
+    }),
+    Layer.succeed(GraphResearchService, graph),
+    Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScopeFor("graph")),
+    TradingEventServiceLive.pipe(
+      Layer.provideMerge(memory),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    TradingResearchSceneServiceLive.pipe(
+      Layer.provideMerge(memory),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    threadMarketRecorder,
+    replayPathStubs,
+  );
+};
+
+const GRAPH_HOUR = 3_600_000;
+const GRAPH_START = 1_699_920_000_000;
+const GRAPH_POOL = ("0x" + "11".repeat(20)) as `0x${string}`;
+const graphHandlerDataset = (): GraphStudyDataset => {
+  const observations: ForgeSwapObservation[] = [100, 110, 120, 130].map((price, index) => ({
+    chain: "ethereum-mainnet",
+    poolId: GRAPH_POOL,
+    observationId: `swap-${index}`,
+    transactionHash: "0x" + String(index + 1).repeat(64),
+    logIndex: 0,
+    timestamp: (GRAPH_START + index * GRAPH_HOUR) / 1000 + 1,
+    sender: "0x" + "22".repeat(20),
+    recipient: "0x" + "33".repeat(20),
+    amount0: "-1000000000000000000",
+    amount1: String(price * 1_000_000),
+    sqrtPriceX96: "1",
+    tick: 0,
+    baseIsToken1: false,
+    priceQuotePerBase: { numerator: String(price), denominator: "1" },
+    priceQuotePerBaseMicros: price * 1_000_000,
+    quoteVolumeMicros: price * 1_000_000,
+    quoteVolumeRaw: String(price * 1_000_000),
+  }));
+  return {
+    observations,
+    candles: observationsToCandles(observations, { intervalMs: GRAPH_HOUR }),
+    quoteDecimals: 6,
+    quoteSymbol: "USDC",
+    manifest: {
+      id: "dataset-graph-handler",
+      environmentId: "env-study-graph",
+      provider: "the-graph",
+      transport: "subgraph",
+      chainId: "1",
+      deploymentOrPackageId: "Qmgraphfixture",
+      schemaSha256: "a".repeat(64),
+      programSha256: "b".repeat(64),
+      variablesSha256: "c".repeat(64),
+      contentSha256: "d".repeat(64),
+      requested: { fromMs: GRAPH_START, toMs: GRAPH_START + 4 * GRAPH_HOUR },
+      coverage: { fromMs: GRAPH_START, toMs: GRAPH_START + 4 * GRAPH_HOUR, rows: 4 },
+      status: "complete",
+      pin: { blockNumber: "18000000", blockHash: "0x" + "e".repeat(64) },
+      cursor: null,
+      normalizedSchemaVersion: 1,
+      capturedAtMs: GRAPH_START + 5 * GRAPH_HOUR,
+      availabilityBasis: "recorded",
+      mode: "historical-replay",
+    },
+  };
+};
+
+it.live(
+  "Graph study and publish use the same retained prices and flow without archive reads",
+  () => {
+    const calls: Array<Parameters<GraphResearchServiceShape["loadStudyDataset"]>[0]> = [];
+    const dataset = graphHandlerDataset();
+    return Effect.gen(function* () {
+      yield* runMigrations({});
+      const events = yield* TradingEventService;
+      const recorded = yield* events.record({
+        name: "Graph release",
+        occurrences: [
+          {
+            startAt: GRAPH_START - 1000,
+            endAt: GRAPH_START,
+            source: "https://example.com/release",
+          },
+        ],
+        threadId: "thread-study-graph",
+        author: "agent",
+        now: GRAPH_START + 5 * GRAPH_HOUR,
+      });
+      assert.equal(recorded.outcome, "ok");
+      const params = {
+        eventSetId: recorded.outcome === "ok" ? recorded.set.eventSetId : "",
+        market: "ETH",
+        interval: "1h",
+        horizonBars: 2,
+        entryBasis: "first_bar_open_after_event",
+        graphSource: { poolId: GRAPH_POOL },
+      } as const;
+      const studied = yield* handlers.trading_events({ action: "study", ...params });
+      const published = yield* handlers.trading_chart({ action: "publish_event_study", ...params });
+      const study = "study" in studied ? studied.study : undefined;
+      const scene = "scene" in published ? published.scene : undefined;
+      assert.isDefined(study, debugJson(studied));
+      assert.isDefined(scene, debugJson(published));
+      if (study === undefined || scene === undefined) return;
+      assert.equal(calls.length, 2);
+      for (const call of calls) {
+        assert.equal(call.market, "ETH");
+        assert.equal(call.environmentId, "env-study-graph");
+        assert.equal(call.entryBasis, params.entryBasis);
+        assert.equal(call.poolId, GRAPH_POOL);
+        assert.equal(call.intervalMs, GRAPH_HOUR);
+        assert.equal(call.horizonBars, 2);
+      }
+      assert.equal(study.nCovered, 1);
+      assert.equal(study.rows[0]?.entryPrice, 100);
+      assert.isAbove(study.rows[0]?.graphTradeCount ?? 0, 0);
+      assert.equal(study.rows[0]?.graphParticipants, 1);
+      assert.isDefined(study.rows[0]?.netFlowMicros);
+      assert.deepStrictEqual(
+        withoutUndefinedKeys(scene.eventStudy?.report),
+        withoutUndefinedKeys(study),
+      );
+      assert.equal(scene.eventStudy?.priceSource, "the-graph");
+      assert.equal(scene.eventStudy?.graphDataset?.datasetId, dataset.manifest.id);
+    }).pipe(
+      Effect.provide(
+        graphHandlerLayers({
+          loadStudyDataset: (input) =>
+            Effect.sync(() => {
+              calls.push(input);
+              return { status: "ok" as const, dataset };
+            }),
+        }),
+      ),
+    );
+  },
+);
+
+it.live("both Graph study handlers refuse unavailable evidence without archive fallback", () =>
+  Effect.gen(function* () {
+    yield* runMigrations({});
+    const events = yield* TradingEventService;
+    const recorded = yield* events.record({
+      name: "Unavailable Graph release",
+      occurrences: [
+        { startAt: GRAPH_START - 1000, endAt: GRAPH_START, source: "https://example.com/release" },
+      ],
+      threadId: "thread-study-graph",
+      author: "agent",
+      now: GRAPH_START + 5 * GRAPH_HOUR,
+    });
+    assert.equal(recorded.outcome, "ok");
+    const params = {
+      eventSetId: recorded.outcome === "ok" ? recorded.set.eventSetId : "",
+      market: "ETH",
+      interval: "1h",
+      horizonBars: 2,
+      graphSource: { poolId: GRAPH_POOL },
+    } as const;
+    const studyRefusal = yield* Effect.flip(
+      handlers.trading_events({ action: "study", ...params }),
+    );
+    const publishRefusal = yield* Effect.flip(
+      handlers.trading_chart({ action: "publish_event_study", ...params }),
+    );
+    for (const refusal of [studyRefusal, publishRefusal]) {
+      assert.instanceOf(refusal, TradingToolRejectedError);
+      assert.include(
+        (refusal as TradingToolRejectedError).detail,
+        "graph study unavailable: pinned capture missing",
+      );
+    }
+  }).pipe(
+    Effect.provide(
+      graphHandlerLayers({
+        loadStudyDataset: () =>
+          Effect.succeed({ status: "unavailable", reason: "pinned capture missing" }),
+      }),
+    ),
+  ),
+);
