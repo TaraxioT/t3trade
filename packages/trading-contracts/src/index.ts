@@ -35,5 +35,6 @@ export * from "./researchScenes.ts";
 export * from "./forge.ts";
 export * from "./researchEvidence.ts";
 export * from "./detectorProgram.ts";
+export * from "./executionPolicy.ts";
 export * from "./graphStudyFeatures.ts";
 export * from "./observation.ts";
