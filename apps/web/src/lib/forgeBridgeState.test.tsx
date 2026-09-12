@@ -12,6 +12,7 @@ import {
   EnvironmentId,
   type ForgePoolSeriesView,
   type ForgePoolStateView,
+  type ForgeThreadContextView,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
@@ -20,7 +21,13 @@ import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { useForgePoolSeries, useForgePoolState, type ForgeReadState } from "./forgeBridgeState";
+import {
+  forgeDetectorSummaries,
+  useForgePoolSeries,
+  useForgePoolState,
+  useForgeThreadContext,
+  type ForgeReadState,
+} from "./forgeBridgeState";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { orchestrationEnvironment } from "../state/orchestration";
 
@@ -93,9 +100,63 @@ const poolStateView: ForgePoolStateView = {
   freshlyConfirmedExpiry: { status: "unknown", reason: "chain policy snapshot unavailable" },
 };
 
+/** The v2 half of a thread-context view: one detector with a committed reading. */
+const detectorSummary = {
+  status: "ok" as const,
+  items: [
+    {
+      status: "available" as const,
+      capabilityId: "flag-detector",
+      version: 3,
+      armed: true,
+      stateRevision: 4,
+      evaluationId: "dtev_1",
+      asOfMs: 1_700_000_100_000,
+      inputDigest: "ab".repeat(32),
+      result: {
+        status: "matched" as const,
+        occurrenceKey: "occ_flag_1",
+        validUntilMs: 1_700_000_400_000,
+      },
+      evidenceIds: ["forge_ev_v2_1"],
+    },
+    {
+      status: "noEvaluation" as const,
+      capabilityId: "quiet-detector",
+      version: 1,
+      armed: false,
+      reason: "the installed detector program has not committed an evaluation yet",
+    },
+  ],
+};
+
+const threadContextBase = {
+  sources: { status: "unavailable" as const, reason: "forge graph source not configured" },
+  capabilities: [],
+  latestEvaluation: {
+    status: "none" as const,
+    reason: "no evaluation has been committed for this thread",
+  },
+  comparison: {
+    status: "unavailable" as const,
+    reason: "v2 revision evidence does not exist yet (F5 pending)",
+  },
+} as const;
+
+/** A payload from before the detector slot existed — the field is absent. */
+const legacyThreadContextView: ForgeThreadContextView = {
+  ...threadContextBase,
+};
+
+const detectorThreadContextView: ForgeThreadContextView = {
+  ...threadContextBase,
+  detectorEvaluations: detectorSummary,
+};
+
 let renderer: ReactTestRenderer | undefined;
 let latestSeries: ForgeReadState<ForgePoolSeriesView>;
 let latestPoolState: ForgeReadState<ForgePoolStateView>;
+let latestThreadContext: ForgeReadState<ForgeThreadContextView>;
 let refreshSpy: ReturnType<typeof spyOnRegistryRefresh>;
 
 function spyOnRegistryRefresh() {
@@ -120,6 +181,14 @@ function PoolStateProbe({ options }: { options: Parameters<typeof useForgePoolSt
   return null;
 }
 
+function ThreadContextProbe({ options }: { options: Parameters<typeof useForgeThreadContext>[1] }) {
+  const state = useForgeThreadContext(ENV, options);
+  useLayoutEffect(() => {
+    latestThreadContext = state;
+  }, [state]);
+  return null;
+}
+
 async function renderSeries(poolId: string | null, options: SeriesOptions) {
   await act(() => {
     renderer = create(<SeriesProbe poolId={poolId} options={options} />);
@@ -135,6 +204,18 @@ async function rerenderSeries(poolId: string | null, options: SeriesOptions) {
 async function renderPoolState(options: Parameters<typeof useForgePoolState>[1]) {
   await act(() => {
     renderer = create(<PoolStateProbe options={options} />);
+  });
+}
+
+async function rerenderThreadContext(options: Parameters<typeof useForgeThreadContext>[1]) {
+  await act(() => {
+    renderer?.update(<ThreadContextProbe options={options} />);
+  });
+}
+
+async function renderThreadContext(options: Parameters<typeof useForgeThreadContext>[1]) {
+  await act(() => {
+    renderer = create(<ThreadContextProbe options={options} />);
   });
 }
 
@@ -279,5 +360,58 @@ describe("forge pool state", () => {
       latestPoolState.refresh();
     });
     expect(refreshSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("forge thread context — v2 detector summaries", () => {
+  it("carries the v2 summaries through the state mapping, retention included", async () => {
+    atomState.result = AsyncResult.success(detectorThreadContextView);
+    await renderThreadContext({ enabled: true, threadId: "thread-9" });
+    // The hook's state mapping passes the whole view through by reference;
+    // the summaries ride beside the v1 slots untouched.
+    expect(latestThreadContext.data).toBe(detectorThreadContextView);
+    expect(latestThreadContext.error).toBeNull();
+    const summaries =
+      latestThreadContext.data === null ? null : forgeDetectorSummaries(latestThreadContext.data);
+    expect(summaries?.length).toBe(2);
+    const [reading, quiet] = summaries ?? [];
+    expect(reading?.status).toBe("available");
+    if (reading?.status !== "available") return;
+    expect(reading.armed).toBe(true);
+    expect(reading.stateRevision).toBe(4);
+    expect(reading.result.status).toBe("matched");
+    expect(quiet?.status).toBe("noEvaluation");
+
+    // A failed refresh keeps the retained summaries on screen, visibly stale.
+    atomState.result = AsyncResult.failure<ForgeThreadContextView, Error>(
+      Cause.fail(new Error("graph down")),
+    );
+    await rerenderThreadContext({ enabled: true, threadId: "thread-9" });
+    expect(latestThreadContext.stale).toBe(true);
+    expect(latestThreadContext.data).toBe(detectorThreadContextView);
+  });
+
+  it("a pre-detector payload (absent field) flows unchanged and reads as no summaries", async () => {
+    atomState.result = AsyncResult.success(legacyThreadContextView);
+    await renderThreadContext({ enabled: true });
+    expect(latestThreadContext.data).toBe(legacyThreadContextView);
+    expect(latestThreadContext.data?.detectorEvaluations).toBeUndefined();
+    expect(
+      latestThreadContext.data !== null ? forgeDetectorSummaries(latestThreadContext.data) : null,
+    ).toEqual([]);
+  });
+
+  it("the selector never fabricates rows for absent or named-unavailable slots", () => {
+    expect(forgeDetectorSummaries(legacyThreadContextView)).toEqual([]);
+    expect(
+      forgeDetectorSummaries({
+        ...threadContextBase,
+        detectorEvaluations: {
+          status: "unavailable",
+          reason: "the detector run store is not wired into this runtime",
+        },
+      }),
+    ).toEqual([]);
+    expect(forgeDetectorSummaries(detectorThreadContextView)).toEqual(detectorSummary.items);
   });
 });

@@ -81,9 +81,12 @@ import {
   FORGE_MAX_SERIES_POINTS,
   FORGE_MAX_WINDOW_SECONDS,
   ForgeCapabilityCatalogEntry,
+  ForgeDetectorResultSummary,
   ForgePoolDiagnostics,
   ForgePoolSeries,
   ForgeSourceListing,
+  Sha256Hex,
+  TradingId,
   UnixMillis,
 } from "@t3tools/trading-contracts";
 import { ResearchSceneView } from "@t3tools/trading-contracts/researchScenes";
@@ -2265,6 +2268,75 @@ export const ForgeRevisionComparison = Schema.Struct({
 });
 export type ForgeRevisionComparison = typeof ForgeRevisionComparison.Type;
 
+/**
+ * The most evidence ids one detector summary carries. The committed record's
+ * own list is unbounded; the thread-context view is a bounded look, so the
+ * server serves at most this many and the schema refuses longer lists — the
+ * full provenance stays reachable through the record itself.
+ */
+export const FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE = 16;
+
+/**
+ * One installed detector-program (v2) capability's standing as the
+ * thread-context view serves it: the detector's armed gate, and either the
+ * newest committed reading (matched / not-matched / unknown with its bounded
+ * "why", the run's own clock, the state revision it advanced, and the content
+ * identity of the sealed input) or the named absence of one.
+ *
+ * The `result` union is the trading-contracts `ForgeDetectorResultSummary`
+ * imported directly: the look payload and the tool status render through one
+ * bounded mirror of the authoritative `DetectionResult`, so the two can never
+ * drift (trading-contracts imports nothing from this package — no cycle).
+ * v2 records carry no per-pool diagnostics and no v1-style window, so those
+ * v1 slot fields are simply absent here, never invented.
+ */
+export const ForgeDetectorEvaluationSummary = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("available"),
+    capabilityId: TrimmedNonEmptyString,
+    version: PositiveInt,
+    /** The detector standing folded from the install log; false by default. */
+    armed: Schema.Boolean,
+    /** The committed detector state the evaluation advanced to. */
+    stateRevision: NonNegativeInt,
+    evaluationId: TrimmedNonEmptyString,
+    /** The evaluation's own clock — the only time the program ever saw. */
+    asOfMs: UnixMillis,
+    /** Digest over the sealed input the program saw. */
+    inputDigest: Sha256Hex,
+    result: ForgeDetectorResultSummary,
+    /** Bounded to {@link FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE} by the schema. */
+    evidenceIds: Schema.Array(TradingId).check(
+      Schema.isMaxLength(FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE),
+    ),
+  }),
+  Schema.Struct({
+    /** Installed (and possibly armed) but no committed run yet: armed says
+     * the detector MAY stand; nothing says it has read anything. */
+    status: Schema.Literal("noEvaluation"),
+    capabilityId: TrimmedNonEmptyString,
+    version: PositiveInt,
+    armed: Schema.Boolean,
+    reason: TrimmedNonEmptyString,
+  }),
+]);
+export type ForgeDetectorEvaluationSummary = typeof ForgeDetectorEvaluationSummary.Type;
+
+/**
+ * The thread-context view's detector slot: the in-scope v2 capabilities'
+ * summaries, or a named unavailable state when the backing store is not wired.
+ * `unavailable` is a runtime wiring fact, never a claim about the detectors.
+ */
+export const ForgeDetectorEvaluationsView = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ok"),
+    /** The honest empty list when no v2 capability is in scope. */
+    items: Schema.Array(ForgeDetectorEvaluationSummary),
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), reason: TrimmedNonEmptyString }),
+]);
+export type ForgeDetectorEvaluationsView = typeof ForgeDetectorEvaluationsView.Type;
+
 /** Source/build discovery for a thread — no Hyperliquid market required. */
 export const OrchestrationGetForgeThreadContextInput = Schema.Struct({
   /** Narrows evaluation evidence to one conversation; absent means environment-scoped. */
@@ -2279,6 +2351,14 @@ export const ForgeThreadContextView = Schema.Struct({
   /** The store's own catalog rows; an empty list is the honest empty. */
   capabilities: Schema.Array(ForgeCapabilityCatalogEntry),
   latestEvaluation: ForgeLatestEvaluationSummary,
+  /**
+   * The installed detector-program (v2) capabilities in this request's scope,
+   * each with its armed standing and newest committed reading. OPTIONAL and
+   * additive: a payload from a server predating the detector slot (and any
+   * client that never reads it) decodes unchanged beside the v1 slot, whose
+   * shape this never touches.
+   */
+  detectorEvaluations: Schema.optional(ForgeDetectorEvaluationsView),
   comparison: ForgeRevisionComparison,
 });
 export type ForgeThreadContextView = typeof ForgeThreadContextView.Type;

@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   ThreadId,
   type EnvironmentId,
+  type ForgeDetectorEvaluationSummary,
   type ForgePoolSeriesView,
   type ForgePoolStateView,
   type ForgeThreadContextView,
@@ -207,6 +208,20 @@ export function useForgePoolState(
   }, [enabled, polls, refresh]);
 
   return { ...retained, refresh };
+}
+
+/**
+ * The in-scope v2 detector summaries a thread-context view carries — the
+ * panel's one read for "what is my installed detector's armed standing and
+ * latest reading". A payload from before the detector slot (absent field) and
+ * a named-unavailable slot both read as the empty list: absence renders from
+ * the view's own `detectorEvaluations` status, never as fabricated rows.
+ */
+export function forgeDetectorSummaries(
+  view: ForgeThreadContextView,
+): ReadonlyArray<ForgeDetectorEvaluationSummary> {
+  const slot = view.detectorEvaluations;
+  return slot !== undefined && slot.status === "ok" ? slot.items : [];
 }
 
 /**

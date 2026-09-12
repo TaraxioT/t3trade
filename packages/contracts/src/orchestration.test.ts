@@ -10,6 +10,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ClientOrchestrationCommand,
+  FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE,
   ModelSelection,
   OrchestrationCommand,
   OrchestrationDispatchCommandError,
@@ -1473,6 +1474,9 @@ it.effect("decodes the thread context with an unavailable comparison and named g
     assert.strictEqual(view.sources.status, "unavailable");
     assert.strictEqual(view.latestEvaluation.status, "detailUnavailable");
     assert.strictEqual(view.comparison.status, "unavailable");
+    // A v1-only payload decodes unchanged: the additive detector slot stays
+    // absent, never defaulted into existence.
+    assert.strictEqual(view.detectorEvaluations, undefined);
     // A fabricated comparison state must not decode: unavailable is the only
     // honest answer until F5 produces records.
     const fabricated = yield* Effect.exit(
@@ -1484,6 +1488,156 @@ it.effect("decodes the thread context with an unavailable comparison and named g
       }),
     );
     assert.strictEqual(fabricated._tag, "Failure");
+  }),
+);
+
+it.effect("decodes the thread context's detector slot and refuses fabricated shapes", () =>
+  Effect.gen(function* () {
+    const base = {
+      sources: { status: "unavailable" as const, reason: "forge graph source not configured" },
+      capabilities: [],
+      latestEvaluation: { status: "none" as const, reason: "no capability is installed" },
+      comparison: {
+        status: "unavailable" as const,
+        reason: "v2 revision evidence does not exist yet (F5 pending)",
+      },
+    };
+    const view = yield* decodeForgeThreadContextView({
+      ...base,
+      detectorEvaluations: {
+        status: "ok",
+        items: [
+          {
+            status: "available",
+            capabilityId: "flag-detector",
+            version: 3,
+            armed: true,
+            stateRevision: 4,
+            evaluationId: "dtev_1",
+            asOfMs: 1_700_000_100_000,
+            inputDigest: "ab".repeat(32),
+            result: {
+              status: "matched",
+              occurrenceKey: "occ_flag_1",
+              validUntilMs: 1_700_000_400_000,
+            },
+            evidenceIds: ["forge_ev_v2_1"],
+          },
+          {
+            status: "noEvaluation",
+            capabilityId: "quiet-detector",
+            version: 1,
+            armed: false,
+            reason: "the installed detector program has not committed an evaluation yet",
+          },
+        ],
+      },
+    });
+    const slot = view.detectorEvaluations;
+    assert.strictEqual(slot?.status, "ok");
+    if (slot?.status !== "ok") return;
+    assert.strictEqual(slot.items.length, 2);
+    const [reading, quiet] = slot.items;
+    assert.strictEqual(reading?.status, "available");
+    if (reading?.status !== "available") return;
+    assert.strictEqual(reading.armed, true);
+    assert.strictEqual(reading.stateRevision, 4);
+    assert.deepStrictEqual(reading.result, {
+      status: "matched",
+      occurrenceKey: "occ_flag_1",
+      validUntilMs: 1_700_000_400_000,
+    });
+    assert.strictEqual(quiet?.status, "noEvaluation");
+    if (quiet?.status !== "noEvaluation") return;
+    assert.strictEqual(quiet.armed, false);
+
+    // An unwired run store is a named unavailable state, never an empty ok.
+    const unavailable = yield* decodeForgeThreadContextView({
+      ...base,
+      detectorEvaluations: {
+        status: "unavailable",
+        reason: "the detector run store is not wired into this runtime",
+      },
+    });
+    assert.strictEqual(unavailable.detectorEvaluations?.status, "unavailable");
+
+    // A result shape outside the three-shape union must not decode.
+    const badResult = yield* Effect.exit(
+      decodeForgeThreadContextView({
+        ...base,
+        detectorEvaluations: {
+          status: "ok",
+          items: [
+            {
+              status: "available",
+              capabilityId: "flag-detector",
+              version: 3,
+              armed: true,
+              stateRevision: 4,
+              evaluationId: "dtev_1",
+              asOfMs: 1_700_000_100_000,
+              inputDigest: "ab".repeat(32),
+              result: { status: "maybe", explanation: "fabricated" },
+              evidenceIds: [],
+            },
+          ],
+        },
+      }),
+    );
+    assert.strictEqual(badResult._tag, "Failure");
+
+    // The evidence-id bound is enforced by the schema itself.
+    const overCap = yield* Effect.exit(
+      decodeForgeThreadContextView({
+        ...base,
+        detectorEvaluations: {
+          status: "ok",
+          items: [
+            {
+              status: "available",
+              capabilityId: "flag-detector",
+              version: 3,
+              armed: true,
+              stateRevision: 4,
+              evaluationId: "dtev_1",
+              asOfMs: 1_700_000_100_000,
+              inputDigest: "ab".repeat(32),
+              result: { status: "unknown", explanation: "source landing" },
+              evidenceIds: Array.from(
+                { length: FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE + 1 },
+                (_, index) => `forge_ev_v2_${index}`,
+              ),
+            },
+          ],
+        },
+      }),
+    );
+    assert.strictEqual(overCap._tag, "Failure");
+
+    // A negative state revision is not a committed state the record advanced to.
+    const negativeRevision = yield* Effect.exit(
+      decodeForgeThreadContextView({
+        ...base,
+        detectorEvaluations: {
+          status: "ok",
+          items: [
+            {
+              status: "available",
+              capabilityId: "flag-detector",
+              version: 3,
+              armed: true,
+              stateRevision: -1,
+              evaluationId: "dtev_1",
+              asOfMs: 1_700_000_100_000,
+              inputDigest: "ab".repeat(32),
+              result: { status: "unknown", explanation: "source landing" },
+              evidenceIds: [],
+            },
+          ],
+        },
+      }),
+    );
+    assert.strictEqual(negativeRevision._tag, "Failure");
   }),
 );
 

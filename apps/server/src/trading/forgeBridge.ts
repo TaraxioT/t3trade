@@ -9,6 +9,10 @@
  *   zeros and never a failed RPC.
  * - Older evaluation evidence without diagnostics surfaces
  *   `detailUnavailable`; counts are not reconstructed or invented.
+ * - v2 detector summaries ride their own optional thread-context slot,
+ *   scoped by the preparing thread the installed bundle's build receipt
+ *   records — never a fabricated scope, and never rendered into the v1
+ *   evaluation slot the record cannot honestly fill.
  * - The same-window v1/v2 comparison is explicitly unavailable until F5
  *   produces revision records.
  * - Expiry judgements stand on the chain snapshot's own block time; a client
@@ -24,6 +28,8 @@ import * as Option from "effect/Option";
 
 import type {
   ForgeControlResult,
+  ForgeDetectorEvaluationsView,
+  ForgeDetectorEvaluationSummary,
   ForgeEvidenceDetail,
   ForgeFreshlyConfirmedExpiry,
   ForgeLatestEvaluationSummary,
@@ -40,13 +46,21 @@ import type {
   OrchestrationGetForgeEvidenceResult,
   OrchestrationGetForgePoolSeriesInput,
 } from "@t3tools/contracts";
-import { FORGE_BRIDGE_TX_PAGE, OrchestrationGetSnapshotError } from "@t3tools/contracts";
-import type { ForgeEvaluationEvidence } from "@t3tools/trading-contracts";
 import {
-  toForgeDetectorResultSummary,
-  type DetectorEvaluationRecordV2,
-  type ForgeDetectorResultSummary,
+  FORGE_BRIDGE_TX_PAGE,
+  FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE,
+  OrchestrationGetSnapshotError,
+} from "@t3tools/contracts";
+import type {
+  DetectorEvaluationRecordV2,
+  ForgeCapabilityCatalogEntry,
+  ForgeEvaluationEvidence,
 } from "@t3tools/trading-contracts";
+import { toForgeDetectorResultSummary } from "@t3tools/trading-contracts";
+
+// Re-exported beside the mapper that produces it: the wire summary type this
+// module owns the composition of.
+export type { ForgeDetectorEvaluationSummary };
 
 import {
   ForgeSourceReads,
@@ -61,7 +75,12 @@ import {
   type ForgePoolProposalRead,
   type ForgePositionStateRead,
 } from "./forge/FeePolicyService.ts";
-import { ForgeCapabilityStore, type ForgeCapabilityStoreShape } from "./forge/CapabilityStore.ts";
+import {
+  ForgeCapabilityStore,
+  versionProgramKind,
+  type ForgeCapabilityStoreShape,
+} from "./forge/CapabilityStore.ts";
+import { DetectorRunStore } from "./forge/DetectorRunStore.ts";
 import type { ForgeIntentRecord } from "./forge/UniswapTestnetAdapter.ts";
 
 /** The honest comparison answer until F5 ships revision evidence. */
@@ -73,15 +92,19 @@ export const FORGE_COMPARISON_UNAVAILABLE: ForgeRevisionComparison = {
 /** Reason served when the capability store is not wired into the runtime. */
 const STORE_UNWIRED_REASON = "the Forge capability store is not wired into this runtime";
 
+/** Reason served when the detector run store is not wired into the runtime —
+ * the same wording the `trading_forge` status tool serves for the same fact. */
+export const DETECTOR_RUNS_UNWIRED_REASON = "the detector run store is not wired into this runtime";
+
 /** Reason served for retained evidence that predates per-pool diagnostics. */
 const DIAGNOSTICS_UNAVAILABLE_REASON =
   "the retained evaluation predates per-pool diagnostics; counts were not recorded";
 
-/** Reason served on every detector (v2) summary's diagnostics slot: the
- * program result carries no per-pool rows at all, so the slot is a NAMED
- * absence — never invented, never zero (the detailUnavailable precedent). */
-export const DETECTOR_POOLS_UNAVAILABLE_REASON =
-  "detector-program evaluations record a detection result, not per-pool diagnostics; nothing exists to fill this slot";
+/** Reason served for a v2 capability that is installed (possibly armed) but
+ * has never committed a run: armed gates whether the detector may stand, it
+ * never claims a reading exists. */
+const NO_COMMITTED_EVALUATION_REASON =
+  "the installed detector program has not committed an evaluation yet";
 
 const toSnapshotError = (message: string, cause: unknown) =>
   new OrchestrationGetSnapshotError({ message, cause });
@@ -127,48 +150,29 @@ const mapEvidenceDetail = (evidence: ForgeEvaluationEvidence): ForgeEvidenceDeta
 });
 
 /**
- * A committed detector-program (v2) evaluation as the bridge would serve it:
- * the three-shape result summary (occurrence key / the "why"), the run's own
- * clock (`asOfMs`), the committed state revision, and the content identity.
- * A server-side view — the WS wire contract has no detector variant yet
- * (see {@link mapDetectorEvaluation}'s note on the thread-context pick).
- */
-export interface ForgeDetectorEvaluationSummary {
-  readonly status: "detector";
-  readonly evaluationId: string;
-  readonly capabilityId: string;
-  readonly capabilityVersion: number;
-  /** The committed detector state this record advanced to. */
-  readonly stateRevision: number;
-  /** The canonical digest over the sealed input the program saw. */
-  readonly inputDigest: string;
-  /** The evaluation's own clock — the only time the program ever saw. */
-  readonly asOfMs: number;
-  readonly committedAtMs: number;
-  readonly result: ForgeDetectorResultSummary;
-  /** v2 records have no per-pool diagnostics; a named absence, never rows. */
-  readonly pools: { readonly status: "detailUnavailable"; readonly reason: string };
-}
-
-/**
- * Map one committed v2 detector record honestly: matched/not-matched/unknown
- * with the occurrence key and the program's own explanation, the run clock,
- * the state revision, and a NAMED empty diagnostics slot (a detector result
- * carries none — nothing is invented to look like a v1 pool reading).
+ * Map one committed v2 detector record onto the wire summary: matched /
+ * not-matched / unknown with the occurrence key or the program's own bounded
+ * "why", the run's own clock (`asOfMs`), the committed state revision, the
+ * sealed input's content digest, and the armed standing the install log folds
+ * to. `evidenceIds` are bounded to the wire cap — the full list stays on the
+ * record, reachable through the run store and the status tool. v2 records
+ * carry no per-pool diagnostics and no v1-style window; those v1 slot fields
+ * are absent, never invented.
  */
 export const mapDetectorEvaluation = (
   record: DetectorEvaluationRecordV2,
+  armed: boolean,
 ): ForgeDetectorEvaluationSummary => ({
-  status: "detector",
-  evaluationId: record.evaluationId,
+  status: "available",
   capabilityId: record.capabilityId,
-  capabilityVersion: record.version,
+  version: record.version,
+  armed,
   stateRevision: record.stateRevision,
-  inputDigest: record.inputDigest,
+  evaluationId: record.evaluationId,
   asOfMs: record.asOfMs,
-  committedAtMs: record.committedAtMs,
+  inputDigest: record.inputDigest,
   result: toForgeDetectorResultSummary(record.result),
-  pools: { status: "detailUnavailable", reason: DETECTOR_POOLS_UNAVAILABLE_REASON },
+  evidenceIds: record.evidenceIds.slice(0, FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE),
 });
 
 export const mapPoolSeriesRead = (read: ForgePoolSeriesRead): ForgePoolSeriesView =>
@@ -456,8 +460,9 @@ export const pageEvaluations = (
 // ---------------------------------------------------------------------------
 
 /**
- * Thread-context discovery: sources, installed capabilities, and the newest
- * sealed evaluation — all with `threadMarket = null`. Degrades to an honest
+ * Thread-context discovery: sources, installed capabilities, the newest
+ * sealed v1 evaluation, the in-scope v2 detector summaries, and the
+ * comparison — all with `threadMarket = null`. Degrades to an honest
  * named absence when the capability store is not wired; the source listing is
  * independent of it and is always served.
  */
@@ -490,6 +495,14 @@ export const forgeThreadContextView = (input: {
           ),
         )
       : null;
+    const detectorEvaluations = Option.isSome(storeOption)
+      ? yield* detectorEvaluationsView({
+          store: storeOption.value,
+          environmentId: input.environmentId,
+          threadId: input.threadId,
+          catalog,
+        })
+      : { status: "unavailable" as const, reason: STORE_UNWIRED_REASON };
     return {
       sources:
         sourcesRead.status === "unavailable"
@@ -509,8 +522,115 @@ export const forgeThreadContextView = (input: {
                     : "no evaluation has been committed for this thread",
             }
           : mapLatestEvaluation(newest),
+      detectorEvaluations,
       comparison: FORGE_COMPARISON_UNAVAILABLE,
     };
+  });
+
+/**
+ * The v2 detector half of the thread-context view, one summary per installed
+ * detector-program capability in the request's scope.
+ *
+ * THREAD SCOPING — resolved, not guessed: a v2 evaluation record carries no
+ * thread (the scheduler and any evaluate call cause it), but the build
+ * receipt that prepared the installed bundle does (`ForgeBuildReceipt.threadId`,
+ * recorded by `startBuild` from the preparing thread's workspace). A v2
+ * capability is therefore in a thread's scope iff some build of the ACTIVE
+ * bundle (stage `installed`, matching `capabilityId` and `bundleSha256`)
+ * carries that thread id — the same provenance the `trading_forge` tool
+ * enforces on builds. Environment-scoped requests (no threadId) include every
+ * installed v2 capability; builds with no thread never match a thread filter,
+ * exactly as v1 environment-scoped evaluation rows never do. A builds-read
+ * failure fails the read rather than fabricating "out of scope".
+ */
+const detectorEvaluationsView = (input: {
+  readonly store: ForgeCapabilityStoreShape;
+  readonly environmentId: string;
+  readonly threadId: string | undefined;
+  readonly catalog: ReadonlyArray<ForgeCapabilityCatalogEntry>;
+}): Effect.Effect<ForgeDetectorEvaluationsView, OrchestrationGetSnapshotError> =>
+  Effect.gen(function* () {
+    const scoped: Array<{ capabilityId: string; version: number; armed: boolean }> = [];
+    for (const entry of input.catalog) {
+      // The bundle's own hash-verified manifest bytes discriminate the
+      // program kind — the same discriminator the store and the forge tool
+      // dispatch on. A manifest that cannot be read decodes as v1: fail
+      // closed, no v2 claim without the bytes proving it.
+      const manifestJson = yield* input.store
+        .readArtifact({
+          environmentId: input.environmentId,
+          capabilityId: entry.capabilityId,
+          version: entry.version,
+          path: "manifest.json",
+        })
+        .pipe(Effect.orElseSucceed(() => null));
+      if (manifestJson === null || versionProgramKind(manifestJson) !== "v2") continue;
+      const active = yield* input.store
+        .activeState({ environmentId: input.environmentId, capabilityId: entry.capabilityId })
+        .pipe(Effect.orElseSucceed(() => null));
+      // The catalog just listed this capability; a null state here is a
+      // mid-read store race, and a capability we cannot honestly state is
+      // one we do not summarize.
+      if (active === null) continue;
+      if (input.threadId !== undefined) {
+        const builds = yield* input.store
+          .listBuilds({
+            environmentId: input.environmentId,
+            capabilityId: entry.capabilityId,
+          })
+          .pipe(
+            Effect.mapError((cause) =>
+              toSnapshotError("Failed to read the Forge build provenance", cause),
+            ),
+          );
+        // Note the store's listing is bounded to its newest 50 builds; the
+        // scope stands on the provenance the listing serves.
+        const inScope = builds.some(
+          (build) =>
+            build.stage === "installed" &&
+            build.capabilityId === entry.capabilityId &&
+            build.bundleSha256 === entry.bundleSha256 &&
+            build.threadId === input.threadId,
+        );
+        if (!inScope) continue;
+      }
+      scoped.push({
+        capabilityId: entry.capabilityId,
+        version: active.version,
+        armed: active.armed,
+      });
+    }
+    if (scoped.length === 0) {
+      // The honest empty list — including when only v1 capabilities are
+      // installed, where no run store is ever consulted.
+      return { status: "ok" as const, items: [] };
+    }
+    const runsOption = yield* Effect.serviceOption(DetectorRunStore);
+    if (!Option.isSome(runsOption)) {
+      return { status: "unavailable" as const, reason: DETECTOR_RUNS_UNWIRED_REASON };
+    }
+    const items: Array<ForgeDetectorEvaluationSummary> = [];
+    for (const capability of scoped) {
+      const latest = yield* runsOption.value
+        .latestEvaluation(input.environmentId, capability.capabilityId)
+        .pipe(
+          Effect.mapError((cause) =>
+            toSnapshotError("Failed to read the Forge detector evaluations", cause),
+          ),
+        );
+      items.push(
+        latest === null
+          ? {
+              status: "noEvaluation" as const,
+              capabilityId: capability.capabilityId,
+              version: capability.version,
+              armed: capability.armed,
+              reason: NO_COMMITTED_EVALUATION_REASON,
+            }
+          : mapDetectorEvaluation(latest, capability.armed),
+      );
+    }
+    return { status: "ok" as const, items };
   });
 
 /**
@@ -524,12 +644,12 @@ export const forgeThreadContextView = (input: {
  *   whose install job caused the evaluation. A v2 record carries no thread
  *   (the scheduler and any evaluate call cause it), so a thread filter can
  *   never honestly match one.
- * - Even environment-scoped, the wire slot (`ForgeLatestEvaluationSummary`
- *   in packages/contracts) has no detector variant: rendering a v2 record
- *   into it would require inventing `window`, `bundleSha256`, `historical`,
- *   and pool diagnostics the record does not carry. When the wire gains a
- *   detector variant, the environment-scoped pick can adopt
- *   {@link mapDetectorEvaluation} unchanged.
+ * - The v1 slot's own shape (`ForgeLatestEvaluationSummary` in
+ *   packages/contracts) has no detector variant and keeps none: rendering a
+ *   v2 record into it would require inventing `window`, `bundleSha256`,
+ *   `historical`, and pool diagnostics the record does not carry. v2 records
+ *   ride the separate `detectorEvaluations` slot instead
+ *   ({@link detectorEvaluationsView}), scoped by build provenance.
  */
 const newestThreadEvaluation = (
   store: ForgeCapabilityStoreShape,

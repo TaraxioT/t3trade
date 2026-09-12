@@ -17,9 +17,15 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { FORGE_BRIDGE_TX_PAGE, type ForgeEvidenceDetail } from "@t3tools/contracts";
+import {
+  FORGE_BRIDGE_TX_PAGE,
+  FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE,
+  type ForgeEvidenceDetail,
+} from "@t3tools/contracts";
 import type {
+  ForgeBuildReceipt,
   ForgeCapabilityCatalogEntry,
+  ForgeCapabilityStatus,
   ForgeEvaluationEvidence,
   ForgeSourceListing,
 } from "@t3tools/trading-contracts";
@@ -30,6 +36,7 @@ import {
 } from "@t3tools/trading-contracts";
 
 import { ForgeCapabilityStore } from "./forge/CapabilityStore.ts";
+import { DetectorRunStore } from "./forge/DetectorRunStore.ts";
 import {
   ForgeSourceReads,
   type ForgePoolSeriesReadInput,
@@ -46,7 +53,7 @@ import {
 } from "./forge/FeePolicyService.ts";
 import type { ForgeHookState, ForgeIntentRecord } from "./forge/UniswapTestnetAdapter.ts";
 import {
-  DETECTOR_POOLS_UNAVAILABLE_REASON,
+  DETECTOR_RUNS_UNWIRED_REASON,
   forgeControlView,
   forgeEvidenceView,
   forgePoolSeriesView,
@@ -544,17 +551,22 @@ describe("mapDetectorEvaluation", () => {
           facts: [],
           validUntilMs: 1_700_000_400_000,
         }),
+        true,
       );
-      assert.strictEqual(matched.status, "detector");
+      assert.strictEqual(matched.status, "available");
+      if (matched.status !== "available") return;
       assert.deepStrictEqual(matched.result, {
         status: "matched",
         occurrenceKey: "occ_flag_1",
         validUntilMs: 1_700_000_400_000,
       });
-      // The run's own clock and the committed revision ride beside it.
+      // The run's own clock, the committed revision, and the armed standing
+      // ride beside the reading.
       assert.strictEqual(matched.asOfMs, 1_700_000_100_000);
       assert.strictEqual(matched.stateRevision, 4);
       assert.strictEqual(matched.inputDigest, "ab".repeat(32));
+      assert.strictEqual(matched.armed, true);
+      assert.deepStrictEqual(matched.evidenceIds, ["forge_ev_v2_1"]);
 
       const notMatched = mapDetectorEvaluation(
         record({
@@ -562,11 +574,15 @@ describe("mapDetectorEvaluation", () => {
           evidenceIds: ["forge_ev_v2_1"],
           explanation: "flag not set in the sealed window",
         }),
+        false,
       );
+      assert.strictEqual(notMatched.status, "available");
+      if (notMatched.status !== "available") return;
       assert.deepStrictEqual(notMatched.result, {
         status: "not-matched",
         explanation: "flag not set in the sealed window",
       });
+      assert.strictEqual(notMatched.armed, false);
 
       const unknown = mapDetectorEvaluation(
         record({
@@ -574,7 +590,10 @@ describe("mapDetectorEvaluation", () => {
           missingSourceIds: ["github-releases:o/r"],
           explanation: "the source revision is still landing",
         }),
+        true,
       );
+      assert.strictEqual(unknown.status, "available");
+      if (unknown.status !== "available") return;
       assert.deepStrictEqual(unknown.result, {
         status: "unknown",
         explanation: "the source revision is still landing",
@@ -582,19 +601,22 @@ describe("mapDetectorEvaluation", () => {
     }),
   );
 
-  it.effect("never invents per-pool diagnostics — the slot is a named absence", () =>
+  it.effect("bounds the evidence ids to the wire cap, newest provenance first", () =>
     Effect.gen(function* () {
-      const mapped = mapDetectorEvaluation(
-        record({
-          status: "not-matched",
-          evidenceIds: [],
-          explanation: "quiet window",
-        }),
-      );
-      assert.deepStrictEqual(mapped.pools, {
-        status: "detailUnavailable",
-        reason: DETECTOR_POOLS_UNAVAILABLE_REASON,
+      const many = record({
+        status: "not-matched",
+        evidenceIds: [],
+        explanation: "quiet window",
       });
+      const padded: DetectorEvaluationRecordV2 = {
+        ...many,
+        evidenceIds: Array.from({ length: 20 }, (_, index) => `forge_ev_v2_${index}`),
+      };
+      const mapped = mapDetectorEvaluation(padded, true);
+      assert.strictEqual(mapped.status, "available");
+      if (mapped.status !== "available") return;
+      assert.strictEqual(mapped.evidenceIds.length, FORGE_DETECTOR_SUMMARY_MAX_EVIDENCE);
+      assert.strictEqual(mapped.evidenceIds[0], "forge_ev_v2_0");
     }),
   );
 });
@@ -665,10 +687,30 @@ const sourceReadsLayer = (input: {
     }),
   );
 
+/**
+ * A minimal v2 detector manifest as the store would serve its bytes: the
+ * discriminator reads only `manifestVersion`, so this stays a two-field
+ * honest fixture.
+ */
+const V2_MANIFEST_JSON = JSON.stringify({ manifestVersion: 2 });
+/** A v1 manifest's bytes: the four-artifact vocabulary. */
+const V1_MANIFEST_JSON = JSON.stringify({ schemaVersion: 1 });
+
 const capabilityStoreLayer = (input: {
   readonly catalog: ReadonlyArray<ForgeCapabilityCatalogEntry>;
   readonly latest?: ForgeEvaluationEvidence | null;
   readonly list?: ReadonlyArray<ForgeEvaluationEvidence>;
+  /** manifest.json bytes by capabilityId; a capability absent here reads null
+   * (the fail-closed v1 discrimination). */
+  readonly manifests?: Readonly<Record<string, string>>;
+  /** Active states by capabilityId; absent capabilities read null. */
+  readonly active?: Readonly<
+    Record<
+      string,
+      { version: number; bundleSha256: string; status: ForgeCapabilityStatus; armed: boolean }
+    >
+  >;
+  readonly builds?: ReadonlyArray<ForgeBuildReceipt>;
 }) =>
   Layer.succeed(
     ForgeCapabilityStore,
@@ -676,16 +718,20 @@ const capabilityStoreLayer = (input: {
       listCatalog: () => Effect.succeed(input.catalog),
       latestEvaluation: () => Effect.succeed(input.latest ?? null),
       listEvaluations: () => Effect.succeed(input.list ?? []),
+      readArtifact: ({ capabilityId, path }) =>
+        path === "manifest.json"
+          ? Effect.succeed((input.manifests ?? {})[capabilityId] ?? null)
+          : Effect.succeed(null),
+      activeState: ({ capabilityId }) => Effect.succeed(input.active?.[capabilityId] ?? null),
+      listBuilds: ({ capabilityId }) =>
+        Effect.succeed((input.builds ?? []).filter((build) => build.capabilityId === capabilityId)),
       startBuild: () => die,
       appendBuildStage: () => die,
       getBuild: () => die,
-      listBuilds: () => die,
       nextVersion: () => die,
       stageVersion: () => die,
       readVersion: () => die,
-      readArtifact: () => die,
       install: () => die,
-      activeState: () => die,
       pause: () => die,
       resume: () => die,
       uninstall: () => die,
@@ -702,6 +748,85 @@ const capabilityStoreLayer = (input: {
       listPolicies: () => die,
     }),
   );
+
+const detectorRunStoreLayer = (input: { readonly latest?: DetectorEvaluationRecordV2 | null }) =>
+  Layer.succeed(
+    DetectorRunStore,
+    DetectorRunStore.of({
+      readState: () => die,
+      commitRun: () => die,
+      latestEvaluation: () => Effect.succeed(input.latest ?? null),
+      listEvaluations: () => die,
+    }),
+  );
+
+/** A cataloged v2 capability with its active standing. */
+const V2_ENTRY: ForgeCapabilityCatalogEntry = {
+  capabilityId: "flag-detector",
+  version: 3,
+  bundleSha256: "f".repeat(64),
+  description: "release-flag detector",
+  status: "installed",
+  installedAtMs: 1_700_000_000_000,
+};
+
+const V2_ACTIVE = {
+  version: 3,
+  bundleSha256: "f".repeat(64),
+  status: "installed" as const,
+  armed: true,
+};
+
+/** The installed-build receipt that proves the preparing thread. */
+const installedBuild = (threadId: string | undefined): ForgeBuildReceipt => ({
+  buildId: `fbuild_${threadId ?? "env"}`,
+  environmentId: "env-1",
+  ...(threadId === undefined ? {} : { threadId }),
+  capabilityId: V2_ENTRY.capabilityId,
+  requestedSemantics: "flag when the release lands",
+  stage: "installed",
+  stages: [{ stage: "requested", atMs: 1 }],
+  bundleSha256: V2_ENTRY.bundleSha256,
+  createdAtMs: 1,
+  updatedAtMs: 2,
+});
+
+/** A committed v2 record for the cataloged fixture capability. */
+const committedV2Record = (
+  result: DetectionResult = {
+    status: "not-matched",
+    evidenceIds: [],
+    explanation: "quiet window",
+  },
+): DetectorEvaluationRecordV2 => {
+  const identity = {
+    environmentId: "env-1",
+    capabilityId: V2_ENTRY.capabilityId,
+    version: V2_ENTRY.version,
+    stateRevision: 4,
+    inputDigest: "cd".repeat(32),
+  };
+  return {
+    manifestVersion: 2,
+    evaluationId: detectorEvaluationId(identity),
+    environmentId: identity.environmentId,
+    capabilityId: identity.capabilityId,
+    version: identity.version,
+    stateRevision: identity.stateRevision,
+    inputDigest: identity.inputDigest,
+    asOfMs: 1_700_000_100_000,
+    result,
+    state: { stateSchemaVersion: 1, state: { count: 4 } },
+    evidenceIds: ["forge_ev_v2_1"],
+    committedAtMs: 1_700_000_100_500,
+  };
+};
+
+/** The source-reads half every thread-context test shares. */
+const okSources = sourceReadsLayer({
+  listing: { status: "ok", listing },
+  series: () => ({ status: "unavailable", reason: "unused" }),
+});
 
 describe("forgeThreadContextView", () => {
   it.effect(
@@ -724,6 +849,10 @@ describe("forgeThreadContextView", () => {
         assert.strictEqual(view.latestEvaluation.status, "none");
         if (view.latestEvaluation.status !== "none") return;
         assert.match(view.latestEvaluation.reason, /capability store is not wired/);
+        // The detector slot degrades to the same named wiring fact.
+        assert.strictEqual(view.detectorEvaluations?.status, "unavailable");
+        if (view.detectorEvaluations?.status !== "unavailable") return;
+        assert.match(view.detectorEvaluations.reason, /capability store is not wired/);
         assert.strictEqual(view.comparison.status, "unavailable");
         assert.match(view.comparison.reason, /F5 pending/);
       }),
@@ -752,6 +881,9 @@ describe("forgeThreadContextView", () => {
                   installedAtMs: 1_700_000_000_000,
                 },
               ],
+              // A v1 manifest (bytes the discriminator reads): the detector
+              // slot stays the honest empty for a v1-only catalog.
+              manifests: { "cap-1": V1_MANIFEST_JSON },
               latest: evaluation({
                 evaluationId: "forge_ev_new",
                 createdAtMs: 300,
@@ -776,6 +908,11 @@ describe("forgeThreadContextView", () => {
       assert.strictEqual(view.latestEvaluation.pools.length, 1);
       assert.strictEqual(view.latestEvaluation.pools[0]?.qualifyingCount, 2);
       assert.strictEqual(view.latestEvaluation.pools[0]?.tradeIds.length, 2);
+      // A v1-only catalog is unchanged by the detector half: no run store is
+      // even consulted.
+      assert.strictEqual(view.detectorEvaluations?.status, "ok");
+      if (view.detectorEvaluations?.status !== "ok") return;
+      assert.deepStrictEqual(view.detectorEvaluations.items, []);
     }),
   );
 
@@ -811,6 +948,160 @@ describe("forgeThreadContextView", () => {
       assert.strictEqual(view.latestEvaluation.status, "none");
       if (view.latestEvaluation.status !== "none") return;
       assert.match(view.latestEvaluation.reason, /this thread/);
+    }),
+  );
+
+  it.effect(
+    "environment scope: a v2 capability with a committed evaluation serves its summary",
+    () =>
+      Effect.gen(function* () {
+        const view = yield* forgeThreadContextView({
+          environmentId: "env-1",
+          threadId: undefined,
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              okSources,
+              capabilityStoreLayer({
+                catalog: [V2_ENTRY],
+                manifests: { [V2_ENTRY.capabilityId]: V2_MANIFEST_JSON },
+                active: { [V2_ENTRY.capabilityId]: V2_ACTIVE },
+                builds: [installedBuild("thread-9")],
+              }),
+              detectorRunStoreLayer({ latest: committedV2Record() }),
+            ),
+          ),
+        );
+        assert.strictEqual(view.detectorEvaluations?.status, "ok");
+        if (view.detectorEvaluations?.status !== "ok") return;
+        assert.strictEqual(view.detectorEvaluations.items.length, 1);
+        const item = view.detectorEvaluations.items[0];
+        assert.strictEqual(item?.status, "available");
+        if (item?.status !== "available") return;
+        assert.strictEqual(item.capabilityId, V2_ENTRY.capabilityId);
+        assert.strictEqual(item.version, V2_ENTRY.version);
+        assert.strictEqual(item.armed, true);
+        assert.strictEqual(item.stateRevision, 4);
+        assert.deepStrictEqual(item.result, {
+          status: "not-matched",
+          explanation: "quiet window",
+        });
+        assert.deepStrictEqual(item.evidenceIds, ["forge_ev_v2_1"]);
+      }),
+  );
+
+  it.effect("thread scope keys on the installed build's preparing thread, never a guess", () =>
+    Effect.gen(function* () {
+      const read = (builds: ReadonlyArray<ForgeBuildReceipt>) =>
+        forgeThreadContextView({ environmentId: "env-1", threadId: "thread-9" }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              okSources,
+              capabilityStoreLayer({
+                catalog: [V2_ENTRY],
+                manifests: { [V2_ENTRY.capabilityId]: V2_MANIFEST_JSON },
+                active: { [V2_ENTRY.capabilityId]: V2_ACTIVE },
+                builds,
+              }),
+              detectorRunStoreLayer({ latest: committedV2Record() }),
+            ),
+          ),
+        );
+      // The build receipt that installed the active bundle carries the
+      // requesting thread: in scope, summary served.
+      const mine = yield* read([installedBuild("thread-9")]);
+      assert.strictEqual(mine.detectorEvaluations?.status, "ok");
+      if (mine.detectorEvaluations?.status !== "ok") return;
+      assert.strictEqual(mine.detectorEvaluations.items.length, 1);
+      // Another conversation's build: out of scope, the honest empty list.
+      const theirs = yield* read([installedBuild("thread-other")]);
+      assert.strictEqual(theirs.detectorEvaluations?.status, "ok");
+      if (theirs.detectorEvaluations?.status !== "ok") return;
+      assert.deepStrictEqual(theirs.detectorEvaluations.items, []);
+      // An environment-scoped build (no thread recorded): it never matches
+      // a thread filter — exactly as v1 environment rows never do.
+      const unattributed = yield* read([installedBuild(undefined)]);
+      assert.strictEqual(unattributed.detectorEvaluations?.status, "ok");
+      if (unattributed.detectorEvaluations?.status !== "ok") return;
+      assert.deepStrictEqual(unattributed.detectorEvaluations.items, []);
+    }),
+  );
+
+  it.effect("an installed v2 capability with no committed run serves the named absence", () =>
+    Effect.gen(function* () {
+      const view = yield* forgeThreadContextView({
+        environmentId: "env-1",
+        threadId: undefined,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            okSources,
+            capabilityStoreLayer({
+              catalog: [V2_ENTRY],
+              manifests: { [V2_ENTRY.capabilityId]: V2_MANIFEST_JSON },
+              active: {
+                [V2_ENTRY.capabilityId]: { ...V2_ACTIVE, armed: false },
+              },
+            }),
+            detectorRunStoreLayer({ latest: null }),
+          ),
+        ),
+      );
+      assert.strictEqual(view.detectorEvaluations?.status, "ok");
+      if (view.detectorEvaluations?.status !== "ok") return;
+      assert.strictEqual(view.detectorEvaluations.items.length, 1);
+      const item = view.detectorEvaluations.items[0];
+      assert.strictEqual(item?.status, "noEvaluation");
+      if (item?.status !== "noEvaluation") return;
+      assert.strictEqual(item.armed, false);
+      assert.match(item.reason, /has not committed an evaluation/);
+    }),
+  );
+
+  it.effect("a v2 capability in scope with the run store unwired names the wiring fact", () =>
+    Effect.gen(function* () {
+      const view = yield* forgeThreadContextView({
+        environmentId: "env-1",
+        threadId: undefined,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            okSources,
+            capabilityStoreLayer({
+              catalog: [V2_ENTRY],
+              manifests: { [V2_ENTRY.capabilityId]: V2_MANIFEST_JSON },
+              active: { [V2_ENTRY.capabilityId]: V2_ACTIVE },
+            }),
+          ),
+        ),
+      );
+      assert.strictEqual(view.detectorEvaluations?.status, "unavailable");
+      if (view.detectorEvaluations?.status !== "unavailable") return;
+      assert.strictEqual(view.detectorEvaluations.reason, DETECTOR_RUNS_UNWIRED_REASON);
+    }),
+  );
+
+  it.effect("a bundle whose manifest cannot be read stays out: no v2 claim without the bytes", () =>
+    Effect.gen(function* () {
+      const view = yield* forgeThreadContextView({
+        environmentId: "env-1",
+        threadId: undefined,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            okSources,
+            capabilityStoreLayer({
+              catalog: [V2_ENTRY],
+              manifests: {},
+              active: { [V2_ENTRY.capabilityId]: V2_ACTIVE },
+            }),
+            detectorRunStoreLayer({ latest: committedV2Record() }),
+          ),
+        ),
+      );
+      assert.strictEqual(view.detectorEvaluations?.status, "ok");
+      if (view.detectorEvaluations?.status !== "ok") return;
+      assert.deepStrictEqual(view.detectorEvaluations.items, []);
     }),
   );
 });
