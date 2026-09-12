@@ -20,7 +20,7 @@ import {
   TRADING_PLAN_TOOL,
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
-import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
+import { TRADING_LOOK_TOOL, TRADING_FORGE_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_BACKTEST_TOOL } from "@t3tools/trading-contracts/backtest";
 import { TRADING_VALIDATE_TOOL } from "@t3tools/trading-contracts/forward";
 import { TRADING_HYPOTHESIS_TOOL } from "@t3tools/trading-contracts/hypothesis";
@@ -82,7 +82,8 @@ export const TRADING_TOOL_POLICY = `T3 Trade tool policy:
 - Record event times honestly: an instantaneous activation is a timed start with the same instant as end, a bounded span is a timed start and end, and a date-only source keeps date precision. Never invent a midnight or a 24-hour duration.
 - An event question is three questions: the scoped inventory, the descriptive measurement, and the notional illustration. Research inventories from current official sources with verified activation times, include out-of-archive events as uncovered rows, and never present a four-event sample as "all upgrades".
 - Never state a hit rate ("3 of 5 dipped massively") without a recorded excursionThresholdPct. With no threshold given, present each occurrence's excursion and ask for the number; record thresholdChosenAfterResults: true when the user picks it after seeing results.
-- A "lowest point" or "highest point" outcome is hindsight-perfect and can never be an exit rule. To backtest or validate an event idea, name a prospective exit (stop, target, or bar limit); a per-notional dollar figure is illustration on each event independently, never a portfolio return, never a forecast.`;
+- A "lowest point" or "highest point" outcome is hindsight-perfect and can never be an exit rule. To backtest or validate an event idea, name a prospective exit (stop, target, or bar limit); a per-notional dollar figure is illustration on each event independently, never a portfolio return, never a forecast.
+- Forge capabilities: ${TRADING_FORGE_TOOL} is the only build path: you author the four artifacts (query.graphql, signal.ts, signal.test.ts, manifest.json) where prepare stages them; the host compiles, tests, accepts and installs, so prose or self-passing tests install nothing. Readings come from trading_look forge keys; pool approval is human, never yours.`;
 
 /**
  * The grounding plus the tool policy: what the first turn of every session
@@ -111,6 +112,9 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_HYPOTHESIS_TOOL,
   TRADING_EVENTS_TOOL,
   TRADING_CHART_TOOL,
+  // F2: the Forge capability lifecycle — the agent authors the four
+  // artifacts; the host tests and installs.
+  TRADING_FORGE_TOOL,
 ];
 
 /**

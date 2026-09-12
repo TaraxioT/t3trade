@@ -20,6 +20,7 @@ import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
 import { TRADING_PLAN_DOCUMENT_TOOL } from "@t3tools/trading-contracts/plan-document";
+import { TRADING_FORGE_TOOL } from "@t3tools/trading-contracts/observation";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
@@ -46,6 +47,7 @@ it("exposes the read, the plan, the watch, the journal, the research, and the tw
       TRADING_HYPOTHESIS_TOOL,
       TRADING_EVENTS_TOOL,
       TRADING_CHART_TOOL,
+      TRADING_FORGE_TOOL,
     ].sort(),
   );
 });
@@ -274,7 +276,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 13 trading tools").toBe(13);
+  expect(tools.length, "expected exactly 14 trading tools").toBe(14);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   // Printed rather than only asserted: the budget is meant to be watched, and
@@ -312,7 +314,14 @@ it("keeps every description on a budget", () => {
   // to shell math because the tool never said what it could measure. The
   // landed grammar text stays intact; the raise carries only the new
   // sentences (events 821 -> 1,120, chart 507 -> 675).
-  expect(total, "total description chars must stay under 7,250").toBeLessThan(7_250);
+  //
+  // Raised from 7,250 to 8,050 when `trading_forge` joined the toolkit
+  // (T3-14 / F2): its description carries the four-artifact contract, the
+  // host-tests-what-installs boundary, the CAS expectation, and the
+  // agent-cannot-approve-pool rule — the sentences that keep a provider from
+  // writing prose where code execution is required. The raise is the new
+  // tool's whole description (~780 chars), not a widening of the old ones.
+  expect(total, "total description chars must stay under 8,050").toBeLessThan(8_050);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;

@@ -8,6 +8,19 @@
  * @module TradingRuntimeLayer
  */
 import * as Layer from "effect/Layer";
+import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
+import { ServerConfig } from "../config.ts";
+import { ForgeCapabilityStoreConfig, ForgeCapabilityStoreLive } from "./forge/CapabilityStore.ts";
+import { ForgeCapabilityBuilderLive } from "./forge/CapabilityBuilder.ts";
+import {
+  ForgeCapabilitySandboxLive,
+  ForgeSandboxConfigFromEnv,
+  ForgeContainerRunnerFromEnv,
+} from "./forge/CapabilitySandbox.ts";
+import { ForgeReactorLive } from "./forge/ForgeReactor.ts";
+import { ForgeAcceptanceLive } from "./forge/ForgeAcceptance.ts";
+import { ForgeSourceWindowLive } from "./forge/ForgeSourceWindow.ts";
 import { FetchHttpClient } from "effect/unstable/http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
@@ -87,6 +100,34 @@ const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer
 const forgeGraphSource = ForgeGraphSourceLive.pipe(
   Layer.provide(ForgeGraphConfigLive),
   Layer.provide(ForgeGraphTransportLive.pipe(Layer.provide(httpWithNode))),
+);
+// Use the server's resolved state directory so worktrees and installed apps never share a writer.
+const forgeStoreConfig = Layer.effect(
+  ForgeCapabilityStoreConfig,
+  Effect.gen(function* () {
+    const config = yield* ServerConfig;
+    const path = yield* Path.Path;
+    return { stateRoot: path.join(config.stateDir, "forge") };
+  }),
+);
+const forgeStore = ForgeCapabilityStoreLive.pipe(Layer.provide(forgeStoreConfig));
+const forgeSandbox = ForgeCapabilitySandboxLive.pipe(
+  Layer.provide(ForgeSandboxConfigFromEnv),
+  Layer.provide(ForgeContainerRunnerFromEnv),
+);
+const forgeWindow = ForgeSourceWindowLive.pipe(
+  Layer.provide(forgeGraphSource),
+  Layer.provide(ForgeSourceStoreLive),
+);
+const forgeBuilder = ForgeCapabilityBuilderLive.pipe(
+  Layer.provide(forgeStore),
+  Layer.provide(forgeSandbox),
+);
+const forgeReactor = ForgeReactorLive.pipe(
+  Layer.provide(forgeStore),
+  Layer.provide(forgeSandbox),
+  Layer.provide(forgeWindow),
+  Layer.provide(forgeStoreConfig),
 );
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 const resolverWithInfo = HyperliquidMarketResolverLive.pipe(Layer.provide(infoWithHttp));
@@ -372,6 +413,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // guard. One shared source/store instance feeds the reads and any later
   // Forge consumer.
   forgeGraphSource,
+  forgeStore,
+  forgeBuilder,
+  ForgeAcceptanceLive,
+  forgeReactor,
   ForgeSourceStoreLive,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
 ).pipe(Layer.provideMerge(infoWithHttp));

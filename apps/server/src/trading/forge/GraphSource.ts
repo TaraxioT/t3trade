@@ -297,7 +297,7 @@ const rawTokenAmount = (value: unknown, decimals: number): string | null => {
  * The one swaps query this source is allowed to run: cursor-paginated by id,
  * timestamp-bounded to the window plus the anchor buffer, pinned to one block.
  */
-const SWAPS_QUERY = `query ForgeSwaps($pool: ID!, $first: Int!, $cursor: ID!, $block: Int!, $from: Int!, $to: Int!) {
+export const FORGE_SWAPS_QUERY = `query ForgeSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
   swaps(
     first: $first
     where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }
@@ -399,6 +399,11 @@ export const makeForgeGraphSource = Effect.gen(function* () {
           return Effect.fail(`graph endpoint answered HTTP ${response.status}`);
         }
         const parsed = asRecord(response.body);
+        const errors = parsed?.["errors"];
+        if (Array.isArray(errors) && errors.length > 0) {
+          const message = asString(asRecord(errors[0])?.["message"]) ?? "unknown graphql error";
+          return Effect.fail(`graphql error: ${redact(message, apiKey)}`);
+        }
         return parsed === null
           ? Effect.fail("graph endpoint returned a non-JSON body")
           : Effect.succeed(parsed);
@@ -627,14 +632,14 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         const page = yield* postOrError(
           source.endpoint,
           {
-            query: SWAPS_QUERY,
+            query: FORGE_SWAPS_QUERY,
             variables: {
               pool: pool.poolId,
               first: source.pageSize,
               cursor,
               block: pinnedBlock,
-              from: input.startedAt - FORGE_ANCHOR_CANDIDATE_WINDOW_SECONDS,
-              to: input.endedAt,
+              from: String(Math.max(0, input.startedAt - FORGE_ANCHOR_CANDIDATE_WINDOW_SECONDS)),
+              to: String(input.endedAt),
             },
           },
           settings.apiKey!,
@@ -670,6 +675,14 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         // does not means the indexer moved or rolled back under the fetch —
         // mixed-block data is never served.
         const meta = asRecord(data["_meta"]);
+        if (meta?.["deployment"] !== source.deployment) {
+          return unavailable(
+            input.poolId,
+            fetchedAtMs,
+            input.historical === true,
+            "Graph response deployment does not match the configured source",
+          );
+        }
         const metaBlock = asRecord(meta?.["block"]);
         const servedBlock = asInt(metaBlock?.["number"]);
         if (servedBlock !== pinnedBlock) {

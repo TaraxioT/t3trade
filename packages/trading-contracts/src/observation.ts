@@ -16,6 +16,7 @@ import { Schema } from "effect";
 
 import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./account-snapshot.ts";
 import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
+import { ForgeEvaluationStatus, ForgeHookFeeHundredthsBps, ForgeSwapObservation } from "./forge.ts";
 import { TradingTradeHistory } from "./history.ts";
 import { IndicatorReading } from "./indicators.ts";
 import { MarketCandleSeries, ObservedMarketSnapshot, OrderBook, ResolvedMarket } from "./market.ts";
@@ -93,7 +94,7 @@ export interface TradingLookCatalogEntry {
    */
   readonly chars: number;
   /** The parameter shape, for keys that take one. */
-  readonly parameterized?: "<interval>:<n>" | "<W>" | "<n>" | "<spec>";
+  readonly parameterized?: "<interval>:<n>" | "<W>" | "<n>" | "<spec>" | "<capabilityId>";
   /** Served from the market archive, not the exchange (§2.4). */
   readonly archive?: boolean;
   readonly note?: string;
@@ -164,6 +165,12 @@ export const TRADING_LOOK_CATALOG: ReadonlyArray<TradingLookCatalogEntry> = [
     key: "cost",
     chars: 101,
     note: "plan §4.2 — the retired market read's cost line stays reachable",
+  },
+  {
+    key: "forge",
+    chars: 140,
+    parameterized: "<capabilityId>",
+    note: "installed Forge capabilities from the runtime store; forge:<id> latest, forge:<id>:history",
   },
 ];
 
@@ -259,6 +266,8 @@ function paramSuffix(key: string): string {
       return `:W[days 1-${TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS}]`;
     case "<spec>":
       return ":spec";
+    case "<capabilityId>":
+      return ":id[:history]";
     default:
       return `:n[1-${key === "events" ? TRADING_LOOK_MAX_EVENTS : TRADING_LOOK_MAX_ARCHIVE_ROWS}]`;
   }
@@ -278,6 +287,12 @@ export type TradingLookFetchParse =
   | { readonly base: "oi_premium"; readonly n: number }
   | { readonly base: "book_history"; readonly n: number }
   | { readonly base: "events"; readonly n: number; readonly explicit: boolean }
+  | { readonly base: "forge"; readonly selection: "catalog" }
+  | {
+      readonly base: "forge";
+      readonly capabilityId: string;
+      readonly selection: "latest" | "history";
+    }
   | { readonly base: TradingLookFixedFetchBase }
   | { readonly base: "invalid_params"; readonly key: string; readonly bound: string }
   | { readonly base: "unknown"; readonly key: string };
@@ -338,6 +353,29 @@ export function parseTradingLookFetchKey(key: string): TradingLookFetchParse {
     }
     return { base: "funding_stats", windowDays: days };
   }
+  if (base === "forge") {
+    // The capability id grammar the store keys by. Which ids EXIST is the
+    // store's answer at runtime — the parser only holds the shape, so an
+    // installed-later capability needs no parser change.
+    if (params.length === 0) return { base: "forge", selection: "catalog" };
+    const capabilityId = params[0] ?? "";
+    if (!FORGE_CAPABILITY_ID_PATTERN.test(capabilityId)) {
+      return {
+        base: "invalid_params",
+        key,
+        bound: "capabilityId must match [a-z0-9][a-z0-9-]{0,63}",
+      };
+    }
+    const tail = params.slice(1);
+    if (tail.length === 0) return { base: "forge", capabilityId, selection: "latest" };
+    if (tail.length === 1 && tail[0] === "history")
+      return { base: "forge", capabilityId, selection: "history" };
+    return {
+      base: "invalid_params",
+      key,
+      bound: "the only suffixes are forge:<capabilityId> and forge:<capabilityId>:history",
+    };
+  }
   for (const seriesBase of ["funding_series", "oi_premium", "book_history"] as const) {
     if (base !== seriesBase) continue;
     const rows = n();
@@ -390,6 +428,482 @@ function levenshtein(a: string, b: string): number {
   }
   return previous[b.length]!;
 }
+
+// -- the Forge capability lifecycle (T3-14 / F2) -------------------------------
+//
+// The host's seal over a capability an in-app agent authored: what was asked,
+// which stages ran, which exact bytes were tested, and what became installed.
+// The agent writes four artifacts in its own workspace; the HOST compiles,
+// tests, accepts, hashes and installs. Nothing here can be satisfied by a
+// model printing "pass" — every field is a host-computed fact.
+
+/** The `trading_forge` lifecycle tool. */
+export const TRADING_FORGE_TOOL = "trading_forge";
+
+/**
+ * A capability id: the stable name a bundle is keyed by and the parameter a
+ * `forge:<capabilityId>` fetch key names. Lowercase, hyphen-separated, bounded
+ * so it is always a filename-safe path segment.
+ */
+export const FORGE_CAPABILITY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** The four artifacts a Forge capability is, exactly — no more, no fewer. */
+export const FORGE_CAPABILITY_ARTIFACT_PATHS = [
+  "query.graphql",
+  "signal.ts",
+  "signal.test.ts",
+  "manifest.json",
+] as const;
+export type ForgeCapabilityArtifactPath = (typeof FORGE_CAPABILITY_ARTIFACT_PATHS)[number];
+
+/** Total size of the four artifacts together: 256 KiB. */
+export const FORGE_MAX_BUNDLE_BYTES = 256 * 1024;
+
+/** Sandbox stdin (JSON input) cap: 2 MiB. */
+export const FORGE_SANDBOX_MAX_INPUT_BYTES = 2 * 1024 * 1024;
+
+/** Sandbox stdout and stderr cap, each: 64 KiB — overflow kills the run. */
+export const FORGE_SANDBOX_MAX_OUTPUT_BYTES = 64 * 1024;
+
+/** Build/check containment budget (~30s). */
+export const FORGE_SANDBOX_BUILD_BUDGET_MS = 30_000;
+
+/** Evaluation containment budget (~2s). */
+export const FORGE_SANDBOX_EVALUATION_BUDGET_MS = 2_000;
+
+/** The manifest schema version the F2 SDK and host agree on. */
+export const FORGE_SDK_SCHEMA_VERSION = 1;
+
+/** The bounded semantics a build request may carry, in characters. */
+export const FORGE_MAX_SEMANTICS_CHARS = 4_000;
+
+/** How many staged bundles and builds a listing read returns at most. */
+export const FORGE_MAX_LISTED_ITEMS = 50;
+
+/** How many observations an `inspect_sources` sample returns at most. */
+export const FORGE_MAX_SOURCE_SAMPLE = 20;
+
+/**
+ * The build lifecycle a host walks an authoring request through. The happy
+ * path is `requested → inspecting → authoring → checking → ready → installed`;
+ * `failed` and `cancelled` are terminal from anywhere.
+ */
+export const ForgeCapabilityBuildStage = Schema.Literals([
+  "requested",
+  "inspecting",
+  "authoring",
+  "checking",
+  "ready",
+  "installed",
+  "failed",
+  "cancelled",
+]);
+export type ForgeCapabilityBuildStage = typeof ForgeCapabilityBuildStage.Type;
+
+/** One timestamped stage transition the host recorded — the receipt trail. */
+export const ForgeBuildStageReceipt = Schema.Struct({
+  stage: ForgeCapabilityBuildStage,
+  atMs: UnixMillis,
+  detail: Schema.optional(Schema.String),
+});
+export type ForgeBuildStageReceipt = typeof ForgeBuildStageReceipt.Type;
+
+/**
+ * `manifest.json` — artifact four. The provider authors it; the host validates
+ * it. `schemaVersion` must equal {@link FORGE_SDK_SCHEMA_VERSION} exactly, so
+ * a bundle written against a different SDK generation cannot install silently.
+ */
+export const ForgeCapabilityManifest = Schema.Struct({
+  capabilityId: Schema.String.check(Schema.isPattern(FORGE_CAPABILITY_ID_PATTERN)),
+  version: Schema.Int.check(Schema.isGreaterThan(0)),
+  schemaVersion: Schema.Int,
+  /** The semantics as the provider understood them, restated in its own words. */
+  description: Schema.String,
+}).check(
+  Schema.makeFilter((input) => {
+    if (input.schemaVersion !== FORGE_SDK_SCHEMA_VERSION) {
+      return `manifest schemaVersion must be ${FORGE_SDK_SCHEMA_VERSION}`;
+    }
+    if (input.description.length > 0 && input.description.length <= FORGE_MAX_SEMANTICS_CHARS) {
+      return true;
+    }
+    return "manifest description must be 1..4000 characters";
+  }),
+);
+export type ForgeCapabilityManifest = typeof ForgeCapabilityManifest.Type;
+
+/** Source provenance as the typed SDK carries it — the frozen F0 contract. */
+export const ForgeSourceEvidence = Schema.Struct({
+  mode: Schema.Literals(["live", "historical"]),
+  provider: Schema.Literals(["the-graph"]),
+  deploymentId: Schema.String.check(Schema.isNonEmpty()),
+  blockNumber: Schema.String.check(Schema.isPattern(/^[0-9]+$/)),
+  blockHash: Schema.String.check(Schema.isNonEmpty()),
+  fetchedAtMs: UnixMillis,
+  windowEndMs: UnixMillis,
+  querySha256: Schema.String.check(Schema.isNonEmpty()),
+  responseSha256: Schema.String.check(Schema.isNonEmpty()),
+  complete: Schema.Boolean,
+});
+export type ForgeSourceEvidence = typeof ForgeSourceEvidence.Type;
+
+/**
+ * One pool's window, aggregated by the HOST from normalized observations:
+ * exact move in bps, stable-quote volume in micro-units, trade count, and the
+ * provenance ids every diagnostic must reference. Classification is the
+ * capability's job; aggregation is never the model's.
+ */
+export const ForgePoolWindow = Schema.Struct({
+  poolId: Schema.String.check(Schema.isNonEmpty()),
+  /** Window price move vs the anchor, integer basis points. */
+  moveBps: Schema.NullOr(Schema.Int),
+  /** Absolute USDC volume over the window, integer micro-units, decimal string. */
+  quoteVolumeMicros: Schema.String.check(Schema.isPattern(/^[0-9]+$/)),
+  tradeCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Every source trade id in the window — diagnostics reference a subset. */
+  observationIds: Schema.Array(Schema.String.check(Schema.isNonEmpty())),
+  /** Raw normalized swaps allow revised detectors to filter trades themselves. */
+  observations: Schema.optional(Schema.Array(ForgeSwapObservation)),
+  anchorCandidates: Schema.optional(Schema.Array(ForgeSwapObservation)),
+  /** The resolved pre-window anchor, when the anchor buffer held one. */
+  anchor: Schema.optional(
+    Schema.Struct({
+      observationId: Schema.String.check(Schema.isNonEmpty()),
+      priceQuotePerBaseMicros: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+      ageBeforeWindowSeconds: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ),
+});
+export type ForgePoolWindow = typeof ForgePoolWindow.Type;
+
+/** What a capability is fed: one sealed window's evidence and pool aggregates. */
+export const ForgeSignalInput = Schema.Struct({
+  evidence: ForgeSourceEvidence,
+  pools: Schema.Array(ForgePoolWindow),
+});
+export type ForgeSignalInput = typeof ForgeSignalInput.Type;
+
+/**
+ * The reading a capability emits — the SDK's output contract, frozen. The
+ * regime labels are the contract's, not any one detector's semantics: a
+ * capability maps pools onto them however its authored logic decides.
+ */
+export const ForgeSignalRegime = Schema.Literals(["coordinated", "isolated", "quiet"]);
+export type ForgeSignalRegime = typeof ForgeSignalRegime.Type;
+
+export const ForgeSignalReading = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literals(["ready"]),
+    regime: ForgeSignalRegime,
+    /** Fraction of eligible pools in agreement, 0..1. */
+    agreement: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(1)),
+    eligiblePoolIds: Schema.Array(Schema.String.check(Schema.isNonEmpty())),
+  }),
+  Schema.Struct({
+    kind: Schema.Literals(["insufficient"]),
+    reason: Schema.String.check(Schema.isNonEmpty()),
+  }),
+]);
+export type ForgeSignalReading = typeof ForgeSignalReading.Type;
+
+/**
+ * Per-pool diagnostics a capability must report beside its reading: which
+ * trades qualified, which were excluded, the volume it counted, and the anchor
+ * it used. The host validates the references against the input window — a
+ * diagnostic naming a trade the window never held is a failed check, not prose.
+ */
+export const ForgePoolDiagnostics = Schema.Struct({
+  poolId: Schema.String.check(Schema.isNonEmpty()),
+  qualifyingCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  excludedCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  quoteVolumeMicros: Schema.String.check(Schema.isPattern(/^[0-9]+$/)),
+  anchorObservationId: Schema.optional(Schema.String),
+  tradeIds: Schema.Array(Schema.String.check(Schema.isNonEmpty())),
+});
+export type ForgePoolDiagnostics = typeof ForgePoolDiagnostics.Type;
+
+/** The capability entrypoint's full output: the reading plus its diagnostics. */
+export const ForgeSignalOutput = Schema.Struct({
+  reading: ForgeSignalReading,
+  diagnostics: Schema.Array(ForgePoolDiagnostics),
+});
+export type ForgeSignalOutput = typeof ForgeSignalOutput.Type;
+
+/**
+ * One host-owned acceptance case: an input window and the reading the requester
+ * expects. Data, not code — the builder stays generic, and the eth-coordination
+ * expectations travel in the demo's request, never in host source.
+ */
+export const ForgeAcceptanceCase = Schema.Struct({
+  name: Schema.String.check(Schema.isNonEmpty()),
+  input: ForgeSignalInput,
+  expected: ForgeSignalReading,
+});
+export type ForgeAcceptanceCase = typeof ForgeAcceptanceCase.Type;
+
+/** One named containment check's host-computed outcome. */
+export const ForgeCheckOutcome = Schema.Struct({
+  name: Schema.String.check(Schema.isNonEmpty()),
+  passed: Schema.Boolean,
+  /** The container's exit code, or null when the run was killed. */
+  exitCode: Schema.optional(Schema.Int),
+  detail: Schema.optional(Schema.String),
+});
+export type ForgeCheckOutcome = typeof ForgeCheckOutcome.Type;
+
+/**
+ * The sealed build receipt: the host's record of one authoring request from
+ * `requested` to a terminal stage. Every array is append-only history; the
+ * `stage` field is the current position.
+ */
+export const ForgeBuildReceipt = Schema.Struct({
+  buildId: Schema.String.check(Schema.isNonEmpty()),
+  environmentId: Schema.String.check(Schema.isNonEmpty()),
+  threadId: Schema.optional(Schema.String),
+  capabilityId: Schema.optional(Schema.String),
+  /** The user's semantics, as the request carried them. */
+  requestedSemantics: Schema.String,
+  stage: ForgeCapabilityBuildStage,
+  stages: Schema.Array(ForgeBuildStageReceipt),
+  /** Typecheck, generated tests, acceptance, determinism — host-run, in containment. */
+  checks: Schema.optional(Schema.Array(ForgeCheckOutcome)),
+  acceptance: Schema.optional(
+    Schema.Struct({
+      total: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      passed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      failed: Schema.Array(Schema.Struct({ name: Schema.String, reason: Schema.String })),
+    }),
+  ),
+  /** Per-artifact hashes, host-computed over the exact tested bytes. */
+  artifactSha256: Schema.optional(
+    Schema.Array(Schema.Struct({ path: Schema.String, sha256: Schema.String })),
+  ),
+  /** Hash over the canonical bundle — the identity `install` pins. */
+  bundleSha256: Schema.optional(Schema.String),
+  /** Present on `failed`; never a success detail. */
+  failureReason: Schema.optional(Schema.String),
+  createdAtMs: UnixMillis,
+  updatedAtMs: UnixMillis,
+});
+export type ForgeBuildReceipt = typeof ForgeBuildReceipt.Type;
+
+/**
+ * One immutable capability version: the exact bytes, their hashes, and the
+ * validated manifest. A version, once written, can never change content —
+ * only its installation status moves.
+ */
+export const ForgeCapabilityVersion = Schema.Struct({
+  capabilityId: Schema.String.check(Schema.isPattern(FORGE_CAPABILITY_ID_PATTERN)),
+  version: Schema.Int.check(Schema.isGreaterThan(0)),
+  bundleSha256: Schema.String.check(Schema.isNonEmpty()),
+  artifacts: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      sha256: Schema.String.check(Schema.isNonEmpty()),
+      bytes: Schema.Int.check(Schema.isGreaterThan(0)),
+    }),
+  ),
+  manifest: ForgeCapabilityManifest,
+  createdAtMs: UnixMillis,
+});
+export type ForgeCapabilityVersion = typeof ForgeCapabilityVersion.Type;
+
+/** An installed capability's lifecycle status, as the catalog reports it. */
+export const ForgeCapabilityStatus = Schema.Literals(["installed", "paused", "uninstalled"]);
+export type ForgeCapabilityStatus = typeof ForgeCapabilityStatus.Type;
+
+/** One catalog entry: what `forge` discovery serves, from the store at runtime. */
+export const ForgeCapabilityCatalogEntry = Schema.Struct({
+  capabilityId: Schema.String.check(Schema.isPattern(FORGE_CAPABILITY_ID_PATTERN)),
+  version: Schema.Int.check(Schema.isGreaterThan(0)),
+  bundleSha256: Schema.String.check(Schema.isNonEmpty()),
+  description: Schema.String,
+  status: ForgeCapabilityStatus,
+  installedAtMs: UnixMillis,
+});
+export type ForgeCapabilityCatalogEntry = typeof ForgeCapabilityCatalogEntry.Type;
+
+/**
+ * One sealed evaluation of an installed capability version over a pinned
+ * source window — the host's record, with the reading's provenance and the
+ * per-pool diagnostics the capability emitted. `status` is the
+ * observed-data status; the provider job that caused it is tracked separately.
+ */
+export const ForgeEvaluationEvidence = Schema.Struct({
+  evaluationId: Schema.String.check(Schema.isNonEmpty()),
+  environmentId: Schema.String.check(Schema.isNonEmpty()),
+  threadId: Schema.optional(Schema.String),
+  capabilityId: Schema.String.check(Schema.isNonEmpty()),
+  capabilityVersion: Schema.Int.check(Schema.isGreaterThan(0)),
+  bundleSha256: Schema.String.check(Schema.isNonEmpty()),
+  window: Schema.Struct({ startedAt: UnixMillis, endedAt: UnixMillis }),
+  historical: Schema.Boolean,
+  pinnedBlock: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  sourceDigest: Schema.optional(Schema.String),
+  evidenceIds: Schema.Array(Schema.String),
+  status: ForgeEvaluationStatus,
+  reading: Schema.optional(ForgeSignalReading),
+  diagnostics: Schema.optional(Schema.Array(ForgePoolDiagnostics)),
+  failureReason: Schema.optional(Schema.String),
+  createdAtMs: UnixMillis,
+  completedAtMs: Schema.optional(UnixMillis),
+});
+export type ForgeEvaluationEvidence = typeof ForgeEvaluationEvidence.Type;
+
+/** A pool proposed for approval — approval is a human act, never the agent's. */
+export const ForgePoolProposalStatus = Schema.Literals(["proposed", "approved", "rejected"]);
+export type ForgePoolProposalStatus = typeof ForgePoolProposalStatus.Type;
+
+export const ForgePoolProposal = Schema.Struct({
+  proposalId: Schema.String.check(Schema.isNonEmpty()),
+  environmentId: Schema.String.check(Schema.isNonEmpty()),
+  poolId: Schema.String.check(Schema.isNonEmpty()),
+  /** The thread whose conversation proposed it; absent when env-scoped. */
+  proposedByThreadId: Schema.optional(Schema.String),
+  reason: Schema.optional(Schema.String),
+  status: ForgePoolProposalStatus,
+  proposedAtMs: UnixMillis,
+  decidedAtMs: Schema.optional(UnixMillis),
+});
+export type ForgePoolProposal = typeof ForgePoolProposal.Type;
+
+/**
+ * A policy binding record. F2 records draft bindings only — no on-chain
+ * action, no signing; F3's publication path starts from these records.
+ */
+export const ForgePolicyBindingStatus = Schema.Literals(["draft", "revoked"]);
+export type ForgePolicyBindingStatus = typeof ForgePolicyBindingStatus.Type;
+
+export const ForgePolicyBinding = Schema.Struct({
+  policyId: Schema.String.check(Schema.isNonEmpty()),
+  environmentId: Schema.String.check(Schema.isNonEmpty()),
+  capabilityId: Schema.String.check(Schema.isNonEmpty()),
+  capabilityVersion: Schema.Int.check(Schema.isGreaterThan(0)),
+  bundleSha256: Schema.String.check(Schema.isNonEmpty()),
+  poolId: Schema.String.check(Schema.isNonEmpty()),
+  detectionFeeHundredthsBps: ForgeHookFeeHundredthsBps,
+  status: ForgePolicyBindingStatus,
+  sourceEvaluationId: Schema.optional(Schema.String),
+  createdAtMs: UnixMillis,
+  revokedAtMs: Schema.optional(UnixMillis),
+});
+export type ForgePolicyBinding = typeof ForgePolicyBinding.Type;
+
+// -- the trading_forge tool ----------------------------------------------------
+
+/** Every `trading_forge` action. */
+export const TradingForgeAction = Schema.Literals([
+  "inspect_sources",
+  "prepare",
+  "check",
+  "install",
+  "revise",
+  "status",
+  "cancel",
+  "pause",
+  "resume",
+  "uninstall",
+  "propose_pool",
+  "approve_pool",
+  "bind_policy",
+  "revoke_policy",
+]);
+export type TradingForgeAction = typeof TradingForgeAction.Type;
+
+export const TradingForgeInput = Schema.Struct({
+  missionId: Schema.optional(TradingId),
+  action: TradingForgeAction,
+  /** The capability this call is about, for the actions that name one. */
+  capabilityId: Schema.optional(Schema.String.check(Schema.isPattern(FORGE_CAPABILITY_ID_PATTERN))),
+  buildId: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  /**
+   * The optimistic lock on installation: the active version the caller read.
+   * A stale value refuses rather than overwrites.
+   */
+  expectedActiveVersion: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  /** The user's semantics for `prepare`/`revise`, in their words. */
+  requestedSemantics: Schema.optional(Schema.String),
+
+  poolId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+  reason: Schema.optional(Schema.String),
+  policyId: Schema.optional(Schema.String),
+  /** `bind_policy`: the detection fee the draft binding records. */
+  detectionFeeHundredthsBps: Schema.optional(ForgeHookFeeHundredthsBps),
+});
+export type TradingForgeInput = typeof TradingForgeInput.Type;
+
+/** One Forge source as `inspect_sources` reports it. */
+export const ForgeSourceInspection = Schema.Struct({
+  poolId: Schema.String.check(Schema.isNonEmpty()),
+  label: Schema.String,
+  feeTierHundredthsBps: Schema.Int,
+  /** The source's own health verdict, never fabricated. */
+  healthStatus: Schema.Literals(["healthy", "stale", "unavailable"]),
+  healthReason: Schema.optional(Schema.String),
+});
+export type ForgeSourceInspection = typeof ForgeSourceInspection.Type;
+
+export const TradingForgeResult = Schema.Struct({
+  outcome: Schema.Literals(["accepted", "rejected"]),
+  action: TradingForgeAction,
+  reason: Schema.optional(Schema.String),
+  detail: Schema.optional(Schema.String),
+  buildId: Schema.optional(Schema.String),
+  /**
+   * `inspect_sources`: the pools and a bounded sample of REAL series points
+   * from the first approved pool — real trades with their provenance ids,
+   * never reconstructed or fabricated swap records.
+   */
+  sources: Schema.optional(
+    Schema.Struct({
+      inspections: Schema.Array(ForgeSourceInspection),
+      sample: Schema.Array(
+        Schema.Struct({
+          observationId: Schema.String.check(Schema.isNonEmpty()),
+          t: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          priceQuotePerBaseMicros: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+          quoteVolumeMicros: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+        }),
+      ),
+    }),
+  ),
+  /** `prepare`: the authoring brief the calling agent works from. */
+  brief: Schema.optional(
+    Schema.Struct({
+      schemaVersion: Schema.Int,
+      /** The typed SDK contract the artifacts import. */
+      sdkSource: Schema.String,
+      /** The observation data schema, rendered. */
+      dataSchema: Schema.String,
+      /** Where in the calling workspace the four artifacts must land. */
+      stagingDir: Schema.String,
+    }),
+  ),
+  build: Schema.optional(ForgeBuildReceipt),
+  capability: Schema.optional(ForgeCapabilityVersion),
+  catalog: Schema.optional(Schema.Array(ForgeCapabilityCatalogEntry)),
+  evaluation: Schema.optional(ForgeEvaluationEvidence),
+  /** `status`: provider job records, kept apart from observed-data status. */
+  jobs: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        jobId: Schema.String,
+        kind: Schema.String,
+        status: Schema.String,
+        detail: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  dataStatus: Schema.optional(
+    Schema.Struct({
+      lastEvaluation: Schema.optional(ForgeEvaluationEvidence),
+    }),
+  ),
+  proposals: Schema.optional(Schema.Array(ForgePoolProposal)),
+  policies: Schema.optional(Schema.Array(ForgePolicyBinding)),
+});
+export type TradingForgeResult = typeof TradingForgeResult.Type;
 
 /**
  * Everything one look answers.
@@ -649,6 +1163,19 @@ export const TradingObservation = Schema.Struct({
       vwap: Schema.optional(Schema.Number),
       /** Which halves are missing, and why — absent when all three served. */
       unavailable: Schema.optional(Schema.String),
+    }),
+  ),
+  /**
+   * `forge` / `forge:<id>` / `forge:<id>:history`: the installed Forge
+   * capabilities and their sealed evaluations. The catalog comes from the
+   * capability store at runtime — an empty catalog is the honest empty
+   * answer, and no detector is ever hardcoded into the fetch catalog.
+   */
+  forge: Schema.optional(
+    Schema.Struct({
+      catalog: Schema.Array(ForgeCapabilityCatalogEntry),
+      latest: Schema.optional(ForgeEvaluationEvidence),
+      history: Schema.optional(Schema.Array(ForgeEvaluationEvidence)),
     }),
   ),
 });

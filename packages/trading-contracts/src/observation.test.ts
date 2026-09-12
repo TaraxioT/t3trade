@@ -3,6 +3,17 @@ import { Schema } from "effect";
 
 import { DERIVED_METRIC_CATALOG } from "./watch.ts";
 import {
+  FORGE_CAPABILITY_ID_PATTERN,
+  FORGE_SDK_SCHEMA_VERSION,
+  ForgeAcceptanceCase,
+  ForgeBuildReceipt,
+  ForgeCapabilityCatalogEntry,
+  ForgeCapabilityManifest,
+  ForgeCapabilityVersion,
+  ForgeEvaluationEvidence,
+  ForgePolicyBinding,
+  ForgePoolProposal,
+  ForgeSignalReading,
   nearestTradingLookKey,
   parseTradingLookFetchKey,
   renderTradingLookMenu,
@@ -12,6 +23,7 @@ import {
   TRADING_LOOK_MAX_BARS,
   TRADING_LOOK_MAX_EVENTS,
   TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS,
+  TradingForgeInput,
   TradingLookInput,
 } from "./observation.ts";
 
@@ -21,7 +33,7 @@ import {
  * and the menu must stay a small blob.
  */
 describe("the fetch catalog", () => {
-  it("holds the 28 published keys, in order, at their published sizes", () => {
+  it("holds the 29 published keys, in order, at their published sizes", () => {
     assert.deepStrictEqual(
       TRADING_LOOK_CATALOG.map((entry) => [entry.key, entry.chars]),
       [
@@ -55,6 +67,10 @@ describe("the fetch catalog", () => {
         // Not in the plan's §2.2 table; §4.2's nothing-deleted invariant keeps
         // the market scope's cost line reachable.
         ["cost", 101],
+        // F2: the Forge capability discovery key. The KEY is static; which
+        // capabilities it lists comes from the store at runtime, so no
+        // detector is ever hardcoded into this catalog.
+        ["forge", 140],
       ],
     );
   });
@@ -233,5 +249,270 @@ describe("the fetch parameter", () => {
     // name the nearest valid key, and reads to the model as "nothing here".
     const decoded = decodeLook({ fetch: ["candles:5m:20", "not_a_key"] });
     assert.deepStrictEqual(decoded.fetch, ["candles:5m:20", "not_a_key"]);
+  });
+});
+
+// -- F2: the Forge capability lifecycle contracts ---------------------------------
+
+describe("the forge fetch key", () => {
+  it("parses catalog, latest and history selections", () => {
+    assert.deepStrictEqual(parseTradingLookFetchKey("forge"), {
+      base: "forge",
+      selection: "catalog",
+    });
+    assert.deepStrictEqual(parseTradingLookFetchKey("forge:wash-detector"), {
+      base: "forge",
+      capabilityId: "wash-detector",
+      selection: "latest",
+    });
+    assert.deepStrictEqual(parseTradingLookFetchKey("forge:wash-detector:history"), {
+      base: "forge",
+      capabilityId: "wash-detector",
+      selection: "history",
+    });
+  });
+
+  it("refuses malformed capability ids and suffixes with the grammar named", () => {
+    for (const key of ["forge:../escape", "forge:UPPER", "forge:a b", "forge:id:latest"]) {
+      const parsed = parseTradingLookFetchKey(key);
+      assert.equal(parsed.base, "invalid_params", key);
+    }
+    const traversal = parseTradingLookFetchKey("forge:../escape");
+    if (traversal.base === "invalid_params") {
+      assert.include(traversal.bound, "capabilityId must match");
+    }
+  });
+
+  it("states its grammar in the menu from the parser's own bound", () => {
+    const menu = renderTradingLookMenu();
+    assert.include(menu, "forge:id[:history]");
+  });
+
+  it("maps a typo to the forge base", () => {
+    assert.equal(nearestTradingLookKey("forg"), "forge");
+  });
+});
+
+describe("ForgeCapabilityManifest", () => {
+  const decode = Schema.decodeUnknownSync(ForgeCapabilityManifest);
+
+  it("accepts the F2 schema version", () => {
+    const decoded = decode({
+      capabilityId: "wash-detector",
+      version: 1,
+      schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+      description: "flag coordinated wash trading across the approved pools",
+    });
+    assert.equal(decoded.capabilityId, "wash-detector");
+  });
+
+  it("refuses a foreign schema version — no silent cross-generation install", () => {
+    assert.throws(() =>
+      decode({
+        capabilityId: "wash-detector",
+        version: 1,
+        schemaVersion: FORGE_SDK_SCHEMA_VERSION + 1,
+        description: "x",
+      }),
+    );
+  });
+
+  it("refuses ids the store could not key safely", () => {
+    assert.throws(() =>
+      decode({
+        capabilityId: "../escape",
+        version: 1,
+        schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+        description: "x",
+      }),
+    );
+    assert.isTrue(FORGE_CAPABILITY_ID_PATTERN.test("a"));
+    assert.isFalse(FORGE_CAPABILITY_ID_PATTERN.test("../escape"));
+  });
+});
+
+describe("ForgeSignalReading", () => {
+  const decode = Schema.decodeUnknownSync(ForgeSignalReading);
+
+  it("accepts both readings", () => {
+    const ready = decode({
+      kind: "ready",
+      regime: "coordinated",
+      agreement: 1,
+      eligiblePoolIds: ["p1"],
+    });
+    assert.equal(ready.kind, "ready");
+    const insufficient = decode({ kind: "insufficient", reason: "no anchor" });
+    assert.equal(insufficient.kind, "insufficient");
+  });
+
+  it("bounds agreement to 0..1 — an invented fraction is not a reading", () => {
+    assert.throws(() =>
+      decode({ kind: "ready", regime: "quiet", agreement: 1.5, eligiblePoolIds: [] }),
+    );
+    assert.throws(() =>
+      decode({ kind: "ready", regime: "quiet", agreement: -0.1, eligiblePoolIds: [] }),
+    );
+  });
+});
+
+describe("the forge lifecycle records", () => {
+  it("decodes a build receipt with its stage trail", () => {
+    const receipt = Schema.decodeUnknownSync(ForgeBuildReceipt)({
+      buildId: "fb_1",
+      environmentId: "env_1",
+      threadId: "th_1",
+      requestedSemantics: "detect coordinated wash trading",
+      stage: "ready",
+      stages: [
+        { stage: "requested", atMs: 1_000 },
+        { stage: "ready", atMs: 2_000 },
+      ],
+      checks: [{ name: "generated-tests", passed: true, exitCode: 0 }],
+      acceptance: { total: 2, passed: 2, failed: [] },
+      artifactSha256: [{ path: "signal.ts", sha256: "ab".repeat(32) }],
+      bundleSha256: "cd".repeat(32),
+      createdAtMs: 1_000,
+      updatedAtMs: 2_000,
+    });
+    assert.equal(receipt.stage, "ready");
+    assert.equal(receipt.checks?.length, 1);
+  });
+
+  it("decodes a capability version with immutable identity", () => {
+    const version = Schema.decodeUnknownSync(ForgeCapabilityVersion)({
+      capabilityId: "wash-detector",
+      version: 1,
+      bundleSha256: "cd".repeat(32),
+      artifacts: [{ path: "signal.ts", sha256: "ab".repeat(32), bytes: 100 }],
+      manifest: {
+        capabilityId: "wash-detector",
+        version: 1,
+        schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+        description: "d",
+      },
+      createdAtMs: 1_000,
+    });
+    assert.equal(version.version, 1);
+    assert.equal(version.artifacts.length, 1);
+  });
+
+  it("decodes evaluation evidence, catalog entries, proposals and policy bindings", () => {
+    const evaluation = Schema.decodeUnknownSync(ForgeEvaluationEvidence)({
+      evaluationId: "fe_1",
+      environmentId: "env_1",
+      capabilityId: "wash-detector",
+      capabilityVersion: 1,
+      bundleSha256: "cd".repeat(32),
+      window: { startedAt: 0, endedAt: 60_000 },
+      historical: false,
+      evidenceIds: ["forge_ev_1"],
+      status: "complete",
+      reading: { kind: "ready", regime: "isolated", agreement: 1, eligiblePoolIds: ["p1"] },
+      createdAtMs: 1_000,
+      completedAtMs: 1_500,
+    });
+    assert.equal(evaluation.status, "complete");
+
+    const entry = Schema.decodeUnknownSync(ForgeCapabilityCatalogEntry)({
+      capabilityId: "wash-detector",
+      version: 1,
+      bundleSha256: "cd".repeat(32),
+      description: "d",
+      status: "installed",
+      installedAtMs: 2_000,
+    });
+    assert.equal(entry.status, "installed");
+
+    const proposal = Schema.decodeUnknownSync(ForgePoolProposal)({
+      proposalId: "fp_1",
+      environmentId: "env_1",
+      poolId: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+      status: "proposed",
+      proposedAtMs: 1_000,
+    });
+    assert.equal(proposal.status, "proposed");
+
+    const policy = Schema.decodeUnknownSync(ForgePolicyBinding)({
+      policyId: "fpol_1",
+      environmentId: "env_1",
+      capabilityId: "wash-detector",
+      capabilityVersion: 1,
+      bundleSha256: "cd".repeat(32),
+      poolId: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+      detectionFeeHundredthsBps: 500,
+      status: "draft",
+      createdAtMs: 1_000,
+    });
+    assert.equal(policy.status, "draft");
+  });
+
+  it("decodes an acceptance case as data — expectations travel in the request", () => {
+    const example = Schema.decodeUnknownSync(ForgeAcceptanceCase)({
+      name: "two same-sign moving pools",
+      input: {
+        evidence: {
+          mode: "live",
+          provider: "the-graph",
+          deploymentId: "dep",
+          blockNumber: "100",
+          blockHash: "0x" + "ab".repeat(32),
+          fetchedAtMs: 1_000,
+          windowEndMs: 900,
+          querySha256: "q",
+          responseSha256: "r",
+          complete: true,
+        },
+        pools: [
+          {
+            poolId: "p1",
+            moveBps: 40,
+            quoteVolumeMicros: "1000000",
+            tradeCount: 2,
+            observationIds: ["a:1", "a:2"],
+          },
+        ],
+      },
+      expected: {
+        kind: "ready",
+        regime: "coordinated",
+        agreement: 1,
+        eligiblePoolIds: ["p1", "p2"],
+      },
+    });
+    assert.equal(example.input.pools.length, 1);
+  });
+});
+
+describe("TradingForgeInput", () => {
+  const decode = Schema.decodeUnknownSync(TradingForgeInput);
+
+  it("takes every lifecycle action and an optional missionId", () => {
+    for (const action of [
+      "inspect_sources",
+      "prepare",
+      "check",
+      "install",
+      "revise",
+      "status",
+      "cancel",
+      "pause",
+      "resume",
+      "uninstall",
+      "propose_pool",
+      "approve_pool",
+      "bind_policy",
+      "revoke_policy",
+    ] as const) {
+      const decoded = decode({ action });
+      assert.equal(decoded.action, action);
+    }
+    const withMission = decode({ action: "status", missionId: "tm_1" });
+    assert.equal(withMission.missionId, "tm_1");
+  });
+
+  it("refuses capability ids outside the store's key grammar", () => {
+    assert.throws(() => decode({ action: "install", capabilityId: "../escape" }));
+    assert.throws(() => decode({ action: "install", capabilityId: "UP" }));
   });
 });

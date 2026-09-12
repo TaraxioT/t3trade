@@ -9,6 +9,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import { runMigrations } from "../../persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -185,8 +186,8 @@ const makeFakeGraph = (options: FakeGraphOptions) => {
           const vars = routed.parsed.variables ?? {};
           const pool = typeof vars.pool === "string" ? vars.pool : "";
           const cursor = typeof vars.cursor === "string" ? vars.cursor : "";
-          const from = typeof vars.from === "number" ? vars.from : 0;
-          const to = typeof vars.to === "number" ? vars.to : Number.MAX_SAFE_INTEGER;
+          const from = Number(vars.from);
+          const to = Number(vars.to);
           const first = typeof vars.first === "number" ? vars.first : 1000;
           const pageNumber =
             calls.filter(
@@ -350,8 +351,8 @@ it.effect("paginates with an id_gt cursor until the short page, pinned to one bl
       assert.equal(call.body.variables.block, 22_000_000);
     }
     // The window query is bounded to the anchor buffer on the low side.
-    assert.equal(swapsCalls[0]?.body.variables.from, WINDOW.startedAt - 300);
-    assert.equal(swapsCalls[0]?.body.variables.to, WINDOW.endedAt);
+    assert.equal(swapsCalls[0]?.body.variables.from, String(WINDOW.startedAt - 300));
+    assert.equal(swapsCalls[0]?.body.variables.to, String(WINDOW.endedAt));
   }),
 );
 
@@ -942,5 +943,31 @@ it.effect("does not report healthy when indexing heads are missing", () =>
     );
     assert.equal((yield* source.probeHealth).status, "unavailable");
     assert.equal((yield* source.fetchWindow({ poolId: POOL_005, ...WINDOW })).status, "stale");
+  }),
+);
+
+it.effect("feeds the reactor a real source capture with retained per-pool provenance", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(WINDOW.endedAt * 1000);
+    const { ForgeSourceWindowLive } = yield* Effect.promise(() => import("./ForgeSourceWindow.ts"));
+    const { ForgeSourceWindowProvider } = yield* Effect.promise(() => import("./ForgeReactor.ts"));
+    const fake = makeFakeGraph({ rows: [] });
+    const layer = ForgeSourceWindowLive.pipe(
+      Layer.provide(sourceLayer(fake.shape)),
+      Layer.provide(ForgeSourceStoreLive),
+      Layer.provideMerge(NodeSqliteClient.layerMemory()),
+    );
+    yield* Effect.gen(function* () {
+      yield* runMigrations({});
+      const provider = yield* ForgeSourceWindowProvider;
+      const captured = yield* provider.currentWindow({ environmentId: "env-window" });
+      assert.equal(captured.evidence.complete, true);
+      assert.equal(captured.historical, false);
+      assert.equal(captured.pools.length, 3);
+      assert.equal(captured.evidenceIds.length, 3);
+      assert.equal(new Set(captured.evidenceIds).size, 3);
+      assert.equal(captured.window.endedAtMs - captured.window.startedAtMs, 300_000);
+      assert.match(captured.evidence.querySha256, /^[0-9a-f]{64}$/);
+    }).pipe(Effect.provide(layer));
   }),
 );

@@ -21,7 +21,12 @@ import {
   TradingEnterResult,
   TradingToolRejectedError,
 } from "@t3tools/trading-contracts/tools";
-import { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
+import {
+  TradingLookInput,
+  TradingObservation,
+  TradingForgeInput,
+  TradingForgeResult,
+} from "@t3tools/trading-contracts/observation";
 import { TradingBacktestInput, TradingBacktestResult } from "@t3tools/trading-contracts/backtest";
 import { TradingValidateInput, TradingValidateResult } from "@t3tools/trading-contracts/forward";
 import {
@@ -71,6 +76,10 @@ import { TradingThesisValidationService } from "../../../trading/TradingThesisVa
 import { TradingHypothesisService } from "../../../trading/TradingHypothesisService.ts";
 import { TradingEventService } from "../../../trading/TradingEventService.ts";
 import { TradingResearchSceneService } from "../../../trading/TradingResearchSceneService.ts";
+import { ForgeSourceReads } from "../../../trading/forge/ForgeSourceReads.ts";
+import { ForgeCapabilityBuilder } from "../../../trading/forge/CapabilityBuilder.ts";
+import { ForgeCapabilityStore } from "../../../trading/forge/CapabilityStore.ts";
+import { ForgeReactor } from "../../../trading/forge/ForgeReactor.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -369,6 +378,33 @@ export const TradingPlanDocumentTool = Tool.make("trading_plan_document", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+export const TradingForgeTool = Tool.make("trading_forge", {
+  description:
+    'Build, check and install a Forge capability over the approved Uniswap pools — you write the four artifacts (query.graphql, signal.ts, signal.test.ts, manifest.json) with your own file tools, the HOST compiles, tests, accepts, hashes and installs. inspect_sources shows the pools and a real sample; prepare returns the authoring brief (SDK contract, data schema, staging directory) and records receipt-backed stages; check runs containment over your staged files (a failed or cancelled build never installs); install is a separate CAS step needing expectedActiveVersion. status reports jobs and observed data separately; cancel/pause/resume/uninstall are direct user controls. propose_pool records a pool for HUMAN approval — approve_pool is always refused here, an agent cannot self-approve. Menu: trading_forge({action:"status"}).',
+  parameters: TradingForgeInput,
+  success: TradingForgeResult,
+  failure: TradingToolRejectedError,
+  // The Forge services ride only this tool: until the Forge layer is wired
+  // into the runtime, the rest of the toolkit must keep working untouched.
+  dependencies: [
+    ...dependencies,
+    ForgeSourceReads,
+    ForgeCapabilityBuilder,
+    ForgeCapabilityStore,
+    ForgeReactor,
+  ],
+})
+  .annotate(Tool.Title, "Forge")
+  // `inspect_sources` and `status` are reads; the lifecycle actions write
+  // build receipts, versions and installation records. The annotation
+  // describes the tool, so it takes the writing half.
+  .annotate(Tool.Readonly, false)
+  // Nothing here can reach an order or sign anything: the deepest it goes is
+  // installing code the host itself tested, and policy bindings are records.
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
@@ -383,4 +419,5 @@ export const TradingToolkit = Toolkit.make(
   TradingHypothesisTool,
   TradingEventsTool,
   TradingChartTool,
+  TradingForgeTool,
 );

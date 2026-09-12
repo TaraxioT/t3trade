@@ -1,3 +1,4 @@
+import { ForgeAcceptance } from "../../../trading/forge/ForgeAcceptance.ts";
 /**
  * Trading tool handlers.
  *
@@ -36,10 +37,15 @@ import {
   type TradingJournalEntry,
 } from "@t3tools/trading-contracts/journal";
 import {
+  FORGE_MAX_SOURCE_SAMPLE,
+  type ForgeBuildReceipt,
+  type ForgePoolProposal,
   parseTradingLookFetchKey,
   nearestTradingLookKey,
   renderTradingLookMenu,
   TRADING_LOOK_BOOK_LEVELS,
+  type TradingForgeInput,
+  type TradingForgeResult,
   type TradingLookFetchParse,
   type TradingLookInput,
   type TradingObservation,
@@ -217,6 +223,13 @@ import {
   TradingResearchSceneService,
   composeSceneViews,
 } from "../../../trading/TradingResearchSceneService.ts";
+import { ForgeSourceReads } from "../../../trading/forge/ForgeSourceReads.ts";
+import {
+  ForgeBuilderError,
+  ForgeCapabilityBuilder,
+} from "../../../trading/forge/CapabilityBuilder.ts";
+import { ForgeCapabilityStore, ForgeStoreError } from "../../../trading/forge/CapabilityStore.ts";
+import { ForgeReactor } from "../../../trading/forge/ForgeReactor.ts";
 import {
   ARCHIVE_INTERVALS,
   archiveDatabasePath,
@@ -658,7 +671,11 @@ const resolveBindableCall = Effect.fn("TradingToolkit.resolveBindableCall")(func
 const resolveReadCall = Effect.fn("TradingToolkit.resolveReadCall")(function* (
   missionId: string | undefined,
 ): Effect.fn.Return<
-  { readonly threadId: string; readonly mission: TradingMission | null },
+  {
+    readonly threadId: string;
+    readonly environmentId: string;
+    readonly mission: TradingMission | null;
+  },
   TradingToolRejectedError,
   McpInvocationContext.McpInvocationContext | TradingMissionService
 > {
@@ -674,7 +691,11 @@ const resolveReadCall = Effect.fn("TradingToolkit.resolveReadCall")(function* (
 
   const missions = yield* TradingMissionService;
   const bound = yield* missions.findMissionByThreadId(scope.threadId).pipe(Effect.orDie);
-  return { threadId: scope.threadId, mission: Option.isNone(bound) ? null : bound.value };
+  return {
+    threadId: scope.threadId,
+    environmentId: scope.environmentId,
+    mission: Option.isNone(bound) ? null : bound.value,
+  };
 });
 
 // The position's high-water mark used to be attached here. Since step 6.1 the
@@ -1222,6 +1243,7 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
   }
   return yield* readFetchedObservation({
     threadId: call.threadId,
+    environmentId: call.environmentId,
     mission,
     market,
     observedAt,
@@ -1479,6 +1501,7 @@ interface FetchedKey {
 const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation")(
   function* (input: {
     readonly threadId: string;
+    readonly environmentId: string;
     readonly mission: TradingMission | null;
     readonly market: TradingMarket;
     readonly observedAt: number;
@@ -2102,6 +2125,70 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
       }
     }
 
+    // -- the forge half (T3-14 / F2) ------------------------------------------
+    //
+    // The installed capabilities and their sealed evaluations, served from the
+    // capability store at runtime. An empty catalog is the honest empty
+    // answer — no detector is hardcoded into the fetch catalog, so before the
+    // first request this section serves an empty list, not a fixture.
+    type ForgeLook = NonNullable<TradingObservation["forge"]>;
+    let forgeSection: ForgeLook | undefined = undefined;
+    if (wants("forge")) {
+      // Optional on purpose: the look must keep answering every other key
+      // wherever the Forge layer is not wired, and the forge keys then say so
+      // in `unavailable` rather than failing the whole call.
+      const forgeStoreOption = yield* Effect.serviceOption(ForgeCapabilityStore);
+      if (forgeStoreOption._tag === "None") {
+        refuseKeys(keysFor("forge"), "the Forge capability store is not wired into this runtime");
+      } else {
+        const forgeStore = forgeStoreOption.value;
+        const catalog = yield* forgeStore
+          .listCatalog(input.environmentId)
+          .pipe(
+            Effect.orElseSucceed(() => [] as NonNullable<TradingObservation["forge"]>["catalog"]),
+          );
+        const installed = new Set(catalog.map((entry) => entry.capabilityId));
+        let latest: ForgeLook["latest"] | undefined = undefined;
+        let history: ForgeLook["history"] | undefined = undefined;
+        for (const { key, parsed } of fetched) {
+          if (parsed.base !== "forge" || parsed.selection === "catalog") continue;
+          const { capabilityId, selection } = parsed;
+          if (!installed.has(capabilityId)) {
+            unavailable.push({
+              key,
+              reason: `capability "${capabilityId}" is not installed; the catalog key "forge" lists what is`,
+            });
+            continue;
+          }
+          if (selection === "latest") {
+            const evaluation = yield* forgeStore
+              .latestEvaluation({ environmentId: input.environmentId, capabilityId })
+              .pipe(Effect.orElseSucceed(() => null));
+            if (evaluation === null) {
+              unavailable.push({
+                key,
+                reason: `capability "${capabilityId}" has no committed evaluation yet; installation alone is not a reading`,
+              });
+            } else {
+              latest = evaluation;
+            }
+          } else {
+            const evaluations = yield* forgeStore
+              .listEvaluations({ environmentId: input.environmentId, capabilityId })
+              .pipe(
+                Effect.orElseSucceed(() => [] as ReadonlyArray<NonNullable<ForgeLook["latest"]>>),
+              );
+            history = [...evaluations];
+          }
+        }
+        forgeSection = {
+          catalog: [...catalog],
+          ...(latest === undefined ? {} : { latest }),
+          ...(history === undefined ? {} : { history }),
+        };
+      }
+    }
+
     const observation = {
       observedAt: input.observedAt,
       market,
@@ -2113,6 +2200,15 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
       fetched: fetched.map((entry) => entry.key),
       ...(unavailable.length === 0 ? {} : { unavailable }),
     } satisfies TradingObservation;
+    // Assigned rather than conditionally spread: a conditional spread types
+    // the field as `| undefined`, which the exact-optional tool contract
+    // refuses; assignment keeps absence and value distinct. The local type
+    // includes `forge` so the assignment is part of the object's type.
+    type ObservationWithForge = TradingObservation & {
+      forge?: NonNullable<TradingObservation["forge"]>;
+    };
+    const typed: ObservationWithForge = observation;
+    if (forgeSection !== undefined) typed.forge = forgeSection;
 
     yield* Effect.logInfo("trading_look: response size", {
       missionId: mission?.id,
@@ -4855,6 +4951,439 @@ export const handlers = {
                   ? "the scene is off the graph"
                   : "no scene of this chat with that id, so nothing changed",
           });
+        }
+      }
+    }),
+
+  // -- trading_forge (T3-14 / F2) ----------------------------------------------
+  //
+  // The bounded lifecycle surface over the forge services. Everything that
+  // grants anything is host-side: this handler only routes actions and shapes
+  // refusals as data. `approve_pool` is always refused here — pool approval is
+  // a human act through the user-service path, and an agent cannot self-grant.
+  trading_forge: (input: TradingForgeInput) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireCapability(
+        "trading",
+        (denial) => denial,
+      ).pipe(
+        Effect.catch((denial) =>
+          rejectCall({
+            reason: "capability_not_granted",
+            threadId: denial.threadId,
+            missionId: undefined,
+          }),
+        ),
+      );
+      const environmentId = scope.environmentId;
+      const threadId = scope.threadId;
+      const store = yield* ForgeCapabilityStore;
+      const builder = yield* ForgeCapabilityBuilder;
+      const reactor = yield* ForgeReactor;
+
+      // `Omit` would strip optionality (exactOptionalPropertyTypes), so the
+      // result builders take partial fields and land on the wire type directly.
+      const accepted = (result: Partial<TradingForgeResult>): TradingForgeResult =>
+        ({ outcome: "accepted", action: input.action, ...result }) as TradingForgeResult;
+      const rejected = (reason: string, detail?: string): TradingForgeResult => ({
+        outcome: "rejected",
+        action: input.action,
+        reason,
+        ...(detail === undefined ? {} : { detail }),
+      });
+      const storeFailure = (error: unknown): TradingForgeResult =>
+        error instanceof ForgeStoreError
+          ? rejected("store_refused", error.message)
+          : rejected("store_error", error instanceof Error ? error.message : String(error));
+      const builderFailure = (error: ForgeBuilderError): TradingForgeResult =>
+        rejected(
+          error.failure.kind === "invalid_request" ? "invalid_request" : "check_failed",
+          error.failure.reason,
+        );
+
+      if (input.buildId !== undefined) {
+        const scopedBuild = yield* store.getBuild(input.buildId).pipe(Effect.orDie);
+        if (
+          scopedBuild !== null &&
+          (scopedBuild.environmentId !== environmentId || scopedBuild.threadId !== threadId)
+        ) {
+          return rejected("scope_mismatch", "the build belongs to another environment or task");
+        }
+      }
+      switch (input.action) {
+        case "inspect_sources": {
+          const reads = yield* ForgeSourceReads;
+          const listing = yield* reads.listSources;
+          if (listing.status !== "ok") {
+            return accepted({
+              sources: { inspections: [], sample: [] },
+              detail: `the Forge source is unavailable: ${listing.reason}`,
+            });
+          }
+          // A bounded sample of REAL observations from the first approved
+          // pool — the inspection tool, not a fixture.
+          const firstPool = listing.listing.pools[0];
+          const series =
+            firstPool === undefined
+              ? null
+              : yield* reads
+                  .readPoolSeries({ poolId: firstPool.poolId })
+                  .pipe(Effect.orElseSucceed(() => null));
+          const sample =
+            series?.status === "ok"
+              ? series.series.points.slice(-FORGE_MAX_SOURCE_SAMPLE).map((point) => ({
+                  observationId: point.observationId,
+                  t: point.t,
+                  priceQuotePerBaseMicros: point.priceQuotePerBaseMicros,
+                  quoteVolumeMicros: point.quoteVolumeMicros,
+                }))
+              : [];
+          return accepted({
+            sources: {
+              inspections: listing.listing.pools.map((pool) => ({
+                poolId: pool.poolId,
+                label: pool.label,
+                feeTierHundredthsBps: pool.feeTierHundredthsBps,
+                healthStatus:
+                  listing.listing.health.status === "unavailable"
+                    ? "unavailable"
+                    : listing.listing.health.status === "stale"
+                      ? "stale"
+                      : "healthy",
+                ...(listing.listing.health.reason === undefined
+                  ? {}
+                  : { healthReason: listing.listing.health.reason }),
+              })),
+              sample,
+            },
+            ...(series?.status === "unavailable"
+              ? { detail: `the live sample read was unavailable: ${series.reason}` }
+              : {}),
+          });
+        }
+
+        case "prepare":
+        case "revise": {
+          if (input.capabilityId === undefined || input.requestedSemantics === undefined) {
+            return rejected(
+              "needs_input",
+              `${input.action} needs capabilityId and requestedSemantics (the user's words)`,
+            );
+          }
+          // The staging directory lives in the CALLING thread's workspace: the
+          // provider writes the four artifacts with its own file tools, and
+          // the host reads them back from there.
+          const sql = yield* SqlClient.SqlClient;
+          const workspaceRoot = yield* readThreadWorkspaceRoot(sql, threadId);
+          if (workspaceRoot === null) {
+            return rejected(
+              "no_workspace",
+              "this thread has no workspace root to stage artifacts in",
+            );
+          }
+          const stagingDir = `${workspaceRoot}/.forge/${input.capabilityId}`;
+          const prepared = yield* builder
+            .prepare({
+              environmentId,
+              threadId,
+              capabilityId: input.capabilityId,
+              requestedSemantics: input.requestedSemantics,
+              stagingDir,
+            })
+            .pipe(
+              Effect.catch((error) =>
+                Effect.succeed(
+                  error instanceof ForgeBuilderError
+                    ? builderFailure(error)
+                    : rejected("check_failed", String(error)),
+                ),
+              ),
+            );
+          if ("outcome" in prepared) return prepared;
+          return accepted({
+            buildId: prepared.build.buildId,
+            build: prepared.build,
+            brief: {
+              schemaVersion: prepared.brief.schemaVersion,
+              sdkSource: prepared.brief.sdkSource,
+              dataSchema: prepared.brief.dataSchema,
+              stagingDir: prepared.brief.stagingDir,
+            },
+            detail:
+              `write exactly ${prepared.brief.artifactContract} into ${stagingDir}, then ` +
+              `trading_forge({action:"check", buildId:"${prepared.build.buildId}"})`,
+          });
+        }
+
+        case "check": {
+          if (input.buildId === undefined) {
+            return rejected("needs_input", "check needs the buildId from prepare");
+          }
+          const existing = yield* store.getBuild(input.buildId).pipe(Effect.orDie);
+          if (existing === null) return rejected("no_build", `no build ${input.buildId}`);
+          const sql = yield* SqlClient.SqlClient;
+          const workspaceRoot = yield* readThreadWorkspaceRoot(sql, threadId);
+          const stagingDir =
+            workspaceRoot === null || existing.capabilityId === undefined
+              ? null
+              : `${workspaceRoot}/.forge/${existing.capabilityId}`;
+          if (stagingDir === null) {
+            return rejected("no_workspace", "the build has no staging directory to read");
+          }
+          const acceptanceProvider = yield* Effect.serviceOption(ForgeAcceptance);
+          if (acceptanceProvider._tag === "None")
+            return rejected(
+              "host_acceptance_unavailable",
+              "host-reviewed acceptance cases are not configured",
+            );
+          if (existing.capabilityId === undefined)
+            return rejected("no_capability", "the build does not name a capability");
+          const nextVersion = yield* store
+            .nextVersion({ environmentId, capabilityId: existing.capabilityId })
+            .pipe(Effect.orDie);
+          const cases = yield* acceptanceProvider.value
+            .read(existing.capabilityId, nextVersion)
+            .pipe(Effect.result);
+          if (cases._tag === "Failure")
+            return rejected("host_acceptance_unavailable", cases.failure);
+          const checked = yield* builder
+            .check({
+              buildId: input.buildId,
+              environmentId,
+              stagingDir,
+              acceptanceCases: cases.success,
+            })
+            .pipe(
+              Effect.catch((error) =>
+                Effect.succeed(
+                  error instanceof ForgeBuilderError
+                    ? builderFailure(error)
+                    : rejected("check_failed", String(error)),
+                ),
+              ),
+            );
+          if ("outcome" in checked) return checked;
+          return accepted({
+            buildId: checked.build.buildId,
+            build: checked.build,
+            ...(checked.staged === null
+              ? {}
+              : {
+                  capability: checked.staged.version,
+                  detail: `v${checked.staged.version.version} is staged READY with host hashes; install is a separate CAS step`,
+                }),
+          });
+        }
+
+        case "install": {
+          if (input.capabilityId === undefined || input.version === undefined) {
+            return rejected("needs_input", "install needs capabilityId and the staged version");
+          }
+          // CAS against the staged version's OWN hash: only the exact bytes
+          // the containment pipeline tested can install.
+          const stagedVersion = yield* store
+            .readVersion({
+              environmentId,
+              capabilityId: input.capabilityId,
+              version: input.version,
+            })
+            .pipe(Effect.orDie);
+          if (stagedVersion === null) {
+            return rejected("no_ready_build", "check must stage the version ready before install");
+          }
+          const builds: ReadonlyArray<ForgeBuildReceipt> = yield* store
+            .listBuilds({ environmentId, capabilityId: input.capabilityId })
+            .pipe(Effect.orDie);
+          const ready = builds.find(
+            (candidate) =>
+              candidate.stage === "ready" &&
+              candidate.threadId === threadId &&
+              candidate.bundleSha256 === stagedVersion.bundleSha256,
+          );
+          if (ready === undefined)
+            return rejected(
+              "no_ready_build",
+              "this task has no ready checked build for the requested version",
+            );
+          const outcome = yield* store
+            .install({
+              environmentId,
+              capabilityId: input.capabilityId,
+              version: input.version,
+              bundleSha256: stagedVersion.bundleSha256,
+              buildId: ready.buildId,
+              expectedActiveVersion: input.expectedActiveVersion ?? null,
+            })
+            .pipe(Effect.catch((error) => Effect.succeed(storeFailure(error))));
+          if ("outcome" in outcome) return outcome;
+          if (outcome.status !== "installed") {
+            return rejected(`install_${outcome.reason}`, outcome.detail);
+          }
+          // The first evaluation runs as a persisted reactor job; the catalog
+          // gains its reading only when that job commits.
+          const job = yield* reactor
+            .enqueueEvaluation({ environmentId, threadId, capabilityId: input.capabilityId })
+            .pipe(Effect.orDie);
+          return accepted({
+            ...(ready === undefined ? {} : { buildId: ready.buildId }),
+            catalog: yield* store.listCatalog(environmentId).pipe(Effect.orDie),
+            detail: `v${input.version} installed; evaluation job ${job.jobId} is ${job.status} — trading_forge({action:"status"}) tracks it`,
+          });
+        }
+
+        case "status": {
+          const jobs = yield* reactor.listJobs({ environmentId }).pipe(Effect.orDie);
+          const lastEvaluation =
+            input.capabilityId === undefined
+              ? null
+              : yield* reactor
+                  .observedStatus({ environmentId, capabilityId: input.capabilityId })
+                  .pipe(Effect.orDie);
+          return accepted({
+            catalog: yield* store.listCatalog(environmentId).pipe(Effect.orDie),
+            jobs: jobs.map((job) => ({
+              jobId: job.jobId,
+              kind: job.kind,
+              status: job.status,
+              ...(job.detail === undefined ? {} : { detail: job.detail }),
+            })),
+            // Provider job status and observed-data status are separate
+            // records, reported separately on purpose.
+            dataStatus:
+              lastEvaluation === null && input.capabilityId === undefined
+                ? undefined
+                : { lastEvaluation: lastEvaluation ?? undefined },
+            ...(input.buildId === undefined
+              ? {}
+              : {
+                  build: (yield* store.getBuild(input.buildId).pipe(Effect.orDie)) ?? undefined,
+                }),
+          });
+        }
+
+        case "cancel": {
+          if (input.buildId === undefined) {
+            return rejected("needs_input", "cancel needs the buildId");
+          }
+          const existing = yield* store.getBuild(input.buildId).pipe(Effect.orDie);
+          if (existing === null) return rejected("no_build", `no build ${input.buildId}`);
+          if (existing.stage === "installed") {
+            return rejected("already_installed", "an installed build cannot be cancelled");
+          }
+          const cancelled = yield* store
+            .appendBuildStage({
+              buildId: input.buildId,
+              stage: "cancelled",
+              detail: input.reason ?? "cancelled by the user",
+            })
+            .pipe(Effect.catch((error) => Effect.succeed(storeFailure(error))));
+          if ("outcome" in cancelled) return cancelled;
+          return accepted({
+            buildId: cancelled.buildId,
+            build: cancelled,
+            detail: `build ${input.buildId} is cancelled and can never install`,
+          });
+        }
+
+        case "pause":
+        case "resume":
+        case "uninstall": {
+          if (input.capabilityId === undefined) {
+            return rejected("needs_input", `${input.action} needs capabilityId`);
+          }
+          const op =
+            input.action === "pause"
+              ? store.pause({ environmentId, capabilityId: input.capabilityId })
+              : input.action === "resume"
+                ? store.resume({ environmentId, capabilityId: input.capabilityId })
+                : store.uninstall({ environmentId, capabilityId: input.capabilityId });
+          const changed = yield* op.pipe(
+            Effect.catch((error) => Effect.succeed(storeFailure(error))),
+          );
+          if (typeof changed !== "boolean") return changed;
+          if (!changed) return rejected("not_installed", `${input.capabilityId} is not installed`);
+          return accepted({
+            catalog: yield* store.listCatalog(environmentId).pipe(Effect.orDie),
+            detail: `${input.capabilityId} ${input.action === "uninstall" ? "uninstalled" : input.action + "d"} — a direct user control, no provider involved`,
+          });
+        }
+
+        case "propose_pool": {
+          if (input.poolId === undefined) {
+            return rejected("needs_input", "propose_pool needs poolId");
+          }
+          const proposal = yield* store
+            .proposePool({
+              environmentId,
+              poolId: input.poolId,
+              threadId,
+              ...(input.reason === undefined ? {} : { reason: input.reason }),
+            })
+            .pipe(Effect.catch((error) => Effect.succeed(storeFailure(error))));
+          if ("outcome" in proposal) return proposal;
+          return accepted({
+            proposals: [proposal] as ForgePoolProposal[],
+            detail:
+              "pool proposed — approval is a HUMAN action outside this tool; " +
+              "an agent cannot self-grant it",
+          });
+        }
+
+        case "approve_pool": {
+          // Deliberately unconditional: the agent path never grants pool
+          // authority. Approval happens through the direct user-service path
+          // on the store, which this tool does not expose.
+          return rejected(
+            "agent_cannot_approve",
+            "pool approval is a human act; this tool cannot grant it, and no agent output can",
+          );
+        }
+
+        case "bind_policy": {
+          if (input.capabilityId === undefined || input.poolId === undefined) {
+            return rejected("needs_input", "bind_policy needs capabilityId and poolId");
+          }
+          const active = yield* store
+            .activeState({ environmentId, capabilityId: input.capabilityId })
+            .pipe(Effect.orDie);
+          if (active === null) {
+            return rejected("not_installed", `${input.capabilityId} is not installed`);
+          }
+          if (input.detectionFeeHundredthsBps === undefined) {
+            return rejected(
+              "needs_input",
+              "bind_policy needs detectionFeeHundredthsBps (500 or 3000 — the fixed hook's only fees)",
+            );
+          }
+          const fee = input.detectionFeeHundredthsBps;
+          const binding = yield* store
+            .bindPolicy({
+              environmentId,
+              capabilityId: input.capabilityId,
+              capabilityVersion: active.version,
+              bundleSha256: active.bundleSha256,
+              poolId: input.poolId,
+              detectionFeeHundredthsBps: fee,
+            })
+            .pipe(Effect.catch((error) => Effect.succeed(storeFailure(error))));
+          if ("outcome" in binding) return binding;
+          return accepted({
+            policies: [binding],
+            detail:
+              "policy binding recorded as a DRAFT — F2 records only; publication to the hook is a later, separately authorized phase",
+          });
+        }
+
+        case "revoke_policy": {
+          if (input.policyId === undefined) {
+            return rejected("needs_input", "revoke_policy needs policyId");
+          }
+          const revoked = yield* store
+            .revokePolicy({ environmentId, policyId: input.policyId })
+            .pipe(Effect.catch((error) => Effect.succeed(storeFailure(error))));
+          if (revoked === null) return rejected("no_policy", `no policy ${input.policyId}`);
+          if ("outcome" in revoked) return revoked;
+          return accepted({ policies: [revoked] });
         }
       }
     }),
