@@ -1,0 +1,1267 @@
+[
+  {
+    "name": "coordinated-two-up-pools",
+    "input": {
+      "evidence": {
+        "mode": "live",
+        "provider": "the-graph",
+        "deploymentId": "Qmforgefixture0000000000000000000000000000",
+        "blockNumber": "22000000",
+        "blockHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "fetchedAtMs": 1775700300000,
+        "windowEndMs": 1775700300000,
+        "querySha256": "0123456789abcdef23456789abcdef23456789abcdef23456789abcdef0123456789abcd",
+        "responseSha256": "fedcba9876543210dcba9876543210dcba9876543210dcba9876543210fedcba98765432",
+        "complete": true
+      },
+      "pools": [
+        {
+          "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "moveBps": 15,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xabababababababababababababababababababababababababababababababab:11",
+            "0xabababababababababababababababababababababababababababababababab:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xabababababababababababababababababababababababababababababababab:11",
+              "transactionHash": "0xabababababababababababababababababababababababababababababababab",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2501875000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2501875000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xabababababababababababababababababababababababababababababababab:12",
+              "transactionHash": "0xabababababababababababababababababababababababababababababababab",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2503750000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2503750000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+          "moveBps": 9,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd:11",
+            "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd:11",
+              "transactionHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2501125000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2501125000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd:12",
+              "transactionHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2502250000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2502250000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+          "moveBps": 1,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef:11",
+            "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef:11",
+              "transactionHash": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500125000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500125000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef:12",
+              "transactionHash": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500250000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500250000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        }
+      ]
+    },
+    "expected": {
+      "kind": "ready",
+      "regime": "coordinated",
+      "agreement": 0.6666666666666666,
+      "eligiblePoolIds": [
+        "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+        "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+        "0x7bea39867e4169dbe237d55c8242fe839056b1dc"
+      ]
+    }
+  },
+  {
+    "name": "isolated-single-moving-pool",
+    "input": {
+      "evidence": {
+        "mode": "live",
+        "provider": "the-graph",
+        "deploymentId": "Qmforgefixture0000000000000000000000000000",
+        "blockNumber": "22000000",
+        "blockHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "fetchedAtMs": 1775700300000,
+        "windowEndMs": 1775700300000,
+        "querySha256": "0123456789abcdef23456789abcdef23456789abcdef23456789abcdef0123456789abcd",
+        "responseSha256": "fedcba9876543210dcba9876543210dcba9876543210dcba9876543210fedcba98765432",
+        "complete": true
+      },
+      "pools": [
+        {
+          "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "moveBps": 12,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xbabababababababababababababababababababababababababababababababa:11",
+            "0xbabababababababababababababababababababababababababababababababa:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xbabababababababababababababababababababababababababababababababa:11",
+              "transactionHash": "0xbabababababababababababababababababababababababababababababababa",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2501500000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2501500000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xbabababababababababababababababababababababababababababababababa:12",
+              "transactionHash": "0xbabababababababababababababababababababababababababababababababa",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2503000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2503000000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+          "moveBps": 0,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:11",
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:11",
+              "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:12",
+              "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+          "moveBps": null,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc:11",
+            "0xbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc:11",
+              "transactionHash": "0xbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc:12",
+              "transactionHash": "0xbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "kind": "ready",
+      "regime": "isolated",
+      "agreement": 0.3333333333333333,
+      "eligiblePoolIds": [
+        "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+        "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+        "0x7bea39867e4169dbe237d55c8242fe839056b1dc"
+      ]
+    }
+  },
+  {
+    "name": "quiet-no-movement",
+    "input": {
+      "evidence": {
+        "mode": "live",
+        "provider": "the-graph",
+        "deploymentId": "Qmforgefixture0000000000000000000000000000",
+        "blockNumber": "22000000",
+        "blockHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "fetchedAtMs": 1775700300000,
+        "windowEndMs": 1775700300000,
+        "querySha256": "0123456789abcdef23456789abcdef23456789abcdef23456789abcdef0123456789abcd",
+        "responseSha256": "fedcba9876543210dcba9876543210dcba9876543210dcba9876543210fedcba98765432",
+        "complete": true
+      },
+      "pools": [
+        {
+          "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "moveBps": 1,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xcacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca:11",
+            "0xcacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xcacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca:11",
+              "transactionHash": "0xcacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500125000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500125000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xcacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca:12",
+              "transactionHash": "0xcacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500250000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500250000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+          "moveBps": -1,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb:11",
+            "0xcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb:11",
+              "transactionHash": "0xcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2499875000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2499875000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb:12",
+              "transactionHash": "0xcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2499750000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2499750000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+          "moveBps": null,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:11",
+            "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:11",
+              "transactionHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:12",
+              "transactionHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "kind": "ready",
+      "regime": "quiet",
+      "agreement": 0,
+      "eligiblePoolIds": [
+        "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+        "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+        "0x7bea39867e4169dbe237d55c8242fe839056b1dc"
+      ]
+    }
+  },
+  {
+    "name": "opposing-moves-insufficient",
+    "input": {
+      "evidence": {
+        "mode": "live",
+        "provider": "the-graph",
+        "deploymentId": "Qmforgefixture0000000000000000000000000000",
+        "blockNumber": "22000000",
+        "blockHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "fetchedAtMs": 1775700300000,
+        "windowEndMs": 1775700300000,
+        "querySha256": "0123456789abcdef23456789abcdef23456789abcdef23456789abcdef0123456789abcd",
+        "responseSha256": "fedcba9876543210dcba9876543210dcba9876543210dcba9876543210fedcba98765432",
+        "complete": true
+      },
+      "pools": [
+        {
+          "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "moveBps": 10,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xdadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada:11",
+            "0xdadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xdadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada:11",
+              "transactionHash": "0xdadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2501250000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2501250000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xdadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada:12",
+              "transactionHash": "0xdadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2502500000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2502500000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+          "moveBps": -6,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb:11",
+            "0xdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb:11",
+              "transactionHash": "0xdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2499250000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2499250000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb:12",
+              "transactionHash": "0xdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2498500000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2498500000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+          "moveBps": 0,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc:11",
+            "0xdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc:11",
+              "transactionHash": "0xdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0xdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc:12",
+              "transactionHash": "0xdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x7bea39867e4169dbe237d55c8242fe839056b1dc",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        }
+      ]
+    },
+    "expected": {
+      "kind": "insufficient",
+      "reason": "opposing_moves"
+    }
+  },
+  {
+    "name": "two-pools-insufficient",
+    "input": {
+      "evidence": {
+        "mode": "live",
+        "provider": "the-graph",
+        "deploymentId": "Qmforgefixture0000000000000000000000000000",
+        "blockNumber": "22000000",
+        "blockHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "fetchedAtMs": 1775700300000,
+        "windowEndMs": 1775700300000,
+        "querySha256": "0123456789abcdef23456789abcdef23456789abcdef23456789abcdef0123456789abcd",
+        "responseSha256": "fedcba9876543210dcba9876543210dcba9876543210dcba9876543210fedcba98765432",
+        "complete": true
+      },
+      "pools": [
+        {
+          "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+          "moveBps": 5,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea:11",
+            "0xeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea:11",
+              "transactionHash": "0xeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500625000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500625000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0xeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea:12",
+              "transactionHash": "0xeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2501250000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2501250000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        },
+        {
+          "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+          "moveBps": 3,
+          "quoteVolumeMicros": "13300000000",
+          "tradeCount": 2,
+          "observationIds": [
+            "0xebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebeb:11",
+            "0xebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebeb:12"
+          ],
+          "observations": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebeb:11",
+              "transactionHash": "0xebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebeb",
+              "logIndex": 11,
+              "timestamp": 1775700060,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-12500000000",
+              "amount1": "25000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500375000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500375000,
+              "quoteVolumeRaw": "12500000000",
+              "quoteVolumeMicros": 12500000000
+            },
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0xebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebeb:12",
+              "transactionHash": "0xebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebeb",
+              "logIndex": 12,
+              "timestamp": 1775700180,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-800000000",
+              "amount1": "1600000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500750000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500750000,
+              "quoteVolumeRaw": "800000000",
+              "quoteVolumeMicros": 800000000
+            }
+          ],
+          "anchorCandidates": [
+            {
+              "chain": "ethereum-mainnet",
+              "poolId": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+              "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+              "transactionHash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+              "logIndex": 5,
+              "timestamp": 1775699970,
+              "sender": "0x0000000000000000000000000000000000000001",
+              "recipient": "0x0000000000000000000000000000000000000002",
+              "amount0": "-1000000",
+              "amount1": "400000000000000",
+              "sqrtPriceX96": "1584563250285286751870879006720000",
+              "tick": -196204,
+              "baseIsToken1": true,
+              "priceQuotePerBase": {
+                "numerator": "2500000000",
+                "denominator": "1000000"
+              },
+              "priceQuotePerBaseMicros": 2500000000,
+              "quoteVolumeRaw": "1000000",
+              "quoteVolumeMicros": 1000000
+            }
+          ],
+          "anchor": {
+            "observationId": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a:5",
+            "priceQuotePerBaseMicros": 2500000000,
+            "ageBeforeWindowSeconds": 30
+          }
+        }
+      ]
+    },
+    "expected": {
+      "kind": "insufficient",
+      "reason": "need_three_distinct_pools"
+    }
+  }
+]

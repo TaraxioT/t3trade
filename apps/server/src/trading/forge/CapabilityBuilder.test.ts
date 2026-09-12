@@ -74,9 +74,20 @@ const manifestJson = (version: number, capabilityId = CAPABILITY): string =>
     description: "flag coordinated wash trading across the approved pools",
   });
 
+/**
+ * A validated bundle query: structurally identical to the pinned reference
+ * (field sets, nesting, variables), byte-different (operation name, spacing)
+ * — exactly what a generated query.graphql legitimately looks like.
+ */
+const CAPABILITY_QUERY = `query GeneratedSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(first: $first, where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }, block: { number: $block }, orderBy: id, orderDirection: asc) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
 const goodArtifacts = (version = 1): Record<string, string> => ({
-  "query.graphql":
-    "query Swaps($pool: ID!) { swaps(first: 100, where: { pool: $pool }) { id amount0 amount1 sqrtPriceX96 tick logIndex transaction { id } } }",
+  "query.graphql": CAPABILITY_QUERY,
   "signal.ts": [
     'import type { ReadSignal, SignalInput, SignalOutput } from "./sdk";',
     "export const readSignal: ReadSignal = (input: SignalInput): SignalOutput => {",
@@ -297,6 +308,42 @@ describe("static artifact validation", () => {
       expectedVersion: 1,
     });
     assert.equal(extra.status, "refused");
+  });
+
+  it("refuses a query.graphql that is not structurally the pinned query", () => {
+    const mutation = validateAuthoredArtifacts({
+      contents: {
+        ...goodArtifacts(1),
+        "query.graphql": "mutation M($pool: String!) { swaps { id } }",
+      },
+      expectedCapabilityId: CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(mutation.status, "refused");
+    if (mutation.status === "refused") assert.include(mutation.reason, "query.graphql");
+
+    const missingField = validateAuthoredArtifacts({
+      contents: { ...goodArtifacts(1), "query.graphql": CAPABILITY_QUERY.replace(" tick", "") },
+      expectedCapabilityId: CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(missingField.status, "refused");
+    if (missingField.status === "refused") assert.include(missingField.reason, '"tick"');
+
+    const garbage = validateAuthoredArtifacts({
+      contents: { ...goodArtifacts(1), "query.graphql": "SELECT * FROM swaps" },
+      expectedCapabilityId: CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(garbage.status, "refused");
+
+    const empty = validateAuthoredArtifacts({
+      contents: { ...goodArtifacts(1), "query.graphql": "" },
+      expectedCapabilityId: CAPABILITY,
+      expectedVersion: 1,
+    });
+    assert.equal(empty.status, "refused");
+    if (empty.status === "refused") assert.include(empty.reason, "empty");
   });
 
   it("reads a real workspace and refuses symlinks, extras, and traversal-shaped names", async () => {

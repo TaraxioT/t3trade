@@ -346,6 +346,14 @@ export interface ForgeFetchWindowInput {
   readonly historical?: boolean;
   /** Pin override, so one capture pins every pool to the same block. */
   readonly pinnedBlock?: number;
+  /**
+   * The query document to execute for the swaps pages. Defaults to the pinned
+   * `FORGE_SWAPS_QUERY`. A caller may only pass a query that passed
+   * `validateForgeCapabilityQuery` — shape-equality with the reference is
+   * what keeps the response normalization below (field names, `_meta` echo,
+   * pinned-block checks) valid against whatever bytes arrive.
+   */
+  readonly query?: string;
 }
 
 export interface ForgeGraphSourceShape {
@@ -356,12 +364,15 @@ export interface ForgeGraphSourceShape {
   /**
    * Fetch every approved pool over one window, pinned to ONE block across
    * pools and pages. Comparisons (v1/v2) need the three pools to describe the
-   * same chain state, so the pin is resolved once and passed down.
+   * same chain state, so the pin is resolved once and passed down. An
+   * optional validated `query` executes in place of the host constant; the
+   * same shape-equality invariant as `fetchWindow` applies.
    */
   readonly fetchAllPools: (input: {
     readonly startedAt: number;
     readonly endedAt: number;
     readonly historical?: boolean;
+    readonly query?: string;
   }) => Effect.Effect<{
     readonly pinnedBlock: number | null;
     readonly fetches: ReadonlyArray<ForgeWindowFetch>;
@@ -621,7 +632,10 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       }
 
       // Bounded cursor walk. The timestamp bounds keep the walk inside the
-      // window plus the anchor buffer; the page cap keeps it finite.
+      // window plus the anchor buffer; the page cap keeps it finite. The
+      // query sent is the caller's validated bundle bytes when provided —
+      // verbatim, never rewritten — and the reference otherwise.
+      const executedQuery = input.query ?? FORGE_SWAPS_QUERY;
       const observations: Array<ForgeSwapObservation> = [];
       const seen = new Set<string>();
       let duplicatesDropped = 0;
@@ -632,7 +646,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         const page = yield* postOrError(
           source.endpoint,
           {
-            query: FORGE_SWAPS_QUERY,
+            query: executedQuery,
             variables: {
               pool: pool.poolId,
               first: source.pageSize,
@@ -834,6 +848,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
     readonly startedAt: number;
     readonly endedAt: number;
     readonly historical?: boolean;
+    readonly query?: string;
   }): Effect.Effect<{
     readonly pinnedBlock: number | null;
     readonly fetches: ReadonlyArray<ForgeWindowFetch>;
@@ -873,6 +888,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
             startedAt: input.startedAt,
             endedAt: input.endedAt,
             ...(input.historical === undefined ? {} : { historical: input.historical }),
+            ...(input.query === undefined ? {} : { query: input.query }),
             ...(pinnedBlock === null ? {} : { pinnedBlock }),
           }),
         );

@@ -5,24 +5,38 @@ import { ForgeGraphSource, FORGE_SWAPS_QUERY } from "./GraphSource.ts";
 import { ForgeSourceStore } from "./ForgeSourceStore.ts";
 import { ForgeSourceWindowProvider, forgeAggregatePoolWindow } from "./ForgeReactor.ts";
 
-/** One source capture supplies every pool in an evaluation, with durable provenance. */
+/**
+ * One source capture supplies every pool in an evaluation, with durable
+ * provenance. When the reactor hands the installed bundle's validated
+ * `query.graphql` bytes down, THOSE bytes are what the source executes and
+ * what `evidence.querySha256` hashes — the executed query is never implied
+ * to be the host constant when a bundle supplied its own.
+ */
 export const ForgeSourceWindowLive = Layer.effect(
   ForgeSourceWindowProvider,
   Effect.gen(function* () {
     const source = yield* ForgeGraphSource;
     const store = yield* ForgeSourceStore;
     return ForgeSourceWindowProvider.of({
-      currentWindow: ({ environmentId }) =>
+      currentWindow: ({ environmentId, query }) =>
         Effect.gen(function* () {
           const settings = yield* source.settings;
           if (!settings.configured || settings.source === undefined)
             return yield* Effect.fail({
               reason: settings.reason ?? "Forge source is not configured",
             });
+          // The executed query is the installed bundle's validated bytes when
+          // the reactor passed them, and the host reference otherwise. The
+          // evidence hash covers exactly the bytes that were executed.
+          const executedQuery = query ?? FORGE_SWAPS_QUERY;
           const now = yield* Clock.currentTimeMillis;
           const endedAt = Math.floor(now / 1000);
           const startedAt = endedAt - 300;
-          const capture = yield* source.fetchAllPools({ startedAt, endedAt });
+          const capture = yield* source.fetchAllPools({
+            startedAt,
+            endedAt,
+            ...(query === undefined ? {} : { query }),
+          });
           if (capture.fetches.length === 0 || capture.pinnedBlock === null)
             return yield* Effect.fail({ reason: "no pinned Forge source window" });
           const hashes = new Set(capture.fetches.map((fetch) => fetch.pinnedBlockHash));
@@ -98,7 +112,7 @@ export const ForgeSourceWindowLive = Layer.effect(
               blockHash,
               fetchedAtMs: now,
               windowEndMs: endedAt * 1000,
-              querySha256: createHash("sha256").update(FORGE_SWAPS_QUERY).digest("hex"),
+              querySha256: createHash("sha256").update(executedQuery).digest("hex"),
               responseSha256: digest,
               complete: true,
             },

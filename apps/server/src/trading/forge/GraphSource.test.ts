@@ -20,6 +20,7 @@ import {
   ForgeGraphSourceLive,
   ForgeGraphTransport,
   ForgeGraphTransportLive,
+  FORGE_SWAPS_QUERY,
   redact,
   resolveForgeGraphSettings,
   type ForgeGraphTransportShape,
@@ -636,6 +637,50 @@ it.effect("pinches one block across every pool in fetchAllPools", () =>
   }),
 );
 
+/** A structurally validated variant of the pinned query, byte-different. */
+const BUNDLE_QUERY = `query BundleSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(first: $first, where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }, block: { number: $block }, orderBy: id, orderDirection: asc) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
+it.effect("sends a provided validated query verbatim on every page of every pool", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeGraph({
+      rows: [
+        row({ tx: TX_A, log: 1, timestamp: WINDOW.startedAt + 1 }),
+        row({ tx: TX_B, log: 2, timestamp: WINDOW.startedAt + 2 }),
+      ],
+      pool: POOL_005,
+    });
+    const source = yield* ForgeGraphSource.pipe(Effect.provide(sourceLayer(fake.shape)));
+    const result = yield* source.fetchAllPools({ ...WINDOW, query: BUNDLE_QUERY });
+
+    assert.equal(result.pinnedBlock, 22_000_000);
+    const swapsCalls = fake.calls.filter((call) => call.body.query.includes("swaps"));
+    assert.isTrue(swapsCalls.length >= 3);
+    for (const call of swapsCalls) {
+      assert.equal(call.body.query, BUNDLE_QUERY);
+    }
+    // The operational probes stay host-owned regardless.
+    for (const call of fake.calls.filter((call) => !call.body.query.includes("swaps"))) {
+      assert.notEqual(call.body.query, BUNDLE_QUERY);
+    }
+  }),
+);
+
+it.effect("defaults to the pinned host query when none is provided", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeGraph({ rows: [], pool: POOL_005 });
+    const source = yield* ForgeGraphSource.pipe(Effect.provide(sourceLayer(fake.shape)));
+    yield* source.fetchAllPools({ ...WINDOW });
+    const swapsCalls = fake.calls.filter((call) => call.body.query.includes("swaps"));
+    assert.isTrue(swapsCalls.length > 0);
+    for (const call of swapsCalls) assert.equal(call.body.query, FORGE_SWAPS_QUERY);
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // The real transport: credentials as a header, never a URL
 // ---------------------------------------------------------------------------
@@ -951,6 +996,9 @@ it.effect("feeds the reactor a real source capture with retained per-pool proven
     yield* TestClock.setTime(WINDOW.endedAt * 1000);
     const { ForgeSourceWindowLive } = yield* Effect.promise(() => import("./ForgeSourceWindow.ts"));
     const { ForgeSourceWindowProvider } = yield* Effect.promise(() => import("./ForgeReactor.ts"));
+    const { createHash } = yield* Effect.promise(() => import("node:crypto"));
+    const sha256 = (value: string): string =>
+      createHash("sha256").update(value, "utf8").digest("hex");
     const fake = makeFakeGraph({ rows: [] });
     const layer = ForgeSourceWindowLive.pipe(
       Layer.provide(sourceLayer(fake.shape)),
@@ -967,7 +1015,19 @@ it.effect("feeds the reactor a real source capture with retained per-pool proven
       assert.equal(captured.evidenceIds.length, 3);
       assert.equal(new Set(captured.evidenceIds).size, 3);
       assert.equal(captured.window.endedAtMs - captured.window.startedAtMs, 300_000);
-      assert.match(captured.evidence.querySha256, /^[0-9a-f]{64}$/);
+      // Without a bundle query the executed bytes are the host constant.
+      assert.equal(captured.evidence.querySha256, sha256(FORGE_SWAPS_QUERY));
+
+      // With the bundle's validated bytes, those bytes are executed (the fake
+      // transport saw them verbatim) and hashed into the evidence.
+      const withBundle = yield* provider.currentWindow({
+        environmentId: "env-window",
+        query: BUNDLE_QUERY,
+      });
+      assert.equal(withBundle.evidence.querySha256, sha256(BUNDLE_QUERY));
+      assert.notEqual(withBundle.evidence.querySha256, captured.evidence.querySha256);
+      const swapsCalls = fake.calls.filter((call) => call.body.query.includes("swaps")).slice(-3);
+      for (const call of swapsCalls) assert.equal(call.body.query, BUNDLE_QUERY);
     }).pipe(Effect.provide(layer));
   }),
 );

@@ -62,6 +62,7 @@ import {
   type ForgeSandboxFile,
 } from "./CapabilitySandbox.ts";
 import { ForgeCapabilityStore, type ForgeCapabilityStoreShape } from "./CapabilityStore.ts";
+import { validateForgeCapabilityQuery } from "./CapabilityQuery.ts";
 
 // ---------------------------------------------------------------------------
 // The typed SDK the artifacts import — host-owned, semantics-free
@@ -234,6 +235,7 @@ export type ForgeArtifactValidation =
 /**
  * The four-artifact contract, enforced before any code runs: exactly the four
  * names, no extras, bounded size, no imports outside the typed SDK, a
+ * `query.graphql` that is structurally the pinned source query, and a
  * manifest that decodes and matches the requested identity.
  */
 export function validateAuthoredArtifacts(input: {
@@ -272,8 +274,11 @@ export function validateAuthoredArtifacts(input: {
       }
     }
   }
-  if (!/\bquery\b/.test(input.contents["query.graphql"] ?? "")) {
-    return { status: "refused", reason: "query.graphql does not define a query" };
+  // The authored query is validated structurally here — at authoring time —
+  // so a bad query fails the build long before any evaluation could run it.
+  const queryCheck = validateForgeCapabilityQuery(input.contents["query.graphql"] ?? "");
+  if (!queryCheck.ok) {
+    return { status: "refused", reason: `query.graphql: ${queryCheck.reason}` };
   }
   let manifest: unknown;
   try {

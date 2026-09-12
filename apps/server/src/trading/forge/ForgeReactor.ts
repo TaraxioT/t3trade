@@ -58,6 +58,7 @@ import {
   FORGE_SDK_SOURCE,
   validateDiagnosticsAgainstInput,
 } from "./CapabilityBuilder.ts";
+import { validateForgeCapabilityQuery } from "./CapabilityQuery.ts";
 
 // ---------------------------------------------------------------------------
 // Host aggregation: observations in, exact pool windows out
@@ -143,9 +144,15 @@ export interface ForgeEvaluationWindow {
 export type ForgeWindowFailure = { readonly reason: string };
 
 export interface ForgeSourceWindowProviderShape {
-  /** The current sealed window across the approved pools, or a named refusal. */
+  /**
+   * The current sealed window across the approved pools, or a named refusal.
+   * `query` carries the installed bundle's validated `query.graphql` bytes;
+   * the provider executes them in place of the host constant and hashes the
+   * executed bytes into the window's evidence.
+   */
   readonly currentWindow: (input: {
     readonly environmentId: string;
+    readonly query?: string;
   }) => Effect.Effect<ForgeEvaluationWindow, ForgeWindowFailure>;
 }
 
@@ -325,7 +332,7 @@ export const makeForgeReactor = Effect.gen(function* () {
     readonly digest?: string | undefined;
   }): string => `feval_${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
 
-  // -- one job's work: window → contained run → host validation → commit ----
+  // -- one job's work: bundle bytes → window → contained run → validation → commit
   const runJob = (job: ForgeReactorJobRecord): Effect.Effect<void> =>
     Effect.gen(function* () {
       // A cancelled job stays cancelled: the transition to `running` refuses
@@ -370,8 +377,52 @@ export const makeForgeReactor = Effect.gen(function* () {
         return;
       }
 
+      const failJob = (reason: string) =>
+        Effect.promise(() =>
+          patchJob(job.environmentId, job.jobId, {
+            status: "failed",
+            completedAtMs: Date.now(),
+            detail: reason,
+          }),
+        );
+
+      // The installed bundle's own bytes decide what this evaluation runs and
+      // which query the window executes. Read them BEFORE fetching the
+      // window: an invalid bundle query fails the job here — honestly,
+      // without touching the source — and the host query is never a fallback.
+      const contents: Record<string, string> = {};
+      const files: Array<ForgeSandboxFile> = [{ path: "sdk.ts", content: FORGE_SDK_SOURCE }];
+      for (const path of FORGE_CAPABILITY_ARTIFACT_PATHS) {
+        const content = yield* store.readArtifact({
+          environmentId: job.environmentId,
+          capabilityId: job.capabilityId,
+          version: active.version,
+          path,
+        });
+        if (content === null) {
+          yield* failJob(`artifact ${path} of v${active.version} is missing from the store`);
+          return;
+        }
+        contents[path] = content;
+        files.push({ path, content });
+      }
+      const bundleQuery = contents["query.graphql"] ?? "";
+      const queryCheck = validateForgeCapabilityQuery(bundleQuery);
+      if (!queryCheck.ok) {
+        yield* failJob(
+          `installed query.graphql failed validation (${queryCheck.reason}); refusing to fall back to the host query`,
+        );
+        return;
+      }
+
       const window = yield* windows
-        .currentWindow({ environmentId: job.environmentId })
+        .currentWindow({
+          environmentId: job.environmentId,
+          // The bundle's validated query bytes: the window executes these and
+          // hashes them into its evidence, so the executed query and its hash
+          // always come from the installed bundle.
+          query: bundleQuery,
+        })
         .pipe(Effect.mapError((failure) => failure.reason));
       const evaluationId = evaluationIdFor({
         environmentId: job.environmentId,
@@ -395,36 +446,11 @@ export const makeForgeReactor = Effect.gen(function* () {
         );
         return;
       }
-      const windowFailed = (reason: string) =>
-        Effect.promise(() =>
-          patchJob(job.environmentId, job.jobId, {
-            status: "failed",
-            completedAtMs: Date.now(),
-            detail: reason,
-          }),
-        );
-
       // The window itself may be servable-but-labeled (stale); that is a
       // failed evaluation with a named reason, never a fabricated reading.
       if (!window.evidence.complete) {
-        yield* windowFailed("the source window is incomplete; refusing to evaluate");
+        yield* failJob("the source window is incomplete; refusing to evaluate");
         return;
-      }
-
-      const contents = FORGE_CAPABILITY_ARTIFACT_PATHS;
-      const files: Array<ForgeSandboxFile> = [{ path: "sdk.ts", content: FORGE_SDK_SOURCE }];
-      for (const path of contents) {
-        const content = yield* store.readArtifact({
-          environmentId: job.environmentId,
-          capabilityId: job.capabilityId,
-          version: active.version,
-          path,
-        });
-        if (content === null) {
-          yield* windowFailed(`artifact ${path} of v${active.version} is missing from the store`);
-          return;
-        }
-        files.push({ path, content });
       }
 
       const signalInput: ForgeSignalInput = {
@@ -442,7 +468,7 @@ export const makeForgeReactor = Effect.gen(function* () {
       if (run._tag === "Failure") {
         const squashed = yield* Effect.sync(() => run.cause);
         const reason = String(squashed).slice(0, 300);
-        yield* windowFailed(`the contained evaluation failed: ${reason}`);
+        yield* failJob(`the contained evaluation failed: ${reason}`);
         return;
       }
       const output = run.value as ForgeSignalOutput;
@@ -451,7 +477,7 @@ export const makeForgeReactor = Effect.gen(function* () {
         signalInput,
       );
       if (referenceError !== null) {
-        yield* windowFailed(
+        yield* failJob(
           `the capability's diagnostics referenced input it never had: ${referenceError}`,
         );
         return;

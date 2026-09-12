@@ -12,6 +12,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { createHash } from "node:crypto";
 import * as NodeFs from "node:fs/promises";
 import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
@@ -33,6 +34,7 @@ import {
   type ForgeCapabilityStoreShape,
 } from "./CapabilityStore.ts";
 import { FORGE_RUNNER_EVALUATE, FORGE_SDK_SOURCE } from "./CapabilityBuilder.ts";
+import { FORGE_SWAPS_QUERY } from "./GraphSource.ts";
 import {
   ForgeReactor,
   ForgeReactorLive,
@@ -59,8 +61,22 @@ const SIGNAL_TS = [
   "});",
 ].join("\n");
 
+/**
+ * A validated bundle query: structurally the pinned reference, byte-different
+ * (operation name, spacing), so hash assertions can tell bundle bytes from
+ * the host constant.
+ */
+const BUNDLE_QUERY = `query InstalledSwaps($pool: String!, $first: Int!, $cursor: ID!, $block: Int!, $from: BigInt!, $to: BigInt!) {
+  swaps(first: $first, where: { pool: $pool, id_gt: $cursor, timestamp_gte: $from, timestamp_lte: $to }, block: { number: $block }, orderBy: id, orderDirection: asc) {
+    id timestamp sender recipient amount0 amount1 sqrtPriceX96 tick logIndex transaction { id }
+  }
+  _meta(block: { number: $block }) { deployment block { number hash } }
+}`;
+
+const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
+
 const artifacts = (version = 1): Record<string, string> => ({
-  "query.graphql": "query { swaps { id } }",
+  "query.graphql": BUNDLE_QUERY,
   "signal.ts": SIGNAL_TS,
   "signal.test.ts": 'import { readSignal } from "./signal"; test("x", () => {});',
   "manifest.json": JSON.stringify({
@@ -103,13 +119,19 @@ const window = (block: number): ForgeEvaluationWindow => ({
 /** The scripted window port: serves queued windows in order, per environment. */
 const makeWindowPort = (
   queue: Array<{ readonly window?: ForgeEvaluationWindow; readonly fail?: string }>,
-): ForgeSourceWindowProviderShape & { readonly calls: Array<string> } => {
+): ForgeSourceWindowProviderShape & {
+  readonly calls: Array<string>;
+  readonly queries: Array<string | undefined>;
+} => {
   const calls: Array<string> = [];
+  const queries: Array<string | undefined> = [];
   return {
     calls,
-    currentWindow: () =>
+    queries,
+    currentWindow: ({ query }) =>
       Effect.sync(() => {
         calls.push(`call-${calls.length}`);
+        queries.push(query);
         const next = queue.shift();
         if (next === undefined) return yieldWindow();
         if (next.fail !== undefined) {
@@ -126,12 +148,17 @@ const yieldWindow = (): Effect.Effect<ForgeEvaluationWindow, { readonly reason: 
 /** The scripted container: evaluate echoes a schema-valid output. */
 const runnerWithCounter = () => {
   let evaluateRuns = 0;
+  const evaluateInputs: Array<{ evidence: { readonly querySha256: string } }> = [];
   const runner: ForgeContainerRunnerShape = {
     available: Effect.succeed(true),
     run: (request: ForgeContainerRunRequest) =>
       Effect.sync(() => {
         if (request.entrypoint[0] === FORGE_RUNNER_EVALUATE[0]) {
           evaluateRuns += 1;
+          const input = JSON.parse(request.stdin ?? "{}") as {
+            evidence: { readonly querySha256: string };
+          };
+          evaluateInputs.push(input);
           return {
             exitCode: 0,
             stdout: JSON.stringify({
@@ -145,7 +172,7 @@ const runnerWithCounter = () => {
         return { exitCode: 0, stdout: "", stderr: "", killed: null };
       }),
   };
-  return { runner, count: () => evaluateRuns };
+  return { runner, count: () => evaluateRuns, evaluateInputs };
 };
 
 const layers = (
@@ -200,9 +227,11 @@ const storeWith = (stateRoot: string): Promise<ForgeCapabilityStoreShape> =>
   );
 
 /** Install v1 through the store's own CAS (the builder path is tested there). */
-const installFixture = async (store: ForgeCapabilityStoreShape): Promise<string> => {
+const installFixture = async (
+  store: ForgeCapabilityStoreShape,
+  contents: Record<string, string> = artifacts(1),
+): Promise<string> => {
   const crypto = await import("node:crypto");
-  const contents = artifacts(1);
   const bundleSha256 = crypto
     .createHash("sha256")
     .update(Object.values(contents).join("\n"))
@@ -564,6 +593,78 @@ it("evaluates a new pinned source window instead of replaying the previous readi
         )
       ).length,
       2,
+    );
+  } finally {
+    await NodeFs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("executes the installed bundle's query and stamps its hash into the evidence the capability sees", async () => {
+  const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-query-"));
+  try {
+    const store = await storeWith(root);
+    await installFixture(store);
+    const seenQueries: Array<string | undefined> = [];
+    // The port stands in for ForgeSourceWindow: it executes whatever query it
+    // was handed and hashes THOSE bytes into the window evidence.
+    const port: ForgeSourceWindowProviderShape = {
+      currentWindow: ({ query }) =>
+        Effect.sync(() => {
+          seenQueries.push(query);
+          return {
+            ...window(100),
+            evidence: { ...window(100).evidence, querySha256: sha256(query ?? "") },
+          };
+        }),
+    };
+    const { runner, count, evaluateInputs } = runnerWithCounter();
+    assert.notEqual(sha256(BUNDLE_QUERY), sha256(FORGE_SWAPS_QUERY));
+    await withReactor(root, runner, port, async (reactor) => {
+      await Effect.runPromise(
+        reactor.enqueueEvaluation({ environmentId: ENV, capabilityId: CAPABILITY }),
+      );
+      await Effect.runPromise(reactor.drain());
+    });
+    assert.deepEqual(seenQueries, [BUNDLE_QUERY]);
+    assert.equal(count(), 1);
+    // The capability's input evidence hashed the bundle's exact bytes — not
+    // the host constant it replaced.
+    assert.equal(evaluateInputs[0]?.evidence.querySha256, sha256(BUNDLE_QUERY));
+    const committed = await Effect.runPromise(
+      store.listEvaluations({ environmentId: ENV, capabilityId: CAPABILITY }),
+    );
+    assert.equal(committed.length, 1);
+  } finally {
+    await NodeFs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("refuses to evaluate an installed bundle whose query.graphql fails validation — no window, no run", async () => {
+  const root = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-reactor-badquery-"));
+  try {
+    const store = await storeWith(root);
+    await installFixture(store, {
+      ...artifacts(1),
+      "query.graphql": "query { swaps { id } }",
+    });
+    const port = makeWindowPort([]);
+    const { runner, count } = runnerWithCounter();
+    await withReactor(root, runner, port, async (reactor) => {
+      await Effect.runPromise(
+        reactor.enqueueEvaluation({ environmentId: ENV, capabilityId: CAPABILITY }),
+      );
+      await Effect.runPromise(reactor.drain());
+      const jobs = await Effect.runPromise(reactor.listJobs({ environmentId: ENV }));
+      assert.equal(jobs[0]?.status, "failed");
+      assert.include(jobs[0]?.detail ?? "", "installed query.graphql failed validation");
+      assert.include(jobs[0]?.detail ?? "", "refusing to fall back to the host query");
+    });
+    assert.equal(port.calls.length, 0);
+    assert.equal(count(), 0);
+    assert.isEmpty(
+      await Effect.runPromise(
+        store.listEvaluations({ environmentId: ENV, capabilityId: CAPABILITY }),
+      ),
     );
   } finally {
     await NodeFs.rm(root, { recursive: true, force: true });
