@@ -77,8 +77,8 @@ const row = (input: {
   timestamp: input.timestamp,
   sender: "0x" + "11".repeat(20),
   recipient: "0x" + "22".repeat(20),
-  amount0: input.amount0 ?? "-2500000",
-  amount1: input.amount1 ?? "1300000000000000000",
+  amount0: input.amount0 ?? "-2.5",
+  amount1: input.amount1 ?? "1.3",
   sqrtPriceX96: input.sqrtPriceX96 ?? SQRT_100,
   tick: -196204,
   logIndex: input.log,
@@ -298,7 +298,7 @@ it.effect("serves a complete window with exact normalization", () =>
       rows: [
         row({ tx: TX_A, log: 1, timestamp: WINDOW.startedAt - 200 }),
         row({ tx: TX_A, log: 2, timestamp: WINDOW.startedAt + 10 }),
-        row({ tx: TX_B, log: 5, timestamp: WINDOW.startedAt + 100, amount0: "1250000" }),
+        row({ tx: TX_B, log: 5, timestamp: WINDOW.startedAt + 100, amount0: "1.25" }),
       ],
       pool: POOL_005,
     });
@@ -876,4 +876,71 @@ it.effect("names the unconfigured state on discovery too", () =>
       readsLayer(unconfiguredFake.shape, { ...BASE_ENV, T3_FORGE_GRAPH_ENDPOINT: undefined }),
     ),
   ),
+);
+
+it.effect("decodes Graph BigInt strings and decimal token amounts", () =>
+  Effect.gen(function* () {
+    const swap = row({
+      tx: TX_A,
+      log: 1,
+      timestamp: WINDOW.startedAt + 1,
+      amount0: "-2.500001",
+      amount1: "1.300000000000000001",
+    });
+    const fake = makeFakeGraph({
+      rows: [],
+      pageOverrides: {
+        0: {
+          data: {
+            swaps: [{ ...swap, timestamp: String(swap.timestamp), logIndex: "1", tick: "-196204" }],
+            _meta: { deployment: DEPLOYMENT, block: { number: 22_000_000, hash: BLOCK_HASH } },
+          },
+        },
+      },
+    });
+    const source = yield* ForgeGraphSource.pipe(Effect.provide(sourceLayer(fake.shape)));
+    const fetch = yield* source.fetchWindow({ poolId: POOL_005, ...WINDOW });
+    assert.equal(fetch.status, "complete");
+    assert.equal(fetch.observations?.[0]?.amount0, "-2500001");
+    assert.equal(fetch.observations?.[0]?.amount1, "1300000000000000001");
+    assert.equal(fetch.observations?.[0]?.quoteVolumeMicros, 2_500_001);
+    assert.ok(
+      fake.calls
+        .find((call) => call.body.query.includes("swaps"))
+        ?.body.query.includes("_meta(block: { number: $block })"),
+    );
+  }),
+);
+
+it.effect("applies the swap cap to a short last page", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeGraph({ rows: [inWindowRow(1), inWindowRow(2), inWindowRow(3)] });
+    const source = yield* ForgeGraphSource.pipe(
+      Effect.provide(sourceLayer(fake.shape, { ...BASE_ENV, T3_FORGE_MAX_SWAPS: "2" })),
+    );
+    const fetch = yield* source.fetchWindow({ poolId: POOL_005, ...WINDOW });
+    assert.equal(fetch.status, "unavailable");
+    assert.include(fetch.reason ?? "", "swap budget");
+  }),
+);
+
+it.effect("does not report healthy when indexing heads are missing", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeGraph({ rows: [] });
+    const source = yield* ForgeGraphSource.pipe(
+      Effect.provide(
+        sourceLayer({
+          post: (input) =>
+            JSON.stringify(input.body).includes("indexingStatuses")
+              ? Effect.succeed({
+                  status: 200,
+                  body: { data: { indexingStatuses: [{ health: "healthy", chains: [] }] } },
+                })
+              : fake.shape.post(input),
+        }),
+      ),
+    );
+    assert.equal((yield* source.probeHealth).status, "unavailable");
+    assert.equal((yield* source.fetchWindow({ poolId: POOL_005, ...WINDOW })).status, "stale");
+  }),
 );

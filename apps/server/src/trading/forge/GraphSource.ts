@@ -271,8 +271,23 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 const asString = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
-const asInt = (value: unknown): number | null =>
-  typeof value === "number" && Number.isInteger(value) ? value : null;
+const asInt = (value: unknown): number | null => {
+  const number = typeof value === "string" && /^-?[0-9]+$/.test(value) ? Number(value) : value;
+  return typeof number === "number" && Number.isSafeInteger(number) ? number : null;
+};
+
+// Graph BigDecimal amounts are token units; the shared observation uses raw units.
+const rawTokenAmount = (value: unknown, decimals: number): string | null => {
+  if (typeof value !== "string" || value.length > 128 || !/^-?[0-9]+(?:\.[0-9]+)?$/.test(value))
+    return null;
+  const negative = value.startsWith("-");
+  const [whole, fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  if (fraction.slice(decimals).replace(/0/g, "") !== "") return null;
+  const raw =
+    BigInt(whole!) * 10n ** BigInt(decimals) +
+    BigInt(fraction.slice(0, decimals).padEnd(decimals, "0") || "0");
+  return (negative ? -raw : raw).toString();
+};
 
 // ---------------------------------------------------------------------------
 // GraphQL documents
@@ -301,7 +316,7 @@ const SWAPS_QUERY = `query ForgeSwaps($pool: ID!, $first: Int!, $cursor: ID!, $b
     logIndex
     transaction { id }
   }
-  _meta { deployment block { number hash } }
+  _meta(block: { number: $block }) { deployment block { number hash } }
 }`;
 
 const META_QUERY = `query ForgeMeta {
@@ -469,7 +484,14 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       chainHeadBlock,
       lagBlocks,
       unhealthyReason: null,
-      failedReason: null,
+      failedReason:
+        health !== "healthy" ||
+        latestBlock === null ||
+        chainHeadBlock === null ||
+        lagBlocks === null ||
+        lagBlocks < 0
+          ? "indexing status omitted valid health or block heads"
+          : null,
     } satisfies IndexingProbe;
   });
 
@@ -540,7 +562,12 @@ export const makeForgeGraphSource = Effect.gen(function* () {
           `pool ${input.poolId} is not in the approved forge pool list`,
         );
       }
-      if (input.startedAt >= input.endedAt) {
+      if (
+        !Number.isSafeInteger(input.startedAt) ||
+        !Number.isSafeInteger(input.endedAt) ||
+        input.startedAt < 0 ||
+        input.startedAt >= input.endedAt
+      ) {
         return unavailable(
           input.poolId,
           fetchedAtMs,
@@ -594,6 +621,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       const seen = new Set<string>();
       let duplicatesDropped = 0;
       let cursor = "";
+      let rowsRead = 0;
       let pinnedBlockHash: string | undefined;
       while (true) {
         const page = yield* postOrError(
@@ -675,6 +703,15 @@ export const makeForgeGraphSource = Effect.gen(function* () {
           );
         }
 
+        rowsRead += rows.length;
+        if (rowsRead > source.maxSwapsPerFetch) {
+          return unavailable(
+            input.poolId,
+            fetchedAtMs,
+            input.historical === true,
+            `window exceeded the swap budget (${rowsRead} > ${source.maxSwapsPerFetch}); narrow the window`,
+          );
+        }
         for (const row of rows) {
           const normalized = normalizeSwap(row, pool);
           if (normalized._tag === "Left") {
@@ -697,7 +734,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         if (rows.length < source.pageSize) break;
         const lastRow = asRecord(rows[rows.length - 1]);
         const lastId = asString(lastRow?.["id"]);
-        if (lastId === null || lastId === cursor) {
+        if (lastId === null || lastId <= cursor) {
           return unavailable(
             input.poolId,
             fetchedAtMs,
@@ -794,9 +831,29 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       // Resolve the shared pin once; a probe that fails leaves every pool to
       // name its own unavailability honestly.
       const probe = yield* probeIndexing;
-      const pinnedBlock = probe.latestBlock;
+      let pinnedBlock = probe.latestBlock;
+      if (pinnedBlock === null && settings.source !== undefined && settings.apiKey !== undefined) {
+        const meta = yield* postOrError(
+          settings.source.endpoint,
+          { query: META_QUERY },
+          settings.apiKey,
+        );
+        const data = meta.ok ? asRecord(meta.body["data"]) : null;
+        pinnedBlock = blockNumber(asRecord(asRecord(data?.["_meta"])?.["block"]));
+      }
       const fetches: Array<ForgeWindowFetch> = [];
       for (const pool of pools) {
+        if (pinnedBlock === null) {
+          fetches.push(
+            unavailable(
+              pool.poolId,
+              yield* Clock.currentTimeMillis,
+              input.historical === true,
+              "could not resolve a shared block to pin",
+            ),
+          );
+          continue;
+        }
         fetches.push(
           yield* fetchWindow({
             poolId: pool.poolId,
@@ -858,8 +915,8 @@ const normalizeSwap = (
   if (timestamp === null || timestamp < 0) {
     return { _tag: "Left", left: `swap ${id} has an invalid timestamp` };
   }
-  const amount0 = asString(record["amount0"]);
-  const amount1 = asString(record["amount1"]);
+  const amount0 = rawTokenAmount(record["amount0"], pool.token0.decimals);
+  const amount1 = rawTokenAmount(record["amount1"], pool.token1.decimals);
   const sqrtPriceX96 = asString(record["sqrtPriceX96"]);
   const tick = asInt(record["tick"]);
   if (amount0 === null || amount1 === null) {
