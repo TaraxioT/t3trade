@@ -61,6 +61,18 @@ export const RPC_REQUIRED_SCOPES = {
   // standing server state, so the write is an operate.
   [ORCHESTRATION_WS_METHODS.getTradingThreadMarket]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.setTradingThreadMarket]: AuthOrchestrationOperateScope,
+  // The Forge reads are research-mode reads: source series, retained evidence,
+  // and pool/policy state need no signer, no mission, and no HL market focus.
+  [ORCHESTRATION_WS_METHODS.getForgeThreadContext]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.getForgePoolSeries]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.getForgeEvidence]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.getForgePoolState]: AuthOrchestrationReadScope,
+  // The direct controls build unsigned intents on the fee-policy service with
+  // no agent provider in the loop. They change standing intent state, so they
+  // are operates, like every other standing-state write.
+  [ORCHESTRATION_WS_METHODS.forgePause]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_WS_METHODS.forgeUnpause]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_WS_METHODS.forgeRevoke]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
   [WS_METHODS.serverProbe]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetConfig]: AuthOrchestrationReadScope,

@@ -108,6 +108,13 @@ import {
   composeSceneViews,
 } from "./trading/TradingResearchSceneService.ts";
 import { TradingEventService } from "./trading/TradingEventService.ts";
+import {
+  forgeControlView,
+  forgeEvidenceView,
+  forgePoolSeriesView,
+  forgePoolStateView,
+  forgeThreadContextView,
+} from "./trading/forgeBridge.ts";
 import { isChartReadEntitled } from "./trading/chartReadEntitlement.ts";
 import { TradingMissionService } from "./trading/TradingMissionService.ts";
 import { TradingManualEntryService } from "./trading/TradingManualEntryService.ts";
@@ -2148,6 +2155,78 @@ const makeWsRpcLayer = (
               ),
             { "rpc.aggregate": "orchestration" },
           ),
+        // -- T3 Forge bridge (U0) ---------------------------------------------
+        // Research-mode reads: no Hyperliquid market, no signer, no mission.
+        // The environment scope comes from the connected session, so a thread
+        // with no market focus still discovers Forge. Unavailable states are
+        // values, not failures; the mapping itself lives in forgeBridge.
+        [ORCHESTRATION_WS_METHODS.getForgeThreadContext]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getForgeThreadContext,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeThreadContextView({
+                environmentId,
+                threadId: input.threadId,
+              });
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getForgePoolSeries]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getForgePoolSeries,
+            forgePoolSeriesView(input),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getForgeEvidence]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getForgeEvidence,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeEvidenceView({
+                environmentId,
+                evaluationId: input.evaluationId,
+                limit: input.limit,
+                cursor: input.cursor,
+              });
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getForgePoolState]: (_input) =>
+          observeRpcEffect(ORCHESTRATION_WS_METHODS.getForgePoolState, forgePoolStateView(), {
+            "rpc.aggregate": "orchestration",
+          }),
+        // Direct controls: provider-independent unsigned-intent builds on the
+        // fee-policy service. The service mints a fresh idempotency key per
+        // call, so each attempt is its own operation identity; nothing here
+        // signs or broadcasts — the refusing broadcaster is wired below.
+        [ORCHESTRATION_WS_METHODS.forgePause]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.forgePause,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeControlView("pause", environmentId);
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.forgeUnpause]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.forgeUnpause,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeControlView("unpause", environmentId);
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.forgeRevoke]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.forgeRevoke,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeControlView("revoke", environmentId);
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.cancelTradingWatch]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.cancelTradingWatch,
@@ -3971,6 +4050,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
+    // T3 Forge bridge (U0): the handlers below resolve FeePolicyService (and
+    // through it the Sepolia adapter, the SQLite intent ledger, and the
+    // immutable grant guard) from the ambient trading layer — the SAME durable
+    // instance the startup reconciliation and the MCP surface use. There is
+    // deliberately no local composition here: an in-memory ledger under the WS
+    // route would fork pause state and intent records from the durable ones.
     return HttpRouter.add(
       "GET",
       "/ws",

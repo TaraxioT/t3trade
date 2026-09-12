@@ -76,6 +76,15 @@ import {
   TradingWatchlistMutationResult,
   TradingWatchlistView,
 } from "./trading.ts";
+import {
+  FORGE_MAX_SERIES_POINTS,
+  FORGE_MAX_WINDOW_SECONDS,
+  ForgeCapabilityCatalogEntry,
+  ForgePoolDiagnostics,
+  ForgePoolSeries,
+  ForgeSourceListing,
+  UnixMillis,
+} from "@t3tools/trading-contracts";
 import { ResearchSceneView } from "@t3tools/trading-contracts/researchScenes";
 // Re-exported so web surfaces can import the scene view type from this
 // package alone, beside the RPC that serves it. The payload types and the
@@ -124,6 +133,13 @@ export const ORCHESTRATION_WS_METHODS = {
   ensureTradingAnalystThread: "orchestration.ensureTradingAnalystThread",
   getTradingThreadMarket: "orchestration.getTradingThreadMarket",
   setTradingThreadMarket: "orchestration.setTradingThreadMarket",
+  getForgeThreadContext: "orchestration.getForgeThreadContext",
+  getForgePoolSeries: "orchestration.getForgePoolSeries",
+  getForgeEvidence: "orchestration.getForgeEvidence",
+  getForgePoolState: "orchestration.getForgePoolState",
+  forgePause: "orchestration.forgePause",
+  forgeUnpause: "orchestration.forgeUnpause",
+  forgeRevoke: "orchestration.forgeRevoke",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
   subscribeTradingAccount: "orchestration.subscribeTradingAccount",
@@ -2136,6 +2152,408 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedErrorClass
   }
 }
 
+// ---------------------------------------------------------------------------
+// T3 Forge bridge (U0): typed reads over the Forge source, capability, and
+// fee-policy services, plus the provider-independent direct controls.
+//
+// Every read works with `threadMarket = null` — Forge is a source in its own
+// right, never an attachment to a Hyperliquid focus. Unavailable things are
+// named states, never zeros, and the same-window v1/v2 comparison says so
+// explicitly until F5 produces revision records.
+// ---------------------------------------------------------------------------
+
+/** Page cap an evaluation-evidence read may ask for; the schema refuses more. */
+export const FORGE_BRIDGE_MAX_EVIDENCE_PAGE = 100;
+/** Newest-N transaction rows the pool-state read serves before `moreAvailable` says the rest exist. */
+export const FORGE_BRIDGE_TX_PAGE = 25;
+
+/** Exact non-negative integer string — the form retained provenance carries. */
+const ForgeNonNegativeIntegerString = TrimmedNonEmptyString.check(Schema.isPattern(/^[0-9]+$/));
+
+const ForgeEvaluationOutcome = Schema.Literals(["pending", "complete", "failed"]);
+
+/** The newest sealed evaluation, or its honest named absence. */
+export const ForgeLatestEvaluationSummary = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("available"),
+    evaluationId: TrimmedNonEmptyString,
+    capabilityId: TrimmedNonEmptyString,
+    capabilityVersion: PositiveInt,
+    bundleSha256: TrimmedNonEmptyString,
+    outcome: ForgeEvaluationOutcome,
+    historical: Schema.Boolean,
+    window: Schema.Struct({ startedAt: UnixMillis, endedAt: UnixMillis }),
+    createdAtMs: UnixMillis,
+    completedAtMs: Schema.NullOr(UnixMillis),
+    /** Per-pool diagnostics as the retained evidence records them. */
+    pools: Schema.Array(ForgePoolDiagnostics),
+  }),
+  Schema.Struct({
+    /** Older evidence without diagnostics: the counts exist nowhere to read. */
+    status: Schema.Literal("detailUnavailable"),
+    evaluationId: TrimmedNonEmptyString,
+    capabilityId: TrimmedNonEmptyString,
+    capabilityVersion: PositiveInt,
+    bundleSha256: TrimmedNonEmptyString,
+    outcome: ForgeEvaluationOutcome,
+    historical: Schema.Boolean,
+    window: Schema.Struct({ startedAt: UnixMillis, endedAt: UnixMillis }),
+    createdAtMs: UnixMillis,
+    completedAtMs: Schema.NullOr(UnixMillis),
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("none"),
+    reason: TrimmedNonEmptyString,
+  }),
+]);
+export type ForgeLatestEvaluationSummary = typeof ForgeLatestEvaluationSummary.Type;
+
+/** Same-window v1/v2 comparison — explicitly unavailable until F5 ships revision evidence. */
+export const ForgeRevisionComparison = Schema.Struct({
+  status: Schema.Literal("unavailable"),
+  reason: TrimmedNonEmptyString,
+});
+export type ForgeRevisionComparison = typeof ForgeRevisionComparison.Type;
+
+/** Source/build discovery for a thread — no Hyperliquid market required. */
+export const OrchestrationGetForgeThreadContextInput = Schema.Struct({
+  /** Narrows evaluation evidence to one conversation; absent means environment-scoped. */
+  threadId: Schema.optionalKey(ThreadId),
+});
+
+export const ForgeThreadContextView = Schema.Struct({
+  sources: Schema.Union([
+    Schema.Struct({ status: Schema.Literal("ok"), listing: ForgeSourceListing }),
+    Schema.Struct({ status: Schema.Literal("unavailable"), reason: TrimmedNonEmptyString }),
+  ]),
+  /** The store's own catalog rows; an empty list is the honest empty. */
+  capabilities: Schema.Array(ForgeCapabilityCatalogEntry),
+  latestEvaluation: ForgeLatestEvaluationSummary,
+  comparison: ForgeRevisionComparison,
+});
+export type ForgeThreadContextView = typeof ForgeThreadContextView.Type;
+
+/**
+ * One pool's series. The window is bounded by the schema itself (≤ 24h) and
+ * the point cap by the same constant the server enforces (≤ 720); a client
+ * cannot turn this read into a bulk history export.
+ */
+export const OrchestrationGetForgePoolSeriesInput = Schema.Struct({
+  poolId: TrimmedNonEmptyString,
+  points: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(FORGE_MAX_SERIES_POINTS))),
+  domain: Schema.optional(
+    Schema.Struct({
+      fromUtcMs: UnixMillis,
+      toUtcMs: UnixMillis,
+    }).check(
+      Schema.makeFilter(
+        (input) =>
+          input.fromUtcMs < input.toUtcMs ||
+          new SchemaIssue.InvalidValue({
+            message: "fromUtcMs must be before toUtcMs",
+          }),
+        { identifier: "ForgePoolSeriesDomain" },
+      ),
+    ),
+  ),
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      input.domain === undefined ||
+      input.domain.toUtcMs - input.domain.fromUtcMs <= FORGE_MAX_WINDOW_SECONDS * 1000 ||
+      new SchemaIssue.InvalidValue({
+        message: "series domain exceeds the 24h bound",
+      }),
+    { identifier: "ForgePoolSeriesDomainBound" },
+  ),
+);
+export type OrchestrationGetForgePoolSeriesInput = typeof OrchestrationGetForgePoolSeriesInput.Type;
+
+/**
+ * The bounded series a chart renders, plus the ISO rendering of the exact UTC
+ * domain the server used. `complete` is true only when the underlying fetch
+ * was fully served at its pinned block; a stale source keeps its real points
+ * and gaps under `complete: false`, never an empty coercion.
+ */
+export const ForgePoolSeriesView = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ok"),
+    series: ForgePoolSeries,
+    domainIso: Schema.Struct({ from: IsoDateTime, to: IsoDateTime }),
+    complete: Schema.Boolean,
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), reason: TrimmedNonEmptyString }),
+]);
+export type ForgePoolSeriesView = typeof ForgePoolSeriesView.Type;
+
+/** Paginated evaluation-evidence detail; the page cap is enforced by the schema. */
+export const OrchestrationGetForgeEvidenceInput = Schema.Struct({
+  /** Narrows to one retained evaluation; absent pages the newest evidence. */
+  evaluationId: Schema.optionalKey(TrimmedNonEmptyString),
+  limit: Schema.optionalKey(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(FORGE_BRIDGE_MAX_EVIDENCE_PAGE)),
+  ),
+  /** Opaque, exclusive: the `nextCursor` a previous page returned. */
+  cursor: Schema.optionalKey(TrimmedNonEmptyString),
+});
+
+export const ForgeEvidenceDetail = Schema.Struct({
+  evaluationId: TrimmedNonEmptyString,
+  capabilityId: TrimmedNonEmptyString,
+  capabilityVersion: PositiveInt,
+  bundleSha256: TrimmedNonEmptyString,
+  outcome: ForgeEvaluationOutcome,
+  historical: Schema.Boolean,
+  window: Schema.Struct({ startedAt: UnixMillis, endedAt: UnixMillis }),
+  createdAtMs: UnixMillis,
+  completedAtMs: Schema.NullOr(UnixMillis),
+  /** Retained evidence rows backing this evaluation, read back by id. */
+  evidenceIds: Schema.Array(TrimmedNonEmptyString),
+  pools: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("available"),
+      rows: Schema.Array(ForgePoolDiagnostics),
+    }),
+    Schema.Struct({
+      status: Schema.Literal("detailUnavailable"),
+      reason: TrimmedNonEmptyString,
+    }),
+  ]),
+});
+export type ForgeEvidenceDetail = typeof ForgeEvidenceDetail.Type;
+
+export const OrchestrationGetForgeEvidenceResult = Schema.Struct({
+  items: Schema.Array(ForgeEvidenceDetail),
+  hasMore: Schema.Boolean,
+  nextCursor: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type OrchestrationGetForgeEvidenceResult = typeof OrchestrationGetForgeEvidenceResult.Type;
+
+/** The F3 pool/proposal/grant/controls/policy/tx handoff, every absence named. */
+export const OrchestrationGetForgePoolStateInput = Schema.Struct({});
+
+export const ForgePoolStateProposal = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ok"),
+    chainId: PositiveInt,
+    chainName: Schema.Literal("sepolia"),
+    addresses: Schema.Struct({
+      hook: TrimmedNonEmptyString,
+      poolManager: TrimmedNonEmptyString,
+      positionManager: TrimmedNonEmptyString,
+      swapRoute: TrimmedNonEmptyString,
+    }),
+    poolKey: Schema.Struct({
+      currency0: TrimmedNonEmptyString,
+      currency1: TrimmedNonEmptyString,
+      fee: NonNegativeInt,
+      tickSpacing: NonNegativeInt,
+      hookAddress: TrimmedNonEmptyString,
+    }),
+    bindingId: TrimmedNonEmptyString,
+    fullPoolId: TrimmedNonEmptyString,
+    grant: Schema.Union([
+      Schema.Struct({
+        status: Schema.Literal("approved"),
+        grantId: TrimmedNonEmptyString,
+        operatorAddress: TrimmedNonEmptyString,
+        expiresAtUnix: NonNegativeInt,
+        perSwapMaxQuoteRaw: ForgeNonNegativeIntegerString,
+        aggregateGasBudgetWei: ForgeNonNegativeIntegerString,
+        tokenCaps: Schema.Array(
+          Schema.Struct({
+            token: TrimmedNonEmptyString,
+            maxAmountRaw: ForgeNonNegativeIntegerString,
+          }),
+        ),
+      }),
+      Schema.Struct({
+        status: Schema.Literal("missing"),
+        reason: TrimmedNonEmptyString,
+      }),
+    ]),
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), reason: TrimmedNonEmptyString }),
+]);
+export type ForgePoolStateProposal = typeof ForgePoolStateProposal.Type;
+
+export const ForgePoolStatePosition = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ok"),
+    position: Schema.Struct({
+      state: Schema.Literals(["none", "proposed", "pending", "confirmed", "removal-pending"]),
+      positionId: Schema.NullOr(TrimmedNonEmptyString),
+      tickLower: Schema.NullOr(Schema.Int),
+      tickUpper: Schema.NullOr(Schema.Int),
+      liquidity: Schema.NullOr(ForgeNonNegativeIntegerString),
+      note: Schema.String,
+    }),
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), reason: TrimmedNonEmptyString }),
+]);
+export type ForgePoolStatePosition = typeof ForgePoolStatePosition.Type;
+
+export const ForgePoolStateControls = Schema.Struct({
+  localPause: Schema.Boolean,
+  controls: Schema.Array(
+    Schema.Struct({
+      name: Schema.Literals(["pause", "unpause", "revoke", "remove-liquidity"]),
+      availableUnderLocalPause: Schema.Boolean,
+      blockedBy: Schema.NullOr(Schema.Literals(["local-pause", "grant"])),
+    }),
+  ),
+  note: Schema.String,
+});
+export type ForgePoolStateControls = typeof ForgePoolStateControls.Type;
+
+/** Local publication intent state vs the chain-confirmed snapshot, never conflated. */
+export const ForgePoolStatePublication = Schema.Struct({
+  status: Schema.Literals(["ok", "unavailable"]),
+  reason: Schema.optional(TrimmedNonEmptyString),
+  /** Null when no publish intent has been recorded (or the read is scoped away). */
+  policy: Schema.NullOr(
+    Schema.Struct({
+      policyId: TrimmedNonEmptyString,
+      status: Schema.Literals(["draft", "submitted", "confirmed", "expired", "failed"]),
+      detectionFeeHundredthsBps: Schema.Literals([500, 3000]),
+      expiresAtUnix: Schema.NullOr(NonNegativeInt),
+      txHash: Schema.NullOr(TrimmedNonEmptyString),
+      publishedAtMs: Schema.NullOr(UnixMillis),
+      createdAtMs: UnixMillis,
+    }),
+  ),
+  pendingConfirmation: Schema.Boolean,
+  lastIntentId: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ForgePoolStatePublication = typeof ForgePoolStatePublication.Type;
+
+export const ForgePoolStateChain = Schema.Struct({
+  /** Null when the hook state could not be read — the named reason rides on the publication half. */
+  snapshot: Schema.NullOr(
+    Schema.Struct({
+      asOfBlockNumber: NonNegativeInt,
+      asOfTimeUnix: NonNegativeInt,
+      policyActive: Schema.Boolean,
+      paused: Schema.Boolean,
+      revision: ForgeNonNegativeIntegerString,
+      expiryUnix: ForgeNonNegativeIntegerString,
+      evidenceDigest: TrimmedNonEmptyString,
+      effectiveFeeHundredthsBps: NonNegativeInt,
+      fetchedAtMs: UnixMillis,
+    }),
+  ),
+  /** True only when the snapshot measurably trails the head; null = freshness unprovable. */
+  stale: Schema.NullOr(Schema.Boolean),
+  staleReason: Schema.optional(TrimmedNonEmptyString),
+});
+export type ForgePoolStateChain = typeof ForgePoolStateChain.Type;
+
+export const ForgePoolStateModuleHash = Schema.Struct({
+  installed: Schema.NullOr(TrimmedNonEmptyString),
+  confirmedOnChain: Schema.NullOr(TrimmedNonEmptyString),
+  /** Null when either side is unknown — never a guess. */
+  match: Schema.NullOr(Schema.Boolean),
+});
+export type ForgePoolStateModuleHash = typeof ForgePoolStateModuleHash.Type;
+
+export const ForgePoolStateTransaction = Schema.Struct({
+  intentId: TrimmedNonEmptyString,
+  kind: Schema.Literals([
+    "publish-policy",
+    "revoke-policy",
+    "pause",
+    "unpause",
+    "initialize-pool",
+    "add-liquidity",
+    "remove-liquidity",
+    "bounded-swap",
+  ]),
+  status: Schema.Literals(["draft", "submitted", "confirmed", "reverted", "unknown"]),
+  createdAtMs: UnixMillis,
+  txHash: Schema.NullOr(TrimmedNonEmptyString),
+  submittedAtMs: Schema.NullOr(UnixMillis),
+  gasCostWei: Schema.NullOr(ForgeNonNegativeIntegerString),
+  /**
+   * The TOTAL swap fee the decoded receipt emitted for our pool, or null when
+   * no decoded receipt exists. The LP share stays null until transaction-order
+   * evidence proves it — the total alone never establishes a split.
+   */
+  totalSwapFeeHundredthsBps: Schema.NullOr(NonNegativeInt),
+  lpFeeHundredthsBps: Schema.NullOr(NonNegativeInt),
+  summary: Schema.String,
+});
+export type ForgePoolStateTransaction = typeof ForgePoolStateTransaction.Type;
+
+export const ForgePoolStateTransactions = Schema.Struct({
+  items: Schema.Array(ForgePoolStateTransaction),
+  /** Rows the ledger holds beyond the served page. */
+  moreAvailable: Schema.Boolean,
+});
+export type ForgePoolStateTransactions = typeof ForgePoolStateTransactions.Type;
+
+/**
+ * Whether the live policy's expiry has passed, proven by chain time alone:
+ * the snapshot's own block timestamp is the only clock this carries. A client
+ * clock is never evidence that a policy is still confirmed or already expired.
+ */
+export const ForgeFreshlyConfirmedExpiry = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("chainConfirmed"),
+    expiryUnix: NonNegativeInt,
+    asOfUnix: NonNegativeInt,
+    expired: Schema.Boolean,
+  }),
+  Schema.Struct({ status: Schema.Literal("unknown"), reason: TrimmedNonEmptyString }),
+]);
+export type ForgeFreshlyConfirmedExpiry = typeof ForgeFreshlyConfirmedExpiry.Type;
+
+export const ForgePoolStateView = Schema.Struct({
+  proposal: ForgePoolStateProposal,
+  position: ForgePoolStatePosition,
+  controls: ForgePoolStateControls,
+  publication: ForgePoolStatePublication,
+  chain: ForgePoolStateChain,
+  moduleHash: ForgePoolStateModuleHash,
+  transactions: ForgePoolStateTransactions,
+  freshlyConfirmedExpiry: ForgeFreshlyConfirmedExpiry,
+});
+export type ForgePoolStateView = typeof ForgePoolStateView.Type;
+
+/**
+ * Direct controls build UNSIGNED intents through the fee-policy service — no
+ * agent provider, no signer, no broadcast. The service mints a fresh
+ * idempotency key per call, so every attempt is its own operation.
+ */
+export const OrchestrationForgeControlInput = Schema.Struct({});
+
+export const ForgeControlIntent = Schema.Struct({
+  intentId: TrimmedNonEmptyString,
+  idempotencyKey: TrimmedNonEmptyString,
+  kind: Schema.Literals(["pause", "unpause", "revoke-policy"]),
+  status: Schema.Literals(["draft", "submitted", "confirmed", "reverted", "unknown"]),
+  createdAtMs: UnixMillis,
+  /** The unsigned transaction a grant-controlled signer would sign; never signed here. */
+  unsigned: Schema.Struct({
+    chainId: PositiveInt,
+    to: TrimmedNonEmptyString,
+    valueWei: ForgeNonNegativeIntegerString,
+    data: TrimmedNonEmptyString,
+  }),
+  summary: Schema.String,
+});
+export type ForgeControlIntent = typeof ForgeControlIntent.Type;
+
+export const ForgeControlResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("ok"), intent: ForgeControlIntent }),
+  Schema.Struct({
+    status: Schema.Literal("refused"),
+    reason: TrimmedNonEmptyString,
+    detail: TrimmedNonEmptyString,
+  }),
+]);
+export type ForgeControlResult = typeof ForgeControlResult.Type;
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
@@ -2244,6 +2662,34 @@ export const OrchestrationRpcSchemas = {
   setTradingThreadMarket: {
     input: TradingSetThreadMarketInput,
     output: TradingThreadMarketView,
+  },
+  getForgeThreadContext: {
+    input: OrchestrationGetForgeThreadContextInput,
+    output: ForgeThreadContextView,
+  },
+  getForgePoolSeries: {
+    input: OrchestrationGetForgePoolSeriesInput,
+    output: ForgePoolSeriesView,
+  },
+  getForgeEvidence: {
+    input: OrchestrationGetForgeEvidenceInput,
+    output: OrchestrationGetForgeEvidenceResult,
+  },
+  getForgePoolState: {
+    input: OrchestrationGetForgePoolStateInput,
+    output: ForgePoolStateView,
+  },
+  forgePause: {
+    input: OrchestrationForgeControlInput,
+    output: ForgeControlResult,
+  },
+  forgeUnpause: {
+    input: OrchestrationForgeControlInput,
+    output: ForgeControlResult,
+  },
+  forgeRevoke: {
+    input: OrchestrationForgeControlInput,
+    output: ForgeControlResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

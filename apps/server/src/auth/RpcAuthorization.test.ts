@@ -3,6 +3,7 @@ import {
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  ORCHESTRATION_WS_METHODS,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -68,6 +69,29 @@ describe("RPC authorization scopes", () => {
       expect(() => requiredScopeForRpcMethod(method)).toThrow(
         `RPC method ${method} has no declared authorization scope.`,
       );
+    }
+  });
+
+  it("keeps the Forge reads read-scoped and the direct controls operate-scoped", () => {
+    // Research-mode reads: series, evidence, discovery, and pool/policy state
+    // need no signer and no HL market focus, so a read-only client can see
+    // everything Forge currently is.
+    for (const method of [
+      ORCHESTRATION_WS_METHODS.getForgeThreadContext,
+      ORCHESTRATION_WS_METHODS.getForgePoolSeries,
+      ORCHESTRATION_WS_METHODS.getForgeEvidence,
+      ORCHESTRATION_WS_METHODS.getForgePoolState,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    // The direct controls build standing intent state on the fee-policy
+    // service (provider-independent, but a write like every other one).
+    for (const method of [
+      ORCHESTRATION_WS_METHODS.forgePause,
+      ORCHESTRATION_WS_METHODS.forgeUnpause,
+      ORCHESTRATION_WS_METHODS.forgeRevoke,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
   });
 });

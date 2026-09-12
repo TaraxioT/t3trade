@@ -1300,6 +1300,60 @@ export const WsOrchestrationActivateTradingPlanDocumentRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationGetForgeThreadContextRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getForgeThreadContext,
+  {
+    payload: OrchestrationRpcSchemas.getForgeThreadContext.input,
+    success: OrchestrationRpcSchemas.getForgeThreadContext.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationGetForgePoolSeriesRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getForgePoolSeries,
+  {
+    payload: OrchestrationRpcSchemas.getForgePoolSeries.input,
+    success: OrchestrationRpcSchemas.getForgePoolSeries.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationGetForgeEvidenceRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getForgeEvidence,
+  {
+    payload: OrchestrationRpcSchemas.getForgeEvidence.input,
+    success: OrchestrationRpcSchemas.getForgeEvidence.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationGetForgePoolStateRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getForgePoolState,
+  {
+    payload: OrchestrationRpcSchemas.getForgePoolState.input,
+    success: OrchestrationRpcSchemas.getForgePoolState.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationForgePauseRpc = Rpc.make(ORCHESTRATION_WS_METHODS.forgePause, {
+  payload: OrchestrationRpcSchemas.forgePause.input,
+  success: OrchestrationRpcSchemas.forgePause.output,
+  error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+});
+
+export const WsOrchestrationForgeUnpauseRpc = Rpc.make(ORCHESTRATION_WS_METHODS.forgeUnpause, {
+  payload: OrchestrationRpcSchemas.forgeUnpause.input,
+  success: OrchestrationRpcSchemas.forgeUnpause.output,
+  error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+});
+
+export const WsOrchestrationForgeRevokeRpc = Rpc.make(ORCHESTRATION_WS_METHODS.forgeRevoke, {
+  payload: OrchestrationRpcSchemas.forgeRevoke.input,
+  success: OrchestrationRpcSchemas.forgeRevoke.output,
+  error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -1519,6 +1573,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationEnsureTradingAnalystThreadRpc,
   WsOrchestrationGetTradingThreadMarketRpc,
   WsOrchestrationSetTradingThreadMarketRpc,
+  WsOrchestrationGetForgeThreadContextRpc,
+  WsOrchestrationGetForgePoolSeriesRpc,
+  WsOrchestrationGetForgeEvidenceRpc,
+  WsOrchestrationGetForgePoolStateRpc,
+  WsOrchestrationForgePauseRpc,
+  WsOrchestrationForgeUnpauseRpc,
+  WsOrchestrationForgeRevokeRpc,
   WsOrchestrationReviseTradingPlanRpc,
   WsOrchestrationActivateTradingPlanDocumentRpc,
   WsOrchestrationSubscribeShellRpc,

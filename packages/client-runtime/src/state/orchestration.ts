@@ -203,6 +203,43 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:commands:trading:set-thread-market",
       tag: ORCHESTRATION_WS_METHODS.setTradingThreadMarket,
     }),
+    // T3 Forge bridge (U0). The four reads work with no Hyperliquid market
+    // focus; unavailable things arrive as named states in the payload, so the
+    // atoms stay plain queries. Not held: freshness is part of each payload
+    // (probed/fetched timestamps, asOf blocks), and the panels re-ask on their
+    // own cadence.
+    forgeThreadContext: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:forge-thread-context",
+      tag: ORCHESTRATION_WS_METHODS.getForgeThreadContext,
+    }),
+    forgePoolSeries: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:forge-pool-series",
+      tag: ORCHESTRATION_WS_METHODS.getForgePoolSeries,
+    }),
+    forgeEvidence: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:forge-evidence",
+      tag: ORCHESTRATION_WS_METHODS.getForgeEvidence,
+    }),
+    forgePoolState: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:forge-pool-state",
+      tag: ORCHESTRATION_WS_METHODS.getForgePoolState,
+    }),
+    // The direct controls build unsigned intents server-side with no provider
+    // in the loop; the caller needs the refusal (or the built intent) on
+    // screen, which is why these are RPC commands rather than dispatched
+    // orchestration commands.
+    forgePause: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:forge-pause",
+      tag: ORCHESTRATION_WS_METHODS.forgePause,
+    }),
+    forgeUnpause: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:forge-unpause",
+      tag: ORCHESTRATION_WS_METHODS.forgeUnpause,
+    }),
+    forgeRevoke: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:forge-revoke",
+      tag: ORCHESTRATION_WS_METHODS.forgeRevoke,
+    }),
     placeTradingOrder: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:place-order",
       execute: (input: TradingOrderPlaceInput) => tradingOrderPlace(input),

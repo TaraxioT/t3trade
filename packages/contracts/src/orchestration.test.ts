@@ -16,12 +16,17 @@ import {
   OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTradingMarketChartInput,
+  OrchestrationGetForgePoolSeriesInput,
+  OrchestrationGetForgeEvidenceInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
   OrchestrationSession,
+  ForgeThreadContextView,
+  ForgePoolStateView,
+  ForgeControlResult,
   OrchestrationThread,
   OrchestrationThreadShell,
   ProjectCreateCommand,
@@ -1311,5 +1316,216 @@ it.effect("the chart interval accepts 1w/1mo while the backtest interval stays c
       const rejected = yield* Effect.exit(decodeBacktestInterval(chartOnly));
       assert.strictEqual(rejected._tag, "Failure");
     }
+  }),
+);
+
+// -- the T3 Forge bridge (U0): bounds enforced by the schemas themselves -------
+
+const decodeForgePoolSeriesInput = Schema.decodeUnknownEffect(OrchestrationGetForgePoolSeriesInput);
+const decodeForgeEvidenceInput = Schema.decodeUnknownEffect(OrchestrationGetForgeEvidenceInput);
+const decodeForgeThreadContextView = Schema.decodeUnknownEffect(ForgeThreadContextView);
+const decodeForgePoolStateView = Schema.decodeUnknownEffect(ForgePoolStateView);
+const decodeForgeControlResult = Schema.decodeUnknownEffect(ForgeControlResult);
+
+const HOUR_MS = 60 * 60_000;
+
+it.effect("accepts a forge pool-series input at the exact bounds and refuses beyond them", () =>
+  Effect.gen(function* () {
+    // Point cap: 720 decodes, 721 is a schema refusal — a client cannot turn
+    // the series read into a bulk history export.
+    const atCap = yield* decodeForgePoolSeriesInput({ poolId: "0xpool", points: 720 });
+    assert.strictEqual(atCap.points, 720);
+    for (const over of [721, 10_000]) {
+      const rejected = yield* Effect.exit(
+        decodeForgePoolSeriesInput({ poolId: "0xpool", points: over }),
+      );
+      assert.strictEqual(rejected._tag, "Failure");
+    }
+    // Window bound: exactly 24h decodes, one millisecond more refuses.
+    const from = 1_700_000_000_000;
+    const dayMs = 24 * HOUR_MS;
+    const atWindowCap = yield* decodeForgePoolSeriesInput({
+      poolId: "0xpool",
+      domain: { fromUtcMs: from, toUtcMs: from + dayMs },
+    });
+    assert.strictEqual(atWindowCap.domain?.toUtcMs, from + dayMs);
+    const overWindow = yield* Effect.exit(
+      decodeForgePoolSeriesInput({
+        poolId: "0xpool",
+        domain: { fromUtcMs: from, toUtcMs: from + dayMs + 1 },
+      }),
+    );
+    assert.strictEqual(overWindow._tag, "Failure");
+    // An inverted domain never decodes.
+    const inverted = yield* Effect.exit(
+      decodeForgePoolSeriesInput({
+        poolId: "0xpool",
+        domain: { fromUtcMs: from + HOUR_MS, toUtcMs: from },
+      }),
+    );
+    assert.strictEqual(inverted._tag, "Failure");
+  }),
+);
+
+it.effect("caps the forge evidence page at 100 in the schema", () =>
+  Effect.gen(function* () {
+    const atCap = yield* decodeForgeEvidenceInput({ limit: 100, cursor: "5:forge_ev_x" });
+    assert.strictEqual(atCap.limit, 100);
+    const rejected = yield* Effect.exit(decodeForgeEvidenceInput({ limit: 101 }));
+    assert.strictEqual(rejected._tag, "Failure");
+  }),
+);
+
+it.effect("decodes the thread context with an unavailable comparison and named gaps", () =>
+  Effect.gen(function* () {
+    const view = yield* decodeForgeThreadContextView({
+      sources: {
+        status: "unavailable",
+        reason: "forge graph source not configured",
+      },
+      capabilities: [
+        {
+          capabilityId: "cap-eth-coordination",
+          version: 2,
+          bundleSha256: "a".repeat(64),
+          description: "detector",
+          status: "installed",
+          installedAtMs: 1_700_000_000_000,
+        },
+      ],
+      latestEvaluation: {
+        status: "detailUnavailable",
+        evaluationId: "forge_ev_1",
+        capabilityId: "cap-eth-coordination",
+        capabilityVersion: 2,
+        bundleSha256: "a".repeat(64),
+        outcome: "complete",
+        historical: false,
+        window: { startedAt: 1_700_000_000_000, endedAt: 1_700_000_060_000 },
+        createdAtMs: 1_700_000_060_000,
+        completedAtMs: 1_700_000_060_001,
+        reason: "the retained evaluation predates per-pool diagnostics; counts were not recorded",
+      },
+      comparison: {
+        status: "unavailable",
+        reason: "v2 revision evidence does not exist yet (F5 pending)",
+      },
+    });
+    assert.strictEqual(view.sources.status, "unavailable");
+    assert.strictEqual(view.latestEvaluation.status, "detailUnavailable");
+    assert.strictEqual(view.comparison.status, "unavailable");
+    // A fabricated comparison state must not decode: unavailable is the only
+    // honest answer until F5 produces records.
+    const fabricated = yield* Effect.exit(
+      decodeForgeThreadContextView({
+        sources: { status: "unavailable", reason: "not configured" },
+        capabilities: [],
+        latestEvaluation: { status: "none", reason: "no capability is installed" },
+        comparison: { status: "available" },
+      }),
+    );
+    assert.strictEqual(fabricated._tag, "Failure");
+  }),
+);
+
+it.effect("decodes the pool state with a missing grant, no policy, and an unknown expiry", () =>
+  Effect.gen(function* () {
+    const view = yield* decodeForgePoolStateView({
+      proposal: {
+        status: "ok",
+        chainId: 11_155_111,
+        chainName: "sepolia",
+        addresses: {
+          hook: "0xhook",
+          poolManager: "0xpm",
+          positionManager: "0xptm",
+          swapRoute: "0xsr",
+        },
+        poolKey: {
+          currency0: "0x0",
+          currency1: "0x1",
+          fee: 500,
+          tickSpacing: 60,
+          hookAddress: "0xhook",
+        },
+        bindingId: "0xbinding",
+        fullPoolId: "0xfull",
+        grant: { status: "missing", reason: "no approved forge spend grant" },
+      },
+      position: {
+        status: "ok",
+        position: {
+          state: "none",
+          positionId: null,
+          tickLower: null,
+          tickUpper: null,
+          liquidity: null,
+          note: "no liquidity intents recorded",
+        },
+      },
+      controls: {
+        localPause: false,
+        controls: [
+          { name: "pause", availableUnderLocalPause: true, blockedBy: "grant" },
+          { name: "unpause", availableUnderLocalPause: false, blockedBy: null },
+        ],
+        note: "direct controls run without any agent provider",
+      },
+      publication: {
+        status: "ok",
+        policy: null,
+        pendingConfirmation: false,
+        lastIntentId: null,
+      },
+      chain: { snapshot: null, stale: null },
+      moduleHash: { installed: null, confirmedOnChain: null, match: null },
+      transactions: { items: [], moreAvailable: false },
+      freshlyConfirmedExpiry: { status: "unknown", reason: "chain policy snapshot unavailable" },
+    });
+    assert.strictEqual(view.proposal.status, "ok");
+    if (view.proposal.status !== "ok") return;
+    assert.strictEqual(view.proposal.grant.status, "missing");
+    assert.strictEqual(view.publication.policy, null);
+    assert.strictEqual(view.freshlyConfirmedExpiry.status, "unknown");
+    assert.strictEqual(view.moduleHash.match, null);
+  }),
+);
+
+it.effect("decodes control results and refuses a fabricated intent kind", () =>
+  Effect.gen(function* () {
+    const ok = yield* decodeForgeControlResult({
+      status: "ok",
+      intent: {
+        intentId: "forge_intent_1",
+        idempotencyKey: "pause:env:1",
+        kind: "pause",
+        status: "draft",
+        createdAtMs: 1_700_000_000_000,
+        unsigned: { chainId: 11_155_111, to: "0xhook", valueWei: "0", data: "0xabc" },
+        summary: "pause the forge hook",
+      },
+    });
+    assert.strictEqual(ok.status, "ok");
+    const refused = yield* decodeForgeControlResult({
+      status: "refused",
+      reason: "unconfigured",
+      detail: "forge sepolia target not configured",
+    });
+    assert.strictEqual(refused.status, "refused");
+    const fabricatedKind = yield* Effect.exit(
+      decodeForgeControlResult({
+        status: "ok",
+        intent: {
+          intentId: "forge_intent_2",
+          idempotencyKey: "k",
+          kind: "bounded-swap",
+          status: "draft",
+          createdAtMs: 1,
+          unsigned: { chainId: 11_155_111, to: "0x", valueWei: "0", data: "0x" },
+          summary: "s",
+        },
+      }),
+    );
+    assert.strictEqual(fabricatedKind._tag, "Failure");
   }),
 );

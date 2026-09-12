@@ -99,6 +99,9 @@ const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unk
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
+import { FeePolicyService } from "./trading/forge/FeePolicyService.ts";
+import { ForgeCapabilityStore } from "./trading/forge/CapabilityStore.ts";
+import { ForgeSourceReads } from "./trading/forge/ForgeSourceReads.ts";
 import {
   isThreadDetailEvent,
   resolveAvailableEditorsForConfig,
@@ -523,6 +526,15 @@ const makeBrowserOtlpPayload = (spanName: string) =>
     return JSON.parse(request.body) as OtlpTracer.TraceData;
   });
 
+// The Forge bridge services the WS surface requires; these seam tests do not
+// exercise Forge behavior, so every member is the mock's loud unimplemented
+// defect if one is reached.
+const forgeBridgeMockLayer = Layer.mergeAll(
+  Layer.mock(FeePolicyService)({}),
+  Layer.mock(ForgeCapabilityStore)({}),
+  Layer.mock(ForgeSourceReads)({}),
+);
+
 const buildAppUnderTest = (options?: {
   onPairingChangesSubscribed?: Effect.Effect<void>;
   config?: Partial<ServerConfig.ServerConfig["Service"]>;
@@ -770,14 +782,15 @@ const buildAppUnderTest = (options?: {
       Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
     );
 
-    const servedRoutesLayer = HttpRouter.serve(
-      makeRoutesLayer.pipe(Layer.provide(serviceLauncherClientLayer)),
-      {
-        disableListenLog: true,
-        disableLogger: true,
-        routerConfig: HTTP_ROUTER_CONFIG,
-      },
-    ).pipe(
+    const routesWithForge = makeRoutesLayer.pipe(
+      Layer.provide(serviceLauncherClientLayer),
+      Layer.provide(forgeBridgeMockLayer),
+    );
+    const servedRoutesLayer = HttpRouter.serve(routesWithForge, {
+      disableListenLog: true,
+      disableLogger: true,
+      routerConfig: HTTP_ROUTER_CONFIG,
+    }).pipe(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(Keybindings.Keybindings)({
@@ -1053,8 +1066,6 @@ const buildAppUnderTest = (options?: {
       ),
     );
 
-    // Split across two pipes only because a single pipe call is capped at
-    // twenty arguments; the split changes no layer nesting order.
     const tradingRoutesLayer = servedRoutesLayer.pipe(
       // The /mcp trading toolkit and the mission snapshot RPC both read
       // persisted mission state, so the routes layer now genuinely needs the
@@ -1900,7 +1911,7 @@ const NodeHttpServerTestWithWsDeflate = HttpServer.layerTestClient.pipe(
   ),
 );
 
-it.layer(NodeServices.layer)("server router seam", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, forgeBridgeMockLayer))("server router seam", (it) => {
   it.effect("parks HTTP ingress until command readiness", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -12016,7 +12027,7 @@ it.live(
             (harness) => harness.dispose,
           ).pipe(
             Effect.provideService(Tracer.Tracer, sqlCounter.tracer),
-            Effect.provide(NodeHttpServerTestWithWsDeflate),
+            Effect.provide(Layer.mergeAll(NodeHttpServerTestWithWsDeflate, forgeBridgeMockLayer)),
           );
         },
         { concurrency: 1 },
