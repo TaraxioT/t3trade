@@ -1324,6 +1324,12 @@ export type TradingEventSetSummary = typeof TradingEventSetSummary.Type;
 
 export const TRADING_EVENTS_TOOL = "trading_events";
 
+/**
+ * The `trading_events` actions. `import_external` is the one action that
+ * reaches an external source: it captures one bounded page through the
+ * server's vetted connector and records the retained revisions as an
+ * agent-authored set — it never widens the authored lifecycle.
+ */
 export const TradingEventsAction = Schema.Literals([
   "preview",
   "record",
@@ -1332,6 +1338,7 @@ export const TradingEventsAction = Schema.Literals([
   "show",
   "study",
   "retire",
+  "import_external",
 ]);
 export type TradingEventsAction = typeof TradingEventsAction.Type;
 
@@ -1501,7 +1508,7 @@ export const TradingEventsInput = Schema.Struct({
   action: Schema.optional(TradingEventsAction),
   /** Required by everything except `record`, `preview` and `list`. */
   eventSetId: Schema.optional(Schema.String),
-  /** Required by `record`, and by `preview` when the preview is for a record. */
+  /** Required by `record` and `import_external`, and by `preview` when the preview is for a record. */
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   /** Required by `record`, `add` and `preview`: the dated occurrences with their sources. */
@@ -1554,7 +1561,7 @@ export const TradingEventsInput = Schema.Struct({
 export type TradingEventsInput = typeof TradingEventsInput.Type;
 
 export const TradingEventsResult = Schema.Struct({
-  /** Set by `record`, `add`, `show` and `retire`. */
+  /** Set by `record`, `import_external`, `add`, `show` and `retire`. */
   eventSet: Schema.optional(TradingEventSet),
   /** Set by `list`. */
   eventSets: Schema.optional(Schema.Array(TradingEventSetSummary)),
@@ -1646,6 +1653,7 @@ export function renderTradingEventsMenu(): string {
   return [
     "preview {name?, occurrences: [{start, end?, precision?, label?, source}]} reads them back with a confirmationDigest; a name previews a record, no name an add",
     "record {name, description?, occurrences} creates or replaces a set's dates (case-insensitive name, retired revives, re-recording corrects); add {eventSetId, occurrences} appends, show/retire {eventSetId}, list",
+    "import_external {name} captures the configured external source once and records its retained releases as this set: publication instants, tag labels, release URL as source; publication is not availability (first-observed window reported); re-import replaces the list, documents without a publication time are skipped and counted",
     "dates are UTC ISO: date-only start/end is date precision (whole days; a missing end spans the start day, a date-only end through that day); a timed start is exact and needs its timed end: same instant is an activation, later a window; a timed start with no end is refused, not padded; declared precision (instant/window/date) contradictions refuse",
     `one source per occurrence (the URL, or "user provided"), never several joined, ${EVENT_SET_MAX_OCCURRENCES} max a set; record/add take requireReadBack: true and the preview's confirmationDigest`,
     `study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?} measures per-occurrence forward return vs an every-bar baseline, entryBasis first_closed_bar_after_event (default), interval 1m 3m 5m 15m 1h 4h 1d: a four-week daily study is interval 1d, horizonBars 28; coarsest interval covering the window; metric path_extrema {direction} adds the post-entry extremum and excursion, hindsight-perfect; uncovered occurrences reported, not dropped`,

@@ -97,6 +97,7 @@ import {
   ExternalSourceConnectorLive,
   ExternalSourceTransportLive,
 } from "./research/ExternalSourceConnector.ts";
+import { ExternalEventImportServiceLive } from "./research/ExternalEventImportService.ts";
 import {
   FeePolicyConfigLive,
   FeePolicyService,
@@ -132,6 +133,19 @@ const externalSourceConnector = ExternalSourceConnectorLive.pipe(
   Layer.provide(ExternalSourceConfigLive),
   Layer.provide(ExternalSourceTransportLive.pipe(Layer.provide(httpWithNode))),
   Layer.provide(ExternalSourceStoreLive),
+);
+// Explicit event-set integration: one import call captures once through the
+// connector above and projects the retained revisions through the AUTHORED
+// TradingEventService.record path (author "agent"). Dependencies are provided
+// explicitly, the same style the backtest/validation wirings use, so the
+// import service's whole dependency set is readable here: SQL, the connector,
+// the store, the event service — nothing that could reach an order. Layer
+// memoization shares the one TradingEventService instance the merge below
+// also builds, so imports and every other reader see one calendar.
+const externalEventImport = ExternalEventImportServiceLive.pipe(
+  Layer.provide(externalSourceConnector),
+  Layer.provide(ExternalSourceStoreLive),
+  Layer.provide(TradingEventServiceLive),
 );
 // Use the server's resolved state directory so worktrees and installed apps never share a writer.
 const forgeStoreConfig = Layer.effect(
@@ -512,12 +526,14 @@ export const TradingLayerLive = Layer.mergeAll(
   ForgeSourceStoreLive,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
   graphResearchServices,
-  // External research evidence: the durable source-revision store plus the
-  // GitHub releases connector over it. Additive — SQL and its own HTTP
-  // transport only, so mounting it changes no trading guard and no consumer's
-  // requirements.
+  // External research evidence: the durable source-revision store, the
+  // GitHub releases connector over it, and the explicit import path from
+  // retained revisions into the authored event calendar. Additive — SQL and
+  // its own HTTP transport only, so mounting it changes no trading guard and
+  // no consumer's requirements.
   ExternalSourceStoreLive,
   externalSourceConnector,
+  externalEventImport,
 ).pipe(
   Layer.provideMerge(infoWithHttp),
   // T3 Forge F3 durable machinery: SQLite intent ledger + grant guard +

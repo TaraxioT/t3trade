@@ -266,6 +266,49 @@ layer("ExternalSourceStore listDocuments", (it) => {
   );
 });
 
+layer("ExternalSourceStore readDocument", (it) => {
+  it.effect("returns the revision with its payload parsed as JSON", () =>
+    Effect.gen(function* () {
+      yield* createRevisionsTable;
+      const store = yield* makeExternalSourceStore;
+      const payload = {
+        tag_name: "v1.0.0",
+        html_url: "https://github.com/o/r/releases/tag/v1.0.0",
+      };
+      yield* store.insert({
+        revision: revision({ environmentId: "env-read-a", revisionId: "rev-read-a" }),
+        payloadJson:
+          '{"tag_name":"v1.0.0","html_url":"https://github.com/o/r/releases/tag/v1.0.0"}',
+      });
+      const read = yield* store.readDocument({ revisionId: "rev-read-a" });
+      assert.isDefined(read);
+      assert.deepEqual(
+        read?.revision,
+        revision({ environmentId: "env-read-a", revisionId: "rev-read-a" }),
+      );
+      assert.deepEqual(read?.document, payload);
+    }),
+  );
+
+  it.effect("a corrupt payload surfaces as document null; an unknown id as null overall", () =>
+    Effect.gen(function* () {
+      yield* createRevisionsTable;
+      const store = yield* makeExternalSourceStore;
+      yield* store.insert({
+        revision: revision({ environmentId: "env-read-b", revisionId: "rev-read-b" }),
+        payloadJson: "not json at all",
+      });
+      const corrupt = yield* store.readDocument({ revisionId: "rev-read-b" });
+      assert.isDefined(corrupt);
+      assert.equal(corrupt?.document, null);
+      // The revision's own columns still read back whole.
+      assert.equal(corrupt?.revision.revisionId, "rev-read-b");
+      const missing = yield* store.readDocument({ revisionId: "rev-read-none" });
+      assert.equal(missing, null);
+    }),
+  );
+});
+
 layer("ExternalSourceStore toManifest projection", (it) => {
   it.effect("projects rows into the ExternalSourceManifest contract shape", () =>
     Effect.gen(function* () {

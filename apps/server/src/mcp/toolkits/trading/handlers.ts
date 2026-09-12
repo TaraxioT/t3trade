@@ -1,6 +1,7 @@
 import { attachGraphStudyFeatures } from "@t3tools/trading-contracts";
 import { ForgeAcceptance } from "../../../trading/forge/ForgeAcceptance.ts";
 import { GraphResearchService } from "../../../trading/research/GraphResearchService.ts";
+import { ExternalEventImportService } from "../../../trading/research/ExternalEventImportService.ts";
 /**
  * Trading tool handlers.
  *
@@ -4311,6 +4312,46 @@ export const handlers = {
             outcome:
               `"${retired.set.name}" is retired. New theses refuse it; theses saved while it was ` +
               "live keep evaluating its dates. Record the name again to bring it back.",
+          });
+        }
+
+        case "import_external": {
+          if (input.name === undefined) return yield* refuse("import_external needs a name");
+          // Resolved like the Graph research service: an unwired runtime
+          // refuses by name rather than dying, so research mode keeps every
+          // non-signing path alive. The whole import policy lives in the
+          // service; this case only sentences its result.
+          const importOption = yield* Effect.serviceOption(ExternalEventImportService);
+          if (importOption._tag === "None") {
+            return yield* refuse(
+              "the external event import service is not wired into this runtime",
+            );
+          }
+          const imported = yield* importOption.value
+            .importExternalSource({
+              environmentId: scope.environmentId,
+              eventSetName: input.name,
+              now,
+              threadId,
+            })
+            .pipe(Effect.orDie);
+          if (imported.outcome === "refused") return yield* refuse(imported.reason);
+          const captureSentence =
+            imported.capture.status === "ok"
+              ? imported.correctionsObserved === 0
+                ? ""
+                : ` ${imported.correctionsObserved} document(s) changed at the source since the previous capture.`
+              : ` The capture before this import failed (${imported.capture.reason}); imported over the retained revisions — they may be stale.`;
+          const skipped =
+            imported.skippedUnpublished === 0 && imported.skippedUnreadable === 0
+              ? ""
+              : ` Skipped ${imported.skippedUnpublished} document(s) without a publication time and ${imported.skippedUnreadable} unreadable.`;
+          return eventsResult({
+            eventSet: imported.eventSet,
+            outcome:
+              `"${imported.eventSet.name}" now holds ${imported.eventSet.occurrences.length} ` +
+              `occurrence(s) imported from github-releases.${captureSentence}${skipped} ` +
+              `${imported.availabilityNote}. Re-import the name to replace the list.`,
           });
         }
 

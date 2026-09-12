@@ -115,6 +115,7 @@ import Migration0100 from "./Migrations/100_ProjectionThreadsActiveOrderKey.ts";
 import Migration0101 from "./Migrations/101_ForgeSourceEvidence.ts";
 import Migration0102 from "./Migrations/102_ForgeIntentLedger.ts";
 import Migration0103 from "./Migrations/103_ExternalSourceRevisions.ts";
+import Migration0104 from "./Migrations/104_EventSetImports.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -237,6 +238,7 @@ export const migrationEntries = [
   [101, "ForgeSourceEvidence", Migration0101],
   [102, "ForgeIntentLedger", Migration0102],
   [103, "ExternalSourceRevisions", Migration0103],
+  [104, "EventSetImports", Migration0104],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

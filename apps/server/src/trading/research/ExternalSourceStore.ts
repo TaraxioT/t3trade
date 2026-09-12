@@ -11,7 +11,9 @@
  * changing what the id means.
  *
  * SQL only — no network, no signer, nothing that could reach an order. The
- * payload bytes are inert data: this module never interprets them.
+ * payload bytes stay inert for every write and every list read; `readDocument`
+ * is the one deterministic extraction boundary that parses them, and only the
+ * connector's own retained JSON ever crosses it.
  *
  * @module ExternalSourceStore
  */
@@ -104,6 +106,23 @@ export interface ExternalSourceStoreShape {
     }>,
     PersistenceSqlError
   >;
+
+  /**
+   * One revision with its retained payload parsed as JSON — the deterministic
+   * extraction boundary. This is the ONLY read that interprets payload bytes;
+   * every other surface keeps them inert. `document` is null when the payload
+   * is not decodable JSON (or is the JSON null literal): the connector only
+   * retains object payloads, so both cases mean "not decodable" and the caller
+   * skips the document rather than guessing. Null overall when no row carries
+   * that revision id.
+   */
+  readonly readDocument: (input: { readonly revisionId: string }) => Effect.Effect<
+    {
+      readonly revision: ExternalSourceRevision;
+      readonly document: unknown;
+    } | null,
+    PersistenceSqlError
+  >;
 }
 
 export class ExternalSourceStore extends Context.Service<
@@ -173,6 +192,20 @@ const decodeManifest = (value: unknown): ExternalSourceManifest => {
 };
 
 /**
+ * Parse one retained payload as JSON, or null when it is not decodable. Retained
+ * bytes are only ever parsed at this boundary, and a corrupt payload surfaces as
+ * `null` rather than a throw so one bad row cannot take a whole projection down.
+ * (decodeSync stays outside Effect generators, per the repo rule.)
+ */
+const decodeRetainedPayload = (payloadJson: string): unknown => {
+  try {
+    return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(payloadJson);
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Project a revision into the `ExternalSourceManifest` contract shape. Pure;
  * throws (a defect, surfaced loudly) only when a row is too corrupt to
  * project — which the insert boundary and the CHECK constraints prevent.
@@ -227,8 +260,9 @@ export const makeExternalSourceStore = Effect.gen(function* () {
       }
     });
 
-  // Read surfaces below never select payload_json: this slice only retains
-  // the bytes; the later event-set projection will read them back by id.
+  // The revision-chain read surfaces never select payload_json; readDocument
+  // below is the single by-id read that does, so the bytes stay inert for
+  // every listing and only an explicitly named revision is ever parsed.
   const latestRevision: ExternalSourceStoreShape["latestRevision"] = ({
     environmentId,
     sourceKind,
@@ -310,7 +344,29 @@ export const makeExternalSourceStore = Effect.gen(function* () {
       }),
     );
 
-  return { insert, latestRevision, history, listDocuments } satisfies ExternalSourceStoreShape;
+  const readDocument: ExternalSourceStoreShape["readDocument"] = ({ revisionId }) =>
+    sql<RevisionRow & { readonly payload_json: string }>`
+      SELECT revision_id, environment_id, source_kind, document_identity, source_url,
+             content_sha256, published_at_ms, time_precision, first_observed_at_ms,
+             capture_ms, correction_of, retracted, payload_json
+      FROM external_source_revisions
+      WHERE revision_id = ${revisionId}
+    `.pipe(
+      Effect.mapError(sqlFail("readDocument")),
+      Effect.map((rows) => {
+        const row = rows[0];
+        if (row === undefined) return null;
+        return { revision: toRevision(row), document: decodeRetainedPayload(row.payload_json) };
+      }),
+    );
+
+  return {
+    insert,
+    latestRevision,
+    history,
+    listDocuments,
+    readDocument,
+  } satisfies ExternalSourceStoreShape;
 });
 
 export const ExternalSourceStoreLive = Layer.effect(ExternalSourceStore, makeExternalSourceStore);

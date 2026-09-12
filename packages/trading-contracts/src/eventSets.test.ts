@@ -8,6 +8,7 @@
  * see is a sentence, not a silent drop.
  */
 import { describe, expect, it } from "@effect/vitest";
+import { Schema } from "effect";
 
 import {
   checkEventStudy,
@@ -23,6 +24,7 @@ import {
   serializeEventSetContent,
   validateEventOccurrence,
   type TradingEventOccurrence,
+  TradingEventsInput,
 } from "./eventSets.ts";
 import type { MarketCandle } from "./market.ts";
 
@@ -1996,11 +1998,11 @@ describe("the menus teach the conventions the parser enforces", () => {
   it("the events menu states the timing, single-source, and read-back rules", () => {
     const menu = renderTradingEventsMenu();
     // Tight enough to serve as a menu: the look menu's 1,500-char budget is
-    // the discipline here too, raised once to 2,000 when the menu gained the
-    // threshold-honesty and no-hindsight-exit rules the study's semantics
-    // require it to teach — bounded growth for required vocabulary, not an
-    // open cap.
-    expect(menu.length).toBeLessThan(2_000);
+    // the discipline here too, raised to 2,000 when the menu gained the
+    // threshold-honesty and no-hindsight-exit rules, and once more to 2,400
+    // for the import_external vocabulary — bounded growth for required
+    // vocabulary, not an open cap.
+    expect(menu.length).toBeLessThan(2_400);
     // The timing model: date precision spans, the instant rule, the refusal
     // that replaced the +24h fabrication.
     expect(menu).toContain("date precision");
@@ -2025,5 +2027,33 @@ describe("the menus teach the conventions the parser enforces", () => {
     expect(menu).toContain("path_extrema");
     expect(menu).toContain("direction");
     expect(menu).toContain("hindsight-perfect");
+    // The external-import vocabulary: the action, its honesty rule, and its
+    // replacement semantics.
+    expect(menu).toContain("import_external {name}");
+    expect(menu).toContain("publication is not availability");
+    expect(menu).toContain("re-import replaces the list");
+  });
+
+  it("the input takes action import_external additively — old payloads decode unchanged", () => {
+    // The new action decodes with the fields it reuses (`name`); nothing new
+    // was added to the input struct itself.
+    const imported = Schema.decodeUnknownSync(TradingEventsInput)({
+      action: "import_external",
+      name: "Releases",
+    });
+    expect(imported.action).toBe("import_external");
+    expect(imported.name).toBe("Releases");
+    // Payloads an older producer could have sent decode exactly as before.
+    const recorded = Schema.decodeUnknownSync(TradingEventsInput)({
+      action: "record",
+      name: "Devcons",
+      occurrences: [{ start: "2026-01-02", source: "https://example.com/a" }],
+    });
+    expect(recorded.action).toBe("record");
+    expect(recorded.occurrences?.length).toBe(1);
+    const menuCall = Schema.decodeUnknownSync(TradingEventsInput)({});
+    expect(menuCall.action).toBeUndefined();
+    // An unknown action still refuses — the literal grew, it did not open.
+    expect(() => Schema.decodeUnknownSync(TradingEventsInput)({ action: "fetch" })).toThrow();
   });
 });
