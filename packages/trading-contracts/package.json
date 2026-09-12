@@ -183,6 +183,7 @@
     "test:fork": "vp test run"
   },
   "dependencies": {
+    "@noble/hashes": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {
