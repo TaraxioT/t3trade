@@ -76,15 +76,15 @@ export const sortsBefore = (a: string, b: string): boolean =>
 
 /** The full pool identity the adapter encodes everywhere, fee always dynamic. */
 export interface ForgePoolKeyConfig {
-  /** The lower currency by address sort order. */
-  readonly currency0: string;
-  /** The higher currency by address sort order. */
-  readonly currency1: string;
+  /** The lower currency by address sort order (a validated hex address). */
+  readonly currency0: `0x${string}`;
+  /** The higher currency by address sort order (a validated hex address). */
+  readonly currency1: `0x${string}`;
   /** Always {@link V4_DYNAMIC_FEE_FLAG}; not configurable. */
   readonly fee: typeof V4_DYNAMIC_FEE_FLAG;
   readonly tickSpacing: number;
-  /** The one fixed hook this pool is governed by. */
-  readonly hookAddress: string;
+  /** The one fixed hook this pool is governed by (a validated hex address). */
+  readonly hookAddress: `0x${string}`;
 }
 
 /** Resolved execution target: Sepolia, one hook, one pool, official periphery. */
@@ -257,16 +257,21 @@ export const resolveForgeTestnetTarget = (env: RawEnv): ForgeTestnetTarget | { r
   );
   if (typeof swapRoute !== "string") return swapRoute;
 
+  // The address strings above validated as hex addresses; the lowercase
+  // forms are the canonical `0x`-prefixed identities the types declare.
+  const hook = hookAddress.toLowerCase() as `0x${string}`;
+  const c0 = currency0.toLowerCase() as `0x${string}`;
+  const c1 = currency1.toLowerCase() as `0x${string}`;
   return {
     chainId: SEPOLIA_CHAIN_ID,
     rpcUrl,
-    hookAddress: hookAddress.toLowerCase(),
+    hookAddress: hook,
     poolKey: {
-      currency0: currency0.toLowerCase(),
-      currency1: currency1.toLowerCase(),
+      currency0: c0,
+      currency1: c1,
       fee: V4_DYNAMIC_FEE_FLAG,
       tickSpacing,
-      hookAddress: hookAddress.toLowerCase(),
+      hookAddress: hook,
     },
     poolManager,
     positionManager,

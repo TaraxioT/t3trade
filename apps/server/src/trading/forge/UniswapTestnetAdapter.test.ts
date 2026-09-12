@@ -21,12 +21,23 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { keccak256, toBytes, type Hex } from "viem";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { MigrationError } from "effect/unstable/sql/Migrator";
+import {
+  decodeAbiParameters,
+  decodeFunctionData,
+  keccak256,
+  parseAbiParameters,
+  toBytes,
+  type Hex,
+} from "viem";
 
 import {
   ForgeTestnetConfig,
   ForgeIntentLedgerInMemory,
   ForgeIntentLedger,
+  ForgeGrantGuard,
   makeInMemoryForgeIntentLedger,
   ForgeSepoliaTransport,
   SignedTransactionBroadcaster,
@@ -39,12 +50,16 @@ import {
   type ForgeSepoliaRpcTransportShape,
   type SignedTransactionBroadcasterShape,
 } from "./UniswapTestnetAdapter.ts";
+import { ForgeGrantGuardLive, ForgeIntentLedgerSqliteLive } from "./ForgeIntentLedgerSqlite.ts";
+import { positionManagerAbi } from "./PeripheryAbi.ts";
 import {
   resolveForgeTestnetSettings,
   SEPOLIA_V4_ADDRESSES,
   SEPOLIA_CHAIN_ID,
   type ForgeTestnetSettings,
 } from "./SepoliaTarget.ts";
+import { runMigrations } from "../../persistence/Migrations.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 // ---------------------------------------------------------------------------
 // Fixture addresses and env
@@ -109,7 +124,7 @@ const SEL = {
   publishPolicy: "0xb9d299c3",
   revokePolicy: "0xeb670690",
   initialize: "0x6276cbbe",
-  modifyLiquidity: "0x5a6bcfda",
+  modifyLiquidities: "0xdd46508f",
   swap: "0x2229d0b4",
 } as const;
 
@@ -120,8 +135,7 @@ for (const [name, literal] of Object.entries(SEL)) {
     publishPolicy: "publishPolicy(bytes32,uint256,uint256,bytes32)",
     revokePolicy: "revokePolicy(bytes32)",
     initialize: "initialize((address,address,uint24,int24,address),uint160)",
-    modifyLiquidity:
-      "modifyLiquidity((address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)",
+    modifyLiquidities: "modifyLiquidities(bytes,uint256)",
     swap: "swap((address,address,uint24,int24,address),(bool,int256,uint160),(bool,bool),bytes)",
   }[name as keyof typeof SEL];
   assert.equal(selectorOf(signature), literal, `frozen selector literal for ${name}`);
@@ -134,6 +148,36 @@ const word = (value: string | bigint): string =>
 /** int256 two's complement of a negative BigInt. */
 const wordSigned = (value: bigint): string =>
   (value < 0n ? 2n ** 256n + value : value).toString(16).padStart(64, "0");
+
+// Test-side declarations of the DEPLOYED PositionManager param tuples
+// (sepolia.etherscan.io verified source for 0x429ba7...09b4, read
+// 2026-09-12) — deliberately independent of the adapter's own encoders so a
+// regression in PeripheryAbi cannot echo itself green.
+const TEST_POOL_KEY =
+  "(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks)";
+const TEST_MINT_PARAMS = parseAbiParameters(
+  `${TEST_POOL_KEY} poolKey, int24 tickLower, int24 tickUpper, uint256 liquidity, uint128 amount0Max, uint128 amount1Max, address owner, bytes hookData`,
+);
+const TEST_INCREASE_PARAMS = parseAbiParameters(
+  "uint256 tokenId, uint256 liquidity, uint128 amount0Max, uint128 amount1Max, bytes hookData",
+);
+const TEST_DECREASE_PARAMS = parseAbiParameters(
+  "uint256 tokenId, uint256 liquidity, uint128 amount0Min, uint128 amount1Min, bytes hookData",
+);
+
+/** Decode modifyLiquidities calldata back into actions, params and deadline. */
+const decodeModifyLiquidities = (
+  data: Hex,
+): { readonly actions: Hex; readonly params: ReadonlyArray<Hex>; readonly deadline: bigint } => {
+  const outer = decodeFunctionData({ abi: positionManagerAbi, data });
+  assert.equal(outer.functionName, "modifyLiquidities");
+  const [unlockData, deadline] = outer.args as [Hex, bigint];
+  const [actions, params] = decodeAbiParameters(
+    parseAbiParameters("bytes actions, bytes[] params"),
+    unlockData,
+  );
+  return { actions, params, deadline };
+};
 
 // ---------------------------------------------------------------------------
 // Fake Sepolia chain
@@ -360,17 +404,44 @@ const configLayer = (env: Record<string, string | undefined>) =>
     resolve: Effect.sync((): ForgeTestnetSettings => resolveForgeTestnetSettings(env)),
   });
 
+// A fresh migrated in-memory SQLite per guard-layer build — the real engine
+// behind the immutable approved-grant table, only the database is disposable.
+// The migrated client is the layer's OUTPUT (not a discarded side effect), so
+// the database's scope is exactly the consumer layer's lifetime: a whole-test
+// provide keeps it open for every broadcast the test makes. The chain is
+// constructed inside the function on purpose — a module-level const would be
+// one Effect-memoized layer shared (and closed) by whichever test built it
+// first.
+type TestSqliteLayerError = SqlError | MigrationError;
+
+const migratedMemorySqlite = (): Layer.Layer<SqlClient.SqlClient, TestSqliteLayerError> =>
+  Layer.effect(
+    SqlClient.SqlClient,
+    Effect.gen(function* () {
+      yield* runMigrations({});
+      return yield* SqlClient.SqlClient;
+    }),
+  ).pipe(Layer.provide(NodeSqliteClient.layerMemory()));
+
+const freshGuardSqlite = (): Layer.Layer<ForgeGrantGuard, TestSqliteLayerError> =>
+  ForgeGrantGuardLive.pipe(Layer.provide(migratedMemorySqlite()));
+
+/** A fresh migrated memory client layer (the durable-ledger tests' provider). */
+const migratedSqliteLayer = migratedMemorySqlite;
+
 const adapterLayer = (
   transport: ForgeSepoliaRpcTransportShape,
   env: Record<string, string | undefined>,
   broadcaster: Layer.Layer<SignedTransactionBroadcaster> = SignedTransactionBroadcasterUnavailable,
-  ledgerLayer: Layer.Layer<ForgeIntentLedger> = admittedTestLedger,
+  ledgerLayer: Layer.Layer<ForgeIntentLedger, TestSqliteLayerError> = admittedTestLedger,
+  guardLayer: Layer.Layer<ForgeGrantGuard, TestSqliteLayerError> = freshGuardSqlite(),
 ) =>
   UniswapTestnetAdapterLive.pipe(
     Layer.provide(configLayer(env)),
     Layer.provide(Layer.succeed(ForgeSepoliaTransport, ForgeSepoliaTransport.of(transport))),
     Layer.provideMerge(ledgerLayer),
     Layer.provideMerge(broadcaster),
+    Layer.provideMerge(guardLayer),
   );
 
 // Test-only simulation of durable admission. It proves service state transitions,
@@ -458,27 +529,23 @@ describe("intent calldata vectors", () => {
     word(BigInt(TICK_SPACING)) +
     word(HOOK.slice(2));
 
-  it.effect("pause/unpause encode to the bare selectors", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("pause/unpause encode to the bare selectors", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const pause = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       assert.equal(pause.unsigned.data, "0x8456cb59");
       assert.equal(pause.unsigned.to, HOOK);
       assert.equal(pause.unsigned.valueWei, "0");
       const unpause = yield* adapter.buildIntent({ kind: "unpause", environmentId: "env-1" });
       assert.equal(unpause.unsigned.data, "0x3f4ba83a");
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("publishPolicy encodes selector + four hand-built words", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("publishPolicy encodes selector + four hand-built words", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const record = yield* adapter.buildIntent({
         kind: "publish-policy",
         environmentId: "env-1",
@@ -497,30 +564,26 @@ describe("intent calldata vectors", () => {
       assert.equal(record.unsigned.data, expected);
       assert.equal(record.params["revision"], "7");
       assert.equal(record.params["expiryUnix"], "1775700900");
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("revokePolicy encodes selector + binding word", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("revokePolicy encodes selector + binding word", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const record = yield* adapter.buildIntent({
         kind: "revoke-policy",
         environmentId: "env-1",
         bindingId: BINDING,
       });
       assert.equal(record.unsigned.data, SEL.revokePolicy + word(BINDING.slice(2)));
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("initialize encodes the pool key inline plus sqrtPriceX96", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("initialize encodes the pool key inline plus sqrtPriceX96", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const sqrtPrice = 2n ** 96n;
       const record = yield* adapter.buildIntent({
         kind: "initialize-pool",
@@ -530,72 +593,128 @@ describe("intent calldata vectors", () => {
       // Static tuple args encode inline (no offset word): 5 key words + 1.
       assert.equal(record.unsigned.data, SEL.initialize + keyWords + word(sqrtPrice));
       assert.equal(record.unsigned.to, SEPOLIA_V4_ADDRESSES.poolManager.toLowerCase());
-    }),
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
+
+  it.effect(
+    "liquidity encodes the deployed PositionManager modifyLiquidities shape (MINT/INCREASE/DECREASE)",
+    () => {
+      const fake = makeFakeChain({});
+      return Effect.gen(function* () {
+        const adapter = yield* UniswapTestnetAdapter;
+        const owner = `0x${"0e".repeat(20)}`;
+
+        // MINT a new position: no tokenId, owner named, maxima from deposits.
+        const mint = yield* adapter.buildIntent({
+          kind: "add-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "1000000000000000000",
+          deposits: [
+            { token: C0, amountRaw: "1000" },
+            { token: C1, amountRaw: "2000" },
+          ],
+          ownerAddress: owner,
+        });
+        assert.equal(mint.unsigned.to, SEPOLIA_V4_ADDRESSES.positionManager.toLowerCase());
+        const minted = decodeModifyLiquidities(mint.unsigned.data);
+        assert.equal(minted.actions, "0x02"); // MINT_POSITION
+        const mintParams = decodeAbiParameters(TEST_MINT_PARAMS, minted.params[0]!);
+        const [key, tickLower, tickUpper, liquidity, amount0Max, amount1Max, mintOwner, hookData] =
+          mintParams;
+        assert.equal(key.currency0, C0);
+        assert.equal(key.currency1, C1);
+        assert.equal(key.fee, 0x800000);
+        assert.equal(key.tickSpacing, TICK_SPACING);
+        assert.equal((key.hooks as string).toLowerCase(), HOOK);
+        assert.equal(tickLower, -60);
+        assert.equal(tickUpper, 60);
+        assert.equal(liquidity, 1_000_000_000_000_000_000n);
+        // The on-chain pull ceilings equal the declared deposits: the
+        // encoded maxima, not self-reported metadata, bind the grant.
+        assert.equal(amount0Max, 1000n);
+        assert.equal(amount1Max, 2000n);
+        assert.equal((mintOwner as string).toLowerCase(), owner);
+        assert.equal(hookData, "0x");
+        // The deadline is bounded: the record's own build time plus the
+        // one-hour window (the record's clock, not the wall clock — the test
+        // runtime may use a controlled clock).
+        const builtSec = BigInt(Math.floor(mint.createdAtMs / 1000));
+        assert.ok(minted.deadline > builtSec && minted.deadline <= builtSec + 3600n);
+
+        // INCREASE an existing tokenId; an undeclared leg bounds to zero.
+        const increase = yield* adapter.buildIntent({
+          kind: "add-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "500",
+          deposits: [{ token: C0, amountRaw: "77" }],
+          tokenId: "7",
+        });
+        const increased = decodeModifyLiquidities(increase.unsigned.data);
+        assert.equal(increased.actions, "0x00"); // INCREASE_LIQUIDITY
+        const [tokenId, incLiquidity, inc0Max, inc1Max] = decodeAbiParameters(
+          TEST_INCREASE_PARAMS,
+          increased.params[0]!,
+        );
+        assert.equal(tokenId, 7n);
+        assert.equal(incLiquidity, 500n);
+        assert.equal(inc0Max, 77n);
+        assert.equal(inc1Max, 0n);
+
+        // DECREASE an existing tokenId; minimum outputs default to 1 raw unit.
+        const decrease = yield* adapter.buildIntent({
+          kind: "remove-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "500",
+          tokenId: "7",
+        });
+        const decreased = decodeModifyLiquidities(decrease.unsigned.data);
+        assert.equal(decreased.actions, "0x01"); // DECREASE_LIQUIDITY
+        const [decTokenId, decLiquidity, min0, min1] = decodeAbiParameters(
+          TEST_DECREASE_PARAMS,
+          decreased.params[0]!,
+        );
+        assert.equal(decTokenId, 7n);
+        assert.equal(decLiquidity, 500n);
+        assert.equal(min0, 1n);
+        assert.equal(min1, 1n);
+        // Explicit nonzero minimum outputs survive verbatim.
+        const explicit = yield* adapter.buildIntent({
+          kind: "remove-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "500",
+          tokenId: "7",
+          minAmount0Raw: "42",
+          minAmount1Raw: "43",
+        });
+        const [, , explicitMin0, explicitMin1] = decodeAbiParameters(
+          TEST_DECREASE_PARAMS,
+          decodeModifyLiquidities(explicit.unsigned.data).params[0]!,
+        );
+        assert.equal(explicitMin0, 42n);
+        assert.equal(explicitMin1, 43n);
+      }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+    },
   );
 
-  it.effect("modifyLiquidity encodes ticks, signed delta, salt, and the empty hookData tail", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
-      const salt = `0x${"5a".repeat(32)}`;
-      const add = yield* adapter.buildIntent({
-        kind: "add-liquidity",
-        environmentId: "env-1",
-        tickLower: -60,
-        tickUpper: 60,
-        liquidity: "1000000000000000000",
-        salt,
-        deposits: [{ token: C0, amountRaw: "1000" }],
-      });
-      assert.equal(add.unsigned.to, SEPOLIA_V4_ADDRESSES.positionManager.toLowerCase());
-      const remove = yield* adapter.buildIntent({
-        kind: "remove-liquidity",
-        environmentId: "env-1",
-        tickLower: -60,
-        tickUpper: 60,
-        liquidity: "1000",
-        salt,
-      });
-      // head: 5 key words + 4 param words + offset word; tail: length 0.
-      // offset = (5 + 4 + 1) * 32 = 320 = 0x140.
-      const addExpected =
-        SEL.modifyLiquidity +
-        keyWords +
-        wordSigned(-60n) +
-        wordSigned(60n) +
-        word(1_000_000_000_000_000_000n) +
-        word(salt.slice(2)) +
-        word(0x140n) +
-        word(0n);
-      assert.equal(add.unsigned.data, addExpected);
-      assert.deepEqual(add.spend.deposits, [{ token: C0, amountRaw: "1000" }]);
-      // Removal is the same calldata with the negated delta.
-      const removeExpected =
-        SEL.modifyLiquidity +
-        keyWords +
-        wordSigned(-60n) +
-        wordSigned(60n) +
-        wordSigned(-1000n) +
-        word(salt.slice(2)) +
-        word(0x140n) +
-        word(0n);
-      assert.equal(remove.unsigned.data, removeExpected);
-    }),
-  );
-
-  it.effect("bounded swap encodes the PoolSwapTest four-arg shape", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("bounded swap encodes the explicit price limit into PoolSwapTest", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
+      const limit = 2n ** 96n;
       const record = yield* adapter.buildIntent({
         kind: "bounded-swap",
         environmentId: "env-1",
         zeroForOne: true,
         amountSpecifiedRaw: "-2500000",
+        sqrtPriceLimitX96: limit.toString(10),
         quoteAmountRaw: "2500000",
       });
       // head: 5 key + 3 swap params + 2 test settings + offset; tail: length 0.
@@ -605,7 +724,7 @@ describe("intent calldata vectors", () => {
         keyWords +
         word(1n) + // zeroForOne = true
         wordSigned(-2_500_000n) +
-        word(0n) + // sqrtPriceLimitX96 = 0
+        word(limit) + // sqrtPriceLimitX96 — explicit, never a zero default
         word(0n) + // takeClaims = false
         word(0n) + // settleUsingBurn = false
         word(0x160n) +
@@ -613,15 +732,13 @@ describe("intent calldata vectors", () => {
       assert.equal(record.unsigned.data, expected);
       assert.equal(record.unsigned.to, SEPOLIA_V4_ADDRESSES.swapRoute.toLowerCase());
       assert.equal(record.spend.swapQuoteAmountRaw, "2500000");
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("build is idempotent by key and refuses key reuse across kinds", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("build is idempotent by key and refuses key reuse across kinds", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const first = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const second = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       assert.equal(second.intentId, first.intentId);
@@ -633,15 +750,13 @@ describe("intent calldata vectors", () => {
         })
         .pipe(Effect.flip);
       assert.include(conflict.detail, "already names");
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("rejects malformed publish params and non-multiple ticks", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("rejects malformed publish params and non-multiple ticks", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const badDigest = yield* adapter
         .buildIntent({
           kind: "publish-policy",
@@ -664,8 +779,8 @@ describe("intent calldata vectors", () => {
         })
         .pipe(Effect.flip);
       assert.include(badTicks.detail, "tick spacing");
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -690,22 +805,21 @@ describe("view reads", () => {
     }),
   );
 
-  it.effect("reads every hook view pinned to one block", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({
-        hook: {
-          revision: 4n,
-          expiry: BigInt(BLOCK_TS + 600),
-          evidenceDigest: EVIDENCE_DIGEST as Hex,
-          policyActive: true,
-          paused: false,
-          effectiveFee: 500,
-          owner: `0x${"aa".repeat(20)}` as Hex,
-          operator: `0x${"77".repeat(20)}` as Hex,
-        },
-      });
+  it.effect("reads every hook view pinned to one block", () => {
+    const fake = makeFakeChain({
+      hook: {
+        revision: 4n,
+        expiry: BigInt(BLOCK_TS + 600),
+        evidenceDigest: EVIDENCE_DIGEST as Hex,
+        policyActive: true,
+        paused: false,
+        effectiveFee: 500,
+        owner: `0x${"aa".repeat(20)}` as Hex,
+        operator: `0x${"77".repeat(20)}` as Hex,
+      },
+    });
+    return Effect.gen(function* () {
       const read = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
         Effect.flatMap((adapter) => adapter.readHookState),
       );
       assert.equal(read.status, "ok");
@@ -730,30 +844,29 @@ describe("view reads", () => {
       for (const block of pinned) {
         assert.equal(block, "0x" + BLOCK.toString(16));
       }
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("decodes policy events sorted by block and log index", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({
-        logs: [
-          policyPublishedLog({
-            blockNumber: BLOCK + 2,
-            txHash: "0x" + "cc".repeat(32),
-            logIndex: 0,
-          }),
-          {
-            address: HOOK,
-            topics: [topic0("Paused()")],
-            data: "0x",
-            blockNumber: "0x" + (BLOCK + 3).toString(16),
-            transactionHash: "0x" + "dd".repeat(32),
-            logIndex: "0x0",
-          },
-        ],
-      });
+  it.effect("decodes policy events sorted by block and log index", () => {
+    const fake = makeFakeChain({
+      logs: [
+        policyPublishedLog({
+          blockNumber: BLOCK + 2,
+          txHash: "0x" + "cc".repeat(32),
+          logIndex: 0,
+        }),
+        {
+          address: HOOK,
+          topics: [topic0("Paused()")],
+          data: "0x",
+          blockNumber: "0x" + (BLOCK + 3).toString(16),
+          transactionHash: "0x" + "dd".repeat(32),
+          logIndex: "0x0",
+        },
+      ],
+    });
+    return Effect.gen(function* () {
       const read = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
         Effect.flatMap((adapter) =>
           adapter.getPolicyEvents({ fromBlock: BLOCK, toBlock: BLOCK + 10 }),
         ),
@@ -769,8 +882,8 @@ describe("view reads", () => {
       assert.equal(published.revision, "4");
       assert.equal(published.poolId, BINDING);
       assert.equal(published.evidenceDigest, EVIDENCE_DIGEST);
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -782,13 +895,11 @@ describe("transaction state machine", () => {
 
   it.effect(
     "submitted while known to the node, unknown after the bounded timeout or when not found",
-    () =>
-      Effect.gen(function* () {
-        const fake = makeFakeChain({});
+    () => {
+      const fake = makeFakeChain({});
+      return Effect.gen(function* () {
         fake.state.txs.set(TX, { hash: TX });
-        const adapter = yield* UniswapTestnetAdapter.pipe(
-          Effect.provide(adapterLayer(fake.shape, ENV)),
-        );
+        const adapter = yield* UniswapTestnetAdapter;
         const pending = yield* adapter.resolveTransaction({
           txHash: TX,
           submittedAtMs: 1_000_000,
@@ -813,12 +924,13 @@ describe("transaction state machine", () => {
           timeoutMs: 300_000,
         });
         assert.deepEqual(notFound, { state: "unknown", detail: "tx-not-found" });
-      }),
+      }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+    },
   );
 
-  it.effect("settles confirmed and reverted receipts with exact gas cost", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
+  it.effect("settles confirmed and reverted receipts with exact gas cost", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
       fake.state.receipts.set(
         TX,
         receiptOf({
@@ -830,9 +942,7 @@ describe("transaction state machine", () => {
           logs: [policyPublishedLog({ blockNumber: BLOCK + 1, txHash: TX })],
         }),
       );
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+      const adapter = yield* UniswapTestnetAdapter;
       const confirmed = yield* adapter.resolveTransaction({
         txHash: TX,
         submittedAtMs: 0,
@@ -857,8 +967,8 @@ describe("transaction state machine", () => {
         timeoutMs: 300_000,
       });
       assert.equal(reverted.state, "reverted");
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -866,19 +976,11 @@ describe("transaction state machine", () => {
 // ---------------------------------------------------------------------------
 
 describe("broadcast grant gate", () => {
-  it.effect("refuses with a named reason when there is no grant, and records it", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            TARGET_ENV,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
-        ),
-      );
+  it.effect("refuses with a named reason when there is no grant, and records it", () => {
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const refusal = yield* adapter.broadcastIntent({ intent }).pipe(Effect.flip);
       assert.ok(typeof refusal !== "string");
@@ -888,68 +990,68 @@ describe("broadcast grant gate", () => {
       // The refusal is durable on the ledger record.
       const stored = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       assert.equal(stored.lastRefusal?.reason, "grant-missing");
-    }),
-  );
-
-  it.effect("refuses when the grant has lapsed by chain time", () =>
-    Effect.gen(function* () {
-      const expired = {
-        ...ENV,
-        T3_FORGE_GRANT_EXPIRES_AT_UNIX: String(BLOCK_TS), // equal means lapsed
-      };
-      const fake = makeFakeChain({});
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            expired,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          TARGET_ENV,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("refuses when the grant has lapsed by chain time", () => {
+    const expired = {
+      ...ENV,
+      T3_FORGE_GRANT_EXPIRES_AT_UNIX: String(BLOCK_TS), // equal means lapsed
+    };
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const refusal = yield* adapter.broadcastIntent({ intent }).pipe(Effect.flip);
       assert.ok(typeof refusal !== "string");
       assert.equal(refusal.reason, "grant-expired");
       assert.equal(broadcaster.sent.length, 0);
-    }),
-  );
-
-  it.effect("refuses when chain time cannot be read (fail closed)", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({ failBlockReads: true });
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          expired,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("refuses when chain time cannot be read (fail closed)", () => {
+    const fake = makeFakeChain({ failBlockReads: true });
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const refusal = yield* adapter.broadcastIntent({ intent }).pipe(Effect.flip);
       assert.ok(typeof refusal !== "string");
       assert.equal(refusal.reason, "chain-time-unavailable");
       assert.equal(broadcaster.sent.length, 0);
-    }),
-  );
-
-  it.effect("refuses an intent whose target is not the kind's one configured address", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          ENV,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("refuses an intent whose target is not the kind's one configured address", () => {
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const tampered: ForgeIntentRecord = {
         ...intent,
@@ -960,57 +1062,194 @@ describe("broadcast grant gate", () => {
       assert.equal(refusal.reason, "idempotency-conflict");
       assert.include(refusal.detail, "immutable");
       assert.equal(broadcaster.sent.length, 0);
-    }),
-  );
-
-  it.effect("refuses deposits and swaps over the grant caps", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          ENV,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
         ),
-      );
-      const overDeposit = yield* adapter.buildIntent({
+      ),
+    );
+  });
+
+  it.effect("refuses unprovable liquidity bounds and over-cap declarations at build", () => {
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
+      // A deposit over the grant cap refuses AT BUILD: the encoded on-chain
+      // maximum is the guard, and it may never sit above the cap floor.
+      const overDeposit = yield* adapter
+        .buildIntent({
+          kind: "add-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "1000000000",
+          deposits: [{ token: C0, amountRaw: "20000000000000000000000" }],
+          ownerAddress: `0x${"0e".repeat(20)}`,
+        })
+        .pipe(Effect.flip);
+      assert.equal(overDeposit.reason, "invalid-params");
+      assert.include(overDeposit.detail, "grant cap");
+
+      // Duplicate tokens sum before the cap is applied.
+      const summed = yield* adapter
+        .buildIntent({
+          kind: "add-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "1000",
+          deposits: [
+            { token: C0, amountRaw: "6000000000000000000000" },
+            { token: C0, amountRaw: "6000000000000000000000" },
+          ],
+          ownerAddress: `0x${"0e".repeat(20)}`,
+        })
+        .pipe(Effect.flip);
+      assert.include(summed.detail, "grant cap");
+
+      // No declared deposits: an unprovable add refuses.
+      const empty = yield* adapter
+        .buildIntent({
+          kind: "add-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "1000",
+          deposits: [],
+          ownerAddress: `0x${"0e".repeat(20)}`,
+        })
+        .pipe(Effect.flip);
+      assert.include(empty.detail, "declare its deposits");
+
+      // A token outside the pool currencies bounds nothing on chain.
+      const foreign = yield* adapter
+        .buildIntent({
+          kind: "add-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "1000",
+          deposits: [{ token: `0x${"99".repeat(20)}`, amountRaw: "1" }],
+          ownerAddress: `0x${"0e".repeat(20)}`,
+        })
+        .pipe(Effect.flip);
+      assert.include(foreign.detail, "pool currencies");
+
+      // A mint with no named owner refuses — no safe default exists.
+      const unowned = yield* adapter
+        .buildIntent({
+          kind: "add-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "1000",
+          deposits: [{ token: C0, amountRaw: "1" }],
+        })
+        .pipe(Effect.flip);
+      assert.include(unowned.detail, "owner");
+
+      // DECREASE is tokenId-keyed; without one there is nothing to encode.
+      // The type now requires tokenId, so this is a deliberate type-level
+      // violation by an untrusted caller.
+      const noTokenRequest = {
+        kind: "remove-liquidity",
+        environmentId: "env-1",
+        tickLower: -60,
+        tickUpper: 60,
+        liquidity: "1000",
+      } as unknown as Parameters<typeof adapter.buildIntent>[0];
+      const noToken = yield* adapter.buildIntent(noTokenRequest).pipe(Effect.flip);
+      assert.include(noToken.detail, "tokenId");
+
+      // Zero minimum outputs refuse.
+      const zeroMin = yield* adapter
+        .buildIntent({
+          kind: "remove-liquidity",
+          environmentId: "env-1",
+          tickLower: -60,
+          tickUpper: 60,
+          liquidity: "1000",
+          tokenId: "7",
+          minAmount0Raw: "0",
+        })
+        .pipe(Effect.flip);
+      assert.include(zeroMin.detail, "minAmount0Raw");
+
+      // Swap price limits: zero, sub-minimum and above-maximum all refuse.
+      const limit = 2n ** 96n;
+      for (const [name, badLimit] of [
+        ["zero", "0"],
+        ["below-min", "4295128739"],
+        ["above-max", "1461446703485210103287273052203988822378723970342"],
+      ] as const) {
+        const refused = yield* adapter
+          .buildIntent({
+            kind: "bounded-swap",
+            environmentId: "env-1",
+            zeroForOne: true,
+            amountSpecifiedRaw: "-2500000",
+            sqrtPriceLimitX96: badLimit,
+            quoteAmountRaw: "2500000",
+          })
+          .pipe(Effect.flip);
+        assert.equal(refused.reason, "invalid-params", name);
+        assert.include(refused.detail, "TickMath", name);
+      }
+      // Sanity: a mid-range limit builds.
+      const ok = yield* adapter.buildIntent({
+        kind: "bounded-swap",
+        environmentId: "env-1",
+        zeroForOne: true,
+        amountSpecifiedRaw: "-2500000",
+        sqrtPriceLimitX96: limit.toString(10),
+        quoteAmountRaw: "2500000",
+      });
+      assert.equal(ok.kind, "bounded-swap");
+      assert.equal(broadcaster.sent.length, 0);
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          ENV,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
+        ),
+      ),
+    );
+  });
+
+  it.effect("refuses at broadcast when the live grant no longer covers the spend", () => {
+    const env = { ...ENV };
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
+      // Build under the full caps, then shrink the live grant before the
+      // broadcast: the metadata passed build, the live cap still refuses.
+      const deposit = yield* adapter.buildIntent({
         kind: "add-liquidity",
         environmentId: "env-1",
         tickLower: -60,
         tickUpper: 60,
-        liquidity: "1000000000",
-        deposits: [{ token: C0, amountRaw: "20000000000000000000000" }],
+        liquidity: "1000",
+        deposits: [{ token: C0, amountRaw: "5000" }],
+        ownerAddress: `0x${"0e".repeat(20)}`,
       });
-      const depositRefusal = yield* adapter
-        .broadcastIntent({ intent: overDeposit })
-        .pipe(Effect.flip);
+      env.T3_FORGE_GRANT_TOKEN0_CAP_RAW = "1000";
+      const depositRefusal = yield* adapter.broadcastIntent({ intent: deposit }).pipe(Effect.flip);
       assert.ok(typeof depositRefusal !== "string");
       assert.equal(depositRefusal.reason, "over-cap");
       assert.include(depositRefusal.detail, "grant cap");
-
-      const uncovered = yield* adapter.buildIntent({
-        kind: "add-liquidity",
-        environmentId: "env-1",
-        tickLower: -60,
-        tickUpper: 60,
-        liquidity: "1000000000",
-        deposits: [{ token: `0x${"99".repeat(20)}`, amountRaw: "1" }],
-      });
-      const uncoveredRefusal = yield* adapter
-        .broadcastIntent({ intent: uncovered })
-        .pipe(Effect.flip);
-      assert.ok(typeof uncoveredRefusal !== "string");
-      assert.equal(uncoveredRefusal.reason, "over-cap");
-      assert.include(uncoveredRefusal.detail, "not covered by grant");
 
       const overSwap = yield* adapter.buildIntent({
         kind: "bounded-swap",
         environmentId: "env-1",
         zeroForOne: true,
         amountSpecifiedRaw: "-600000000",
+        sqrtPriceLimitX96: (2n ** 96n).toString(10),
         quoteAmountRaw: "600000000",
       });
       const swapRefusal = yield* adapter.broadcastIntent({ intent: overSwap }).pipe(Effect.flip);
@@ -1018,23 +1257,67 @@ describe("broadcast grant gate", () => {
       assert.equal(swapRefusal.reason, "over-cap");
       assert.include(swapRefusal.detail, "per-swap grant cap");
       assert.equal(broadcaster.sent.length, 0);
-    }),
-  );
-
-  it.effect("refuses once aggregate accounted gas reaches the grant budget", () =>
-    Effect.gen(function* () {
-      const env = { ...ENV };
-      const fake = makeFakeChain({});
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            env,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          env,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("refuses broadcast when the resolved grant retargets an approved grant", () => {
+    const env = { ...ENV };
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
+      const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
+      const sent = yield* adapter.broadcastIntent({ intent });
+      assert.equal(sent.record.status, "submitted");
+
+      // The operator repoints the hook env: same grantId, different binding.
+      // configLayer resolves the (mutable) env on every settings read, so the
+      // SAME adapter re-resolves the retargeted target — and the one guard
+      // database of this layer build must refuse the retarget.
+      env.T3_FORGE_SEPOLIA_HOOK_ADDRESS = `0x${"cd".repeat(19)}80`;
+      // A fresh idempotency key: the same pause request against the new
+      // target is a NEW intent, not a replay of the first.
+      const rebuilt = yield* adapter.buildIntent({
+        kind: "pause",
+        environmentId: "env-1",
+        idempotencyKey: "retarget-probe",
+      });
+      const refusal = yield* adapter.broadcastIntent({ intent: rebuilt }).pipe(Effect.flip);
+      assert.ok(typeof refusal !== "string");
+      assert.equal(refusal.reason, "wrong-target");
+      assert.include(refusal.detail, "refusing to retarget");
+      assert.equal(broadcaster.sent.length, 1);
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          env,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
+          admittedTestLedger,
+          freshGuardSqlite(),
+        ),
+      ),
+    );
+  });
+
+  it.effect("refuses once aggregate accounted gas reaches the grant budget", () => {
+    // The budget is tight FROM THE START (exactly one intent's gas cost): the
+    // immutable grant guard records this binding once, and exhaustion comes
+    // from the ledger's accounted gas — not from a post-hoc env change the
+    // guard would (correctly) refuse as a retarget.
+    const env = { ...ENV, T3_FORGE_GRANT_AGGREGATE_GAS_WEI: "100000000000000" };
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const first = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const sent = yield* adapter.broadcastIntent({ intent: first });
       assert.equal(sent.record.txHash, "0x" + "1".padStart(64, "0"));
@@ -1051,29 +1334,29 @@ describe("broadcast grant gate", () => {
       const settled = yield* adapter.reconcileIntent(first.intentId);
       assert.equal(settled?.status, "confirmed");
       assert.equal(settled?.gasCostWei, "100000000000000");
-      // Accounted 1e14 wei; squeeze the budget to exactly that.
-      env.T3_FORGE_GRANT_AGGREGATE_GAS_WEI = "100000000000000";
+      // Accounted 1e14 wei — exactly the whole budget: the next intent
+      // cannot reserve anything.
       const second = yield* adapter.buildIntent({ kind: "unpause", environmentId: "env-1" });
       const refusal = yield* adapter.broadcastIntent({ intent: second }).pipe(Effect.flip);
       assert.ok(typeof refusal !== "string");
       assert.equal(refusal.reason, "budget-exhausted");
       assert.equal(broadcaster.sent.length, 1);
-    }),
-  );
-
-  it.effect("broadcasts through the signer seam exactly once, then reconciles idempotently", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          env,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("broadcasts through the signer seam exactly once, then reconciles idempotently", () => {
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const first = yield* adapter.broadcastIntent({ intent });
       assert.equal(first.record.status, "submitted");
@@ -1120,22 +1403,22 @@ describe("broadcast grant gate", () => {
       // Reconcile again: terminal state is immutable, gas never recounted.
       const again2 = yield* adapter.reconcileIntent(intent.intentId);
       assert.deepEqual(again2, settled);
-    }),
-  );
-
-  it.effect("an unknown (timed-out) intent can still settle later", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const broadcaster = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            fake.shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          ENV,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("an unknown (timed-out) intent can still settle later", () => {
+    const fake = makeFakeChain({});
+    const broadcaster = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "unpause", environmentId: "env-1" });
       const sent = yield* adapter.broadcastIntent({ intent });
       // Node neither knows the tx nor has a receipt → unknown.
@@ -1148,21 +1431,27 @@ describe("broadcast grant gate", () => {
       );
       const settled = yield* adapter.reconcileIntent(intent.intentId);
       assert.equal(settled?.status, "confirmed");
-    }),
-  );
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          fake.shape,
+          ENV,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster.shape),
+        ),
+      ),
+    );
+  });
 
-  it.effect("refuses with broadcaster-missing when no signer is wired", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({});
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
-      );
+  it.effect("refuses with broadcaster-missing when no signer is wired", () => {
+    const fake = makeFakeChain({});
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const refusal = yield* adapter.broadcastIntent({ intent }).pipe(Effect.flip);
       assert.ok(typeof refusal !== "string");
       assert.equal(refusal.reason, "broadcaster-missing");
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1172,21 +1461,21 @@ describe("broadcast grant gate", () => {
 describe("swap fee evidence", () => {
   const SWAP_TX = "0x" + "ab".repeat(32);
 
-  it.effect("reports total fee while executed LP and protocol split stays unknown", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({
-        hook: {
-          revision: 1n,
-          expiry: BigInt(BLOCK_TS + 600),
-          evidenceDigest: EVIDENCE_DIGEST as Hex,
-          policyActive: true,
-          paused: false,
-          effectiveFee: 500,
-          owner: `0x${"aa".repeat(20)}` as Hex,
-          operator: `0x${"77".repeat(20)}` as Hex,
-        },
-        effectiveFeeAtBlock: () => 500,
-      });
+  it.effect("reports total fee while executed LP and protocol split stays unknown", () => {
+    const fake = makeFakeChain({
+      hook: {
+        revision: 1n,
+        expiry: BigInt(BLOCK_TS + 600),
+        evidenceDigest: EVIDENCE_DIGEST as Hex,
+        policyActive: true,
+        paused: false,
+        effectiveFee: 500,
+        owner: `0x${"aa".repeat(20)}` as Hex,
+        operator: `0x${"77".repeat(20)}` as Hex,
+      },
+      effectiveFeeAtBlock: () => 500,
+    });
+    return Effect.gen(function* () {
       fake.state.receipts.set(
         SWAP_TX,
         receiptOf({
@@ -1199,7 +1488,6 @@ describe("swap fee evidence", () => {
         }),
       );
       const read = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
         Effect.flatMap((adapter) => adapter.readSwapFeeEvidence(SWAP_TX)),
       );
       assert.equal(read.status, "ok");
@@ -1211,14 +1499,14 @@ describe("swap fee evidence", () => {
       assert.equal(swap.lpFeeHundredthsBps, null);
       assert.equal(swap.lpFeeAsOf, null);
       assert.equal(swap.protocolFeeHundredthsBps, null);
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("baseline fee 3000 after expiry, and protocol fee honestly null when unknown", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({
-        effectiveFeeAtBlock: () => 3000,
-      });
+  it.effect("baseline fee 3000 after expiry, and protocol fee honestly null when unknown", () => {
+    const fake = makeFakeChain({
+      effectiveFeeAtBlock: () => 3000,
+    });
+    return Effect.gen(function* () {
       fake.state.receipts.set(
         SWAP_TX,
         receiptOf({
@@ -1231,7 +1519,6 @@ describe("swap fee evidence", () => {
         }),
       );
       const read = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
         Effect.flatMap((adapter) => adapter.readSwapFeeEvidence(SWAP_TX)),
       );
       assert.equal(read.status, "ok");
@@ -1241,14 +1528,14 @@ describe("swap fee evidence", () => {
       assert.equal(swap.totalSwapFeeHundredthsBps, 3500);
       assert.equal(swap.lpFeeHundredthsBps, null);
       assert.equal(swap.protocolFeeHundredthsBps, null);
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
-  it.effect("does not substitute latest state for executed fee evidence", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeChain({
-        effectiveFeeAtBlock: () => "fail",
-      });
+  it.effect("does not substitute latest state for executed fee evidence", () => {
+    const fake = makeFakeChain({
+      effectiveFeeAtBlock: () => "fail",
+    });
+    return Effect.gen(function* () {
       fake.state.receipts.set(
         SWAP_TX,
         receiptOf({
@@ -1261,7 +1548,6 @@ describe("swap fee evidence", () => {
         }),
       );
       const read = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(adapterLayer(fake.shape, ENV)),
         Effect.flatMap((adapter) => adapter.readSwapFeeEvidence(SWAP_TX)),
       );
       assert.equal(read.status, "ok");
@@ -1271,8 +1557,8 @@ describe("swap fee evidence", () => {
       assert.equal(swap.lpFeeAsOf, null);
       assert.equal(swap.lpFeeHundredthsBps, null);
       assert.equal(fake.state.calls.filter((call) => call.method === "eth_call").length, 0);
-    }),
-  );
+    }).pipe(Effect.provide(adapterLayer(fake.shape, ENV)));
+  });
 
   it.effect("marks foreign-pool swaps and refuses receipts without swaps", () =>
     Effect.gen(function* () {
@@ -1314,46 +1600,38 @@ describe("swap fee evidence", () => {
 });
 
 describe("execution admission regressions", () => {
-  it.effect("production in-memory ledger cannot reach the signer", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            makeFakeChain({}).shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, fake.shape),
-            ForgeIntentLedgerInMemory,
-          ),
-        ),
-      );
+  it.effect("production in-memory ledger cannot reach the signer", () => {
+    const fake = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const refusal = yield* adapter.broadcastIntent({ intent }).pipe(Effect.flip);
       assert.ok(typeof refusal !== "string");
       assert.equal(refusal.reason, "execution-unavailable");
       assert.equal(fake.sent.length, 0);
-    }),
-  );
-
-  it.effect("an ambiguous broadcaster failure leaves a claimed intent unrepeatable", () =>
-    Effect.gen(function* () {
-      let attempts = 0;
-      const broadcaster: SignedTransactionBroadcasterShape = {
-        broadcast: () =>
-          Effect.gen(function* () {
-            attempts++;
-            return yield* Effect.fail("response lost after submission");
-          }),
-      };
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            makeFakeChain({}).shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, broadcaster),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          makeFakeChain({}).shape,
+          ENV,
+          Layer.succeed(SignedTransactionBroadcaster, fake.shape),
+          ForgeIntentLedgerInMemory,
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("an ambiguous broadcaster failure leaves a claimed intent unrepeatable", () => {
+    let attempts = 0;
+    const broadcaster: SignedTransactionBroadcasterShape = {
+      broadcast: () =>
+        Effect.gen(function* () {
+          attempts++;
+          return yield* Effect.fail("response lost after submission");
+        }),
+    };
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       yield* adapter.broadcastIntent({ intent }).pipe(Effect.flip);
       const second = yield* adapter.broadcastIntent({ intent }).pipe(Effect.flip);
@@ -1361,21 +1639,21 @@ describe("execution admission regressions", () => {
       assert.equal(second.reason, "idempotency-conflict");
       assert.equal(attempts, 1);
       assert.equal((yield* adapter.reconcileIntent(intent.intentId))?.status, "unknown");
-    }),
-  );
-
-  it.effect("rejects modified calldata and a wrong RPC chain before signing", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeBroadcaster();
-      const adapter = yield* UniswapTestnetAdapter.pipe(
-        Effect.provide(
-          adapterLayer(
-            makeFakeChain({ chainIdHex: "0x1" }).shape,
-            ENV,
-            Layer.succeed(SignedTransactionBroadcaster, fake.shape),
-          ),
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          makeFakeChain({}).shape,
+          ENV,
+          Layer.succeed(SignedTransactionBroadcaster, broadcaster),
         ),
-      );
+      ),
+    );
+  });
+
+  it.effect("rejects modified calldata and a wrong RPC chain before signing", () => {
+    const fake = makeFakeBroadcaster();
+    return Effect.gen(function* () {
+      const adapter = yield* UniswapTestnetAdapter;
       const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
       const mutated = yield* adapter
         .broadcastIntent({ intent: { ...intent, unsigned: { ...intent.unsigned, data: "0x" } } })
@@ -1386,30 +1664,113 @@ describe("execution admission regressions", () => {
       assert.ok(typeof wrongChain !== "string");
       assert.equal(wrongChain.reason, "wrong-target");
       assert.equal(fake.sent.length, 0);
-    }),
-  );
-});
-
-it.effect("concurrent attempts admit only one broadcast", () =>
-  Effect.gen(function* () {
-    const fake = makeFakeBroadcaster();
-    const adapter = yield* UniswapTestnetAdapter.pipe(
+    }).pipe(
       Effect.provide(
         adapterLayer(
-          makeFakeChain({}).shape,
+          makeFakeChain({ chainIdHex: "0x1" }).shape,
           ENV,
           Layer.succeed(SignedTransactionBroadcaster, fake.shape),
         ),
       ),
     );
-    const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
-    yield* Effect.all(
-      [
-        adapter.broadcastIntent({ intent }).pipe(Effect.exit),
-        adapter.broadcastIntent({ intent }).pipe(Effect.exit),
-      ],
-      { concurrency: "unbounded" },
+  });
+  it.effect(
+    "the durable SQLite ledger refuses claims without enforceable gas, then admits exactly one",
+    () => {
+      const fake = makeFakeBroadcaster();
+      const sqliteLedger = ForgeIntentLedgerSqliteLive.pipe(Layer.provide(migratedSqliteLayer()));
+      const guard = freshGuardSqlite();
+      return Effect.gen(function* () {
+        const adapter = yield* UniswapTestnetAdapter;
+        const ledger = yield* ForgeIntentLedger;
+
+        // A freshly built record carries no gas fields (the prepared pass has
+        // not run): the claim must lose and nothing reaches the signer.
+        const bare = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
+        const bareRefusal = yield* adapter.broadcastIntent({ intent: bare }).pipe(Effect.flip);
+        assert.ok(typeof bareRefusal !== "string");
+        assert.equal(bareRefusal.reason, "idempotency-conflict");
+        assert.include(bareRefusal.detail, "gas reservation was refused");
+        assert.equal(fake.sent.length, 0);
+        // The losing claim does not consume the draft: after the (simulated)
+        // prepared-transaction pass stamps gas fields, the same intent claims.
+        const prepared: ForgeIntentRecord = {
+          ...bare,
+          unsigned: {
+            ...bare.unsigned,
+            gasLimit: "100000",
+            maxFeePerGasWei: "2000000000",
+            maxPriorityFeePerGasWei: "1000000000",
+          },
+        };
+        yield* ledger.upsert(prepared);
+        const sent = yield* adapter.broadcastIntent({ intent: prepared });
+        assert.equal(sent.record.status, "submitted");
+        assert.equal(fake.sent.length, 1);
+
+        // A SECOND intent, gas-stamped, admits once under concurrency.
+        const other = yield* adapter.buildIntent({ kind: "unpause", environmentId: "env-1" });
+        const otherPrepared: ForgeIntentRecord = {
+          ...other,
+          unsigned: { ...other.unsigned, gasLimit: "100000", maxFeePerGasWei: "2000000000" },
+        };
+        yield* ledger.upsert(otherPrepared);
+        yield* Effect.all(
+          [
+            adapter.broadcastIntent({ intent: otherPrepared }).pipe(Effect.exit),
+            adapter.broadcastIntent({ intent: otherPrepared }).pipe(Effect.exit),
+          ],
+          { concurrency: "unbounded" },
+        );
+        // One broadcast for the bare intent, exactly one more for the pair.
+        assert.equal(fake.sent.length, 2);
+      }).pipe(
+        Effect.provide(
+          adapterLayer(
+            makeFakeChain({}).shape,
+            ENV,
+            Layer.succeed(SignedTransactionBroadcaster, fake.shape),
+            sqliteLedger,
+            guard,
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect("a claimed intent that cannot be signed stays claimed: reservations never leak", () => {
+    const sqliteLedger = ForgeIntentLedgerSqliteLive.pipe(Layer.provide(migratedSqliteLayer()));
+    return Effect.gen(function* () {
+      // The production signer seam refuses — but the claim has already
+      // happened. The record must be unknown with its reservation held,
+      // and no retry may reach the (future) signer again.
+      const adapter = yield* UniswapTestnetAdapter;
+      const ledger = yield* ForgeIntentLedger;
+      const intent = yield* adapter.buildIntent({ kind: "pause", environmentId: "env-1" });
+      const prepared: ForgeIntentRecord = {
+        ...intent,
+        unsigned: { ...intent.unsigned, gasLimit: "100000", maxFeePerGasWei: "2000000000" },
+      };
+      yield* ledger.upsert(prepared);
+      const refusal = yield* adapter.broadcastIntent({ intent: prepared }).pipe(Effect.flip);
+      assert.ok(typeof refusal !== "string");
+      assert.equal(refusal.reason, "broadcaster-missing");
+      // The durable claim survived the refusal: unknown, reserved, stuck.
+      const stored = yield* ledger.find(intent.intentId);
+      assert.equal(stored?.status, "unknown");
+      const retry = yield* adapter.broadcastIntent({ intent: prepared }).pipe(Effect.flip);
+      assert.ok(typeof retry !== "string");
+      assert.equal(retry.reason, "idempotency-conflict");
+    }).pipe(
+      Effect.provide(
+        adapterLayer(
+          makeFakeChain({}).shape,
+          ENV,
+          SignedTransactionBroadcasterUnavailable,
+          sqliteLedger,
+          freshGuardSqlite(),
+        ),
+      ),
     );
-    assert.equal(fake.sent.length, 1);
-  }),
-);
+  });
+});

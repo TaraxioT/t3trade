@@ -52,9 +52,21 @@ import {
 import {
   SEPOLIA_CHAIN_ID,
   resolveForgeTestnetSettings,
+  type ForgeSpendGrant,
   type ForgeTestnetSettings,
   type ForgeTestnetTarget,
 } from "./SepoliaTarget.ts";
+import {
+  POSITION_MANAGER_ACTIONS,
+  V4_MAX_SQRT_PRICE,
+  V4_MIN_SQRT_PRICE,
+  encodeDecreaseLiquidityParams,
+  encodeIncreaseLiquidityParams,
+  encodeMintPositionParams,
+  encodeModifyLiquiditiesUnlockData,
+  positionManagerAbi,
+  swapRouteAbi,
+} from "./PeripheryAbi.ts";
 
 // ---------------------------------------------------------------------------
 // The fixed hook's ABI (contracts/forge/src/ForgeFeeHook.sol, frozen in 4a)
@@ -95,19 +107,8 @@ const poolManagerAbi = parseAbi([
   "event ModifyLiquidity(bytes32 indexed id, address indexed sender, int24 tickLower, int24 tickUpper, int256 liquidityDelta, bytes32 salt)",
 ]) as unknown as Abi;
 
-/** PositionManager.modifyLiquidity has the same shape as the manager's. */
-const positionManagerAbi = parseAbi([
-  "function modifyLiquidity((address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) key, (int24 tickLower, int24 tickUpper, int256 liquidityDelta, bytes32 salt) params, bytes hookData) returns ((int128 amount0, int128 amount1) callerDelta, (int128 amount0, int128 amount1) feesAccrued)",
-]) as unknown as Abi;
-
-/**
- * The bounded-swap route: the official Sepolia `PoolSwapTest` — one call, no
- * Universal Router command encoding. `TestSettings(false, false)` means
- * settle with transfers, no claims.
- */
-const swapRouteAbi = parseAbi([
-  "function swap((address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) key, (bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96) params, (bool takeClaims, bool settleUsingBurn) testSettings, bytes hookData) returns ((int128 amount0, int128 amount1) delta)",
-]) as unknown as Abi;
+// The PositionManager (modifyLiquidities) and PoolSwapTest (swap) fragments
+// live in PeripheryAbi.ts, pinned against the deployed verified sources.
 
 // ---------------------------------------------------------------------------
 // Pool identity, computed locally (mirrors the hook's own pure functions)
@@ -216,6 +217,13 @@ export type ForgeIntentRequest =
       readonly salt?: string;
       /** Token deposits this add may move; grant-capped at broadcast. */
       readonly deposits: ReadonlyArray<{ readonly token: string; readonly amountRaw: string }>;
+      /** Present to add to an existing NFT position; absent to MINT a new one. */
+      readonly tokenId?: string;
+      /**
+       * Recipient of the minted position NFT. Required when minting — there is
+       * no safe default for who owns a position.
+       */
+      readonly ownerAddress?: string;
       readonly idempotencyKey?: string;
     }
   | {
@@ -225,6 +233,11 @@ export type ForgeIntentRequest =
       readonly tickUpper: number;
       readonly liquidity: string;
       readonly salt?: string;
+      /** The existing NFT position being decreased; DECREASE is tokenId-keyed. */
+      readonly tokenId: string;
+      /** Minimum outputs; each defaults to 1 raw unit when omitted. */
+      readonly minAmount0Raw?: string;
+      readonly minAmount1Raw?: string;
       readonly idempotencyKey?: string;
     }
   | {
@@ -233,7 +246,12 @@ export type ForgeIntentRequest =
       readonly zeroForOne: boolean;
       /** Exact-in (negative) or exact-out (positive), raw, never zero. */
       readonly amountSpecifiedRaw: string;
-      readonly sqrtPriceLimitX96?: string;
+      /**
+       * Required, nonzero, inside the open TickMath sqrt-price interval. A
+       * zero limit is outside the usable range; bounded swaps are
+       * machine-generated and always carry an explicit bound.
+       */
+      readonly sqrtPriceLimitX96: string;
       /** Declared quote-leg size of the swap, raw; grant-capped at broadcast. */
       readonly quoteAmountRaw: string;
       readonly idempotencyKey?: string;
@@ -251,6 +269,18 @@ export interface ForgeUnsignedTransaction {
   readonly to: string;
   readonly data: Hex;
   readonly valueWei: string;
+  /**
+   * Enforceable gas ceiling, stamped by the future prepared-transaction pass.
+   * A claim without these fields refuses: an unenforceable reservation is
+   * worse than none. EIP-1559 takes gasLimit x maxFeePerGasWei; legacy takes
+   * gasLimit x gasPriceWei.
+   */
+  readonly gasLimit?: string;
+  readonly maxFeePerGasWei?: string;
+  readonly maxPriorityFeePerGasWei?: string;
+  readonly gasPriceWei?: string;
+  /** Assigned when a signer prepares a concrete transaction. */
+  readonly nonce?: number;
 }
 
 export interface ForgeReceiptSnapshot {
@@ -603,10 +633,43 @@ export interface ForgeIntentLedgerShape {
   readonly listRecent: (limit?: number) => Effect.Effect<ReadonlyArray<ForgeIntentRecord>>;
   /** Sum of gasCostWei across records whose gas has been accounted. */
   readonly totalAccountedGasWei: Effect.Effect<string>;
+  /**
+   * Release a settled intent's gas reservation (actual cost recorded via the
+   * settled record). Optional: only durable ledgers carry reservations.
+   */
+  readonly settleGas?: (intentId: string, gasCostWei: string) => Effect.Effect<void>;
+  /** Durable scoped control state (the persistent local pause). Optional. */
+  readonly readPaused?: (scope: string) => Effect.Effect<boolean>;
+  readonly writePaused?: (scope: string, paused: boolean) => Effect.Effect<void>;
 }
 
 export class ForgeIntentLedger extends Context.Service<ForgeIntentLedger, ForgeIntentLedgerShape>()(
   "t3/trading/forge/UniswapTestnetAdapter/ForgeIntentLedger",
+) {}
+
+// ---------------------------------------------------------------------------
+// The immutable approved-grant guard seam
+// ---------------------------------------------------------------------------
+
+export type ForgeGrantGuardVerdict =
+  | { readonly status: "recorded" }
+  | { readonly status: "verified" }
+  | { readonly status: "retarget"; readonly detail: string };
+
+export interface ForgeGrantGuardShape {
+  /**
+   * Record the first sighting of a grantId, or verify that the resolved grant
+   * still matches it in every binding field (chain, hook, operator, caps,
+   * budget, expiry). The durable implementation is INSERT-only: changing the
+   * configured target can never silently retarget an approved grant.
+   */
+  readonly recordOrVerify: (
+    grant: ForgeSpendGrant,
+  ) => Effect.Effect<ForgeGrantGuardVerdict, string>;
+}
+
+export class ForgeGrantGuard extends Context.Service<ForgeGrantGuard, ForgeGrantGuardShape>()(
+  "t3/trading/forge/UniswapTestnetAdapter/ForgeGrantGuard",
 ) {}
 
 /**
@@ -731,6 +794,28 @@ const canonicalKey = (request: ForgeIntentRequest): string => {
 // The adapter service
 // ---------------------------------------------------------------------------
 
+/**
+ * How long a built liquidity intent stays submittable: the deadline encoded
+ * into modifyLiquidities is build time plus this window. Generous enough for
+ * the supervised broadcast flow; a draft that outlives it reverts on chain
+ * rather than executing — the safe direction.
+ */
+export const FORGE_LIQUIDITY_DEADLINE_SECONDS = 3600;
+
+/** Validate one optional minimum-output leg; default 1 raw unit, never zero. */
+const boundedMinOut = (
+  raw: string | undefined,
+  name: string,
+): Effect.Effect<string, ForgeIntentBuildError> =>
+  raw === undefined
+    ? Effect.succeed("1")
+    : isNonNegativeIntString(raw) && raw !== "0"
+      ? Effect.succeed(raw)
+      : new ForgeIntentBuildError({
+          reason: "invalid-params",
+          detail: `${name} must be a positive integer string`,
+        });
+
 export interface UniswapTestnetAdapterShape {
   readonly settings: Effect.Effect<ForgeTestnetSettings>;
 
@@ -808,6 +893,9 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
   const transport = yield* ForgeSepoliaTransport;
   const ledger = yield* ForgeIntentLedger;
   const broadcaster = yield* SignedTransactionBroadcaster;
+  // Mandatory: without immutable approved-grant verification the broadcast
+  // layer cannot even be constructed — the fail-closed shape of this seam.
+  const grantGuard = yield* ForgeGrantGuard;
 
   const rpc = (method: string, params: ReadonlyArray<unknown>): Effect.Effect<unknown, string> =>
     transport.request(method, params);
@@ -1375,7 +1463,21 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
           params.tickUpper = String(request.tickUpper);
           params.liquidity = request.liquidity;
           params.salt = request.salt ?? ZERO_BYTES32;
+          to = target.positionManager;
+
+          const poolCurrencies: ReadonlyArray<`0x${string}`> = [
+            target.poolKey.currency0,
+            target.poolKey.currency1,
+          ];
+          // The on-chain pull/payout bounds, derived from declared deposits.
+          // An add with no declared deposits is unprovable and refuses: the
+          // encoded maxima, not self-reported metadata, are the guard.
+          const depositByToken = new Map<string, string>();
           if (request.kind === "add-liquidity") {
+            yield* validate(
+              request.deposits.length > 0,
+              "a liquidity add must declare its deposits",
+            );
             for (const deposit of request.deposits) {
               yield* validate(
                 isAddress(deposit.token),
@@ -1385,29 +1487,107 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
                 isNonNegativeIntString(deposit.amountRaw),
                 `deposit amount for ${deposit.token} must be a non-negative integer string`,
               );
+              const token = deposit.token.toLowerCase() as `0x${string}`;
+              yield* validate(
+                poolCurrencies.includes(token),
+                `deposit token ${deposit.token} is not one of the pool currencies`,
+              );
+              // Duplicate tokens sum: the aggregate the cap must bound.
+              const existing = depositByToken.get(token) ?? "0";
+              depositByToken.set(
+                token,
+                (BigInt(existing) + BigInt(deposit.amountRaw)).toString(10),
+              );
             }
-            spend.deposits = request.deposits;
+            // The encoded maxima must sit at or below the grant cap floor at
+            // build time; the broadcast re-checks against the live grant.
+            const buildGrant = settings.grant;
+            if (buildGrant !== undefined) {
+              for (const [token, amount] of depositByToken) {
+                const cap = buildGrant.tokenCaps.find((entry) => entry.token === token);
+                yield* validate(
+                  cap !== undefined && BigInt(amount) <= BigInt(cap.maxAmountRaw),
+                  `deposit ${amount} exceeds the grant cap ${cap?.maxAmountRaw ?? "(none)"} for ${token}`,
+                );
+              }
+            }
           }
-          const liquidityDelta =
+          const amount0 = depositByToken.get(target.poolKey.currency0) ?? "0";
+          const amount1 = depositByToken.get(target.poolKey.currency1) ?? "0";
+
+          const deadlineUnix = Math.floor(createdAtMs / 1000) + FORGE_LIQUIDITY_DEADLINE_SECONDS;
+          params.deadlineUnix = String(deadlineUnix);
+          params.amount0Bound = request.kind === "add-liquidity" ? amount0 : "0";
+          params.amount1Bound = request.kind === "add-liquidity" ? amount1 : "0";
+
+          // One action per intent: MINT a new position, or INCREASE/DECREASE
+          // an existing tokenId, through the deployed PositionManager's
+          // modifyLiquidities (see PeripheryAbi for the pin).
+          const nowAction =
             request.kind === "add-liquidity"
-              ? BigInt(request.liquidity)
-              : -BigInt(request.liquidity);
-          to = target.positionManager;
+              ? request.tokenId === undefined
+                ? POSITION_MANAGER_ACTIONS.MINT_POSITION
+                : POSITION_MANAGER_ACTIONS.INCREASE_LIQUIDITY
+              : POSITION_MANAGER_ACTIONS.DECREASE_LIQUIDITY;
+          if (request.kind === "add-liquidity" && request.tokenId !== undefined) {
+            yield* validate(
+              isNonNegativeIntString(request.tokenId),
+              "tokenId must be a non-negative integer string",
+            );
+            params.tokenId = request.tokenId;
+            params.action = "increase";
+          } else if (request.kind === "add-liquidity") {
+            yield* validate(
+              request.ownerAddress !== undefined && isAddress(request.ownerAddress),
+              "a minted position must name an owner address",
+            );
+            params.action = "mint";
+            params.owner = request.ownerAddress!.toLowerCase();
+          } else {
+            yield* validate(
+              isNonNegativeIntString(request.tokenId),
+              "remove-liquidity requires the NFT position tokenId (a non-negative integer string)",
+            );
+            params.tokenId = request.tokenId;
+            params.action = "decrease";
+          }
+
+          const paramBytes =
+            request.kind === "add-liquidity"
+              ? request.tokenId === undefined
+                ? encodeMintPositionParams({
+                    poolKey: target.poolKey,
+                    tickLower: request.tickLower,
+                    tickUpper: request.tickUpper,
+                    liquidity: request.liquidity,
+                    amount0Max: amount0,
+                    amount1Max: amount1,
+                    owner: params.owner! as `0x${string}`,
+                  })
+                : encodeIncreaseLiquidityParams({
+                    tokenId: request.tokenId,
+                    liquidity: request.liquidity,
+                    amount0Max: amount0,
+                    amount1Max: amount1,
+                  })
+              : encodeDecreaseLiquidityParams({
+                  tokenId: request.tokenId,
+                  liquidity: request.liquidity,
+                  // A nonzero minimum-out per leg: >0 default or an explicit
+                  // user value. Zero would accept a fully-dusted removal.
+                  amount0Min: yield* boundedMinOut(request.minAmount0Raw, "minAmount0Raw"),
+                  amount1Min: yield* boundedMinOut(request.minAmount1Raw, "minAmount1Raw"),
+                });
+          if (request.kind === "add-liquidity") spend.deposits = request.deposits;
           data = encodeFunctionData({
             abi: positionManagerAbi,
-            functionName: "modifyLiquidity",
+            functionName: "modifyLiquidities",
             args: [
-              poolKeyArgs as unknown as readonly string[],
-              [
-                request.tickLower,
-                request.tickUpper,
-                liquidityDelta,
-                (request.salt ?? ZERO_BYTES32) as Hex,
-              ],
-              "0x",
+              encodeModifyLiquiditiesUnlockData([nowAction], [paramBytes]),
+              BigInt(deadlineUnix),
             ],
           });
-          summary = `${request.kind === "add-liquidity" ? "add" : "remove"} liquidity ${request.liquidity} ticks [${request.tickLower}, ${request.tickUpper}]`;
+          summary = `${request.kind === "add-liquidity" ? (params.action === "mint" ? "mint" : "increase") : "decrease"} liquidity ${request.liquidity}${params.tokenId === undefined ? ` ticks [${request.tickLower}, ${request.tickUpper}]` : ` position ${params.tokenId}`}`;
           break;
         }
         case "bounded-swap": {
@@ -1420,14 +1600,24 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
             isNonNegativeIntString(request.quoteAmountRaw),
             "quoteAmountRaw must be a non-negative integer string",
           );
-          if (request.sqrtPriceLimitX96 !== undefined) {
-            yield* validate(
-              isNonNegativeIntString(request.sqrtPriceLimitX96),
-              "sqrtPriceLimitX96 must be a non-negative integer string",
-            );
-          }
+          // An omitted or zero price limit is outside the usable TickMath
+          // range and would revert (or bound nothing); machine-generated
+          // bounded swaps always carry an explicit limit inside the open
+          // interval. Direction-vs-current-price cannot be proven offline —
+          // the interval bound is the hard execution bound, and zero fails
+          // it like any other out-of-range value.
+          yield* validate(
+            isNonNegativeIntString(request.sqrtPriceLimitX96),
+            "sqrtPriceLimitX96 is required and must be a non-negative integer string",
+          );
+          const limit = BigInt(request.sqrtPriceLimitX96);
+          yield* validate(
+            limit > V4_MIN_SQRT_PRICE && limit < V4_MAX_SQRT_PRICE,
+            `sqrtPriceLimitX96 must lie strictly inside the TickMath interval (${V4_MIN_SQRT_PRICE}, ${V4_MAX_SQRT_PRICE})`,
+          );
           params.zeroForOne = String(request.zeroForOne);
           params.amountSpecifiedRaw = request.amountSpecifiedRaw;
+          params.sqrtPriceLimitX96 = request.sqrtPriceLimitX96;
           params.quoteAmountRaw = request.quoteAmountRaw;
           spend.swapQuoteAmountRaw = request.quoteAmountRaw;
           to = target.swapRoute;
@@ -1436,11 +1626,7 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
             functionName: "swap",
             args: [
               poolKeyArgs as unknown as readonly string[],
-              [
-                request.zeroForOne,
-                BigInt(request.amountSpecifiedRaw),
-                BigInt(request.sqrtPriceLimitX96 ?? "0"),
-              ],
+              [request.zeroForOne, BigInt(request.amountSpecifiedRaw), limit],
               [false, false],
               "0x",
             ],
@@ -1558,6 +1744,26 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
         });
       }
 
+      // Immutable grant binding: the FIRST recorded sighting of this grantId
+      // is the authority. A resolved grant that differs in any binding field
+      // (chain, hook, operator, caps, budget, expiry) — for example after a
+      // T3_FORGE_SEPOLIA_HOOK_ADDRESS change — is a retarget and refuses. A
+      // guard that cannot answer is treated the same way: fail closed.
+      const verdict = yield* grantGuard.recordOrVerify(grant).pipe(
+        Effect.catch((cause): Effect.Effect<ForgeGrantGuardVerdict, never> =>
+          Effect.succeed({
+            status: "retarget",
+            detail: `immutable grant verification failed: ${String(cause)}`,
+          }),
+        ),
+      );
+      if (verdict.status === "retarget") {
+        return yield* new ForgeBroadcastRefused({
+          reason: "wrong-target",
+          detail: verdict.detail,
+        });
+      }
+
       // Per-token deposit caps and the per-swap quote cap.
       if (intent.spend.deposits !== undefined) {
         for (const deposit of intent.spend.deposits) {
@@ -1595,17 +1801,17 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
         });
       }
 
-      if (
-        intent.kind === "add-liquidity" ||
-        intent.kind === "remove-liquidity" ||
-        intent.kind === "bounded-swap"
-      ) {
-        return yield* new ForgeBroadcastRefused({
-          reason: "execution-unavailable",
-          detail:
-            "liquidity ABI and on-chain token bounds are not verified; this route cannot execute",
-        });
-      }
+      // The execution ladder every intent — policy, liquidity, or swap — now
+      // climbs: (1) validated, bounded calldata encoded at build time against
+      // the pinned deployed periphery; (2) the immutable approved-grant
+      // binding verified above; (3) the MANDATORY durable admission claim
+      // below (an in-memory or missing claim implementation refuses, and a
+      // claim on a record without enforceable gas fields refuses — until the
+      // prepared-transaction pass stamps them, nothing can pass here); and
+      // (4) the signer-broadcaster seam, which still refuses with
+      // broadcaster-missing until the supervised live pass wires a
+      // grant-controlled signer. Nothing new can execute; the machinery above
+      // it is real.
       if (ledger.durableAdmission === undefined) {
         return yield* new ForgeBroadcastRefused({
           reason: "execution-unavailable",
@@ -1697,6 +1903,20 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
           receipt: resolution.receipt,
         };
         yield* ledger.upsert(settled);
+        // Release the admission reservation against the actual cost. Failure
+        // here leaves the reservation held — the safe direction — and the
+        // open-intent sweep settles it later.
+        if (ledger.settleGas !== undefined) {
+          yield* ledger
+            .settleGas(settled.intentId, resolution.receipt.gasCostWei)
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  `forge intent ${settled.intentId} gas settle failed: ${String(cause)}`,
+                ),
+              ),
+            );
+        }
         return settled;
       }
       if (resolution.state === "unknown" && record.status !== "unknown") {

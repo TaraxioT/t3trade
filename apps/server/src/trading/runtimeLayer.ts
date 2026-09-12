@@ -90,6 +90,21 @@ import {
   ForgeGraphTransportLive,
 } from "./forge/GraphSource.ts";
 import { ForgeSourceReadsLive } from "./forge/ForgeSourceReads.ts";
+import {
+  FeePolicyConfigLive,
+  FeePolicyService,
+  FeePolicyServiceLive,
+} from "./forge/FeePolicyService.ts";
+import {
+  ForgeTestnetConfigLive,
+  ForgeSepoliaTransportLive,
+  SignedTransactionBroadcasterUnavailable,
+  UniswapTestnetAdapterLive,
+} from "./forge/UniswapTestnetAdapter.ts";
+import {
+  ForgeGrantGuardLive,
+  ForgeIntentLedgerSqliteLive,
+} from "./forge/ForgeIntentLedgerSqlite.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 
@@ -129,6 +144,55 @@ const forgeReactor = ForgeReactorLive.pipe(
   Layer.provide(forgeWindow),
   Layer.provide(forgeStoreConfig),
 );
+
+// T3 Forge F3: the durable intent machinery. SQLite ledger + immutable grant
+// guard on the shared SqlClient (satisfied where TradingLayerLive is
+// provided, exactly like the other SQL-backed trading services), the Sepolia
+// adapter over the node-backed HTTP transport, and the fee-policy service on
+// top. The broadcaster is the honest refusal — no signer is wired, so every
+// broadcast still fails closed at that seam.
+const forgeDurable = Layer.mergeAll(ForgeIntentLedgerSqliteLive, ForgeGrantGuardLive);
+const forgeAdapter = UniswapTestnetAdapterLive.pipe(
+  Layer.provide(ForgeTestnetConfigLive),
+  // The transport reads the Sepolia target itself (its own config
+  // requirement must be satisfied HERE, or it leaks into every consumer's
+  // requirements channel).
+  Layer.provide(
+    ForgeSepoliaTransportLive.pipe(
+      Layer.provide(ForgeTestnetConfigLive),
+      Layer.provide(httpWithNode),
+    ),
+  ),
+  Layer.provideMerge(forgeDurable),
+  Layer.provideMerge(SignedTransactionBroadcasterUnavailable),
+);
+const forgeFeePolicy = FeePolicyServiceLive.pipe(
+  Layer.provide(forgeAdapter),
+  Layer.provide(FeePolicyConfigLive),
+  Layer.provide(ForgeSourceStoreLive),
+  // The publish path verifies installed capabilities; same instance the rest
+  // of the forge wiring shares.
+  Layer.provide(forgeStore),
+);
+export const ForgeF3ServicesLive = Layer.mergeAll(forgeAdapter, forgeFeePolicy);
+
+// Restart-safe reconciliation: once, when the layer builds, settle whatever
+// the previous process left open. Non-fatal by design — an unconfigured
+// target or an unreachable RPC logs and lets the server come up.
+const forgeStartupReconciliation = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const service = yield* FeePolicyService;
+    const result = yield* service.reconcileOpenIntents;
+    yield* Effect.logInfo("forge open-intent reconciliation complete").pipe(
+      Effect.annotateLogs({
+        reconciled: result.reconciled.length,
+        skippedCrossTarget: result.skippedCrossTarget.length,
+      }),
+    );
+    // reconcileOpenIntents is total by contract (it reports per-intent
+    // failures inside its read), so there is no error channel to catch here.
+  }),
+).pipe(Layer.provide(ForgeF3ServicesLive));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 const resolverWithInfo = HyperliquidMarketResolverLive.pipe(Layer.provide(infoWithHttp));
 const gatewayWithRead = HyperliquidGatewayLive.pipe(
@@ -419,4 +483,14 @@ export const TradingLayerLive = Layer.mergeAll(
   forgeReactor,
   ForgeSourceStoreLive,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
-).pipe(Layer.provideMerge(infoWithHttp));
+).pipe(
+  Layer.provideMerge(infoWithHttp),
+  // T3 Forge F3 durable machinery: SQLite intent ledger + grant guard +
+  // Sepolia adapter + fee-policy service, plus the one-shot startup
+  // reconciliation over them — provideMerge'd AFTER the merge (they depend
+  // on the merged SqlClient source and each other, which a parallel mergeAll
+  // would not order). Fails closed — no signer, no approved grant, nothing
+  // executes; the layers beneath the future live pass are real.
+  Layer.provideMerge(ForgeF3ServicesLive),
+  Layer.provideMerge(forgeStartupReconciliation),
+);

@@ -40,13 +40,18 @@ import {
   makeInMemoryForgeIntentLedger,
   ForgeSepoliaTransport,
   SignedTransactionBroadcaster,
+  ForgeGrantGuard,
   UniswapTestnetAdapterLive,
   forgeBindingId,
   forgeFullPoolId,
   type ForgeSepoliaRpcTransportShape,
   type SignedTransactionBroadcasterShape,
 } from "./UniswapTestnetAdapter.ts";
-import { resolveForgeTestnetSettings, type ForgeTestnetSettings } from "./SepoliaTarget.ts";
+import {
+  resolveForgeTestnetSettings,
+  SEPOLIA_V4_ADDRESSES,
+  type ForgeTestnetSettings,
+} from "./SepoliaTarget.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -356,6 +361,7 @@ const serviceLayer = (
         Layer.provide(Layer.succeed(ForgeSepoliaTransport, ForgeSepoliaTransport.of(transport))),
         Layer.provideMerge(admittedTestLedger),
         Layer.provideMerge(Layer.succeed(SignedTransactionBroadcaster, broadcaster)),
+        Layer.provideMerge(permissiveGrantGuard),
       ),
     ),
     // provideMerge exposes the store (and its SQLite) to the test, so the
@@ -413,6 +419,15 @@ const seedEvidence = (
 
 // Test-only simulation of durable admission. It proves service state transitions,
 // not actual persistence or gas enforcement. Production has no implementation.
+// Permissive grant-guard double: these tests exercise fee-policy and pool
+// behavior, not grant immutability (which has its own dedicated suites over
+// the real SQL guard).
+const permissiveGrantGuard = Layer.succeed(ForgeGrantGuard, {
+  recordOrVerify: () => Effect.succeed({ status: "verified" as const }),
+});
+
+const MINT_OWNER = `0x${"0e".repeat(20)}`;
+
 const admittedTestLedger = Layer.effect(
   ForgeIntentLedger,
   Effect.gen(function* () {
@@ -600,9 +615,13 @@ describe("local pause and direct controls (no provider anywhere)", () => {
         tickLower: -60,
         tickUpper: 60,
         liquidity: "1000",
+        tokenId: "7",
       });
       assert.equal(remove.status, "ok");
-      assert.ok(remove.status === "ok" && remove.record.unsigned.data.startsWith("0x5a6bcfda"));
+      assert.ok(
+        remove.status === "ok" &&
+          remove.record.unsigned.to === SEPOLIA_V4_ADDRESSES.positionManager.toLowerCase(),
+      );
     }),
   );
 
@@ -807,6 +826,7 @@ describe("position state", () => {
         tickLower: -60,
         tickUpper: 60,
         liquidity: "1000000000000000000",
+        ownerAddress: MINT_OWNER,
         deposits: [
           { token: C0, amountRaw: "1000" },
           { token: C1, amountRaw: "2000" },
@@ -820,10 +840,11 @@ describe("position state", () => {
       assert.equal(proposed.position.liquidity, null);
 
       const addIntentId = add.status === "ok" ? add.record.intentId : "";
-      const refused = yield* service.broadcast(addIntentId);
-      assert.equal(refused.status, "refused");
-      // Receipt projection remains independently testable without pretending
-      // the unsupported liquidity route can broadcast.
+      // Liquidity broadcasts now climb the real guard/admission ladder and
+      // submit through the signer seam; the receipt projection below is then
+      // exercised on a manually seeded confirmation for that same intent.
+      const broadcasted = yield* service.broadcast(addIntentId);
+      assert.equal(broadcasted.status, "submitted");
       assert.ok(add.status === "ok");
       const sent = {
         record: {
@@ -853,12 +874,13 @@ describe("position state", () => {
         tickLower: -60,
         tickUpper: 60,
         liquidity: "1000000000000000000",
+        tokenId: "7",
       });
       assert.ok(remove.status === "ok");
       const removing = yield* service.broadcast(
         remove.status === "ok" ? remove.record.intentId : "",
       );
-      assert.equal(removing.status, "refused");
+      assert.equal(removing.status, "submitted");
       assert.ok(remove.status === "ok");
       yield* ledger.upsert({
         ...remove.record,
@@ -1003,7 +1025,8 @@ it.effect("retains policy, pending work and liquidity beyond presentation histor
       tickLower: -60,
       tickUpper: 60,
       liquidity: "1000",
-      deposits: [],
+      ownerAddress: MINT_OWNER,
+      deposits: [{ token: C0, amountRaw: "1000" }],
     });
     assert.ok(add.status === "ok");
     const txHash = `0x${"51".repeat(32)}`;
@@ -1070,7 +1093,8 @@ it.effect("does not merge separate receipt ranges or use reverted proposal ticks
       tickLower: -60,
       tickUpper: 60,
       liquidity: "1000",
-      deposits: [],
+      ownerAddress: MINT_OWNER,
+      deposits: [{ token: C0, amountRaw: "1000" }],
     });
     assert.ok(add.status === "ok");
     const txHash = `0x${"61".repeat(32)}`;
@@ -1082,7 +1106,8 @@ it.effect("does not merge separate receipt ranges or use reverted proposal ticks
       tickLower: 120,
       tickUpper: 180,
       liquidity: "2000",
-      deposits: [],
+      ownerAddress: MINT_OWNER,
+      deposits: [{ token: C0, amountRaw: "500" }],
     });
     assert.ok(other.status === "ok");
     yield* ledger.upsert({ ...other.record, status: "reverted" });

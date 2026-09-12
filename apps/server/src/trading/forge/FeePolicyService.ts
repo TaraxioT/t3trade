@@ -67,6 +67,26 @@ export const DEFAULT_POLICY_DURATION_SECONDS = 900;
 /** Snapshot older than this many blocks behind the head is `stale`. */
 export const DEFAULT_SNAPSHOT_MAX_LAG_BLOCKS = 6;
 
+/**
+ * The durable scope of this service's local-pause brake. The control is
+ * service-global today (setLocalPause carries no environment); the ledger's
+ * control state is scope-keyed so a future per-environment control adopts the
+ * same table without a migration.
+ */
+export const FORGE_LOCAL_PAUSE_SCOPE = "forge-fee-policy-service";
+
+/** Result of the restart-safe open-intent reconciliation sweep. */
+export interface ForgeOpenReconciliationRead {
+  /** Current-target intents reconciled this pass (terminal or still open). */
+  readonly reconciled: ReadonlyArray<ForgeIntentRecord>;
+  /** Open intents that belong to another (or no) target — left untouched. */
+  readonly skippedCrossTarget: ReadonlyArray<{
+    readonly intentId: string;
+    readonly kind: string;
+    readonly status: string;
+  }>;
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -254,6 +274,9 @@ export interface FeePolicyServiceShape {
     readonly tickUpper: number;
     readonly liquidity: string;
     readonly salt?: string;
+    readonly tokenId: string;
+    readonly minAmount0Raw?: string;
+    readonly minAmount1Raw?: string;
   }) => Effect.Effect<ForgeOperationResult>;
   readonly requestInitializePool: (input: {
     readonly environmentId: string;
@@ -266,12 +289,14 @@ export interface FeePolicyServiceShape {
     readonly liquidity: string;
     readonly salt?: string;
     readonly deposits: ReadonlyArray<{ readonly token: string; readonly amountRaw: string }>;
+    readonly tokenId?: string;
+    readonly ownerAddress?: string;
   }) => Effect.Effect<ForgeOperationResult>;
   readonly requestBoundedSwap: (input: {
     readonly environmentId: string;
     readonly zeroForOne: boolean;
     readonly amountSpecifiedRaw: string;
-    readonly sqrtPriceLimitX96?: string;
+    readonly sqrtPriceLimitX96: string;
     readonly quoteAmountRaw: string;
   }) => Effect.Effect<ForgeOperationResult>;
 
@@ -280,6 +305,12 @@ export interface FeePolicyServiceShape {
   readonly reconcile: (
     intentId?: string,
   ) => Effect.Effect<ReadonlyArray<ForgeIntentRecord>, string>;
+  /**
+   * Restart-safe sweep: reconcile every open intent for the CURRENT target,
+   * settle gas reservations from receipts, and report (never decode) open
+   * intents that belong to another target. Safe to call repeatedly.
+   */
+  readonly reconcileOpenIntents: Effect.Effect<ForgeOpenReconciliationRead>;
 
   /** Local kill switch: stops NEW chain-affecting intents; safety ops pass. */
   readonly setLocalPause: (paused: boolean) => Effect.Effect<ForgeDirectControlsRead>;
@@ -314,9 +345,17 @@ export const makeFeePolicyService = Effect.gen(function* () {
   const feeConfig = yield* FeePolicyConfig;
   const capabilityStore = yield* Effect.serviceOption(ForgeCapabilityStore);
 
-  // Local pause is process state: the durable stop lives on-chain (hook
-  // pause); this flag is the operator's instant local brake between reads.
+  // Local pause: the instant in-process brake. When the ledger persists
+  // control state, construction reads it back (a restart must not forget a
+  // pause) and every write goes through; an unreadable persisted pause reads
+  // as SET — fail closed, exposure blocked, safety controls unaffected.
+  const readPausedOnce = ledger.readPaused;
   let localPause = false;
+  if (readPausedOnce !== undefined) {
+    localPause = yield* readPausedOnce(FORGE_LOCAL_PAUSE_SCOPE).pipe(
+      Effect.catch(() => Effect.succeed(true)),
+    );
+  }
 
   const readPoolProposal: FeePolicyServiceShape["readPoolProposal"] = Effect.gen(function* () {
     const resolved = yield* adapter.settings;
@@ -936,7 +975,10 @@ export const makeFeePolicyService = Effect.gen(function* () {
         tickLower: input.tickLower,
         tickUpper: input.tickUpper,
         liquidity: input.liquidity,
+        tokenId: input.tokenId,
         ...(input.salt === undefined ? {} : { salt: input.salt }),
+        ...(input.minAmount0Raw === undefined ? {} : { minAmount0Raw: input.minAmount0Raw }),
+        ...(input.minAmount1Raw === undefined ? {} : { minAmount1Raw: input.minAmount1Raw }),
       });
       return { status: "ok" as const, record };
     }).pipe(
@@ -985,6 +1027,8 @@ export const makeFeePolicyService = Effect.gen(function* () {
         liquidity: input.liquidity,
         ...(input.salt === undefined ? {} : { salt: input.salt }),
         deposits: input.deposits,
+        ...(input.tokenId === undefined ? {} : { tokenId: input.tokenId }),
+        ...(input.ownerAddress === undefined ? {} : { ownerAddress: input.ownerAddress }),
       });
       return { status: "ok" as const, record };
     }).pipe(
@@ -1007,9 +1051,7 @@ export const makeFeePolicyService = Effect.gen(function* () {
         environmentId: input.environmentId,
         zeroForOne: input.zeroForOne,
         amountSpecifiedRaw: input.amountSpecifiedRaw,
-        ...(input.sqrtPriceLimitX96 === undefined
-          ? {}
-          : { sqrtPriceLimitX96: input.sqrtPriceLimitX96 }),
+        sqrtPriceLimitX96: input.sqrtPriceLimitX96,
         quoteAmountRaw: input.quoteAmountRaw,
       });
       return { status: "ok" as const, record };
@@ -1110,9 +1152,110 @@ export const makeFeePolicyService = Effect.gen(function* () {
 
   const setLocalPause: FeePolicyServiceShape["setLocalPause"] = (paused) =>
     Effect.gen(function* () {
-      localPause = paused;
+      if (ledger.writePaused === undefined) {
+        // No durable control state (in-memory ledger): the brake stays
+        // process-local, exactly the reviewed behavior.
+        localPause = paused;
+        return yield* readDirectControls;
+      }
+      if (paused) {
+        // Set the brake in memory FIRST, then persist. A failed write leaves
+        // the pause on in this process — the safe direction.
+        localPause = true;
+        yield* ledger
+          .writePaused(FORGE_LOCAL_PAUSE_SCOPE, true)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(`forge local pause persisted write failed: ${String(cause)}`),
+            ),
+          );
+      } else {
+        // Clearing must be durable BEFORE the in-memory flag drops: a failed
+        // write leaves the brake on.
+        yield* ledger
+          .writePaused(FORGE_LOCAL_PAUSE_SCOPE, false)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(`forge local unpause persisted write failed: ${String(cause)}`),
+            ),
+          );
+        const readBack = ledger.readPaused;
+        if (readBack !== undefined) {
+          const persisted = yield* readBack(FORGE_LOCAL_PAUSE_SCOPE).pipe(
+            Effect.catch(() => Effect.succeed(true)),
+          );
+          if (!persisted) localPause = false;
+        }
+      }
       return yield* readDirectControls;
     });
+
+  /**
+   * The restart-safe sweep. Open intents for the CURRENT configured target
+   * are reconciled through the adapter's uncertain-broadcast state machine
+   * (which also settles gas reservations from receipts); open intents bound
+   * to another target are reported, never decoded against this deployment.
+   * Terminal intents get an idempotent gas-settle backstop so a crash between
+   * settlement and reservation release cannot strand budget forever.
+   */
+  const reconcileOpenIntents: FeePolicyServiceShape["reconcileOpenIntents"] = Effect.gen(
+    function* () {
+      const settings = yield* adapter.settings;
+      const targetFingerprint =
+        settings.target === undefined ? null : immutableTargetFingerprint(settings.target);
+      const all = yield* ledger.listAll;
+      const open = all.filter(
+        (record) => record.status === "submitted" || record.status === "unknown",
+      );
+      const skippedCrossTarget: Array<{
+        readonly intentId: string;
+        readonly kind: string;
+        readonly status: string;
+      }> = [];
+      const reconciled: Array<ForgeIntentRecord> = [];
+      for (const record of open) {
+        if (targetFingerprint === null || record.params.targetFingerprint !== targetFingerprint) {
+          skippedCrossTarget.push({
+            intentId: record.intentId,
+            kind: record.kind,
+            status: record.status,
+          });
+          continue;
+        }
+        // Non-fatal per intent: one unreadable receipt must not block the
+        // rest of the sweep (the startup wiring logs and continues).
+        const next = yield* adapter
+          .reconcileIntent(record.intentId)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                `forge open intent ${record.intentId} reconcile failed: ${cause}`,
+              ).pipe(Effect.as(record)),
+            ),
+          );
+        if (next !== null) reconciled.push(next);
+      }
+      if (ledger.settleGas !== undefined) {
+        const terminal = all.filter(
+          (record) =>
+            (record.status === "confirmed" || record.status === "reverted") && record.gasAccounted,
+        );
+        for (const record of terminal) {
+          if (record.gasCostWei === undefined) continue;
+          yield* ledger
+            .settleGas(record.intentId, record.gasCostWei)
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  `forge intent ${record.intentId} reservation settle failed: ${String(cause)}`,
+                ),
+              ),
+            );
+        }
+      }
+      return { reconciled, skippedCrossTarget };
+    },
+  );
 
   return FeePolicyService.of({
     readPoolProposal,
@@ -1131,6 +1274,7 @@ export const makeFeePolicyService = Effect.gen(function* () {
     requestBoundedSwap,
     broadcast,
     reconcile,
+    reconcileOpenIntents,
     setLocalPause,
   });
 });
