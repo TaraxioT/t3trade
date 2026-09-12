@@ -363,6 +363,12 @@ export const makeForgeIntentLedgerSqlite = Effect.gen(function* () {
               '$.nonce', json_extract(excluded.unsigned_json, '$.nonce'))
           ELSE forge_intents.unsigned_json
         END
+      -- A delayed reconciliation/refusal write must not undo settlement or
+      -- turn an admitted transaction back into an unsigned draft. Terminal
+      -- rows are immutable; unknown -> submitted remains valid when a
+      -- broadcaster returns its hash after the durable claim.
+      WHERE forge_intents.status NOT IN ('confirmed', 'reverted')
+        AND (excluded.status <> 'draft' OR forge_intents.status = 'draft')
     `.pipe(
       Effect.asVoid,
       Effect.mapError(sqlFail("upsert")),
@@ -550,6 +556,7 @@ export const makeForgeIntentLedgerSqlite = Effect.gen(function* () {
           gas_cost_wei = ${gasCostWei}, gas_accounted = 1
       WHERE intent_id = ${intentId} AND gas_settled = 0
         AND status IN ('confirmed', 'reverted')
+        AND gas_cost_wei = ${gasCostWei}
     `.pipe(Effect.asVoid, Effect.mapError(sqlFail("settleGas")), Effect.orDie);
 
   const readPaused: ForgeIntentLedgerSqliteShape["readPaused"] = (scope) =>

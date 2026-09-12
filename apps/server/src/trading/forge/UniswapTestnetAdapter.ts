@@ -1917,12 +1917,12 @@ export const makeUniswapTestnetAdapter = Effect.gen(function* () {
               ),
             );
         }
-        return settled;
+        return yield* ledger.find(intentId);
       }
       if (resolution.state === "unknown" && record.status !== "unknown") {
         const unknown: ForgeIntentRecord = { ...record, status: "unknown" };
         yield* ledger.upsert(unknown);
-        return unknown;
+        return yield* ledger.find(intentId);
       }
       return record;
     });

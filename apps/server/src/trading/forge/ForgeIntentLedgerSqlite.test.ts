@@ -108,9 +108,76 @@ layer("ForgeIntentLedgerSqlite", (it) => {
       assert.deepEqual(read, full);
       assert.deepEqual(yield* ledger.findByIdempotencyKey("key-1"), full);
       assert.equal(yield* ledger.totalAccountedGasWei, "150000000000");
-      // Upsert is idempotent for the same id.
+      // Terminal records are immutable, including delayed metadata writes.
       yield* ledger.upsert({ ...full, summary: "again" });
-      assert.equal((yield* ledger.find(full.intentId))?.summary, "again");
+      assert.deepEqual(yield* ledger.find(full.intentId), full);
+    }),
+  );
+
+  it.effect("a delayed reconciliation cannot erase settled gas accounting", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const ledger = yield* makeForgeIntentLedgerSqlite;
+      const draft = record();
+      yield* ledger.upsert(draft);
+      assert.equal(
+        yield* ledger.durableAdmission.claim(draft, "f0-grant", "250000000000000"),
+        true,
+      );
+      const submitted = record({
+        status: "submitted",
+        txHash: "0x" + "aa".repeat(32),
+        submittedAtMs: 2_000,
+      });
+      yield* ledger.upsert(submitted);
+      const terminal = {
+        ...submitted,
+        status: "confirmed" as const,
+        gasCostWei: "100000000000000",
+        gasAccounted: true,
+      };
+      yield* ledger.upsert(terminal);
+      // A losing receipt must not replace the cost of the terminal winner.
+      yield* ledger.settleGas(terminal.intentId, "1");
+      assert.equal(yield* ledger.totalReservedGasWei, "200000000000000");
+      assert.equal(yield* ledger.totalAccountedGasWei, terminal.gasCostWei);
+      yield* ledger.settleGas(terminal.intentId, terminal.gasCostWei);
+
+      // Model two callers that read submitted before either RPC completed:
+      // the receipt wins, then the timeout writes its older snapshot.
+      yield* ledger.upsert({ ...submitted, status: "unknown" });
+      yield* ledger.upsert({ ...submitted, status: "reverted", gasCostWei: "1" });
+      assert.deepEqual(yield* ledger.find(terminal.intentId), terminal);
+      assert.equal(yield* ledger.totalAccountedGasWei, "100000000000000");
+      assert.equal(yield* ledger.totalReservedGasWei, "0");
+      const next = record({ intentId: "next", idempotencyKey: "next" });
+      yield* ledger.upsert(next);
+      assert.equal(
+        yield* ledger.durableAdmission.claim(next, "f0-grant", "250000000000000"),
+        false,
+      );
+    }),
+  );
+
+  it.effect("a stale refusal cannot restore a claimed draft", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const ledger = yield* makeForgeIntentLedgerSqlite;
+      const draft = record();
+      yield* ledger.upsert(draft);
+      assert.equal(
+        yield* ledger.durableAdmission.claim(draft, "f0-grant", "250000000000000"),
+        true,
+      );
+      yield* ledger.upsert({
+        ...draft,
+        lastRefusal: { reason: "grant-missing", detail: "stale refusal", refusedAtMs: 2_000 },
+      });
+      assert.equal((yield* ledger.find(draft.intentId))?.status, "unknown");
+      assert.equal(yield* ledger.totalReservedGasWei, "200000000000000");
+      const submitted = { ...draft, status: "submitted" as const, txHash: "0xhash" };
+      yield* ledger.upsert(submitted);
+      assert.deepEqual(yield* ledger.find(draft.intentId), submitted);
     }),
   );
 
