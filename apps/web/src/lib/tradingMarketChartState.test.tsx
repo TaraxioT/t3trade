@@ -14,6 +14,7 @@ import {
   type TradingMarketChartView,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
@@ -181,6 +182,35 @@ describe("refresh identity", () => {
 });
 
 describe("staleness and last success", () => {
+  it("preserves the read timestamp across rerenders and an in-flight refresh", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const success = AsyncResult.success(view("ETH"));
+    atomState.result = success;
+    await renderChart("ETH", { enabled: true });
+
+    nowSpy.mockReturnValue(2_000);
+    await rerenderChart("ETH", { enabled: true });
+    expect(latest.lastSuccessAt).toBe(1_000);
+
+    atomState.result = AsyncResult.waiting(success);
+    await rerenderChart("ETH", { enabled: true });
+    expect(latest.isLoading).toBe(true);
+    expect(latest.lastSuccessAt).toBe(1_000);
+  });
+
+  it("marks a failed refresh carrying cached success as stale with its original timestamp", async () => {
+    const cachedView = view("ETH");
+    atomState.result = AsyncResult.failure<TradingMarketChartView, Error>(
+      Cause.fail(new Error("offline")),
+      { previousSuccess: Option.some(AsyncResult.success(cachedView, { timestamp: 1_000 })) },
+    );
+    await renderChart("ETH", { enabled: true });
+    expect(latest.data).toBe(cachedView);
+    expect(latest.stale).toBe(true);
+    expect(latest.error).toBeNull();
+    expect(latest.lastSuccessAt).toBe(1_000);
+  });
+
   it("flips stale on a failed poll, clears it on recovery, and stamps lastSuccessAt only on success", async () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
     const ethView = view("ETH", 100);

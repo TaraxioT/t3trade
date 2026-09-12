@@ -215,10 +215,16 @@ export function useTradingMarketChart(
   // A failure carrying its previous success keeps `lastGood` (the atom still
   // reports that value) but must not advance the last-success stamp: the read
   // failed, and the stamp is what "stale since" is measured against.
-  if (AsyncResult.isSuccess(result)) lastSuccessAt.current = Date.now();
+  const success = AsyncResult.isSuccess(result)
+    ? result
+    : AsyncResult.isFailure(result)
+      ? Option.getOrNull(result.previousSuccess)
+      : null;
+  if (success !== null) lastSuccessAt.current = success.timestamp;
 
   const data = fresh ?? lastGood.current;
-  const stale = data !== null && (fresh === null || fresh.stale === true);
+  const stale =
+    data !== null && (AsyncResult.isFailure(result) || fresh === null || fresh.stale === true);
 
   // Refresh the exact atom instance this render reads. Rebuilding the key here
   // once dropped `maxBars`, so a chart that asked for a wide window refreshed
