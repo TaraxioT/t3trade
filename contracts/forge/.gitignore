@@ -2,5 +2,5 @@ cache/
 out/
 
 # The repository-wide test/ rule must not hide the first-party Foundry suite.
-!test/
-!test/**
+!/test/
+!/test/**
