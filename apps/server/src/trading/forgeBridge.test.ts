@@ -23,6 +23,11 @@ import type {
   ForgeEvaluationEvidence,
   ForgeSourceListing,
 } from "@t3tools/trading-contracts";
+import {
+  detectorEvaluationId,
+  type DetectionResult,
+  type DetectorEvaluationRecordV2,
+} from "@t3tools/trading-contracts";
 
 import { ForgeCapabilityStore } from "./forge/CapabilityStore.ts";
 import {
@@ -41,12 +46,14 @@ import {
 } from "./forge/FeePolicyService.ts";
 import type { ForgeHookState, ForgeIntentRecord } from "./forge/UniswapTestnetAdapter.ts";
 import {
+  DETECTOR_POOLS_UNAVAILABLE_REASON,
   forgeControlView,
   forgeEvidenceView,
   forgePoolSeriesView,
   forgePoolStateView,
   forgeThreadContextView,
   mapControlResult,
+  mapDetectorEvaluation,
   mapPoolSeriesRead,
   mapPoolState,
   mapPoolStateTransaction,
@@ -497,6 +504,97 @@ describe("mapControlResult", () => {
       assert.strictEqual(refused.status, "refused");
       if (refused.status !== "refused") return;
       assert.strictEqual(refused.reason, "unconfigured");
+    }),
+  );
+});
+
+describe("mapDetectorEvaluation", () => {
+  /** A committed v2 record whose identity the contract itself would accept. */
+  const record = (result: DetectionResult): DetectorEvaluationRecordV2 => {
+    const identity = {
+      environmentId: "tm_env1",
+      capabilityId: "flag-detector",
+      version: 2,
+      stateRevision: 4,
+      inputDigest: "ab".repeat(32),
+    };
+    return {
+      manifestVersion: 2,
+      evaluationId: detectorEvaluationId(identity),
+      environmentId: identity.environmentId,
+      capabilityId: identity.capabilityId,
+      version: identity.version,
+      stateRevision: identity.stateRevision,
+      inputDigest: identity.inputDigest,
+      asOfMs: 1_700_000_100_000,
+      result,
+      state: { stateSchemaVersion: 1, state: { count: 4 } },
+      evidenceIds: ["forge_ev_v2_1"],
+      committedAtMs: 1_700_000_100_500,
+    };
+  };
+
+  it.effect("renders the three result shapes with their bounded meaning", () =>
+    Effect.gen(function* () {
+      const matched = mapDetectorEvaluation(
+        record({
+          status: "matched",
+          occurrenceKey: "occ_flag_1",
+          evidenceIds: ["forge_ev_v2_1"],
+          facts: [],
+          validUntilMs: 1_700_000_400_000,
+        }),
+      );
+      assert.strictEqual(matched.status, "detector");
+      assert.deepStrictEqual(matched.result, {
+        status: "matched",
+        occurrenceKey: "occ_flag_1",
+        validUntilMs: 1_700_000_400_000,
+      });
+      // The run's own clock and the committed revision ride beside it.
+      assert.strictEqual(matched.asOfMs, 1_700_000_100_000);
+      assert.strictEqual(matched.stateRevision, 4);
+      assert.strictEqual(matched.inputDigest, "ab".repeat(32));
+
+      const notMatched = mapDetectorEvaluation(
+        record({
+          status: "not-matched",
+          evidenceIds: ["forge_ev_v2_1"],
+          explanation: "flag not set in the sealed window",
+        }),
+      );
+      assert.deepStrictEqual(notMatched.result, {
+        status: "not-matched",
+        explanation: "flag not set in the sealed window",
+      });
+
+      const unknown = mapDetectorEvaluation(
+        record({
+          status: "unknown",
+          missingSourceIds: ["github-releases:o/r"],
+          explanation: "the source revision is still landing",
+        }),
+      );
+      assert.deepStrictEqual(unknown.result, {
+        status: "unknown",
+        explanation: "the source revision is still landing",
+      });
+    }),
+  );
+
+  it.effect("never invents per-pool diagnostics — the slot is a named absence", () =>
+    Effect.gen(function* () {
+      const mapped = mapDetectorEvaluation(
+        record({
+          status: "not-matched",
+          evidenceIds: [],
+          explanation: "quiet window",
+        }),
+      );
+      assert.deepStrictEqual(mapped.pools, {
+        status: "detailUnavailable",
+        reason: DETECTOR_POOLS_UNAVAILABLE_REASON,
+      });
     }),
   );
 });

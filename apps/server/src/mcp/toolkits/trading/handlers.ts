@@ -41,6 +41,7 @@ import {
 } from "@t3tools/trading-contracts/journal";
 import {
   FORGE_MAX_SOURCE_SAMPLE,
+  toForgeDetectorResultSummary,
   type ForgeBuildReceipt,
   type ForgePoolProposal,
   parseTradingLookFetchKey,
@@ -231,8 +232,13 @@ import {
   ForgeBuilderError,
   ForgeCapabilityBuilder,
 } from "../../../trading/forge/CapabilityBuilder.ts";
-import { ForgeCapabilityStore, ForgeStoreError } from "../../../trading/forge/CapabilityStore.ts";
+import {
+  ForgeCapabilityStore,
+  ForgeStoreError,
+  versionProgramKind,
+} from "../../../trading/forge/CapabilityStore.ts";
 import { ForgeReactor } from "../../../trading/forge/ForgeReactor.ts";
+import { DetectorRunStore } from "../../../trading/forge/DetectorRunStore.ts";
 import {
   ARCHIVE_INTERVALS,
   archiveDatabasePath,
@@ -2153,6 +2159,7 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
         const installed = new Set(catalog.map((entry) => entry.capabilityId));
         let latest: ForgeLook["latest"] | undefined = undefined;
         let history: ForgeLook["history"] | undefined = undefined;
+        let detailCapabilityId: string | undefined = undefined;
         for (const { key, parsed } of fetched) {
           if (parsed.base !== "forge" || parsed.selection === "catalog") continue;
           const { capabilityId, selection } = parsed;
@@ -2163,6 +2170,12 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
             });
             continue;
           }
+          // The last fetched detail capability also answers the detector
+          // fields: armed from the store's replayed lifecycle, the state
+          // revision and latest committed result from the run store. An
+          // unwired run store leaves those fields absent rather than failing
+          // the look — the v1 fields beside them still serve.
+          detailCapabilityId = capabilityId;
           if (selection === "latest") {
             const evaluation = yield* forgeStore
               .latestEvaluation({ environmentId: input.environmentId, capabilityId })
@@ -2184,10 +2197,39 @@ const readFetchedObservation = Effect.fn("TradingToolkit.readFetchedObservation"
             history = [...evaluations];
           }
         }
+        let detectorArmed: boolean | undefined;
+        let detectorStateRevision: number | undefined;
+        let latestDetectorResult: ReturnType<typeof toForgeDetectorResultSummary> | undefined;
+        if (detailCapabilityId !== undefined) {
+          const active = yield* forgeStore
+            .activeState({ environmentId: input.environmentId, capabilityId: detailCapabilityId })
+            .pipe(Effect.orElseSucceed(() => null));
+          if (active !== null) detectorArmed = active.armed;
+          const runsOption = yield* Effect.serviceOption(DetectorRunStore);
+          if (runsOption._tag === "Some") {
+            const state = yield* runsOption.value
+              .readState(input.environmentId, detailCapabilityId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (state !== null) detectorStateRevision = state.stateRevision;
+            const latestRun = yield* runsOption.value
+              .latestEvaluation(input.environmentId, detailCapabilityId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (latestRun !== null) {
+              latestDetectorResult = toForgeDetectorResultSummary(latestRun.result);
+            }
+          }
+        }
         forgeSection = {
           catalog: [...catalog],
           ...(latest === undefined ? {} : { latest }),
           ...(history === undefined ? {} : { history }),
+          ...(detectorArmed === undefined ? {} : { armed: detectorArmed }),
+          ...(detectorStateRevision === undefined
+            ? {}
+            : { detectorStateRevision: detectorStateRevision }),
+          ...(latestDetectorResult === undefined
+            ? {}
+            : { latestDetectorResult: latestDetectorResult }),
         };
       }
     }
@@ -5166,6 +5208,28 @@ export const handlers = {
           error.failure.reason,
         );
 
+      /**
+       * The program kind of an installed version, discriminated by its own
+       * hash-verified `manifest.json` bytes — the same discriminator the
+       * store, reactor, and scheduler dispatch on. A missing/undecodable
+       * manifest is v1 (the v1 four-artifact vocabulary), fail-closed.
+       */
+      const programKindOf = (
+        capabilityId: string,
+        version: number,
+      ): Effect.Effect<1 | 2, never, never> =>
+        store
+          .readArtifact({
+            environmentId,
+            capabilityId,
+            version,
+            path: "manifest.json",
+          })
+          .pipe(
+            Effect.map((manifestJson) => (versionProgramKind(manifestJson) === "v2" ? 2 : 1)),
+            Effect.orDie,
+          );
+
       if (input.buildId !== undefined) {
         const scopedBuild = yield* store.getBuild(input.buildId).pipe(Effect.orDie);
         if (
@@ -5404,6 +5468,57 @@ export const handlers = {
               : yield* reactor
                   .observedStatus({ environmentId, capabilityId: input.capabilityId })
                   .pipe(Effect.orDie);
+          // The detector half, when a capability is named: the standing of
+          // the active version plus — for a detector-program v2 capability —
+          // its committed run view from the detector run store. Provider
+          // jobs, v1 observed data, and the detector record stay three
+          // separate records on purpose.
+          let detector: TradingForgeResult["detector"] = undefined;
+          if (input.capabilityId !== undefined) {
+            const active = yield* store
+              .activeState({ environmentId, capabilityId: input.capabilityId })
+              .pipe(Effect.orDie);
+            if (active !== null) {
+              const kind = yield* programKindOf(input.capabilityId, active.version);
+              if (kind === 2) {
+                const runsOption = yield* Effect.serviceOption(DetectorRunStore);
+                if (runsOption._tag === "None") {
+                  detector = {
+                    programKind: 2,
+                    armed: active.armed,
+                    unavailable: "the detector run store is not wired into this runtime",
+                  };
+                } else {
+                  const state = yield* runsOption.value
+                    .readState(environmentId, input.capabilityId)
+                    .pipe(Effect.orDie);
+                  const latest = yield* runsOption.value
+                    .latestEvaluation(environmentId, input.capabilityId)
+                    .pipe(Effect.orDie);
+                  detector = {
+                    programKind: 2,
+                    armed: active.armed,
+                    ...(state === null
+                      ? {}
+                      : {
+                          stateRevision: state.stateRevision,
+                          lastEvaluationId: state.lastEvaluationId,
+                        }),
+                    ...(latest === null
+                      ? {}
+                      : {
+                          latestResult: {
+                            result: toForgeDetectorResultSummary(latest.result),
+                            asOfMs: latest.asOfMs,
+                          },
+                        }),
+                  };
+                }
+              } else {
+                detector = { programKind: 1, armed: active.armed };
+              }
+            }
+          }
           return accepted({
             catalog: yield* store.listCatalog(environmentId).pipe(Effect.orDie),
             jobs: jobs.map((job) => ({
@@ -5418,6 +5533,7 @@ export const handlers = {
               lastEvaluation === null && input.capabilityId === undefined
                 ? undefined
                 : { lastEvaluation: lastEvaluation ?? undefined },
+            ...(detector === undefined ? {} : { detector }),
             ...(input.buildId === undefined
               ? {}
               : {
@@ -5470,6 +5586,89 @@ export const handlers = {
           return accepted({
             catalog: yield* store.listCatalog(environmentId).pipe(Effect.orDie),
             detail: `${input.capabilityId} ${input.action === "uninstall" ? "uninstalled" : input.action + "d"} — a direct user control, no provider involved`,
+          });
+        }
+
+        case "arm":
+        case "disarm": {
+          if (input.capabilityId === undefined) {
+            return rejected("needs_input", `${input.action} needs capabilityId`);
+          }
+          // The store's own gates decide (not installed → false, refusals
+          // verbatim); arming is a standing, never an evaluation.
+          const op =
+            input.action === "arm"
+              ? store.arm({ environmentId, capabilityId: input.capabilityId })
+              : store.disarm({ environmentId, capabilityId: input.capabilityId });
+          const changed = yield* op.pipe(
+            Effect.catch((error) => Effect.succeed(storeFailure(error))),
+          );
+          if (typeof changed !== "boolean") return changed;
+          if (!changed) {
+            return rejected(
+              "not_installed",
+              `${input.capabilityId} is not installed; there is no detector standing to ${input.action === "arm" ? "arm" : "withdraw"}`,
+            );
+          }
+          const active = yield* store
+            .activeState({ environmentId, capabilityId: input.capabilityId })
+            .pipe(Effect.orDie);
+          const kind =
+            active === null ? null : yield* programKindOf(input.capabilityId, active.version);
+          return accepted({
+            catalog: yield* store.listCatalog(environmentId).pipe(Effect.orDie),
+            ...(active === null || kind === null
+              ? {}
+              : { detector: { programKind: kind, armed: active.armed } }),
+            detail:
+              input.action === "arm"
+                ? `${input.capabilityId} is armed${active === null ? "" : ` at v${active.version}`}; arming does NOT evaluate — the scheduler's next sweep or trading_forge({action:"evaluate"}) runs the next evaluation`
+                : `${input.capabilityId}'s detector standing is withdrawn (disarmed); it will not evaluate again until armed`,
+          });
+        }
+
+        case "evaluate": {
+          if (input.capabilityId === undefined) {
+            return rejected("needs_input", "evaluate needs capabilityId");
+          }
+          const active = yield* store
+            .activeState({ environmentId, capabilityId: input.capabilityId })
+            .pipe(Effect.orDie);
+          if (active === null) {
+            return rejected(
+              "not_installed",
+              `${input.capabilityId} is not installed; nothing to evaluate`,
+            );
+          }
+          // The bundle's own manifest bytes decide the vocabulary. v1
+          // evaluation is install-driven: its reading came from the
+          // install-time reactor job, and on-demand re-evaluation is a v2
+          // (detector-program) capability only.
+          const kind = yield* programKindOf(input.capabilityId, active.version);
+          if (kind !== 2) {
+            return rejected(
+              "v1_install_driven",
+              `v1 capabilities evaluate at install time; ${input.capabilityId}'s active v${active.version} is not a detector-program (v2) capability`,
+            );
+          }
+          // No armed pre-check-and-hide: the reactor's armed gate owns that
+          // refusal. Enqueue honestly and surface the standing so the job's
+          // fate is readable before it happens.
+          const job = yield* reactor
+            .enqueueEvaluation({
+              environmentId,
+              threadId,
+              capabilityId: input.capabilityId,
+              programKind: 2,
+            })
+            .pipe(Effect.orDie);
+          return accepted({
+            detector: { programKind: 2, armed: active.armed },
+            detail:
+              `detector evaluation job ${job.jobId} is ${job.status}` +
+              (active.armed
+                ? ' — trading_forge({action:"status"}) tracks it'
+                : ` — ${input.capabilityId} is NOT armed, so the job will be refused by the armed gate; arm it first`),
           });
         }
 

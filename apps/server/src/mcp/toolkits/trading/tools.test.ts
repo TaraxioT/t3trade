@@ -321,17 +321,32 @@ it("keeps every description on a budget", () => {
   // agent-cannot-approve-pool rule — the sentences that keep a provider from
   // writing prose where code execution is required. The raise is the new
   // tool's whole description (~780 chars), not a widening of the old ones.
-  expect(total, "total description chars must stay under 8,050").toBeLessThan(8_050);
+  //
+  // Raised from 8,050 to 8,750 when `trading_forge` gained the detector
+  // standing sentences (P4): installation-is-not-arming, un-armed never
+  // evaluates, the scheduler turns without a provider, on-demand evaluate is
+  // v2-only, and status reports the detector revision and latest result.
+  // The raise is the new sentences (~630 chars) on the same rule.
+  //
+  // The same P4 pass also surfaced that the total had already drifted to
+  // 8,317 on committed main: `trading_events` grew its import_external
+  // sentences (publication-is-not-availability, capture honesty) without a
+  // matching raise. 8,750 covers that committed reality plus the forge
+  // sentences; it is not fresh headroom for the next field glossary.
+  expect(total, "total description chars must stay under 8,750").toBeLessThan(8_750);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;
     // `trading_events` carries the study grammar (interval set, horizonBars
-    // bound, the four-week example, the path_extrema metric fields) and
+    // bound, the four-week example, the path_extrema metric fields) and the
+    // import_external capture honesty (publication is not availability), and
     // `trading_look` the fetch grammar, so they are the longest descriptions
-    // in the set. 1,150 leaves edit headroom, not room for a new field
-    // glossary; it moved from 900 when the metric fields landed.
-    expect(len, `${tool.name} description is ${len} chars, must be <= 1,150`).toBeLessThanOrEqual(
-      1_150,
+    // in the set. 1,450 leaves edit headroom, not room for a new field
+    // glossary; it moved from 900 (metric fields), to 1,150 (path_extrema),
+    // to 1,450 when the committed import_external sentences (1,410 chars)
+    // were found exceeding the stale 1,150 bound.
+    expect(len, `${tool.name} description is ${len} chars, must be <= 1,450`).toBeLessThanOrEqual(
+      1_450,
     );
   }
 });

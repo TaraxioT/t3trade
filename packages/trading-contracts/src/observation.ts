@@ -26,6 +26,11 @@ import {
   TimeframeAlignment,
 } from "./marketStructure.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
+// Type-only: `toForgeDetectorResultSummary` below narrows the authoritative
+// `DetectionResult`. `researchEvidence.ts` imports only primitives, so this
+// edge cannot cycle; the summary SCHEMA stays a bounded local mirror on
+// purpose (see its comment).
+import type { DetectionResult } from "./researchEvidence.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingTimeframe } from "./strategy.ts";
 import { DERIVED_METRIC_CATALOG } from "./watch.ts";
@@ -803,6 +808,9 @@ export const TradingForgeAction = Schema.Literals([
   "pause",
   "resume",
   "uninstall",
+  "arm",
+  "disarm",
+  "evaluate",
   "propose_pool",
   "approve_pool",
   "bind_policy",
@@ -843,6 +851,50 @@ export const ForgeSourceInspection = Schema.Struct({
   healthReason: Schema.optional(Schema.String),
 });
 export type ForgeSourceInspection = typeof ForgeSourceInspection.Type;
+
+/**
+ * A bounded summary of one committed detector-program (v2) result.
+ *
+ * A deliberate MINIMAL MIRROR of `researchEvidence.ts`'s `DetectionResult`
+ * three shapes, not a reuse of that schema: the full result carries
+ * fact/evidence arrays the look payload must not bloat with, and the mirror
+ * keeps this module's dependency surface unchanged (the mapper below takes
+ * the authoritative type; the schema stays local). The authoritative
+ * vocabulary is the record's own `DetectionResult`; keep the three statuses
+ * and their meaning in sync with it — `matched` carries the occurrence
+ * identity and how long the match stands, the other two carry the program's
+ * own "why".
+ */
+export const ForgeDetectorResultSummary = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("matched"),
+    occurrenceKey: TradingId,
+    validUntilMs: UnixMillis,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("not-matched"),
+    explanation: Schema.String,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unknown"),
+    explanation: Schema.String,
+  }),
+]);
+export type ForgeDetectorResultSummary = typeof ForgeDetectorResultSummary.Type;
+
+/**
+ * Bound one committed {@link DetectionResult} into the look/tool summary.
+ * The only producer-side mapping: server surfaces (the forge tool status and
+ * the web bridge) both render through this so the bounded fields can never
+ * drift between the two.
+ */
+export function toForgeDetectorResultSummary(result: DetectionResult): ForgeDetectorResultSummary {
+  return result.status === "matched"
+    ? { status: "matched", occurrenceKey: result.occurrenceKey, validUntilMs: result.validUntilMs }
+    : result.status === "not-matched"
+      ? { status: "not-matched", explanation: result.explanation }
+      : { status: "unknown", explanation: result.explanation };
+}
 
 export const TradingForgeResult = Schema.Struct({
   outcome: Schema.Literals(["accepted", "rejected"]),
@@ -898,6 +950,28 @@ export const TradingForgeResult = Schema.Struct({
   dataStatus: Schema.optional(
     Schema.Struct({
       lastEvaluation: Schema.optional(ForgeEvaluationEvidence),
+    }),
+  ),
+  /**
+   * `status`/`arm`/`disarm`/`evaluate`, for the actions that name a
+   * capability: the detector standing of the active version, plus — for a
+   * detector-program v2 capability — its committed run view from the
+   * detector run store. `unavailable` names why the v2 view is absent
+   * (store unwired, read failed); never zeros, never invented.
+   */
+  detector: Schema.optional(
+    Schema.Struct({
+      programKind: Schema.Literals([1, 2]),
+      armed: Schema.Boolean,
+      stateRevision: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+      lastEvaluationId: Schema.optional(Schema.String),
+      latestResult: Schema.optional(
+        Schema.Struct({
+          result: ForgeDetectorResultSummary,
+          asOfMs: UnixMillis,
+        }),
+      ),
+      unavailable: Schema.optional(Schema.String),
     }),
   ),
   proposals: Schema.optional(Schema.Array(ForgePoolProposal)),
@@ -1170,12 +1244,21 @@ export const TradingObservation = Schema.Struct({
    * capabilities and their sealed evaluations. The catalog comes from the
    * capability store at runtime — an empty catalog is the honest empty
    * answer, and no detector is ever hardcoded into the fetch catalog.
+   *
+   * The three v2 fields are additive (detector-program capabilities): the
+   * detector standing, the committed state revision, and the newest
+   * committed detector result. All optional, all absent for v1 capabilities
+   * and for scopes the serving runtime has not filled — a pre-existing
+   * payload decodes unchanged.
    */
   forge: Schema.optional(
     Schema.Struct({
       catalog: Schema.Array(ForgeCapabilityCatalogEntry),
       latest: Schema.optional(ForgeEvaluationEvidence),
       history: Schema.optional(Schema.Array(ForgeEvaluationEvidence)),
+      armed: Schema.optional(Schema.Boolean),
+      detectorStateRevision: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+      latestDetectorResult: Schema.optional(ForgeDetectorResultSummary),
     }),
   ),
 });

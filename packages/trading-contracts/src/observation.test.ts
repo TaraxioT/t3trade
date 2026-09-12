@@ -10,6 +10,7 @@ import {
   ForgeCapabilityCatalogEntry,
   ForgeCapabilityManifest,
   ForgeCapabilityVersion,
+  ForgeDetectorResultSummary,
   ForgeEvaluationEvidence,
   ForgePolicyBinding,
   ForgePoolProposal,
@@ -24,7 +25,9 @@ import {
   TRADING_LOOK_MAX_EVENTS,
   TRADING_LOOK_MAX_FUNDING_WINDOW_DAYS,
   TradingForgeInput,
+  TradingForgeResult,
   TradingLookInput,
+  TradingObservation,
 } from "./observation.ts";
 
 /**
@@ -499,6 +502,9 @@ describe("TradingForgeInput", () => {
       "pause",
       "resume",
       "uninstall",
+      "arm",
+      "disarm",
+      "evaluate",
       "propose_pool",
       "approve_pool",
       "bind_policy",
@@ -514,5 +520,88 @@ describe("TradingForgeInput", () => {
   it("refuses capability ids outside the store's key grammar", () => {
     assert.throws(() => decode({ action: "install", capabilityId: "../escape" }));
     assert.throws(() => decode({ action: "install", capabilityId: "UP" }));
+  });
+});
+
+// -- P4: the detector-program (v2) additive fields ---------------------------------
+
+describe("the forge detector (v2) additive contracts", () => {
+  it("summarizes the three DetectionResult shapes with bounded fields", () => {
+    const decode = Schema.decodeUnknownSync(ForgeDetectorResultSummary);
+    assert.deepStrictEqual(
+      decode({ status: "matched", occurrenceKey: "occ_1", validUntilMs: 9_000 }),
+      { status: "matched", occurrenceKey: "occ_1", validUntilMs: 9_000 },
+    );
+    assert.deepStrictEqual(decode({ status: "not-matched", explanation: "flag not set" }), {
+      status: "not-matched",
+      explanation: "flag not set",
+    });
+    assert.deepStrictEqual(decode({ status: "unknown", explanation: "source lagging" }), {
+      status: "unknown",
+      explanation: "source lagging",
+    });
+    // The mirror is bounded on purpose: the full result's fact/evidence
+    // arrays are not look payload.
+    assert.throws(() => decode({ status: "matched", occurrenceKey: "occ_1" }));
+    assert.throws(() => decode({ status: "unknown" }));
+  });
+
+  it("decodes the forge look struct unchanged without the v2 fields, and with them", () => {
+    const decode = Schema.decodeUnknownSync(TradingObservation);
+    const base = {
+      observedAt: 1_000,
+      market: "ETH",
+      // A pre-v2 payload: only catalog/latest/history. Additive optionality
+      // means this decodes byte-identically after the v2 fields exist.
+      forge: {
+        catalog: [],
+      },
+    };
+    const legacy = decode(base);
+    assert.deepStrictEqual(legacy.forge?.catalog, []);
+    assert.isUndefined(legacy.forge?.armed);
+    assert.isUndefined(legacy.forge?.detectorStateRevision);
+    assert.isUndefined(legacy.forge?.latestDetectorResult);
+
+    const v2 = decode({
+      ...base,
+      forge: {
+        catalog: [],
+        armed: true,
+        detectorStateRevision: 3,
+        latestDetectorResult: { status: "matched", occurrenceKey: "occ_1", validUntilMs: 9_000 },
+      },
+    });
+    assert.equal(v2.forge?.armed, true);
+    assert.equal(v2.forge?.detectorStateRevision, 3);
+    assert.equal(v2.forge?.latestDetectorResult?.status, "matched");
+  });
+
+  it("carries the detector standing and committed run view on the forge result", () => {
+    const decode = Schema.decodeUnknownSync(TradingForgeResult);
+    const decoded = decode({
+      outcome: "accepted",
+      action: "status",
+      detector: {
+        programKind: 2,
+        armed: true,
+        stateRevision: 2,
+        lastEvaluationId: "dtev_fixture",
+        latestResult: {
+          result: { status: "unknown", explanation: "window incomplete" },
+          asOfMs: 1_700_000_000_000,
+        },
+      },
+    });
+    assert.equal(decoded.detector?.programKind, 2);
+    assert.equal(decoded.detector?.stateRevision, 2);
+    assert.equal(decoded.detector?.latestResult?.result.status, "unknown");
+    // The v2 view's absence is named, never invented.
+    const unavailable = decode({
+      outcome: "accepted",
+      action: "status",
+      detector: { programKind: 2, armed: false, unavailable: "store unwired" },
+    });
+    assert.equal(unavailable.detector?.unavailable, "store unwired");
   });
 });

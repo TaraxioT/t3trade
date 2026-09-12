@@ -20,6 +20,7 @@ import { assert, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFs from "node:fs/promises";
 import * as NodeOs from "node:os";
@@ -29,6 +30,8 @@ import { runMigrations } from "../../../persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   FORGE_SDK_SCHEMA_VERSION,
+  detectorEvaluationId,
+  encodeDetectorState,
   type TradingForgeResult,
   type TradingObservation,
 } from "@t3tools/trading-contracts";
@@ -42,7 +45,8 @@ import {
   ForgeCapabilityStoreLive,
   type ForgeCapabilityStoreShape,
 } from "../../../trading/forge/CapabilityStore.ts";
-import { ForgeReactor } from "../../../trading/forge/ForgeReactor.ts";
+import { ForgeReactor, type ForgeReactorShape } from "../../../trading/forge/ForgeReactor.ts";
+import { DetectorRunStore, DetectorRunStoreLive } from "../../../trading/forge/DetectorRunStore.ts";
 import { ForgeCapabilityBuilder } from "../../../trading/forge/CapabilityBuilder.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { handlers } from "./handlers.ts";
@@ -96,13 +100,57 @@ const stubReactor = (
     observedStatus: () => Effect.succeed(null),
   } as unknown as ForgeReactor["Service"]);
 
-const provide = (stateRoot: string, extra: Layer.Layer<ForgeReactor> = stubReactor()) =>
+/**
+ * The recording reactor stub: every enqueue lands in `enqueues` and answers
+ * with a `queued` v2 job record, so the arm/disarm/evaluate flow is testable
+ * without the job queue.
+ */
+const recordingReactor = () => {
+  const enqueues: Array<{
+    readonly environmentId: string;
+    readonly capabilityId: string;
+    readonly programKind?: 2 | undefined;
+  }> = [];
+  const layer = Layer.succeed(ForgeReactor, {
+    enqueueEvaluation: (input: {
+      readonly environmentId: string;
+      readonly capabilityId: string;
+      readonly programKind?: 2 | undefined;
+    }) =>
+      Effect.sync(() => {
+        enqueues.push({
+          environmentId: input.environmentId,
+          capabilityId: input.capabilityId,
+          ...(input.programKind === undefined ? {} : { programKind: input.programKind }),
+        });
+        return {
+          jobId: `fjob_rec_${enqueues.length}`,
+          kind: "evaluation" as const,
+          status: "queued" as const,
+          environmentId: input.environmentId,
+          createdAtMs: 0,
+          capabilityId: input.capabilityId,
+          ...(input.programKind === undefined ? {} : { programKind: input.programKind }),
+        };
+      }),
+    drain: () => Effect.void,
+    cancel: () => Effect.succeed(false),
+    listJobs: () => Effect.succeed([]),
+    observedStatus: () => Effect.succeed(null),
+  } as unknown as ForgeReactorShape);
+  return { enqueues, layer };
+};
+
+/** The layer graph every handler call runs against: the invocation scope, a
+ * die-if-touched gateway, the real file store over the temp root, and the
+ * stubs. The reactor stub defaults to the inert one. */
+const provide = (stateRoot: string, reactorLayer: Layer.Layer<ForgeReactor> = stubReactor()) =>
   Layer.mergeAll(
     Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScope),
     stubGateway,
     storeOver(stateRoot),
     TradingMissionServiceLive,
-    extra,
+    reactorLayer,
     Layer.succeed(ForgeCapabilityBuilder, {
       prepare: () => Effect.die("not used here"),
       check: () => Effect.die("not used here"),
@@ -120,13 +168,47 @@ const provide = (stateRoot: string, extra: Layer.Layer<ForgeReactor> = stubReact
 const call = <A, E>(
   effect: Effect.Effect<A, E>,
   stateRoot: string,
-  extra?: Layer.Layer<ForgeReactor>,
+  reactorLayer?: Layer.Layer<ForgeReactor> | undefined,
 ): Promise<A> =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* runMigrations({});
       return yield* effect;
-    }).pipe(Effect.provide(provide(stateRoot, extra))),
+    }).pipe(Effect.provide(provide(stateRoot, reactorLayer))),
+  );
+
+/** The same graph plus the real detector run store, for the calls that read
+ * or write committed v2 runs (the effect may require the store or the shared
+ * SQL client — the graph provides both). Written out rather than
+ * parameterized: the layer combinators type-check a concrete composition. */
+const callWithRuns = <A, E>(
+  effect: Effect.Effect<A, E, SqlClient.SqlClient | DetectorRunStore>,
+  stateRoot: string,
+  reactorLayer: Layer.Layer<ForgeReactor>,
+): Promise<A> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* runMigrations({});
+      return yield* effect;
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScope),
+          stubGateway,
+          storeOver(stateRoot),
+          TradingMissionServiceLive,
+          reactorLayer,
+          Layer.succeed(ForgeCapabilityBuilder, {
+            prepare: () => Effect.die("not used here"),
+            check: () => Effect.die("not used here"),
+          } as unknown as ForgeCapabilityBuilder["Service"]),
+          Layer.succeed(TradingMarketArchive, {
+            read: () => Effect.die("no archive in the forge handler tests"),
+          } as unknown as TradingMarketArchive["Service"]),
+          DetectorRunStoreLive,
+        ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory())),
+      ),
+    ),
   );
 
 const storeAt = (stateRoot: string): Promise<ForgeCapabilityStoreShape> =>
@@ -186,6 +268,80 @@ const seedInstalledCapability = async (store: ForgeCapabilityStoreShape): Promis
 
 const tempRoot = async (): Promise<string> =>
   NodePath.join(await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-handler-")));
+
+const V2_CAPABILITY = "flag-detector";
+
+const fixtureSha256 = (value: string): string =>
+  NodeCrypto.createHash("sha256").update(value, "utf8").digest("hex");
+
+/**
+ * Install one fixture detector-program (v2) capability directly through the
+ * store's CAS — the bundle's `manifest.json` bytes carry
+ * `manifestVersion: 2`, which is the program-kind discriminator. Arming is
+ * deliberately NOT part of the seed.
+ */
+const seedInstalledV2Capability = async (store: ForgeCapabilityStoreShape): Promise<void> => {
+  const manifestJson = JSON.stringify({
+    manifestVersion: 2,
+    capabilityId: V2_CAPABILITY,
+    version: 1,
+    semantics: "fixture detector",
+    requiredSourceIds: ["github-releases:o/r"],
+    outputFactKeys: ["flag"],
+    artifacts: [
+      { role: "sdk", path: "sdk.ts", sha256: fixtureSha256("export const sdkFixture = 1;") },
+      { role: "detector", path: "detector.ts", sha256: fixtureSha256("export const detect = 1;") },
+      {
+        role: "acceptance",
+        path: "detector.test.ts",
+        sha256: fixtureSha256('test("x", () => {});'),
+      },
+    ],
+    createdAtMs: 1_700_000_000_000,
+  });
+  const contents: Record<string, string> = {
+    "detector.ts": "export const detect = 1;",
+    "detector.test.ts": 'test("x", () => {});',
+    "sdk.ts": "export const sdkFixture = 1;",
+    "manifest.json": manifestJson,
+  };
+  const hashedPaths = Object.keys(contents).sort();
+  const bundleSha256 = fixtureSha256(hashedPaths.map((path) => contents[path] ?? "").join("\n"));
+  const staged = await Effect.runPromise(
+    store.stageVersion(
+      ENV_ID,
+      {
+        capabilityId: V2_CAPABILITY,
+        version: 1,
+        bundleSha256,
+        artifacts: hashedPaths.map((path) => ({
+          path,
+          sha256: fixtureSha256(contents[path] ?? ""),
+          bytes: Buffer.byteLength(contents[path] ?? "", "utf8"),
+        })),
+        manifest: {
+          capabilityId: V2_CAPABILITY,
+          version: 1,
+          schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+          description: "[detector-program v2] fixture detector",
+        },
+        createdAtMs: 1_000,
+      },
+      contents,
+    ),
+  );
+  assert.equal(staged.status, "staged");
+  const installed = await Effect.runPromise(
+    store.install({
+      environmentId: ENV_ID,
+      capabilityId: V2_CAPABILITY,
+      version: 1,
+      bundleSha256,
+      expectedActiveVersion: null,
+    }),
+  );
+  assert.equal(installed.status, "installed");
+};
 
 it("trading_look serves forge discovery from the store, empty included", async () => {
   const root = await tempRoot();
@@ -364,6 +520,210 @@ it("prepare names a missing workspace instead of inventing a path", async () => 
     );
     assert.equal(needsInput.outcome, "rejected");
     assert.equal(needsInput.reason, "needs_input");
+  } finally {
+    await NodeFs.rm(root, { recursive: true, force: true });
+  }
+});
+
+// -- the detector standing: arm/disarm/evaluate/status over v2 (P4.5) ---------
+
+it("arm refuses what is not installed, and the v2 arm→disarm cycle names the standing", async () => {
+  const root = await tempRoot();
+  try {
+    const reactor = recordingReactor();
+    const armUnknown = await call(
+      handlers.trading_forge({
+        action: "arm",
+        capabilityId: "never-installed",
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(armUnknown.outcome, "rejected");
+    assert.equal(armUnknown.reason, "not_installed");
+
+    await seedInstalledV2Capability(await storeAt(root));
+    const armed = await call(
+      handlers.trading_forge({
+        action: "arm",
+        capabilityId: V2_CAPABILITY,
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(armed.outcome, "accepted");
+    assert.equal(armed.detector?.programKind, 2);
+    assert.equal(armed.detector?.armed, true);
+    // Arming is a standing, never an evaluation.
+    assert.include(armed.detail ?? "", "does NOT evaluate");
+    assert.deepEqual(reactor.enqueues, []);
+
+    const disarmed = await call(
+      handlers.trading_forge({
+        action: "disarm",
+        capabilityId: V2_CAPABILITY,
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(disarmed.outcome, "accepted");
+    assert.equal(disarmed.detector?.armed, false);
+    assert.include(disarmed.detail ?? "", "disarmed");
+  } finally {
+    await NodeFs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("evaluate enqueues v2 honestly — unarmed surfaces the armed gate, v1 refuses by name", async () => {
+  const root = await tempRoot();
+  try {
+    await seedInstalledV2Capability(await storeAt(root));
+    await seedInstalledCapability(await storeAt(root));
+    const reactor = recordingReactor();
+
+    // The v1 refusal is named and nothing is enqueued.
+    const v1 = await call(
+      handlers.trading_forge({
+        action: "evaluate",
+        capabilityId: CAPABILITY,
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(v1.outcome, "rejected");
+    assert.equal(v1.reason, "v1_install_driven");
+    assert.deepEqual(reactor.enqueues, []);
+
+    // The unarmed v2 evaluate is NOT pre-checked-and-hidden: the job is
+    // enqueued and the standing says the armed gate will refuse it.
+    const unarmed = await call(
+      handlers.trading_forge({
+        action: "evaluate",
+        capabilityId: V2_CAPABILITY,
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(unarmed.outcome, "accepted");
+    assert.equal(unarmed.detector?.programKind, 2);
+    assert.equal(unarmed.detector?.armed, false);
+    assert.include(unarmed.detail ?? "", "NOT armed");
+    assert.equal(reactor.enqueues.length, 1);
+    assert.equal(reactor.enqueues[0]?.programKind, 2);
+
+    const store = await storeAt(root);
+    await Effect.runPromise(store.arm({ environmentId: ENV_ID, capabilityId: V2_CAPABILITY }));
+    const armedCall = await call(
+      handlers.trading_forge({
+        action: "evaluate",
+        capabilityId: V2_CAPABILITY,
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(armedCall.outcome, "accepted");
+    assert.equal(armedCall.detector?.armed, true);
+    assert.equal(reactor.enqueues.length, 2);
+  } finally {
+    await NodeFs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("status serves the v2 detector view: standing, committed revision, latest result — or names the gap", async () => {
+  const root = await tempRoot();
+  try {
+    const seedingStore = await storeAt(root);
+    await seedInstalledV2Capability(seedingStore);
+    await seedInstalledCapability(seedingStore);
+    await Effect.runPromise(
+      seedingStore.arm({ environmentId: ENV_ID, capabilityId: V2_CAPABILITY }),
+    );
+    const reactor = recordingReactor();
+
+    // No DetectorRunStore wired: the v2 view's absence is named, never zero.
+    const unwired = await call(
+      handlers.trading_forge({
+        action: "status",
+        capabilityId: V2_CAPABILITY,
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(unwired.outcome, "accepted");
+    assert.equal(unwired.detector?.programKind, 2);
+    assert.equal(unwired.detector?.armed, true);
+    assert.include(unwired.detector?.unavailable ?? "", "not wired");
+    assert.isUndefined(unwired.detector?.stateRevision);
+
+    // One committed run, in the same database the status read answers from.
+    const identity = {
+      environmentId: ENV_ID,
+      capabilityId: V2_CAPABILITY,
+      version: 1,
+      stateRevision: 0,
+      inputDigest: "cd".repeat(32),
+    };
+    const encoded = encodeDetectorState({ stateSchemaVersion: 1, state: { count: 0 } });
+    assert.ok(encoded.ok);
+    const served = await callWithRuns(
+      Effect.gen(function* () {
+        const runs = yield* DetectorRunStore;
+        const commit = yield* runs.commitRun({
+          record: {
+            manifestVersion: 2,
+            evaluationId: detectorEvaluationId(identity),
+            environmentId: ENV_ID,
+            capabilityId: V2_CAPABILITY,
+            version: 1,
+            stateRevision: 0,
+            inputDigest: identity.inputDigest,
+            asOfMs: 1_700_000_100_000,
+            result: {
+              status: "matched",
+              occurrenceKey: "occ_fixture_1",
+              evidenceIds: ["forge_ev_v2"],
+              facts: [],
+              validUntilMs: 1_700_000_400_000,
+            },
+            state: { stateSchemaVersion: 1, state: { count: 0 } },
+            evidenceIds: ["forge_ev_v2"],
+            committedAtMs: 1_700_000_100_500,
+          },
+          stateBytes: encoded.serialized,
+        });
+        assert.equal(commit.status, "committed");
+        return yield* handlers.trading_forge({
+          action: "status",
+          capabilityId: V2_CAPABILITY,
+        }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>;
+      }),
+      root,
+      reactor.layer,
+    );
+    assert.equal(served.outcome, "accepted");
+    assert.equal(served.detector?.armed, true);
+    assert.equal(served.detector?.stateRevision, 0);
+    assert.equal(served.detector?.lastEvaluationId, detectorEvaluationId(identity));
+    assert.deepEqual(served.detector?.latestResult?.result, {
+      status: "matched",
+      occurrenceKey: "occ_fixture_1",
+      validUntilMs: 1_700_000_400_000,
+    });
+    assert.equal(served.detector?.latestResult?.asOfMs, 1_700_000_100_000);
+
+    // A v1 capability's status carries the standing only — no v2 view.
+    const v1Status = await callWithRuns(
+      handlers.trading_forge({
+        action: "status",
+        capabilityId: CAPABILITY,
+      }) as unknown as Effect.Effect<TradingForgeResult, TradingToolRejectedError>,
+      root,
+      reactor.layer,
+    );
+    assert.equal(v1Status.detector?.programKind, 1);
+    assert.equal(v1Status.detector?.armed, false);
+    assert.isUndefined(v1Status.detector?.stateRevision);
+    assert.isUndefined(v1Status.detector?.latestResult);
   } finally {
     await NodeFs.rm(root, { recursive: true, force: true });
   }

@@ -19,6 +19,7 @@ import {
   ForgeContainerRunnerFromEnv,
 } from "./forge/CapabilitySandbox.ts";
 import { ForgeReactorLive } from "./forge/ForgeReactor.ts";
+import { DetectorSchedulerLive, DetectorSchedulerStartLive } from "./forge/DetectorScheduler.ts";
 import { ForgeAcceptanceLive } from "./forge/ForgeAcceptance.ts";
 import { ForgeSourceWindowLive } from "./forge/ForgeSourceWindow.ts";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -188,6 +189,20 @@ const forgeReactor = ForgeReactorLive.pipe(
   // shares the one instance — no second detector store exists.
   Layer.provide(DetectorRunStoreLive),
   Layer.provide(detectorFactWindow),
+);
+// The provider-free detector heartbeat: one sweep per interval over the SAME
+// store and reactor instances the merge below mounts (layer memoization),
+// lease-gated per tick. The start layer forks the loop into its scope, so
+// the sweep begins when the trading runtime builds and stops with it; a
+// runtime that does not hold the lease runs the loop as a per-tick no-op.
+const detectorScheduler = DetectorSchedulerLive.pipe(
+  Layer.provide(forgeStore),
+  Layer.provide(forgeStoreConfig),
+  Layer.provide(forgeReactor),
+  Layer.provide(TradingRuntimeLeaseLive),
+);
+const detectorSchedulerStart = DetectorSchedulerStartLive.pipe(
+  Layer.provideMerge(detectorScheduler),
 );
 
 // T3 Forge F3: the durable intent machinery. SQLite ledger + immutable grant
@@ -543,6 +558,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // SQL-backed forge services use. Additive — nothing here reaches an order,
   // a signer, or an exchange.
   DetectorRunStoreLive,
+  // The periodic sweep that enqueues v2 evaluations for armed detectors with
+  // no provider turn in the loop. Starts and stops with this layer; every
+  // tick re-checks the lease, so only the trading-lease owner ever enqueues.
+  detectorSchedulerStart,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
   graphResearchServices,
   // External research evidence: the durable source-revision store, the
