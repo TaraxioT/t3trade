@@ -700,6 +700,11 @@ describe("UniswapQuoteService.quoteExactInput", () => {
         }
         const otherAmount = yield* service.quoteExactInput({ ...input, amountInRaw: "1001" });
         const otherTime = yield* service.quoteExactInput({ ...input, now: NOW + 1 });
+        const otherExpiry = yield* service.quoteExactInput({ ...input, quoteTtlMs: 1_000 });
+        assert.equal(otherExpiry.status, "quoted");
+        if (first.status === "quoted" && otherExpiry.status === "quoted") {
+          assert.notEqual(otherExpiry.record.quoteId, first.record.quoteId);
+        }
         assert.equal(otherAmount.status, "quoted");
         assert.equal(otherTime.status, "quoted");
         if (

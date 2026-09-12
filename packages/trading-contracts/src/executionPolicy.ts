@@ -223,9 +223,10 @@ export function serializeSwapQuoteIdentity(input: {
   readonly amountInRaw: string;
   readonly minAmountOutRaw: string;
   readonly quotedAtMs: number;
+  readonly expiresAtMs: number;
 }): string {
   return JSON.stringify([
-    "trading_execution.quote.v1",
+    "trading_execution.quote.v2",
     input.chainId,
     input.routeId,
     input.tokenIn,
@@ -233,6 +234,7 @@ export function serializeSwapQuoteIdentity(input: {
     input.amountInRaw,
     input.minAmountOutRaw,
     input.quotedAtMs,
+    input.expiresAtMs,
   ]);
 }
 
@@ -254,8 +256,8 @@ function sha256Hex(value: string): string {
 /**
  * The content identity of one quote: `sq_` plus the first 24 hex characters of
  * the SHA-256 over the canonical identity serialization. A reprice changes
- * `quotedAtMs` at minimum, so it always mints a new id; only a byte-identical
- * requote at the same millisecond collapses to the same one.
+ * `quotedAtMs` at minimum, so it mints a new id. Quotes with identical
+ * execution terms and validity collapse to the same identity.
  */
 export function swapQuoteId(input: {
   readonly chainId: string;
@@ -265,6 +267,7 @@ export function swapQuoteId(input: {
   readonly amountInRaw: string;
   readonly minAmountOutRaw: string;
   readonly quotedAtMs: number;
+  readonly expiresAtMs: number;
 }): string {
   return `sq_${sha256Hex(serializeSwapQuoteIdentity(input)).slice(0, 24)}`;
 }

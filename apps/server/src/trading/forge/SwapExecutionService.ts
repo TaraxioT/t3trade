@@ -28,10 +28,10 @@
  *  6. the unsigned transaction is built deterministically (PoolSwapTest
  *     calldata over the route's pool key) and persisted as one immutable
  *     intent row;
- *  7. submission is ATTEMPTED through the SignedTransactionBroadcaster seam.
+ *  7. submission is refused before calling any broadcaster.
  *
  * Step 7 is the honest end of this slice: no signer is authorized, so the
- * shipped broadcaster refuses `broadcaster-missing` and the intent lands
+ * service refuses `broadcaster-missing` and the intent lands
  * durably as `submit-refused`. The asymmetry is deliberate and load-bearing:
  * a refused submission RESERVES NOTHING — the proposal stays `proposed`, no
  * budget is consumed, nothing is in flight — so the operator can re-price
@@ -79,12 +79,7 @@ import {
 } from "./UniswapQuoteService.ts";
 import { swapRouteAbi } from "./PeripheryAbi.ts";
 import { SEPOLIA_CHAIN_ID } from "./SepoliaTarget.ts";
-import {
-  SignedTransactionBroadcaster,
-  type ForgeBroadcastRefusalReason,
-  type ForgeIntentRecord,
-  type ForgeUnsignedTransaction,
-} from "./UniswapTestnetAdapter.ts";
+import type { ForgeBroadcastRefusalReason } from "./UniswapTestnetAdapter.ts";
 import type { ExecutionEnvelopeView } from "./ExecutionPolicyService.ts";
 
 /** The most intent rows one listing read will return. */
@@ -115,11 +110,9 @@ const NATIVE_CURRENCY_ADDRESS = `0x${"0".repeat(40)}`;
  *   refused, never assumed.
  * - `superseded-quote` — this proposal already has an intent prepared against
  *   a DIFFERENT quote; repricing is a new proposal, never a mutation.
- * - `execution-unavailable` — the broadcaster seam failed without a named
- *   refusal.
- * - the F0 `ForgeBroadcastRefusalReason` members surface VERBATIM when a
- *   wired broadcaster refuses (today only `broadcaster-missing` is emitted,
- *   by the shipped honest refusal).
+ * - `execution-unavailable` — required retained execution state is unavailable.
+ * - `broadcaster-missing` — draft preparation cannot submit unprotected calldata.
+ *   Other F0 refusal names remain in the shared compatibility vocabulary.
  */
 export type SwapExecutionRefusalName =
   | ExecutionRefusal
@@ -345,14 +338,6 @@ const amountInOf = (proposalJson: string): string | null => {
 };
 
 /**
- * URLs are the only credential-bearing text the failure channel can carry
- * (provider keys ride RPC paths), so they never survive into a persisted
- * refusal reason — the quote service's redaction rule, restated.
- */
-const redactDetail = (detail: string): string =>
-  detail.replace(/https?:\/\/[^\s"'<>]+/g, "[redacted-url]");
-
-/**
  * Key-sorted, undefined-dropping canonical JSON input (the envelope store's
  * normalization, restated): the prepared transaction's stored bytes are a
  * function of their content, so the content id is stable across processes.
@@ -375,11 +360,6 @@ export const makeSwapExecutionService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const store: ForgeCapabilityStoreShape = yield* ForgeCapabilityStore;
   const routeConfig = yield* SwapRouteConfig;
-  // Resolved at BUILD time, deliberately: the broadcaster is a property of
-  // the runtime this service was constructed in (the wiring composes the
-  // honest refusal in), not of whichever caller happens to invoke
-  // prepareAndAttempt later.
-  const broadcasterOption = yield* Effect.serviceOption(SignedTransactionBroadcaster);
 
   const intentFor: SwapExecutionServiceShape["intentFor"] = (proposalId) =>
     sql<IntentRow>`
@@ -530,7 +510,7 @@ export const makeSwapExecutionService = Effect.gen(function* () {
       if (envelopeRow.status === "revoked") {
         return refuse("envelope-revoked", `envelope ${envelopeRow.envelope_id} is revoked`);
       }
-      if (now > envelope.expiresAtMs) {
+      if (now >= envelope.expiresAtMs) {
         return refuse("envelope-expired", `the envelope expired at ${envelope.expiresAtMs}`);
       }
       if (envelopeRow.status !== "approved") {
@@ -702,23 +682,11 @@ export const makeSwapExecutionService = Effect.gen(function* () {
         );
       }
 
-      // Build the unsigned transaction deterministically. The calldata is
-      // the PoolSwapTest encoder over the route's own pool key: exact input
-      // (negative amountSpecified), TestSettings(false,false) (settle by
-      // paying, take no claims), no hook data. sqrtPriceLimitX96 = 0 is the
-      // v4 "no price bound / full range" convention: the min-out that binds
-      // this intent is the QUOTE's minAmountOutRaw, and PoolSwapTest exposes
-      // no min-out parameter — so on-chain price enforcement is unbounded by
-      // design here and honest slippage enforcement lands in the post-trade
-      // receipt check (the later reconciliation pass), never in this
-      // calldata. The value follows the v4 native-currency convention: when
-      // the input token is the zero-address marker, the payable call carries
-      // the input as msg.value; otherwise value is zero and the ERC-20 is
-      // pulled. Gas is the documented conservative placeholder capped by the
-      // envelope's maxGasWei — it can only over-reserve, never overspend.
-      // The nonce is a null placeholder: deterministic signing is a
-      // separately authorized pass, and the F0 draft-only gas/nonce stamp is
-      // the precedent for where those fields get stamped when one exists.
+      // Build an inspectable draft only. PoolSwapTest has no min-output or
+      // deadline parameter, and zero is not a valid v4 pool price bound.
+      // These bytes must never be broadcast. The refusal below is unconditional
+      // until an authorized execution adapter supplies protected calldata.
+      // Gas/nonce are placeholders, not measured execution guarantees.
       const gasCeiling =
         BigInt(QUOTE_GAS_ESTIMATE_WEI_PLACEHOLDER) < BigInt(envelope.maxGasWei)
           ? QUOTE_GAS_ESTIMATE_WEI_PLACEHOLDER
@@ -851,107 +819,16 @@ export const makeSwapExecutionService = Effect.gen(function* () {
         );
       }
 
-      // The submission attempt. The broadcaster seam is optional on purpose:
-      // an unwired runtime refuses broadcaster-missing without dying, and a
-      // wired one is called with the exact prepared bytes. The shipped
-      // implementation refuses `broadcaster-missing` — the honest no-signer
-      // gate — so today this always records a durable submit-refusal while
-      // the code path stays real.
-      const unsigned: ForgeUnsignedTransaction = {
-        chainId: SEPOLIA_CHAIN_ID,
-        to: route.swapTargetAddress,
-        data,
-        valueWei,
-      };
-      // The seam's intent parameter is typed over the F0 ForgeIntentRecord
-      // (a read-only module whose kind vocabulary has no envelope-swap
-      // member). The view below carries the closest swap literal ONLY to
-      // satisfy that parameter type; the true identity and authority ride in
-      // params (authority: execution-envelope). No F0 ledger row is ever
-      // written by this service, and the shipped broadcaster never reads
-      // this record.
-      const intentView: ForgeIntentRecord = {
-        intentId: record.intentId,
-        idempotencyKey: record.intentId,
-        kind: "bounded-swap",
-        environmentId,
-        createdAtMs: record.preparedAtMs,
-        unsigned,
-        spend: { swapQuoteAmountRaw: record.amountInRaw },
-        status: "draft",
-        gasAccounted: false,
-        params: {
-          authority: "execution-envelope",
-          envelopeId: record.envelopeId,
-          proposalId: record.proposalId,
-          quoteId: record.quoteId,
-          routeId: record.routeId,
-          recipient: record.recipient,
-          minAmountOutRaw: record.minAmountOutRaw,
-        },
-        summary: `execution-envelope swap ${record.amountInRaw} ${record.tokenIn}->${record.tokenOut} via ${record.routeId}`,
-      };
-
-      let submitted = false;
-      let refusal: SwapExecutionRefusalName = "broadcaster-missing";
-      let detail = "";
-      if (broadcasterOption._tag === "None") {
-        refusal = "broadcaster-missing";
-        detail = "no signed-transaction broadcaster is provided; nothing was submitted";
-      } else {
-        // The named refusal is surfaced VERBATIM (reason literal + detail,
-        // URLs redacted) and never caught-and-hidden; a string failure is
-        // the unnameable transport case.
-        const sent = yield* broadcasterOption.value
-          .broadcast({ transaction: unsigned, intent: intentView })
-          .pipe(
-            Effect.map((): { readonly ok: true } => ({ ok: true })),
-            Effect.catchTag(
-              "ForgeBroadcastRefused",
-              (
-                refused,
-              ): Effect.Effect<{
-                readonly ok: false;
-                readonly refusal: SwapExecutionRefusalName;
-                readonly detail: string;
-              }> =>
-                Effect.succeed({
-                  ok: false,
-                  refusal: refused.reason,
-                  detail: redactDetail(refused.detail),
-                }),
-            ),
-            Effect.catch(
-              (
-                other,
-              ): Effect.Effect<{
-                readonly ok: false;
-                readonly refusal: SwapExecutionRefusalName;
-                readonly detail: string;
-              }> =>
-                Effect.succeed({
-                  ok: false,
-                  refusal: "execution-unavailable",
-                  detail: redactDetail(String(other).slice(0, 300)),
-                }),
-            ),
-          );
-        if (sent.ok) {
-          // A wired broadcaster accepted the bytes. The tx-hash/receipt
-          // columns do not exist yet (the authorized live pass adds them);
-          // the honest record today is the one-way `submitted` transition.
-          submitted = true;
-        } else {
-          refusal = sent.refusal;
-          detail = sent.detail;
-        }
-      }
-
-      // Record the attempt on the intent row: one-way `prepared ->
-      // submit-refused` (or `submitted`), both timestamps durable. The
-      // proposal STAYS `proposed` — a refused submission reserves nothing.
-      const nextStatus = submitted ? "submitted" : "submit-refused";
-      const refusalReason = submitted ? null : `${refusal}: ${detail}`;
+      // PoolSwapTest cannot enforce the quote's minimum output or deadline.
+      // Retain the draft for inspection, but do not pass these unprotected
+      // bytes to any broadcaster, including one added for the F0 fee hook.
+      // A future execution path needs separately authorized signing, protected
+      // calldata, and atomic budget reservation before submitting anything.
+      const refusal: SwapExecutionRefusalName = "broadcaster-missing";
+      const detail =
+        "swap submission is disabled: no authorized broadcaster with on-chain minimum-output and deadline enforcement is wired; nothing was submitted";
+      const nextStatus = "submit-refused";
+      const refusalReason = `${refusal}: ${detail}`;
       yield* sql
         .withTransaction(
           Effect.gen(function* () {
@@ -974,17 +851,13 @@ export const makeSwapExecutionService = Effect.gen(function* () {
         )
         .pipe(Effect.mapError(sqlFail("prepareAndAttempt.attempt")));
 
-      const attempted: SwapIntentRecord = submitted
-        ? { ...record, status: "submitted", attemptAtMs: now }
-        : {
-            ...record,
-            status: "submit-refused",
-            attemptAtMs: now,
-            ...(refusalReason === null ? {} : { refusalReason }),
-          };
-      return submitted
-        ? { status: "submitted" as const, intent: attempted }
-        : { status: "submit-refused" as const, intent: attempted, refusal, detail };
+      const attempted: SwapIntentRecord = {
+        ...record,
+        status: "submit-refused",
+        attemptAtMs: now,
+        refusalReason,
+      };
+      return { status: "submit-refused" as const, intent: attempted, refusal, detail };
     });
 
   return {
@@ -996,14 +869,7 @@ export const makeSwapExecutionService = Effect.gen(function* () {
   } satisfies SwapExecutionServiceShape;
 });
 
-/**
- * The service layer. `SwapRouteConfig` and the honest broadcaster are
- * composed at the wiring point over the ONE shared instances the runtime
- * already builds; the SqlClient rides the same ambient provision the other
- * SQL-backed forge services use. The broadcaster is consumed through
- * serviceOption — an unwired runtime is a durable broadcaster-missing
- * refusal, never a dead layer.
- */
+/** Uses the shared route registry, capability store, and ambient SQL client. */
 export const SwapExecutionServiceLive = Layer.effect(
   SwapExecutionService,
   makeSwapExecutionService,

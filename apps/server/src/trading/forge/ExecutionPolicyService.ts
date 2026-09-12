@@ -487,7 +487,7 @@ export const makeExecutionPolicyService = Effect.gen(function* () {
                 detail: `envelope status is ${row.status}, only a proposed envelope can be approved`,
               };
             }
-            if (now > envelope.expiresAtMs) {
+            if (now >= envelope.expiresAtMs) {
               return {
                 status: "refused" as const,
                 reason: "expired" as const,
@@ -613,7 +613,7 @@ export const makeExecutionPolicyService = Effect.gen(function* () {
           `envelope ${envelopeRow.envelope_id} does not decode; approval cannot be trusted`,
         );
       }
-      if (now > envelope.expiresAtMs) {
+      if (now >= envelope.expiresAtMs) {
         return refuse("envelope-expired", `the envelope expired at ${envelope.expiresAtMs}`);
       }
       if (envelopeRow.status !== "approved") {

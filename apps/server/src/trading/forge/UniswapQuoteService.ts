@@ -467,6 +467,7 @@ export const makeUniswapQuoteService = Effect.gen(function* () {
           amountInRaw: input.amountInRaw,
           minAmountOutRaw: minAmountOutRaw.toString(10),
           quotedAtMs: input.now,
+          expiresAtMs: input.now + ttlMs,
         }),
         chainId: route.chainId,
         routeId: route.routeId,

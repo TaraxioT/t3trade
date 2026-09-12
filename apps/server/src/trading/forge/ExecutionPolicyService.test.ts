@@ -759,7 +759,7 @@ layer("ExecutionPolicyService evaluatePolicy gates", (it) => {
     }),
   );
 
-  it.effect("an expired envelope refuses evaluation", () =>
+  it.effect("an envelope refuses evaluation at its expiry instant", () =>
     Effect.gen(function* () {
       yield* reset;
       const svc = yield* service();
@@ -767,7 +767,7 @@ layer("ExecutionPolicyService evaluatePolicy gates", (it) => {
       const outcome = yield* svc.evaluatePolicy({
         environmentId: ENV,
         capabilityId: CAP,
-        now: NOW + 2_000,
+        now: NOW + 1_000,
       });
       refusedWith(outcome, "envelope-expired");
     }),

@@ -55,7 +55,7 @@ import {
   SwapRouteConfig,
   type SwapRouteSettings,
 } from "./UniswapQuoteService.ts";
-import { ForgeBroadcastRefused, SignedTransactionBroadcaster } from "./UniswapTestnetAdapter.ts";
+import { SignedTransactionBroadcaster } from "./UniswapTestnetAdapter.ts";
 
 const ENV = "env_swap_exec";
 const CAP = "flow-policy";
@@ -412,8 +412,8 @@ const policyService = (): Effect.Effect<ExecutionPolicyServiceShape, never, SqlC
 
 /**
  * The swap service under test. `refusingDetail` null leaves the broadcaster
- * seam unwired (serviceOption None); otherwise the shipped honest-refusal
- * behavior is provided inline as a wired Some.
+ * seam unwired; otherwise an injected broadcaster throws if called.
+ * Draft preparation must never invoke either an F0 or future broadcaster.
  */
 const swapService = (
   refusingDetail: string | null,
@@ -430,11 +430,9 @@ const swapService = (
     base,
     SignedTransactionBroadcaster,
     SignedTransactionBroadcaster.of({
-      broadcast: () =>
-        new ForgeBroadcastRefused({
-          reason: "broadcaster-missing",
-          detail: refusingDetail,
-        }),
+      broadcast: () => {
+        throw new Error(`unsafe broadcaster invocation: ${refusingDetail}`);
+      },
     }),
   );
 };
@@ -595,7 +593,7 @@ layer("SwapExecutionService prepareAndAttempt", (it) => {
       }),
   );
 
-  it.effect("a wired broadcaster's refusal is persisted verbatim (URLs redacted)", () =>
+  it.effect("an injected broadcaster is never called for unprotected draft calldata", () =>
     Effect.gen(function* () {
       yield* reset;
       const policy = yield* policyService();
@@ -612,10 +610,10 @@ layer("SwapExecutionService prepareAndAttempt", (it) => {
       assert.equal(outcome.status, "submit-refused");
       if (outcome.status !== "submit-refused") throw new Error("unreachable");
       assert.equal(outcome.refusal, "broadcaster-missing");
-      assert.include(outcome.detail, "no grant-controlled signer is wired");
+      assert.include(outcome.detail, "minimum-output and deadline enforcement");
       // The credential-bearing URL never survives into the durable reason.
       assert.notInclude(outcome.intent.refusalReason ?? "", "https://sepolia.example");
-      assert.include(outcome.intent.refusalReason ?? "", "[redacted-url]");
+      assert.notInclude(outcome.intent.refusalReason ?? "", "no grant-controlled signer is wired");
     }),
   );
 
@@ -866,7 +864,7 @@ layer("SwapExecutionService prepareAndAttempt", (it) => {
             quotedAtMs: NOW + 100,
             expiresAtMs: NOW + 1_600,
           }),
-          now: NOW + 2_000,
+          now: NOW + 1_500,
         }),
         "envelope-expired",
       );

@@ -94,6 +94,7 @@ const quoteIdentity = {
   amountInRaw: "1000000000000000",
   minAmountOutRaw: "900000000",
   quotedAtMs: 1_700_000_000_000,
+  expiresAtMs: 1_700_000_030_000,
 } as const;
 
 const quote = {
@@ -317,6 +318,7 @@ describe("the quote content identity", () => {
     assert.notStrictEqual(changed({ amountInRaw: "1000000000000001" }), baseline);
     assert.notStrictEqual(changed({ minAmountOutRaw: "900000001" }), baseline);
     assert.notStrictEqual(changed({ quotedAtMs: quoteIdentity.quotedAtMs + 1 }), baseline);
+    assert.notStrictEqual(changed({ expiresAtMs: quoteIdentity.expiresAtMs + 1 }), baseline);
   });
 
   it("agrees with the platform SHA-256 over the canonical identity serialization", async () => {
@@ -340,6 +342,7 @@ describe("the quote content identity", () => {
         amountInRaw: "1",
         minAmountOutRaw: "0",
         quotedAtMs: 0,
+        expiresAtMs: 1000,
       },
       {
         chainId: "11155111",
@@ -349,6 +352,7 @@ describe("the quote content identity", () => {
         amountInRaw: "123456789012345678901234567890",
         minAmountOutRaw: "987654321098765432109876543210",
         quotedAtMs: 1_799_999_999_999,
+        expiresAtMs: 1_800_000_029_999,
       },
     ];
     for (const sample of samples) {
