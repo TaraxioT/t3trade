@@ -1,4 +1,5 @@
 import { ForgeAcceptance } from "../../../trading/forge/ForgeAcceptance.ts";
+import { GraphResearchService } from "../../../trading/research/GraphResearchService.ts";
 /**
  * Trading tool handlers.
  *
@@ -4121,7 +4122,9 @@ export const handlers = {
 
       const eventService = yield* TradingEventService;
       const now = yield* Clock.currentTimeMillis;
-      const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
+      const invocationContext = yield* McpInvocationContext.McpInvocationContext;
+      const threadId = invocationContext.threadId;
+      const scope = invocationContext;
 
       // `missionId` is attribution, never authority: an event set takes no
       // mission state and can reach no order, whether or not one is named.
@@ -4405,28 +4408,58 @@ export const handlers = {
           });
           if (tooLarge !== null) return yield* refuse(tooLarge);
 
-          const rows = yield* archive
-            .candlesInWindow({
-              coin: input.market,
-              interval,
-              fromT: studyWindow.fromT,
-              toT: studyWindow.toT,
-              maxBars: BACKTEST_MAX_BARS,
-            })
-            .pipe(Effect.orDie);
-          if (rows.length === 0) {
-            return yield* refuse(
-              `the archive holds no ${interval} bars for ${input.market} in that window` +
-                (coverageProbe?.recordingSince == null
-                  ? " (nothing is recorded for this market at all)"
-                  : "") +
-                (hydrationNote === null ? "" : `; ${hydrationNote}`),
-            );
+          // The Graph path: bars aggregated from retained, pinned Uniswap
+          // swaps for a vetted pool, with per-row flow features from the
+          // same bytes. No Hyperliquid hydration happens on this path —
+          // the dataset IS the price source — and an unavailable source is
+          // a refusal, never zeros.
+          let graphDataset:
+            | import("../../../trading/research/GraphResearchService.ts").GraphStudyDataset
+            | undefined;
+          let studyCandles: ReadonlyArray<import("@t3tools/trading-contracts").MarketCandle>;
+          if (input.graphSource !== undefined) {
+            const graphResearchOption = yield* Effect.serviceOption(GraphResearchService);
+            if (graphResearchOption._tag === "None") {
+              return yield* refuse("the Graph research service is not wired into this runtime");
+            }
+            const read = yield* graphResearchOption.value.loadStudyDataset({
+              environmentId: scope.environmentId,
+              poolId: input.graphSource.poolId,
+              occurrences: set.occurrences,
+              intervalMs: width,
+              horizonBars,
+              now,
+            });
+            if (read.status === "unavailable") {
+              return yield* refuse(`graph study unavailable: ${read.reason}`);
+            }
+            graphDataset = read.dataset;
+            studyCandles = read.dataset.candles;
+          } else {
+            const rows = yield* archive
+              .candlesInWindow({
+                coin: input.market,
+                interval,
+                fromT: studyWindow.fromT,
+                toT: studyWindow.toT,
+                maxBars: BACKTEST_MAX_BARS,
+              })
+              .pipe(Effect.orDie);
+            if (rows.length === 0) {
+              return yield* refuse(
+                `the archive holds no ${interval} bars for ${input.market} in that window` +
+                  (coverageProbe?.recordingSince == null
+                    ? " (nothing is recorded for this market at all)"
+                    : "") +
+                  (hydrationNote === null ? "" : `; ${hydrationNote}`),
+              );
+            }
+            studyCandles = rows.map(toCandle);
           }
 
           const study = runEventStudy({
             occurrences: set.occurrences,
-            candles: rows.map(toCandle),
+            candles: studyCandles,
             intervalMs: width,
             horizonBars,
             entryBasis,
@@ -4457,10 +4490,33 @@ export const handlers = {
             resolvedMetric.metric === "path_extrema"
               ? ` Metric: path extrema for a ${resolvedMetric.direction} on the ${resolvedMetric.priceField} — the excursion to that extremum is hindsight-perfect (maximum favorable excursion after entry), not a realizable result.`
               : "";
+          let featureStudy = study;
+          if (graphDataset !== undefined) {
+            const featuresByStart = new Map(
+              graphDataset.features.map((feature) => [feature.startAt, feature]),
+            );
+            featureStudy = {
+              ...study,
+              rows: study.rows.map((row) => {
+                const feature = featuresByStart.get(row.startAt);
+                if (feature === undefined) return row;
+                return {
+                  ...row,
+                  netFlowMicros: feature.netFlowMicros,
+                  graphParticipants: feature.participants,
+                  graphTradeCount: feature.tradeCount,
+                };
+              }),
+            };
+          }
+          const graphSentence =
+            graphDataset === undefined
+              ? ""
+              : ` Price and flow source: The Graph dataset ${graphDataset.manifest.id} (${graphDataset.manifest.status}, ${graphDataset.manifest.coverage.rows} observations, pinned at block ${graphDataset.manifest.pin?.blockNumber ?? "multiple"}).`;
           return eventsResult({
-            study,
+            study: featureStudy,
             outcome:
-              `${study.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence} ` +
+              `${featureStudy.verdict} Entry basis: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[entryBasis]}.${metricSentence}${graphSentence} ` +
               "To show this on the graph, call trading_chart publish_event_study with the same parameters.",
           });
         }
@@ -4487,7 +4543,9 @@ export const handlers = {
       const scenes = yield* TradingResearchSceneService;
       const eventService = yield* TradingEventService;
       const now = yield* Clock.currentTimeMillis;
-      const threadId = (yield* McpInvocationContext.McpInvocationContext).threadId;
+      const invocationContext = yield* McpInvocationContext.McpInvocationContext;
+      const threadId = invocationContext.threadId;
+      const scope = invocationContext;
 
       // Attribution, never authority: a scene takes no mission state, the
       // same sentence the events handler carries.
@@ -4606,23 +4664,50 @@ export const handlers = {
             coarser: coarserIntervals(interval),
           });
           if (tooLarge !== null) return yield* refuse(tooLarge);
-          const rows = yield* archive
-            .candlesInWindow({
-              coin: input.market,
-              interval,
-              fromT: studyWindow.fromT,
-              toT: studyWindow.toT,
-              maxBars: BACKTEST_MAX_BARS,
-            })
-            .pipe(Effect.orDie);
-          if (rows.length === 0) {
-            return yield* refuse(
-              `the archive holds no ${interval} bars for ${input.market} in that window` +
-                (hydrationNote === null ? "" : `; ${hydrationNote}`),
-            );
+          // The study action's Graph rule, verbatim: when a graphSource is
+          // requested, the retained pinned swaps are the price source and
+          // the row features; the archive path is untouched otherwise.
+          let graphDataset:
+            | import("../../../trading/research/GraphResearchService.ts").GraphStudyDataset
+            | undefined;
+          let candles: ReadonlyArray<import("@t3tools/trading-contracts").MarketCandle>;
+          if (input.graphSource !== undefined) {
+            const graphResearchOption = yield* Effect.serviceOption(GraphResearchService);
+            if (graphResearchOption._tag === "None") {
+              return yield* refuse("the Graph research service is not wired into this runtime");
+            }
+            const read = yield* graphResearchOption.value.loadStudyDataset({
+              environmentId: scope.environmentId,
+              poolId: input.graphSource.poolId,
+              occurrences: set.occurrences,
+              intervalMs: width,
+              horizonBars,
+              now,
+            });
+            if (read.status === "unavailable") {
+              return yield* refuse(`graph study unavailable: ${read.reason}`);
+            }
+            graphDataset = read.dataset;
+            candles = read.dataset.candles;
+          } else {
+            const rows = yield* archive
+              .candlesInWindow({
+                coin: input.market,
+                interval,
+                fromT: studyWindow.fromT,
+                toT: studyWindow.toT,
+                maxBars: BACKTEST_MAX_BARS,
+              })
+              .pipe(Effect.orDie);
+            if (rows.length === 0) {
+              return yield* refuse(
+                `the archive holds no ${interval} bars for ${input.market} in that window` +
+                  (hydrationNote === null ? "" : `; ${hydrationNote}`),
+              );
+            }
+            candles = rows.map(toCandle);
           }
-          const candles = rows.map(toCandle);
-          const report = runEventStudy({
+          let report = runEventStudy({
             occurrences: set.occurrences,
             candles,
             intervalMs: width,
@@ -4645,6 +4730,24 @@ export const handlers = {
                 }
               : {}),
           });
+          if (graphDataset !== undefined) {
+            const featuresByStart = new Map(
+              graphDataset.features.map((feature) => [feature.startAt, feature]),
+            );
+            report = {
+              ...report,
+              rows: report.rows.map((row) => {
+                const feature = featuresByStart.get(row.startAt);
+                if (feature === undefined) return row;
+                return {
+                  ...row,
+                  netFlowMicros: feature.netFlowMicros,
+                  graphParticipants: feature.participants,
+                  graphTradeCount: feature.tradeCount,
+                };
+              }),
+            };
+          }
           const servedFromT = candles[0]?.openTime ?? now;
           const servedToT = candles[candles.length - 1]?.openTime ?? now;
           // The scene's provenance: the study's own bounded window, the bars
@@ -4696,7 +4799,18 @@ export const handlers = {
               payload: {
                 kind: "eventStudy",
                 document: {
-                  priceSource: "hyperliquid",
+                  priceSource: graphDataset === undefined ? "hyperliquid" : "the-graph",
+                  ...(graphDataset === undefined
+                    ? {}
+                    : {
+                        graphDataset: {
+                          datasetId: graphDataset.manifest.id,
+                          contentSha256: graphDataset.manifest.contentSha256,
+                          deploymentOrPackageId: graphDataset.manifest.deploymentOrPackageId,
+                          chainId: graphDataset.manifest.chainId,
+                          pinnedBlock: graphDataset.manifest.pin?.blockNumber ?? null,
+                        },
+                      }),
                   entryBasis,
                   // The metric is part of the recipe and always recorded: a
                   // path_extrema scene's extrema and excursion aggregates read

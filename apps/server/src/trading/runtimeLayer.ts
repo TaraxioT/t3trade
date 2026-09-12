@@ -90,6 +90,7 @@ import {
   ForgeGraphTransportLive,
 } from "./forge/GraphSource.ts";
 import { ForgeSourceReadsLive } from "./forge/ForgeSourceReads.ts";
+import { GraphResearchService, makeGraphResearchService } from "./research/GraphResearchService.ts";
 import {
   FeePolicyConfigLive,
   FeePolicyService,
@@ -335,6 +336,13 @@ const TradingExecutionLayerLive = Layer.mergeAll(
   TradingWorkingOrderLayerLive,
 ).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
+// Graph-backed dataset acquisition for the research tools: reads through the
+// same vetted-pool Graph source the detectors use, self-contained in its
+// provides, so the merge builds it in parallel safely.
+const graphResearchServices = Layer.effect(GraphResearchService, makeGraphResearchService).pipe(
+  Layer.provide(forgeGraphSource),
+);
+
 export const TradingLayerLive = Layer.mergeAll(
   // `trading_look`'s archive-backed fetch keys (plan 38 §2.4). Read-only over
   // the archiver's own file; a missing archive answers unavailable, not zero.
@@ -483,6 +491,7 @@ export const TradingLayerLive = Layer.mergeAll(
   forgeReactor,
   ForgeSourceStoreLive,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
+  graphResearchServices,
 ).pipe(
   Layer.provideMerge(infoWithHttp),
   // T3 Forge F3 durable machinery: SQLite intent ledger + grant guard +
