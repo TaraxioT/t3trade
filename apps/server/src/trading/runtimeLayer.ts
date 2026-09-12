@@ -114,6 +114,7 @@ import {
   UniswapTestnetAdapterLive,
 } from "./forge/UniswapTestnetAdapter.ts";
 import { SwapRouteConfigLive, UniswapQuoteServiceLive } from "./forge/UniswapQuoteService.ts";
+import { SwapExecutionServiceLive } from "./forge/SwapExecutionService.ts";
 import {
   ForgeGrantGuardLive,
   ForgeIntentLedgerSqliteLive,
@@ -246,6 +247,19 @@ const forgeAdapter = UniswapTestnetAdapterLive.pipe(
 const forgeQuoteService = UniswapQuoteServiceLive.pipe(
   Layer.provide(SwapRouteConfigLive),
   Layer.provide(forgeSepoliaTransport),
+);
+// P5.4: the swap-intent flow — prepare an exact-input transaction from a
+// persisted proposal plus a fresh quote, then honestly refuse submission at
+// the broadcaster seam. Rides the SAME route registry the quote service
+// resolves and the SAME honest broadcaster the forge adapter is gated on
+// (provided, so the real serviceOption call path runs and refuses
+// broadcaster-missing; a runtime that omits it lands on the same durable
+// refusal through the None branch). SQL + calldata encoding only — no
+// signer, no RPC, no Hyperliquid, and no F0 ledger write.
+const swapExecutionService = SwapExecutionServiceLive.pipe(
+  Layer.provide(forgeStore),
+  Layer.provide(SwapRouteConfigLive),
+  Layer.provide(SignedTransactionBroadcasterUnavailable),
 );
 const forgeFeePolicy = FeePolicyServiceLive.pipe(
   Layer.provide(forgeAdapter),
@@ -594,6 +608,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // uses (see forgeQuoteService). Additive — a read-only eth_call, so
   // mounting it changes no trading guard and adds no requirements here.
   forgeQuoteService,
+  // P5.4 swap-intent flow (migration 107): prepared exact-input transactions
+  // ending at the honest broadcaster-missing refusal. Additive — SQL and
+  // calldata encoding only, sharing the route registry above.
+  swapExecutionService,
   // External research evidence: the durable source-revision store, the
   // GitHub releases connector over it, and the explicit import path from
   // retained revisions into the authored event calendar. Additive — SQL and

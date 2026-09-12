@@ -815,6 +815,13 @@ export const TradingForgeAction = Schema.Literals([
   "approve_pool",
   "bind_policy",
   "revoke_policy",
+  // P5.4 execution actions (additive; old payloads decode unchanged).
+  "quote",
+  "propose_envelope",
+  "approve_envelope",
+  "envelope",
+  "evaluate_policy",
+  "swap",
 ]);
 export type TradingForgeAction = typeof TradingForgeAction.Type;
 
@@ -838,6 +845,33 @@ export const TradingForgeInput = Schema.Struct({
   policyId: Schema.optional(Schema.String),
   /** `bind_policy`: the detection fee the draft binding records. */
   detectionFeeHundredthsBps: Schema.optional(ForgeHookFeeHundredthsBps),
+
+  // P5.4 execution actions (additive; all optional, old payloads decode
+  // unchanged).
+  /** `quote`: the approved route to price an exact-input swap over. */
+  routeId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+  /** `quote`: the exact input amount, raw units, decimal integer string. */
+  amountInRaw: Schema.optional(Schema.String),
+  /** `quote`: slippage allowance applied to the quoted output, bps. */
+  maxSlippageBps: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  /**
+   * `propose_envelope`: the ExecutionEnvelope JSON. Carried as unknown and
+   * decoded server-side against the authoritative executionPolicy schema —
+   * observation.ts cannot import that module (it already imports this one
+   * for FORGE_CAPABILITY_ID_PATTERN), and the local-mirror alternative would
+   * duplicate the whole envelope contract on the wire boundary.
+   */
+  envelope: Schema.optional(Schema.Unknown),
+  /** `envelope`/`swap`: one execution envelope by its content id. */
+  envelopeId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+  /** `swap`: the persisted proposal the prepared transaction executes. */
+  proposalId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+  /**
+   * `swap`: the SwapQuoteRecord JSON the caller priced. Unknown for the same
+   * cycle reason as `envelope`; decoded server-side, refused by name on
+   * malformed input.
+   */
+  quote: Schema.optional(Schema.Unknown),
 });
 export type TradingForgeInput = typeof TradingForgeInput.Type;
 
@@ -895,6 +929,118 @@ export function toForgeDetectorResultSummary(result: DetectionResult): ForgeDete
       ? { status: "not-matched", explanation: result.explanation }
       : { status: "unknown", explanation: result.explanation };
 }
+
+// -- P5.4 execution views (local mirrors; see the note on ForgeExecutionQuote) --
+
+/**
+ * A bounded mirror of the executionPolicy module's `SwapQuoteRecord` for the
+ * tool result. Deliberately NOT an import: `executionPolicy.ts` already
+ * imports this module (FORGE_CAPABILITY_ID_PATTERN), and a top-level schema
+ * cycle between the two would evaluate against an uninitialized binding. The
+ * authoritative contract is the one the server decodes against; keep the
+ * fields and their meanings in sync with it (the DetectorResultForPolicy
+ * precedent).
+ */
+export const ForgeExecutionQuote = Schema.Struct({
+  quoteId: Schema.String.check(Schema.isNonEmpty()),
+  chainId: Schema.String,
+  routeId: Schema.String.check(Schema.isNonEmpty()),
+  tokenIn: Schema.String,
+  tokenOut: Schema.String,
+  amountInRaw: Schema.String,
+  minAmountOutRaw: Schema.String,
+  gasEstimateWei: Schema.String,
+  quotedAtMs: UnixMillis,
+  expiresAtMs: UnixMillis,
+  basis: Schema.Literals(["eth_call"]),
+});
+export type ForgeExecutionQuote = typeof ForgeExecutionQuote.Type;
+
+/** One envelope candidate as the `envelope` view reports it. */
+export const ForgeExecutionCandidateView = Schema.Struct({
+  candidateId: Schema.String.check(Schema.isNonEmpty()),
+  chainId: Schema.String,
+  tokenIn: Schema.String,
+  tokenOut: Schema.String,
+  recipient: Schema.String,
+});
+export type ForgeExecutionCandidateView = typeof ForgeExecutionCandidateView.Type;
+
+/**
+ * The `envelope` action's grant view: identity, lifecycle status, the
+ * approval origin (the direct user path, never an agent), the caps, and the
+ * host-computed remaining spend. `expired` is a derived label the store
+ * serves like `ExecutionEnvelopeStatus` does.
+ */
+export const ForgeExecutionEnvelopeView = Schema.Struct({
+  envelopeId: Schema.String.check(Schema.isNonEmpty()),
+  environmentId: Schema.String.check(Schema.isNonEmpty()),
+  capabilityId: Schema.optional(Schema.String),
+  revision: Schema.Int.check(Schema.isGreaterThan(0)),
+  status: Schema.Literals(["draft", "proposed", "approved", "revoked", "expired"]),
+  expiresAtMs: UnixMillis,
+  approvedVia: Schema.optional(Schema.String),
+  candidates: Schema.Array(ForgeExecutionCandidateView),
+  inputCapTotalRaw: Schema.String,
+  inputCapPerSwapRaw: Schema.String,
+  remainingInputCapRaw: Schema.String,
+});
+export type ForgeExecutionEnvelopeView = typeof ForgeExecutionEnvelopeView.Type;
+
+/** One persisted proposal as the `envelope` view reports it. */
+export const ForgeExecutionProposalView = Schema.Struct({
+  proposalId: Schema.String.check(Schema.isNonEmpty()),
+  kind: Schema.Literals(["wait", "price", "swap", "stop-future-actions", "complete"]),
+  status: Schema.Literals(["proposed", "rejected", "executing", "executed", "superseded"]),
+  stageKey: Schema.optional(Schema.String),
+  amountInRaw: Schema.optional(Schema.String),
+  proposedAtMs: UnixMillis,
+});
+export type ForgeExecutionProposalView = typeof ForgeExecutionProposalView.Type;
+
+/**
+ * One swap intent as the surfaces report it: what was prepared, and — when
+ * submission was refused — why, verbatim. The prepared transaction bytes stay
+ * server-side; this view carries their identity fields only.
+ */
+export const ForgeSwapIntentView = Schema.Struct({
+  intentId: Schema.String.check(Schema.isNonEmpty()),
+  proposalId: Schema.String.check(Schema.isNonEmpty()),
+  quoteId: Schema.String.check(Schema.isNonEmpty()),
+  routeId: Schema.String.check(Schema.isNonEmpty()),
+  tokenIn: Schema.String,
+  tokenOut: Schema.String,
+  amountInRaw: Schema.String,
+  minAmountOutRaw: Schema.String,
+  status: Schema.Literals([
+    "prepared",
+    "submit-refused",
+    "submitted",
+    "confirmed",
+    "reverted",
+    "unknown",
+  ]),
+  preparedAtMs: UnixMillis,
+  attemptAtMs: Schema.optional(UnixMillis),
+  refusalReason: Schema.optional(Schema.String),
+});
+export type ForgeSwapIntentView = typeof ForgeSwapIntentView.Type;
+
+/** The `evaluate_policy` outcome as the tool reports it. */
+export const ForgePolicyEvaluationView = Schema.Struct({
+  status: Schema.Literals(["proposed", "already-proposed", "no-proposal", "refused"]),
+  proposalId: Schema.optional(Schema.String),
+  proposalKind: Schema.optional(
+    Schema.Literals(["wait", "price", "swap", "stop-future-actions", "complete"]),
+  ),
+  stageKey: Schema.optional(Schema.String),
+  amountInRaw: Schema.optional(Schema.String),
+  /** `no-proposal`: why the policy proposed nothing. */
+  reason: Schema.optional(Schema.String),
+  refusal: Schema.optional(Schema.String),
+  detail: Schema.optional(Schema.String),
+});
+export type ForgePolicyEvaluationView = typeof ForgePolicyEvaluationView.Type;
 
 export const TradingForgeResult = Schema.Struct({
   outcome: Schema.Literals(["accepted", "rejected"]),
@@ -976,6 +1122,26 @@ export const TradingForgeResult = Schema.Struct({
   ),
   proposals: Schema.optional(Schema.Array(ForgePoolProposal)),
   policies: Schema.optional(Schema.Array(ForgePolicyBinding)),
+  // P5.4 execution results (additive-optional; old payloads decode unchanged).
+  /** `quote`: the immutable quote record, verbatim. */
+  quoteRecord: Schema.optional(ForgeExecutionQuote),
+  /** `propose_envelope`: the id the grant landed under. */
+  envelopeId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+  /**
+   * `envelope`: the grant view — envelope, its proposals, its intents, and
+   * the host-computed remaining input budget in one read.
+   */
+  envelopeView: Schema.optional(
+    Schema.Struct({
+      envelope: ForgeExecutionEnvelopeView,
+      proposals: Schema.Array(ForgeExecutionProposalView),
+      intents: Schema.Array(ForgeSwapIntentView),
+    }),
+  ),
+  /** `evaluate_policy`: the policy evaluator's outcome. */
+  policyEvaluation: Schema.optional(ForgePolicyEvaluationView),
+  /** `swap`: the prepared intent's summary, including its refusal state. */
+  swapIntent: Schema.optional(ForgeSwapIntentView),
 });
 export type TradingForgeResult = typeof TradingForgeResult.Type;
 

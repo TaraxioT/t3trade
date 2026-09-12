@@ -54,9 +54,16 @@ import {
   type TradingLookInput,
   type TradingObservation,
 } from "@t3tools/trading-contracts/observation";
+import {
+  ExecutionEnvelope,
+  SwapQuoteRecord,
+  type PersistedProposalRecord,
+  type SwapIntentRecord,
+} from "@t3tools/trading-contracts";
 import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import { Schema } from "effect";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -239,6 +246,9 @@ import {
 } from "../../../trading/forge/CapabilityStore.ts";
 import { ForgeReactor } from "../../../trading/forge/ForgeReactor.ts";
 import { DetectorRunStore } from "../../../trading/forge/DetectorRunStore.ts";
+import { ExecutionPolicyService } from "../../../trading/forge/ExecutionPolicyService.ts";
+import { SwapExecutionService } from "../../../trading/forge/SwapExecutionService.ts";
+import { UniswapQuoteService } from "../../../trading/forge/UniswapQuoteService.ts";
 import {
   ARCHIVE_INTERVALS,
   archiveDatabasePath,
@@ -5748,6 +5758,346 @@ export const handlers = {
           if (revoked === null) return rejected("no_policy", `no policy ${input.policyId}`);
           if ("outcome" in revoked) return revoked;
           return accepted({ policies: [revoked] });
+        }
+
+        // -- execution actions (P5.4) ---------------------------------------
+        //
+        // The execution half of the menu. Every action names what did AND
+        // did not happen: quote is a read, propose_envelope only records a
+        // grant, approve_envelope is refused unconditionally (approval is a
+        // direct operator act), and swap ends at the honest no-signer
+        // refusal with the prepared transaction retained.
+
+        case "quote": {
+          if (input.routeId === undefined || input.amountInRaw === undefined) {
+            return rejected("needs_input", "quote needs routeId and amountInRaw");
+          }
+          const quoteService = yield* Effect.serviceOption(UniswapQuoteService);
+          if (quoteService._tag === "None") {
+            return rejected(
+              "quote_service_unavailable",
+              "the swap quote service is not wired into this runtime",
+            );
+          }
+          const now = yield* Clock.currentTimeMillis;
+          const outcome = yield* quoteService.value.quoteExactInput({
+            routeId: input.routeId,
+            amountInRaw: input.amountInRaw,
+            now,
+            ...(input.maxSlippageBps === undefined ? {} : { maxSlippageBps: input.maxSlippageBps }),
+          });
+          if (outcome.status === "refused") {
+            return rejected("quote_refused", outcome.reason);
+          }
+          return accepted({
+            quoteRecord: {
+              quoteId: outcome.record.quoteId,
+              chainId: outcome.record.chainId,
+              routeId: outcome.record.routeId,
+              tokenIn: outcome.record.tokenIn,
+              tokenOut: outcome.record.tokenOut,
+              amountInRaw: outcome.record.amountInRaw,
+              minAmountOutRaw: outcome.record.minAmountOutRaw,
+              gasEstimateWei: outcome.record.gasEstimateWei,
+              quotedAtMs: outcome.record.quotedAtMs,
+              expiresAtMs: outcome.record.expiresAtMs,
+              basis: outcome.record.basis,
+            },
+            detail:
+              `quote ${outcome.record.quoteId} prices ${outcome.record.amountInRaw} in for at least ${outcome.record.minAmountOutRaw} out ` +
+              `and expires at ${outcome.record.expiresAtMs}; a swap binds it before expiry or prices a new one`,
+          });
+        }
+
+        case "propose_envelope": {
+          if (input.capabilityId === undefined || input.envelope === undefined) {
+            return rejected(
+              "needs_input",
+              "propose_envelope needs capabilityId and the envelope JSON",
+            );
+          }
+          const policyService = yield* Effect.serviceOption(ExecutionPolicyService);
+          if (policyService._tag === "None") {
+            return rejected(
+              "policy_service_unavailable",
+              "the execution policy service is not wired into this runtime",
+            );
+          }
+          // Malformed envelope JSON is a named refusal, never a die: the
+          // strict decode runs behind Effect.result so the refusal is data.
+          const decodedEnvelope = yield* Effect.result(
+            Schema.decodeUnknownEffect(ExecutionEnvelope)(input.envelope),
+          );
+          if (decodedEnvelope._tag === "Failure") {
+            return rejected(
+              "invalid_envelope",
+              "the envelope does not satisfy the ExecutionEnvelope contract",
+            );
+          }
+          const envelope = decodedEnvelope.success;
+          const now = yield* Clock.currentTimeMillis;
+          const outcome = yield* policyService.value
+            .proposeEnvelope({
+              environmentId,
+              envelope,
+              now,
+              proposedVia: "agent-tool",
+              capabilityId: input.capabilityId,
+            })
+            .pipe(Effect.orDie);
+          if (outcome.status === "refused") {
+            return rejected(`envelope_${outcome.reason.replace(/-/g, "_")}`, outcome.detail);
+          }
+          return accepted({
+            envelopeId: outcome.envelopeId,
+            detail:
+              outcome.status === "already-proposed"
+                ? `envelope ${outcome.envelopeId} is already proposed; approval is a HUMAN action outside this tool`
+                : `envelope ${outcome.envelopeId} recorded as proposed — approval is a HUMAN action outside this tool; an agent cannot self-approve it`,
+          });
+        }
+
+        case "approve_envelope": {
+          // Deliberately unconditional (the approve_pool precedent): the
+          // agent path never grants execution authority. Envelope approval
+          // happens through the direct user-service method, which this tool
+          // does not expose.
+          return rejected(
+            "agent_cannot_approve",
+            "envelope approval is a direct operator action; this tool cannot grant it, and no agent output can",
+          );
+        }
+
+        case "envelope": {
+          if (input.capabilityId === undefined && input.envelopeId === undefined) {
+            return rejected("needs_input", "envelope needs capabilityId or envelopeId");
+          }
+          const swapService = yield* Effect.serviceOption(SwapExecutionService);
+          const policyService = yield* Effect.serviceOption(ExecutionPolicyService);
+          if (swapService._tag === "None" || policyService._tag === "None") {
+            return rejected(
+              "execution_service_unavailable",
+              "the swap execution service is not wired into this runtime",
+            );
+          }
+          const now = yield* Clock.currentTimeMillis;
+          const view = yield* (
+            input.envelopeId !== undefined
+              ? swapService.value.envelopeById(input.envelopeId)
+              : policyService.value.envelopeFor({
+                  environmentId,
+                  capabilityId: input.capabilityId ?? "",
+                })
+          ).pipe(Effect.orDie);
+          if (view === null) {
+            return rejected(
+              "no_envelope",
+              input.envelopeId !== undefined
+                ? `no envelope ${input.envelopeId}`
+                : `no envelope has been proposed for ${input.capabilityId}`,
+            );
+          }
+          if (view.envelope === null) {
+            return rejected(
+              "invalid_envelope",
+              `envelope ${view.envelopeId}'s stored bytes do not decode`,
+            );
+          }
+          const grant = view.envelope;
+          const budget = yield* swapService.value
+            .remainingInputBudgetFor(view.envelopeId)
+            .pipe(Effect.orDie);
+          const proposals = yield* policyService.value
+            .listProposals({
+              envelopeId: view.envelopeId,
+              limit: 100,
+            })
+            .pipe(Effect.orDie);
+          const intents = yield* swapService.value
+            .listIntents({ envelopeId: view.envelopeId })
+            .pipe(Effect.orDie);
+          const effectiveStatus =
+            view.status === "approved" && now > grant.expiresAtMs ? "expired" : view.status;
+          return accepted({
+            envelopeView: {
+              envelope: {
+                envelopeId: view.envelopeId,
+                environmentId: view.environmentId,
+                ...(view.capabilityId === null ? {} : { capabilityId: view.capabilityId }),
+                revision: view.revision,
+                status: effectiveStatus,
+                expiresAtMs: grant.expiresAtMs,
+                ...(view.approvedVia === null ? {} : { approvedVia: view.approvedVia }),
+                candidates: grant.candidates.map((candidate) => ({
+                  candidateId: candidate.candidateId,
+                  chainId: candidate.chainId,
+                  tokenIn: candidate.tokenIn,
+                  tokenOut: candidate.tokenOut,
+                  recipient: candidate.recipient,
+                })),
+                inputCapTotalRaw: grant.inputCapTotalRaw,
+                inputCapPerSwapRaw: grant.inputCapPerSwapRaw,
+                remainingInputCapRaw:
+                  budget === null ? grant.inputCapTotalRaw : budget.remainingInputCapRaw,
+              },
+              proposals: proposals.map((proposal: PersistedProposalRecord) => ({
+                proposalId: proposal.proposalId,
+                kind: proposal.proposal.kind,
+                status: proposal.status,
+                ...(proposal.proposal.kind === "swap"
+                  ? {
+                      stageKey: proposal.proposal.stageKey,
+                      amountInRaw: proposal.proposal.amountInRaw,
+                    }
+                  : {}),
+                proposedAtMs: proposal.proposedAtMs,
+              })),
+              intents: intents.map((intent: SwapIntentRecord) => ({
+                intentId: intent.intentId,
+                proposalId: intent.proposalId,
+                quoteId: intent.quoteId,
+                routeId: intent.routeId,
+                tokenIn: intent.tokenIn,
+                tokenOut: intent.tokenOut,
+                amountInRaw: intent.amountInRaw,
+                minAmountOutRaw: intent.minAmountOutRaw,
+                status: intent.status,
+                preparedAtMs: intent.preparedAtMs,
+                ...(intent.attemptAtMs === undefined ? {} : { attemptAtMs: intent.attemptAtMs }),
+                ...(intent.refusalReason === undefined
+                  ? {}
+                  : { refusalReason: intent.refusalReason }),
+              })),
+            },
+            detail: `envelope ${view.envelopeId} is ${effectiveStatus}${view.approvedVia === null ? "" : ` (approved via ${view.approvedVia})`}; remaining input budget ${budget === null ? "unknown" : budget.remainingInputCapRaw}`,
+          });
+        }
+
+        case "evaluate_policy": {
+          if (input.capabilityId === undefined) {
+            return rejected("needs_input", "evaluate_policy needs capabilityId");
+          }
+          const policyService = yield* Effect.serviceOption(ExecutionPolicyService);
+          if (policyService._tag === "None") {
+            return rejected(
+              "policy_service_unavailable",
+              "the execution policy service is not wired into this runtime",
+            );
+          }
+          const now = yield* Clock.currentTimeMillis;
+          const outcome = yield* policyService.value
+            .evaluatePolicy({
+              environmentId,
+              capabilityId: input.capabilityId,
+              now,
+            })
+            .pipe(Effect.orDie);
+          return accepted({
+            policyEvaluation: {
+              status: outcome.status,
+              ...(outcome.status === "proposed" || outcome.status === "already-proposed"
+                ? {
+                    proposalId: outcome.proposalId,
+                    ...(outcome.status === "proposed"
+                      ? {
+                          proposalKind: outcome.proposal.kind,
+                          ...(outcome.proposal.kind === "swap"
+                            ? {
+                                stageKey: outcome.proposal.stageKey,
+                                amountInRaw: outcome.proposal.amountInRaw,
+                              }
+                            : {}),
+                        }
+                      : {}),
+                  }
+                : {}),
+              ...(outcome.status === "no-proposal" ? { reason: outcome.reason } : {}),
+              ...(outcome.status === "refused"
+                ? { refusal: outcome.refusal, detail: outcome.detail }
+                : {}),
+            },
+            detail:
+              outcome.status === "proposed"
+                ? `the policy proposed one ${outcome.proposal.kind} action (${outcome.proposalId}); a swap still needs a fresh quote and the swap action to prepare anything`
+                : outcome.status === "already-proposed"
+                  ? `the identical proposal already exists (${outcome.proposalId}); nothing new was written`
+                  : outcome.status === "no-proposal"
+                    ? `the policy proposed nothing: ${outcome.reason}`
+                    : `evaluation refused (${outcome.refusal}): ${outcome.detail}`,
+          });
+        }
+
+        case "swap": {
+          if (input.proposalId === undefined || input.quote === undefined) {
+            return rejected("needs_input", "swap needs proposalId and the quote JSON");
+          }
+          const swapService = yield* Effect.serviceOption(SwapExecutionService);
+          if (swapService._tag === "None") {
+            return rejected(
+              "execution_service_unavailable",
+              "the swap execution service is not wired into this runtime",
+            );
+          }
+          // Malformed quote JSON is a named refusal, never a die.
+          const decodedQuote = yield* Effect.result(
+            Schema.decodeUnknownEffect(SwapQuoteRecord)(input.quote),
+          );
+          if (decodedQuote._tag === "Failure") {
+            return rejected(
+              "invalid_quote",
+              "the quote does not satisfy the SwapQuoteRecord contract",
+            );
+          }
+          const quote = decodedQuote.success;
+          const now = yield* Clock.currentTimeMillis;
+          const outcome = yield* swapService.value
+            .prepareAndAttempt({
+              environmentId,
+              proposalId: input.proposalId,
+              quote,
+              now,
+            })
+            .pipe(Effect.orDie);
+          const intentView = (intent: SwapIntentRecord) => ({
+            intentId: intent.intentId,
+            proposalId: intent.proposalId,
+            quoteId: intent.quoteId,
+            routeId: intent.routeId,
+            tokenIn: intent.tokenIn,
+            tokenOut: intent.tokenOut,
+            amountInRaw: intent.amountInRaw,
+            minAmountOutRaw: intent.minAmountOutRaw,
+            status: intent.status,
+            preparedAtMs: intent.preparedAtMs,
+            ...(intent.attemptAtMs === undefined ? {} : { attemptAtMs: intent.attemptAtMs }),
+            ...(intent.refusalReason === undefined ? {} : { refusalReason: intent.refusalReason }),
+          });
+          if (outcome.status === "refused") {
+            return rejected(
+              `swap_${outcome.refusal.replace(/-/g, "_")}`,
+              `${outcome.detail} — nothing was prepared`,
+            );
+          }
+          if (outcome.status === "already-prepared") {
+            return accepted({
+              swapIntent: intentView(outcome.intent),
+              detail:
+                "an identical intent was already prepared for this proposal; its recorded state stands and nothing new was written",
+            });
+          }
+          if (outcome.status === "submitted") {
+            return accepted({
+              swapIntent: intentView(outcome.intent),
+              detail: `the prepared transaction was submitted as intent ${outcome.intent.intentId}`,
+            });
+          }
+          return accepted({
+            swapIntent: intentView(outcome.intent),
+            detail:
+              `the transaction was prepared and retained (intent ${outcome.intent.intentId}), ` +
+              `submission was refused because no signer is authorized (${outcome.refusal}), ` +
+              "and nothing executed — the proposal stays proposed and no budget is consumed",
+          });
         }
       }
     }),

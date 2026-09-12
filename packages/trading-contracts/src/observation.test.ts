@@ -509,6 +509,12 @@ describe("TradingForgeInput", () => {
       "approve_pool",
       "bind_policy",
       "revoke_policy",
+      "quote",
+      "propose_envelope",
+      "approve_envelope",
+      "envelope",
+      "evaluate_policy",
+      "swap",
     ] as const) {
       const decoded = decode({ action });
       assert.equal(decoded.action, action);
@@ -603,5 +609,162 @@ describe("the forge detector (v2) additive contracts", () => {
       detector: { programKind: 2, armed: false, unavailable: "store unwired" },
     });
     assert.equal(unavailable.detector?.unavailable, "store unwired");
+  });
+});
+
+// -- P5.4: the execution-action additive contracts ---------------------------------
+
+describe("the forge execution actions (P5.4 additive)", () => {
+  const decodeInput = Schema.decodeUnknownSync(TradingForgeInput);
+  const decodeResult = Schema.decodeUnknownSync(TradingForgeResult);
+
+  it("carries the execution input fields; the envelope and quote ride as unknown JSON", () => {
+    const decoded = decodeInput({
+      action: "swap",
+      routeId: "weth-usdc-500",
+      amountInRaw: "1000000",
+      maxSlippageBps: 30,
+      envelopeId: "env_1",
+      proposalId: "pprop_1",
+      envelope: { revision: 1 },
+      quote: { quoteId: "sq_1" },
+    });
+    assert.equal(decoded.action, "swap");
+    assert.equal(decoded.routeId, "weth-usdc-500");
+    assert.equal(decoded.amountInRaw, "1000000");
+    assert.equal(decoded.maxSlippageBps, 30);
+    assert.equal(decoded.envelopeId, "env_1");
+    assert.equal(decoded.proposalId, "pprop_1");
+    // Unknown-carried JSON passes through verbatim for the server-side
+    // strict decode; an empty routeId still refuses.
+    assert.deepEqual(decoded.envelope, { revision: 1 });
+    assert.deepEqual(decoded.quote, { quoteId: "sq_1" });
+    assert.throws(() => decodeInput({ action: "quote", routeId: "" }));
+    assert.throws(() => decodeInput({ action: "quote", maxSlippageBps: -1 }));
+  });
+
+  it("decodes a pre-P5.4 forge result unchanged, and the execution views when present", () => {
+    // The old payload: no execution fields, byte-identical decode.
+    const legacy = decodeResult({
+      outcome: "accepted",
+      action: "status",
+      proposals: [],
+    });
+    assert.isUndefined(legacy.quoteRecord);
+    assert.isUndefined(legacy.envelopeView);
+    assert.isUndefined(legacy.policyEvaluation);
+    assert.isUndefined(legacy.swapIntent);
+    assert.isUndefined(legacy.envelopeId);
+
+    const decoded = decodeResult({
+      outcome: "accepted",
+      action: "swap",
+      envelopeId: "env_1",
+      quoteRecord: {
+        quoteId: "sq_1",
+        chainId: "11155111",
+        routeId: "weth-usdc-500",
+        tokenIn: "0xaaa",
+        tokenOut: "0xbbb",
+        amountInRaw: "1000000",
+        minAmountOutRaw: "900000",
+        gasEstimateWei: "1",
+        quotedAtMs: 1,
+        expiresAtMs: 2,
+        basis: "eth_call",
+      },
+      envelopeView: {
+        envelope: {
+          envelopeId: "env_1",
+          environmentId: "env-1",
+          revision: 1,
+          status: "approved",
+          expiresAtMs: 9_000,
+          approvedVia: "local-operator",
+          candidates: [
+            {
+              candidateId: "cand_1",
+              chainId: "11155111",
+              tokenIn: "0xaaa",
+              tokenOut: "0xbbb",
+              recipient: "0xccc",
+            },
+          ],
+          inputCapTotalRaw: "1500000",
+          inputCapPerSwapRaw: "2000000",
+          remainingInputCapRaw: "1500000",
+        },
+        proposals: [
+          {
+            proposalId: "pprop_1",
+            kind: "swap",
+            status: "proposed",
+            stageKey: "entry",
+            amountInRaw: "1000000",
+            proposedAtMs: 1_000,
+          },
+        ],
+        intents: [
+          {
+            intentId: "sint_1",
+            proposalId: "pprop_1",
+            quoteId: "sq_1",
+            routeId: "weth-usdc-500",
+            tokenIn: "0xaaa",
+            tokenOut: "0xbbb",
+            amountInRaw: "1000000",
+            minAmountOutRaw: "900000",
+            status: "submit-refused",
+            preparedAtMs: 2_000,
+            attemptAtMs: 2_000,
+            refusalReason: "broadcaster-missing: no signer",
+          },
+        ],
+      },
+      policyEvaluation: {
+        status: "refused",
+        refusal: "bundle-changed",
+        detail: "hash differs",
+      },
+      swapIntent: {
+        intentId: "sint_1",
+        proposalId: "pprop_1",
+        quoteId: "sq_1",
+        routeId: "weth-usdc-500",
+        tokenIn: "0xaaa",
+        tokenOut: "0xbbb",
+        amountInRaw: "1000000",
+        minAmountOutRaw: "900000",
+        status: "submit-refused",
+        preparedAtMs: 2_000,
+        refusalReason: "broadcaster-missing: no signer",
+      },
+    });
+    assert.equal(decoded.quoteRecord?.basis, "eth_call");
+    assert.equal(decoded.envelopeView?.envelope.remainingInputCapRaw, "1500000");
+    assert.equal(decoded.envelopeView?.proposals[0]?.status, "proposed");
+    assert.equal(decoded.envelopeView?.intents[0]?.refusalReason, "broadcaster-missing: no signer");
+    assert.equal(decoded.policyEvaluation?.refusal, "bundle-changed");
+    assert.equal(decoded.swapIntent?.status, "submit-refused");
+
+    // Foreign statuses refuse: the view vocabularies are closed.
+    assert.throws(() =>
+      decodeResult({
+        outcome: "accepted",
+        action: "swap",
+        swapIntent: {
+          intentId: "sint_1",
+          proposalId: "pprop_1",
+          quoteId: "sq_1",
+          routeId: "r",
+          tokenIn: "0xaaa",
+          tokenOut: "0xbbb",
+          amountInRaw: "1",
+          minAmountOutRaw: "1",
+          status: "draft",
+          preparedAtMs: 2_000,
+        },
+      }),
+    );
   });
 });

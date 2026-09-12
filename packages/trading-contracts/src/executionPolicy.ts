@@ -636,3 +636,95 @@ export function proposalId(input: {
 }): string {
   return `pprop_${sha256Hex(serializeProposalIdentity(input)).slice(0, 24)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Swap intents (P5.4 — the local execution path's durable unit)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a swap intent stands. One-way:
+ * `prepared → submit-refused | submitted`, and `submitted → confirmed |
+ * reverted | unknown` once receipts exist (the last three are declared so the
+ * state machine is honest from day one; only `prepared` and `submit-refused`
+ * are reachable while no signer is authorized). `unknown` PRESERVES ambiguity
+ * rather than resolving it — the same rule {@link ExecutionIntentStatus}
+ * states for the general flow.
+ */
+export const SwapIntentStatus = Schema.Literals([
+  "prepared",
+  "submit-refused",
+  "submitted",
+  "confirmed",
+  "reverted",
+  "unknown",
+]);
+export type SwapIntentStatus = typeof SwapIntentStatus.Type;
+
+/**
+ * The canonical serialization a swap intent's content identity is taken over
+ * (the fixed-shape-array rule every identity in this module follows). The
+ * prepared transaction rides as its own canonical JSON string, so a changed
+ * calldata, value, or gas ceiling is a changed identity.
+ */
+export function serializeSwapIntentIdentity(input: {
+  readonly proposalId: string;
+  readonly quoteId: string;
+  readonly preparedTxJson: string;
+}): string {
+  return JSON.stringify([
+    "trading_execution.swap_intent.v1",
+    input.proposalId,
+    input.quoteId,
+    input.preparedTxJson,
+  ]);
+}
+
+/**
+ * The content identity of one swap intent: `sint_` plus the first 24 hex
+ * characters of the SHA-256 over the canonical identity serialization.
+ * Re-preparing the same proposal against the same quote with the same
+ * prepared bytes collapses to the same id (idempotent); a changed quote or
+ * changed prepared transaction mints a new id, which the ONE-intent-per-
+ * proposal storage predicate turns into the `superseded-quote` refusal —
+ * repricing is a NEW proposal, never a mutation of a retained intent.
+ */
+export function swapIntentId(input: {
+  readonly proposalId: string;
+  readonly quoteId: string;
+  readonly preparedTxJson: string;
+}): string {
+  return `sint_${sha256Hex(serializeSwapIntentIdentity(input)).slice(0, 24)}`;
+}
+
+/**
+ * One prepared exact-input swap: the proposal that authorized it, the quote
+ * it priced against, and the exact unsigned transaction bytes that would be
+ * signed. The record carries NO authority of its own — every field was
+ * re-validated against the envelope at preparation time, and submission is
+ * a separate, refusing-by-default step. `preparedTxJson` is the canonical
+ * `{ to, data, value, chainId, gasWei, nonce: null }` serialization; the
+ * nonce and concrete gas are stamped only by an authorized signer pass (the
+ * F0 draft-only gas-stamp precedent), which does not exist yet.
+ */
+export const SwapIntentRecord = Schema.Struct({
+  intentId: TradingId,
+  environmentId: TradingId,
+  envelopeId: TradingId,
+  proposalId: TradingId,
+  quoteId: TradingId,
+  routeId: Schema.String.check(Schema.isNonEmpty()),
+  tokenIn: ExecutionEvmAddress,
+  tokenOut: ExecutionEvmAddress,
+  amountInRaw: DecimalIntegerString,
+  minAmountOutRaw: DecimalIntegerString,
+  /** The envelope candidate's recipient — where the output must land. */
+  recipient: ExecutionEvmAddress,
+  /** The approved route's swap target (the PoolSwapTest-style contract). */
+  swapTargetAddress: ExecutionEvmAddress,
+  preparedTxJson: Schema.String.check(Schema.isNonEmpty()),
+  status: SwapIntentStatus,
+  preparedAtMs: UnixMillis,
+  attemptAtMs: Schema.optional(UnixMillis),
+  refusalReason: Schema.optional(Schema.String),
+});
+export type SwapIntentRecord = typeof SwapIntentRecord.Type;

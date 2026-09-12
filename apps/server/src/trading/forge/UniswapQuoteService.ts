@@ -76,6 +76,13 @@ export interface SwapRouteSpec {
   readonly tokenIn: string;
   readonly tokenOut: string;
   readonly quoterAddress: string;
+  /**
+   * The PoolSwapTest-style testnet contract an exact-input intent executes
+   * through (P5.4): the quote's numbers come from `quoterAddress`, the
+   * prepared transaction's `to` comes from here. Required per route so a
+   * route can never be quotable but not executable.
+   */
+  readonly swapTargetAddress: string;
   readonly poolKey: {
     readonly currency0: string;
     readonly currency1: string;
@@ -168,6 +175,14 @@ export const resolveSwapRouteSettings = (
     if (tokenOut === null) return refuse("tokenOut is not a 20-byte address");
     const quoterAddress = addressField(record["quoterAddress"]);
     if (quoterAddress === null) return refuse("quoterAddress is not a 20-byte address");
+    // Required per route (P5.4): the swap target a prepared exact-input
+    // transaction is addressed to. A route without one can be priced but
+    // never executed, so it is refused at resolution, not at execution.
+    const swapTargetAddress = addressField(record["swapTargetAddress"]);
+    if (swapTargetAddress === null) return refuse("swapTargetAddress is not a 20-byte address");
+    if (swapTargetAddress === quoterAddress) {
+      return refuse("swapTargetAddress must differ from quoterAddress");
+    }
     if (tokenIn === tokenOut) {
       return refuse("tokenIn and tokenOut must differ");
     }
@@ -230,6 +245,7 @@ export const resolveSwapRouteSettings = (
       tokenIn,
       tokenOut,
       quoterAddress,
+      swapTargetAddress,
       poolKey: { currency0, currency1, fee, tickSpacing, hooks },
       zeroForOne,
       ...(label === undefined ? {} : { label }),

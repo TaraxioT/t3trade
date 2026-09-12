@@ -63,6 +63,7 @@ const routeFixture = (overrides: Record<string, unknown> = {}): Record<string, u
   tokenIn: C0,
   tokenOut: C1,
   quoterAddress: QUOTER,
+  swapTargetAddress: "0x9b6b46e2c869aa39918db7f52f5557fe577b6eee",
   poolKey: { currency0: C0, currency1: C1, fee: 500, tickSpacing: 60, hooks: HOOKS },
   zeroForOne: true,
   ...overrides,

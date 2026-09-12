@@ -39,9 +39,13 @@ import {
   proposalId,
   serializeProposalIdentity,
   SwapCandidate,
+  SwapIntentRecord,
+  SwapIntentStatus,
   SwapQuoteRecord,
   remainingInputBudget,
+  serializeSwapIntentIdentity,
   serializeSwapQuoteIdentity,
+  swapIntentId,
   swapQuoteId,
   withinInputBudget,
 } from "./executionPolicy.ts";
@@ -830,5 +834,105 @@ describe("the proposal content identity", () => {
       const expected = `pprop_${(await referenceSha256Hex(serializeProposalIdentity(sample))).slice(0, 24)}`;
       assert.strictEqual(proposalId(sample), expected);
     }
+  });
+});
+
+describe("the swap intent record", () => {
+  const record = {
+    intentId: "sint_1",
+    environmentId: "env-1",
+    envelopeId: "env_1",
+    proposalId: "pprop_1",
+    quoteId: "sq_1",
+    routeId: "weth-usdc-500",
+    tokenIn: weth,
+    tokenOut: usdc,
+    amountInRaw: "1000000",
+    minAmountOutRaw: "900000",
+    recipient,
+    swapTargetAddress: "0x9b6b46e2c869aa39918db7f52f5557fe577b6eee",
+    preparedTxJson:
+      '{"chainId":11155111,"data":"0x","gasWei":"1","nonce":null,"to":"0x1","value":"0"}',
+    status: "prepared",
+    preparedAtMs: 1_700_000_200_000,
+  } as const;
+
+  it("round-trips, and decodes every status of the one-way machine", () => {
+    assert.isTrue(decode(SwapIntentRecord, record));
+    for (const status of [
+      "prepared",
+      "submit-refused",
+      "submitted",
+      "confirmed",
+      "reverted",
+      "unknown",
+    ] as const) {
+      assert.isTrue(decode(SwapIntentStatus, status));
+    }
+    // Foreign vocabularies refuse: the F0 intent statuses and the general
+    // ExecutionIntentStatus are NOT swap-intent statuses.
+    assert.isFalse(decode(SwapIntentStatus, "draft"));
+    assert.isFalse(decode(SwapIntentStatus, "admitted"));
+    assert.isFalse(decode(SwapIntentStatus, "refused"));
+  });
+
+  it("round-trips the optional attempt fields and refuses malformed ones", () => {
+    assert.isTrue(
+      decode(SwapIntentRecord, {
+        ...record,
+        attemptAtMs: 1_700_000_201_000,
+        refusalReason: "broadcaster-missing: no signer is wired",
+      }),
+    );
+    // Amounts stay exact decimal strings and addresses stay 20-byte hex.
+    assert.isFalse(decode(SwapIntentRecord, { ...record, amountInRaw: "1.5" }));
+    assert.isFalse(decode(SwapIntentRecord, { ...record, recipient: "0x1234" }));
+    assert.isFalse(decode(SwapIntentRecord, { ...record, preparedTxJson: "" }));
+  });
+});
+
+describe("the swap intent content identity", () => {
+  const identity = {
+    proposalId: "pprop_1",
+    quoteId: "sq_1",
+    preparedTxJson: '{"to":"0x1","data":"0x"}',
+  } as const;
+
+  it("is deterministic and sint_-shaped", () => {
+    assert.strictEqual(swapIntentId(identity), swapIntentId(identity));
+    assert.match(swapIntentId(identity), /^sint_[0-9a-f]{24}$/);
+  });
+
+  it("changes when the proposal, the quote, or the prepared bytes change", () => {
+    const baseline = swapIntentId(identity);
+    type IntentIdentity = Parameters<typeof swapIntentId>[0];
+    const changed = (patch: Partial<IntentIdentity>): string =>
+      swapIntentId({ ...identity, ...patch });
+    // A changed quote (the superseded-quote rule) and changed prepared
+    // transaction bytes (any field of the canonical tx) both mint new ids.
+    assert.notStrictEqual(changed({ quoteId: "sq_2" }), baseline);
+    assert.notStrictEqual(changed({ preparedTxJson: '{"to":"0x2","data":"0x"}' }), baseline);
+    assert.notStrictEqual(
+      changed({ proposalId: "pprop_other" }),
+      changed({ proposalId: "pprop_third" }),
+    );
+  });
+
+  it("agrees with the platform SHA-256 over the canonical identity serialization", async () => {
+    const referenceSha256Hex = async (value: string): Promise<string> => {
+      const digest = await globalThis.crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(value),
+      );
+      return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    };
+    const sample = {
+      proposalId: "pprop_abcdefghijklmnopqrstuvwxyz",
+      quoteId: "sq_0123456789abcdef",
+      preparedTxJson:
+        '{"chainId":11155111,"data":"0x1234567890","gasWei":"40000000000000000","nonce":null,"to":"0x9b6b46e2c869aa39918db7f52f5557fe577b6eee","value":"0"}',
+    };
+    const expected = `sint_${(await referenceSha256Hex(serializeSwapIntentIdentity(sample))).slice(0, 24)}`;
+    assert.strictEqual(swapIntentId(sample), expected);
   });
 });
