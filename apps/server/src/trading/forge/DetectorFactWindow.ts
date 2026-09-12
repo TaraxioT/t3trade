@@ -25,12 +25,10 @@
  * FACT BOUNDING (the load-bearing decision): one CapturedFact per observation
  * would make the window unbounded — a dataset can hold tens of thousands of
  * rows. Each resolving source instead contributes a FIXED, small set of
- * summary facts (at most four for a graph dataset, two for an external
- * document), every value exact (decimal strings from decimals-free fields).
- * Flow-denominated facts need the pool's quote decimals, which the retained
- * observation rows do not carry; deriving them half-way would be dishonest,
- * so they arrive with the P4S/P7 scenario work where the provider gains the
- * vetted pool config. Nothing here guesses a decimal scaling.
+ * summary facts (at most six for a graph dataset, two for an external
+ * document). Flow is exact quote-token raw units, scoped to the source pool;
+ * it must never be interpreted as USD or combined across pools without
+ * verified token metadata. No decimal scaling is guessed.
  *
  * Absence discipline (the v2 SDK rule): a required source that cannot be
  * resolved — not retained, environment mismatch, retracted latest, or an
@@ -219,8 +217,8 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
   const external = yield* ExternalSourceStore;
 
   /**
-   * Resolve one graph dataset into its BOUNDED fact set (at most four facts:
-   * observation count, last price in micros, and the dataset's own window
+   * Resolve one graph dataset into its BOUNDED fact set (at most six facts:
+   * observation count, last price in micros, net/gross raw quote flow, and the dataset's own window
    * span — the record's recorded bounds, present even for an empty dataset).
    */
   const graphSource = (
@@ -246,6 +244,34 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
         ) {
           return null;
         }
+        // Raw units preserve every retained digit. Net flow is positive for
+        // base purchases (negative pool base delta), unlike gross turnover.
+        let netFlowRaw = 0n;
+        let grossFlowRaw = 0n;
+        const baseIsToken1 = observations[0]?.baseIsToken1;
+        for (const observation of observations) {
+          if (
+            observation.poolId !== record.poolId ||
+            observation.baseIsToken1 !== baseIsToken1 ||
+            observation.timestamp < record.windowStart ||
+            observation.timestamp > record.windowEnd
+          )
+            return null;
+          const base = BigInt(observation.baseIsToken1 ? observation.amount1 : observation.amount0);
+          const quote = BigInt(
+            observation.baseIsToken1 ? observation.amount0 : observation.amount1,
+          );
+          const magnitude = quote < 0n ? -quote : quote;
+          if (magnitude !== BigInt(observation.quoteVolumeRaw)) return null;
+          if (
+            (base < 0n && quote < 0n) ||
+            (base > 0n && quote > 0n) ||
+            (base === 0n && quote !== 0n)
+          )
+            return null;
+          grossFlowRaw += magnitude;
+          netFlowRaw += base < 0n ? magnitude : base > 0n ? -magnitude : 0n;
+        }
         const evidence: ReadonlyArray<EvidenceRef> = [
           graphEvidenceRef({
             environmentId,
@@ -263,6 +289,20 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
         );
         const last = ordered[ordered.length - 1];
         const candidates: Array<CapturedFact | null> = [
+          sealedFact(
+            sourceId,
+            "graph.pool.net-flow-quote-raw",
+            record.poolId,
+            decimal(netFlowRaw.toString(), "quote-token-raw"),
+            evidence,
+          ),
+          sealedFact(
+            sourceId,
+            "graph.pool.gross-flow-quote-raw",
+            record.poolId,
+            decimal(grossFlowRaw.toString(), "quote-token-raw"),
+            evidence,
+          ),
           sealedFact(
             sourceId,
             "graph.pool.observation-count",

@@ -377,6 +377,19 @@ export type ForgeAnchorCandidate = typeof ForgeAnchorCandidate.Type;
  */
 /** Credential-free request bytes retained for reproducible research captures. */
 export const ForgeQueryCapture = Schema.Struct({
+  /** Independent pin verification when a provider omits Graph block hashes.
+   * Retained with query bytes; never claims the hash came from Graph. */
+  blockHashVerification: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        method: Schema.Literal("independent-rpc"),
+        chainId: Schema.Literal(1),
+        blockNumber: Schema.Int,
+        beforeHash: Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/)),
+        afterHash: Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/)),
+      }),
+    ),
+  ),
   query: Schema.String,
   variables: Schema.Array(
     Schema.Struct({

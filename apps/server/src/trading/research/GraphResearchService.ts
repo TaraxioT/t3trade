@@ -370,6 +370,9 @@ export const makeGraphResearchService = Effect.gen(function* () {
       const observations: Array<ForgeSwapObservation> = [];
       const seenIds = new Set<string>();
       const variables: Array<ForgeQueryCapture["variables"][number]> = [];
+      const blockHashVerification: NonNullable<
+        ForgeQueryCapture["blockHashVerification"]
+      >[number][] = [];
       let pinnedBlock: number | undefined;
       let pinnedBlockHash: string | undefined;
       let capturedAtMs = 0;
@@ -422,6 +425,7 @@ export const makeGraphResearchService = Effect.gen(function* () {
         pinnedBlockHash = fetch.pinnedBlockHash;
         capturedAtMs = Math.max(capturedAtMs, fetch.fetchedAtMs);
         for (const variable of fetch.queryCapture.variables) variables.push(variable);
+        blockHashVerification.push(...(fetch.queryCapture.blockHashVerification ?? []));
         for (const observation of fetch.observations ?? []) {
           // Segments do not overlap; dedupe is a safety net against a source
           // echoing a boundary row into two segments.
@@ -448,7 +452,11 @@ export const makeGraphResearchService = Effect.gen(function* () {
           (a.observationId < b.observationId ? -1 : a.observationId > b.observationId ? 1 : 0),
       );
       const contentSha256 = sha256(forgeJsonEncode(observations));
-      const queryCapture: ForgeQueryCapture = { query: FORGE_SWAPS_QUERY, variables };
+      const queryCapture: ForgeQueryCapture = {
+        query: FORGE_SWAPS_QUERY,
+        variables,
+        ...(blockHashVerification.length === 0 ? {} : { blockHashVerification }),
+      };
       const variablesSha256 = sha256(forgeJsonEncode(variables));
       const complete = partialReason === undefined;
       const manifest: GraphDatasetManifest = {

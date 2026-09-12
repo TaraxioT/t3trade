@@ -171,7 +171,7 @@ export const syntheticSwap = (input: {
   timestamp: input.timestamp,
   sender: `0x${"1a".repeat(20)}`,
   recipient: `0x${"2b".repeat(20)}`,
-  amount0: "2000000",
+  amount0: String(input.volumeMicros),
   amount1: "-1000",
   sqrtPriceX96: "79228162514264337593543950336",
   tick: 0,

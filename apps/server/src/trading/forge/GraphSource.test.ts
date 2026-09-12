@@ -1063,3 +1063,222 @@ it.effect("refuses invalid chart bounds before querying the source", () =>
     }
   }).pipe(Effect.provide(readsLayer(deadTransport))),
 );
+
+it.effect("independent mainnet head proves lag without passing Graph credentials to RPC", () =>
+  Effect.gen(function* () {
+    const rpcCalls: Array<{ readonly url: string; readonly body: unknown }> = [];
+    const transport: ForgeGraphTransportShape = {
+      post: ({ body, apiKey }) => {
+        assert.equal(apiKey, API_KEY);
+        if (JSON.stringify(body).includes("indexingStatuses")) return Effect.fail("HTTP404");
+        return Effect.succeed({
+          status: 200,
+          body: {
+            data: {
+              _meta: {
+                deployment: DEPLOYMENT,
+                hasIndexingErrors: false,
+                block: { number: 100 },
+              },
+            },
+          },
+        });
+      },
+      postRpc: (input) => {
+        rpcCalls.push(input);
+        assert.ok(!JSON.stringify(input).includes(API_KEY));
+        assert.ok(!("apiKey" in input));
+        const request = input.body as { id: number; method: string };
+        return Effect.succeed({
+          status: 200,
+          body: {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: request.method === "eth_chainId" ? "0x1" : "0x69",
+          },
+        });
+      },
+    };
+    const health = yield* Effect.flatMap(ForgeGraphSource, (source) => source.probeHealth).pipe(
+      Effect.provide(
+        sourceLayer(transport, { ...BASE_ENV, T3_FORGE_CHAIN_HEAD_RPC: "https://rpc.test" }),
+      ),
+    );
+    assert.equal(health.status, "healthy");
+    assert.equal(health.latestBlock, 100);
+    assert.equal(health.chainHeadBlock, 105);
+    assert.equal(health.lagBlocks, 5);
+    assert.equal(rpcCalls.length, 2);
+  }),
+);
+
+it.effect(
+  "independent freshness refuses forged, malformed, unhealthy and wrong-chain responses",
+  () =>
+    Effect.gen(function* () {
+      const cases = [
+        { deployment: "forged" },
+        { hasIndexingErrors: true },
+        { hasIndexingErrors: undefined },
+        { latest: -1 },
+        { latest: Number.MAX_SAFE_INTEGER + 1 },
+        { chainId: "0xaa36a7" },
+        { chainId: "0x01" },
+        { head: "0x20000000000000" },
+        { head: "0x63" },
+        { head: "105" },
+        { responseId: 999 },
+        { rpcError: true },
+      ];
+      for (const override of cases) {
+        const options = {
+          deployment: DEPLOYMENT,
+          hasIndexingErrors: false as boolean | undefined,
+          latest: 100,
+          chainId: "0x1",
+          head: "0x69",
+          responseId: null as number | null,
+          rpcError: false,
+          ...override,
+        };
+        const transport: ForgeGraphTransportShape = {
+          post: ({ body }) =>
+            JSON.stringify(body).includes("indexingStatuses")
+              ? Effect.fail("HTTP404")
+              : Effect.succeed({
+                  status: 200,
+                  body: {
+                    data: {
+                      _meta: {
+                        deployment: options.deployment,
+                        hasIndexingErrors: options.hasIndexingErrors,
+                        block: { number: options.latest },
+                      },
+                    },
+                  },
+                }),
+          postRpc: ({ body }) => {
+            const request = body as { id: number; method: string };
+            return Effect.succeed({
+              status: 200,
+              body: {
+                jsonrpc: "2.0",
+                id: options.responseId ?? request.id,
+                ...(options.rpcError ? { error: { message: API_KEY } } : {}),
+                result: request.method === "eth_chainId" ? options.chainId : options.head,
+              },
+            });
+          },
+        };
+        const health = yield* Effect.flatMap(ForgeGraphSource, (source) => source.probeHealth).pipe(
+          Effect.provide(
+            sourceLayer(transport, { ...BASE_ENV, T3_FORGE_CHAIN_HEAD_RPC: "https://rpc.test" }),
+          ),
+        );
+        assert.equal(health.status, "unavailable", Object.keys(override).join(", "));
+        if (health.status === "unavailable") assert.ok(!(health.reason ?? "").includes(API_KEY));
+      }
+    }),
+);
+
+it("the real independent RPC transport omits authorization", async () => {
+  let headers: Headers | undefined;
+  const fetchStub = (async (_input: unknown, init?: RequestInit) => {
+    headers = new Headers(init?.headers);
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x1" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const transport = yield* ForgeGraphTransport;
+      assert.ok(transport.postRpc);
+      yield* transport.postRpc({
+        url: "https://rpc.test",
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_chainId",
+          params: [],
+        },
+      });
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ForgeGraphTransportLive.pipe(Layer.provide(FetchHttpClient.layer))),
+      Effect.provideService(FetchHttpClient.Fetch, fetchStub),
+    ),
+  );
+  assert.ok(headers);
+  assert.equal(headers.get("authorization"), null);
+});
+
+it.effect("number-pinned Graph pages retain independently verified hashes and refuse reorgs", () =>
+  Effect.gen(function* () {
+    for (const mode of ["stable", "changed", "wrong-chain", "wrong-number", "malformed"] as const) {
+      const block = 22_000_000;
+      const fake = makeFakeGraph({
+        rows: [],
+        pageOverrides: {
+          0: {
+            data: {
+              swaps: [],
+              _meta: { deployment: DEPLOYMENT, block: { number: block, hash: null } },
+            },
+          },
+        },
+      });
+      let reads = 0;
+      const transport: ForgeGraphTransportShape = {
+        ...fake.shape,
+        postRpc: ({ body }) => {
+          const input = body as { method: string; id: number; params: unknown[] };
+          let result: unknown;
+          if (input.method === "eth_chainId") result = mode === "wrong-chain" ? "0x2" : "0x1";
+          else {
+            assert.equal(input.method, "eth_getBlockByNumber");
+            assert.deepEqual(input.params, [`0x${block.toString(16)}`, false]);
+            reads++;
+            result = {
+              number: `0x${(mode === "wrong-number" ? block + 1 : block).toString(16)}`,
+              hash:
+                mode === "malformed"
+                  ? "0x123"
+                  : mode === "changed" && reads === 2
+                    ? `0x${"ef".repeat(32)}`
+                    : BLOCK_HASH,
+            };
+          }
+          return Effect.succeed({ status: 200, body: { jsonrpc: "2.0", id: input.id, result } });
+        },
+      };
+      const fetch = yield* Effect.flatMap(ForgeGraphSource, (source) =>
+        source.fetchWindow({
+          poolId: POOL_005,
+          ...WINDOW,
+        }),
+      ).pipe(
+        Effect.provide(
+          sourceLayer(transport, {
+            ...BASE_ENV,
+            T3_FORGE_CHAIN_HEAD_RPC: "https://rpc.test",
+          }),
+        ),
+      );
+      if (mode === "stable") {
+        assert.equal(fetch.status, "empty");
+        assert.equal(fetch.pinnedBlockHash, BLOCK_HASH);
+        assert.deepEqual(fetch.queryCapture?.blockHashVerification, [
+          {
+            method: "independent-rpc",
+            chainId: 1,
+            blockNumber: block,
+            beforeHash: BLOCK_HASH,
+            afterHash: BLOCK_HASH,
+          },
+        ]);
+        assert.equal(reads, 2);
+      } else assert.equal(fetch.status, "unavailable", mode);
+    }
+  }),
+);

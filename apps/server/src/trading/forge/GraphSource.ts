@@ -120,6 +120,8 @@ export interface ForgeGraphSettings {
   /** Present only when configured. Never logged, never in a URL. */
   readonly apiKey?: string;
   readonly source?: ForgeSourceConfig;
+  /** Optional independent mainnet head provider; never receives the Graph key. */
+  readonly chainHeadRpc?: string;
 }
 
 const toIntOr = (raw: string | undefined, fallback: number): number => {
@@ -134,6 +136,8 @@ const toIntOr = (raw: string | undefined, fallback: number): number => {
  *   - `T3_FORGE_GRAPH_API_KEY` — The Graph API key (required; header-only)
  *   - `T3_FORGE_GRAPH_DEPLOYMENT` — deployment id (required)
  *   - `T3_FORGE_INDEXING_ENDPOINT` — status probe (default shown above)
+ *   - `T3_FORGE_CHAIN_HEAD_RPC` — optional HTTPS mainnet RPC for independent
+ *     head verification when the indexing probe fails (no default or Graph key)
  *   - `T3_FORGE_POOLS` — comma-separated subset of the approved pools
  *   - `T3_FORGE_MAX_LAG_BLOCKS`, `T3_FORGE_PAGE_SIZE`, `T3_FORGE_MAX_SWAPS`
  *
@@ -188,6 +192,9 @@ export const resolveForgeGraphSettings = (
   return {
     configured: true,
     apiKey,
+    ...(env.T3_FORGE_CHAIN_HEAD_RPC?.trim()
+      ? { chainHeadRpc: env.T3_FORGE_CHAIN_HEAD_RPC.trim() }
+      : {}),
     source: {
       kind: "uniswap-v3-graph",
       endpoint,
@@ -222,6 +229,11 @@ export interface ForgeGraphHttpResponse {
 }
 
 export interface ForgeGraphTransportShape {
+  /** Separate credential-free seam for the optional independent chain head. */
+  readonly postRpc?: (input: {
+    readonly url: string;
+    readonly body: unknown;
+  }) => Effect.Effect<ForgeGraphHttpResponse, string>;
   readonly post: (input: {
     readonly url: string;
     readonly body: unknown;
@@ -244,6 +256,19 @@ export const ForgeGraphTransportLive = Layer.effect(
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     return ForgeGraphTransport.of({
+      postRpc: ({ url, body }) =>
+        HttpClientRequest.post(url).pipe(
+          HttpClientRequest.bodyJson(body),
+          Effect.flatMap(client.execute),
+          Effect.flatMap((response) =>
+            response.json.pipe(
+              Effect.map((parsed) => ({ status: response.status, body: parsed as unknown })),
+              Effect.orElseSucceed(() => ({ status: response.status, body: null })),
+            ),
+          ),
+          // RPC URLs may contain provider credentials. Never echo a transport error.
+          Effect.mapError((): string => "independent chain-head transport failed"),
+        ),
       post: ({ url, body, apiKey }) =>
         HttpClientRequest.post(url).pipe(
           HttpClientRequest.setHeader("authorization", `Bearer ${apiKey}`),
@@ -443,7 +468,7 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       ),
     );
 
-  const probeIndexing = Effect.gen(function* () {
+  const probeIndexingPrimary = Effect.gen(function* () {
     const settings = yield* config.resolve;
     if (!settings.configured || settings.source === undefined || settings.apiKey === undefined) {
       return {
@@ -509,6 +534,115 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         lagBlocks < 0
           ? "indexing status omitted valid health or block heads"
           : null,
+    } satisfies IndexingProbe;
+  });
+
+  /** Read one canonical pin independently. The caller compares BEFORE/AFTER
+   * the complete page walk; number-only Graph replies cannot prove their own
+   * chain hash. This cross-check still trusts Graph's declared deployment. */
+  const independentPinHash = (rpcUrl: string, block: number, verifyChain: boolean) =>
+    Effect.gen(function* () {
+      const postRpc = transport.postRpc;
+      if (!postRpc || !URL.canParse(rpcUrl)) return null;
+      const url = new URL(rpcUrl);
+      if (url.protocol !== "https:" || url.username || url.password) return null;
+      const read = (method: string, params: ReadonlyArray<unknown>, id: number) =>
+        postRpc({ url: rpcUrl, body: { jsonrpc: "2.0", id, method, params } }).pipe(
+          Effect.map((response) => {
+            const body = asRecord(response.body);
+            return response.status === 200 &&
+              body?.["jsonrpc"] === "2.0" &&
+              body?.["id"] === id &&
+              body?.["error"] === undefined
+              ? body["result"]
+              : null;
+          }),
+          Effect.orElseSucceed(() => null),
+        );
+      if (verifyChain && (yield* read("eth_chainId", [], 3)) !== "0x1") return null;
+      const result = asRecord(
+        yield* read("eth_getBlockByNumber", [`0x${block.toString(16)}`, false], 4),
+      );
+      const hash = asString(result?.["hash"]);
+      if (
+        result?.["number"] !== `0x${block.toString(16)}` ||
+        hash === null ||
+        !/^0x[0-9a-fA-F]{64}$/.test(hash)
+      )
+        return null;
+      return hash.toLowerCase();
+    });
+
+  const probeIndexing = Effect.gen(function* () {
+    const primary = yield* probeIndexingPrimary;
+    if (primary.failedReason === null || primary.unhealthyReason !== null) return primary;
+    const settings = yield* config.resolve;
+    const rpcUrl = settings.chainHeadRpc;
+    if (!rpcUrl || !settings.source || !settings.apiKey || !transport.postRpc) return primary;
+    const unavailable = (reason: string): IndexingProbe => ({
+      latestBlock: null,
+      chainHeadBlock: null,
+      lagBlocks: null,
+      unhealthyReason: null,
+      failedReason: `independent freshness probe failed: ${reason}`,
+    });
+    let url: URL;
+    try {
+      url = new URL(rpcUrl);
+    } catch {
+      return unavailable("invalid RPC URL");
+    }
+    if (url.protocol !== "https:" || url.username || url.password)
+      return unavailable("RPC must use HTTPS without URL user credentials");
+    const metaResponse = yield* postOrError(
+      settings.source.endpoint,
+      {
+        query: "query ForgeFreshness { _meta { deployment hasIndexingErrors block { number } } }",
+      },
+      settings.apiKey,
+    );
+    if (!metaResponse.ok) return unavailable(metaResponse.reason);
+    const meta = asRecord(asRecord(metaResponse.body["data"])?.["_meta"]);
+    const latestBlock = blockNumber(asRecord(meta?.["block"]));
+    if (
+      meta?.["deployment"] !== settings.source.deployment ||
+      meta?.["hasIndexingErrors"] !== false ||
+      latestBlock === null
+    )
+      return unavailable("gateway omitted a healthy deployment and valid indexed head");
+    const rpcQuantity = (method: string, id: number) =>
+      transport.postRpc!({
+        url: rpcUrl,
+        body: { jsonrpc: "2.0", id, method, params: [] },
+      }).pipe(
+        Effect.map((response): number | null => {
+          const body = asRecord(response.body);
+          const value = body?.["result"];
+          if (
+            response.status !== 200 ||
+            body?.["jsonrpc"] !== "2.0" ||
+            body?.["id"] !== id ||
+            body?.["error"] !== undefined ||
+            typeof value !== "string" ||
+            !/^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(value)
+          )
+            return null;
+          const parsed = BigInt(value);
+          return parsed <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(parsed) : null;
+        }),
+        Effect.orElseSucceed(() => null),
+      );
+    const chainId = yield* rpcQuantity("eth_chainId", 1);
+    if (chainId !== 1) return unavailable("RPC did not identify Ethereum mainnet");
+    const chainHeadBlock = yield* rpcQuantity("eth_blockNumber", 2);
+    if (chainHeadBlock === null || chainHeadBlock < latestBlock)
+      return unavailable("RPC omitted a valid chain head at or beyond the indexed head");
+    return {
+      latestBlock,
+      chainHeadBlock,
+      lagBlocks: chainHeadBlock - latestBlock,
+      unhealthyReason: null,
+      failedReason: null,
     } satisfies IndexingProbe;
   });
 
@@ -643,7 +777,17 @@ export const makeForgeGraphSource = Effect.gen(function* () {
       let duplicatesDropped = 0;
       let cursor = "";
       let rowsRead = 0;
-      let pinnedBlockHash: string | undefined;
+      const independentBefore = settings.chainHeadRpc
+        ? yield* independentPinHash(settings.chainHeadRpc, pinnedBlock, true)
+        : undefined;
+      if (independentBefore === null)
+        return unavailable(
+          input.poolId,
+          fetchedAtMs,
+          input.historical === true,
+          "independent pinned block hash could not be verified",
+        );
+      let pinnedBlockHash: string | undefined = independentBefore;
       while (true) {
         const variables = {
           pool: pool.poolId,
@@ -781,6 +925,20 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         }
       }
 
+      const independentAfter = settings.chainHeadRpc
+        ? yield* independentPinHash(settings.chainHeadRpc, pinnedBlock, false)
+        : undefined;
+      if (
+        independentBefore !== undefined &&
+        (independentAfter === null || independentAfter !== independentBefore)
+      )
+        return unavailable(
+          input.poolId,
+          fetchedAtMs,
+          input.historical === true,
+          "independent pinned block hash changed or became unavailable during the fetch",
+        );
+
       // Deterministic order regardless of the id-string cursor: time first,
       // then log index within a transaction.
       observations.sort((a, b) => a.timestamp - b.timestamp || a.logIndex - b.logIndex);
@@ -829,7 +987,23 @@ export const makeForgeGraphSource = Effect.gen(function* () {
         ...(probe.lagBlocks === null ? {} : { lagBlocks: probe.lagBlocks }),
         ...(duplicatesDropped === 0 ? {} : { duplicatesDropped }),
         sourceDigest: digest,
-        queryCapture: { query: executedQuery, variables: executedVariables },
+        queryCapture: {
+          query: executedQuery,
+          variables: executedVariables,
+          ...(independentBefore === undefined
+            ? {}
+            : {
+                blockHashVerification: [
+                  {
+                    method: "independent-rpc",
+                    chainId: 1,
+                    blockNumber: pinnedBlock,
+                    beforeHash: independentBefore,
+                    afterHash: independentAfter,
+                  },
+                ],
+              }),
+        },
       };
       // Self-check: the envelope the adapter built must satisfy the contract
       // it claims to be. A construction bug surfaces as unavailable here

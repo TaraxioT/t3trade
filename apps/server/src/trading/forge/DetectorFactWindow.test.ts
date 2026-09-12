@@ -32,6 +32,8 @@ import {
   type ExternalSourceStoreShape,
 } from "../research/ExternalSourceStore.ts";
 import { forgeJsonEncode } from "./ForgeJsonEncode.ts";
+import { compileScenarioPrograms, launchPolicySource } from "./scenarioPacks/scenarioFixtures.ts";
+import { flowRevisionDetectorSource } from "./scenarioPacks/flowRevisionPrograms.ts";
 
 const ENV = "env_fact_window";
 const POOL: `0x${string}` = `0x${"1".repeat(40)}`;
@@ -191,7 +193,7 @@ layer("graph-dataset sources", (it) => {
           unit: "ms",
         });
         // Bounded summary facts only — never one fact per observation.
-        assert.equal(outcome.facts.length, 4);
+        assert.equal(outcome.facts.length, 6);
         // Every fact cites the dataset evidence.
         for (const fact of outcome.facts) {
           assert.equal(fact.entityId, POOL);
@@ -200,6 +202,140 @@ layer("graph-dataset sources", (it) => {
           assert.equal(fact.evidence[0]?.mode, "historical-replay");
         }
       }),
+  );
+
+  it.effect("net and gross retain exact raw units and distinguish offsetting flow", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const { graph, window } = yield* makeWindow;
+      const buy = "900719925474099312345";
+      const sell = "900719925474099312344";
+      yield* seedDataset(graph, {
+        evidenceId: "ds_flow",
+        observations: [
+          { ...observation("1", 1_700_000_010), amount0: buy, quoteVolumeRaw: buy },
+          {
+            ...observation("2", 1_700_000_050),
+            amount0: `-${sell}`,
+            amount1: "500",
+            quoteVolumeRaw: sell,
+          },
+        ],
+      });
+      const result = yield* build(window, ["graph-dataset:ds_flow"]);
+      assert.equal(result.status, "ok");
+      if (result.status !== "ok") return;
+      const values = new Map(result.facts.map((fact) => [fact.key, fact.value]));
+      assert.deepEqual(values.get("graph.pool.net-flow-quote-raw"), {
+        kind: "decimal",
+        value: "1",
+        unit: "quote-token-raw",
+      });
+      assert.deepEqual(values.get("graph.pool.gross-flow-quote-raw"), {
+        kind: "decimal",
+        value: "1801439850948198624689",
+        unit: "quote-token-raw",
+      });
+      // Compile two actual artifact revisions, then replay the IDENTICAL sealed
+      // input. There is no metric/scenario switch in the host evaluator.
+      const input = {
+        programSchemaVersion: 2,
+        asOfMs: 1_700_000_300_000,
+        inputDigest: sha256(forgeJsonEncode(result)),
+        facts: result.facts,
+        sources: result.sources,
+        priorState: null,
+      };
+      const before = forgeJsonEncode(input);
+      const gross = flowRevisionDetectorSource("graph-dataset:ds_flow", "gross", "100");
+      const net = flowRevisionDetectorSource("graph-dataset:ds_flow", "net", "100");
+      assert.notEqual(sha256(gross), sha256(net));
+      for (const [detectorSource, expected] of [
+        [gross, "matched"],
+        [net, "not-matched"],
+      ] as const) {
+        yield* Effect.promise(async () => {
+          const program = await compileScenarioPrograms({
+            detectorSource,
+            testSource: "",
+            policySource: launchPolicySource,
+          });
+          try {
+            const output = program.detect(input);
+            assert.equal((output.result as { status: string }).status, expected);
+            assert.deepEqual(program.detect(input), output);
+            assert.equal(forgeJsonEncode(input), before);
+          } finally {
+            await program.cleanup();
+          }
+        });
+      }
+    }),
+  );
+
+  it.effect("raw flow signs follow base orientation and empty datasets remain zero", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const { graph, window } = yield* makeWindow;
+      const cases = [
+        {
+          id: "ds_sell",
+          rows: [{ ...observation("1", 1_700_000_010), amount0: "-1000000", amount1: "500" }],
+          net: "-1000000",
+          gross: "1000000",
+        },
+        {
+          id: "ds_other_base",
+          rows: [
+            {
+              ...observation("1", 1_700_000_010),
+              baseIsToken1: false,
+              amount0: "-500",
+              amount1: "1000000",
+            },
+          ],
+          net: "1000000",
+          gross: "1000000",
+        },
+        { id: "ds_empty", rows: [], net: "0", gross: "0" },
+      ];
+      for (const row of cases) {
+        yield* seedDataset(graph, { evidenceId: row.id, observations: row.rows });
+        const outcome = yield* build(window, [`graph-dataset:${row.id}`]);
+        assert.equal(outcome.status, "ok");
+        if (outcome.status !== "ok") continue;
+        for (const [key, expected] of [
+          ["net", row.net],
+          ["gross", row.gross],
+        ] as const) {
+          assert.deepEqual(
+            outcome.facts.find((fact) => fact.key === `graph.pool.${key}-flow-quote-raw`)?.value,
+            { kind: "decimal", value: expected, unit: "quote-token-raw" },
+          );
+        }
+      }
+    }),
+  );
+
+  it.effect("inconsistent quote units or mixed pool orientation are absent", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const { graph, window } = yield* makeWindow;
+      const invalidRows: ReadonlyArray<ReadonlyArray<ForgeSwapObservation>> = [
+        [{ ...observation("1", 1_700_000_010), quoteVolumeRaw: "2" }],
+        [
+          observation("1", 1_700_000_010),
+          { ...observation("2", 1_700_000_020), baseIsToken1: false },
+        ],
+        [{ ...observation("1", 1_700_000_010), poolId: `0x${"2".repeat(40)}` }],
+        [observation("1", 1_700_000_101)],
+      ];
+      for (const [index, observations] of invalidRows.entries()) {
+        const id = `ds_invalid_${index}`;
+        yield* seedDataset(graph, { evidenceId: id, observations });
+        assert.equal((yield* build(window, [`graph-dataset:${id}`])).status, "unavailable");
+      }
+    }),
   );
 
   it.effect("an integrity shortfall (claimed count or digest) is absence", () =>
