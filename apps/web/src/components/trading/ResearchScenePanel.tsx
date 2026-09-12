@@ -1543,7 +1543,18 @@ export function ResearchScenePanel(props: {
           the outer graph's tab, never a second switcher here. */}
       <div className="flex min-h-0 flex-1 flex-col" data-testid="research-scene-body">
         {scene.eventStudy !== undefined ? (
-          props.mode === "calendar" ? (
+          (scene.eventStudy.priceSource ?? "hyperliquid") !== "hyperliquid" ? (
+            <div className="space-y-2 text-xs" data-testid="research-source-chart-unavailable">
+              <p>
+                This study uses {scene.eventStudy.priceSource}. Its source prices are not yet
+                available in this chart. The saved research summary is shown below.
+              </p>
+              <StudyExplanation
+                payload={scene.eventStudy}
+                calculationVersion={scene.calculationVersion}
+              />
+            </div>
+          ) : props.mode === "calendar" ? (
             // Keyed by scene id so a newly published scene (with its own
             // persisted notional and basis) reinitializes the body's local
             // state instead of carrying the previous scene's numbers forward.

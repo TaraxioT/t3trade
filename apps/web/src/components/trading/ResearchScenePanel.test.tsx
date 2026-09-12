@@ -1,3 +1,4 @@
+import type { EventStudyScenePayload } from "@t3tools/trading-contracts/researchScenes";
 /**
  * The research scene panel, pinned on its static markup: the persisted
  * notional initializes the illustration (and survives a remount), the money
@@ -104,7 +105,7 @@ const payload = (
     },
     occurrenceWindows: rowsOverride ?? rows,
     archiveBounds: { recordingSince: T0 - 400 * DAY, fromT: T0, toT: T1 + 31 * DAY },
-  }) as never;
+  }) as unknown as EventStudyScenePayload;
 
 const deterministic = [
   { kind: "event_span", startAt: T0, endAt: T0, label: "Dencun", occurrenceIndex: 0 },
@@ -157,6 +158,7 @@ const renderPanel = (
     deterministic?: ReadonlyArray<{ [key: string]: unknown }>;
     n?: number;
     nCovered?: number;
+    priceSource?: string;
   } = {},
 ) =>
   renderToStaticMarkup(
@@ -186,7 +188,10 @@ const renderPanel = (
             sources: ["https://example.org/activation"],
             disclaimer: "Historical research. No order placed. Not a forecast.",
           },
-          eventStudy: payload(baseline, overrides.rows, overrides.n, overrides.nCovered),
+          eventStudy: {
+            ...payload(baseline, overrides.rows, overrides.n, overrides.nCovered),
+            priceSource: overrides.priceSource ?? "hyperliquid",
+          },
         } as never,
       ]}
       loading={false}
@@ -888,3 +893,13 @@ describe("ResearchScenePanel: a strategy replay scene (G9)", () => {
     expect(markup).toContain("-$30 net");
   });
 });
+
+for (const mode of ["calendar", "aligned"] as const) {
+  it(`refuses archive charts for a Graph-backed scene in ${mode} mode`, () => {
+    const markup = renderPanel(mode, null, { priceSource: "the-graph" });
+    expect(markup).toContain('data-testid="research-source-chart-unavailable"');
+    expect(markup).toContain("Its source prices are not yet");
+    expect(markup).not.toContain('data-testid="research-calendar-stage"');
+    expect(markup).not.toContain('data-testid="research-aligned-stage"');
+  });
+}
