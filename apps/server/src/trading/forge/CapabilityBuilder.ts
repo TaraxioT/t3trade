@@ -8,13 +8,16 @@
  *   prepare → the host inspects sources and hands back an authoring brief
  *             (the typed SDK contract, the data schema, the staging
  *             directory). No detector semantics ship in the brief.
- *   the agent writes the four artifacts with its own file tools, in its own
+ *   the agent writes the artifacts with its own file tools, in its own
  *             workspace — there is no hidden finished detector here.
- *   check   → the host reads the staged files (exactly four, flat, regular,
- *             bounded), compiles and typechecks them, runs the generated
+ *   check   → the host reads the staged files (flat, regular, bounded,
+ *             contract-set), compiles and typechecks them, runs the generated
  *             tests, then runs host-owned acceptance cases and determinism
  *             checks — all inside the sealed sandbox — and computes the
- *             sealed report and every hash itself.
+ *             sealed report and every hash itself. Which pipeline runs is
+ *             dispatched on the staged manifest's manifestVersion: 1 is the
+ *             pool-signal contract, 2 the detector-program contract over
+ *             sealed facts with carried state.
  *   install → a separate CAS step in the store (never part of check).
  *
  * A "pass" string from inside the container grants nothing: the host reads
@@ -39,6 +42,11 @@ import * as NodePath from "node:path";
 import { randomUUID } from "node:crypto";
 
 import {
+  CapabilityManifestV2,
+  detectorArtifactPaths,
+  DETECTOR_V2_ARTIFACT_ROLES,
+  DetectorProgramInputV2,
+  DetectorProgramOutputV2,
   FORGE_CAPABILITY_ARTIFACT_PATHS,
   FORGE_MAX_BUNDLE_BYTES,
   FORGE_MAX_SEMANTICS_CHARS,
@@ -47,6 +55,7 @@ import {
   ForgeCapabilityManifest,
   ForgeSignalOutput,
   type ForgeAcceptanceCase,
+  type ForgeAcceptanceCaseV2,
   type ForgeBuildReceipt,
   type ForgeCapabilityVersion,
   type ForgeCheckOutcome,
@@ -195,6 +204,255 @@ export const FORGE_DATA_SCHEMA_CONTEXT = [
   "  observationIds present in the input window.",
 ].join("\n");
 
+// ---------------------------------------------------------------------------
+// The detector-program (v2) SDK — sealed facts, carried state
+// ---------------------------------------------------------------------------
+
+/**
+ * The detector-program SDK generation. The v1 `FORGE_SDK_SCHEMA_VERSION`
+ * stays 1: two SDK generations live side by side, and every consumer
+ * dispatches on the manifest's `manifestVersion` before choosing one.
+ */
+export const DETECTOR_SDK_SCHEMA_VERSION = 2;
+
+/**
+ * The v2 SDK source mounted beside the artifacts in containment as `sdk.ts`.
+ *
+ * Types, the state-envelope helpers, the toy test harness, and the SYNC entry
+ * signature ONLY — mirroring `detectorProgram.ts` in trading-contracts field
+ * for field. The invariants containment enforces and this SDK assumes: NO
+ * clock (`asOfMs` is the only time a detector ever sees), NO network or fetch,
+ * NO environment or process access, NO host callbacks. `detect` is
+ * synchronous and pure over the sealed input — the same input, including
+ * `priorState`, must produce the same `{ result, nextState }`. Changing this
+ * contract is a detector SDK schema-version bump, never an in-place edit.
+ */
+export const FORGE_SDK_SOURCE_V2 = `/**
+ * T3 Forge detector-program SDK — schema version ${DETECTOR_SDK_SCHEMA_VERSION}.
+ * Host-owned contract; a detector imports nothing else.
+ *
+ * Invariants: you have NO clock (asOfMs is the only time you will ever see),
+ * NO network or fetch, NO environment or process access, and NO host
+ * callbacks. Your detect is synchronous and pure over the sealed input: the
+ * same input — including priorState — must produce the same result and
+ * nextState. Facts arrive sealed as-of asOfMs; treat an unqualified or
+ * incomplete source as unknown, never as silent absence of evidence.
+ */
+export type EvidenceMode = "live" | "historical-replay" | "fixture";
+export type AvailabilityBasis = "recorded" | "conservative-estimate" | "unknown";
+export type SourceTimePrecision = "millisecond" | "second" | "minute" | "day";
+
+/** One observed value: a boolean, an exact decimal with its unit, or text. */
+export type FactValue =
+  | { readonly kind: "boolean"; readonly value: boolean }
+  | { readonly kind: "decimal"; readonly value: string; readonly unit: string }
+  | { readonly kind: "text"; readonly value: string };
+
+export type EvidenceRef = {
+  readonly id: string;
+  readonly environmentId: string;
+  readonly sourceId: string;
+  readonly mode: EvidenceMode;
+  readonly contentSha256: string;
+  readonly eventAtMs: number;
+  readonly availableAtMs: number | null;
+  readonly availabilityBasis: AvailabilityBasis;
+  readonly timePrecision: SourceTimePrecision;
+  readonly capturedAtMs: number;
+  readonly expiresAtMs: number;
+  readonly sourceRevision: string;
+};
+
+export type CapturedFact = {
+  readonly id: string;
+  readonly key: string;
+  readonly entityId: string;
+  readonly value: FactValue;
+  readonly evidence: ReadonlyArray<EvidenceRef>;
+};
+
+/** One required source's completeness, as sealed by the host beside the facts. */
+export type SealedSourceRecord = {
+  readonly sourceId: string;
+  readonly evidenceId: string;
+  readonly mode: EvidenceMode;
+  readonly contentSha256: string;
+  readonly complete: boolean;
+  readonly eventAtMs?: number;
+  readonly availableAtMs?: number;
+  readonly availabilityBasis: AvailabilityBasis;
+  readonly expiresAtMs?: number;
+  readonly sourceRevision?: string;
+};
+
+export type DetectionResult =
+  | { readonly status: "matched"; readonly occurrenceKey: string; readonly evidenceIds: ReadonlyArray<string>; readonly facts: ReadonlyArray<CapturedFact>; readonly validUntilMs: number }
+  | { readonly status: "not-matched"; readonly evidenceIds: ReadonlyArray<string>; readonly explanation: string }
+  | { readonly status: "unknown"; readonly missingSourceIds: ReadonlyArray<string>; readonly explanation: string };
+
+export type DetectorProgramInput = {
+  readonly programSchemaVersion: ${DETECTOR_SDK_SCHEMA_VERSION};
+  readonly asOfMs: number;
+  readonly inputDigest: string;
+  readonly facts: ReadonlyArray<CapturedFact>;
+  readonly sources: ReadonlyArray<SealedSourceRecord>;
+  readonly priorState?: unknown;
+};
+
+export type DetectorProgramOutput = {
+  readonly result: DetectionResult;
+  readonly nextState: unknown;
+};
+
+/** The wrapper around state you carry between runs. stateSchemaVersion is
+ *  YOUR version tag for the shape you understand, so a later revision can
+ *  refuse (or migrate) an older state instead of misreading it. */
+export type DetectorStateEnvelope = {
+  readonly stateSchemaVersion: number;
+  readonly state: unknown;
+};
+
+/** The ceiling on committed state, in bytes of the canonical serialization. */
+export const DETECTOR_STATE_MAX_BYTES = 262144;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Minimal structural check of one sealed input; exactness is the host's. */
+export function assertDetectorInput(value: unknown): asserts value is DetectorProgramInput {
+  if (
+    !isPlainObject(value) ||
+    value.programSchemaVersion !== ${DETECTOR_SDK_SCHEMA_VERSION} ||
+    !Array.isArray(value.facts) ||
+    !Array.isArray(value.sources)
+  ) {
+    throw new Error("DetectorProgramInput must be { programSchemaVersion: ${DETECTOR_SDK_SCHEMA_VERSION}, asOfMs, inputDigest, facts[], sources[] }");
+  }
+}
+
+// Key-sorted, undefined-dropping canonical JSON: an envelope's serialization
+// is a function of its content, not of which caller built the object.
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (typeof value === "object" && value !== null) {
+    const source = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) {
+      if (source[key] === undefined) continue;
+      out[key] = canonical(source[key]);
+    }
+    return out;
+  }
+  return value;
+};
+
+// UTF-8 byte length without TextEncoder (not in the runner's ES2022 lib).
+const byteLength = (value: string): number => {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+};
+
+const isStateEnvelope = (value: unknown): value is DetectorStateEnvelope =>
+  isPlainObject(value) &&
+  typeof value.stateSchemaVersion === "number" &&
+  Number.isInteger(value.stateSchemaVersion) &&
+  value.stateSchemaVersion > 0 &&
+  "state" in value;
+
+export type DetectorStateFailure =
+  | "state-envelope-invalid"
+  | "state-not-serializable"
+  | "state-exceeds-max-bytes"
+  | "state-json-invalid";
+
+export type EncodeDetectorStateResult =
+  | { readonly ok: true; readonly serialized: string }
+  | { readonly ok: false; readonly failure: DetectorStateFailure };
+
+export type DecodeDetectorStateResult =
+  | { readonly ok: true; readonly envelope: DetectorStateEnvelope }
+  | { readonly ok: false; readonly failure: DetectorStateFailure };
+
+/** Validate a state envelope and serialize it canonically under the byte cap. */
+export function encodeDetectorState(envelope: unknown): EncodeDetectorStateResult {
+  if (!isStateEnvelope(envelope)) return { ok: false, failure: "state-envelope-invalid" };
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(canonical(envelope));
+  } catch {
+    return { ok: false, failure: "state-not-serializable" };
+  }
+  if (byteLength(serialized) > DETECTOR_STATE_MAX_BYTES)
+    return { ok: false, failure: "state-exceeds-max-bytes" };
+  return { ok: true, serialized };
+}
+
+/** Parse and validate a serialized state envelope under the same byte cap. */
+export function decodeDetectorState(serialized: string): DecodeDetectorStateResult {
+  if (byteLength(serialized) > DETECTOR_STATE_MAX_BYTES)
+    return { ok: false, failure: "state-exceeds-max-bytes" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    return { ok: false, failure: "state-json-invalid" };
+  }
+  if (!isStateEnvelope(parsed)) return { ok: false, failure: "state-envelope-invalid" };
+  return { ok: true, envelope: parsed };
+}
+
+const registeredTests: Array<() => void | Promise<void>> = [];
+export function describe(_name: string, body: () => void): void { body(); }
+export function test(_name: string, body: () => void | Promise<void>): void { registeredTests.push(body); }
+export const it = test;
+export function expect(actual: unknown) {
+  return {
+    toBe(expected: unknown): void { if (!Object.is(actual, expected)) throw new Error("values differ"); },
+    toEqual(expected: unknown): void { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("values differ"); },
+    toBeDefined(): void { if (actual === undefined) throw new Error("value is undefined"); },
+    toBeTruthy(): void { if (!actual) throw new Error("value is not truthy"); },
+    toBeFalsy(): void { if (actual) throw new Error("value is not falsy"); },
+  };
+}
+export async function runRegisteredTests(): Promise<number> {
+  for (const body of registeredTests) await body();
+  return registeredTests.length;
+}
+
+/** The entrypoint every detector exports. Synchronous and pure: the same
+ *  input — including priorState — must produce the same result and nextState. */
+export type Detect = (input: DetectorProgramInput) => DetectorProgramOutput;
+`;
+
+/** The v2 authoring brief's data-schema prose, rendered once. */
+export const FORGE_DATA_SCHEMA_CONTEXT_V2 = [
+  "Detector-program data contract (host-sealed, exact):",
+  "- Facts arrive SEALED as-of the host clock: programSchemaVersion pins the SDK generation,",
+  "  asOfMs is the only time your detector ever sees, and inputDigest is the host-computed",
+  "  digest over facts+sources that you may echo but never recompute the meaning of.",
+  "- Each CapturedFact carries its evidence references; keys and entityIds are opaque strings",
+  "  pinned by your manifest's outputFactKeys.",
+  '- Sources may be incomplete or unqualified (complete: false, availabilityBasis "unknown").',
+  "  Treat an unqualified or incomplete source as unknown — never as absence of evidence.",
+  "  An unknown conclusion blocks new exposure; it is a first-class outcome, not an error.",
+  "- State is yours: priorState is what your previous run committed (absent on the first run),",
+  "  nextState is what this run commits, envelope-bounded through the SDK helpers at",
+  "  DETECTOR_STATE_MAX_BYTES. A program that outgrows the cap must re-derive, not remember.",
+  "- Return exactly one DetectionResult (matched | not-matched | unknown) beside nextState.",
+].join("\n");
+
 /**
  * Entrypoints — the pinned runner image's contract. Distinct heads so a
  * scripted runner (and the image itself) can never confuse one step for
@@ -203,6 +461,9 @@ export const FORGE_DATA_SCHEMA_CONTEXT = [
 export const FORGE_RUNNER_TYPECHECK = ["forge-typecheck"] as const;
 export const FORGE_RUNNER_TEST = ["forge-test"] as const;
 export const FORGE_RUNNER_EVALUATE = ["forge-evaluate"] as const;
+/** The detector-program (v2) evaluation head — a distinct shim, so a scripted
+ *  runner (and the image itself) can never confuse the two generations. */
+export const FORGE_RUNNER_EVALUATE_V2 = ["forge-evaluate-v2"] as const;
 
 // ---------------------------------------------------------------------------
 // Static artifact validation (host, before anything executes)
@@ -309,12 +570,183 @@ export function validateAuthoredArtifacts(input: {
   return { status: "ok", artifacts: { contents: input.contents } };
 }
 
+// ---------------------------------------------------------------------------
+// Static validation — detector-program (v2)
+// ---------------------------------------------------------------------------
+
 /**
- * Read the authoring workspace: exactly the four flat files, all regular
+ * Tags the staged version header's description so any reader of the current
+ * (v1-typed) store record can see the bundle is a detector-program v2 one.
+ * The authoritative v2 manifest stays byte-exact in the bundle contents.
+ */
+const DETECTOR_V2_MANIFEST_TAG = "[detector-program v2] ";
+
+/**
+ * The paths whose hashes the staged v2 version record carries — exactly four,
+ * because the current store's `stageVersion` accepts only a four-entry
+ * artifact array (see the staging note in `check`). Optional artifacts ride
+ * in the bundle contents and the authored manifest; P4.3's role-aware store
+ * supersedes this shape.
+ */
+const DETECTOR_V2_REQUIRED_HASH_PATHS = [
+  "detector.test.ts",
+  "detector.ts",
+  "manifest.json",
+  "sdk.ts",
+] as const;
+
+/**
+ * The detector-program (v2) artifact contract, enforced before any code runs.
+ *
+ * Dispatch happens on the manifest's `manifestVersion` BEFORE any v1 decode
+ * (the v1 `ForgeCapabilityManifest` filter would reject a v2 manifest — the
+ * discriminator trap). The file set is role-derived through
+ * `detectorArtifactPaths`: the manifest's declared paths plus `manifest.json`,
+ * with the host-mounted `sdk.ts` validated by its declared hash against the
+ * exact bytes this server mounts. The v1 four-path constant is never touched.
+ */
+export function validateAuthoredDetectorArtifacts(input: {
+  readonly contents: Readonly<Record<string, string>>;
+  readonly expectedCapabilityId: string;
+  readonly expectedVersion: number;
+}): ForgeArtifactValidation {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(input.contents["manifest.json"] ?? "");
+  } catch {
+    return { status: "refused", reason: "manifest.json is not valid JSON" };
+  }
+  let parsed: CapabilityManifestV2;
+  try {
+    parsed = Schema.decodeUnknownSync(CapabilityManifestV2)(manifest);
+  } catch (error) {
+    return {
+      status: "refused",
+      reason: `manifest.json does not satisfy the detector-program v2 contract: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (parsed.capabilityId !== input.expectedCapabilityId) {
+    return {
+      status: "refused",
+      reason: `manifest names capability ${parsed.capabilityId}, the build is for ${input.expectedCapabilityId}`,
+    };
+  }
+  if (parsed.version !== input.expectedVersion) {
+    return {
+      status: "refused",
+      reason: `manifest declares v${parsed.version}, the build is for v${input.expectedVersion}`,
+    };
+  }
+  const paths = detectorArtifactPaths(parsed);
+  if ("refusal" in paths) {
+    return { status: "refused", reason: `manifest artifacts: ${paths.refusal}` };
+  }
+  // sdk.ts is host-mounted, never authored: the file set is the declared
+  // paths without it, plus the manifest itself.
+  const expected = [...paths.paths.filter((path) => path !== "sdk.ts"), "manifest.json"].sort();
+  const names = Object.keys(input.contents).sort();
+  if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) {
+    return {
+      status: "refused",
+      reason: `the detector bundle must be exactly ${expected.join(", ")} — found ${names.join(", ") || "nothing"}`,
+    };
+  }
+  const totalBytes = expected.reduce(
+    (sum, path) => sum + Buffer.byteLength(input.contents[path] ?? "", "utf8"),
+    0,
+  );
+  if (totalBytes > FORGE_MAX_BUNDLE_BYTES) {
+    return {
+      status: "refused",
+      reason: `the detector bundle totals ${totalBytes} bytes, over the ${FORGE_MAX_BUNDLE_BYTES} byte cap`,
+    };
+  }
+  for (const path of ["detector.ts", "detector.test.ts"]) {
+    if ((input.contents[path] ?? "").trim() === "") {
+      return { status: "refused", reason: `${path} is empty` };
+    }
+  }
+  // The sdk role pins the SDK generation: its declared hash must be the exact
+  // bytes this server mounts at sdk.ts.
+  const sdkArtifact = parsed.artifacts.find((artifact) => artifact.role === "sdk");
+  if (sdkArtifact === undefined || sdkArtifact.sha256 !== forgeSha256Hex(FORGE_SDK_SOURCE_V2)) {
+    return {
+      status: "refused",
+      reason:
+        "the sdk artifact hash does not pin this server's detector SDK; declare the sha256 from the authoring brief",
+    };
+  }
+  // Every other declared hash must match the authored bytes the host just read.
+  for (const artifact of parsed.artifacts) {
+    if (artifact.role === "sdk") continue;
+    if (artifact.sha256 !== forgeSha256Hex(input.contents[artifact.path] ?? "")) {
+      return { status: "refused", reason: `${artifact.path} does not match its declared sha256` };
+    }
+  }
+  // Imports: the authored program may reference the SDK, the detector entry,
+  // and the optional modules its manifest declared — nothing else.
+  const allowedImports = new Set<string>(["./sdk", "./detector"]);
+  if (parsed.artifacts.some((artifact) => artifact.role === "transform")) {
+    allowedImports.add("./transform");
+  }
+  if (parsed.artifacts.some((artifact) => artifact.role === "state-schema")) {
+    allowedImports.add("./state-schema");
+  }
+  for (const path of names) {
+    if (!path.endsWith(".ts")) continue;
+    for (const specifier of declaredImports(input.contents[path] ?? "")) {
+      if (!allowedImports.has(specifier)) {
+        return {
+          status: "refused",
+          reason: `${path} imports ${JSON.stringify(specifier)}; only the detector SDK modules (${[...allowedImports].sort().join(", ")}) are allowed`,
+        };
+      }
+    }
+  }
+  // A declared query rides the same structural validator as v1 — v2 never
+  // weakens the query contract.
+  const query = input.contents["query.graphql"];
+  if (query !== undefined) {
+    const queryCheck = validateForgeCapabilityQuery(query);
+    if (!queryCheck.ok) {
+      return { status: "refused", reason: `query.graphql: ${queryCheck.reason}` };
+    }
+  }
+  // The staged version header renders `[detector-program v2] <semantics>` into
+  // a v1-typed description field bounded by FORGE_MAX_SEMANTICS_CHARS.
+  const semanticsLimit = FORGE_MAX_SEMANTICS_CHARS - DETECTOR_V2_MANIFEST_TAG.length;
+  if (parsed.semantics.length > semanticsLimit) {
+    return {
+      status: "refused",
+      reason: `manifest semantics must be at most ${semanticsLimit} characters`,
+    };
+  }
+  return { status: "ok", artifacts: { contents: input.contents } };
+}
+
+/**
+ * Every workspace name the reader accepts: the v1 four plus the detector-v2
+ * role paths (sdk.ts among them, so a v2 workspace that copied the SDK is
+ * still read — the per-version validators then decide the exact set). Which
+ * bundle a workspace actually is gets decided AFTER the read, on the staged
+ * manifest's manifestVersion.
+ */
+export const FORGE_WORKSPACE_READ_PATHS: ReadonlyArray<string> = [
+  ...new Set([
+    ...FORGE_CAPABILITY_ARTIFACT_PATHS,
+    ...Object.values(DETECTOR_V2_ARTIFACT_ROLES).map((role) => role.path),
+  ]),
+];
+
+/**
+ * Read the authoring workspace: exactly the allowed flat files, all regular
  * files (a symlink is a refusal, not a shortcut), nothing else alongside.
+ * The default allowlist is the v1 four; the check pipeline reads with the
+ * v1∪v2 union and dispatches on the staged manifest afterwards.
  */
 export const readAuthoringWorkspace = async (
   stagingDir: string,
+  allowedPaths: readonly string[] = FORGE_CAPABILITY_ARTIFACT_PATHS,
 ): Promise<Record<string, string>> => {
   if ((await NodeFs.lstat(stagingDir)).isSymbolicLink())
     throw new Error("refusing a symlink authoring workspace");
@@ -322,11 +754,7 @@ export const readAuthoringWorkspace = async (
   let totalBytes = 0;
   const contents: Record<string, string> = {};
   for (const entry of entries) {
-    if (
-      !FORGE_CAPABILITY_ARTIFACT_PATHS.includes(
-        entry.name as (typeof FORGE_CAPABILITY_ARTIFACT_PATHS)[number],
-      )
-    ) {
+    if (!allowedPaths.includes(entry.name)) {
       throw new Error(`unexpected file in the authoring workspace: ${entry.name}`);
     }
     if (entry.isSymbolicLink()) {
@@ -371,6 +799,20 @@ export function forgeBundleSha256(contents: Readonly<Record<string, string>>): s
     FORGE_CAPABILITY_ARTIFACT_PATHS.map((path) => contents[path] ?? "").join(
       "\n---forge-artifact---\n",
     ),
+  );
+}
+
+/**
+ * Canonical detector-bundle hash: every bundle path (authored files plus the
+ * host-mounted sdk.ts, optionals included), sorted, joined with the same
+ * separator as v1 — the identity a v2 install pins.
+ */
+export function forgeDetectorBundleSha256(contents: Readonly<Record<string, string>>): string {
+  return forgeSha256Hex(
+    Object.keys(contents)
+      .sort()
+      .map((path) => contents[path] ?? "")
+      .join("\n---forge-artifact---\n"),
   );
 }
 
@@ -452,6 +894,12 @@ export interface ForgeCapabilityBuilderShape {
     readonly requestedSemantics: string;
     /** The directory in the caller's workspace where the four artifacts must land. */
     readonly stagingDir: string;
+    /**
+     * Which SDK generation the brief targets: 1 (pool signal, the default) or
+     * 2 (detector program over sealed facts). Additive — every existing v1
+     * caller omits it and gets the v1 brief unchanged.
+     */
+    readonly manifestVersion?: 1 | 2 | undefined;
   }) => Effect.Effect<
     { readonly build: ForgeBuildReceipt; readonly brief: ForgeAuthoringBrief },
     ForgeBuilderError
@@ -459,12 +907,20 @@ export interface ForgeCapabilityBuilderShape {
   /**
    * Read the authored workspace, validate, and run the full containment
    * pipeline. On success the version is staged READY — never installed.
+   *
+   * The pipeline dispatches on the staged manifest's `manifestVersion`: a v1
+   * manifest runs the pool-signal path byte-identically; a v2 manifest runs
+   * the detector-program path with v2 acceptance cases (`acceptanceV2`,
+   * host-reviewed data the handler layer reads from the stateDir — the
+   * reader wiring lands with the handler slice).
    */
   readonly check: (input: {
     readonly buildId: string;
     readonly environmentId: string;
     readonly stagingDir: string;
     readonly acceptanceCases: ReadonlyArray<ForgeAcceptanceCase>;
+    /** Host-reviewed v2 acceptance cases; required (≥1) when the staged manifest is v2. */
+    readonly acceptanceV2?: ReadonlyArray<ForgeAcceptanceCaseV2> | undefined;
   }) => Effect.Effect<
     { readonly build: ForgeBuildReceipt; readonly staged: ForgeSealedBundle | null },
     ForgeBuilderError
@@ -490,9 +946,17 @@ const toBuilderError = (error: unknown): ForgeBuilderError =>
 const decodeManifest = (raw: string): ForgeCapabilityManifest =>
   Schema.decodeUnknownSync(ForgeCapabilityManifest)(parseJsonOr(raw, {}));
 
+/** The v2 counterpart of decodeManifest: bytes static validation already decoded. */
+const decodeManifestV2 = (raw: string): CapabilityManifestV2 =>
+  Schema.decodeUnknownSync(CapabilityManifestV2)(parseJsonOr(raw, {}));
+
 /** The one decoder every contained evaluation runs: the SDK's output contract. */
 const decodeForgeSignalOutput = (value: unknown): unknown =>
   Schema.decodeUnknownSync(ForgeSignalOutput)(value);
+
+/** The v2 evaluation decoder: the detector-program output contract. */
+const decodeDetectorProgramOutputV2 = (value: unknown): unknown =>
+  Schema.decodeUnknownSync(DetectorProgramOutputV2)(value);
 
 /** JSON.parse whose failure degrades to a value the manifest decode refuses. */
 const parseJsonOr = (raw: string, fallback: unknown): unknown => {
@@ -534,6 +998,7 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
     capabilityId,
     requestedSemantics,
     stagingDir,
+    manifestVersion = 1,
   }) =>
     Effect.gen(function* () {
       if (
@@ -570,14 +1035,266 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
       const version = yield* store
         .nextVersion({ environmentId, capabilityId })
         .pipe(Effect.mapError(toBuilderError));
-      const brief: ForgeAuthoringBrief = {
-        schemaVersion: FORGE_SDK_SCHEMA_VERSION,
-        sdkSource: FORGE_SDK_SOURCE,
-        dataSchema: `${FORGE_DATA_SCHEMA_CONTEXT}\nAuthor manifest.version as ${version}; immutable retained versions are never reused.`,
-        stagingDir,
-        artifactContract: FORGE_CAPABILITY_ARTIFACT_PATHS.join(", "),
-      };
+      const brief: ForgeAuthoringBrief =
+        manifestVersion === 2
+          ? {
+              schemaVersion: DETECTOR_SDK_SCHEMA_VERSION,
+              sdkSource: FORGE_SDK_SOURCE_V2,
+              dataSchema: [
+                `${FORGE_DATA_SCHEMA_CONTEXT_V2}\nAuthor manifest.version as ${version}; immutable retained versions are never reused.`,
+                `The manifest is detector-program v2: manifestVersion 2, your capabilityId, this version,`,
+                `requiredSourceIds, outputFactKeys, createdAtMs, and one artifact entry per declared file.`,
+                `Declare the sdk artifact as { "role": "sdk", "path": "sdk.ts", "sha256": "${forgeSha256Hex(FORGE_SDK_SOURCE_V2)}" };`,
+                `the host mounts those exact bytes — never author sdk.ts yourself.`,
+              ].join("\n"),
+              stagingDir,
+              artifactContract:
+                "manifest.json, detector.ts, detector.test.ts (plus each optional transform.ts / state-schema.ts / query.graphql / policy.ts you declare)",
+            }
+          : {
+              schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+              sdkSource: FORGE_SDK_SOURCE,
+              dataSchema: `${FORGE_DATA_SCHEMA_CONTEXT}\nAuthor manifest.version as ${version}; immutable retained versions are never reused.`,
+              stagingDir,
+              artifactContract: FORGE_CAPABILITY_ARTIFACT_PATHS.join(", "),
+            };
       return { build: authoring, brief };
+    });
+
+  /**
+   * The detector-program (v2) check pipeline: static validation, the shared
+   * typecheck and generated-test runs, HOST-owned v2 acceptance (a sealed
+   * input → exactly one DetectionResult + nextState, both compared by the
+   * host), a determinism double-run over the WHOLE output including state,
+   * and staging under the current store's shape.
+   *
+   * The v2 acceptance-case reader from the stateDir lands with the handler
+   * slice; here the cases arrive as a parameter, and ≥1 is required — a
+   * module nothing exercised cannot be certified.
+   */
+  const checkDetectorV2 = (input: {
+    readonly buildId: string;
+    readonly environmentId: string;
+    readonly capabilityId: string;
+    readonly nextVersion: number;
+    readonly contents: Record<string, string>;
+    readonly acceptanceV2: ReadonlyArray<ForgeAcceptanceCaseV2>;
+  }): Effect.Effect<
+    { readonly build: ForgeBuildReceipt; readonly staged: ForgeSealedBundle | null },
+    ForgeBuilderError
+  > =>
+    Effect.gen(function* () {
+      const { buildId, environmentId, capabilityId, nextVersion, contents, acceptanceV2 } = input;
+      const validated = validateAuthoredDetectorArtifacts({
+        contents,
+        expectedCapabilityId: capabilityId,
+        expectedVersion: nextVersion,
+      });
+      if (validated.status === "refused") {
+        return yield* failStage(buildId, validated.reason);
+      }
+      yield* store
+        .appendBuildStage({
+          buildId,
+          stage: "checking",
+          detail: "detector bundle accepted for containment",
+        })
+        .pipe(Effect.mapError(toBuilderError));
+
+      const manifest = decodeManifestV2(contents["manifest.json"] ?? "{}");
+      // The sealed bundle the runs mount and the store stages: the authored
+      // files plus the exact host SDK bytes mounted at sdk.ts.
+      const bundleContents: Record<string, string> = {
+        ...contents,
+        "sdk.ts": FORGE_SDK_SOURCE_V2,
+      };
+      const bundlePaths = Object.keys(bundleContents).sort();
+      const artifactSha256 = bundlePaths.map((path) => ({
+        path,
+        sha256: forgeSha256Hex(bundleContents[path] ?? ""),
+      }));
+      const bundleSha256 = forgeDetectorBundleSha256(bundleContents);
+      const files: Array<ForgeSandboxFile> = bundlePaths.map((path) => ({
+        path,
+        content: bundleContents[path] ?? "",
+      }));
+
+      const checks: Array<ForgeCheckOutcome> = [];
+
+      // -- compile + typecheck (host-run, contained; entrypoint shared) ------
+      const typecheck = yield* sandbox
+        .runBuildStep({ files, entrypoint: [...FORGE_RUNNER_TYPECHECK] })
+        .pipe(Effect.exit);
+      if (typecheck._tag === "Failure") {
+        return yield* failStage(
+          buildId,
+          `typecheck failed closed: ${sandboxFailureReason(typecheck.cause)}`,
+        );
+      }
+      checks.push({ name: "typecheck", passed: true, exitCode: typecheck.value.exitCode });
+
+      // -- the generated tests (detector.test.ts, their own run) ------------
+      const tests = yield* sandbox
+        .runBuildStep({ files, entrypoint: [...FORGE_RUNNER_TEST] })
+        .pipe(Effect.exit);
+      if (tests._tag === "Failure") {
+        return yield* failStage(
+          buildId,
+          `generated tests failed closed: ${sandboxFailureReason(tests.cause)}`,
+        );
+      }
+      checks.push({ name: "generated-tests", passed: true, exitCode: tests.value.exitCode });
+
+      // -- host-owned acceptance (v2): the host compares result AND state ----
+      const failedCases: Array<{ name: string; reason: string }> = [];
+      for (const example of acceptanceV2) {
+        if (!Schema.is(DetectorProgramInputV2)(example.input)) {
+          failedCases.push({
+            name: example.name,
+            reason: "the case input is not a sealed DetectorProgramInputV2",
+          });
+          continue;
+        }
+        const actual = yield* sandbox
+          .runEvaluation({
+            files,
+            entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
+            stdinJson: JSON.stringify(example.input),
+            decodeResult: decodeDetectorProgramOutputV2,
+          })
+          .pipe(Effect.exit);
+        if (actual._tag === "Failure") {
+          failedCases.push({ name: example.name, reason: sandboxFailureReason(actual.cause) });
+          continue;
+        }
+        const output = actual.value as DetectorProgramOutputV2;
+        const expectedResult = JSON.stringify(example.expected.result);
+        const gotResult = JSON.stringify(output.result);
+        if (expectedResult !== gotResult) {
+          failedCases.push({
+            name: example.name,
+            reason: `expected result ${expectedResult}, got ${gotResult}`,
+          });
+          continue;
+        }
+        const expectedState = JSON.stringify(example.expected.nextState);
+        const gotState = JSON.stringify(output.nextState);
+        if (expectedState !== gotState) {
+          failedCases.push({
+            name: example.name,
+            reason: `expected nextState ${expectedState}, got ${gotState}`,
+          });
+        }
+      }
+      const acceptancePassed = acceptanceV2.length - failedCases.length;
+      checks.push({
+        name: "acceptance",
+        passed: failedCases.length === 0,
+        ...(failedCases.length === 0
+          ? {}
+          : {
+              detail: failedCases
+                .map((failure) => `${failure.name}: ${failure.reason}`)
+                .join("; ")
+                .slice(0, 2_000),
+            }),
+      });
+
+      // Empty caller cases cannot certify a module without exercising it —
+      // the same rule the v1 path holds.
+      const determinismInput = acceptanceV2[0]?.input;
+      if (determinismInput === undefined)
+        return yield* failStage(
+          buildId,
+          "at least one independent host acceptance case is required",
+        );
+      const first = yield* sandbox
+        .runEvaluation({
+          files,
+          entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
+          stdinJson: JSON.stringify(determinismInput),
+          decodeResult: decodeDetectorProgramOutputV2,
+        })
+        .pipe(Effect.exit);
+      const second = yield* sandbox
+        .runEvaluation({
+          files,
+          entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
+          stdinJson: JSON.stringify(determinismInput),
+          decodeResult: decodeDetectorProgramOutputV2,
+        })
+        .pipe(Effect.exit);
+      // The double-run covers the WHOLE output JSON: result and nextState
+      // together — a detector whose state drifts is not deterministic.
+      const determinismPassed =
+        first._tag === "Success" &&
+        second._tag === "Success" &&
+        JSON.stringify(first.value) === JSON.stringify(second.value);
+      checks.push({ name: "determinism", passed: determinismPassed });
+
+      const allPassed = failedCases.length === 0 && determinismPassed;
+      if (!allPassed) {
+        return yield* failStage(
+          buildId,
+          failedCases.length > 0
+            ? `acceptance failed: ${failedCases.map((failure) => failure.name).join(", ")}`
+            : "the detector was not deterministic on identical input",
+        );
+      }
+
+      // -- stage the immutable version (READY — installation is separate) ----
+      //
+      // Staging route-around (the role-aware store lands in P4.3): the
+      // current store accepts only a v1-typed version header — an artifacts
+      // array of EXACTLY four entries and a manifest whose schemaVersion is 1
+      // — and re-reads the record through a strict decode. The v2 record
+      // therefore hashes exactly the four required paths (optional artifacts
+      // live in the bundle contents and are covered by bundleSha256) and
+      // carries a v1-decodable header whose description tags the bundle as
+      // detector-program v2. The authoritative v2 manifest stays byte-exact
+      // in contents["manifest.json"]; P4.3 supersedes this scaffolding.
+      const version: ForgeCapabilityVersion = {
+        capabilityId,
+        version: nextVersion,
+        bundleSha256,
+        artifacts: DETECTOR_V2_REQUIRED_HASH_PATHS.map((path) => ({
+          path,
+          sha256: forgeSha256Hex(bundleContents[path] ?? ""),
+          bytes: Buffer.byteLength(bundleContents[path] ?? "", "utf8"),
+        })),
+        manifest: {
+          capabilityId,
+          version: nextVersion,
+          // Forced by the store's v1-typed field (see the note above).
+          schemaVersion: FORGE_SDK_SCHEMA_VERSION,
+          description: `${DETECTOR_V2_MANIFEST_TAG}${manifest.semantics}`,
+        },
+        createdAtMs: Date.now(),
+      };
+      const stagedResult = yield* store
+        .stageVersion(environmentId, version, bundleContents)
+        .pipe(Effect.mapError(toBuilderError));
+      if (stagedResult.status === "refused") {
+        return yield* failStage(buildId, `the store refused the version: ${stagedResult.detail}`);
+      }
+      const ready = yield* store
+        .appendBuildStage({
+          buildId,
+          stage: "ready",
+          detail: `v${nextVersion} sealed and staged; installation is a separate CAS step`,
+          patch: {
+            checks,
+            acceptance: {
+              total: acceptanceV2.length,
+              passed: acceptancePassed,
+              failed: failedCases,
+            },
+            artifactSha256,
+            bundleSha256,
+          },
+        })
+        .pipe(Effect.mapError(toBuilderError));
+      return { build: ready, staged: { version, contents: bundleContents } };
     });
 
   const check: ForgeCapabilityBuilderShape["check"] = ({
@@ -585,6 +1302,7 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
     environmentId,
     stagingDir,
     acceptanceCases,
+    acceptanceV2,
   }) =>
     Effect.gen(function* () {
       const existing = yield* store.getBuild(buildId).pipe(Effect.mapError(toBuilderError));
@@ -618,11 +1336,33 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
         .nextVersion({ environmentId, capabilityId })
         .pipe(Effect.mapError(toBuilderError));
 
-      // -- read and validate the authored workspace --------------------------
+      // -- read the authored workspace (the v1∪v2 name union; which bundle
+      //    this is gets decided immediately after, on the manifest) ----------
       const contents = yield* Effect.tryPromise({
-        try: () => readAuthoringWorkspace(stagingDir),
+        try: () => readAuthoringWorkspace(stagingDir, FORGE_WORKSPACE_READ_PATHS),
         catch: (error) => (error instanceof Error ? error.message : String(error)),
       }).pipe(Effect.catch((reason) => failStage(buildId, `authoring workspace: ${reason}`)));
+
+      // Dispatch on the staged manifest's manifestVersion BEFORE any v1
+      // decode: the v1 ForgeCapabilityManifest filter rejects a v2 manifest,
+      // so the discriminator must be read first (and a v1 manifest, whatever
+      // else it says, keeps running the untouched v1 path below).
+      const manifestPeek: unknown = parseJsonOr(contents["manifest.json"] ?? "", {});
+      const manifestVersion =
+        typeof manifestPeek === "object" && manifestPeek !== null
+          ? (manifestPeek as Record<string, unknown>)["manifestVersion"]
+          : undefined;
+      if (manifestVersion === 2) {
+        return yield* checkDetectorV2({
+          buildId,
+          environmentId,
+          capabilityId,
+          nextVersion,
+          contents,
+          acceptanceV2: acceptanceV2 ?? [],
+        });
+      }
+
       const validated = validateAuthoredArtifacts({
         contents,
         expectedCapabilityId: capabilityId,

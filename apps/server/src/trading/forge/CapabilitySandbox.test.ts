@@ -16,6 +16,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import {
+  DETECTOR_V2_ARTIFACT_ROLES,
+  DetectorProgramOutputV2,
   FORGE_MAX_BUNDLE_BYTES,
   FORGE_SANDBOX_MAX_INPUT_BYTES,
   FORGE_SANDBOX_MAX_OUTPUT_BYTES,
@@ -24,6 +26,7 @@ import {
 
 import {
   dockerRunArgv,
+  FORGE_DETECTOR_BUNDLE_PATHS,
   ForgeCapabilitySandbox,
   ForgeCapabilitySandboxLive,
   type ForgeCapabilitySandboxShape,
@@ -356,4 +359,130 @@ it("returns a typed refusal when the host decoder rejects output", async () => {
     }),
   );
   assert.equal(result.kind, "invalid_result");
+});
+
+describe("detector-program (v2) runs", () => {
+  const v2Files = [
+    { path: "detector.ts", content: "export const detect = 1;" },
+    { path: "detector.test.ts", content: "export const t = 1;" },
+    { path: "manifest.json", content: "{}" },
+  ];
+  const v2Output = JSON.stringify({
+    result: { status: "not-matched", evidenceIds: [], explanation: "fixture" },
+    nextState: { count: 1 },
+  });
+  const v2Input = JSON.stringify({
+    programSchemaVersion: 2,
+    asOfMs: 1,
+    inputDigest: "b".repeat(64),
+    facts: [],
+    sources: [],
+  });
+
+  it("derives the v2 path vocabulary from the artifact roles, without the host sdk", () => {
+    assert.include(FORGE_DETECTOR_BUNDLE_PATHS, "manifest.json");
+    assert.include(FORGE_DETECTOR_BUNDLE_PATHS, "detector.ts");
+    assert.include(FORGE_DETECTOR_BUNDLE_PATHS, "detector.test.ts");
+    assert.include(FORGE_DETECTOR_BUNDLE_PATHS, "transform.ts");
+    assert.include(FORGE_DETECTOR_BUNDLE_PATHS, "query.graphql");
+    assert.notInclude(FORGE_DETECTOR_BUNDLE_PATHS, "sdk.ts");
+    // The role mapping the paths come from is the contracts' own, unchanged.
+    assert.deepEqual(
+      [...new Set(Object.values(DETECTOR_V2_ARTIFACT_ROLES).map((role) => role.path))].sort(),
+      [
+        "detector.test.ts",
+        "detector.ts",
+        "policy.ts",
+        "query.graphql",
+        "sdk.ts",
+        "state-schema.ts",
+        "transform.ts",
+      ],
+    );
+  });
+
+  it("stages the v2 file set and dispatches the forge-evaluate-v2 entrypoint", async () => {
+    const runner = makeScriptedRunner({
+      "forge-evaluate-v2": Effect.succeed({
+        exitCode: 0,
+        stdout: v2Output,
+        stderr: "",
+        killed: null,
+      }),
+    });
+    const sandbox = await sandboxWith(runner);
+    const decoded = (await Effect.runPromise(
+      sandbox.runEvaluation({
+        files: v2Files,
+        entrypoint: ["forge-evaluate-v2"],
+        stdinJson: v2Input,
+        decodeResult: Schema.decodeUnknownSync(DetectorProgramOutputV2),
+      }),
+    )) as { readonly result: { readonly status: string }; readonly nextState: unknown };
+    assert.equal(decoded.result.status, "not-matched");
+    assert.deepEqual(decoded.nextState, { count: 1 });
+    assert.equal(runner.requests.length, 1);
+    const request = runner.requests[0];
+    assert.equal(request?.entrypoint[0], "forge-evaluate-v2");
+    assert.deepEqual(
+      request?.files.map((file) => file.path),
+      ["detector.ts", "detector.test.ts", "manifest.json"],
+    );
+    // The evaluation budget and output cap are the same as v1 runs.
+    assert.equal(request?.timeoutMs, 2_000);
+    assert.equal(request?.outputLimitBytes, FORGE_SANDBOX_MAX_OUTPUT_BYTES);
+  });
+
+  it("build steps mount the v2 file set with the host sdk beside it, on the build budget", async () => {
+    const runner = makeScriptedRunner({
+      "forge-typecheck": Effect.succeed({ exitCode: 0, stdout: "", stderr: "", killed: null }),
+    });
+    const sandbox = await sandboxWith(runner);
+    await Effect.runPromise(
+      sandbox.runBuildStep({
+        files: [...v2Files, { path: "sdk.ts", content: "export const x = 1;" }],
+        entrypoint: ["forge-typecheck"],
+      }),
+    );
+    const request = runner.requests[0];
+    assert.isDefined(request);
+    assert.deepEqual(request?.files.map((file) => file.path).sort(), [
+      "detector.test.ts",
+      "detector.ts",
+      "manifest.json",
+      "sdk.ts",
+    ]);
+    assert.equal(request?.timeoutMs, 30_000);
+  });
+
+  it("still enforces the bundle byte cap over the v2 path vocabulary", async () => {
+    const runner = makeScriptedRunner();
+    const sandbox = await sandboxWith(runner);
+    const failure = await expectFailure(
+      sandbox.runBuildStep({
+        files: [{ path: "detector.ts", content: "x".repeat(FORGE_MAX_BUNDLE_BYTES + 1) }],
+        entrypoint: ["forge-typecheck"],
+      }),
+    );
+    assert.equal(failure.kind, "invalid_request");
+    assert.include(failure.reason, "detector bundle");
+    assert.isEmpty(runner.requests);
+  });
+
+  it("still enforces the stdin cap and the total file-set cap on v2 inputs", async () => {
+    const runner = makeScriptedRunner();
+    const sandbox = await sandboxWith(runner);
+    const stdinFailure = await expectFailure(
+      sandbox.runEvaluation({
+        files: v2Files,
+        entrypoint: ["forge-evaluate-v2"],
+        // Valid JSON, so the parse pre-check passes and the byte cap is what refuses.
+        stdinJson: JSON.stringify({ pad: "x".repeat(FORGE_SANDBOX_MAX_INPUT_BYTES) }),
+        decodeResult: Schema.decodeUnknownSync(DetectorProgramOutputV2),
+      }),
+    );
+    assert.equal(stdinFailure.kind, "invalid_request");
+    assert.include(stdinFailure.reason, "input cap");
+    assert.isEmpty(runner.requests);
+  });
 });

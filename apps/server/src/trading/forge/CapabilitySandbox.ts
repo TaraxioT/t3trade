@@ -31,6 +31,7 @@ import { execFile, spawn } from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 
 import {
+  DETECTOR_V2_ARTIFACT_ROLES,
   FORGE_CAPABILITY_ARTIFACT_PATHS,
   FORGE_MAX_BUNDLE_BYTES,
   FORGE_SANDBOX_BUILD_BUDGET_MS,
@@ -428,6 +429,22 @@ export function isSafeSandboxPath(path: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(path) && !path.includes("..");
 }
 
+/**
+ * The detector-program (v2) bundle's authored path vocabulary: every v2
+ * artifact role's declared path except the host-mounted `sdk.ts`, plus
+ * `manifest.json`. The v1 four-path cap stays untouched beside it; a v2 file
+ * set gets the same byte ceiling over its own names. The v1 constant is never
+ * widened — a v1 bundle remains exactly the four files it always was.
+ */
+export const FORGE_DETECTOR_BUNDLE_PATHS: ReadonlyArray<string> = [
+  ...new Set([
+    "manifest.json",
+    ...Object.values(DETECTOR_V2_ARTIFACT_ROLES)
+      .map((role) => role.path)
+      .filter((path) => path !== "sdk.ts"),
+  ]),
+].sort();
+
 export interface ForgeSandboxRunOutcome {
   readonly exitCode: number;
   readonly stdout: string;
@@ -500,6 +517,20 @@ export const makeForgeCapabilitySandbox = Effect.gen(function* () {
         return yield* fail({
           kind: "invalid_request",
           reason: `the four artifacts total ${artifactBytes} bytes, over the ${FORGE_MAX_BUNDLE_BYTES} byte bundle cap`,
+        });
+      }
+      // Detector-program (v2) bundles carry their own path vocabulary under the
+      // same byte ceiling. Additive beside the v1 check: a v1 file set never
+      // trips it (its v2-named bytes are a subset of its v1-capped bytes), and
+      // the host-mounted sdk.ts stays under the total cap below, exactly as in
+      // the v1 runs.
+      const detectorBytes = input.files
+        .filter((file) => (FORGE_DETECTOR_BUNDLE_PATHS as readonly string[]).includes(file.path))
+        .reduce((sum, file) => sum + Buffer.byteLength(file.content, "utf8"), 0);
+      if (detectorBytes > FORGE_MAX_BUNDLE_BYTES) {
+        return yield* fail({
+          kind: "invalid_request",
+          reason: `the detector bundle totals ${detectorBytes} bytes, over the ${FORGE_MAX_BUNDLE_BYTES} byte bundle cap`,
         });
       }
       const totalBytes = input.files.reduce(

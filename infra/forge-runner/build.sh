@@ -140,7 +140,8 @@ echo "export T3_FORGE_SANDBOX_RUNNER=docker"
 
 if [ "$SMOKE" -eq 1 ]; then
   smoke_dir=$(mktemp -d "${TMPDIR:-/tmp}/forge-runner-smoke.XXXXXX")
-  trap 'rm -rf "$smoke_dir"' EXIT INT TERM
+  smoke_v2_dir=$(mktemp -d "${TMPDIR:-/tmp}/forge-runner-smoke-v2.XXXXXX")
+  trap 'rm -rf "$smoke_dir" "$smoke_v2_dir"' EXIT INT TERM
 
   # Fixtures consistent with runner.cjs: tsc --strict over sdk.ts, signal.ts
   # (+ signal.test.ts except for evaluate); forge-test requires at least one
@@ -232,6 +233,84 @@ EOF
   # shellcheck disable=SC2086
   docker run --rm --pull never $run_args "$image_ref" forge-typecheck < /dev/null ||
     die "smoke failed: the server's image ref '$image_ref' did not resolve locally with --pull never"
+
+  # -- v2 detector-program fixtures: sdk.ts + detector.ts + detector.test.ts.
+  # forge-evaluate-v2 compiles the same set minus the test file, reads a
+  # DetectorProgramInput JSON from stdin, and must echo {result, nextState}.
+  cat >"$smoke_v2_dir/sdk.ts" <<'EOF'
+export type CapturedFact = {
+  readonly id: string;
+  readonly key: string;
+  readonly entityId: string;
+  readonly value: { readonly kind: "boolean"; readonly value: boolean };
+  readonly evidence: ReadonlyArray<{ readonly id: string }>;
+};
+export type SealedSourceRecord = { readonly sourceId: string; readonly complete: boolean };
+export type DetectorProgramInput = {
+  readonly programSchemaVersion: 2;
+  readonly asOfMs: number;
+  readonly inputDigest: string;
+  readonly facts: ReadonlyArray<CapturedFact>;
+  readonly sources: ReadonlyArray<SealedSourceRecord>;
+  readonly priorState?: unknown;
+};
+export type DetectionResult =
+  | { readonly status: "matched"; readonly occurrenceKey: string; readonly evidenceIds: ReadonlyArray<string>; readonly facts: ReadonlyArray<CapturedFact>; readonly validUntilMs: number }
+  | { readonly status: "not-matched"; readonly evidenceIds: ReadonlyArray<string>; readonly explanation: string }
+  | { readonly status: "unknown"; readonly missingSourceIds: ReadonlyArray<string>; readonly explanation: string };
+export type DetectorProgramOutput = { readonly result: DetectionResult; readonly nextState: unknown };
+export type Detect = (input: DetectorProgramInput) => DetectorProgramOutput;
+const registeredTests: Array<() => void | Promise<void>> = [];
+export function test(_name: string, body: () => void | Promise<void>): void {
+  registeredTests.push(body);
+}
+export async function runRegisteredTests(): Promise<number> {
+  for (const body of registeredTests) await body();
+  return registeredTests.length;
+}
+EOF
+  cat >"$smoke_v2_dir/detector.ts" <<'EOF'
+import type { Detect, DetectorProgramInput, DetectorProgramOutput } from "./sdk";
+export const detect: Detect = (input: DetectorProgramInput): DetectorProgramOutput => ({
+  result: { status: "not-matched", evidenceIds: [], explanation: "smoke" },
+  nextState: { runs: 1 },
+});
+EOF
+  cat >"$smoke_v2_dir/detector.test.ts" <<'EOF'
+import { test } from "./sdk";
+import { detect } from "./detector";
+test("smoke detect exists", () => {
+  if (detect === undefined) throw new Error("detect missing");
+});
+EOF
+  cat >"$smoke_v2_dir/evaluate-v2-input.json" <<'EOF'
+{"programSchemaVersion":2,"asOfMs":1,"inputDigest":"b","facts":[],"sources":[{"sourceId":"src_graph_1","complete":true}]}
+EOF
+  chmod -R a+rX "$smoke_v2_dir"
+
+  run_args_v2="--rm --network none --read-only --cap-drop ALL
+    --security-opt no-new-privileges --user 65534:65534 --memory 512m --cpus 1
+    --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m
+    --mount type=bind,source=$smoke_v2_dir,target=/work,readonly
+    --workdir /work --env HOME=/tmp"
+
+  echo
+  echo "==> smoke: forge-evaluate-v2"
+  # shellcheck disable=SC2086
+  docker run $run_args_v2 "$IMAGE_TAG" forge-typecheck < /dev/null ||
+    die "smoke failed: v2 forge-typecheck exited nonzero"
+  out=$(docker run $run_args_v2 "$IMAGE_TAG" forge-test < /dev/null) ||
+    die "smoke failed: v2 forge-test exited nonzero"
+  case "$out" in
+    *'"testsPassed":'*) ;;
+    *) die "smoke failed: v2 forge-test printed no testsPassed JSON (got '$out')" ;;
+  esac
+  out=$(docker run $run_args_v2 "$IMAGE_TAG" forge-evaluate-v2 < "$smoke_v2_dir/evaluate-v2-input.json") ||
+    die "smoke failed: forge-evaluate-v2 exited nonzero"
+  case "$out" in
+    '{'*) echo "    forge-evaluate-v2: $out" ;;
+    *) die "smoke failed: forge-evaluate-v2 printed no JSON (got '$out')" ;;
+  esac
 
   echo
   echo "==> smoke passed"

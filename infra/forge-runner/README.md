@@ -53,6 +53,23 @@ read-only workdir mount):
 - the printed `name@sha256:<digest>` ref resolves locally under
   `--pull never`.
 
+## Detector-program (v2) modes
+
+`forge-evaluate-v2` is a fourth shim installed beside the v1 three: it reads a
+sealed detector-program input JSON (`DetectorProgramInputV2`) from stdin,
+requires the compiled `detector.ts`, and calls its exported `detect` — which
+must be synchronous; an async return or a missing export is a named error, the
+same guard style as the v1 `readSignal` check. `forge-typecheck` and
+`forge-test` are shared between bundle generations: the compile set is
+discovered from the mounted `/work` directory (every `*.ts`, with `*.test.ts`
+excluded in the evaluate modes), and the test entry follows whichever of
+`detector.test.ts` / `signal.test.ts` the bundle authored. Because the image
+contents changed, the already-built image behind `T3_FORGE_SANDBOX_IMAGE` does
+NOT pick these modes up: rebuild with `build.sh` against the same reviewed base
+digest and re-pin the printed `t3-forge-runner@sha256:<digest>` before any
+v2 capability runs — the server refuses v2 entrypoints against an old image
+with a plain `nonzero_exit`/`invalid_request` failure, never a fallback.
+
 ## No model-authored Dockerfile is ever built
 
 The only Dockerfile in play is the host-reviewed one in this directory, fed a
