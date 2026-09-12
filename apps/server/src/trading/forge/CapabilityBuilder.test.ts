@@ -16,6 +16,9 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as NodeFs from "node:fs/promises";
 import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
@@ -716,3 +719,44 @@ describe("check", () => {
     }
   });
 });
+
+it.effect("bounds the complete check pipeline and records a failed build", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() =>
+      NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "forge-builder-budget-")),
+    );
+    const staging = yield* Effect.promise(() => writeWorkspace(goodArtifacts(1)));
+    const started = yield* Deferred.make<void>();
+    const runner: ForgeContainerRunnerShape = {
+      available: Effect.succeed(true),
+      run: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+    };
+    const builder = yield* Effect.promise(() => builderWith(runner, root));
+    const prepared = yield* builder.prepare({
+      environmentId: ENV,
+      capabilityId: CAPABILITY,
+      requestedSemantics: "detect coordinated moves",
+      stagingDir: staging,
+    });
+    const check = yield* builder
+      .check({
+        buildId: prepared.build.buildId,
+        environmentId: ENV,
+        stagingDir: staging,
+        acceptanceCases: [],
+      })
+      .pipe(Effect.exit, Effect.forkChild);
+    yield* Deferred.await(started);
+    yield* TestClock.adjust("30 seconds");
+    const outcome = yield* Fiber.join(check);
+    assert.equal(outcome._tag, "Failure");
+    const store = yield* Effect.promise(() => storeAt(root));
+    assert.equal((yield* store.getBuild(prepared.build.buildId))?.stage, "failed");
+    yield* Effect.promise(() =>
+      Promise.all([
+        NodeFs.rm(root, { recursive: true, force: true }),
+        NodeFs.rm(staging, { recursive: true, force: true }),
+      ]),
+    );
+  }),
+);

@@ -298,7 +298,7 @@ export const makeDockerContainerRunner = (
 ): ForgeContainerRunnerShape => {
   const run: ForgeContainerRunnerShape["run"] = (request) =>
     Effect.tryPromise({
-      try: async (): Promise<ForgeContainerRunResult> => {
+      try: async (signal): Promise<ForgeContainerRunResult> => {
         const os = await import("node:os");
         const fs = await import("node:fs/promises");
         const path = await import("node:path");
@@ -326,6 +326,11 @@ export const makeDockerContainerRunner = (
             }),
           ];
           argv.splice(1, 0, "--name", containerName);
+          if (signal.aborted)
+            throw new ForgeSandboxError({
+              kind: "timeout",
+              reason: "sandbox run was interrupted before launch",
+            });
           return await new Promise<ForgeContainerRunResult>((resolve, reject) => {
             const child = spawn("docker", argv, {
               env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
@@ -340,6 +345,9 @@ export const makeDockerContainerRunner = (
               killed = reason;
               child.kill("SIGKILL");
             };
+            const onAbort = () => stop("timeout");
+            signal.addEventListener("abort", onAbort, { once: true });
+            if (signal.aborted) onAbort();
             const timer = setTimeout(() => stop("timeout"), request.timeoutMs);
             const capture = (destination: Buffer[], chunk: Buffer) => {
               size += chunk.length;
@@ -351,10 +359,12 @@ export const makeDockerContainerRunner = (
             child.stdin.on("error", () => {}); // A failed container may close stdin early.
             child.once("error", (error) => {
               clearTimeout(timer);
+              signal.removeEventListener("abort", onAbort);
               reject(error);
             });
             child.once("close", (code) => {
               clearTimeout(timer);
+              signal.removeEventListener("abort", onAbort);
               resolve({
                 exitCode: code,
                 stdout: Buffer.concat(stdout).toString("utf8"),

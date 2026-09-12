@@ -43,6 +43,7 @@ import {
   FORGE_MAX_BUNDLE_BYTES,
   FORGE_MAX_SEMANTICS_CHARS,
   FORGE_SDK_SCHEMA_VERSION,
+  FORGE_SANDBOX_BUILD_BUDGET_MS,
   ForgeCapabilityManifest,
   ForgeSignalOutput,
   type ForgeAcceptanceCase,
@@ -797,7 +798,13 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(toBuilderError));
       return { build: ready, staged: { version, contents } };
-    });
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: `${FORGE_SANDBOX_BUILD_BUDGET_MS} millis`,
+        orElse: () =>
+          failStage(buildId, "the complete build/check pipeline exceeded its wall-clock budget"),
+      }),
+    );
 
   return { prepare, check } satisfies ForgeCapabilityBuilderShape;
 });
