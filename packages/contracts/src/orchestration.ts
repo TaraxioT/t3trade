@@ -52,6 +52,7 @@ import {
   TradingManualCloseResult,
   TradingChartInterval,
   TradingChartRange,
+  TradingChartCandle,
   TradingMarketChartView,
   OrchestrationReviseTradingPlanInput,
   OrchestrationReviseTradingPlanResult,
@@ -116,6 +117,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getTradingUniverse: "orchestration.getTradingUniverse",
   getTradingAccountView: "orchestration.getTradingAccountView",
   getTradingMarketChart: "orchestration.getTradingMarketChart",
+  getTradingGraphDatasetCandles: "orchestration.getTradingGraphDatasetCandles",
   getTradingResearchScenes: "orchestration.getTradingResearchScenes",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
   activateTradingPlanDocument: "orchestration.activateTradingPlanDocument",
@@ -871,6 +873,53 @@ export const TradingResearchScenesView = Schema.Struct({
   scenes: Schema.Array(ResearchSceneView),
 });
 export type TradingResearchScenesView = typeof TradingResearchScenesView.Type;
+
+/**
+ * Input for `getTradingGraphDatasetCandles`: one immutable retained Graph
+ * dataset, aggregated to candles at a chart interval.
+ *
+ * `datasetId` is the retained evidence id the scene's `graphDataset` carries.
+ * `startTime`/`endTime` are epoch millis bounding the served candle window (a
+ * research view's occurrence window); each is honoured independently, and both
+ * omitted serves the dataset's full span. `maxBars` asks for a wider (or
+ * narrower) window than the default; the server clamps it to the same cap the
+ * market chart read uses, so this RPC cannot become a bulk history export.
+ */
+export const OrchestrationGetTradingGraphDatasetCandlesInput = Schema.Struct({
+  datasetId: TrimmedNonEmptyString,
+  interval: TradingChartInterval,
+  startTime: Schema.optional(Schema.Number),
+  endTime: Schema.optional(Schema.Number),
+  maxBars: Schema.optional(PositiveInt),
+});
+export type OrchestrationGetTradingGraphDatasetCandlesInput =
+  typeof OrchestrationGetTradingGraphDatasetCandlesInput.Type;
+
+/**
+ * Candles aggregated from one immutable dataset's retained pinned swap
+ * observations — the prices a Graph-priced study actually measured, never
+ * Hyperliquid's record of the market.
+ *
+ * Sparse buckets produce no candle: a bucket with no swaps is a gap, not a
+ * flat bar. No mark/funding/OI figures exist for a historical dataset and
+ * none are fabricated — the view carries candles and coverage only.
+ * `quoteSymbol` is display metadata resolved from the configured vetted pools
+ * and MAY be `""` when the pool is no longer configured. `coverageFromMs`/
+ * `coverageToMs` are the DATASET's full span (not the served window's), so a
+ * bounded request or a `maxBars` cap is distinguishable from what the dataset
+ * holds; `rows` is the dataset's own retained observation count.
+ */
+export const TradingGraphDatasetCandlesView = Schema.Struct({
+  datasetId: Schema.String,
+  poolId: Schema.String,
+  quoteSymbol: Schema.String,
+  interval: TradingChartInterval,
+  candles: Schema.Array(TradingChartCandle),
+  coverageFromMs: Schema.Number,
+  coverageToMs: Schema.Number,
+  rows: NonNegativeInt,
+});
+export type TradingGraphDatasetCandlesView = typeof TradingGraphDatasetCandlesView.Type;
 
 /**
  * Bounds a thread detail read to a window of recent turns. `turnLimit` counts
@@ -2594,6 +2643,10 @@ export const OrchestrationRpcSchemas = {
   getTradingMarketChart: {
     input: OrchestrationGetTradingMarketChartInput,
     output: TradingMarketChartView,
+  },
+  getTradingGraphDatasetCandles: {
+    input: OrchestrationGetTradingGraphDatasetCandlesInput,
+    output: TradingGraphDatasetCandlesView,
   },
   getTradingResearchScenes: {
     input: OrchestrationGetTradingResearchScenesInput,

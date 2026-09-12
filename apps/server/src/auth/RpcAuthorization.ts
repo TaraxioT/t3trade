@@ -30,6 +30,9 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTradingMarketChart]: AuthOrchestrationReadScope,
+  // Dataset candles are a research read over retained evidence: no signer, no
+  // mission, no exchange call — the same read scope as the chart beside it.
+  [ORCHESTRATION_WS_METHODS.getTradingGraphDatasetCandles]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTradingUniverse]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTradingAccountView]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.subscribeTradingAccount]: AuthOrchestrationReadScope,

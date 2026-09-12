@@ -484,7 +484,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // read models. SQL + its own HTTP transport only — nothing here can reach
   // an order, a signer, or Hyperliquid, so mounting it changes no trading
   // guard. One shared source/store instance feeds the reads and any later
-  // Forge consumer.
+  // Forge consumer. ForgeGraphConfig is exposed ambiently too (stateless
+  // per-call env resolution) for the WS read that labels a retained
+  // dataset's quote symbol without touching the source itself.
+  ForgeGraphConfigLive,
   forgeGraphSource,
   forgeStore,
   forgeBuilder,

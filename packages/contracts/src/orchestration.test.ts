@@ -16,6 +16,8 @@ import {
   OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTradingMarketChartInput,
+  OrchestrationGetTradingGraphDatasetCandlesInput,
+  TradingGraphDatasetCandlesView,
   OrchestrationGetForgePoolSeriesInput,
   OrchestrationGetForgeEvidenceInput,
   OrchestrationGetTurnDiffInput,
@@ -1316,6 +1318,63 @@ it.effect("the chart interval accepts 1w/1mo while the backtest interval stays c
       const rejected = yield* Effect.exit(decodeBacktestInterval(chartOnly));
       assert.strictEqual(rejected._tag, "Failure");
     }
+  }),
+);
+
+// -- the graph-dataset candle read (Graph-priced research scenes) --------------
+
+const decodeGraphDatasetCandlesInput = Schema.decodeUnknownEffect(
+  OrchestrationGetTradingGraphDatasetCandlesInput,
+);
+const decodeGraphDatasetCandlesView = Schema.decodeUnknownEffect(TradingGraphDatasetCandlesView);
+
+it.effect("decodes the graph-dataset candle input and output round-trip", () =>
+  Effect.gen(function* () {
+    const input = yield* decodeGraphDatasetCandlesInput({
+      datasetId: " ds-capture-1 ",
+      interval: "1h",
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_000_360_000,
+      maxBars: 240,
+    });
+    assert.strictEqual(input.datasetId, "ds-capture-1");
+    assert.strictEqual(input.interval, "1h");
+    assert.strictEqual(input.maxBars, 240);
+    // Optionality idiom matches the market chart input: every bound may be
+    // omitted, and an omitted field stays undefined rather than defaulting.
+    const bare = yield* decodeGraphDatasetCandlesInput({ datasetId: "ds", interval: "1m" });
+    assert.strictEqual(bare.startTime, undefined);
+    assert.strictEqual(bare.endTime, undefined);
+    assert.strictEqual(bare.maxBars, undefined);
+    // Wrong shapes refuse: an unknown interval, a blank dataset id, and a
+    // non-positive bar cap never decode.
+    for (const garbage of [
+      { datasetId: "ds", interval: "2h" },
+      { datasetId: "  ", interval: "1m" },
+      { datasetId: "ds", interval: "1m", maxBars: 0 },
+    ]) {
+      const rejected = yield* Effect.exit(decodeGraphDatasetCandlesInput(garbage));
+      assert.strictEqual(rejected._tag, "Failure");
+    }
+    // The view round-trips: sparse candles stay sparse (two buckets served of
+    // a wider span), coverage is the dataset's own span, and quoteSymbol may
+    // be empty when the pool is no longer configured.
+    const view = yield* decodeGraphDatasetCandlesView({
+      datasetId: "ds-capture-1",
+      poolId: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+      quoteSymbol: "",
+      interval: "1h",
+      candles: [
+        { openTime: 1_700_000_000_000, open: 1.5, high: 1.6, low: 1.4, close: 1.55, volume: 12.5 },
+        { openTime: 1_700_000_720_000, open: 1.55, high: 1.7, low: 1.5, close: 1.65, volume: 3 },
+      ],
+      coverageFromMs: 1_699_999_000_000,
+      coverageToMs: 1_700_001_000_000,
+      rows: 4_096,
+    });
+    assert.strictEqual(view.candles.length, 2);
+    assert.strictEqual(view.rows, 4_096);
+    assert.strictEqual(view.coverageFromMs, 1_699_999_000_000);
   }),
 );
 

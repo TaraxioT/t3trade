@@ -102,7 +102,13 @@ import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
 import { FeePolicyService } from "./trading/forge/FeePolicyService.ts";
 import { ForgeCapabilityStore } from "./trading/forge/CapabilityStore.ts";
 import { ForgeSourceReads } from "./trading/forge/ForgeSourceReads.ts";
+import { ForgeSourceStore, makeForgeSourceStore } from "./trading/forge/ForgeSourceStore.ts";
+import { ForgeGraphConfig } from "./trading/forge/GraphSource.ts";
+import createEvidenceTable from "./persistence/Migrations/101_ForgeSourceEvidence.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
+  buildTradingGraphDatasetCandlesView,
   isThreadDetailEvent,
   resolveAvailableEditorsForConfig,
   resolveFileManagerRevealKindForConfig,
@@ -528,11 +534,15 @@ const makeBrowserOtlpPayload = (spanName: string) =>
 
 // The Forge bridge services the WS surface requires; these seam tests do not
 // exercise Forge behavior, so every member is the mock's loud unimplemented
-// defect if one is reached.
+// defect if one is reached. The graph settings resolve honestly
+// unconfigured — the live shape when no Forge env vars are set — so the
+// dataset quote symbol resolves to "" rather than a guess.
 const forgeBridgeMockLayer = Layer.mergeAll(
   Layer.mock(FeePolicyService)({}),
   Layer.mock(ForgeCapabilityStore)({}),
   Layer.mock(ForgeSourceReads)({}),
+  Layer.mock(ForgeSourceStore)({}),
+  Layer.mock(ForgeGraphConfig)({ resolve: Effect.succeed({ configured: false }) }),
 );
 
 const buildAppUnderTest = (options?: {
@@ -4434,6 +4444,160 @@ it.layer(Layer.mergeAll(NodeServices.layer, forgeBridgeMockLayer))("server route
       );
       assert.equal(rpcError._tag, "OrchestrationGetSnapshotError");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "serves candles from a retained graph dataset and refuses foreign or truncated rows",
+    () =>
+      Effect.gen(function* () {
+        // The dataset-candle handler's pure seam over a REAL evidence store on
+        // a memory sqlite, seeded through the store's own insert: the row, the
+        // payload, and the read-back path are exactly what production serves.
+        yield* createEvidenceTable;
+        const store = yield* makeForgeSourceStore;
+        const poolId = "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640" as const;
+        // An hour-aligned epoch second, so the 1h buckets open exactly at the
+        // window bounds the assertions name.
+        const t0 = 1_699_999_200;
+        const observation = (offsetSeconds: number, logIndex: number) => ({
+          chain: "ethereum-mainnet" as const,
+          poolId,
+          observationId: `obs-${offsetSeconds}-${logIndex}`,
+          transactionHash: `0x${`${logIndex}${offsetSeconds}`.padStart(64, "0")}`,
+          logIndex,
+          timestamp: t0 + offsetSeconds,
+          sender: "0xsender",
+          recipient: "0xrecipient",
+          amount0: "-1000000",
+          amount1: "2000000000000000000",
+          sqrtPriceX96: "1234567890123456789012345",
+          tick: 12,
+          baseIsToken1: true,
+          priceQuotePerBase: { numerator: "2000000", denominator: "1000000" },
+          priceQuotePerBaseMicros: 2_000_000,
+          quoteVolumeRaw: "1000000",
+          quoteVolumeMicros: 1_000_000,
+        });
+        // Two swaps in the first hour, none in the second, one in the third: a
+        // 1h aggregation serves two candles and the empty middle hour stays
+        // empty — sparse buckets produce no candle, never a flat bar.
+        const observations = [observation(0, 0), observation(300, 1), observation(2 * 3600, 2)];
+        const record = {
+          evidenceId: "ds-test-1",
+          environmentId: "env-test",
+          poolId,
+          historical: true,
+          endpoint: "https://graph.example",
+          deployment: "deployment",
+          pinnedBlock: 100,
+          pinnedBlockHash: "hash",
+          windowStart: t0,
+          windowEnd: t0 + 3 * 3600,
+          fetchedAtMs: (t0 + 3 * 3600) * 1000,
+          digest: "digest",
+          observationCount: observations.length,
+        };
+        yield* store.insert({ record, observations });
+        const read = yield* store.readObservations("ds-test-1");
+        assert.ok(read !== null);
+
+        const hourMs = 3_600_000;
+
+        // Full span: two sparse-preserving candles.
+        const full = buildTradingGraphDatasetCandlesView({
+          environmentId: "env-test",
+          datasetId: "ds-test-1",
+          interval: "1h",
+          evidence: read,
+          quoteSymbol: "USDC",
+        });
+        assert.ok("view" in full);
+        if (!("view" in full)) return;
+        assert.equal(full.view.candles.length, 2);
+        // Coverage is the DATASET's span, not the served bars', and rows is the
+        // dataset's own observation count.
+        assert.equal(full.view.coverageFromMs, t0 * 1000);
+        assert.equal(full.view.coverageToMs, (t0 + 3 * 3600) * 1000);
+        assert.equal(full.view.rows, 3);
+        assert.equal(full.view.poolId, poolId);
+        assert.equal(full.view.quoteSymbol, "USDC");
+
+        // Windowed: only the first hour asked, one candle served, and the
+        // bucket's volume is its summed quote leg in whole units (two micro
+        // swaps of 1 USDC each — the display tier the archive candle carries).
+        const windowed = buildTradingGraphDatasetCandlesView({
+          environmentId: "env-test",
+          datasetId: "ds-test-1",
+          interval: "1h",
+          startTime: t0 * 1000,
+          endTime: t0 * 1000 + hourMs,
+          evidence: read,
+          quoteSymbol: "USDC",
+        });
+        assert.ok("view" in windowed);
+        if (!("view" in windowed)) return;
+        assert.equal(windowed.view.candles.length, 1);
+        assert.equal(windowed.view.candles[0]?.volume, 2);
+        // The window does not shrink the reported coverage.
+        assert.equal(windowed.view.coverageToMs, (t0 + 3 * 3600) * 1000);
+
+        // Another environment's dataset refuses, named as such.
+        const foreign = buildTradingGraphDatasetCandlesView({
+          environmentId: "env-other",
+          datasetId: "ds-test-1",
+          interval: "1h",
+          evidence: read,
+          quoteSymbol: "",
+        });
+        assert.ok("refusal" in foreign);
+        if ("refusal" in foreign) {
+          assert.include(foreign.refusal, "belongs to another environment");
+        }
+
+        // An unresolvable quote symbol stays "" — display metadata, never a guess.
+        const unlabeled = buildTradingGraphDatasetCandlesView({
+          environmentId: "env-test",
+          datasetId: "ds-test-1",
+          interval: "1h",
+          evidence: read,
+          quoteSymbol: "",
+        });
+        assert.ok("view" in unlabeled);
+        if ("view" in unlabeled) assert.equal(unlabeled.view.quoteSymbol, "");
+
+        // A truncated payload (claimed count above the decoded length) is a
+        // refusal naming both numbers — never a partial series.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE forge_source_evidence SET observation_count = observation_count + 2 WHERE evidence_id = ${"ds-test-1"}`;
+        const truncatedRead = yield* store.readObservations("ds-test-1");
+        assert.ok(truncatedRead !== null);
+        const truncated = buildTradingGraphDatasetCandlesView({
+          environmentId: "env-test",
+          datasetId: "ds-test-1",
+          interval: "1h",
+          evidence: truncatedRead,
+          quoteSymbol: "USDC",
+        });
+        assert.ok("refusal" in truncated);
+        if ("refusal" in truncated) {
+          assert.include(truncated.refusal, "incomplete");
+          assert.include(truncated.refusal, "5 observations but 3 decoded");
+        }
+
+        // A dataset id nothing retains names the id in its refusal.
+        const missing = buildTradingGraphDatasetCandlesView({
+          environmentId: "env-test",
+          datasetId: "ds-not-retained",
+          interval: "1h",
+          evidence: null,
+          quoteSymbol: "",
+        });
+        assert.ok("refusal" in missing);
+        if ("refusal" in missing) {
+          assert.include(missing.refusal, "ds-not-retained");
+          assert.include(missing.refusal, "not retained");
+        }
+      }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
   );
 
   it.effect("refuses a plan revision for a mission that does not exist", () =>

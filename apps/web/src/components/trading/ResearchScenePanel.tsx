@@ -28,6 +28,7 @@ import { Button } from "../ui/button";
 import { MissionPriceChart } from "./MissionPriceChart";
 import type { ChartInterval, ChartWindow } from "../../lib/tradingMarketChartState";
 import { useTradingMarketChart } from "../../lib/tradingMarketChartState";
+import { useTradingGraphDatasetCandles } from "../../lib/tradingDatasetCandlesState";
 import {
   PER_NOTIONAL_ILLUSTRATION_LABEL,
   RESEARCH_DISCLAIMER,
@@ -83,6 +84,54 @@ const NOTIONAL_DEFAULT = 1_000;
 
 /** Bars of context on each side of a measured occurrence window (shared with the chart cap). */
 const CONTEXT_BARS = STUDY_CHART_CONTEXT_BARS;
+
+/**
+ * The dataset identity a Graph-priced scene carries: the immutable retained
+ * capture its bars were computed from. Null on archive scenes — and on Graph
+ * scenes published without one, which keep the honest refusal.
+ */
+type GraphDatasetIdentity = NonNullable<EventStudyScenePayload["graphDataset"]>;
+
+/**
+ * The source badge a dataset-backed view draws beside its prices: the quote
+ * symbol (when the pool is still configured) and a short dataset id, so what
+ * is on the stage visibly comes from the dataset, not the exchange archive.
+ */
+const datasetBadgeText = (datasetId: string, quoteSymbol: string): string => {
+  const shortId = datasetId.length > 12 ? `${datasetId.slice(0, 12)}…` : datasetId;
+  return quoteSymbol === "" ? `${shortId} · The Graph` : `${quoteSymbol} · ${shortId} · The Graph`;
+};
+
+/** The named error a dataset-backed view renders instead of any fallback chart. */
+const DatasetErrorNote = () => (
+  <div
+    className="flex flex-1 items-center justify-center px-2 text-center text-xs text-red-600 dark:text-red-400"
+    data-testid="research-dataset-error"
+  >
+    dataset read failed — the dataset&apos;s prices are unavailable, and the exchange archive is not
+    substituted for them
+  </div>
+);
+
+/** The named empty a dataset-backed view renders when no swaps bucketed in the window. */
+const DatasetEmptyNote = () => (
+  <div
+    className="flex flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground"
+    data-testid="research-dataset-empty"
+  >
+    no swaps recorded in this window of the dataset — a bucket without swaps draws no candle
+  </div>
+);
+
+/** The dataset source badge, drawn once per dataset-backed stage. */
+const DatasetBadge = (props: { readonly datasetId: string; readonly quoteSymbol: string }) => (
+  <div
+    className="px-1 text-[10px] uppercase tracking-wide text-muted-foreground"
+    data-testid="research-dataset-badge"
+  >
+    {datasetBadgeText(props.datasetId, props.quoteSymbol)}
+  </div>
+);
 
 const fmtPct = (value: number | null | undefined): string =>
   value === null || value === undefined ? "-" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
@@ -168,6 +217,12 @@ function OccurrenceChart(props: {
   /** The selected report row, for the pieces the deterministic layers do not carry. */
   readonly row: StudyRow;
   /**
+   * The retained Graph dataset a Graph-priced scene draws from, or null for
+   * the ordinary archive read. Same window, same bars math, same layers —
+   * only the price source changes.
+   */
+  readonly dataset: GraphDatasetIdentity | null;
+  /**
    * The path_extrema context, only on scenes measured by the current engine:
    * legacy scenes keep their recorded numbers and their legacy line, never a
    * newly-corrected extremum marker.
@@ -177,19 +232,28 @@ function OccurrenceChart(props: {
     readonly interval: string;
   } | null;
 }) {
+  const maxBars = studyWindowMaxBars({
+    startAt: props.occurrence.startAt,
+    endAt: props.occurrence.endAt,
+    horizonBars: props.horizonBars,
+    intervalMs: props.intervalMs,
+  });
+  // Both hooks run unconditionally (rules of hooks); the disabled one holds
+  // an empty state and puts nothing on the wire.
+  const datasetRead = useTradingGraphDatasetCandles(
+    props.environmentId,
+    props.dataset === null ? null : props.dataset.datasetId,
+    props.interval,
+    { window: props.window, maxBars },
+  );
   const { data, error, stale } = useTradingMarketChart(
     props.environmentId,
     props.market,
     props.interval,
     {
-      enabled: true,
+      enabled: props.dataset === null,
       window: props.window,
-      maxBars: studyWindowMaxBars({
-        startAt: props.occurrence.startAt,
-        endAt: props.occurrence.endAt,
-        horizonBars: props.horizonBars,
-        intervalMs: props.intervalMs,
-      }),
+      maxBars,
       poll: false,
     },
   );
@@ -275,6 +339,59 @@ function OccurrenceChart(props: {
           studyOverlay.extremum.at,
         )
       : null;
+
+  // The dataset path: explicit loading, empty and error states, and never a
+  // fallback to the exchange archive — a failed dataset read says so, and no
+  // Hyperliquid price is substituted for the study's source.
+  if (props.dataset !== null) {
+    if (datasetRead.error !== null) {
+      return <DatasetErrorNote />;
+    }
+    if (datasetRead.data === null) {
+      return (
+        <div
+          className="h-full min-h-24 motion-safe:animate-pulse rounded bg-muted/40"
+          data-testid="research-dataset-loading"
+        />
+      );
+    }
+    const datasetCandles = datasetRead.data.candles;
+    if (datasetCandles.length < 2) {
+      return <DatasetEmptyNote />;
+    }
+    return (
+      <>
+        <DatasetBadge
+          datasetId={props.dataset.datasetId}
+          quoteSymbol={datasetRead.data.quoteSymbol}
+        />
+        <MissionPriceChart
+          candles={datasetCandles}
+          eventBands={bands}
+          researchMarkers={extremumMarker === null ? [] : [extremumMarker]}
+          studyOverlay={studyOverlay}
+          entryPrice={null}
+          stopPrice={null}
+          targetPrice={null}
+          liquidationPrice={null}
+          entryTime={null}
+          markPrice={null}
+          pnlSign={null}
+          markMotion="static"
+          showVolume={false}
+          className="h-full min-h-24"
+        />
+        {coincidence === null ? null : (
+          <div
+            className="px-1 text-[10px] text-muted-foreground"
+            data-testid="research-extremum-coincident"
+          >
+            {coincidence}
+          </div>
+        )}
+      </>
+    );
+  }
 
   // Last good view on a transient read failure, labelled stale: the window
   // did not stop existing because a request failed, and a reader
@@ -446,6 +563,8 @@ function EventStudyBody(props: {
   readonly calculationVersion?: string | undefined;
   /** The server-composed deterministic layers of this scene, when it has them. */
   readonly layers: ReadonlyArray<DeterministicSceneLayer>;
+  /** The retained dataset a Graph-priced scene draws from, or null. */
+  readonly dataset: GraphDatasetIdentity | null;
   readonly prefill: ((sentence: string) => void) | null;
 }) {
   const [notional, setNotional] = useState(
@@ -520,6 +639,7 @@ function EventStudyBody(props: {
             occurrenceIndex={safeSelected}
             sceneId={props.sceneId}
             row={row}
+            dataset={props.dataset}
             extremumContext={
               drawExtremum && pathExtrema !== null
                 ? { priceField: pathExtrema.priceField, interval: payload.interval }
@@ -694,6 +814,8 @@ function AlignedTrace(props: {
   readonly occurrence: CoveredOccurrenceWindow;
   readonly horizonBars: number;
   readonly entryBasis: EventStudyEntryBasis;
+  /** The retained dataset a Graph-priced scene draws from, or null. */
+  readonly dataset: GraphDatasetIdentity | null;
   /**
    * The row's hindsight extremum as a mark on the trace, only on current-engine
    * path_extrema scenes: the requested extreme beside the horizon's terminal
@@ -705,18 +827,58 @@ function AlignedTrace(props: {
   // The close basis anchors on the entry bar's CLOSE, so its read starts one
   // bar earlier to include that bar and carries one more bar of horizon.
   const closeBasis = props.entryBasis === "first_closed_bar_after_event";
+  const window: ChartWindow = {
+    startTime: props.occurrence.entryTime - (closeBasis ? props.intervalMs : 0),
+    endTime: (props.occurrence.exitTime ?? props.occurrence.entryTime) + 1,
+  };
+  const maxBars = Math.min(
+    props.horizonBars + (closeBasis ? 1 : 0) + 2 * CONTEXT_BARS,
+    STUDY_CHART_MAX_WINDOW_BARS,
+  );
+  // Both hooks run unconditionally (rules of hooks); the disabled one reads
+  // nothing.
+  const datasetRead = useTradingGraphDatasetCandles(
+    props.environmentId,
+    props.dataset === null ? null : props.dataset.datasetId,
+    props.interval,
+    { window, maxBars },
+  );
   const { data } = useTradingMarketChart(props.environmentId, props.market, props.interval, {
-    enabled: true,
-    window: {
-      startTime: props.occurrence.entryTime - (closeBasis ? props.intervalMs : 0),
-      endTime: (props.occurrence.exitTime ?? props.occurrence.entryTime) + 1,
-    },
-    maxBars: Math.min(
-      props.horizonBars + (closeBasis ? 1 : 0) + 2 * CONTEXT_BARS,
-      STUDY_CHART_MAX_WINDOW_BARS,
-    ),
+    enabled: props.dataset === null,
+    window,
+    maxBars,
     poll: false,
   });
+  // The dataset path names its failures and empties instead of drawing a
+  // skeleton that never resolves or silently borrowing archive prices.
+  if (props.dataset !== null) {
+    if (datasetRead.error !== null) {
+      return <DatasetErrorNote />;
+    }
+    if (datasetRead.data === null) {
+      return <div className="h-[48px] motion-safe:animate-pulse rounded bg-muted/40" />;
+    }
+    if (datasetRead.data.candles.length === 0) {
+      return <DatasetEmptyNote />;
+    }
+    const datasetTrace = alignedTracePoints({
+      candles: datasetRead.data.candles,
+      entryTime: props.occurrence.entryTime,
+      intervalMs: props.intervalMs,
+      horizonBars: props.horizonBars,
+      entryBasis: props.entryBasis,
+    });
+    if (datasetTrace.length < 2) return <DatasetEmptyNote />;
+    return (
+      <TraceSvg
+        trace={datasetTrace}
+        horizonBars={props.horizonBars}
+        emphasis={false}
+        extremumMark={props.extremumMark}
+        extremumLabel={props.extremumPhraseText}
+      />
+    );
+  }
   if (data === null) {
     return <div className="h-[48px] motion-safe:animate-pulse rounded bg-muted/40" />;
   }
@@ -904,6 +1066,8 @@ function EventAlignedBody(props: {
   readonly payload: EventStudyScenePayload;
   /** The scene row's calculation version, so legacy scenes can say so. */
   readonly calculationVersion?: string | undefined;
+  /** The retained dataset a Graph-priced scene draws from, or null. */
+  readonly dataset: GraphDatasetIdentity | null;
 }) {
   const { payload } = props;
   const entryBasis = payloadEntryBasis(payload);
@@ -930,6 +1094,13 @@ function EventAlignedBody(props: {
     <>
       {/* The stage: the aggregate comparison, first. */}
       <div className="flex flex-col gap-1" data-testid="research-aligned-stage">
+        {/* The dataset label rides the stage on a dataset-backed scene: the
+            traces below are dataset prices, and the stage says so. No quote
+            symbol here — that arrives only inside a dataset read, and the id
+            plus source are what the label honestly claims. */}
+        {props.dataset === null ? null : (
+          <DatasetBadge datasetId={props.dataset.datasetId} quoteSymbol="" />
+        )}
         {covered.length === 0 ? (
           <div className="flex min-h-24 flex-1 items-center justify-center px-2 text-center text-xs text-muted-foreground">
             No covered occurrences to align. The calendar view says why each one was not measured.
@@ -979,6 +1150,7 @@ function EventAlignedBody(props: {
                 environmentId={props.environmentId}
                 payload={payload}
                 covered={covered}
+                dataset={props.dataset}
                 reference={baselineReference(baseline)}
               />
             </div>
@@ -1030,6 +1202,7 @@ function EventAlignedBody(props: {
                   occurrence={window}
                   horizonBars={payload.horizonBars}
                   entryBasis={entryBasis}
+                  dataset={props.dataset}
                   extremumMark={
                     extremumScene
                       ? alignedExtremumMark({
@@ -1064,6 +1237,8 @@ function AggregateTrace(props: {
   readonly environmentId: EnvironmentId;
   readonly payload: EventStudyScenePayload;
   readonly covered: ReadonlyArray<{ readonly window: ResearchOccurrenceWindow }>;
+  /** The retained dataset a Graph-priced scene draws from, or null. */
+  readonly dataset: GraphDatasetIdentity | null;
   readonly reference: { readonly valuePct: number; readonly label: string } | null;
 }) {
   const intervalMs = props.payload.report.horizonMs / props.payload.report.horizonBars;
@@ -1110,6 +1285,7 @@ function AggregateTrace(props: {
           intervalMs={intervalMs}
           horizonBars={props.payload.horizonBars}
           entryBasis={entryBasis}
+          dataset={props.dataset}
           occurrence={window}
           onTrace={(points) =>
             recordSlot(window, points.length === 0 ? { status: "empty" } : { status: "ok", points })
@@ -1157,6 +1333,8 @@ function AggregateTraceFetch(props: {
   readonly intervalMs: number;
   readonly horizonBars: number;
   readonly entryBasis: EventStudyEntryBasis;
+  /** The retained dataset a Graph-priced scene draws from, or null. */
+  readonly dataset: GraphDatasetIdentity | null;
   readonly occurrence: ResearchOccurrenceWindow;
   readonly onTrace: (points: ReadonlyArray<{ barsSinceEntry: number; changePct: number }>) => void;
   /** Called once when this fetch has FAILED — a stated outcome, not a skeleton. */
@@ -1166,37 +1344,53 @@ function AggregateTraceFetch(props: {
   // whose open sits one full interval before the entry close it anchors on.
   const closeBasis = props.entryBasis === "first_closed_bar_after_event";
   const entryTime = props.occurrence.entryTime ?? props.occurrence.startAt;
+  const window: ChartWindow = {
+    startTime: entryTime - (closeBasis ? props.intervalMs : 0),
+    endTime: (props.occurrence.exitTime ?? entryTime) + 1,
+  };
+  const maxBars = Math.min(
+    props.horizonBars + (closeBasis ? 1 : 0) + 2 * CONTEXT_BARS,
+    STUDY_CHART_MAX_WINDOW_BARS,
+  );
+  // Both hooks run unconditionally (rules of hooks); the disabled one reads
+  // nothing.
+  const datasetRead = useTradingGraphDatasetCandles(
+    props.environmentId,
+    props.dataset === null ? null : props.dataset.datasetId,
+    props.interval,
+    { window, maxBars },
+  );
   const { data, error } = useTradingMarketChart(props.environmentId, props.market, props.interval, {
-    enabled: true,
-    window: {
-      startTime: entryTime - (closeBasis ? props.intervalMs : 0),
-      endTime: (props.occurrence.exitTime ?? entryTime) + 1,
-    },
-    maxBars: Math.min(
-      props.horizonBars + (closeBasis ? 1 : 0) + 2 * CONTEXT_BARS,
-      STUDY_CHART_MAX_WINDOW_BARS,
-    ),
+    enabled: props.dataset === null,
+    window,
+    maxBars,
     poll: false,
   });
+  // Which read this occurrence settles from: the dataset's on a dataset-backed
+  // scene, the archive's otherwise. Never both — a Graph-priced study never
+  // borrows archive prices.
+  const settledError = props.dataset === null ? error : datasetRead.error;
+  const settledCandles =
+    props.dataset === null ? (data?.candles ?? null) : (datasetRead.data?.candles ?? null);
   // A failed read settles this occurrence's slot as failed: the aggregate
   // keeps the survivors and the coverage line says what is missing, instead
   // of a skeleton that can never resolve or an empty trace that reads as a
   // path that went nowhere.
   useEffect(() => {
-    if (error !== null) props.onFailed();
-  }, [error, props]);
+    if (settledError !== null) props.onFailed();
+  }, [settledError, props]);
   useEffect(() => {
-    if (data === null || props.occurrence.entryTime === undefined) return;
+    if (settledCandles === null || props.occurrence.entryTime === undefined) return;
     props.onTrace(
       alignedTracePoints({
-        candles: data.candles,
+        candles: settledCandles,
         entryTime: props.occurrence.entryTime,
         intervalMs: props.intervalMs,
         horizonBars: props.horizonBars,
         entryBasis: props.entryBasis,
       }),
     );
-  }, [data, props]);
+  }, [settledCandles, props]);
   return null;
 }
 
@@ -1435,6 +1629,16 @@ export function ResearchScenePanel(props: {
   // A const binding keeps the `eventStudy` narrowing inside the click
   // handlers below, where a property access on `scene` would lose it.
   const study = scene?.eventStudy;
+  // The retained dataset identity a Graph-priced scene carries. Null on
+  // archive scenes, and on Graph scenes without one — the latter keep the
+  // honest refusal below rather than silently drawing the exchange archive
+  // for a Graph-priced study.
+  const sceneDataset =
+    study !== undefined &&
+    (study.priceSource ?? "hyperliquid") !== "hyperliquid" &&
+    study.graphDataset !== undefined
+      ? study.graphDataset
+      : null;
 
   // The error and empty states keep the panel's shape: a message where the
   // content would sit, never a different frame. A refresh failure with
@@ -1543,7 +1747,11 @@ export function ResearchScenePanel(props: {
           the outer graph's tab, never a second switcher here. */}
       <div className="flex min-h-0 flex-1 flex-col" data-testid="research-scene-body">
         {scene.eventStudy !== undefined ? (
-          (scene.eventStudy.priceSource ?? "hyperliquid") !== "hyperliquid" ? (
+          (scene.eventStudy.priceSource ?? "hyperliquid") !== "hyperliquid" &&
+          sceneDataset === null ? (
+            // The honest refusal, now only for a non-archive scene WITHOUT a
+            // usable dataset identity (a payload missing `graphDataset`):
+            // there is nothing to draw prices from, and the summary says so.
             <div className="space-y-2 text-xs" data-testid="research-source-chart-unavailable">
               <p>
                 This study uses {scene.eventStudy.priceSource}. Its source prices are not yet
@@ -1565,6 +1773,7 @@ export function ResearchScenePanel(props: {
               sceneId={scene.sceneId}
               calculationVersion={scene.calculationVersion}
               layers={scene.scene?.deterministic ?? []}
+              dataset={sceneDataset}
               prefill={props.prefill}
             />
           ) : (
@@ -1572,6 +1781,7 @@ export function ResearchScenePanel(props: {
               environmentId={props.environmentId}
               payload={scene.eventStudy}
               calculationVersion={scene.calculationVersion}
+              dataset={sceneDataset}
             />
           )
         ) : scene.strategyReplay !== undefined ? (

@@ -65,6 +65,16 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-market-chart",
       tag: ORCHESTRATION_WS_METHODS.getTradingMarketChart,
     }),
+    // Candles aggregated from one immutable retained Graph dataset. The
+    // dataset cannot change under the cache (retained evidence is write-once
+    // per id), so the entry is held as generously as a workflow script's —
+    // re-reads only happen for a different window, which is a different key.
+    tradingGraphDatasetCandles: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-graph-dataset-candles",
+      tag: ORCHESTRATION_WS_METHODS.getTradingGraphDatasetCandles,
+      staleTimeMs: 300_000,
+      idleTtlMs: 300_000,
+    }),
     // One thread's published research scenes. Not held: the interesting
     // moment is exactly when a scene appears, and the graph panel re-asks on
     // its own cadence.

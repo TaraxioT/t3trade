@@ -47,6 +47,9 @@ import {
   type TradingWatchlistMutationResult,
   ORCHESTRATION_WS_METHODS,
   TRADING_IDEA_ROW_CAP,
+  TRADING_CHART_INTERVAL_MILLIS,
+  type TradingChartInterval,
+  type TradingGraphDatasetCandlesView,
   type TradingIdeaRow,
   ProjectId,
   type ProjectEntriesFailure,
@@ -129,7 +132,14 @@ import { ArchiveSupervisor } from "./trading/ArchiveSupervisor.ts";
 import { FollowSetRegistry } from "./trading/FollowSetRegistry.ts";
 import { marketRef } from "@t3tools/trading-contracts/primitives";
 import { describeThesis } from "@t3tools/trading-contracts/thesis";
+import {
+  observationsToCandles,
+  type ForgeEvidenceRecord,
+  type ForgeSwapObservation,
+} from "@t3tools/trading-contracts";
 import { STUDY_CHART_MAX_WINDOW_BARS } from "@t3tools/trading-contracts/researchScenes";
+import { ForgeGraphConfig, type ForgeGraphSettings } from "./trading/forge/GraphSource.ts";
+import { ForgeSourceStore } from "./trading/forge/ForgeSourceStore.ts";
 import { TRADE_MD_FILENAME } from "@t3tools/trading-contracts";
 import { TradingUniverse } from "./trading/TradingUniverse.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
@@ -265,6 +275,118 @@ const withMarketPrices = (
     },
     { concurrency: "unbounded" },
   );
+
+// -- graph dataset candles (Graph-priced research scenes) ----------------------
+
+/**
+ * Resolve a dataset pool's quote symbol from the configured vetted pools.
+ *
+ * The quote token is whichever slot the base does not occupy — the same rule
+ * the source's own normalization uses (`baseIsToken1` picks the base slot), so
+ * the badge the panel draws names the token the micros were denominated in. An
+ * unconfigured source or a pool no longer in the vetted list resolves to "":
+ * display metadata only, never a guess that would label the prices wrongly.
+ */
+const resolveDatasetQuoteSymbol = (
+  settings: ForgeGraphSettings,
+  poolId: string | undefined,
+): string => {
+  if (poolId === undefined || settings.source === undefined) return "";
+  const pool = settings.source.pools.find(
+    (candidate) => candidate.poolId.toLowerCase() === poolId.toLowerCase(),
+  );
+  return pool === undefined ? "" : pool.baseIsToken1 ? pool.token0.symbol : pool.token1.symbol;
+};
+
+/** Same default bar count the market chart read serves. */
+const DATASET_CANDLES_DEFAULT_MAX_BARS = 120;
+
+/**
+ * Build the dataset-candle view (or its refusal) from one retained-evidence
+ * read. Pure on purpose — the aggregation, windowing, and refusal rules are
+ * what deserves testing, and they need no socket. The WS handler is a thin
+ * wrapper around this seam plus the two service reads it performs.
+ *
+ * Refusals name their cause and never serve a partial series:
+ * - not retained: the dataset id is named, so a vanished capture reads
+ *   differently from a broken read;
+ * - another environment's dataset: evidence is environment-scoped;
+ * - integrity shortfall: the row claims more observations than its payload
+ *   decoded, so aggregating what arrived would silently omit swaps.
+ */
+export const buildTradingGraphDatasetCandlesView = (input: {
+  readonly environmentId: string;
+  readonly datasetId: string;
+  readonly interval: TradingChartInterval;
+  readonly startTime?: number | undefined;
+  readonly endTime?: number | undefined;
+  readonly maxBars?: number | undefined;
+  readonly evidence: {
+    readonly record: ForgeEvidenceRecord;
+    readonly observations: ReadonlyArray<ForgeSwapObservation>;
+    readonly claimedCount: number;
+  } | null;
+  readonly quoteSymbol: string;
+}): { readonly view: TradingGraphDatasetCandlesView } | { readonly refusal: string } => {
+  if (input.evidence === null) {
+    return { refusal: `dataset ${input.datasetId} is not retained on this server` };
+  }
+  const { record, observations, claimedCount } = input.evidence;
+  if (record.environmentId !== input.environmentId) {
+    return { refusal: `dataset ${input.datasetId} belongs to another environment` };
+  }
+  if (claimedCount !== observations.length) {
+    return {
+      refusal: `dataset ${input.datasetId} is incomplete: the row claims ${claimedCount} observations but ${observations.length} decoded`,
+    };
+  }
+  // The same aggregation the study ran: buckets are epoch-aligned at the
+  // interval's millis and sparse buckets stay sparse (no candle without
+  // swaps), so the served bars reproduce what the scene measured.
+  const intervalMs = TRADING_CHART_INTERVAL_MILLIS[input.interval];
+  const aggregated = observationsToCandles(observations, { intervalMs });
+  // Each bound is honoured independently; both absent is the dataset's full
+  // span. The window keeps candles whose OPEN falls inside [start, end).
+  const windowed = aggregated.filter((candle) => {
+    if (input.startTime !== undefined && candle.openTime < input.startTime) return false;
+    if (input.endTime !== undefined && candle.openTime >= input.endTime) return false;
+    return true;
+  });
+  // Same clamp idiom as the market chart read, against the same cap constant,
+  // so this RPC cannot become a bulk history export either. An over-cap window
+  // keeps its MOST RECENT bars (research exits matter most); the response
+  // still carries the dataset's full coverage span, so a capped read is
+  // distinguishable from a short dataset.
+  const maxBars = Math.min(
+    input.maxBars ?? DATASET_CANDLES_DEFAULT_MAX_BARS,
+    STUDY_CHART_MAX_WINDOW_BARS,
+  );
+  const served = windowed.length > maxBars ? windowed.slice(-maxBars) : windowed;
+  return {
+    view: {
+      datasetId: input.datasetId,
+      poolId: record.poolId,
+      quoteSymbol: input.quoteSymbol,
+      interval: input.interval,
+      // The wire candle drops closeTime/trades (nothing renders them). Volume
+      // maps verbatim: observationsToCandles already sums the bucket's quote
+      // leg in whole units (micros/1e6) — the display tier the archive candle
+      // schema carries — so no second conversion happens here.
+      candles: served.map((candle) => ({
+        openTime: candle.openTime,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+      })),
+      coverageFromMs: record.windowStart * 1000,
+      coverageToMs: record.windowEnd * 1000,
+      rows: record.observationCount,
+    },
+  };
+};
+
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -705,6 +827,12 @@ const makeWsRpcLayer = (
       const tradingMarketPrice = yield* TradingMarketPrice;
       const tradingMarketChart = yield* TradingMarketChart;
       const tradingTurnCoordinator = yield* TradingTurnCoordinator;
+      // The dataset-candle read's two services, ambient from the same trading
+      // layer every other Forge read resolves: the retained evidence store (no
+      // second instance can fork the payload) and the env-resolved graph
+      // settings (stateless per-call config).
+      const forgeSourceStore = yield* ForgeSourceStore;
+      const forgeGraphConfig = yield* ForgeGraphConfig;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
@@ -2611,6 +2739,49 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to load the trading market chart",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        // The dataset-scoped candle read a Graph-priced scene's charts use:
+        // one immutable retained evidence row, aggregated server-side so no
+        // observation payload ever rides the wire. Research-mode read — no
+        // signer, no mission, no exchange — and every refusal is a named
+        // failure, never a partial series (see the seam above).
+        [ORCHESTRATION_WS_METHODS.getTradingGraphDatasetCandles]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingGraphDatasetCandles,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              const evidence = yield* forgeSourceStore.readObservations(input.datasetId);
+              const settings = yield* forgeGraphConfig.resolve;
+              const result = buildTradingGraphDatasetCandlesView({
+                environmentId,
+                datasetId: input.datasetId,
+                interval: input.interval,
+                ...(input.startTime === undefined ? {} : { startTime: input.startTime }),
+                ...(input.endTime === undefined ? {} : { endTime: input.endTime }),
+                ...(input.maxBars === undefined ? {} : { maxBars: input.maxBars }),
+                evidence,
+                quoteSymbol: resolveDatasetQuoteSymbol(settings, evidence?.record.poolId),
+              });
+              if ("refusal" in result) {
+                return yield* new OrchestrationGetSnapshotError({ message: result.refusal });
+              }
+              return result.view;
+            }).pipe(
+              // The store read and the settings resolution are local SQL/env
+              // reads; a failure here is a real defect worth an error log,
+              // unlike the chart read's transient-exchange case above.
+              Effect.tapError((cause) =>
+                Effect.logError("trading graph dataset candles read failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to read the graph dataset candles",
                     cause,
                   }),
               ),

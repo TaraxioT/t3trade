@@ -11,7 +11,7 @@ import type { EventStudyScenePayload } from "@t3tools/trading-contracts/research
  * motion, is asserted by its absence.
  */
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ResearchScenePanel } from "./ResearchScenePanel";
 
@@ -34,6 +34,27 @@ const CANDLES = Array.from({ length: 110 }, (_, i) => ({
 
 vi.mock("../../lib/tradingMarketChartState", () => ({
   useTradingMarketChart: () => ({ data: { candles: CANDLES }, error: null, stale: false }),
+}));
+
+// The dataset-scoped read, mocked at the hook the same way: archive scenes
+// (dataset null) never reach it, and the dataset cases below set the state
+// each render needs through this binding.
+const datasetView = {
+  datasetId: "ds_ab12cd34ef56",
+  poolId: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+  quoteSymbol: "USDC",
+  interval: "1d",
+  candles: CANDLES.map(({ trades: _trades, ...candle }) => candle),
+  coverageFromMs: T0 - 400 * DAY,
+  coverageToMs: T1 + 31 * DAY,
+  rows: 110,
+};
+let datasetCandlesState: { data: typeof datasetView | null; error: string | null } = {
+  data: datasetView,
+  error: null,
+};
+vi.mock("../../lib/tradingDatasetCandlesState", () => ({
+  useTradingGraphDatasetCandles: () => datasetCandlesState,
 }));
 
 const coveredRow = (startAt: number, label: string, returnPct: number) => ({
@@ -159,6 +180,14 @@ const renderPanel = (
     n?: number;
     nCovered?: number;
     priceSource?: string;
+    /** The retained-dataset identity a Graph-priced scene may carry. */
+    graphDataset?: {
+      datasetId: string;
+      contentSha256: string;
+      deploymentOrPackageId: string;
+      chainId: string;
+      pinnedBlock: string | null;
+    };
   } = {},
 ) =>
   renderToStaticMarkup(
@@ -191,6 +220,9 @@ const renderPanel = (
           eventStudy: {
             ...payload(baseline, overrides.rows, overrides.n, overrides.nCovered),
             priceSource: overrides.priceSource ?? "hyperliquid",
+            ...(overrides.graphDataset === undefined
+              ? {}
+              : { graphDataset: overrides.graphDataset }),
           },
         } as never,
       ]}
@@ -903,3 +935,79 @@ for (const mode of ["calendar", "aligned"] as const) {
     expect(markup).not.toContain('data-testid="research-aligned-stage"');
   });
 }
+
+// ---------------------------------------------------------------------------
+// A Graph-backed scene WITH a dataset identity draws its charts from the
+// retained dataset — never from the exchange archive, and never a silent
+// fallback when the dataset read fails.
+// ---------------------------------------------------------------------------
+
+const GRAPH_DATASET = {
+  datasetId: "ds_ab12cd34ef56",
+  contentSha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  deploymentOrPackageId: "Qmdeployment",
+  chainId: "1",
+  pinnedBlock: "21000000",
+};
+
+describe("ResearchScenePanel: a Graph scene with a dataset identity", () => {
+  beforeEach(() => {
+    datasetCandlesState = { data: datasetView, error: null };
+  });
+
+  it("draws the calendar stage from the dataset and labels the source", () => {
+    const markup = renderPanel("calendar", null, {
+      priceSource: "the-graph",
+      graphDataset: GRAPH_DATASET,
+    });
+    // The stage renders (no refusal) and prices are labelled as dataset
+    // prices: quote symbol plus a short dataset id, never a bare chart that
+    // reads as the exchange archive.
+    expect(markup).toContain('data-testid="research-calendar-stage"');
+    expect(markup).toContain('data-testid="research-dataset-badge"');
+    expect(markup).toContain("USDC · ds_ab12cd34e… · The Graph");
+    expect(markup).not.toContain('data-testid="research-source-chart-unavailable"');
+    expect(markup).not.toContain('data-testid="research-dataset-error"');
+  });
+
+  it("draws the event-aligned stage from the dataset", () => {
+    const markup = renderPanel("aligned", null, {
+      priceSource: "the-graph",
+      graphDataset: GRAPH_DATASET,
+    });
+    expect(markup).toContain('data-testid="research-aligned-stage"');
+    expect(markup).toContain('data-testid="research-aggregate"');
+    expect(markup).toContain('data-testid="research-dataset-badge"');
+    expect(markup).toContain("ds_ab12cd34e… · The Graph");
+    expect(markup).not.toContain('data-testid="research-source-chart-unavailable"');
+  });
+
+  it("renders a named error state when the dataset read fails — no archive fallback", () => {
+    datasetCandlesState = { data: null, error: "Failed to load the dataset candles." };
+    for (const mode of ["calendar", "aligned"] as const) {
+      const markup = renderPanel(mode, null, {
+        priceSource: "the-graph",
+        graphDataset: GRAPH_DATASET,
+      });
+      expect(markup).toContain('data-testid="research-dataset-error"');
+      // The failure never falls back to the archive chart or the old refusal.
+      expect(markup).not.toContain('data-testid="research-source-chart-unavailable"');
+    }
+  });
+
+  it("says so when the dataset holds no swaps for the window", () => {
+    datasetCandlesState = {
+      data: { ...datasetView, candles: [] },
+      error: null,
+    };
+    const markup = renderPanel("calendar", null, {
+      priceSource: "the-graph",
+      graphDataset: GRAPH_DATASET,
+    });
+    expect(markup).toContain('data-testid="research-dataset-empty"');
+    expect(markup).toContain("no swaps recorded in this window");
+    // An empty dataset is not an error and not the refusal.
+    expect(markup).not.toContain('data-testid="research-dataset-error"');
+    expect(markup).not.toContain('data-testid="research-source-chart-unavailable"');
+  });
+});
