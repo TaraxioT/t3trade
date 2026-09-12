@@ -91,6 +91,12 @@ import {
 } from "./forge/GraphSource.ts";
 import { ForgeSourceReadsLive } from "./forge/ForgeSourceReads.ts";
 import { GraphResearchService, makeGraphResearchService } from "./research/GraphResearchService.ts";
+import { ExternalSourceStoreLive } from "./research/ExternalSourceStore.ts";
+import {
+  ExternalSourceConfigLive,
+  ExternalSourceConnectorLive,
+  ExternalSourceTransportLive,
+} from "./research/ExternalSourceConnector.ts";
 import {
   FeePolicyConfigLive,
   FeePolicyService,
@@ -116,6 +122,16 @@ const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer
 const forgeGraphSource = ForgeGraphSourceLive.pipe(
   Layer.provide(ForgeGraphConfigLive),
   Layer.provide(ForgeGraphTransportLive.pipe(Layer.provide(httpWithNode))),
+);
+// The external-source connector (GitHub official releases first). The store is
+// SQL-only, and the connector's own HTTP requirement is satisfied here over
+// the same node-backed layer, so no new HTTP requirement leaks out of the
+// trading layer to any consumer. Its fetch URL comes from vetted config only;
+// nothing in this composition can reach a signer or an order.
+const externalSourceConnector = ExternalSourceConnectorLive.pipe(
+  Layer.provide(ExternalSourceConfigLive),
+  Layer.provide(ExternalSourceTransportLive.pipe(Layer.provide(httpWithNode))),
+  Layer.provide(ExternalSourceStoreLive),
 );
 // Use the server's resolved state directory so worktrees and installed apps never share a writer.
 const forgeStoreConfig = Layer.effect(
@@ -496,6 +512,12 @@ export const TradingLayerLive = Layer.mergeAll(
   ForgeSourceStoreLive,
   ForgeSourceReadsLive.pipe(Layer.provide(forgeGraphSource), Layer.provide(ForgeSourceStoreLive)),
   graphResearchServices,
+  // External research evidence: the durable source-revision store plus the
+  // GitHub releases connector over it. Additive — SQL and its own HTTP
+  // transport only, so mounting it changes no trading guard and no consumer's
+  // requirements.
+  ExternalSourceStoreLive,
+  externalSourceConnector,
 ).pipe(
   Layer.provideMerge(infoWithHttp),
   // T3 Forge F3 durable machinery: SQLite intent ledger + grant guard +
