@@ -194,6 +194,7 @@ import {
   resolveEventStudyMetric,
   runEventStudy,
   serializeEventSetContent,
+  TradingGraphEventWindowStudy,
   type TradingEventsResult,
   type TradingEventsOccurrenceInput,
   type TradingEventOccurrence,
@@ -4671,6 +4672,31 @@ export const handlers = {
           if (studyOption._tag === "None") {
             return yield* refuse(
               "the Graph event-window study service is not wired into this runtime",
+            );
+          }
+          // Read-back of one retained study: a multi-variant acquisition can
+          // outlast the tool timeout while the service still commits it; the
+          // read returns exactly what was retained, unchanged.
+          if (input.graphStudy.studyId !== undefined) {
+            const retained = yield* studyOption.value
+              .readStudy(input.graphStudy.studyId)
+              .pipe(Effect.orDie);
+            if (retained === null) {
+              return yield* refuse(`no retained window study with id ${input.graphStudy.studyId}`);
+            }
+            const readBack = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(TradingGraphEventWindowStudy),
+            )(retained.resultJson).pipe(Effect.orDie);
+            return eventsResult({
+              graphStudy: readBack,
+              outcome:
+                `Read back retained window study ${readBack.studyId} over Graph pool ${readBack.poolId}: ` +
+                `${readBack.variants.length} variants retained together. ${readBack.uncertainty}`,
+            });
+          }
+          if (input.graphStudy.variants === undefined || input.graphStudy.poolId === undefined) {
+            return yield* refuse(
+              "study_graph needs poolId and variants: [{label, anchor, leadMs|tailMs, horizonBars, entryBasis?}]",
             );
           }
           // Tool-shape variants to the service's total shape: the anchor's own

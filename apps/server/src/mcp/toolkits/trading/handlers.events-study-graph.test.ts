@@ -36,6 +36,7 @@ import {
   GraphEventWindowStudyService,
   type GraphEventWindowStudyInput,
   type GraphEventWindowStudyResult,
+  type GraphEventWindowStudyServiceShape,
 } from "../../../trading/research/GraphEventWindowStudyService.ts";
 
 const DAY = 24 * 60 * 60 * 1_000;
@@ -52,6 +53,12 @@ const invocationScope = (suffix: string): McpInvocationContext.McpInvocationScop
   capabilities: new Set<McpInvocationContext.McpCapability>(["trading"]),
   issuedAt: 0,
 });
+
+/** A service fake that fails loudly if any acquisition path is reached. */
+const dieIfAcquiredService: GraphEventWindowStudyServiceShape = {
+  runStudy: () => Effect.die("this path must refuse or read back before acquisition"),
+  readStudy: () => Effect.succeed(null),
+};
 
 /** The handler TYPE requires the archive (the archive-study path); the
  *  study_graph path must never touch it — a die-if-touched stub satisfies
@@ -170,6 +177,14 @@ it.live("maps variants, derives the next occurrence, and relays the retained stu
     assert.equal(recorded.outcome, "ok");
 
     const captured: Array<GraphEventWindowStudyInput> = [];
+    const recordingService: GraphEventWindowStudyServiceShape = {
+      runStudy: (input) =>
+        Effect.sync(() => {
+          captured.push(input);
+          return { status: "ok" as const, result: cannedResult() };
+        }),
+      readStudy: () => Effect.succeed(null),
+    };
     const result = yield* handlers
       .trading_events({
         action: "study_graph",
@@ -189,19 +204,7 @@ it.live("maps variants, derives the next occurrence, and relays the retained stu
           ],
         },
       })
-      .pipe(
-        Effect.provideService(
-          GraphEventWindowStudyService,
-          GraphEventWindowStudyService.of({
-            runStudy: (input) =>
-              Effect.sync(() => {
-                captured.push(input);
-                return { status: "ok" as const, result: cannedResult() };
-              }),
-            readStudy: () => Effect.succeed(null),
-          }),
-        ),
-      );
+      .pipe(Effect.provideService(GraphEventWindowStudyService, recordingService));
 
     // The engine saw the mapped request: this environment, the set's name,
     // every occurrence, the daily default, and both variants with the
@@ -324,14 +327,91 @@ it.live("refuses a malformed variant before any acquisition runs", () => {
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        Layer.succeed(
-          GraphEventWindowStudyService,
-          GraphEventWindowStudyService.of({
-            runStudy: () => Effect.die("a malformed variant must refuse before acquisition"),
-            readStudy: () => Effect.succeed(null),
-          }),
-        ),
+        Layer.succeed(GraphEventWindowStudyService, dieIfAcquiredService),
         Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScope("refuse")),
+        TradingEventServiceLive.pipe(
+          Layer.provideMerge(NodeSqliteClient.layerMemory()),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+        threadMarketRecorder,
+        archiveStub,
+      ),
+    ),
+    Effect.onExit(() =>
+      Effect.sync(() => {
+        if (previousHome === undefined) {
+          delete process.env["T3CODE_HOME"];
+        } else {
+          process.env["T3CODE_HOME"] = previousHome;
+        }
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+      }),
+    ),
+  );
+});
+
+it.live("reads a retained study back by id without re-acquiring", () => {
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-events-study-graph-"));
+  const previousHome = process.env["T3CODE_HOME"];
+  process.env["T3CODE_HOME"] = NodePath.join(dir, "home");
+  const now = Date.now();
+
+  return Effect.gen(function* () {
+    yield* runMigrations({});
+    const events = yield* TradingEventService;
+    const recorded = yield* events.record({
+      name: "devcon",
+      occurrences: [
+        { startAt: now - 400 * DAY, endAt: now - 396 * DAY, source: "https://example.com/a" },
+      ],
+      threadId: "thread-study-graph-readback",
+      author: "agent",
+      now,
+    });
+    assert.equal(recorded.outcome, "ok");
+    const retained = cannedResult();
+
+    // The engine is never called on a read-back: the fake dies if it runs.
+    const result = yield* handlers
+      .trading_events({
+        action: "study_graph",
+        eventSetId: recorded.outcome === "ok" ? recorded.set.eventSetId : "",
+        market: "ETH",
+        graphStudy: { studyId: retained.studyId },
+      })
+      .pipe(
+        Effect.provideService(GraphEventWindowStudyService, {
+          runStudy: () => Effect.die("a read-back must not acquire"),
+          readStudy: (studyId) =>
+            Effect.succeed(
+              studyId === retained.studyId
+                ? { specJson: "{}", resultJson: JSON.stringify(retained) }
+                : null,
+            ),
+        } satisfies GraphEventWindowStudyServiceShape),
+      );
+    assert.equal("graphStudy" in result ? result.graphStudy?.studyId : undefined, retained.studyId);
+    const outcome = "outcome" in result ? result.outcome : undefined;
+    assert.include(outcome, `Read back retained window study ${retained.studyId}`);
+    assert.include(outcome, retained.uncertainty);
+
+    // An unknown id refuses with the id named, changing nothing.
+    const missing = yield* Effect.flip(
+      handlers
+        .trading_events({
+          action: "study_graph",
+          eventSetId: recorded.outcome === "ok" ? recorded.set.eventSetId : "",
+          market: "ETH",
+          graphStudy: { studyId: "ges_doesnotexist000000000000" },
+        })
+        .pipe(Effect.provideService(GraphEventWindowStudyService, dieIfAcquiredService)),
+    );
+    assert.instanceOf(missing, TradingToolRejectedError, debugJson(missing));
+    assert.include((missing as TradingToolRejectedError).detail, "ges_doesnotexist000000000000");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScope("readback")),
         TradingEventServiceLive.pipe(
           Layer.provideMerge(NodeSqliteClient.layerMemory()),
           Layer.provideMerge(NodeServices.layer),

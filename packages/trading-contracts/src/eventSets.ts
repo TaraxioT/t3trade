@@ -1516,8 +1516,9 @@ export type TradingEventsGraphStudyVariant = typeof TradingEventsGraphStudyVaria
  * pre/post-event window study.
  */
 export const TradingEventsGraphStudyRequest = Schema.Struct({
-  /** The vetted pool whose retained Uniswap swaps price the study. */
-  poolId: Schema.String.check(Schema.isNonEmpty()),
+  /** The vetted pool whose retained Uniswap swaps price the study (an
+   *  acquisition; a studyId read-back does not name a pool). */
+  poolId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
   /** Bar width, ms. The service floor is one hour. */
   intervalMs: Schema.optional(Schema.Number),
   /**
@@ -1527,7 +1528,14 @@ export const TradingEventsGraphStudyRequest = Schema.Struct({
    */
   poolDataStartMs: Schema.optional(Schema.Number),
   /** 1–8 variants; the service refuses an empty or oversized set. */
-  variants: Schema.Array(TradingEventsGraphStudyVariant),
+  variants: Schema.optional(Schema.Array(TradingEventsGraphStudyVariant)),
+  /**
+   * Read back one RETAINED study instead of acquiring: a multi-variant
+   * acquisition can outlast the tool timeout while the service still
+   * commits it; this returns exactly what was retained. Present alone
+   * (poolId/variants are ignored on a read-back).
+   */
+  studyId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
 });
 export type TradingEventsGraphStudyRequest = typeof TradingEventsGraphStudyRequest.Type;
 
