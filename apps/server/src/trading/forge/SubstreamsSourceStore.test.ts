@@ -159,6 +159,56 @@ layer("SubstreamsSourceStore commit", (it) => {
     }),
   );
 
+  it.effect("listSources returns one environment's sources with their committed health", () =>
+    Effect.gen(function* () {
+      yield* createSubstreamsTables;
+      const store = yield* makeSubstreamsSourceStore;
+      const env = envFor("list");
+      const foreignEnv = envFor("list-foreign");
+      const first = yield* ensure(store, env);
+      const second = yield* ensure(store, env, {
+        params: "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+      });
+      const foreign = yield* ensure(store, foreignEnv);
+      assert.notEqual(foreign.sourceId, first.sourceId);
+
+      // One committed batch on `first`, and `second` marked stale: the
+      // listing must carry the committed watermark/cursor/health per source.
+      const committed = yield* commit(store, env, first.sourceId, [block(1000)], "cursor-a", 2_500);
+      assert.equal(committed.status, "committed");
+      const marked = yield* store.markStale({
+        environmentId: env,
+        sourceId: second.sourceId,
+        reason: "test staleness",
+      });
+      assert.isTrue(marked);
+
+      const listed = yield* store.listSources(env);
+      assert.equal(listed.length, 2);
+      assert.deepEqual(
+        listed.map((row) => row.sourceId),
+        [first.sourceId, second.sourceId],
+      );
+      const healthy = listed.find((row) => row.sourceId === first.sourceId)!;
+      assert.equal(healthy.state, "healthy");
+      assert.equal(healthy.finalWatermarkBlock, "1000");
+      assert.equal(healthy.finalWatermarkTimestampMs, block(1000).timestampMs);
+      assert.equal(healthy.lastCommitAtMs, 2_500);
+      assert.equal(healthy.cursor, "cursor-a");
+      assert.equal(healthy.packageSha256, PACKAGE_SHA);
+      assert.equal(healthy.moduleDigest, first.moduleDigest);
+      const stale = listed.find((row) => row.sourceId === second.sourceId)!;
+      assert.equal(stale.state, "stale");
+      assert.equal(stale.reason, "test staleness");
+      // The foreign environment's source is not this environment's listing.
+      const foreignListed = yield* store.listSources(foreignEnv);
+      assert.deepEqual(
+        foreignListed.map((row) => row.sourceId),
+        [foreign.sourceId],
+      );
+    }),
+  );
+
   it.effect("commits blocks, events, watermark, cursor and one outbox row in one batch", () =>
     Effect.gen(function* () {
       yield* createSubstreamsTables;

@@ -1151,6 +1151,27 @@ export const TradingForgeResult = Schema.Struct({
     }),
   ),
   /**
+   * `status`: the registered live Substreams sources for this environment and
+   * their committed health — the streaming half of the data view, reported
+   * apart from provider jobs and detector runs. Empty when no source is
+   * registered; absent when the streaming store is not wired.
+   */
+  substreams: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        sourceId: Schema.String,
+        state: Schema.String,
+        reason: Schema.String,
+        finalWatermarkBlock: Schema.String,
+        finalWatermarkTimestampMs: Schema.Number,
+        lastCommitAtMs: Schema.Number,
+        packageSha256: Schema.String,
+        moduleDigest: Schema.String,
+        cursor: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
+  /**
    * `status`/`arm`/`disarm`/`evaluate`, for the actions that name a
    * capability: the detector standing of the active version, plus — for a
    * detector-program v2 capability — its committed run view from the

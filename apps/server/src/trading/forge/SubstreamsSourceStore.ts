@@ -264,6 +264,14 @@ export interface SubstreamsSourceStoreShape {
     environmentId: string,
     sourceId: string,
   ) => Effect.Effect<SubstreamsSourceHealth, PersistenceSqlError>;
+  /** Every registered source for one environment with its committed health —
+   *  the status/debug listing; no per-source query needed to see the lane. */
+  readonly listSources: (
+    environmentId: string,
+  ) => Effect.Effect<
+    ReadonlyArray<SubstreamsSourceHealth & { readonly sourceId: string }>,
+    PersistenceSqlError
+  >;
   readonly sourceRevision: (
     environmentId: string,
     sourceId: string,
@@ -687,6 +695,20 @@ export const makeSubstreamsSourceStore = Effect.gen(function* () {
       Effect.map((row) => (row === null ? unknownHealth(sourceId) : toHealth(row))),
     );
 
+  const listSources: SubstreamsSourceStoreShape["listSources"] = (environmentId) =>
+    sql<SourceRow>`
+      SELECT source_id, environment_id, chain_id, network, package_sha256, module_name, module_digest,
+             params_json, schema_version, cursor, state, state_reason, final_watermark_block,
+             final_watermark_block_num, final_watermark_timestamp_ms, last_commit_at_ms,
+             created_at_ms
+      FROM substreams_sources
+      WHERE environment_id = ${environmentId}
+      ORDER BY created_at_ms, source_id
+    `.pipe(
+      Effect.mapError(sqlFail("listSources")),
+      Effect.map((rows) => rows.map((row) => ({ sourceId: row.source_id, ...toHealth(row) }))),
+    );
+
   const sourceRevision: SubstreamsSourceStoreShape["sourceRevision"] = (environmentId, sourceId) =>
     loadSource(environmentId, sourceId).pipe(
       Effect.map((row) =>
@@ -805,6 +827,7 @@ export const makeSubstreamsSourceStore = Effect.gen(function* () {
     readBlockEnvelopes,
     readPoolEvents,
     sourceHealth,
+    listSources,
     sourceRevision,
     resumeCursor,
     markStale,

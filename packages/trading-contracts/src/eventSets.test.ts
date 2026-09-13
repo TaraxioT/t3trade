@@ -1999,10 +1999,11 @@ describe("the menus teach the conventions the parser enforces", () => {
     const menu = renderTradingEventsMenu();
     // Tight enough to serve as a menu: the look menu's 1,500-char budget is
     // the discipline here too, raised to 2,000 when the menu gained the
-    // threshold-honesty and no-hindsight-exit rules, and once more to 2,400
-    // for the import_external vocabulary — bounded growth for required
-    // vocabulary, not an open cap.
-    expect(menu.length).toBeLessThan(2_400);
+    // threshold-honesty and no-hindsight-exit rules, once more to 2,400
+    // for the import_external vocabulary, and to 2,700 for study_graph's
+    // variant grammar — bounded growth for required vocabulary, not an
+    // open cap.
+    expect(menu.length).toBeLessThan(2_700);
     // The timing model: date precision spans, the instant rule, the refusal
     // that replaced the +24h fabrication.
     expect(menu).toContain("date precision");

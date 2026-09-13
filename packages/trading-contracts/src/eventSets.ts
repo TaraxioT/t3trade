@@ -1337,6 +1337,7 @@ export const TradingEventsAction = Schema.Literals([
   "list",
   "show",
   "study",
+  "study_graph",
   "retire",
   "import_external",
 ]);
@@ -1485,6 +1486,122 @@ export function parseTradingEventsOccurrence(
   };
 }
 
+/**
+ * One compared entry/holding design for a `study_graph` call: where entry
+ * anchors relative to each occurrence (`pre-start` with a lead, or `post-end`
+ * with a tail), a holding horizon in bars, and an entry basis. Every variant
+ * the call names runs and is retained together — picking the flattering one
+ * afterwards is the cherry-picking the study exists to prevent.
+ */
+export const TradingEventsGraphStudyVariant = Schema.Struct({
+  /** Short human label retained with every number (e.g. "pre-30d-hold-30d"). */
+  label: Schema.String.check(Schema.isNonEmpty()),
+  anchor: Schema.Literals(["pre-start", "post-end"]),
+  /** pre-start only: entry lead before the event start, ms. */
+  leadMs: Schema.optional(Schema.Number),
+  /** post-end only: entry tail after the event end, ms. */
+  tailMs: Schema.optional(Schema.Number),
+  /** Holding period in bars of the study's `intervalMs` (positive integer; the service refuses anything else). */
+  horizonBars: Schema.Number,
+  entryBasis: Schema.optional(EventStudyEntryBasis),
+});
+export type TradingEventsGraphStudyVariant = typeof TradingEventsGraphStudyVariant.Type;
+
+/**
+ * The `study_graph` request body: measure the named event set's dated
+ * occurrences over Graph-derived prices from one vetted pool, comparing the
+ * named entry/holding variants, with an every-bar baseline and honest
+ * coverage disclosure. The separate `graphSource` field stays the simpler
+ * single-window archive-study basis; this struct is the multi-variant
+ * pre/post-event window study.
+ */
+export const TradingEventsGraphStudyRequest = Schema.Struct({
+  /** The vetted pool whose retained Uniswap swaps price the study. */
+  poolId: Schema.String.check(Schema.isNonEmpty()),
+  /** Bar width, ms. The service floor is one hour. */
+  intervalMs: Schema.optional(Schema.Number),
+  /**
+   * The pool dataset's declared earliest coverage, ms epoch: occurrences
+   * anchored before it are reported uncovered BY DECLARATION instead of
+   * burning the acquisition budget on windows that cannot exist.
+   */
+  poolDataStartMs: Schema.optional(Schema.Number),
+  /** 1–8 variants; the service refuses an empty or oversized set. */
+  variants: Schema.Array(TradingEventsGraphStudyVariant),
+});
+export type TradingEventsGraphStudyRequest = typeof TradingEventsGraphStudyRequest.Type;
+
+/** One occurrence's outcome inside one `study_graph` variant. */
+export const TradingGraphStudyOccurrence = Schema.Struct({
+  label: Schema.optional(Schema.String),
+  startAt: Schema.Number,
+  endAt: Schema.Number,
+  anchorAt: Schema.Number,
+  source: Schema.String,
+  covered: Schema.Boolean,
+  reason: Schema.optional(Schema.String),
+  datasetId: Schema.optional(Schema.String),
+  returnPct: Schema.optional(Schema.Number),
+  truncated: Schema.optional(Schema.Boolean),
+  baselineMeanReturnPct: Schema.optional(Schema.Number),
+  /** Trader net base acquisition over [anchor, anchor+24h), exact raw units (positive = net buying). */
+  entryDayNetBaseRaw: Schema.optional(Schema.String),
+  /** Trader net base acquisition over the full entry lead window, exact raw units. */
+  entryLeadNetBaseRaw: Schema.optional(Schema.String),
+});
+export type TradingGraphStudyOccurrence = typeof TradingGraphStudyOccurrence.Type;
+
+/** One variant's outcome: per-occurrence rows plus complete-horizon aggregates. */
+export const TradingGraphStudyVariantOutcome = Schema.Struct({
+  label: Schema.String,
+  anchor: Schema.Literals(["pre-start", "post-end"]),
+  leadMs: Schema.Number,
+  tailMs: Schema.Number,
+  horizonBars: Schema.Number,
+  entryBasis: EventStudyEntryBasis,
+  occurrences: Schema.Array(TradingGraphStudyOccurrence),
+  /** Aggregates across COMPLETE horizons only. */
+  aggregates: Schema.Struct({
+    nRequested: Schema.Number,
+    nCovered: Schema.Number,
+    nComplete: Schema.Number,
+    meanReturnPct: Schema.NullOr(Schema.Number),
+    bestReturnPct: Schema.NullOr(Schema.Number),
+    worstReturnPct: Schema.NullOr(Schema.Number),
+    meanBaselineReturnPct: Schema.NullOr(Schema.Number),
+  }),
+  disclosure: Schema.String,
+});
+export type TradingGraphStudyVariantOutcome = typeof TradingGraphStudyVariantOutcome.Type;
+
+/** The applies-now assessment for one variant against the next occurrence. */
+export const TradingGraphStudyAppliesNow = Schema.Struct({
+  label: Schema.String,
+  /** Null when the variant's anchor design has no pre-event entry window. */
+  entryWindowStartMs: Schema.NullOr(Schema.Number),
+  entryWindowEndMs: Schema.NullOr(Schema.Number),
+  withinWindow: Schema.NullOr(Schema.Boolean),
+  note: Schema.String,
+});
+export type TradingGraphStudyAppliesNow = typeof TradingGraphStudyAppliesNow.Type;
+
+/** The retained `study_graph` result: every variant, every row, the honest
+ *  uncertainty sentence, and the applies-now verdict for the next occurrence. */
+export const TradingGraphEventWindowStudy = Schema.Struct({
+  studyId: Schema.String,
+  createdAtMs: Schema.Number,
+  eventSetName: Schema.String,
+  poolId: Schema.String,
+  intervalMs: Schema.Number,
+  variants: Schema.Array(TradingGraphStudyVariantOutcome),
+  appliesNow: Schema.Array(TradingGraphStudyAppliesNow),
+  /** The earliest observation actually retained across every dataset in this study. */
+  earliestRetainedObservationMs: Schema.NullOr(Schema.Number),
+  declaredPoolDataStartMs: Schema.NullOr(Schema.Number),
+  uncertainty: Schema.String,
+});
+export type TradingGraphEventWindowStudy = typeof TradingGraphEventWindowStudy.Type;
+
 export const TradingEventsInput = Schema.Struct({
   /** Attribution, never authority: an event set takes no mission state. */
   missionId: Schema.optional(Schema.String),
@@ -1561,6 +1678,9 @@ export const TradingEventsInput = Schema.Struct({
    * report says so rather than letting the number pass as pre-registered.
    */
   thresholdChosenAfterResults: Schema.optional(Schema.Boolean),
+  /** Required by `study_graph`: the multi-variant pre/post-event window
+   *  study over Graph-derived pool prices. */
+  graphStudy: Schema.optional(TradingEventsGraphStudyRequest),
 });
 export type TradingEventsInput = typeof TradingEventsInput.Type;
 
@@ -1575,6 +1695,8 @@ export const TradingEventsResult = Schema.Struct({
   confirmationDigest: Schema.optional(Schema.String),
   /** Set by `study`, with the composed honesty sentence in `verdict`. */
   study: Schema.optional(EventStudyReport),
+  /** Set by `study_graph`: the retained multi-variant window study. */
+  graphStudy: Schema.optional(TradingGraphEventWindowStudy),
   /** What the call did, in one sentence the model can relay. */
   outcome: Schema.optional(Schema.String),
   /** Why a call changed nothing. Present only on a refusal. */
@@ -1661,6 +1783,7 @@ export function renderTradingEventsMenu(): string {
     "dates are UTC ISO: date-only start/end is date precision (whole days; a missing end spans the start day, a date-only end through that day); a timed start is exact and needs its timed end: same instant is an activation, later a window; a timed start with no end is refused, not padded; declared precision (instant/window/date) contradictions refuse",
     `one source per occurrence (the URL, or "user provided"), never several joined, ${EVENT_SET_MAX_OCCURRENCES} max a set; record/add take requireReadBack: true and the preview's confirmationDigest`,
     `study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?} measures per-occurrence forward return vs an every-bar baseline, entryBasis first_closed_bar_after_event (default), interval 1m 3m 5m 15m 1h 4h 1d: a four-week daily study is interval 1d, horizonBars 28; coarsest interval covering the window; metric path_extrema {direction} adds the post-entry extremum and excursion, hindsight-perfect; uncovered occurrences reported, not dropped`,
+    `study_graph {eventSetId, market, graphStudy:{poolId, variants:[{label, anchor, leadMs|tailMs, horizonBars}], intervalMs?, poolDataStartMs?}} compares entry/holding variants over Graph pool prices: per-occurrence return vs baseline, net flow, coverage, applies-now vs the next occurrence; freeze windows from the result BEFORE arming`,
     `a hit rate needs a recorded excursionThresholdPct (negative for a short's dip, long convention): without one, present each occurrence's excursion and ask; with one, hits are counted over complete horizons against a matched every-bar baseline, and thresholdChosenAfterResults: true is recorded when the number was picked after seeing results`,
     `a lowest/highest-point exit is hindsight, never a rule: backtesting or validating an event idea needs a prospective exit (stop, target, or maxHoldBars)`,
     "theses anchor with operand {source: event, eventSetId, label}: bars since the most recent ended occurrence; profit simulation is trading_backtest's",

@@ -65,6 +65,7 @@ import {
   UniswapQuoteService,
 } from "../../../trading/forge/UniswapQuoteService.ts";
 import { ForgeCapabilitySandbox } from "../../../trading/forge/CapabilitySandbox.ts";
+import { SubstreamsSourceStore } from "../../../trading/forge/SubstreamsSourceStore.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { handlers } from "./handlers.ts";
 
@@ -230,6 +231,35 @@ const callWithRuns = <A, E>(
 
 const storeAt = (stateRoot: string): Promise<ForgeCapabilityStoreShape> =>
   Effect.runPromise(Effect.provide(storeOver(stateRoot))(ForgeCapabilityStore));
+
+/** The same graph plus a stubbed streaming store, for the status read that
+ *  lists registered substreams sources. */
+const callWithSubstreams = <A, E>(
+  effect: Effect.Effect<A, E>,
+  stateRoot: string,
+  substreamsLayer: Layer.Layer<SubstreamsSourceStore>,
+): Promise<A> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* runMigrations({});
+      return yield* effect;
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(McpInvocationContext.McpInvocationContext, invocationScope),
+          stubGateway,
+          storeOver(stateRoot),
+          TradingMissionServiceLive,
+          stubReactor(),
+          Layer.succeed(ForgeCapabilityBuilder, {
+            prepare: () => Effect.die("not used here"),
+            check: () => Effect.die("not used here"),
+          } as unknown as ForgeCapabilityBuilder["Service"]),
+          substreamsLayer,
+        ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory())),
+      ),
+    ),
+  );
 
 /** Install one fixture capability version directly through the store's CAS. */
 const seedInstalledCapability = async (store: ForgeCapabilityStoreShape): Promise<void> => {
@@ -507,6 +537,56 @@ it("status reports provider jobs and observed data separately", async () => {
     // absence — distinct from the job's success.
     assert.isDefined(status.dataStatus);
     assert.isUndefined(status.dataStatus?.lastEvaluation);
+  } finally {
+    await NodeFs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("status lists registered substreams sources with their committed health", async () => {
+  const root = await tempRoot();
+  try {
+    // With no streaming store wired the field stays absent — the unwired
+    // runtime's honest shape.
+    const unwired = await call(
+      handlers.trading_forge({ action: "status" }) as unknown as Effect.Effect<
+        TradingForgeResult,
+        TradingToolRejectedError
+      >,
+      root,
+    );
+    assert.equal(unwired.outcome, "accepted");
+    assert.isUndefined(unwired.substreams);
+
+    // With the store wired, the registered source and its committed health
+    // ride the status read as the streaming half of the data view.
+    const wired = await callWithSubstreams(
+      handlers.trading_forge({ action: "status" }) as unknown as Effect.Effect<
+        TradingForgeResult,
+        TradingToolRejectedError
+      >,
+      root,
+      Layer.succeed(SubstreamsSourceStore, {
+        listSources: (environmentId: string) =>
+          Effect.succeed([
+            {
+              sourceId: `sub_${environmentId}`,
+              state: "healthy",
+              reason: "",
+              finalWatermarkBlock: "25965000",
+              finalWatermarkTimestampMs: 1_789_000_000_000,
+              lastCommitAtMs: 1_789_000_001_000,
+              cursor: "cursor-live",
+              packageSha256: "2ce1aac8fd8debb67ddbdb87b56ff15395605b9e0b192dd796cac874b721ae3f",
+              moduleDigest: "d".repeat(64),
+            },
+          ]),
+      } as unknown as SubstreamsSourceStore["Service"]),
+    );
+    assert.equal(wired.outcome, "accepted");
+    assert.equal(wired.substreams?.length, 1);
+    assert.equal(wired.substreams?.[0]?.state, "healthy");
+    assert.equal(wired.substreams?.[0]?.finalWatermarkBlock, "25965000");
+    assert.equal(wired.substreams?.[0]?.cursor, "cursor-live");
   } finally {
     await NodeFs.rm(root, { recursive: true, force: true });
   }

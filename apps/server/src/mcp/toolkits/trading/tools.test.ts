@@ -333,20 +333,32 @@ it("keeps every description on a budget", () => {
   // sentences (publication-is-not-availability, capture honesty) without a
   // matching raise. 8,750 covers that committed reality plus the forge
   // sentences; it is not fresh headroom for the next field glossary.
-  expect(total, "total description chars must stay under 8,750").toBeLessThan(8_750);
+  //
+  // Raised from 8,750 to 9,450 when `trading_events` gained the study_graph
+  // sentence (~370 chars: the multi-variant pre/post-event window study over
+  // Graph pool prices, with applies-now) — and that raise tripped over the
+  // G0 session's declare_source/capture_source sentences, which had landed
+  // committed in `trading_forge` (~530 chars) without the matching raise the
+  // convention requires. The same pass re-trimmed both descriptions rather
+  // than widening them: events 2,329 → 1,517, forge 2,023 → 1,769. The raise
+  // carries the committed G0 sentences plus the one new study_graph sentence
+  // over those trimmed numbers, on the same rule as every raise above.
+  expect(total, "total description chars must stay under 9,450").toBeLessThan(9_450);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;
     // `trading_events` carries the study grammar (interval set, horizonBars
     // bound, the four-week example, the path_extrema metric fields) and the
     // import_external capture honesty (publication is not availability), and
-    // `trading_look` the fetch grammar, so they are the longest descriptions
-    // in the set. 1,450 leaves edit headroom, not room for a new field
-    // glossary; it moved from 900 (metric fields), to 1,150 (path_extrema),
-    // to 1,450 when the committed import_external sentences (1,410 chars)
-    // were found exceeding the stale 1,150 bound.
-    expect(len, `${tool.name} description is ${len} chars, must be <= 1,450`).toBeLessThanOrEqual(
-      1_450,
+    // `trading_forge` the four-artifact contract plus the generated-source
+    // and execution lanes, so they are the longest descriptions in the set.
+    // 1,800 leaves edit headroom, not room for a new field glossary; it
+    // moved from 900 (metric fields), to 1,150 (path_extrema), to 1,450
+    // (import_external sentences), to 1,800 when the committed G0
+    // declare/capture sentences and the study_graph sentence carried both
+    // tools past the stale 1,450 bound in the same measured pass.
+    expect(len, `${tool.name} description is ${len} chars, must be <= 1,800`).toBeLessThanOrEqual(
+      1_800,
     );
   }
 });

@@ -2,6 +2,11 @@ import { attachGraphStudyFeatures } from "@t3tools/trading-contracts";
 import { ForgeAcceptance } from "../../../trading/forge/ForgeAcceptance.ts";
 import type { ForgeAcceptanceCase } from "@t3tools/trading-contracts";
 import { GraphResearchService } from "../../../trading/research/GraphResearchService.ts";
+import {
+  GraphEventWindowStudyService,
+  type EventWindowStudyVariant,
+} from "../../../trading/research/GraphEventWindowStudyService.ts";
+import { SubstreamsSourceStore } from "../../../trading/forge/SubstreamsSourceStore.ts";
 import { ExternalEventImportService } from "../../../trading/research/ExternalEventImportService.ts";
 /**
  * Trading tool handlers.
@@ -4645,6 +4650,116 @@ export const handlers = {
               "To show this on the graph, call trading_chart publish_event_study with the same parameters.",
           });
         }
+
+        case "study_graph": {
+          if (input.eventSetId === undefined) {
+            return yield* refuse("study_graph needs an eventSetId");
+          }
+          if (input.graphStudy === undefined) {
+            return yield* refuse(
+              "study_graph needs its graphStudy body: {poolId, variants: [{label, anchor: pre-start|post-end, leadMs|tailMs, horizonBars, entryBasis?}], intervalMs?, poolDataStartMs?}",
+            );
+          }
+          if (input.market === undefined) {
+            return yield* refuse(
+              "study_graph needs a market (the asset the pool prices, e.g. ETH)",
+            );
+          }
+          const set = yield* eventService.show(input.eventSetId).pipe(Effect.orDie);
+          if (set === null) return yield* refuse("no event set with that id");
+          const studyOption = yield* Effect.serviceOption(GraphEventWindowStudyService);
+          if (studyOption._tag === "None") {
+            return yield* refuse(
+              "the Graph event-window study service is not wired into this runtime",
+            );
+          }
+          // Tool-shape variants to the service's total shape: the anchor's own
+          // offset must be a positive integer, the other stays 0. Validation is
+          // local so the refusal names the variant before any acquisition runs.
+          const variants: Array<EventWindowStudyVariant> = [];
+          for (const [index, variant] of input.graphStudy.variants.entries()) {
+            const offset = variant.anchor === "pre-start" ? variant.leadMs : variant.tailMs;
+            if (offset === undefined || !Number.isSafeInteger(offset) || offset <= 0) {
+              return yield* refuse(
+                `variant ${index + 1} (${variant.label}): anchor ${variant.anchor} needs ${
+                  variant.anchor === "pre-start" ? "leadMs" : "tailMs"
+                } as a positive integer`,
+              );
+            }
+            if (!Number.isSafeInteger(variant.horizonBars) || variant.horizonBars < 1) {
+              return yield* refuse(
+                `variant ${index + 1} (${variant.label}): horizonBars must be a positive integer`,
+              );
+            }
+            variants.push({
+              label: variant.label,
+              anchor: variant.anchor,
+              leadMs: variant.anchor === "pre-start" ? offset : 0,
+              tailMs: variant.anchor === "post-end" ? offset : 0,
+              horizonBars: variant.horizonBars,
+              entryBasis: variant.entryBasis ?? EVENT_STUDY_DEFAULT_ENTRY_BASIS,
+            });
+          }
+          // The applies-now assessment reads the set's next not-yet-started
+          // occurrence — the soonest upcoming start.
+          const upcoming = [...set.occurrences]
+            .filter((occurrence) => occurrence.startAt > now)
+            .sort((a, b) => a.startAt - b.startAt);
+          const next = upcoming[0];
+          const read = yield* studyOption.value.runStudy({
+            environmentId: scope.environmentId,
+            poolId: input.graphStudy.poolId,
+            market: input.market,
+            eventSetName: set.name,
+            occurrences: set.occurrences,
+            intervalMs: input.graphStudy.intervalMs ?? 86_400_000,
+            variants,
+            ...(input.graphStudy.poolDataStartMs === undefined
+              ? {}
+              : { poolDataStartMs: input.graphStudy.poolDataStartMs }),
+            ...(next === undefined
+              ? {}
+              : {
+                  nextOccurrence: {
+                    startAt: next.startAt,
+                    endAt: next.endAt,
+                    ...(next.label === undefined ? {} : { label: next.label }),
+                    source: next.source,
+                  },
+                }),
+            now,
+          });
+          if (read.status === "unavailable") {
+            return yield* refuse(`graph window study unavailable: ${read.reason}`);
+          }
+          // One sentence per variant (coverage + complete-horizon mean) plus
+          // every applies-now verdict, so the model relays the honest numbers
+          // without re-deriving them from the retained result.
+          const variantSentences = read.result.variants.map(
+            (variant) =>
+              `${variant.label}: ${variant.aggregates.nComplete}/${variant.aggregates.nRequested} complete` +
+              (variant.aggregates.meanReturnPct === null
+                ? ""
+                : `, mean ${variant.aggregates.meanReturnPct.toFixed(2)}%`),
+          );
+          const appliesSentences = read.result.appliesNow.map(
+            (applies) =>
+              `${applies.label}: ${
+                applies.entryWindowStartMs === null || applies.entryWindowEndMs === null
+                  ? "no pre-event entry window by design"
+                  : applies.withinWindow
+                    ? "INSIDE the entry window now"
+                    : "outside the entry window"
+              } — ${applies.note}`,
+          );
+          return eventsResult({
+            graphStudy: read.result,
+            outcome:
+              `Retained window study ${read.result.studyId} over Graph pool ${read.result.poolId} ` +
+              `(${read.result.variants.length} variants, ${variantSentences.join("; ")}). ` +
+              `${read.result.uncertainty} ${appliesSentences.join(" ")}`,
+          });
+        }
       }
     }),
 
@@ -5520,6 +5635,25 @@ export const handlers = {
 
         case "status": {
           const jobs = yield* reactor.listJobs({ environmentId }).pipe(Effect.orDie);
+          // The streaming lane's registered sources with committed health —
+          // the third record, kept apart from provider jobs and detector runs.
+          const substreamsOption = yield* Effect.serviceOption(SubstreamsSourceStore);
+          const substreams =
+            substreamsOption._tag === "None"
+              ? undefined
+              : (yield* substreamsOption.value.listSources(environmentId).pipe(Effect.orDie)).map(
+                  (source) => ({
+                    sourceId: source.sourceId,
+                    state: source.state,
+                    reason: source.reason,
+                    finalWatermarkBlock: source.finalWatermarkBlock,
+                    finalWatermarkTimestampMs: source.finalWatermarkTimestampMs,
+                    lastCommitAtMs: source.lastCommitAtMs,
+                    packageSha256: source.packageSha256,
+                    moduleDigest: source.moduleDigest,
+                    cursor: source.cursor,
+                  }),
+                );
           const lastEvaluation =
             input.capabilityId === undefined
               ? null
@@ -5591,6 +5725,7 @@ export const handlers = {
               lastEvaluation === null && input.capabilityId === undefined
                 ? undefined
                 : { lastEvaluation: lastEvaluation ?? undefined },
+            ...(substreams === undefined ? {} : { substreams }),
             ...(detector === undefined ? {} : { detector }),
             ...(input.buildId === undefined
               ? {}
