@@ -51,6 +51,7 @@ import {
   DetectorProgramOutputV2,
   FORGE_CAPABILITY_ARTIFACT_PATHS,
   FORGE_MAX_BUNDLE_BYTES,
+  FORGE_MAX_SAMPLE_DOCUMENT_BYTES,
   FORGE_MAX_SEMANTICS_CHARS,
   FORGE_SDK_SCHEMA_VERSION,
   FORGE_SANDBOX_BUILD_BUDGET_MS,
@@ -864,14 +865,24 @@ export function validateAuthoredDetectorArtifacts(input: {
       reason: `the detector bundle must be exactly ${expected.join(", ")} — found ${names.join(", ") || "nothing"}`,
     };
   }
-  const totalBytes = expected.reduce(
-    (sum, path) => sum + Buffer.byteLength(input.contents[path] ?? "", "utf8"),
-    0,
-  );
+  // Program bytes and the sample document budget are separate: the sample is
+  // check-time input (a real captured document), not program bytes, and gets
+  // the capture-policy-aligned ceiling instead of the program cap.
+  const totalBytes = expected.reduce((sum, path) => {
+    if (path === "sample-document.json") return sum;
+    return sum + Buffer.byteLength(input.contents[path] ?? "", "utf8");
+  }, 0);
   if (totalBytes > FORGE_MAX_BUNDLE_BYTES) {
     return {
       status: "refused",
       reason: `the detector bundle totals ${totalBytes} bytes, over the ${FORGE_MAX_BUNDLE_BYTES} byte cap`,
+    };
+  }
+  const sampleBytes = Buffer.byteLength(input.contents["sample-document.json"] ?? "", "utf8");
+  if (sampleBytes > FORGE_MAX_SAMPLE_DOCUMENT_BYTES) {
+    return {
+      status: "refused",
+      reason: `sample-document.json is ${sampleBytes} bytes, over the ${FORGE_MAX_SAMPLE_DOCUMENT_BYTES} byte sample ceiling`,
     };
   }
   // Kind-aware program checks: a detector bundle centers detector.ts with its
@@ -1015,6 +1026,7 @@ export const readAuthoringWorkspace = async (
     throw new Error("refusing a symlink authoring workspace");
   const entries = await NodeFs.readdir(stagingDir, { withFileTypes: true });
   let totalBytes = 0;
+  let sampleBytes = 0;
   const contents: Record<string, string> = {};
   for (const entry of entries) {
     if (!allowedPaths.includes(entry.name)) {
@@ -1033,9 +1045,18 @@ export const readAuthoringWorkspace = async (
     const handle = await NodeFs.open(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     try {
       const stat = await handle.stat();
-      totalBytes += stat.size;
-      if (!stat.isFile() || totalBytes > FORGE_MAX_BUNDLE_BYTES)
-        throw new Error("bundle exceeds its file or size bounds");
+      // The sample document rides its own capture-aligned budget; program
+      // files keep the strict bundle cap.
+      const isSample = entry.name === "sample-document.json";
+      if (isSample) {
+        sampleBytes += stat.size;
+        if (!stat.isFile() || sampleBytes > FORGE_MAX_SAMPLE_DOCUMENT_BYTES)
+          throw new Error("bundle exceeds its file or size bounds");
+      } else {
+        totalBytes += stat.size;
+        if (!stat.isFile() || totalBytes > FORGE_MAX_BUNDLE_BYTES)
+          throw new Error("bundle exceeds its file or size bounds");
+      }
       const buffer = Buffer.alloc(stat.size + 1);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       if (bytesRead !== stat.size) throw new Error("artifact changed during read");

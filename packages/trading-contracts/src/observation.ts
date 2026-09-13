@@ -464,6 +464,15 @@ export type ForgeCapabilityArtifactPath = (typeof FORGE_CAPABILITY_ARTIFACT_PATH
 /** Total size of the four artifacts together: 256 KiB. */
 export const FORGE_MAX_BUNDLE_BYTES = 256 * 1024;
 
+/**
+ * The byte ceiling for a source-adapter bundle's sample-document.json — the
+ * base64 of one real captured document, check-time input rather than program
+ * bytes. Sized above the capture policy's maxDocumentBytes ceiling
+ * (1 MiB decoded ≈ 1.4 MiB base64) so a document the capture path may accept
+ * can always be submitted as the acceptance sample.
+ */
+export const FORGE_MAX_SAMPLE_DOCUMENT_BYTES = 2 * 1024 * 1024;
+
 /** Sandbox stdin (JSON input) cap: 2 MiB. */
 export const FORGE_SANDBOX_MAX_INPUT_BYTES = 2 * 1024 * 1024;
 
