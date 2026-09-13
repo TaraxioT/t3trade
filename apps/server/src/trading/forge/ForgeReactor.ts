@@ -39,6 +39,7 @@ import {
   DetectorProgramOutputV2,
   DetectorStateEnvelope,
   detectorArtifactPaths,
+  v2BundleKind,
   decodeDetectorState,
   detectorEvaluationId,
   encodeDetectorState,
@@ -433,6 +434,15 @@ export const makeForgeReactor = Effect.gen(function* () {
       const manifest = decodeDetectorManifestV2(manifestJson);
       if (manifest === null) {
         yield* failJob(`the installed v2 manifest of ${job.capabilityId} does not decode`);
+        return;
+      }
+      // A source-adapter bundle installs but never evaluates: it has no
+      // detector program, and arming one can only end in a named failure —
+      // refuse it here instead, at the dispatch boundary.
+      if (v2BundleKind(manifest) === "source-adapter") {
+        yield* failJob(
+          `${job.capabilityId} v${active.version} is a source adapter, not a detector program; it installs for capture but never evaluates`,
+        );
         return;
       }
       const paths = detectorArtifactPaths(manifest);

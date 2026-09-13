@@ -44,6 +44,7 @@ import { randomUUID } from "node:crypto";
 import {
   CapabilityManifestV2,
   detectorArtifactPaths,
+  v2BundleKind,
   DETECTOR_V2_ARTIFACT_ROLES,
   DetectorProgramInputV2,
   DetectorProgramOutputV2,
@@ -791,6 +792,21 @@ const DETECTOR_V2_REQUIRED_HASH_PATHS = [
   "sdk.ts",
 ] as const;
 
+/** The source-adapter bundle's staged hash paths (same four-entry shape). */
+const SOURCE_ADAPTER_V2_REQUIRED_HASH_PATHS = [
+  "manifest.json",
+  "sample-document.json",
+  "sdk.ts",
+  "transform.ts",
+] as const;
+
+/**
+ * The parse head: the runner image's `parse-v2` shim (compiled `transform.ts`,
+ * sync `parseDocument` export, document envelope JSON on stdin, `{ records }`
+ * stdout). Kept structurally identical to the research service's envelope.
+ */
+export const FORGE_RUNNER_PARSE_V2 = ["forge-parse-v2"] as const;
+
 /**
  * The detector-program (v2) artifact contract, enforced before any code runs.
  *
@@ -857,9 +873,45 @@ export function validateAuthoredDetectorArtifacts(input: {
       reason: `the detector bundle totals ${totalBytes} bytes, over the ${FORGE_MAX_BUNDLE_BYTES} byte cap`,
     };
   }
-  for (const path of ["detector.ts", "detector.test.ts"]) {
-    if ((input.contents[path] ?? "").trim() === "") {
-      return { status: "refused", reason: `${path} is empty` };
+  // Kind-aware program checks: a detector bundle centers detector.ts with its
+  // generated test; a source-adapter bundle centers transform.ts with a real
+  // sample document the host parses at check time. The exact file-set
+  // comparison above already excludes a detector file from a source-adapter
+  // bundle and vice versa.
+  if (v2BundleKind(parsed) === "source-adapter") {
+    if ((input.contents["transform.ts"] ?? "").trim() === "") {
+      return { status: "refused", reason: "transform.ts is empty" };
+    }
+    const sample = input.contents["sample-document.json"] ?? "";
+    if (sample.trim() === "") {
+      return { status: "refused", reason: "sample-document.json is empty" };
+    }
+    let parsedSample: unknown;
+    try {
+      parsedSample = JSON.parse(sample);
+    } catch {
+      return { status: "refused", reason: "sample-document.json is not valid JSON" };
+    }
+    const sampleRecord =
+      typeof parsedSample === "object" && parsedSample !== null && !Array.isArray(parsedSample)
+        ? (parsedSample as Record<string, unknown>)
+        : null;
+    if (
+      sampleRecord === null ||
+      typeof sampleRecord["bodyBase64"] !== "string" ||
+      sampleRecord["bodyBase64"] === ""
+    ) {
+      return {
+        status: "refused",
+        reason:
+          "sample-document.json must be an object carrying the captured document as bodyBase64",
+      };
+    }
+  } else {
+    for (const path of ["detector.ts", "detector.test.ts"]) {
+      if ((input.contents[path] ?? "").trim() === "") {
+        return { status: "refused", reason: `${path} is empty` };
+      }
     }
   }
   // A declared execution policy is a program too: empty bytes are not one.
@@ -1258,7 +1310,7 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
               ].join("\n"),
               stagingDir,
               artifactContract:
-                "manifest.json, detector.ts, detector.test.ts (plus each optional transform.ts / state-schema.ts / query.graphql / policy.ts you declare)",
+                "detector program: manifest.json, detector.ts, detector.test.ts (plus each optional transform.ts / state-schema.ts / query.graphql / policy.ts you declare). SOURCE ADAPTER instead of a detector: manifest.json, transform.ts (exports sync parseDocument(envelope) -> {records}), and sample-document.json ({bodyBase64: a real captured document}) as the acceptance artifact — declare NO detector role; transform imports only ./sdk (decodeBase64Utf8 lives there); the host parses your sample through the transform in containment at check time",
             }
           : {
               schemaVersion: FORGE_SDK_SCHEMA_VERSION,
@@ -1311,6 +1363,7 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
         .pipe(Effect.mapError(toBuilderError));
 
       const manifest = decodeManifestV2(contents["manifest.json"] ?? "{}");
+      const bundleKind = v2BundleKind(manifest);
       // The sealed bundle the runs mount and the store stages: the authored
       // files plus the exact host SDK bytes mounted at sdk.ts.
       const bundleContents: Record<string, string> = {
@@ -1342,114 +1395,202 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
       }
       checks.push({ name: "typecheck", passed: true, exitCode: typecheck.value.exitCode });
 
-      // -- the generated tests (detector.test.ts, their own run) ------------
-      const tests = yield* sandbox
-        .runBuildStep({ files, entrypoint: [...FORGE_RUNNER_TEST] })
-        .pipe(Effect.exit);
-      if (tests._tag === "Failure") {
-        return yield* failStage(
-          buildId,
-          `generated tests failed closed: ${sandboxFailureReason(tests.cause)}`,
-        );
-      }
-      checks.push({ name: "generated-tests", passed: true, exitCode: tests.value.exitCode });
+      // The acceptance summary the ready patch reports; the source-adapter
+      // branch fills its own below.
+      let detectorAcceptance: {
+        total: number;
+        passed: number;
+        failed: Array<{ name: string; reason: string }>;
+      } = { total: acceptanceV2.length, passed: acceptanceV2.length, failed: [] };
 
-      // -- host-owned acceptance (v2): the host compares result AND state ----
-      const failedCases: Array<{ name: string; reason: string }> = [];
-      for (const example of acceptanceV2) {
-        if (!Schema.is(DetectorProgramInputV2)(example.input)) {
-          failedCases.push({
-            name: example.name,
-            reason: "the case input is not a sealed DetectorProgramInputV2",
-          });
-          continue;
+      if (bundleKind === "source-adapter") {
+        // -- source-adapter acceptance: parse the REAL staged sample ----------
+        // The sample document IS the acceptance case: the transform must turn
+        // the captured bytes into a records array, deterministically, inside
+        // containment. No generated test file exists for a parse.
+        const envelope = JSON.stringify({
+          schemaVersion: 1,
+          sourceId: capabilityId,
+          url: "sample",
+          contentType: "application/json",
+          capturedAtMs: Date.now(),
+          bodyBase64: (
+            JSON.parse(contents["sample-document.json"] ?? "{}") as {
+              bodyBase64?: unknown;
+            }
+          )["bodyBase64"],
+        });
+        const decodeParseOutput = (value: unknown): unknown => {
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw new ForgeSandboxError({
+              kind: "invalid_result",
+              reason: "adapter output must be a JSON object",
+            });
+          }
+          if (!Array.isArray((value as Record<string, unknown>)["records"])) {
+            throw new ForgeSandboxError({
+              kind: "invalid_result",
+              reason: "adapter output must carry a records array",
+            });
+          }
+          return value;
+        };
+        const parseChecks = [
+          yield* sandbox
+            .runEvaluation({
+              files,
+              entrypoint: [...FORGE_RUNNER_PARSE_V2],
+              stdinJson: envelope,
+              decodeResult: decodeParseOutput,
+            })
+            .pipe(Effect.exit),
+          yield* sandbox
+            .runEvaluation({
+              files,
+              entrypoint: [...FORGE_RUNNER_PARSE_V2],
+              stdinJson: envelope,
+              decodeResult: decodeParseOutput,
+            })
+            .pipe(Effect.exit),
+        ];
+        if (parseChecks.some((outcome) => outcome._tag === "Failure")) {
+          const firstFailure = parseChecks.find((outcome) => outcome._tag === "Failure");
+          return yield* failStage(
+            buildId,
+            `sample parse failed closed: ${
+              firstFailure && firstFailure._tag === "Failure"
+                ? sandboxFailureReason(firstFailure.cause)
+                : "unknown"
+            }`,
+          );
         }
-        const actual = yield* sandbox
+        const determinismPassed =
+          parseChecks[0]?._tag === "Success" &&
+          parseChecks[1]?._tag === "Success" &&
+          JSON.stringify(parseChecks[0].value) === JSON.stringify(parseChecks[1].value);
+        checks.push({ name: "parse-acceptance", passed: true });
+        checks.push({ name: "determinism", passed: determinismPassed });
+        if (!determinismPassed) {
+          return yield* failStage(
+            buildId,
+            "the source adapter was not deterministic on the identical sample document",
+          );
+        }
+      } else {
+        // -- the generated tests (detector.test.ts, their own run) ------------
+        const tests = yield* sandbox
+          .runBuildStep({ files, entrypoint: [...FORGE_RUNNER_TEST] })
+          .pipe(Effect.exit);
+        if (tests._tag === "Failure") {
+          return yield* failStage(
+            buildId,
+            `generated tests failed closed: ${sandboxFailureReason(tests.cause)}`,
+          );
+        }
+        checks.push({ name: "generated-tests", passed: true, exitCode: tests.value.exitCode });
+
+        // -- host-owned acceptance (v2): the host compares result AND state ----
+        const failedCases: Array<{ name: string; reason: string }> = [];
+        for (const example of acceptanceV2) {
+          if (!Schema.is(DetectorProgramInputV2)(example.input)) {
+            failedCases.push({
+              name: example.name,
+              reason: "the case input is not a sealed DetectorProgramInputV2",
+            });
+            continue;
+          }
+          const actual = yield* sandbox
+            .runEvaluation({
+              files,
+              entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
+              stdinJson: JSON.stringify(example.input),
+              decodeResult: decodeDetectorProgramOutputV2,
+            })
+            .pipe(Effect.exit);
+          if (actual._tag === "Failure") {
+            failedCases.push({ name: example.name, reason: sandboxFailureReason(actual.cause) });
+            continue;
+          }
+          const output = actual.value as DetectorProgramOutputV2;
+          const expectedResult = JSON.stringify(example.expected.result);
+          const gotResult = JSON.stringify(output.result);
+          if (expectedResult !== gotResult) {
+            failedCases.push({
+              name: example.name,
+              reason: `expected result ${expectedResult}, got ${gotResult}`,
+            });
+            continue;
+          }
+          const expectedState = JSON.stringify(example.expected.nextState);
+          const gotState = JSON.stringify(output.nextState);
+          if (expectedState !== gotState) {
+            failedCases.push({
+              name: example.name,
+              reason: `expected nextState ${expectedState}, got ${gotState}`,
+            });
+          }
+        }
+        const acceptancePassed = acceptanceV2.length - failedCases.length;
+        checks.push({
+          name: "acceptance",
+          passed: failedCases.length === 0,
+          ...(failedCases.length === 0
+            ? {}
+            : {
+                detail: failedCases
+                  .map((failure) => `${failure.name}: ${failure.reason}`)
+                  .join("; ")
+                  .slice(0, 2_000),
+              }),
+        });
+
+        // Empty caller cases cannot certify a module without exercising it —
+        // the same rule the v1 path holds.
+        const determinismInput = acceptanceV2[0]?.input;
+        if (determinismInput === undefined)
+          return yield* failStage(
+            buildId,
+            "at least one independent host acceptance case is required",
+          );
+        const first = yield* sandbox
           .runEvaluation({
             files,
             entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
-            stdinJson: JSON.stringify(example.input),
+            stdinJson: JSON.stringify(determinismInput),
             decodeResult: decodeDetectorProgramOutputV2,
           })
           .pipe(Effect.exit);
-        if (actual._tag === "Failure") {
-          failedCases.push({ name: example.name, reason: sandboxFailureReason(actual.cause) });
-          continue;
-        }
-        const output = actual.value as DetectorProgramOutputV2;
-        const expectedResult = JSON.stringify(example.expected.result);
-        const gotResult = JSON.stringify(output.result);
-        if (expectedResult !== gotResult) {
-          failedCases.push({
-            name: example.name,
-            reason: `expected result ${expectedResult}, got ${gotResult}`,
-          });
-          continue;
-        }
-        const expectedState = JSON.stringify(example.expected.nextState);
-        const gotState = JSON.stringify(output.nextState);
-        if (expectedState !== gotState) {
-          failedCases.push({
-            name: example.name,
-            reason: `expected nextState ${expectedState}, got ${gotState}`,
-          });
-        }
-      }
-      const acceptancePassed = acceptanceV2.length - failedCases.length;
-      checks.push({
-        name: "acceptance",
-        passed: failedCases.length === 0,
-        ...(failedCases.length === 0
-          ? {}
-          : {
-              detail: failedCases
-                .map((failure) => `${failure.name}: ${failure.reason}`)
-                .join("; ")
-                .slice(0, 2_000),
-            }),
-      });
+        const second = yield* sandbox
+          .runEvaluation({
+            files,
+            entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
+            stdinJson: JSON.stringify(determinismInput),
+            decodeResult: decodeDetectorProgramOutputV2,
+          })
+          .pipe(Effect.exit);
+        // The double-run covers the WHOLE output JSON: result and nextState
+        // together — a detector whose state drifts is not deterministic.
+        const determinismPassed =
+          first._tag === "Success" &&
+          second._tag === "Success" &&
+          JSON.stringify(first.value) === JSON.stringify(second.value);
+        checks.push({ name: "determinism", passed: determinismPassed });
 
-      // Empty caller cases cannot certify a module without exercising it —
-      // the same rule the v1 path holds.
-      const determinismInput = acceptanceV2[0]?.input;
-      if (determinismInput === undefined)
-        return yield* failStage(
-          buildId,
-          "at least one independent host acceptance case is required",
-        );
-      const first = yield* sandbox
-        .runEvaluation({
-          files,
-          entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
-          stdinJson: JSON.stringify(determinismInput),
-          decodeResult: decodeDetectorProgramOutputV2,
-        })
-        .pipe(Effect.exit);
-      const second = yield* sandbox
-        .runEvaluation({
-          files,
-          entrypoint: [...FORGE_RUNNER_EVALUATE_V2],
-          stdinJson: JSON.stringify(determinismInput),
-          decodeResult: decodeDetectorProgramOutputV2,
-        })
-        .pipe(Effect.exit);
-      // The double-run covers the WHOLE output JSON: result and nextState
-      // together — a detector whose state drifts is not deterministic.
-      const determinismPassed =
-        first._tag === "Success" &&
-        second._tag === "Success" &&
-        JSON.stringify(first.value) === JSON.stringify(second.value);
-      checks.push({ name: "determinism", passed: determinismPassed });
-
-      const allPassed = failedCases.length === 0 && determinismPassed;
-      if (!allPassed) {
-        return yield* failStage(
-          buildId,
-          failedCases.length > 0
-            ? `acceptance failed: ${failedCases.map((failure) => failure.name).join(", ")}`
-            : "the detector was not deterministic on identical input",
-        );
-      }
+        const allPassed = failedCases.length === 0 && determinismPassed;
+        if (!allPassed) {
+          return yield* failStage(
+            buildId,
+            failedCases.length > 0
+              ? `acceptance failed: ${failedCases.map((failure) => failure.name).join(", ")}`
+              : "the detector was not deterministic on identical input",
+          );
+        }
+        detectorAcceptance = {
+          total: acceptanceV2.length,
+          passed: acceptancePassed,
+          failed: failedCases,
+        };
+      } // end detector-program acceptance branch
 
       // -- stage the immutable version (READY — installation is separate) ----
       //
@@ -1466,7 +1607,10 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
         capabilityId,
         version: nextVersion,
         bundleSha256,
-        artifacts: DETECTOR_V2_REQUIRED_HASH_PATHS.map((path) => ({
+        artifacts: (bundleKind === "source-adapter"
+          ? SOURCE_ADAPTER_V2_REQUIRED_HASH_PATHS
+          : DETECTOR_V2_REQUIRED_HASH_PATHS
+        ).map((path) => ({
           path,
           sha256: forgeSha256Hex(bundleContents[path] ?? ""),
           bytes: Buffer.byteLength(bundleContents[path] ?? "", "utf8"),
@@ -1493,11 +1637,10 @@ export const makeForgeCapabilityBuilder = Effect.gen(function* () {
           detail: `v${nextVersion} sealed and staged; installation is a separate CAS step`,
           patch: {
             checks,
-            acceptance: {
-              total: acceptanceV2.length,
-              passed: acceptancePassed,
-              failed: failedCases,
-            },
+            acceptance:
+              bundleKind === "source-adapter"
+                ? { total: 1, passed: 1, failed: [] }
+                : detectorAcceptance,
             artifactSha256,
             bundleSha256,
           },

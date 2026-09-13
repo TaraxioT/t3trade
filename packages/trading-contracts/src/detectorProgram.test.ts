@@ -34,6 +34,8 @@ import {
   SealedSourceRecord,
   decodeDetectorState,
   detectorArtifactPaths,
+  SOURCE_ADAPTER_V2_ARTIFACT_ROLES,
+  v2BundleKind,
   detectorEvaluationId,
   encodeDetectorState,
   serializeDetectorEvaluationIdentity,
@@ -480,6 +482,55 @@ describe("the v2 artifact path validation", () => {
     });
   });
 
+  it("routes a transform-primary manifest to the source-adapter shape", () => {
+    assert.deepStrictEqual(SOURCE_ADAPTER_V2_ARTIFACT_ROLES.transform, {
+      path: "transform.ts",
+      required: true,
+    });
+    assert.deepStrictEqual(SOURCE_ADAPTER_V2_ARTIFACT_ROLES.acceptance, {
+      path: "sample-document.json",
+      required: true,
+    });
+    assert.strictEqual(SOURCE_ADAPTER_V2_ARTIFACT_ROLES.detector.required, false);
+
+    const adapter = v2Manifest([
+      { role: "sdk", path: "sdk.ts", sha256: "1" },
+      { role: "transform", path: "transform.ts", sha256: "4" },
+      { role: "acceptance", path: "sample-document.json", sha256: "5" },
+    ]);
+    assert.strictEqual(v2BundleKind(adapter), "source-adapter");
+    assert.deepStrictEqual(detectorArtifactPaths(adapter), {
+      paths: ["sample-document.json", "sdk.ts", "transform.ts"],
+    });
+
+    const detector = v2Manifest([
+      { role: "sdk", path: "sdk.ts", sha256: "1" },
+      { role: "detector", path: "detector.ts", sha256: "2" },
+      { role: "acceptance", path: "detector.test.ts", sha256: "3" },
+      { role: "transform", path: "transform.ts", sha256: "4" },
+    ]);
+    assert.strictEqual(v2BundleKind(detector), "detector-program");
+  });
+
+  it("refuses a source adapter without its sample document, and a bare transform with no detector", () => {
+    const missingSample = v2Manifest([
+      { role: "sdk", path: "sdk.ts", sha256: "1" },
+      { role: "transform", path: "transform.ts", sha256: "4" },
+      { role: "acceptance", path: "detector.test.ts", sha256: "3" },
+    ]);
+    assert.deepStrictEqual(detectorArtifactPaths(missingSample), {
+      refusal: "artifact role acceptance must be at path sample-document.json",
+    });
+
+    const noDetectorNoTransform = v2Manifest([
+      { role: "sdk", path: "sdk.ts", sha256: "1" },
+      { role: "acceptance", path: "sample-document.json", sha256: "3" },
+    ]);
+    assert.deepStrictEqual(detectorArtifactPaths(noDetectorNoTransform), {
+      refusal: "missing required artifact role: transform",
+    });
+  });
+
   it("refuses a missing required role, a wrong path per role, and duplicates", () => {
     const missing = detectorArtifactPaths(
       v2Manifest([
@@ -487,7 +538,23 @@ describe("the v2 artifact path validation", () => {
         { role: "acceptance", path: "detector.test.ts", sha256: "3" },
       ]),
     );
-    assert.deepStrictEqual(missing, { refusal: "missing required artifact role: detector" });
+    // Since source-adapter bundles, a detector-less manifest routes to the
+    // adapter shape, where the test-file acceptance path is itself wrong —
+    // still a named refusal, now naming the actual malformation.
+    assert.deepStrictEqual(missing, {
+      refusal: "artifact role acceptance must be at path sample-document.json",
+    });
+
+    const adapterWrongTransformPath = detectorArtifactPaths(
+      v2Manifest([
+        { role: "sdk", path: "sdk.ts", sha256: "1" },
+        { role: "acceptance", path: "sample-document.json", sha256: "3" },
+        { role: "transform", path: "transform.js", sha256: "4" },
+      ]),
+    );
+    assert.deepStrictEqual(adapterWrongTransformPath, {
+      refusal: "artifact role transform must be at path transform.ts",
+    });
 
     const wrongPath = detectorArtifactPaths(
       v2Manifest([

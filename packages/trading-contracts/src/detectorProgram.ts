@@ -367,6 +367,39 @@ export const DETECTOR_V2_ARTIFACT_ROLES: Readonly<
   "execution-policy": { path: "policy.ts", required: false },
 };
 
+/**
+ * The v2 SOURCE-ADAPTER role-to-path mapping: a transform-primary bundle with
+ * no detector program. Required: `sdk` (host-mounted), `transform` (the
+ * network-less parse), and `acceptance` as `sample-document.json` — a real
+ * captured document body the host parses through the transform at check time;
+ * there is no generated test file for a parse. The kind discriminator is the
+ * declared role set itself: `transform` without `detector`.
+ */
+export const SOURCE_ADAPTER_V2_ARTIFACT_ROLES: Readonly<
+  Record<CapabilityArtifactRole, { readonly path: string; readonly required: boolean }>
+> = {
+  sdk: { path: "sdk.ts", required: true },
+  detector: { path: "detector.ts", required: false },
+  acceptance: { path: "sample-document.json", required: true },
+  transform: { path: "transform.ts", required: true },
+  "state-schema": { path: "state-schema.ts", required: false },
+  "source-query": { path: "query.graphql", required: false },
+  "execution-policy": { path: "policy.ts", required: false },
+};
+
+/**
+ * Which v2 bundle shape a manifest declares: a detector program (the
+ * `detector` role present), or a source adapter (`transform` present and no
+ * `detector`). A manifest with neither has no program to run and refuses path
+ * validation through the required-role check.
+ */
+export function v2BundleKind(
+  manifest: CapabilityManifestV2,
+): "detector-program" | "source-adapter" {
+  const roles = new Set(manifest.artifacts.map((artifact) => artifact.role));
+  return roles.has("detector") ? "detector-program" : "source-adapter";
+}
+
 /** The validated v2 bundle path set, or a named refusal. */
 export type DetectorArtifactPathsResult =
   | { readonly paths: string[] }
@@ -385,13 +418,17 @@ export type DetectorArtifactPathsResult =
  * Paths come back sorted, so the set is byte-stable for hashing and listing.
  */
 export function detectorArtifactPaths(manifest: CapabilityManifestV2): DetectorArtifactPathsResult {
+  const roleMap =
+    v2BundleKind(manifest) === "source-adapter"
+      ? SOURCE_ADAPTER_V2_ARTIFACT_ROLES
+      : DETECTOR_V2_ARTIFACT_ROLES;
   const seenRoles = new Map<CapabilityArtifactRole, number>();
   const seenPaths = new Map<string, CapabilityArtifactRole>();
   // "No other roles" is structural: `CapabilityArtifactRole` is a closed
   // literal union and the mapping covers every member, so a decoded manifest
   // cannot carry a role this switch does not know.
   for (const artifact of manifest.artifacts) {
-    const declared = DETECTOR_V2_ARTIFACT_ROLES[artifact.role];
+    const declared = roleMap[artifact.role];
     if (seenRoles.has(artifact.role)) {
       return { refusal: `duplicate artifact role: ${artifact.role}` };
     }
@@ -406,12 +443,16 @@ export function detectorArtifactPaths(manifest: CapabilityManifestV2): DetectorA
     seenRoles.set(artifact.role, 1);
     seenPaths.set(artifact.path, artifact.role);
   }
-  for (const [role, declared] of Object.entries(DETECTOR_V2_ARTIFACT_ROLES) as Array<
+  for (const [role, declared] of Object.entries(roleMap) as Array<
     [CapabilityArtifactRole, { readonly path: string; readonly required: boolean }]
   >) {
     if (declared.required && !seenRoles.has(role)) {
       return { refusal: `missing required artifact role: ${role}` };
     }
   }
+  // A source adapter is exactly transform-primary: a detector role beside the
+  // transform makes it a detector bundle (which allows transform as an
+  // optional module), and v2BundleKind already routed on that — so reaching
+  // here with the source-adapter map means `detector` is correctly absent.
   return { paths: [...seenPaths.keys()].sort() };
 }
