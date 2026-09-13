@@ -446,9 +446,27 @@ const substreamsIngestionStart = Layer.effectDiscard(
           .pipe(
             Effect.catch((failure) =>
               Effect.gen(function* () {
-                yield* Effect.logWarning(
-                  `SubstreamsIngestion: run ended with ${String(failure).slice(0, 200)}; reconnecting from the committed cursor`,
-                );
+                const reason =
+                  typeof failure === "string"
+                    ? failure
+                    : String((failure as { readonly reason?: unknown }).reason ?? failure);
+                // Credential rejections get their own diagnosis: the token is
+                // read from the environment at consume time, so an expired or
+                // rejected credential only clears after re-authentication and
+                // a server restart — reconnect retries alone cannot fix it.
+                const credentialRejected =
+                  /unauthenticated|unauthorized|\b401\b|invalid token|expired token|token expired|invalid api[ -]?key/i.test(
+                    reason,
+                  );
+                if (credentialRejected) {
+                  yield* Effect.logWarning(
+                    `SubstreamsIngestion: the provider rejected the ${tokenEnvName} credential (expired or invalid); re-authenticate and restart this server — reconnecting from the committed cursor meanwhile`,
+                  );
+                } else {
+                  yield* Effect.logWarning(
+                    `SubstreamsIngestion: run ended with ${String(failure).slice(0, 200)}; reconnecting from the committed cursor`,
+                  );
+                }
                 return null;
               }),
             ),

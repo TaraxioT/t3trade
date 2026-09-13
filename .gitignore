@@ -37,6 +37,8 @@ node_modules/
 *.log
 .env*
 !.env.example
+# Substreams CLI credential written by `substreams auth` at the repo root
+.substreams.env
 
 # local working files, not part of the product tree
 .claude/

@@ -465,24 +465,54 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
     );
 
   /**
-   * Resolve one `external:<kind>:<identity>` source against its revision
-   * chain head. A latest retraction makes the document absent (named in
-   * `missingSourceIds`); a resolvable head contributes at most two facts —
+   * Resolve one `external:<sourceKind>:<documentIdentity>` source against its
+   * revision chain head. A latest retraction makes the document absent (named
+   * in `missingSourceIds`); a resolvable head contributes at most two facts —
    * publication happened, and when (undated documents carry no instant).
+   *
+   * The reference grammar carries a colon-bearing ambiguity on purpose: the
+   * sourceKind ITSELF may contain colons (generated adapters retain revisions
+   * under `generated:<sourceId>`), so the kind/identity boundary cannot be a
+   * positional split. It resolves against the store instead: the leftmost
+   * colon split whose exact (sourceKind, documentIdentity) pair has a
+   * retained revision wins; a document that exists but ends in a retraction
+   * resolves AS that document (absence), never falling through to a different
+   * split; a reference no split resolves is absence, as before.
    */
   const externalSource = (
     environmentId: string,
     sourceId: string,
-    sourceKind: string,
-    documentIdentity: string,
+    rest: string,
   ): Effect.Effect<
     { readonly source: SealedSourceRecord; readonly facts: ReadonlyArray<CapturedFact> } | null,
     PersistenceSqlError
-  > =>
-    external.latestRevision({ environmentId, sourceKind, documentIdentity }).pipe(
-      Effect.mapError(sqlFail("buildWindow")),
-      Effect.map((latest) => {
-        if (latest === null) return null;
+  > => {
+    const splits: Array<{ readonly sourceKind: string; readonly documentIdentity: string }> = [];
+    let colon = rest.indexOf(":");
+    while (colon > 0) {
+      splits.push({
+        sourceKind: rest.slice(0, colon),
+        documentIdentity: rest.slice(colon + 1),
+      });
+      colon = rest.indexOf(":", colon + 1);
+    }
+    return Effect.forEach(splits, (split) =>
+      external
+        .latestRevision({
+          environmentId,
+          sourceKind: split.sourceKind,
+          documentIdentity: split.documentIdentity,
+        })
+        .pipe(
+          Effect.mapError(sqlFail("buildWindow")),
+          Effect.map((latest) => (latest === null ? null : { split, latest })),
+        ),
+    ).pipe(
+      Effect.map((attempts) => {
+        const resolved = attempts.find((attempt) => attempt !== null);
+        if (resolved === undefined) return null;
+        const { documentIdentity } = resolved.split;
+        const latest = resolved.latest;
         // The chain currently ends in a retraction: the document's current
         // state IS retracted, which is absence for a detector.
         if (latest.retraction !== null) return null;
@@ -536,6 +566,7 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
         return { source, facts };
       }),
     );
+  };
 
   /**
    * Resolve one `substreams:<sourceId>:<windowMs>` source reference through
@@ -919,13 +950,10 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
             datasetId === "" ? null : yield* graphSource(environmentId, sourceId, datasetId);
         } else if (sourceId.startsWith(externalPrefix)) {
           const rest = sourceId.slice(externalPrefix.length);
-          const split = rest.indexOf(":");
-          const sourceKind = split > 0 ? rest.slice(0, split) : "";
-          const documentIdentity = split > 0 ? rest.slice(split + 1) : "";
           resolved =
-            sourceKind === "" || documentIdentity === ""
-              ? null
-              : yield* externalSource(environmentId, sourceId, sourceKind, documentIdentity);
+            rest.includes(":") && !rest.startsWith(":") && !rest.endsWith(":")
+              ? yield* externalSource(environmentId, sourceId, rest)
+              : null;
         } else if (sourceId.startsWith(substreamsPrefix)) {
           // The LAST colon splits the stream binding's window selector, so the
           // source id itself may never contain one past this point.

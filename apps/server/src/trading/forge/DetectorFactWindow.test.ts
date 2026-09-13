@@ -592,6 +592,66 @@ layer("external sources", (it) => {
       assert.notInclude(keys, "external.document.publication-ms");
     }),
   );
+
+  it.effect("a colon-bearing generated sourceKind resolves through the store-driven split", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const { external, window } = yield* makeWindow;
+      // The generated-adapter retention shape: sourceKind `generated:<id>`,
+      // documentIdentity itself namespaced by the adapter.
+      yield* seedDocument(external, [
+        revision({
+          revisionId: "rev-gen",
+          sourceKind: "generated:devcon-calendar",
+          documentIdentity: "devcon-calendar:devcon-event:Devcon 8 India",
+          publishedAtMs: null,
+          timePrecision: "instant",
+          firstObservedAtMs: 12_000,
+        }),
+      ]);
+      const outcome = yield* build(window, [
+        "external:generated:devcon-calendar:devcon-calendar:devcon-event:Devcon 8 India",
+      ]);
+      assert.equal(outcome.status, "ok");
+      if (outcome.status !== "ok") return;
+      const source = outcome.sources[0]!;
+      assert.isTrue(source.complete);
+      assert.equal(source.evidenceId, "rev-gen");
+      assert.equal(source.availableAtMs, 12_000);
+      const byKey = new Map(outcome.facts.map((fact) => [fact.key, fact]));
+      assert.equal(
+        byKey.get("external.document.published")?.entityId,
+        "devcon-calendar:devcon-event:Devcon 8 India",
+      );
+    }),
+  );
+
+  it.effect("the leftmost resolving split wins when two kind prefixes both retain documents", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const { external, window } = yield* makeWindow;
+      // `external:a:b:c` is ambiguous between (a, b:c) and (a:b, c); the
+      // LEFTMOST resolving split is the deterministic winner.
+      yield* seedDocument(external, [
+        revision({
+          revisionId: "rev-short-kind",
+          sourceKind: "a",
+          documentIdentity: "b:c",
+          firstObservedAtMs: 2_000,
+        }),
+        revision({
+          revisionId: "rev-long-kind",
+          sourceKind: "a:b",
+          documentIdentity: "c",
+          firstObservedAtMs: 3_000,
+        }),
+      ]);
+      const outcome = yield* build(window, ["external:a:b:c"]);
+      assert.equal(outcome.status, "ok");
+      if (outcome.status !== "ok") return;
+      assert.equal(outcome.sources[0]?.evidenceId, "rev-short-kind");
+    }),
+  );
 });
 
 layer("window discipline", (it) => {
