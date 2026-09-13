@@ -157,7 +157,12 @@ describe("the execution envelope", () => {
         ...envelope,
         candidates: [
           candidate,
-          { ...candidate, candidateId: "cand_usdc_weth", tokenIn: usdc, tokenOut: weth },
+          {
+            ...candidate,
+            candidateId: "cand_weth_other",
+            tokenOut: addr("d"),
+            label: "WETH -> OTHER",
+          },
         ],
       }),
     );
@@ -241,6 +246,64 @@ describe("the execution envelope", () => {
       }),
     );
   });
+
+  it("refuses a candidate whose tokens differ only by address casing", () => {
+    // EVM addresses are case-insensitive identities: a tokenIn/tokenOut pair
+    // differing only in checksum casing is the same self-swap.
+    const upperWeth = `0x${"A".repeat(40)}`;
+    assert.isFalse(
+      decode(ExecutionEnvelope, {
+        ...envelope,
+        candidates: [{ ...candidate, tokenIn: weth, tokenOut: upperWeth }],
+      }),
+    );
+  });
+
+  it("refuses candidates that spend different chains or input assets (one denomination per envelope)", () => {
+    assert.isFalse(
+      decode(ExecutionEnvelope, {
+        ...envelope,
+        candidates: [candidate, { ...candidate, chainId: "1" }],
+      }),
+    );
+    assert.isFalse(
+      decode(ExecutionEnvelope, {
+        ...envelope,
+        candidates: [candidate, { ...candidate, tokenIn: addr("d"), tokenOut: addr("e") }],
+      }),
+    );
+    // Mixed denominations must refuse in EITHER order: the first candidate
+    // does not get to define the denomination by position.
+    assert.isFalse(
+      decode(ExecutionEnvelope, {
+        ...envelope,
+        candidates: [
+          { ...candidate, chainId: "1" },
+          { ...candidate, tokenIn: usdc, tokenOut: weth },
+        ],
+      }),
+    );
+    assert.isFalse(
+      decode(ExecutionEnvelope, {
+        ...envelope,
+        candidates: [{ ...candidate, tokenIn: addr("d"), tokenOut: addr("e") }, candidate],
+      }),
+    );
+  });
+
+  it("accepts candidates that share the denomination under address casing differences", () => {
+    // The input asset is the same 20 bytes regardless of checksum casing, so
+    // casing alone must not split the denomination.
+    assert.isTrue(
+      decode(ExecutionEnvelope, {
+        ...envelope,
+        candidates: [
+          candidate,
+          { ...candidate, candidateId: "cand_2", tokenIn: `0x${"A".repeat(40)}` },
+        ],
+      }),
+    );
+  });
 });
 
 describe("execution proposals", () => {
@@ -285,6 +348,65 @@ describe("the swap quote record", () => {
     assert.isTrue(decode(SwapQuoteRecord, quote));
   });
 
+  it("round-trips with the v3 execution-identity fields present", () => {
+    const measured = {
+      ...quote,
+      quoteId: swapQuoteId({
+        ...quoteIdentity,
+        routeConfigDigest: hex64("d"),
+        quotedBlockNumber: "21000000",
+        quotedBlockHash: hex64("e"),
+        quotedAmountOutRaw: "909000000",
+        quoterCodeHash: hex64("f"),
+        targetCodeHash: hex64("1"),
+        gasUnitsMeasured: "180000",
+        maxFeePerGasWei: "30000000000",
+        maxPriorityFeePerGasWei: "2000000000",
+      }),
+      routeConfigDigest: hex64("d"),
+      quotedBlockNumber: "21000000",
+      quotedBlockHash: hex64("e"),
+      quotedAmountOutRaw: "909000000",
+      quoterCodeHash: hex64("f"),
+      targetCodeHash: hex64("1"),
+      gasUnitsMeasured: "180000",
+      maxFeePerGasWei: "30000000000",
+      maxPriorityFeePerGasWei: "2000000000",
+      // gasUnitsMeasured × maxFeePerGasWei, the worst-case reservation.
+      gasEstimateWei: "5400000000000000",
+    };
+    assert.isTrue(decode(SwapQuoteRecord, measured));
+  });
+
+  it("refuses measured fee fields that are partial or incoherent", () => {
+    const full = {
+      gasUnitsMeasured: "180000",
+      maxFeePerGasWei: "30000000000",
+      maxPriorityFeePerGasWei: "2000000000",
+      gasEstimateWei: "5400000000000000",
+    } as const;
+    // All-or-nothing: one bound present without the others refuses.
+    assert.isFalse(decode(SwapQuoteRecord, { ...quote, gasUnitsMeasured: "180000" }));
+    assert.isFalse(decode(SwapQuoteRecord, { ...quote, maxFeePerGasWei: "30000000000" }));
+    // Zero units cannot bound anything.
+    assert.isFalse(decode(SwapQuoteRecord, { ...quote, ...full, gasUnitsMeasured: "0" }));
+    // priority above max fee is not a bound.
+    assert.isFalse(
+      decode(SwapQuoteRecord, {
+        ...quote,
+        ...full,
+        maxPriorityFeePerGasWei: "40000000000",
+      }),
+    );
+    // The declared worst-case must be exactly units × max fee — a clamped or
+    // invented gasEstimateWei is tampering, not a reservation.
+    assert.isFalse(
+      decode(SwapQuoteRecord, { ...quote, ...full, gasEstimateWei: "150000000000000" }),
+    );
+    // Non-exact values refuse like every other raw amount.
+    assert.isFalse(decode(SwapQuoteRecord, { ...quote, ...full, gasUnitsMeasured: "1.5" }));
+  });
+
   it("refuses quotes that do not expire strictly after they were taken", () => {
     assert.isFalse(decode(SwapQuoteRecord, { ...quote, expiresAtMs: quote.quotedAtMs }));
     assert.isFalse(decode(SwapQuoteRecord, { ...quote, expiresAtMs: quote.quotedAtMs - 1 }));
@@ -319,6 +441,46 @@ describe("the quote content identity", () => {
     assert.notStrictEqual(changed({ minAmountOutRaw: "900000001" }), baseline);
     assert.notStrictEqual(changed({ quotedAtMs: quoteIdentity.quotedAtMs + 1 }), baseline);
     assert.notStrictEqual(changed({ expiresAtMs: quoteIdentity.expiresAtMs + 1 }), baseline);
+    // The v3 execution-identity fields: presence changes the identity, and
+    // any changed value does too — including the block the price was taken
+    // at, the config digest, and every fee bound.
+    const identityPatch = {
+      routeConfigDigest: hex64("d"),
+      quotedBlockNumber: "21000000",
+      quotedBlockHash: hex64("e"),
+      quotedAmountOutRaw: "909000000",
+      quoterCodeHash: hex64("f"),
+      targetCodeHash: hex64("1"),
+      gasUnitsMeasured: "180000",
+      maxFeePerGasWei: "30000000000",
+      maxPriorityFeePerGasWei: "2000000000",
+    };
+    const withIdentity = changed(identityPatch);
+    assert.notStrictEqual(withIdentity, baseline);
+    assert.notStrictEqual(
+      changed({ ...identityPatch, quotedBlockNumber: "21000001" }),
+      withIdentity,
+    );
+    assert.notStrictEqual(changed({ ...identityPatch, quotedBlockHash: hex64("2") }), withIdentity);
+    assert.notStrictEqual(
+      changed({ ...identityPatch, quotedAmountOutRaw: "909000001" }),
+      withIdentity,
+    );
+    assert.notStrictEqual(
+      changed({ ...identityPatch, routeConfigDigest: hex64("3") }),
+      withIdentity,
+    );
+    assert.notStrictEqual(changed({ ...identityPatch, quoterCodeHash: hex64("4") }), withIdentity);
+    assert.notStrictEqual(changed({ ...identityPatch, targetCodeHash: hex64("5") }), withIdentity);
+    assert.notStrictEqual(changed({ ...identityPatch, gasUnitsMeasured: "180001" }), withIdentity);
+    assert.notStrictEqual(
+      changed({ ...identityPatch, maxFeePerGasWei: "30000000001" }),
+      withIdentity,
+    );
+    assert.notStrictEqual(
+      changed({ ...identityPatch, maxPriorityFeePerGasWei: "2000000001" }),
+      withIdentity,
+    );
   });
 
   it("agrees with the platform SHA-256 over the canonical identity serialization", async () => {
@@ -511,6 +673,7 @@ describe("the refusal vocabulary", () => {
     "envelope-expired": true,
     "envelope-not-approved": true,
     "budget-exhausted": true,
+    "corrupt-budget-ledger": true,
     "stale-evidence": true,
     "stale-quote": true,
     "occurrence-already-executed": true,
@@ -530,6 +693,7 @@ describe("the refusal vocabulary", () => {
       "envelope-expired",
       "envelope-not-approved",
       "budget-exhausted",
+      "corrupt-budget-ledger",
       "stale-evidence",
       "stale-quote",
       "occurrence-already-executed",

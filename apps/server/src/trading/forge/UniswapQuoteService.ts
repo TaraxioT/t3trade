@@ -36,7 +36,9 @@
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { Layer, Schema } from "effect";
+import { keccak256, toBytes } from "viem";
 
 import {
   EXECUTION_ENVELOPE_MAX_SLIPPAGE_BPS,
@@ -46,11 +48,15 @@ import {
 
 import { ForgeSepoliaTransport } from "./UniswapTestnetAdapter.ts";
 import { V4_MAX_TICK_SPACING, V4_MIN_TICK_SPACING } from "./SepoliaTarget.ts";
+import { SpotMainnetTransport } from "./SpotMainnetTarget.ts";
+import { encodeProtectedExactInput, type ProtectedSwapPlan } from "./MainnetProtectedRouter.ts";
 import {
   QUOTE_EXACT_AMOUNT_MAX,
   decodeQuoteExactInputSingleResult,
   encodeQuoteExactInputSingle,
 } from "./QuoterAbi.ts";
+import { forgeSha256Hex } from "./CapabilitySandbox.ts";
+import { forgeJsonEncode } from "./ForgeJsonEncode.ts";
 
 // ---------------------------------------------------------------------------
 // The approved-route registry
@@ -59,30 +65,55 @@ import {
 /** Sepolia's chain id as the route vocabulary carries it (decimal string). */
 export const SWAP_ROUTE_SEPOLIA_CHAIN_ID = "11155111";
 
-/** The one routing path P5 supports; anything else is refused by name. */
-export type SwapRouteType = "v4-exact-input-single";
+/** Ethereum mainnet's chain id as the route vocabulary carries it (decimal string). */
+export const SWAP_ROUTE_MAINNET_CHAIN_ID = "1";
+
+/** The native-currency marker: address(0) names native ETH in a route's token pair. */
+export const SWAP_NATIVE_CURRENCY_ADDRESS = `0x${"0".repeat(40)}`;
+
+/** The one routing vocabulary; anything else is refused by name. */
+export type SwapRouteType = "v4-exact-input-single" | "ur-v3-exact-input";
 
 /**
  * One approved swap route: the exact pool, direction, and quoter a quote or
  * (later, P5.4) an exact-input intent may use. Addresses are validated and
  * lowercased at resolution so quote identities stay byte-deterministic
  * regardless of the config's casing.
+ *
+ * Two route families exist, discriminated by `routeType`:
+ *
+ * - `v4-exact-input-single` (Sepolia drafts): a v4 PoolSwapTest target with
+ *   the pool key the test contract settles against. This family produces
+ *   UNPROTECTED draft bytes only — admission always ends at the
+ *   broadcaster-missing refusal.
+ * - `ur-v3-exact-input` (the protected mainnet lane): a Universal Router
+ *   target over one v3 pool identified by `weth`/`feeTier` and the ERC20
+ *   side, where exactly one of tokenIn/tokenOut is the native-currency
+ *   marker. Quotes on this family carry the full v3 execution identity
+ *   (block, code hashes, measured fees) and only the protected admission
+ *   service may prepare them.
  */
-export interface SwapRouteSpec {
+export interface SwapRouteSpecBase {
   /** Registry identity; proposals and quote records bind to it. */
   readonly routeId: string;
-  readonly chainId: typeof SWAP_ROUTE_SEPOLIA_CHAIN_ID;
   readonly routeType: SwapRouteType;
   readonly tokenIn: string;
   readonly tokenOut: string;
   readonly quoterAddress: string;
   /**
-   * The PoolSwapTest-style testnet contract an exact-input intent executes
-   * through (P5.4): the quote's numbers come from `quoterAddress`, the
-   * prepared transaction's `to` comes from here. Required per route so a
-   * route can never be quotable but not executable.
+   * The exact-input target a prepared transaction is addressed to: the v4
+   * PoolSwapTest helper for drafts, the Universal Router for the protected
+   * lane. Required per route so a route can never be quotable but not
+   * executable.
    */
   readonly swapTargetAddress: string;
+  /** Display label for surfaces; never parsed, never an identity. */
+  readonly label?: string;
+}
+
+export interface V4SwapRouteSpec extends SwapRouteSpecBase {
+  readonly routeType: "v4-exact-input-single";
+  readonly chainId: typeof SWAP_ROUTE_SEPOLIA_CHAIN_ID;
   readonly poolKey: {
     readonly currency0: string;
     readonly currency1: string;
@@ -92,9 +123,46 @@ export interface SwapRouteSpec {
   };
   /** currency0 -> currency1 when true; must agree with tokenIn/tokenOut. */
   readonly zeroForOne: boolean;
-  /** Display label for surfaces; never parsed, never an identity. */
-  readonly label?: string;
 }
+
+export interface UrV3SwapRouteSpec extends SwapRouteSpecBase {
+  readonly routeType: "ur-v3-exact-input";
+  readonly chainId: typeof SWAP_ROUTE_MAINNET_CHAIN_ID;
+  /** The canonical WETH9 the v3 pool trades against the native side. */
+  readonly weth: string;
+  /** The v3 pool's fee tier in hundredths of a bip (500 = 0.05%). */
+  readonly feeTier: number;
+  /** The ERC20 side of the pool (exactly one route side is the native marker). */
+  readonly erc20: string;
+}
+
+export type SwapRouteSpec = V4SwapRouteSpec | UrV3SwapRouteSpec;
+
+/**
+ * The route-config digest (the quote-identity field `routeConfigDigest`):
+ * SHA-256 over the canonical key-sorted JSON of the RESOLVED route spec.
+ * Admission recomputes it from the CURRENT registry, so a config change —
+ * different pool, target, quoter, or fee tier — invalidates every retained
+ * quote for that routeId, exactly as 03 requires ("reject old config even
+ * when routeId is unchanged").
+ */
+export const swapRouteConfigDigest = (route: SwapRouteSpec): string => {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (typeof value === "object" && value !== null) {
+      const source = value as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(source).sort()) {
+        if (source[key] === undefined) continue;
+        out[key] = canonical(source[key]);
+      }
+      return out;
+    }
+    return value;
+  };
+  // Bare 64-hex to match the contracts' Sha256Hex identity pattern (no 0x).
+  return forgeSha256Hex(forgeJsonEncode(canonical(route)));
+};
 
 /** Resolved route settings. `configured: false` carries the named reason. */
 export interface SwapRouteSettings {
@@ -153,14 +221,20 @@ export const resolveSwapRouteSettings = (
     if (seen.has(id)) {
       return refuse(`duplicate routeId '${id}'`);
     }
-    if (record["chainId"] !== SWAP_ROUTE_SEPOLIA_CHAIN_ID) {
+    const routeType = record["routeType"];
+    if (routeType !== "v4-exact-input-single" && routeType !== "ur-v3-exact-input") {
       return refuse(
-        `chainId must be "${SWAP_ROUTE_SEPOLIA_CHAIN_ID}" (Sepolia), got '${String(record["chainId"])}'`,
+        `unsupported routeType '${String(routeType)}' — only 'v4-exact-input-single' and 'ur-v3-exact-input' are supported (UniswapX, order, and bridge routes are refused by name)`,
       );
     }
-    if (record["routeType"] !== "v4-exact-input-single") {
+    const chainId = record["chainId"];
+    const expectedChain =
+      routeType === "v4-exact-input-single"
+        ? SWAP_ROUTE_SEPOLIA_CHAIN_ID
+        : SWAP_ROUTE_MAINNET_CHAIN_ID;
+    if (chainId !== expectedChain) {
       return refuse(
-        `unsupported routeType '${String(record["routeType"])}' — only 'v4-exact-input-single' is supported (UniswapX, order, and bridge routes are refused by name)`,
+        `chainId must be "${expectedChain}" for routeType ${routeType}, got '${String(chainId)}'`,
       );
     }
 
@@ -186,7 +260,60 @@ export const resolveSwapRouteSettings = (
     if (tokenIn === tokenOut) {
       return refuse("tokenIn and tokenOut must differ");
     }
+    if (record["label"] !== undefined && typeof record["label"] !== "string") {
+      return refuse("label must be a string when present");
+    }
+    const label = record["label"];
 
+    if (routeType === "ur-v3-exact-input") {
+      // The protected mainnet family: exactly one side is the native marker,
+      // the other names the ERC20; `weth` carries the canonical WETH9 the
+      // pool trades; `feeTier` names the one v3 pool. The Universal Router
+      // target is mandatory and must not be the native marker.
+      const weth = addressField(record["weth"]);
+      if (weth === null) return refuse("weth is not a 20-byte address");
+      if (weth === SWAP_NATIVE_CURRENCY_ADDRESS) {
+        return refuse("weth must be the canonical WETH9 contract, not the native marker");
+      }
+      const feeTier = record["feeTier"];
+      if (
+        typeof feeTier !== "number" ||
+        !Number.isInteger(feeTier) ||
+        feeTier < 0 ||
+        feeTier > 1_000_000
+      ) {
+        return refuse("feeTier must be an integer in [0, 1000000] (v3 hundredths of a bip)");
+      }
+      const nativeSides =
+        (tokenIn === SWAP_NATIVE_CURRENCY_ADDRESS ? 1 : 0) +
+        (tokenOut === SWAP_NATIVE_CURRENCY_ADDRESS ? 1 : 0);
+      if (nativeSides !== 1) {
+        return refuse(
+          "exactly one of tokenIn/tokenOut must be the native marker 0x0 for a ur-v3 route",
+        );
+      }
+      const erc20 = tokenIn === SWAP_NATIVE_CURRENCY_ADDRESS ? tokenOut : tokenIn;
+      if (erc20 === weth) {
+        return refuse("the ERC20 side must differ from weth");
+      }
+      seen.add(id);
+      routes.push({
+        routeId: id,
+        chainId: SWAP_ROUTE_MAINNET_CHAIN_ID,
+        routeType,
+        tokenIn,
+        tokenOut,
+        quoterAddress,
+        swapTargetAddress,
+        weth,
+        feeTier,
+        erc20,
+        ...(label === undefined ? {} : { label }),
+      });
+      continue;
+    }
+
+    // The v4 draft family: the pool key and its direction.
     const poolKeyRaw = record["poolKey"];
     if (typeof poolKeyRaw !== "object" || poolKeyRaw === null || Array.isArray(poolKeyRaw)) {
       return refuse("poolKey is not an object");
@@ -217,10 +344,6 @@ export const resolveSwapRouteSettings = (
       return refuse("zeroForOne must be a boolean");
     }
     const zeroForOne = record["zeroForOne"];
-    if (record["label"] !== undefined && typeof record["label"] !== "string") {
-      return refuse("label must be a string when present");
-    }
-    const label = record["label"];
 
     // A v4 exact-input-single quote/swap is only defined for the pool's own
     // currency pair, with the direction implied by which side tokenIn is. A
@@ -241,7 +364,7 @@ export const resolveSwapRouteSettings = (
     routes.push({
       routeId: id,
       chainId: SWAP_ROUTE_SEPOLIA_CHAIN_ID,
-      routeType: "v4-exact-input-single",
+      routeType,
       tokenIn,
       tokenOut,
       quoterAddress,
@@ -283,11 +406,13 @@ export const QUOTE_TTL_DEFAULT_MS = 30_000;
 export const QUOTE_TTL_MIN_MS = 1_000;
 
 /**
- * Conservative gas-cost placeholder, wei: 400k gas units (a generous v4
- * single-hop swap) at a 100 gwei ceiling = 4e16. Real estimation is a later
- * live-gate refinement; whatever a quote carries, admission caps it by the
- * envelope's maxGasWei, so the placeholder can only over-reserve, never
- * overspend.
+ * DRAFT-ONLY gas placeholder, wei: 400k gas units at a 100 gwei ceiling.
+ * Used solely by the Sepolia v4 draft lane, whose submission refusal is
+ * UNCONDITIONAL — those bytes are never signable, so the placeholder can
+ * only over-reserve an inspectable draft, never under-reserve a spend. The
+ * protected mainnet lane never uses it: its quotes carry measured
+ * `gasUnitsMeasured` × `maxFeePerGasWei` worst-case reservations, and a fee
+ * that cannot be bounded refuses the quote outright.
  */
 export const QUOTE_GAS_ESTIMATE_WEI_PLACEHOLDER = "40000000000000000";
 
@@ -331,9 +456,75 @@ const POSITIVE_DECIMAL = /^(0|[1-9][0-9]*)$/;
 
 const decodeQuoteRecord = Schema.decodeUnknownEffect(SwapQuoteRecord);
 
+// ---------------------------------------------------------------------------
+// The mainnet QuoterV2 v3 codec (pinned; see the artifact for probes)
+// ---------------------------------------------------------------------------
+
+/**
+ * The deployed mainnet QuoterV2's `quoteExactInputSingle` signature, verified
+ * LIVE against 0x61fFE014bA17989E743c5F6cB21bF9697530B21e (2026-09-13): the
+ * current v3-periphery interface
+ * https://raw.githubusercontent.com/Uniswap/v3-periphery/main/contracts/interfaces/IQuoterV2.sol
+ * declares `(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee,
+ * uint160 sqrtPriceLimitX96)` — selector 0xc6a5026a, confirmed by a
+ * successful mainnet eth_call in both directions. The older 4-field shape and
+ * the bool-variant shape both revert on this deployment.
+ */
+const QUOTERV2_EXACT_INPUT_SINGLE_SELECTOR = "0xc6a5026a";
+
+const padUint = (value: bigint): string => value.toString(16).padStart(64, "0");
+const padAddress = (value: string): string =>
+  value.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+
+/** Calldata for the QuoterV2 exact-input-single quote; read-only, no value. */
+const encodeQuoterV2ExactInputSingle = (input: {
+  readonly tokenIn: string;
+  readonly tokenOut: string;
+  readonly amountIn: bigint;
+  readonly fee: number;
+}): string =>
+  QUOTERV2_EXACT_INPUT_SINGLE_SELECTOR +
+  padAddress(input.tokenIn) +
+  padAddress(input.tokenOut) +
+  padUint(input.amountIn) +
+  padUint(BigInt(input.fee)) +
+  padUint(0n);
+
+/** The quoter's static four-word return, or null when the shape is wrong. */
+const decodeQuoterV2Result = (
+  data: unknown,
+): { readonly amountOut: bigint; readonly gasEstimate: bigint } | null => {
+  if (typeof data !== "string" || !data.startsWith("0x") || data.length !== 2 + 64 * 4) return null;
+  const body = data.slice(2);
+  if (!/^[0-9a-fA-F]+$/.test(body)) return null;
+  return {
+    amountOut: BigInt(`0x${body.slice(0, 64)}`),
+    gasEstimate: BigInt(`0x${body.slice(64 * 3, 64 * 4)}`),
+  };
+};
+
+/** keccak256 hex of runtime code bytes, the target-code identity quotes pin. */
+const codeHashOf = (code: unknown): string | null => {
+  if (typeof code !== "string" || !code.startsWith("0x") || code.length <= 2) return null;
+  try {
+    return keccak256(toBytes(code as `0x${string}`));
+  } catch {
+    return null;
+  }
+};
+
+/** Decimal-string → BigInt; null on anything inexact. */
+const exactDecimal = (value: string | undefined | null): bigint | null =>
+  typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : null;
+
 export const makeUniswapQuoteService = Effect.gen(function* () {
   const routeConfig = yield* SwapRouteConfig;
   const transport = yield* ForgeSepoliaTransport;
+  // The mainnet lane is OPTIONAL at composition: runtimes that have not wired
+  // a mainnet RPC still quote Sepolia drafts, and a ur-v3 route refuses by
+  // name instead of dying at layer build (the runtimeLayer compatibility
+  // rule — a new required dep would break the existing wiring).
+  const mainnetTransportOption = yield* Effect.serviceOption(SpotMainnetTransport);
 
   const quoteExactInput = (input: QuoteExactInputInput): Effect.Effect<SwapQuoteOutcome> =>
     Effect.gen(function* () {
@@ -401,6 +592,10 @@ export const makeUniswapQuoteService = Effect.gen(function* () {
           status: "refused" as const,
           reason: "invalid-ttl: expiry exceeds the safe integer range",
         };
+      }
+
+      if (route.routeType === "ur-v3-exact-input") {
+        return yield* quoteUrV3ExactInput(route, input, slippageBps, ttlMs);
       }
 
       // One read-only eth_call against the route's quoter at the chain head.
@@ -492,6 +687,284 @@ export const makeUniswapQuoteService = Effect.gen(function* () {
         })),
       );
     });
+
+  /**
+   * The protected mainnet lane's quote: complete execution identity and
+   * MEASURED fees, or a named refusal. Every field 03 requires a funded gate
+   * to verify is produced here — coherent block (number + hash), route
+   * config digest, quoter/target runtime-code hashes, quoted output, gas
+   * estimate from the actual protected calldata, and EIP-1559 bounds from
+   * fee history. Anything that cannot be measured refuses: a fee that cannot
+   * be bounded is not quoted, it is unavailable.
+   */
+  const quoteUrV3ExactInput = (
+    route: UrV3SwapRouteSpec,
+    input: QuoteExactInputInput,
+    slippageBps: number,
+    ttlMs: number,
+  ): Effect.Effect<SwapQuoteOutcome> =>
+    Effect.gen(function* () {
+      if (Option.isNone(mainnetTransportOption)) {
+        return {
+          status: "refused" as const,
+          reason:
+            "quote-unavailable: the mainnet RPC transport is not wired into this runtime, so a ur-v3 route cannot be priced",
+        };
+      }
+      const rpc = mainnetTransportOption.value;
+      // A named helper so every RPC failure reads as a refusal, never a die.
+      const call = <A>(
+        method: string,
+        params: ReadonlyArray<unknown>,
+        read: (value: unknown) => A | null,
+      ): Effect.Effect<A, string> =>
+        rpc.request(method, [...params]).pipe(
+          Effect.mapError(redactRpcDetail),
+          Effect.flatMap((value): Effect.Effect<A, string> => {
+            const parsed = read(value);
+            return parsed === null
+              ? Effect.fail(`${method} returned an unusable result`)
+              : Effect.succeed(parsed);
+          }),
+        );
+
+      // Chain binding first: the RPC must BE mainnet before anything it says
+      // is allowed to become quote identity.
+      const chainId = yield* call("eth_chainId", [], (value) =>
+        typeof value === "string" && value === "0x1" ? value : null,
+      ).pipe(Effect.catch((reason): Effect.Effect<string, never> => Effect.succeed(reason)));
+      if (chainId !== "0x1") {
+        return {
+          status: "refused" as const,
+          reason: `quote-unavailable: the mainnet RPC did not identify as chain 1 (${chainId})`,
+        };
+      }
+
+      // Pin the coherent block: number first, then every read at that block.
+      const blockNumberHex = yield* call("eth_blockNumber", [], (value) =>
+        typeof value === "string" && /^0x[0-9a-f]+$/.test(value) ? value : null,
+      ).pipe(Effect.catch((reason) => Effect.succeed(`error:${reason}`)));
+      if (typeof blockNumberHex !== "string" || blockNumberHex.startsWith("error:")) {
+        return {
+          status: "refused" as const,
+          reason: `quote-unavailable: cannot pin a quote block (${String(blockNumberHex).slice("error:".length)})`,
+        };
+      }
+      const blockNumber = BigInt(blockNumberHex).toString(10);
+
+      // Target-code identity at the pinned block: both the quoter and the
+      // swap target must carry code whose keccak256 the record pins.
+      const bareCodeHash = (code: unknown): string | null => {
+        const hash = codeHashOf(code);
+        return hash === null ? null : hash.replace(/^0x/, "");
+      };
+      const quoterCodeHash = yield* call(
+        "eth_getCode",
+        [route.quoterAddress, blockNumberHex],
+        bareCodeHash,
+      ).pipe(Effect.catch((reason) => Effect.succeed(`error:${reason}` as const)));
+      if (typeof quoterCodeHash !== "string" || quoterCodeHash.startsWith("error:")) {
+        return {
+          status: "refused" as const,
+          reason: "quote-unavailable: the quoter's runtime code could not be read and hashed",
+        };
+      }
+      const targetCodeHash = yield* call(
+        "eth_getCode",
+        [route.swapTargetAddress, blockNumberHex],
+        bareCodeHash,
+      ).pipe(Effect.catch((reason) => Effect.succeed(`error:${reason}` as const)));
+      if (typeof targetCodeHash !== "string" || targetCodeHash.startsWith("error:")) {
+        return {
+          status: "refused" as const,
+          reason: "quote-unavailable: the swap target's runtime code could not be read and hashed",
+        };
+      }
+
+      // The quote itself, at the pinned block, through the v3 QuoterV2.
+      const amountIn = BigInt(input.amountInRaw);
+      const quoteData = encodeQuoterV2ExactInputSingle({
+        tokenIn: route.tokenIn === SWAP_NATIVE_CURRENCY_ADDRESS ? route.weth : route.tokenIn,
+        tokenOut: route.tokenOut === SWAP_NATIVE_CURRENCY_ADDRESS ? route.weth : route.tokenOut,
+        amountIn,
+        fee: route.feeTier,
+      });
+      const quoted = yield* call(
+        "eth_call",
+        [{ to: route.quoterAddress, data: quoteData }, blockNumberHex],
+        decodeQuoterV2Result,
+      ).pipe(Effect.catch((reason) => Effect.succeed(`error:${reason}` as const)));
+      if (typeof quoted === "string") {
+        return {
+          status: "refused" as const,
+          reason: `quote-unavailable: the v3 quoter call failed at block ${blockNumber}`,
+        };
+      }
+      if (quoted.amountOut <= 0n) {
+        return { status: "refused" as const, reason: "quote-unavailable: zero output" };
+      }
+      const minAmountOutRaw = (quoted.amountOut * BigInt(10_000 - slippageBps)) / 10_000n;
+      if (minAmountOutRaw === 0n) {
+        return {
+          status: "refused" as const,
+          reason: "quote-unavailable: slippage rounds minimum output to zero",
+        };
+      }
+
+      // The block's hash, read back for the same pinned number: together
+      // with the number it fixes the state the price was taken against.
+      const blockHash = yield* call(
+        "eth_getBlockByNumber",
+        [blockNumberHex, false],
+        (value): string | null => {
+          if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+          const hash = (value as Record<string, unknown>)["hash"];
+          return typeof hash === "string" && /^0x[0-9a-f]{64}$/.test(hash) ? hash.slice(2) : null;
+        },
+      ).pipe(Effect.catch((reason) => Effect.succeed(`error:${reason}` as const)));
+      if (typeof blockHash !== "string" || blockHash.startsWith("error:")) {
+        return {
+          status: "refused" as const,
+          reason: "quote-unavailable: the pinned quote block's hash could not be read",
+        };
+      }
+
+      // EIP-1559 bounds from fee history: next-block base fee plus the 50th
+      // percentile priority. maxFee = 2× base + priority (the standard
+      // headroom bound); a missing/zero bound refuses.
+      const feeBounds = yield* call(
+        "eth_feeHistory",
+        ["0x1", "latest", [50]],
+        (value): { readonly maxFee: bigint; readonly priority: bigint } | null => {
+          if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+          const baseFees = (value as Record<string, unknown>)["baseFeePerGas"];
+          const rewards = (value as Record<string, unknown>)["reward"];
+          if (!Array.isArray(baseFees) || baseFees.length < 2) return null;
+          if (!Array.isArray(rewards) || rewards.length < 1 || !Array.isArray(rewards[0]))
+            return null;
+          // Quantity words arrive as 0x-prefixed hex.
+          const hexQuantity = (input: unknown): bigint | null =>
+            typeof input === "string" && /^0x[0-9a-fA-F]+$/.test(input) ? BigInt(input) : null;
+          const nextBase = hexQuantity(baseFees[1]);
+          const priority = hexQuantity(rewards[0][0]);
+          if (nextBase === null || nextBase <= 0n || priority === null) return null;
+          return { maxFee: nextBase * 2n + priority, priority };
+        },
+      ).pipe(Effect.catch((reason) => Effect.succeed(`error:${reason}` as const)));
+      if (typeof feeBounds === "string") {
+        return {
+          status: "refused" as const,
+          reason: "quote-unavailable: EIP-1559 fee bounds could not be measured for this route",
+        };
+      }
+      const { maxFee, priority } = feeBounds;
+
+      // Measured gas: estimate the ACTUAL protected calldata (encode with a
+      // unit minOut so the estimate measures the swap, not the protection).
+      // Estimation requires the funding account; an unfunded or refusing
+      // estimate leaves the fee unbounded, which refuses the quote.
+      const spotTarget = rpc.target();
+      const accountAddress = spotTarget === null ? null : spotTarget.accountAddress;
+      if (accountAddress === null) {
+        return {
+          status: "refused" as const,
+          reason:
+            "quote-unavailable: the spot mainnet account address is not configured, so execution gas cannot be estimated",
+        };
+      }
+      const estimatePlan: ProtectedSwapPlan = {
+        direction:
+          route.tokenIn === SWAP_NATIVE_CURRENCY_ADDRESS ? "native-in" : "erc20-in-native-out",
+        chainId: 1,
+        router: route.swapTargetAddress,
+        weth: route.weth,
+        erc20: route.erc20,
+        recipient: "0x0000000000000000000000000000000000000001",
+        amountInRaw: input.amountInRaw,
+        minAmountOutRaw: "1",
+        deadlineUnix: Math.floor(input.now / 1000) + Math.floor(ttlMs / 1000) + 60,
+        feeTier: route.feeTier,
+      };
+      const estimateCall = encodeProtectedExactInput(estimatePlan);
+      const gasUnits = yield* call(
+        "eth_estimateGas",
+        [
+          {
+            from: accountAddress,
+            to: estimateCall.to,
+            data: estimateCall.data,
+            value: estimateCall.value,
+          },
+          blockNumberHex,
+        ],
+        (value) =>
+          typeof value === "string" && /^0x[0-9a-f]+$/.test(value) ? BigInt(value) : null,
+      ).pipe(Effect.catch((reason) => Effect.succeed(`error:${reason}` as const)));
+      if (typeof gasUnits !== "bigint" || gasUnits <= 0n) {
+        return {
+          status: "refused" as const,
+          reason:
+            "quote-unavailable: execution gas could not be estimated for the protected calldata (the funding account must exist for estimation)",
+        };
+      }
+
+      const routeDigest = swapRouteConfigDigest(route);
+      const worstCaseFeeWei = gasUnits * maxFee;
+      const record: SwapQuoteRecord = {
+        quoteId: swapQuoteId({
+          chainId: route.chainId,
+          routeId: route.routeId,
+          tokenIn: route.tokenIn,
+          tokenOut: route.tokenOut,
+          amountInRaw: input.amountInRaw,
+          minAmountOutRaw: minAmountOutRaw.toString(10),
+          quotedAtMs: input.now,
+          expiresAtMs: input.now + ttlMs,
+          routeConfigDigest: routeDigest,
+          quotedBlockNumber: blockNumber,
+          quotedBlockHash: blockHash,
+          quotedAmountOutRaw: quoted.amountOut.toString(10),
+          quoterCodeHash,
+          targetCodeHash,
+          gasUnitsMeasured: gasUnits.toString(10),
+          maxFeePerGasWei: maxFee.toString(10),
+          maxPriorityFeePerGasWei: priority.toString(10),
+        }),
+        chainId: route.chainId,
+        routeId: route.routeId,
+        tokenIn: route.tokenIn,
+        tokenOut: route.tokenOut,
+        amountInRaw: input.amountInRaw,
+        minAmountOutRaw: minAmountOutRaw.toString(10),
+        gasEstimateWei: worstCaseFeeWei.toString(10),
+        quotedAtMs: input.now,
+        expiresAtMs: input.now + ttlMs,
+        basis: "eth_call",
+        routeConfigDigest: routeDigest,
+        quotedBlockNumber: blockNumber,
+        quotedBlockHash: blockHash,
+        quotedAmountOutRaw: quoted.amountOut.toString(10),
+        quoterCodeHash,
+        targetCodeHash,
+        gasUnitsMeasured: gasUnits.toString(10),
+        maxFeePerGasWei: maxFee.toString(10),
+        maxPriorityFeePerGasWei: priority.toString(10),
+      };
+      return yield* decodeQuoteRecord(record).pipe(
+        Effect.map((validated): SwapQuoteOutcome => ({ status: "quoted", record: validated })),
+        Effect.orElseSucceed((): SwapQuoteOutcome => ({
+          status: "refused",
+          reason: "quote-unavailable: quote record failed contract validation",
+        })),
+      );
+    }).pipe(
+      Effect.catch((reason): Effect.Effect<SwapQuoteOutcome, never> =>
+        Effect.succeed({
+          status: "refused" as const,
+          reason: `quote-unavailable: ${redactRpcDetail(String(reason))}`,
+        }),
+      ),
+    );
 
   return UniswapQuoteService.of({ quoteExactInput });
 });

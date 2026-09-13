@@ -912,6 +912,159 @@ layer("SwapExecutionService prepareAndAttempt", (it) => {
     }),
   );
 
+  it.effect("a corrupt budget ledger refuses by name and never shows a fresh budget", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const policy = yield* policyService();
+      const swap = yield* swapService(null);
+      const { envelopeId, proposalId } = yield* seededProposal(policy);
+
+      // A SECOND and THIRD proposal so the ledger mixes VALID rows on both
+      // sides of the corrupt one — the fold's verdict cannot depend on row
+      // order. The proposal under preparation ('entry') stays valid; the
+      // corruption lives in a different row.
+      yield* commitEvaluation(matchedRecord(1, "occ-entry-2"));
+      policyState.impl = fixedSwapPolicy({ amountInRaw: "1", stageKey: "second" });
+      const second = yield* policy.evaluatePolicy({
+        environmentId: ENV,
+        capabilityId: CAP,
+        now: NOW + 3,
+      });
+      assert.equal(second.status, "proposed");
+      yield* commitEvaluation(matchedRecord(2, "occ-entry-3"));
+      policyState.impl = fixedSwapPolicy({ amountInRaw: "1", stageKey: "third" });
+      const third = yield* policy.evaluatePolicy({
+        environmentId: ENV,
+        capabilityId: CAP,
+        now: NOW + 4,
+      });
+      assert.equal(third.status, "proposed");
+
+      const sql = yield* SqlClient.SqlClient;
+      // Valid ('entry', 'third') around corrupt ('second', status executing,
+      // fractional amount).
+      yield* sql`UPDATE execution_proposals SET status = 'executing', proposal_json = '{"amountInRaw":"1.5"}' WHERE stage_key = 'second'`;
+      const outcome = yield* swap.prepareAndAttempt({
+        environmentId: ENV,
+        proposalId,
+        quote: quoteFixture(),
+        now: NOW + 2_000,
+      });
+      const refusal = refusedWith(outcome, "corrupt-budget-ledger");
+      assert.include(refusal.detail, "corrupt");
+      assert.equal(yield* intentCount, 0);
+
+      // The BUDGET VIEW for the same corrupt ledger reports zero spendable
+      // with the corrupt marker — never the full cap.
+      const view = yield* swap.remainingInputBudgetFor(envelopeId);
+      assert.isNotNull(view);
+      assert.equal(view?.budgetLedger, "corrupt");
+      assert.equal(view?.remainingInputCapRaw, "0");
+      assert.match(view?.corruptDetail ?? "", /corrupt/);
+    }),
+  );
+
+  it.effect(
+    "a quote on another chain than the candidate refuses stale-quote naming the field",
+    () =>
+      Effect.gen(function* () {
+        yield* reset;
+        const policy = yield* policyService();
+        // A mainnet ur-v3 route whose chain the quote matches, while the
+        // envelope's candidate stays on Sepolia — the candidate/route chain
+        // disagreement is named, whatever the route family.
+        const mainnetEnv = routeEnv([
+          {
+            routeId: "mainnet-eth-usdc",
+            chainId: "1",
+            routeType: "ur-v3-exact-input",
+            tokenIn: NATIVE,
+            tokenOut: TOKEN_OUT,
+            quoterAddress: "0x61ffe014ba17989e743c5f6cb21bf9697530b21e",
+            swapTargetAddress: "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad",
+            weth: `0x${"c0".repeat(20)}`,
+            feeTier: 500,
+          },
+        ]);
+        const swap = yield* swapService(null, mainnetEnv);
+        const { proposalId } = yield* seededProposal(policy);
+        const outcome = yield* swap.prepareAndAttempt({
+          environmentId: ENV,
+          proposalId,
+          quote: quoteFixture({ routeId: "mainnet-eth-usdc", chainId: "1", tokenIn: NATIVE }),
+          now: NOW + 2_000,
+        });
+        const refusal = refusedWith(outcome, "stale-quote");
+        assert.include(refusal.detail, "chainId mismatch");
+        assert.equal(yield* intentCount, 0);
+      }),
+  );
+
+  it.effect("a ur-v3 protected route refuses protected-route-live-lane in the draft service", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const policy = yield* policyService();
+      const mainnetEnv = routeEnv([
+        {
+          routeId: "mainnet-eth-usdc",
+          chainId: "1",
+          routeType: "ur-v3-exact-input",
+          tokenIn: NATIVE,
+          tokenOut: TOKEN_OUT,
+          quoterAddress: "0x61ffe014ba17989e743c5f6cb21bf9697530b21e",
+          swapTargetAddress: "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad",
+          weth: `0x${"c0".repeat(20)}`,
+          feeTier: 500,
+        },
+      ]);
+      const swap = yield* swapService(null, mainnetEnv);
+      const { proposalId } = yield* seededProposal(policy, {
+        envelopeOverrides: {
+          candidates: [{ ...CANDIDATE, chainId: "1", tokenIn: NATIVE, label: "ETH -> USDC" }],
+          expiresAtMs: NOW + 7_200_000,
+        },
+        atMs: NOW + 10_000,
+      });
+      const outcome = yield* swap.prepareAndAttempt({
+        environmentId: ENV,
+        proposalId,
+        quote: quoteFixture({
+          routeId: "mainnet-eth-usdc",
+          chainId: "1",
+          tokenIn: NATIVE,
+        }),
+        now: NOW + 20_000,
+      });
+      const refusal = refusedWith(outcome, "protected-route-live-lane");
+      assert.include(refusal.detail, "protected admission");
+      assert.equal(yield* intentCount, 0);
+    }),
+  );
+
+  it.effect("a measured fee estimate beyond the envelope gas cap refuses, never clamps", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const policy = yield* policyService();
+      const swap = yield* swapService(null);
+      const { proposalId } = yield* seededProposal(policy);
+      // 1 gas unit × 3e14 max fee exceeds the fixture's 2e14 maxGasWei.
+      const outcome = yield* swap.prepareAndAttempt({
+        environmentId: ENV,
+        proposalId,
+        quote: quoteFixture({
+          gasUnitsMeasured: "1000000",
+          maxFeePerGasWei: "300000000000000",
+          maxPriorityFeePerGasWei: "100000000000000",
+          gasEstimateWei: "300000000000000000000",
+        }),
+        now: NOW + 2_000,
+      });
+      const refusal = refusedWith(outcome, "budget-exhausted");
+      assert.include(refusal.detail, "never clamping");
+      assert.equal(yield* intentCount, 0);
+    }),
+  );
+
   it.effect("the native-currency convention: a native tokenIn pays msg.value", () =>
     Effect.gen(function* () {
       yield* reset;
@@ -983,6 +1136,7 @@ layer("SwapExecutionService prepareAndAttempt", (it) => {
         remainingInputCapRaw: "1500000",
         settledRaw: "0",
         inFlightRaw: "0",
+        budgetLedger: "ok",
       });
 
       yield* swap.prepareAndAttempt({

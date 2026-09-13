@@ -747,7 +747,13 @@ export const makeExecutionPolicyService = Effect.gen(function* () {
       }
 
       // Gate 6 — the explicit remaining budget: settled (executed) and
-      // in-flight (executing) swap proposals deducted, fail closed.
+      // in-flight (executing) swap proposals deducted, fail closed. A ledger
+      // row that does not decode, or whose amount is not an exact decimal
+      // integer, makes the budget CORRUPT, not zero: folding malformed rows
+      // to zero would show the FULL cap as spendable, so the evaluation
+      // refuses by name instead of proposing against an unreadable ledger.
+      // The verdict is order-independent — one malformed row anywhere in the
+      // ledger (before or after valid rows) refuses the whole fold.
       const budgetRows = yield* sql<{ readonly status: string; readonly proposal_json: string }>`
         SELECT status, proposal_json FROM execution_proposals
         WHERE envelope_id = ${envelopeRow.envelope_id} AND stage_key IS NOT NULL
@@ -757,22 +763,27 @@ export const makeExecutionPolicyService = Effect.gen(function* () {
       {
         let settled = 0n;
         let inFlight = 0n;
-        let malformed = false;
+        let corrupt: string | null = null;
         for (const row of budgetRows) {
           const amount = amountInOf(row.proposal_json);
           if (amount === null || !/^(0|[1-9][0-9]*)$/.test(amount)) {
-            // An unparseable ledger authorizes nothing (fail closed).
-            malformed = true;
+            // Do not echo the corrupt bytes into the refusal detail; naming
+            // the status is enough to locate the row.
+            corrupt = `a proposal in status ${row.status} does not decode to a swap with an exact decimal amount`;
             break;
           }
           const value = BigInt(amount);
           if (row.status === "executed") settled += value;
           if (row.status === "executing") inFlight += value;
         }
-        if (!malformed) {
-          settledRaw = settled.toString();
-          inFlightRaw = inFlight.toString();
+        if (corrupt !== null) {
+          return refuse(
+            "corrupt-budget-ledger",
+            `the spend ledger under ${envelopeRow.envelope_id} is corrupt: ${corrupt}; refusing rather than reporting a fresh budget`,
+          );
         }
+        settledRaw = settled.toString();
+        inFlightRaw = inFlight.toString();
       }
       const remainingInputCapRaw = remainingInputBudget({
         capTotalRaw: envelope.inputCapTotalRaw,

@@ -78,7 +78,6 @@ import {
   validateQuoteFresh,
 } from "./UniswapQuoteService.ts";
 import { swapRouteAbi } from "./PeripheryAbi.ts";
-import { SEPOLIA_CHAIN_ID } from "./SepoliaTarget.ts";
 import type { ForgeBroadcastRefusalReason } from "./UniswapTestnetAdapter.ts";
 import type { ExecutionEnvelopeView } from "./ExecutionPolicyService.ts";
 
@@ -111,6 +110,12 @@ const NATIVE_CURRENCY_ADDRESS = `0x${"0".repeat(40)}`;
  * - `superseded-quote` — this proposal already has an intent prepared against
  *   a DIFFERENT quote; repricing is a new proposal, never a mutation.
  * - `execution-unavailable` — required retained execution state is unavailable.
+ * - `protected-route-live-lane` — the quote names a ur-v3 protected mainnet
+ *   route, which only the protected admission service (reservations,
+ *   Universal Router calldata, refusing broadcaster) may prepare; this draft
+ *   lane never downgrades a protected route to PoolSwapTest bytes.
+ * - `corrupt-budget-ledger` — a spend-ledger row did not decode; the budget
+ *   is corrupt, not zero, and nothing may be prepared against it.
  * - `broadcaster-missing` — draft preparation cannot submit unprotected calldata.
  *   Other F0 refusal names remain in the shared compatibility vocabulary.
  */
@@ -121,6 +126,7 @@ export type SwapExecutionRefusalName =
   | "proposal-not-swap"
   | "invalid-policy-output"
   | "superseded-quote"
+  | "protected-route-live-lane"
   | "execution-unavailable";
 
 export type SwapPrepareOutcome =
@@ -157,6 +163,15 @@ export interface EnvelopeBudgetView {
   readonly remainingInputCapRaw: string;
   readonly settledRaw: string;
   readonly inFlightRaw: string;
+  /**
+   * "corrupt" when a ledger row did not decode to an exact amount. The
+   * spendable fields then report "0" (fail closed — a corrupt ledger never
+   * shows a fresh budget) and consumers must surface the corruption, not the
+   * zero. Additive so existing readers keep compiling.
+   */
+  readonly budgetLedger?: "ok" | "corrupt";
+  /** Human-readable corruption detail when `budgetLedger` is "corrupt". */
+  readonly corruptDetail?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +353,39 @@ const amountInOf = (proposalJson: string): string | null => {
 };
 
 /**
+ * The settled/in-flight fold over one envelope's swap-proposal ledger.
+ * Corrupt rows (undecodable proposal, non-exact amount) make the WHOLE fold
+ * corrupt — never a zero-spend ledger, which would display the full cap as
+ * spendable. The verdict is order-independent: one malformed row anywhere,
+ * before or after valid rows, corrupts the fold. `executed` sums into
+ * settled, `executing` into in-flight, every other status spends nothing.
+ */
+const foldBudgetLedger = (
+  rows: ReadonlyArray<{ readonly status: string; readonly proposal_json: string }>,
+):
+  | { readonly corrupt: false; readonly settledRaw: string; readonly inFlightRaw: string }
+  | {
+      readonly corrupt: true;
+      readonly detail: string;
+    } => {
+  let settled = 0n;
+  let inFlight = 0n;
+  for (const row of rows) {
+    const amount = amountInOf(row.proposal_json);
+    if (amount === null || !/^(0|[1-9][0-9]*)$/.test(amount)) {
+      return {
+        corrupt: true,
+        detail: `a proposal in status ${row.status} does not decode to a swap with an exact decimal amount`,
+      };
+    }
+    const value = BigInt(amount);
+    if (row.status === "executed") settled += value;
+    if (row.status === "executing") inFlight += value;
+  }
+  return { corrupt: false, settledRaw: settled.toString(), inFlightRaw: inFlight.toString() };
+};
+
+/**
  * Key-sorted, undefined-dropping canonical JSON input (the envelope store's
  * normalization, restated): the prepared transaction's stored bytes are a
  * function of their content, so the content id is stable across processes.
@@ -421,29 +469,28 @@ export const makeSwapExecutionService = Effect.gen(function* () {
       const rows = yield* budgetRowsFor(envelopeId).pipe(
         Effect.mapError(sqlFail("remainingInputBudgetFor")),
       );
-      // The same ledger fold the envelope evaluator runs: an unparseable
-      // amount fails closed (malformed ledger authorizes nothing).
-      let settled = 0n;
-      let inFlight = 0n;
-      let malformed = false;
-      for (const row of rows) {
-        const amount = amountInOf(row.proposal_json);
-        if (amount === null || !/^(0|[1-9][0-9]*)$/.test(amount)) {
-          malformed = true;
-          break;
-        }
-        const value = BigInt(amount);
-        if (row.status === "executed") settled += value;
-        if (row.status === "executing") inFlight += value;
+      const folded = foldBudgetLedger(rows);
+      if (folded.corrupt) {
+        // A corrupt ledger never displays a fresh budget: the spendable
+        // fields fail closed to zero and the marker names the corruption so
+        // surfaces can refuse rather than show a spendable balance.
+        return {
+          remainingInputCapRaw: "0",
+          settledRaw: "0",
+          inFlightRaw: "0",
+          budgetLedger: "corrupt" as const,
+          corruptDetail: `the spend ledger under ${envelopeId} is corrupt: ${folded.detail}`,
+        };
       }
       return {
         remainingInputCapRaw: remainingInputBudget({
           capTotalRaw: envelope.inputCapTotalRaw,
-          settledRaw: malformed ? "0" : settled.toString(),
-          inFlightRaw: malformed ? "0" : inFlight.toString(),
+          settledRaw: folded.settledRaw,
+          inFlightRaw: folded.inFlightRaw,
         }),
-        settledRaw: settled.toString(),
-        inFlightRaw: inFlight.toString(),
+        settledRaw: folded.settledRaw,
+        inFlightRaw: folded.inFlightRaw,
+        budgetLedger: "ok" as const,
       };
     });
 
@@ -609,6 +656,16 @@ export const makeSwapExecutionService = Effect.gen(function* () {
           `candidateId ${proposal.candidateId} is not predeclared`,
         );
       }
+      // Chain binding (repair d) BEFORE the pair fields: the CANDIDATE's
+      // chain, the quote's chain, and the route's chain must be ONE approved
+      // chain. A quote priced on another chain is not a price for this
+      // candidate, whatever its routeId says.
+      if (quote.chainId !== candidate.chainId) {
+        return refuse(
+          "stale-quote",
+          `chainId mismatch: quote ${quote.chainId}, candidate ${candidate.chainId}`,
+        );
+      }
       // The quote must match the proposal's candidate and amount EXACTLY —
       // the fields the policy decided on, named in the refusal when they
       // differ. These run BEFORE the route-pair check so a mismatch against
@@ -647,27 +704,23 @@ export const makeSwapExecutionService = Effect.gen(function* () {
 
       // Gate 5 — the budget re-check at preparation: within the per-swap cap
       // AND the remaining total over settled + in-flight. NEVER clamp: an
-      // amount outside the caps is a refusal the policy must re-propose.
+      // amount outside the caps is a refusal the policy must re-propose. A
+      // corrupt ledger row refuses the whole gate by name — folding it to
+      // zero would leave the full cap spendable against unreadable history.
       const ledgerRows = yield* budgetRowsFor(proposalRow.envelope_id).pipe(
         Effect.mapError(sqlFail("prepareAndAttempt.budget")),
       );
-      let settled = 0n;
-      let inFlight = 0n;
-      let malformed = false;
-      for (const row of ledgerRows) {
-        const amount = amountInOf(row.proposal_json);
-        if (amount === null || !/^(0|[1-9][0-9]*)$/.test(amount)) {
-          malformed = true;
-          break;
-        }
-        const value = BigInt(amount);
-        if (row.status === "executed") settled += value;
-        if (row.status === "executing") inFlight += value;
+      const folded = foldBudgetLedger(ledgerRows);
+      if (folded.corrupt) {
+        return refuse(
+          "corrupt-budget-ledger",
+          `the spend ledger under ${proposalRow.envelope_id} is corrupt: ${folded.detail}; refusing rather than treating the ledger as empty`,
+        );
       }
       const remainingRaw = remainingInputBudget({
         capTotalRaw: envelope.inputCapTotalRaw,
-        settledRaw: malformed ? "0" : settled.toString(),
-        inFlightRaw: malformed ? "0" : inFlight.toString(),
+        settledRaw: folded.settledRaw,
+        inFlightRaw: folded.inFlightRaw,
       });
       if (
         !withinInputBudget({
@@ -682,15 +735,46 @@ export const makeSwapExecutionService = Effect.gen(function* () {
         );
       }
 
-      // Build an inspectable draft only. PoolSwapTest has no min-output or
-      // deadline parameter, and zero is not a valid v4 pool price bound.
-      // These bytes must never be broadcast. The refusal below is unconditional
-      // until an authorized execution adapter supplies protected calldata.
-      // Gas/nonce are placeholders, not measured execution guarantees.
-      const gasCeiling =
-        BigInt(QUOTE_GAS_ESTIMATE_WEI_PLACEHOLDER) < BigInt(envelope.maxGasWei)
-          ? QUOTE_GAS_ESTIMATE_WEI_PLACEHOLDER
-          : envelope.maxGasWei;
+      // Route-type binding: this service's draft lane builds PoolSwapTest
+      // calldata and can never submit it. A ur-v3 route (the protected
+      // mainnet lane) must go through the protected admission service that
+      // encodes Universal Router calldata, reserves budget atomically, and
+      // refuses-by-default at the broadcaster — reaching THIS draft builder
+      // would silently downgrade a protected route to unprotected bytes.
+      if (route.routeType !== "v4-exact-input-single") {
+        return refuse(
+          "protected-route-live-lane",
+          `route ${route.routeId} is a ${route.routeType} route; the Sepolia draft lane cannot prepare it — use the protected admission path`,
+        );
+      }
+
+      // Gas ceiling for the DRAFT bytes only (never signable). When the quote
+      // carries a MEASURED estimate with bounded fees, the worst-case
+      // reservation is units × max fee and an over-envelope measurement is a
+      // REFUSAL — clamping a measurement to the budget and calling it safe is
+      // the exact failure 03 forbids. A quote without measurements keeps the
+      // documented draft placeholder, clamped by the envelope cap, which this
+      // lane can do only because its submission refusal is unconditional.
+      let gasCeiling: string;
+      if (
+        quote.gasUnitsMeasured !== undefined &&
+        quote.maxFeePerGasWei !== undefined &&
+        quote.maxPriorityFeePerGasWei !== undefined
+      ) {
+        const worstCase = BigInt(quote.gasUnitsMeasured) * BigInt(quote.maxFeePerGasWei);
+        if (worstCase > BigInt(envelope.maxGasWei)) {
+          return refuse(
+            "budget-exhausted",
+            `measured worst-case fees ${worstCase} wei exceed the envelope's maxGasWei ${envelope.maxGasWei}; refusing, never clamping a measurement`,
+          );
+        }
+        gasCeiling = worstCase.toString();
+      } else {
+        gasCeiling =
+          BigInt(QUOTE_GAS_ESTIMATE_WEI_PLACEHOLDER) < BigInt(envelope.maxGasWei)
+            ? QUOTE_GAS_ESTIMATE_WEI_PLACEHOLDER
+            : envelope.maxGasWei;
+      }
       const data: Hex = encodeFunctionData({
         abi: swapRouteAbi,
         functionName: "swap",
@@ -708,12 +792,15 @@ export const makeSwapExecutionService = Effect.gen(function* () {
         ],
       });
       const valueWei = route.tokenIn === NATIVE_CURRENCY_ADDRESS ? quote.amountInRaw : "0";
+      // The transaction's chain is the ROUTE's chain (repair d) — the chain
+      // the quote was priced on and the candidate declared, already verified
+      // equal above. Never a hardcoded chain id.
       const preparedTxJson = forgeJsonEncode(
         canonical({
           to: route.swapTargetAddress,
           data,
           value: valueWei,
-          chainId: SEPOLIA_CHAIN_ID,
+          chainId: Number(route.chainId),
           gasWei: gasCeiling,
           nonce: null,
         }),

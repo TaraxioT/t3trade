@@ -25,6 +25,8 @@ import {
   ForgeSepoliaTransport,
   type ForgeSepoliaRpcTransportShape,
 } from "./UniswapTestnetAdapter.ts";
+import { SpotMainnetTransport, type SpotMainnetTarget } from "./SpotMainnetTarget.ts";
+import { UR_COMMAND_V3_SWAP_EXACT_IN, UR_COMMAND_WRAP_ETH } from "./MainnetProtectedRouter.ts";
 import {
   QUOTE_EXACT_AMOUNT_MAX,
   QUOTE_EXACT_INPUT_SINGLE_SIGNATURE,
@@ -39,6 +41,7 @@ import {
   UniswapQuoteService,
   UniswapQuoteServiceLive,
   resolveSwapRouteSettings,
+  swapRouteConfigDigest,
   routeFor,
   validateQuoteFresh,
   type SwapQuoteOutcome,
@@ -366,7 +369,10 @@ describe("resolveSwapRouteSettings", () => {
     assert.equal(settings.routes?.length, 2);
     const first = settings.routes?.[0];
     assert.equal(first?.tokenIn, mixed.toLowerCase());
-    assert.equal(first?.poolKey.currency0, mixed.toLowerCase());
+    assert.equal(
+      first?.routeType === "v4-exact-input-single" ? first.poolKey.currency0 : undefined,
+      mixed.toLowerCase(),
+    );
     assert.equal(first?.routeType, "v4-exact-input-single");
     assert.equal(first?.chainId, "11155111");
     // routeFor finds by the trimmed registry identity and nothing else.
@@ -717,6 +723,285 @@ describe("UniswapQuoteService.quoteExactInput", () => {
         }
       }),
   );
+});
+
+// ---------------------------------------------------------------------------
+// The protected mainnet lane (ur-v3 routes through the spot transport)
+// ---------------------------------------------------------------------------
+
+const M_ROUTER = "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad";
+const M_WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+const M_USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+const M_QUOTER = "0x61ffe014ba17989e743c5f6cb21bf9697530b21e";
+const M_NATIVE = `0x${"0".repeat(40)}`;
+
+const mainnetRouteFixture = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  routeId: "mainnet-eth-usdc",
+  chainId: "1",
+  routeType: "ur-v3-exact-input",
+  tokenIn: M_NATIVE,
+  tokenOut: M_USDC,
+  quoterAddress: M_QUOTER,
+  swapTargetAddress: M_ROUTER,
+  weth: M_WETH,
+  feeTier: 500,
+  ...overrides,
+});
+
+const spotTarget: SpotMainnetTarget = {
+  chainId: 1,
+  rpcUrl: "https://example.invalid",
+  accountAddress: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+  universalRouter: M_ROUTER,
+  quoterV2: M_QUOTER,
+  permit2: "0x000000000022d473030f116ddee9f6b43ac78ba3",
+  v3Factory: "0x1f98431c8ad98523631ae4a59f267346ea31f984",
+  weth9: M_WETH,
+  usdc: M_USDC,
+  pool: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+  feeTier: 500,
+  deadlineWindowSeconds: 120,
+  codeHashPins: {},
+};
+
+/** A fake spot mainnet transport answering a per-method script. */
+const makeSpotTransport = (script: (method: string, params: ReadonlyArray<unknown>) => unknown) => {
+  const calls: Array<{ readonly method: string; readonly params: ReadonlyArray<unknown> }> = [];
+  return {
+    calls,
+    shape: SpotMainnetTransport.of({
+      target: () => spotTarget,
+      request: (method, params) =>
+        Effect.gen(function* () {
+          calls.push({ method, params });
+          const served = script(method, params);
+          if (served === undefined) {
+            return yield* Effect.fail(`no fixture for ${method}`);
+          }
+          return served;
+        }),
+    }),
+  };
+};
+
+const MAINNET_QUOTE_RESULT = (() => {
+  // (amountOut, sqrtAfter, ticksCrossed, gasEstimate) static words.
+  const w = (v: bigint): string => v.toString(16).padStart(64, "0");
+  return `0x${w(2_500_500_000n)}${w(1n)}${w(1n)}${w(90_000n)}`;
+})();
+
+const FEE_HISTORY = (() => {
+  const w = (v: string): string => v.replace(/^0x/, "").padStart(64, "0");
+  return {
+    baseFeePerGas: ["0x5", "0x7"],
+    reward: [["0x3"]],
+  };
+})();
+
+const healthySpotScript = (
+  overrides: Record<string, unknown> = {},
+): ((method: string, params: ReadonlyArray<unknown>) => unknown) => {
+  const defaults: Record<string, unknown> = {
+    eth_chainId: "0x1",
+    eth_blockNumber: "0x1406f40",
+    eth_getCode: "0x6080",
+    eth_call: MAINNET_QUOTE_RESULT,
+    eth_getBlockByNumber: { hash: `0x${"3".repeat(64)}` },
+    eth_feeHistory: FEE_HISTORY,
+    eth_estimateGas: "0x35b60",
+  };
+  const merged = { ...defaults, ...overrides };
+  return (method) => merged[method];
+};
+
+const mainnetQuoteLayer = (
+  transportShape: ReturnType<typeof makeSpotTransport>["shape"],
+  env: Record<string, string | undefined>,
+) =>
+  UniswapQuoteServiceLive.pipe(
+    Layer.provide(routeConfigLayer(env)),
+    Layer.provide(
+      Layer.succeed(
+        ForgeSepoliaTransport,
+        ForgeSepoliaTransport.of(
+          makeFakeTransport(() => ({ fail: "sepolia must not be used" })).shape,
+        ),
+      ),
+    ),
+    Layer.provide(Layer.succeed(SpotMainnetTransport, transportShape)),
+  );
+
+describe("the protected mainnet lane", () => {
+  it("prices a ur-v3 route with the COMPLETE v3 identity and measured fees", async () => {
+    const transport = makeSpotTransport(healthySpotScript());
+    const env = routesEnv([mainnetRouteFixture()]);
+    const program = Effect.flatMap(UniswapQuoteService, (svc) =>
+      svc.quoteExactInput({
+        routeId: "mainnet-eth-usdc",
+        amountInRaw: "400000000000000000",
+        now: NOW,
+      }),
+    );
+    const service = await Effect.runPromise(
+      Effect.provide(program, mainnetQuoteLayer(transport.shape, env)),
+    );
+    assert.equal(service.status, "quoted", JSON.stringify(service));
+    if (service.status !== "quoted") throw new Error("unreachable");
+    const record = service.record;
+    assert.equal(record.chainId, "1");
+    assert.equal(record.quotedAmountOutRaw, "2500500000");
+    assert.equal(record.quotedBlockNumber, BigInt("0x1406f40").toString(10));
+    assert.equal(record.quotedBlockHash, "3".repeat(64));
+    assert.match(record.routeConfigDigest ?? "", /^[0-9a-f]{64}$/);
+    assert.isDefined(record.quoterCodeHash);
+    assert.isDefined(record.targetCodeHash);
+    // Measured fees: 0x35860 units × (2×7 + 3) wei = the declared worst case.
+    assert.equal(record.gasUnitsMeasured, "220000");
+    assert.equal(record.maxFeePerGasWei, "17");
+    assert.equal(record.maxPriorityFeePerGasWei, "3");
+    assert.equal(record.gasEstimateWei, (220_000n * 17n).toString(10));
+    // The quote was pinned at the block number, not "latest".
+    assert.isTrue(
+      transport.calls.some(
+        (call) => call.method === "eth_call" && JSON.stringify(call.params).includes('"0x1406f40"'),
+      ),
+    );
+    // The gas estimate measured the PROTECTED calldata addressed to the router.
+    const estimate = transport.calls.find((call) => call.method === "eth_estimateGas");
+    assert.isDefined(estimate);
+    const estimateCall = estimate?.params[0] as { readonly to: string; readonly data: string };
+    assert.equal(estimateCall.to, M_ROUTER);
+    assert.isTrue(estimateCall.data.startsWith("0x3593564c"));
+  });
+
+  it("refuses when the RPC is not chain 1, or fees/estimates cannot be bounded", async () => {
+    const env = routesEnv([mainnetRouteFixture()]);
+    const quoteAt = (layer: ReturnType<typeof mainnetQuoteLayer>) =>
+      Effect.runPromise(
+        Effect.provide(
+          Effect.flatMap(UniswapQuoteService, (svc) =>
+            svc.quoteExactInput({ routeId: "mainnet-eth-usdc", amountInRaw: "1000000", now: NOW }),
+          ),
+          layer,
+        ),
+      );
+    const wrongChain = await quoteAt(
+      mainnetQuoteLayer(makeSpotTransport(healthySpotScript({ eth_chainId: "0x2" })).shape, env),
+    );
+    assert.equal(wrongChain.status, "refused");
+    if (wrongChain.status === "refused") assert.include(wrongChain.reason, "chain 1");
+
+    const noFees = await quoteAt(
+      mainnetQuoteLayer(
+        makeSpotTransport(healthySpotScript({ eth_feeHistory: undefined })).shape,
+        env,
+      ),
+    );
+    assert.equal(noFees.status, "refused");
+    if (noFees.status === "refused") assert.include(noFees.reason, "fee bounds");
+
+    const noEstimate = await quoteAt(
+      mainnetQuoteLayer(
+        makeSpotTransport(healthySpotScript({ eth_estimateGas: undefined })).shape,
+        env,
+      ),
+    );
+    assert.equal(noEstimate.status, "refused");
+    if (noEstimate.status === "refused")
+      assert.include(noEstimate.reason, "gas could not be estimated");
+  });
+
+  it("refuses a ur-v3 route when no mainnet transport is wired", async () => {
+    const env = routesEnv([mainnetRouteFixture()]);
+    const service = await Effect.runPromise(
+      Effect.provide(
+        Effect.flatMap(UniswapQuoteService, (svc) =>
+          svc.quoteExactInput({ routeId: "mainnet-eth-usdc", amountInRaw: "1000000", now: NOW }),
+        ),
+        UniswapQuoteServiceLive.pipe(
+          Layer.provide(routeConfigLayer(env)),
+          Layer.provide(
+            Layer.succeed(
+              ForgeSepoliaTransport,
+              ForgeSepoliaTransport.of(
+                makeFakeTransport(() => ({ fail: "sepolia must not be used" })).shape,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    assert.equal(service.status, "refused");
+    if (service.status === "refused")
+      assert.include(service.reason, "mainnet RPC transport is not wired");
+  });
+
+  it("the registry resolves both ur-v3 directions and refuses malformed ones", () => {
+    const both = resolveSwapRouteSettings(
+      routesEnv([
+        mainnetRouteFixture(),
+        mainnetRouteFixture({ routeId: "mainnet-usdc-eth", tokenIn: M_USDC, tokenOut: M_NATIVE }),
+      ]),
+    );
+    assert.isTrue(both.configured, both.reason ?? "routes must resolve");
+    assert.equal(both.routes?.length, 2);
+    const reverse = both.routes?.[1];
+    assert.equal(reverse?.tokenIn, M_USDC);
+    if (reverse?.routeType === "ur-v3-exact-input") {
+      assert.equal(reverse.erc20, M_USDC);
+      assert.equal(reverse.weth, M_WETH);
+    } else {
+      assert.fail("the reverse route must resolve as ur-v3");
+    }
+
+    // Two native markers collapse to a same-token refusal; none at all is
+    // refused by the native-marker rule.
+    const twoNative = resolveSwapRouteSettings(
+      routesEnv([mainnetRouteFixture({ tokenOut: M_NATIVE })]),
+    );
+    assert.isFalse(twoNative.configured);
+    assert.include(twoNative.reason ?? "", "tokenIn and tokenOut must differ");
+    const noNative = resolveSwapRouteSettings(
+      routesEnv([mainnetRouteFixture({ tokenIn: M_USDC, tokenOut: M_WETH })]),
+    );
+    assert.isFalse(noNative.configured);
+    assert.include(noNative.reason ?? "", "native marker");
+
+    // A ur-v3 route on the wrong chain is refused.
+    const wrongChain = resolveSwapRouteSettings(
+      routesEnv([mainnetRouteFixture({ chainId: "11155111" })]),
+    );
+    assert.isFalse(wrongChain.configured);
+    assert.include(wrongChain.reason ?? "", 'chainId must be "1"');
+
+    // The weth side may not be the native marker.
+    const nativeWeth = resolveSwapRouteSettings(
+      routesEnv([mainnetRouteFixture({ weth: M_NATIVE })]),
+    );
+    assert.isFalse(nativeWeth.configured);
+    assert.include(nativeWeth.reason ?? "", "weth");
+  });
+
+  it("the route-config digest changes with every execution-relevant field", () => {
+    const base = resolveSwapRouteSettings(routesEnv([mainnetRouteFixture()]));
+    assert.isTrue(base.configured);
+    const baseRoute = base.routes?.[0]!;
+    const changed = (override: Record<string, unknown>): string => {
+      const resolved = resolveSwapRouteSettings(routesEnv([mainnetRouteFixture(override)]));
+      assert.isTrue(resolved.configured);
+      const route = resolved.routes?.[0];
+      if (route === undefined) throw new Error("route must resolve");
+      return swapRouteConfigDigest(route);
+    };
+    const baseline = swapRouteConfigDigest(baseRoute);
+    assert.notStrictEqual(
+      changed({ swapTargetAddress: "0xcb640a86855f1a828c27241ba364348de28abe66" }),
+      baseline,
+    );
+    assert.notStrictEqual(changed({ feeTier: 3000 }), baseline);
+    assert.notStrictEqual(changed({ weth: `0x${"d0".repeat(20)}` }), baseline);
+    assert.strictEqual(changed({}), baseline);
+  });
 });
 
 // ---------------------------------------------------------------------------

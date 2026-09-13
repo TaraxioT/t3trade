@@ -1061,6 +1061,56 @@ layer("ExecutionPolicyService evaluatePolicy gates", (it) => {
       assert.equal(fifth.status, "proposed");
     }),
   );
+
+  it.effect(
+    "a corrupt spend ledger refuses corrupt-budget-ledger instead of proposing against a fresh budget",
+    () =>
+      Effect.gen(function* () {
+        yield* reset;
+        const svc = yield* service();
+        yield* approvedEnvelope(svc);
+        yield* commitEvaluation(matchedRecord(0, "occ-entry-1"));
+        const sql = yield* SqlClient.SqlClient;
+
+        // A valid executed row first, then a corrupt one: any malformed row
+        // in the ledger — before or after valid rows — refuses the fold.
+        policyState.impl = fixedSwapPolicy({ amountInRaw: "100000", stageKey: "first" });
+        const first = yield* svc.evaluatePolicy({
+          environmentId: ENV,
+          capabilityId: CAP,
+          now: NOW,
+        });
+        assert.equal(first.status, "proposed");
+        yield* sql`
+          UPDATE execution_proposals SET status = 'executed' WHERE stage_key = 'first'
+        `;
+        const envelopeRows = yield* sql<{ readonly envelope_id: string }>`
+          SELECT envelope_id FROM execution_envelopes LIMIT 1
+        `;
+        yield* sql`
+          INSERT INTO execution_proposals (
+            proposal_id, environment_id, capability_id, envelope_id, envelope_revision,
+            detector_evaluation_id, stage_key, proposal_json, status, proposed_at_ms
+          ) VALUES (
+            'pprop_corrupt', ${ENV}, ${CAP}, ${envelopeRows[0]!.envelope_id}, 1,
+            'dtev_corrupt', 'corrupt', '{"kind":"swap","amountInRaw":"1.5"}', 'executing', ${NOW}
+          )
+        `;
+        policyState.impl = fixedSwapPolicy({ amountInRaw: "1", stageKey: "second" });
+        const outcome = yield* svc.evaluatePolicy({
+          environmentId: ENV,
+          capabilityId: CAP,
+          now: NOW + 1,
+        });
+        const refusal = refusedWith(outcome, "corrupt-budget-ledger");
+        assert.include(refusal.detail, "corrupt");
+        // Nothing was proposed against the unreadable ledger.
+        const rows = yield* sql<{ readonly n: number }>`
+          SELECT COUNT(*) AS n FROM execution_proposals WHERE stage_key = 'second'
+        `;
+        assert.equal(rows[0]?.n, 0);
+      }),
+  );
 });
 
 // ---------------------------------------------------------------------------

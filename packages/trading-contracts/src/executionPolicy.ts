@@ -144,11 +144,34 @@ export const ExecutionEnvelope = Schema.Struct({
   }),
   // A swap of a token for itself is not a predeclared trade, it is a malformed
   // candidate; refusing it here keeps the whole envelope unapprovable rather
-  // than letting a no-op leg through approval.
+  // than letting a no-op leg through approval. Addresses compare numerically
+  // (lowercased): EVM addresses are case-insensitive identities, so a
+  // tokenIn/tokenOut pair differing only in checksum casing is the same
+  // self-swap and must be refused exactly like an exact-byte match.
   Schema.makeFilter((input) => {
     for (const candidate of input.candidates) {
-      if (candidate.tokenIn === candidate.tokenOut) {
+      if (candidate.tokenIn.toLowerCase() === candidate.tokenOut.toLowerCase()) {
         return `candidate ${candidate.candidateId} must have distinct tokenIn and tokenOut`;
+      }
+    }
+    return true;
+  }),
+  // ONE denomination per envelope: every candidate spends the same input
+  // asset on the same chain. The raw-integer caps (inputCapTotalRaw,
+  // inputCapPerSwapRaw) are amounts OF that one asset; raw integers of
+  // different assets or decimals must never be summed or compared, so an
+  // envelope mixing denominations is malformed at approval time, never a
+  // budget the host has to disentangle later.
+  Schema.makeFilter((input) => {
+    const first = input.candidates[0]!;
+    const denominationChain = first.chainId;
+    const denominationTokenIn = first.tokenIn.toLowerCase();
+    for (const candidate of input.candidates) {
+      if (
+        candidate.chainId !== denominationChain ||
+        candidate.tokenIn.toLowerCase() !== denominationTokenIn
+      ) {
+        return `candidate ${candidate.candidateId} spends a different chain/input asset than candidate ${first.candidateId}; one envelope authorizes exactly one input denomination (chain ${denominationChain}, tokenIn ${denominationTokenIn})`;
       }
     }
     return true;
@@ -214,6 +237,11 @@ export type ExecutionProposal = typeof ExecutionProposal.Type;
  * fixed-shape array under a version tag (the `serializeDetectorEvaluationIdentity`
  * precedent — never an object, whose key order a serializer could reorder).
  * The quote service hashes this string to mint {@link swapQuoteId}.
+ *
+ * v3 adds the execution-identity fields (route-config digest, quoted block,
+ * quoted output, target/quoter code hashes, measured fee bounds). They ride
+ * the identity as explicit `null` when absent, so a v2-era record and a v3
+ * record with identical numbers NEVER collide: absence is itself identity.
  */
 export function serializeSwapQuoteIdentity(input: {
   readonly chainId: string;
@@ -224,9 +252,18 @@ export function serializeSwapQuoteIdentity(input: {
   readonly minAmountOutRaw: string;
   readonly quotedAtMs: number;
   readonly expiresAtMs: number;
+  readonly routeConfigDigest?: string | undefined;
+  readonly quotedBlockNumber?: string | undefined;
+  readonly quotedBlockHash?: string | undefined;
+  readonly quotedAmountOutRaw?: string | undefined;
+  readonly quoterCodeHash?: string | undefined;
+  readonly targetCodeHash?: string | undefined;
+  readonly gasUnitsMeasured?: string | undefined;
+  readonly maxFeePerGasWei?: string | undefined;
+  readonly maxPriorityFeePerGasWei?: string | undefined;
 }): string {
   return JSON.stringify([
-    "trading_execution.quote.v2",
+    "trading_execution.quote.v3",
     input.chainId,
     input.routeId,
     input.tokenIn,
@@ -235,6 +272,15 @@ export function serializeSwapQuoteIdentity(input: {
     input.minAmountOutRaw,
     input.quotedAtMs,
     input.expiresAtMs,
+    input.routeConfigDigest ?? null,
+    input.quotedBlockNumber ?? null,
+    input.quotedBlockHash ?? null,
+    input.quotedAmountOutRaw ?? null,
+    input.quoterCodeHash ?? null,
+    input.targetCodeHash ?? null,
+    input.gasUnitsMeasured ?? null,
+    input.maxFeePerGasWei ?? null,
+    input.maxPriorityFeePerGasWei ?? null,
   ]);
 }
 
@@ -268,6 +314,15 @@ export function swapQuoteId(input: {
   readonly minAmountOutRaw: string;
   readonly quotedAtMs: number;
   readonly expiresAtMs: number;
+  readonly routeConfigDigest?: string | undefined;
+  readonly quotedBlockNumber?: string | undefined;
+  readonly quotedBlockHash?: string | undefined;
+  readonly quotedAmountOutRaw?: string | undefined;
+  readonly quoterCodeHash?: string | undefined;
+  readonly targetCodeHash?: string | undefined;
+  readonly gasUnitsMeasured?: string | undefined;
+  readonly maxFeePerGasWei?: string | undefined;
+  readonly maxPriorityFeePerGasWei?: string | undefined;
 }): string {
   return `sq_${sha256Hex(serializeSwapQuoteIdentity(input)).slice(0, 24)}`;
 }
@@ -280,6 +335,26 @@ export function swapQuoteId(input: {
  * basis is not a quote. The schema-level check pins the one ordering rule the
  * id exists to carry: a quote must expire strictly after it was taken, or
  * admission can never verify freshness against it.
+ *
+ * The optional identity fields are the v3 execution-identity additions: the
+ * HOST fills them when it prices a route whose admission needs complete
+ * provenance (the protected mainnet lane), and admission REFUSES a protected
+ * attempt whose quote lacks any of them. They are optional at the schema only
+ * so v2-era Sepolia draft records keep decoding; a funded gate never accepts
+ * their absence:
+ *
+ * - `routeConfigDigest` — digest over the resolved route config snapshot;
+ *   admission recomputes it from the CURRENT registry, so an old config is
+ *   rejected even when `routeId` is unchanged.
+ * - `quotedBlockNumber`/`quotedBlockHash` — the coherent block the price was
+ *   taken at (a rebind to a different block is a different quote).
+ * - `quotedAmountOutRaw` — the exact expected output BEFORE slippage (the
+ *   number `minAmountOutRaw` floors).
+ * - `quoterCodeHash`/`targetCodeHash` — runtime-code digests of the quoter
+ *   and the swap target at quote time; a changed contract is a changed quote.
+ * - `gasUnitsMeasured`, `maxFeePerGasWei`, `maxPriorityFeePerGasWei` — the
+ *   measured estimate and EIP-1559 bounds backing `gasEstimateWei`; a fee
+ *   that cannot be bounded is a refusal, never a guess.
  */
 export const SwapQuoteRecord = Schema.Struct({
   quoteId: TradingId,
@@ -293,10 +368,52 @@ export const SwapQuoteRecord = Schema.Struct({
   quotedAtMs: UnixMillis,
   expiresAtMs: UnixMillis,
   basis: Schema.Literals(["eth_call"]),
+  routeConfigDigest: Schema.optional(Sha256Hex),
+  quotedBlockNumber: Schema.optional(DecimalIntegerString),
+  quotedBlockHash: Schema.optional(Sha256Hex),
+  quotedAmountOutRaw: Schema.optional(DecimalIntegerString),
+  quoterCodeHash: Schema.optional(Sha256Hex),
+  targetCodeHash: Schema.optional(Sha256Hex),
+  gasUnitsMeasured: Schema.optional(DecimalIntegerString),
+  maxFeePerGasWei: Schema.optional(DecimalIntegerString),
+  maxPriorityFeePerGasWei: Schema.optional(DecimalIntegerString),
 }).check(
   Schema.makeFilter((input) =>
     input.expiresAtMs > input.quotedAtMs ? true : "expiresAtMs must be strictly after quotedAtMs",
   ),
+  // When a measured gas estimate is present it must be coherent with its
+  // declared bounds: units × max fee is the worst-case wei reservation the
+  // record claims, and a record whose arithmetic does not hold is tampered,
+  // not quotable.
+  Schema.makeFilter((input) => {
+    if (
+      input.gasUnitsMeasured === undefined &&
+      input.maxFeePerGasWei === undefined &&
+      input.maxPriorityFeePerGasWei === undefined
+    ) {
+      return true;
+    }
+    if (
+      input.gasUnitsMeasured === undefined ||
+      input.maxFeePerGasWei === undefined ||
+      input.maxPriorityFeePerGasWei === undefined
+    ) {
+      return "measured fee fields are all-or-nothing";
+    }
+    const units = parseNonNegativeRaw(input.gasUnitsMeasured);
+    const maxFee = parseNonNegativeRaw(input.maxFeePerGasWei);
+    const priority = parseNonNegativeRaw(input.maxPriorityFeePerGasWei);
+    const declared = parseNonNegativeRaw(input.gasEstimateWei);
+    if (units === null || maxFee === null || priority === null || declared === null) {
+      return "measured fee fields must be exact decimal integers";
+    }
+    if (units <= 0n) return "gasUnitsMeasured must be strictly positive";
+    if (priority > maxFee) return "maxPriorityFeePerGasWei must not exceed maxFeePerGasWei";
+    if (units * maxFee !== declared) {
+      return "gasEstimateWei must equal gasUnitsMeasured × maxFeePerGasWei (the worst-case reservation)";
+    }
+    return true;
+  }),
 );
 export type SwapQuoteRecord = typeof SwapQuoteRecord.Type;
 
@@ -422,6 +539,7 @@ export type ExecutionRefusal =
   | "envelope-expired"
   | "envelope-not-approved"
   | "budget-exhausted"
+  | "corrupt-budget-ledger"
   | "stale-evidence"
   | "stale-quote"
   | "occurrence-already-executed"
@@ -442,6 +560,7 @@ export const EXECUTION_REFUSALS: readonly ExecutionRefusal[] = Object.freeze([
   "envelope-expired",
   "envelope-not-approved",
   "budget-exhausted",
+  "corrupt-budget-ledger",
   "stale-evidence",
   "stale-quote",
   "occurrence-already-executed",
