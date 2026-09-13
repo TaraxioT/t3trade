@@ -34,6 +34,7 @@ import {
   DETECTOR_V2_ARTIFACT_ROLES,
   FORGE_CAPABILITY_ARTIFACT_PATHS,
   FORGE_MAX_BUNDLE_BYTES,
+  FORGE_MAX_SAMPLE_DOCUMENT_BYTES,
   FORGE_SANDBOX_BUILD_BUDGET_MS,
   FORGE_SANDBOX_EVALUATION_BUDGET_MS,
   FORGE_SANDBOX_MAX_INPUT_BYTES,
@@ -548,15 +549,28 @@ export const makeForgeCapabilitySandbox = Effect.gen(function* () {
           reason: `the detector bundle totals ${detectorBytes} bytes, over the ${FORGE_MAX_BUNDLE_BYTES} byte bundle cap`,
         });
       }
-      const totalBytes = input.files.reduce(
-        (sum, file) => sum + Buffer.byteLength(file.content, "utf8"),
-        0,
-      );
+      // A source-adapter's sample document rides its own capture-aligned
+      // ceiling (see FORGE_MAX_SAMPLE_DOCUMENT_BYTES): it is check-time input
+      // delivered through the envelope, not program bytes, and must not
+      // consume the program file-set budget.
+      const totalBytes = input.files.reduce((sum, file) => {
+        if (file.path === "sample-document.json") return sum;
+        return sum + Buffer.byteLength(file.content, "utf8");
+      }, 0);
+      const sampleBytes = input.files
+        .filter((file) => file.path === "sample-document.json")
+        .reduce((sum, file) => sum + Buffer.byteLength(file.content, "utf8"), 0);
       const bundleCap = FORGE_MAX_BUNDLE_BYTES + 256 * 1024; // artifacts + host SDK/harness files
       if (totalBytes > bundleCap) {
         return yield* fail({
           kind: "invalid_request",
           reason: `file set is ${totalBytes} bytes, over the ${bundleCap} byte containment cap`,
+        });
+      }
+      if (sampleBytes > FORGE_MAX_SAMPLE_DOCUMENT_BYTES) {
+        return yield* fail({
+          kind: "invalid_request",
+          reason: `sample-document.json is ${sampleBytes} bytes, over the ${FORGE_MAX_SAMPLE_DOCUMENT_BYTES} byte sample containment ceiling`,
         });
       }
       const stdin = input.stdin ?? "";
