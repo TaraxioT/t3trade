@@ -848,6 +848,12 @@ export const TradingForgeInput = Schema.Struct({
   expectedActiveVersion: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   /** The user's semantics for `prepare`/`revise`, in their words. */
   requestedSemantics: Schema.optional(Schema.String),
+  /**
+   * `prepare`: which authoring generation the brief targets. 2 selects the
+   * detector-program / source-adapter contract (SDK sha256, v2 manifest,
+   * declared artifact roles); absent stays the v1 four-artifact contract.
+   */
+  manifestVersion: Schema.optional(Schema.Literals([1, 2])),
 
   poolId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
   reason: Schema.optional(Schema.String),

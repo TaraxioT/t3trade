@@ -1,5 +1,6 @@
 import { attachGraphStudyFeatures } from "@t3tools/trading-contracts";
 import { ForgeAcceptance } from "../../../trading/forge/ForgeAcceptance.ts";
+import type { ForgeAcceptanceCase } from "@t3tools/trading-contracts";
 import { GraphResearchService } from "../../../trading/research/GraphResearchService.ts";
 import { ExternalEventImportService } from "../../../trading/research/ExternalEventImportService.ts";
 /**
@@ -69,6 +70,8 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+// @effect-diagnostics nodeBuiltinImport:off - one bounded manifest read at the tool boundary.
+import * as NodeFs from "node:fs";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -2660,6 +2663,23 @@ const targetRungWarning = (input: {
   `move that barely pays for itself.`;
 
 /** Exported for direct handler tests: the study path is pinned outside the toolkit layer. */
+/** The staged manifest's bundle kind, or null when unreadable/not v2. */
+const manifestBundleKind = (manifestJson: string): "detector-program" | "source-adapter" | null => {
+  try {
+    const parsed = JSON.parse(manifestJson) as { manifestVersion?: unknown; artifacts?: unknown };
+    if (parsed.manifestVersion !== 2 || !Array.isArray(parsed.artifacts)) return null;
+    const roles = new Set(
+      parsed.artifacts
+        .filter((a): a is { role: string } => typeof a === "object" && a !== null && "role" in a)
+        .map((a) => a.role),
+    );
+    if (!roles.has("transform") && !roles.has("detector")) return null;
+    return roles.has("detector") ? "detector-program" : "source-adapter";
+  } catch {
+    return null;
+  }
+};
+
 export const handlers = {
   trading_look: (input) => readObservation(input),
 
@@ -5330,6 +5350,11 @@ export const handlers = {
               capabilityId: input.capabilityId,
               requestedSemantics: input.requestedSemantics,
               stagingDir,
+              // v2 is opt-in per call: the detector-program/source-adapter
+              // authoring brief. Absent stays v1 for compatibility.
+              ...(input.manifestVersion === undefined
+                ? {}
+                : { manifestVersion: input.manifestVersion }),
             })
             .pipe(
               Effect.catch((error) =>
@@ -5371,28 +5396,43 @@ export const handlers = {
           if (stagingDir === null) {
             return rejected("no_workspace", "the build has no staging directory to read");
           }
-          const acceptanceProvider = yield* Effect.serviceOption(ForgeAcceptance);
-          if (acceptanceProvider._tag === "None")
-            return rejected(
-              "host_acceptance_unavailable",
-              "host-reviewed acceptance cases are not configured",
-            );
           if (existing.capabilityId === undefined)
             return rejected("no_capability", "the build does not name a capability");
+          // A staged SOURCE-ADAPTER manifest (transform declared, detector
+          // absent) carries its own acceptance: the sample document the
+          // builder parses in containment. Host acceptance cases are for
+          // detector programs; requiring them here would refuse every
+          // adapter build at the door.
+          const stagedManifest = yield* Effect.try(() =>
+            NodeFs.readFileSync(`${stagingDir}/manifest.json`, "utf8"),
+          ).pipe(Effect.option);
+          const stagedKind = Option.isSome(stagedManifest)
+            ? manifestBundleKind(stagedManifest.value)
+            : null;
           const nextVersion = yield* store
             .nextVersion({ environmentId, capabilityId: existing.capabilityId })
             .pipe(Effect.orDie);
-          const cases = yield* acceptanceProvider.value
-            .read(existing.capabilityId, nextVersion)
-            .pipe(Effect.result);
-          if (cases._tag === "Failure")
-            return rejected("host_acceptance_unavailable", cases.failure);
+          let acceptanceCases: ReadonlyArray<ForgeAcceptanceCase> = [];
+          if (stagedKind !== "source-adapter") {
+            const acceptanceProvider = yield* Effect.serviceOption(ForgeAcceptance);
+            if (acceptanceProvider._tag === "None")
+              return rejected(
+                "host_acceptance_unavailable",
+                "host-reviewed acceptance cases are not configured",
+              );
+            const cases = yield* acceptanceProvider.value
+              .read(existing.capabilityId, nextVersion)
+              .pipe(Effect.result);
+            if (cases._tag === "Failure")
+              return rejected("host_acceptance_unavailable", cases.failure);
+            acceptanceCases = cases.success;
+          }
           const checked = yield* builder
             .check({
               buildId: input.buildId,
               environmentId,
               stagingDir,
-              acceptanceCases: cases.success,
+              acceptanceCases,
             })
             .pipe(
               Effect.catch((error) =>
