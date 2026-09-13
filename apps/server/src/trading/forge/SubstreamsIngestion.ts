@@ -389,6 +389,18 @@ export const makeSubstreamsIngestion = Effect.gen(function* () {
                     timestampMs: message.timestampMs,
                     events: message.events,
                   };
+                  if (blocksCommitted === 0 && pending.blocks.length === 0) {
+                    // The lane's heartbeat: a run that connects but never
+                    // logs this is stuck between the transport and the first
+                    // provider message — visible immediately, not after the
+                    // reconnect timeout.
+                    yield* Effect.logInfo("SubstreamsIngestion: first block buffered", {
+                      sourceId,
+                      blockNumber: message.blockNumber,
+                      blockHash: message.blockHash,
+                      events: message.events.length,
+                    });
+                  }
                   pending = {
                     blocks: [...pending.blocks, block],
                     bytes: pending.bytes + approxBytes,
