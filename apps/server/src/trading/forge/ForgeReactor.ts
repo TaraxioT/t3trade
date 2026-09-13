@@ -593,6 +593,26 @@ export const makeForgeReactor = Effect.gen(function* () {
         yield* failJob(`the detector commit was refused: ${commit.reason} (${commit.detail})`);
         return;
       }
+      // Durable occurrence: persist the logical false→true transition of
+      // this condition after the evaluation commits. Confirmations collapse
+      // onto the active row; a consumed occurrence never re-fires; the reset
+      // discriminator is null until a program carries one.
+      if (output.result.status === "matched") {
+        const occurred = yield* runStore.recordOccurrence({
+          environmentId: job.environmentId,
+          capabilityId: job.capabilityId,
+          version: active.version,
+          occurrenceKey: output.result.occurrenceKey,
+          resetKey: null,
+          detectedAtMs: asOfMs,
+          validUntilMs: output.result.validUntilMs,
+          evaluationId,
+        });
+        if (occurred.status === "refused") {
+          yield* failJob(`the occurrence record was refused: ${occurred.detail}`);
+          return;
+        }
+      }
       const detail =
         commit.status === "replayed"
           ? `evaluation ${evaluationId} already committed; replayed`

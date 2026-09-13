@@ -21,6 +21,13 @@
  *   revision chain head for one external document, through
  *   `ExternalSourceStore.latestRevision`. `documentIdentity` may itself
  *   contain colons; only the FIRST colon after `external:` splits the kind.
+ * - `substreams:<sourceId>:<windowMs>` — one complete live window over a
+ *   committed Substreams source (Worker A's durable sink), resolved through
+ *   the frozen A→B reader port below. `windowMs` (decimal milliseconds,
+ *   60_000..86_400_000) is the stream binding's own window selector: windows
+ *   are UTC-grid aligned, ending at the last grid boundary at or before the
+ *   evaluation clock. Only the LAST colon splits the id; the source id itself
+ *   must not be empty.
  *
  * FACT BOUNDING (the load-bearing decision): one CapturedFact per observation
  * would make the window unbounded — a dataset can hold tens of thousands of
@@ -49,6 +56,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import { Schema } from "effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { createHash } from "node:crypto";
 
 import {
@@ -78,6 +86,27 @@ export const DETECTOR_WINDOW_MAX_SOURCE_IDS = 16;
  */
 const NO_EXPIRY_MS = Number.MAX_SAFE_INTEGER;
 
+// -- Substreams live-window policy (the frozen binding rules) ------------------
+//
+// A live stream window is FINAL data with a FINITE freshness horizon — never
+// NO_EXPIRY_MS. Mainnet finality (~2 epochs) is already satisfied by the
+// store's final-block mode; this horizon bounds how long a sealed window may
+// still ground an as-of decision after it closed, so stale windows expire
+// instead of lingering forever.
+export const SUBSTREAMS_WINDOW_MIN_MS = 60_000;
+export const SUBSTREAMS_WINDOW_MAX_MS = 86_400_000;
+export const SUBSTREAMS_WINDOW_VALIDITY_MS = 24 * 60 * 60 * 1000;
+/**
+ * Envelope lookback: mainnet slots are 12 s, so a window of `windowMs` holds
+ * at most `windowMs / 10_000` blocks at a conservative 10 s floor, plus a
+ * margin for the pre-window proof block. Bounded by the window cap (≤ 8 768).
+ */
+const substreamsLookbackBlocks = (windowMs: number): number => Math.ceil(windowMs / 10_000) + 128;
+
+/** The decimal-string block numbers this module compares, as ordered BigInts. */
+const blockNumberValue = (raw: string): bigint | null =>
+  /^[0-9]+$/.test(raw) ? BigInt(raw) : null;
+
 /** Graph subgraph timestamps are whole seconds — the precision they can claim. */
 const GRAPH_TIME_PRECISION = "second" as const;
 
@@ -95,6 +124,80 @@ export type DetectorWindowOutcome =
       readonly missingSourceIds: ReadonlyArray<string>;
     }
   | { readonly status: "unavailable"; readonly reason: string };
+
+// ---------------------------------------------------------------------------
+// The frozen A→B Substreams reader port (parallel-checkpoint.md; names on A's
+// side may differ, shapes bind). Committed-only, ordered, final-block mode.
+// Until Worker A's SubstreamsSourceStore lands, tests bind a local fake that
+// implements exactly this shape — replaced at integration, never shipped.
+// ---------------------------------------------------------------------------
+
+/** Block envelopes in a committed range; zero eventCount proves an empty block. */
+export interface SubstreamsCommittedBlocks {
+  readonly blocks: ReadonlyArray<{
+    readonly number: string; // decimal string, uint64 preserved
+    readonly hash: string;
+    readonly timestampMs: number;
+    readonly eventCount: number;
+  }>;
+}
+
+/** One committed pool event, signed raw decimal strings exactly as decoded. */
+export interface SubstreamsPoolEvent {
+  readonly blockNumber: string;
+  readonly blockHash: string;
+  readonly transactionHash: string;
+  readonly logIndex: number;
+  readonly pool: string;
+  readonly amount0Raw: string;
+  readonly amount1Raw: string;
+  readonly sqrtPriceX96: string;
+  readonly sender: string;
+  readonly recipient: string;
+}
+
+export interface SubstreamsSourceHealthSnapshot {
+  readonly state: "healthy" | "stale" | "unhealthy";
+  readonly reason: string;
+  /** Highest committed FINAL block. */
+  readonly finalWatermarkBlock: string;
+  readonly finalWatermarkTimestampMs: number;
+  readonly lastCommitAtMs: number;
+  readonly cursor: string | null;
+  readonly packageSha256: string;
+  readonly moduleDigest: string;
+}
+
+/** The A→B seam: committed chain data for one Substreams source. */
+export interface SubstreamsSourceReaderShape {
+  readonly committedWatermark: (
+    environmentId: string,
+    sourceId: string,
+  ) => { readonly finalWatermarkBlock: string; readonly finalWatermarkTimestampMs: number } | null;
+  readonly readBlockEnvelopes: (
+    environmentId: string,
+    sourceId: string,
+    fromBlock: string,
+    toBlock: string,
+  ) => SubstreamsCommittedBlocks;
+  readonly readPoolEvents: (
+    environmentId: string,
+    sourceId: string,
+    fromBlock: string,
+    toBlock: string,
+  ) => ReadonlyArray<SubstreamsPoolEvent>;
+  readonly sourceHealth: (
+    environmentId: string,
+    sourceId: string,
+  ) => SubstreamsSourceHealthSnapshot;
+  /** Package+module+params digest, or null when the source is unknown. */
+  readonly sourceRevision: (environmentId: string, sourceId: string) => string | null;
+}
+
+export class SubstreamsSourceReader extends Context.Service<
+  SubstreamsSourceReader,
+  SubstreamsSourceReaderShape
+>()("t3/trading/forge/DetectorFactWindow/SubstreamsSourceReader") {}
 
 export interface DetectorFactWindowShape {
   /**
@@ -215,6 +318,11 @@ const decimal = (value: string | number, unit: string): FactValue => ({
 export const makeDetectorFactWindow = Effect.gen(function* () {
   const graph = yield* ForgeSourceStore;
   const external = yield* ExternalSourceStore;
+  // Ambiently optional (the ForgeReactor pattern): a wiring without Worker A's
+  // store keeps both existing source kinds working, and every `substreams:`
+  // id resolves as absence until the real reader is provided at integration.
+  const substreamsOption = yield* Effect.serviceOption(SubstreamsSourceReader);
+  const substreams = Option.isSome(substreamsOption) ? substreamsOption.value : null;
 
   /**
    * Resolve one graph dataset into its BOUNDED fact set (at most six facts:
@@ -429,6 +537,349 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
       }),
     );
 
+  /**
+   * Resolve one `substreams:<sourceId>:<windowMs>` source reference through
+   * the frozen A→B reader port.
+   *
+   * Outcomes, per the frozen binding rules:
+   * - COMPLETE window (facts + `complete: true`) — the source is healthy, the
+   *   committed FINAL watermark timestamp is at or past the window end, and
+   *   the committed block envelopes cover the window's block range with no
+   *   gaps up to the watermark block. Evidence is `live`, availabilityBasis
+   *   `recorded`, availableAtMs the store's recorded commit time (the exact
+   *   closing-block commit when the watermark IS the proving block, otherwise
+   *   a conservative later instant), and expiresAtMs FINITE (window close +
+   *   the validity horizon — stream windows never carry NO_EXPIRY_MS).
+   * - INCOMPLETE window (`complete: false`, NO facts) — stale/unhealthy
+   *   source, watermark short of the window end, envelope gaps, an envelope
+   *   lookback that cannot prove the window's start, or an event whose shape
+   *   fails integrity. The sealed record carries no available instant and an
+   *   `unknown` availability basis: a window that never provably closed has
+   *   no availability to cite. The PROGRAM grounds unknown on it — an
+   *   incomplete window can never ground a confident matched.
+   * - ABSENCE (null → `missingSourceIds`) — the reader is unwired, the source
+   *   id is malformed, or the store does not know the source (no revision).
+   *
+   * Every reader call is total here: a store that throws degrades to an
+   * incomplete window with a named internal reason, never a crashed build.
+   */
+  const substreamsSource = (
+    environmentId: string,
+    fullSourceId: string,
+    bareSourceId: string,
+    windowMs: number,
+    asOfMs: number,
+  ): {
+    readonly source: SealedSourceRecord;
+    readonly facts: ReadonlyArray<CapturedFact>;
+  } | null => {
+    if (substreams === null) return null;
+    // UTC-grid aligned window ending at the last boundary at or before the
+    // evaluation clock: [start, end).
+    const end = Math.floor(asOfMs / windowMs) * windowMs;
+    const start = end - windowMs;
+
+    const attempt = <T>(thunk: () => T): { ok: true; value: T } | { ok: false; reason: string } => {
+      try {
+        return { ok: true, value: thunk() };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: `the substreams store read failed: ${String(error).slice(0, 120)}`,
+        };
+      }
+    };
+    const incomplete = (
+      reason: string,
+    ): { source: SealedSourceRecord; facts: ReadonlyArray<CapturedFact> } => {
+      const revision = attempt(() => substreams.sourceRevision(environmentId, bareSourceId));
+      const revisionTag = revision.ok && typeof revision.value === "string" ? revision.value : null;
+      const refusalDigest = createHash("sha256")
+        .update(forgeJsonEncode({ fullSourceId, start, end, reason, revisionTag }))
+        .digest("hex");
+      return {
+        source: {
+          sourceId: fullSourceId,
+          evidenceId: `sev_${refusalDigest.slice(0, 24)}`,
+          mode: "live",
+          contentSha256: refusalDigest,
+          complete: false,
+          availabilityBasis: "unknown",
+          ...(revisionTag === null ? {} : { sourceRevision: revisionTag }),
+        },
+        facts: [],
+      };
+    };
+
+    const revisionRead = attempt(() => substreams.sourceRevision(environmentId, bareSourceId));
+    if (!revisionRead.ok) return incomplete(revisionRead.reason);
+    if (revisionRead.value === null) return null;
+    const sourceRevision = revisionRead.value;
+
+    const healthRead = attempt(() => substreams.sourceHealth(environmentId, bareSourceId));
+    if (!healthRead.ok) return incomplete(healthRead.reason);
+    const health = healthRead.value;
+    if (health.state !== "healthy") {
+      return incomplete(`the substreams source is ${health.state}: ${health.reason}`);
+    }
+
+    const watermarkRead = attempt(() => substreams.committedWatermark(environmentId, bareSourceId));
+    if (!watermarkRead.ok) return incomplete(watermarkRead.reason);
+    const watermark = watermarkRead.value;
+    if (watermark === null) return incomplete("no committed final watermark exists yet");
+    const watermarkBlockNumber = blockNumberValue(watermark.finalWatermarkBlock);
+    if (watermarkBlockNumber === null) {
+      return incomplete("the committed watermark block number is malformed");
+    }
+    if (watermark.finalWatermarkTimestampMs < end) {
+      return incomplete(
+        `the committed final watermark (block ${watermark.finalWatermarkBlock}, ts ${watermark.finalWatermarkTimestampMs}) has not reached the window end ${end}`,
+      );
+    }
+
+    // Bounded envelope read ending at the watermark. The lookback is the
+    // conservative block count of one window plus margin; it must reach at
+    // least one block BEFORE the window start or start coverage is unprovable.
+    const fromBlockNumber = watermarkBlockNumber - BigInt(substreamsLookbackBlocks(windowMs));
+    const envelopesRead = attempt(() =>
+      substreams.readBlockEnvelopes(
+        environmentId,
+        bareSourceId,
+        (fromBlockNumber < 0n ? 0n : fromBlockNumber).toString(10),
+        watermark.finalWatermarkBlock,
+      ),
+    );
+    if (!envelopesRead.ok) return incomplete(envelopesRead.reason);
+    // One validated envelope, its number widened to BigInt for exact compare.
+    interface ValidatedEnvelope {
+      readonly number: bigint;
+      readonly hash: string;
+      readonly timestampMs: number;
+      readonly eventCount: number;
+    }
+    const fetched: Array<ValidatedEnvelope> = envelopesRead.value.blocks
+      .map((block): ValidatedEnvelope | null => {
+        const number = blockNumberValue(block.number);
+        return number !== null && Number.isFinite(block.timestampMs) && block.timestampMs >= 0
+          ? {
+              number,
+              hash: block.hash,
+              timestampMs: block.timestampMs,
+              eventCount: block.eventCount,
+            }
+          : null;
+      })
+      .flatMap((block) => (block === null ? [] : [block]))
+      .sort((a, b) => (a.number < b.number ? -1 : a.number > b.number ? 1 : 0));
+    if (fetched.length === 0) return incomplete("no committed block envelopes in the bounded read");
+    const watermarkEnvelope = fetched[fetched.length - 1]!;
+    if (watermarkEnvelope.number !== watermarkBlockNumber) {
+      return incomplete("the watermark block itself is not committed in the envelope read");
+    }
+    const earliest = fetched[0]!;
+    if (earliest.number === watermarkBlockNumber || earliest.timestampMs >= start) {
+      return incomplete(
+        "the bounded envelope lookback cannot prove the window's start is fully covered",
+      );
+    }
+
+    const windowBlocks = fetched.filter(
+      (block) => block.timestampMs >= start && block.timestampMs < end,
+    );
+    if (windowBlocks.length === 0) {
+      return incomplete("no committed block envelope falls inside the window yet");
+    }
+    const committedNumbers = new Set(fetched.map((block) => block.number.toString(10)));
+    for (let number = windowBlocks[0]!.number; number <= watermarkBlockNumber; number += 1n) {
+      if (!committedNumbers.has(number.toString(10))) {
+        return incomplete(
+          `block ${number.toString(10)} is not committed inside the window's block range; the window has a gap`,
+        );
+      }
+    }
+    const startBlock = windowBlocks[0]!;
+    const endBlock = windowBlocks[windowBlocks.length - 1]!;
+
+    const eventsRead = attempt(() =>
+      substreams.readPoolEvents(
+        environmentId,
+        bareSourceId,
+        startBlock.number.toString(10),
+        endBlock.number.toString(10),
+      ),
+    );
+    if (!eventsRead.ok) return incomplete(eventsRead.reason);
+    let netAmount0 = 0n;
+    let netAmount1 = 0n;
+    let grossAmount0 = 0n;
+    let grossAmount1 = 0n;
+    let eventCount = 0;
+    let pool: string | null = null;
+    let lastPrice: string | null = null;
+    let lastOrder = { block: -1n, logIndex: -1 };
+    for (const event of eventsRead.value) {
+      const number = blockNumberValue(event.blockNumber);
+      if (
+        number === null ||
+        number < startBlock.number ||
+        number > endBlock.number ||
+        !/^-?[0-9]+$/.test(event.amount0Raw) ||
+        !/^-?[0-9]+$/.test(event.amount1Raw) ||
+        !/^[0-9]+$/.test(event.sqrtPriceX96) ||
+        !Number.isSafeInteger(event.logIndex) ||
+        event.logIndex < 0 ||
+        event.pool.trim() === ""
+      ) {
+        return incomplete("a committed event failed shape or range integrity");
+      }
+      // One stream source is one pool by its own specification; sums across
+      // pools would be meaningless, so a second pool is an integrity failure.
+      if (pool === null) pool = event.pool.toLowerCase();
+      else if (pool !== event.pool.toLowerCase()) {
+        return incomplete(
+          "the stream source carries more than one pool; window facts would mix pools",
+        );
+      }
+      const amount0 = BigInt(event.amount0Raw);
+      const amount1 = BigInt(event.amount1Raw);
+      netAmount0 += amount0;
+      netAmount1 += amount1;
+      grossAmount0 += amount0 < 0n ? -amount0 : amount0;
+      grossAmount1 += amount1 < 0n ? -amount1 : amount1;
+      eventCount += 1;
+      const order = { block: number, logIndex: event.logIndex };
+      if (
+        order.block > lastOrder.block ||
+        (order.block === lastOrder.block && order.logIndex > lastOrder.logIndex)
+      ) {
+        lastOrder = order;
+        lastPrice = event.sqrtPriceX96;
+      }
+    }
+
+    // Content-derived live evidence: the sealed window's blocks and events.
+    const contentSha256 = createHash("sha256")
+      .update(
+        forgeJsonEncode({
+          sourceId: bareSourceId,
+          startMs: start,
+          endMs: end,
+          sourceRevision,
+          blocks: windowBlocks.map((block) => [
+            block.number.toString(10),
+            block.hash,
+            block.timestampMs,
+            block.eventCount,
+          ]),
+          events: eventsRead.value.map((event) => [
+            event.blockNumber,
+            event.transactionHash,
+            event.logIndex,
+            event.amount0Raw,
+            event.amount1Raw,
+            event.sqrtPriceX96,
+          ]),
+        }),
+      )
+      .digest("hex");
+    const evidenceId = `sev_${contentSha256.slice(0, 24)}`;
+    // The window closed when its proving watermark committed; the store's
+    // recorded last commit is exact when the watermark IS the proving block
+    // and a conservative later instant when the stream has moved on.
+    const availableAtMs = health.lastCommitAtMs;
+    const expiresAtMs = end + SUBSTREAMS_WINDOW_VALIDITY_MS;
+    const evidence: ReadonlyArray<EvidenceRef> = [
+      {
+        id: evidenceId,
+        environmentId,
+        sourceId: bareSourceId,
+        mode: "live",
+        contentSha256,
+        eventAtMs: end,
+        availableAtMs,
+        availabilityBasis: "recorded",
+        timePrecision: "second",
+        capturedAtMs: availableAtMs,
+        expiresAtMs,
+        sourceRevision,
+      },
+    ];
+    const entityId = bareSourceId;
+    const candidates: Array<CapturedFact | null> = [
+      sealedFact(
+        fullSourceId,
+        "stream.window.event-count",
+        entityId,
+        decimal(eventCount, "events"),
+        evidence,
+      ),
+      sealedFact(
+        fullSourceId,
+        "stream.window.net-amount0-raw",
+        entityId,
+        decimal(netAmount0.toString(10), "token0-raw"),
+        evidence,
+      ),
+      sealedFact(
+        fullSourceId,
+        "stream.window.net-amount1-raw",
+        entityId,
+        decimal(netAmount1.toString(10), "token1-raw"),
+        evidence,
+      ),
+      sealedFact(
+        fullSourceId,
+        "stream.window.gross-amount0-raw",
+        entityId,
+        decimal(grossAmount0.toString(10), "token0-raw"),
+        evidence,
+      ),
+      sealedFact(
+        fullSourceId,
+        "stream.window.gross-amount1-raw",
+        entityId,
+        decimal(grossAmount1.toString(10), "token1-raw"),
+        evidence,
+      ),
+      ...(lastPrice === null
+        ? []
+        : [
+            sealedFact(
+              fullSourceId,
+              "stream.window.last-sqrt-price-x96",
+              entityId,
+              decimal(lastPrice, "raw"),
+              evidence,
+            ),
+          ]),
+      sealedFact(fullSourceId, "stream.window.start-ms", entityId, decimal(start, "ms"), evidence),
+      sealedFact(fullSourceId, "stream.window.end-ms", entityId, decimal(end, "ms"), evidence),
+      sealedFact(
+        fullSourceId,
+        "stream.window.end-block",
+        entityId,
+        decimal(endBlock.number.toString(10), "block"),
+        evidence,
+      ),
+    ];
+    const facts = candidates.flatMap((fact) => (fact === null ? [] : [fact]));
+    if (facts.length === 0)
+      return incomplete("the complete window's facts failed their own contract");
+    const source: SealedSourceRecord = {
+      sourceId: fullSourceId,
+      evidenceId,
+      mode: "live",
+      contentSha256,
+      eventAtMs: end,
+      availableAtMs,
+      availabilityBasis: "recorded",
+      expiresAtMs,
+      complete: true,
+      sourceRevision,
+    };
+    return { source, facts };
+  };
+
   const buildWindow: DetectorFactWindowShape["buildWindow"] = ({
     environmentId,
     requiredSourceIds,
@@ -457,6 +908,7 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
       for (const sourceId of ids) {
         const datasetPrefix = "graph-dataset:";
         const externalPrefix = "external:";
+        const substreamsPrefix = "substreams:";
         let resolved: {
           readonly source: SealedSourceRecord;
           readonly facts: ReadonlyArray<CapturedFact>;
@@ -474,8 +926,23 @@ export const makeDetectorFactWindow = Effect.gen(function* () {
             sourceKind === "" || documentIdentity === ""
               ? null
               : yield* externalSource(environmentId, sourceId, sourceKind, documentIdentity);
+        } else if (sourceId.startsWith(substreamsPrefix)) {
+          // The LAST colon splits the stream binding's window selector, so the
+          // source id itself may never contain one past this point.
+          const rest = sourceId.slice(substreamsPrefix.length);
+          const split = rest.lastIndexOf(":");
+          const bareSourceId = split > 0 ? rest.slice(0, split) : "";
+          const windowMsRaw = split > 0 ? rest.slice(split + 1) : "";
+          const windowMs = /^[0-9]+$/.test(windowMsRaw) ? Number(windowMsRaw) : Number.NaN;
+          resolved =
+            bareSourceId === "" ||
+            !Number.isSafeInteger(windowMs) ||
+            windowMs < SUBSTREAMS_WINDOW_MIN_MS ||
+            windowMs > SUBSTREAMS_WINDOW_MAX_MS
+              ? null
+              : substreamsSource(environmentId, sourceId, bareSourceId, windowMs, asOfMs);
         }
-        // An id outside both conventions is a required source that cannot
+        // An id outside every convention is a required source that cannot
         // resolve: absent and named, the same as an unretained dataset.
         if (resolved === null) {
           missing.push(sourceId);

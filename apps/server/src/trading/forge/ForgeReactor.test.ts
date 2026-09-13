@@ -1036,7 +1036,9 @@ describe("the detector-program (v2) job", () => {
         stdin.sources.map((source) => source.sourceId),
         [`graph-dataset:${datasetId}`, "external:github-releases:github-release:o/r:v1.0.0"],
       );
-      assert.equal(stdin.facts.length, 6);
+      // Six graph summary facts (the two exact flow facts came with the
+      // "expose exact flow facts" change) plus the two external document facts.
+      assert.equal(stdin.facts.length, 8);
 
       // The digest is a rebuild from the identical sealed bytes: same
       // {asOfMs, facts, sources, priorState} in, same digest out.
@@ -1299,6 +1301,11 @@ describe("the detector-program (v2) job", () => {
         commitRun: () => Effect.succeed({ status: "replayed" as const }),
         latestEvaluation: () => Effect.succeed(null),
         listEvaluations: () => Effect.succeed([]),
+        // Occurrence stubs (Worker B's occurrence boundary): this fixture's
+        // results are never matched, so the recording path is never taken.
+        recordOccurrence: () => Effect.succeed({ status: "recorded" as const }),
+        readOccurrence: () => Effect.succeed(null),
+        consumeOccurrence: () => Effect.succeed({ status: "not-found" as const }),
       } satisfies DetectorRunStoreShape);
       await withDetectorReactor(
         root,

@@ -76,6 +76,52 @@ export type DetectorCommitOutcome =
   | { readonly status: "replayed" }
   | DetectorCommitRefusal;
 
+// ---------------------------------------------------------------------------
+// Durable occurrences — the logical false→true transition store
+// ---------------------------------------------------------------------------
+
+/** The durable state of one logical occurrence, as its latest row reads it. */
+export interface DetectorOccurrenceSnapshot {
+  readonly occurrenceKey: string;
+  readonly version: number;
+  /** The program's reset discriminator recorded at detection ("null" when none). */
+  readonly resetKey: string;
+  /** `active` — detected, unreset, unconsumed; `consumed` — fired, never again; `reset` — closed by reset. */
+  readonly status: "active" | "consumed" | "reset";
+  readonly firstDetectedAtMs: number;
+  readonly lastConfirmedAtMs: number;
+  readonly validUntilMs: number;
+  readonly evaluationId: string;
+  readonly consumedAtMs: number | null;
+  readonly resetAtMs: number | null;
+}
+
+/**
+ * What `recordOccurrence` did with a detection:
+ *
+ * - `recorded` — this call IS the logical false→true transition: a first
+ *   detection, the first after a reset, or the first after a consumed
+ *   occurrence was reset. A new row exists; downstream may fire on it.
+ * - `confirmed` — the active occurrence still holds (same reset
+ *   discriminator); only `last_confirmed_at_ms` (and the validity horizon)
+ *   advanced. A persistent condition emits ONCE; later windows confirm.
+ * - `consumed` — this occurrence already fired and can never fire again.
+ *   Nothing is written.
+ * - refused `invalid-occurrence` — boundary validation failed.
+ */
+export type OccurrenceRecordOutcome =
+  | { readonly status: "recorded" }
+  | { readonly status: "confirmed" }
+  | { readonly status: "consumed" }
+  | { readonly status: "refused"; readonly reason: "invalid-occurrence"; readonly detail: string };
+
+/** What `consumeOccurrence` did: the one-time, idempotent firing mark. */
+export type OccurrenceConsumeOutcome =
+  | { readonly status: "consumed" }
+  | { readonly status: "already-consumed" }
+  | { readonly status: "not-found" }
+  | { readonly status: "reset" };
+
 export interface DetectorRunStoreShape {
   /** The current state row, or null when the capability has never committed. */
   readonly readState: (
@@ -117,6 +163,58 @@ export interface DetectorRunStoreShape {
     capabilityId: string,
     limit?: number | undefined,
   ) => Effect.Effect<ReadonlyArray<DetectorEvaluationRecordV2>, PersistenceSqlError>;
+
+  /**
+   * Record one detection of a logical occurrence (the `occurrenceKey` of a
+   * committed `DetectionResult.matched`), durably, across windows and
+   * restarts. The FIRST detection of an occurrence (its false→true
+   * transition) is `recorded`; later windows while the condition still holds
+   * only `confirm`; a consumed occurrence is never re-firable; a CHANGED
+   * `resetKey` is the program's specified reset — the old row closes and the
+   * detection opens a new occurrence.
+   *
+   * `version` keys the row to the program identity: a detector artifact
+   * revision (a new version) is a new program with a fresh occurrence space;
+   * the old version's rows are immutable history and its consumed state can
+   * never be reset implicitly by upgrading.
+   */
+  readonly recordOccurrence: (input: {
+    readonly environmentId: string;
+    readonly capabilityId: string;
+    readonly version: number;
+    readonly occurrenceKey: string;
+    /** The program's reset discriminator for this occurrence, or null when none. */
+    readonly resetKey: string | null;
+    readonly detectedAtMs: number;
+    readonly validUntilMs: number;
+    /** The committed evaluation whose result carried this occurrence. */
+    readonly evaluationId: string;
+  }) => Effect.Effect<OccurrenceRecordOutcome, PersistenceSqlError>;
+
+  /**
+   * The latest row for one occurrence, or null when never detected. Admission
+   * re-checks (unexpired, unfired, current) read through this; the clock and
+   * the policy judgment stay with the caller.
+   */
+  readonly readOccurrence: (
+    environmentId: string,
+    capabilityId: string,
+    version: number,
+    occurrenceKey: string,
+  ) => Effect.Effect<DetectorOccurrenceSnapshot | null, PersistenceSqlError>;
+
+  /**
+   * Consume (fire) an occurrence — the one-time mark. Idempotent: consuming
+   * an already-consumed occurrence is `already-consumed`, never a second
+   * fire. A reset or unknown occurrence cannot be consumed.
+   */
+  readonly consumeOccurrence: (input: {
+    readonly environmentId: string;
+    readonly capabilityId: string;
+    readonly version: number;
+    readonly occurrenceKey: string;
+    readonly consumedAtMs: number;
+  }) => Effect.Effect<OccurrenceConsumeOutcome, PersistenceSqlError>;
 }
 
 export class DetectorRunStore extends Context.Service<DetectorRunStore, DetectorRunStoreShape>()(
@@ -136,6 +234,32 @@ interface StateRow {
 interface EvaluationListRow {
   readonly record_json: string;
 }
+
+interface OccurrenceRow {
+  readonly occurrence_row_id: number;
+  readonly version: number;
+  readonly occurrence_key: string;
+  readonly reset_key: string;
+  readonly first_detected_at_ms: number;
+  readonly last_confirmed_at_ms: number;
+  readonly valid_until_ms: number;
+  readonly evaluation_id: string;
+  readonly consumed_at_ms: number | null;
+  readonly reset_at_ms: number | null;
+}
+
+const toOccurrenceSnapshot = (row: OccurrenceRow): DetectorOccurrenceSnapshot => ({
+  occurrenceKey: row.occurrence_key,
+  version: row.version,
+  resetKey: row.reset_key,
+  status: row.reset_at_ms !== null ? "reset" : row.consumed_at_ms !== null ? "consumed" : "active",
+  firstDetectedAtMs: row.first_detected_at_ms,
+  lastConfirmedAtMs: row.last_confirmed_at_ms,
+  validUntilMs: row.valid_until_ms,
+  evaluationId: row.evaluation_id,
+  consumedAtMs: row.consumed_at_ms,
+  resetAtMs: row.reset_at_ms,
+});
 
 const toSnapshot = (row: StateRow): DetectorStateSnapshot => ({
   version: row.version,
@@ -365,11 +489,165 @@ export const makeDetectorRunStore = Effect.gen(function* () {
       ),
     );
 
+  // -- durable occurrences ---------------------------------------------------
+
+  /** The latest occurrence row for one key, or null when never detected. */
+  const readLatestOccurrenceRow = (
+    environmentId: string,
+    capabilityId: string,
+    version: number,
+    occurrenceKey: string,
+  ) =>
+    sql<OccurrenceRow>`
+      SELECT occurrence_row_id, version, occurrence_key, reset_key,
+             first_detected_at_ms, last_confirmed_at_ms, valid_until_ms,
+             evaluation_id, consumed_at_ms, reset_at_ms
+      FROM forge_detector_occurrences
+      WHERE environment_id = ${environmentId} AND capability_id = ${capabilityId}
+        AND version = ${version} AND occurrence_key = ${occurrenceKey}
+      ORDER BY occurrence_row_id DESC
+      LIMIT 1
+    `.pipe(
+      Effect.mapError(sqlFail("readOccurrence")),
+      Effect.map((rows) => (rows[0] === undefined ? null : rows[0])),
+    );
+
+  const readOccurrence: DetectorRunStoreShape["readOccurrence"] = (
+    environmentId,
+    capabilityId,
+    version,
+    occurrenceKey,
+  ) =>
+    readLatestOccurrenceRow(environmentId, capabilityId, version, occurrenceKey).pipe(
+      Effect.map((row) => (row === null ? null : toOccurrenceSnapshot(row))),
+    );
+
+  const recordOccurrence: DetectorRunStoreShape["recordOccurrence"] = (input) =>
+    Effect.gen(function* () {
+      const invalid =
+        input.occurrenceKey.trim() === "" ||
+        !Number.isSafeInteger(input.version) ||
+        input.version < 1 ||
+        !Number.isSafeInteger(input.detectedAtMs) ||
+        input.detectedAtMs < 0 ||
+        !Number.isSafeInteger(input.validUntilMs) ||
+        input.validUntilMs < 0 ||
+        input.evaluationId.trim() === ""
+          ? "occurrenceKey and evaluationId must be non-empty, version ≥ 1, times non-negative integers"
+          : null;
+      if (invalid !== null) {
+        return {
+          status: "refused" as const,
+          reason: "invalid-occurrence" as const,
+          detail: invalid,
+        };
+      }
+      // The stored reset discriminator: a literal "null" marker keeps the row
+      // shape total (SQL null vs empty string would blur "no reset specified").
+      const resetKey = input.resetKey ?? "null";
+
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const latest = yield* readLatestOccurrenceRow(
+            input.environmentId,
+            input.capabilityId,
+            input.version,
+            input.occurrenceKey,
+          );
+          if (latest !== null && latest.reset_at_ms === null) {
+            if (latest.consumed_at_ms !== null) {
+              // A consumed occurrence never fires again. Only a CHANGED reset
+              // discriminator (the program's specified reset) opens a new one,
+              // and the consumed row itself stays untouched history.
+              if (latest.reset_key === resetKey) {
+                return { status: "consumed" as const };
+              }
+            } else if (latest.reset_key === resetKey) {
+              // The condition still holds on the active occurrence: confirm,
+              // never a second transition. The validity horizon may extend to
+              // what this detection observed, never shorten.
+              yield* sql`
+                UPDATE forge_detector_occurrences
+                SET last_confirmed_at_ms = ${input.detectedAtMs},
+                    valid_until_ms = MAX(valid_until_ms, ${input.validUntilMs})
+                WHERE occurrence_row_id = ${latest.occurrence_row_id}
+                  AND consumed_at_ms IS NULL AND reset_at_ms IS NULL
+              `;
+              return { status: "confirmed" as const };
+            } else {
+              // Active row whose discriminator changed: the program's
+              // specified reset. Close it — a reset occurrence can never fire
+              // even though it never consumed.
+              yield* sql`
+                UPDATE forge_detector_occurrences
+                SET reset_at_ms = ${input.detectedAtMs}
+                WHERE occurrence_row_id = ${latest.occurrence_row_id}
+                  AND consumed_at_ms IS NULL AND reset_at_ms IS NULL
+              `;
+            }
+          }
+          yield* sql`
+            INSERT INTO forge_detector_occurrences (
+              environment_id, capability_id, version, occurrence_key, reset_key,
+              first_detected_at_ms, last_confirmed_at_ms, valid_until_ms,
+              evaluation_id, consumed_at_ms, reset_at_ms
+            ) VALUES (
+              ${input.environmentId}, ${input.capabilityId}, ${input.version},
+              ${input.occurrenceKey}, ${resetKey},
+              ${input.detectedAtMs}, ${input.detectedAtMs}, ${input.validUntilMs},
+              ${input.evaluationId}, NULL, NULL
+            )
+          `;
+          return { status: "recorded" as const };
+        }),
+      );
+    }).pipe(Effect.mapError(sqlFail("recordOccurrence")));
+
+  const consumeOccurrence: DetectorRunStoreShape["consumeOccurrence"] = (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const latest = yield* readLatestOccurrenceRow(
+            input.environmentId,
+            input.capabilityId,
+            input.version,
+            input.occurrenceKey,
+          );
+          if (latest === null) return { status: "not-found" as const };
+          if (latest.reset_at_ms !== null) return { status: "reset" as const };
+          if (latest.consumed_at_ms !== null) return { status: "already-consumed" as const };
+          yield* sql`
+            UPDATE forge_detector_occurrences
+            SET consumed_at_ms = ${input.consumedAtMs}
+            WHERE occurrence_row_id = ${latest.occurrence_row_id}
+              AND consumed_at_ms IS NULL AND reset_at_ms IS NULL
+          `;
+          const verify = yield* readLatestOccurrenceRow(
+            input.environmentId,
+            input.capabilityId,
+            input.version,
+            input.occurrenceKey,
+          );
+          if (verify?.consumed_at_ms !== input.consumedAtMs) {
+            return yield* new PersistenceSqlError({
+              operation: "DetectorRunStore.consumeOccurrence",
+              detail:
+                "consume verification failed after update; the transaction rolled back and the occurrence is unfired",
+            });
+          }
+          return { status: "consumed" as const };
+        }),
+      )
+      .pipe(Effect.mapError(sqlFail("consumeOccurrence")));
+
   return {
     readState,
     commitRun,
     latestEvaluation,
     listEvaluations,
+    recordOccurrence,
+    readOccurrence,
+    consumeOccurrence,
   } satisfies DetectorRunStoreShape;
 });
 

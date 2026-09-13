@@ -51,8 +51,12 @@ import {
   DETECTOR_SWEEP_MIN_INTERVAL_MS,
   DetectorScheduler,
   makeDetectorScheduler,
+  manifestSubstreamsSourceIds,
   resolveDetectorSweepIntervalMs,
+  SubstreamsOutbox,
   type DetectorSchedulerShape,
+  type SubstreamsOutboxEntry,
+  type SubstreamsOutboxShape,
 } from "./DetectorScheduler.ts";
 
 const ENV = "env_sched";
@@ -222,6 +226,7 @@ const schedulerOver = (input: {
   readonly lease: Layer.Layer<TradingRuntimeLease>;
   readonly store?: Layer.Layer<ForgeCapabilityStore> | undefined;
   readonly reactor?: Layer.Layer<ForgeReactor> | undefined;
+  readonly outbox?: Layer.Layer<SubstreamsOutbox> | undefined;
   readonly sweepIntervalMs?: number | undefined;
 }): Layer.Layer<DetectorScheduler> => {
   const core = Layer.effect(
@@ -231,10 +236,23 @@ const schedulerOver = (input: {
     Layer.provide(input.lease),
     Layer.provide(Layer.succeed(ForgeCapabilityStoreConfig, { stateRoot: input.stateRoot })),
   );
-  if (input.store !== undefined && input.reactor !== undefined)
+  // Explicit branches, not a folded array: the layer combinators type-check
+  // a written-out composition, not a spread one.
+  if (input.store !== undefined && input.reactor !== undefined && input.outbox !== undefined) {
+    return core.pipe(Layer.provideMerge(Layer.mergeAll(input.store, input.reactor, input.outbox)));
+  }
+  if (input.store !== undefined && input.reactor !== undefined) {
     return core.pipe(Layer.provideMerge(Layer.mergeAll(input.store, input.reactor)));
+  }
+  if (input.store !== undefined && input.outbox !== undefined) {
+    return core.pipe(Layer.provideMerge(Layer.mergeAll(input.store, input.outbox)));
+  }
+  if (input.reactor !== undefined && input.outbox !== undefined) {
+    return core.pipe(Layer.provideMerge(Layer.mergeAll(input.reactor, input.outbox)));
+  }
   if (input.store !== undefined) return core.pipe(Layer.provideMerge(input.store));
   if (input.reactor !== undefined) return core.pipe(Layer.provideMerge(input.reactor));
+  if (input.outbox !== undefined) return core.pipe(Layer.provideMerge(input.outbox));
   return core;
 };
 
@@ -587,6 +605,383 @@ describe("DetectorScheduler against the real capability store", () => {
       assert.deepEqual(reactor.enqueues, [
         { environmentId: ENV, capabilityId: "flag-detector", programKind: 2 },
       ]);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The outbox drain — stream-committed evidence triggers evaluation
+// ---------------------------------------------------------------------------
+
+/** A v2 manifest binding arbitrary required source ids. */
+const v2ManifestBinding = (
+  capabilityId: string,
+  requiredSourceIds: ReadonlyArray<string>,
+): string =>
+  JSON.stringify({
+    manifestVersion: 2,
+    capabilityId,
+    version: 1,
+    semantics: "fixture stream detector",
+    requiredSourceIds,
+    outputFactKeys: ["flag"],
+    artifacts: [
+      { role: "sdk", path: "sdk.ts", sha256: sha256("sdk") },
+      { role: "detector", path: "detector.ts", sha256: sha256("detector") },
+      { role: "acceptance", path: "detector.test.ts", sha256: sha256("tests") },
+    ],
+    createdAtMs: 1_700_000_000_000,
+  });
+
+/**
+ * DEVELOPMENT FAKE — Worker A's durable outbox stand-in, implementing exactly
+ * the consumer port (`SubstreamsOutboxShape`). Replaced by A's store at
+ * integration; never shipped.
+ */
+const fakeOutbox = (entries: ReadonlyArray<SubstreamsOutboxEntry>) => {
+  const pending: Array<SubstreamsOutboxEntry> = [...entries];
+  const acked: Array<string> = [];
+  const layer = Layer.succeed(SubstreamsOutbox, {
+    readPending: ({
+      environmentId,
+      limit,
+    }: {
+      readonly environmentId: string;
+      readonly limit: number;
+    }) =>
+      Effect.sync(() =>
+        pending.filter((entry) => entry.environmentId === environmentId).slice(0, limit),
+      ),
+    ack: ({ outboxIds }: { readonly outboxIds: ReadonlyArray<string> }) =>
+      Effect.sync(() => {
+        for (const id of outboxIds) {
+          const index = pending.findIndex((entry) => entry.outboxId === id);
+          if (index >= 0) pending.splice(index, 1);
+          if (!acked.includes(id)) acked.push(id);
+        }
+      }),
+  } satisfies SubstreamsOutboxShape);
+  return { pending, acked, layer };
+};
+
+const entry = (outboxId: string, sourceId: string): SubstreamsOutboxEntry => ({
+  outboxId,
+  environmentId: ENV,
+  sourceId,
+  committedAtMs: 2_000,
+});
+
+describe("manifestSubstreamsSourceIds", () => {
+  it("extracts bare source ids from substreams bindings and rejects non-v2 shapes", () => {
+    const manifest = v2ManifestBinding("cap", [
+      "substreams:pool-obs-main:3600000",
+      "graph-dataset:ds_1",
+      "external:devcon:doc-1",
+      "substreams:other.stream:60000",
+    ]);
+    assert.deepEqual(manifestSubstreamsSourceIds(manifest), ["pool-obs-main", "other.stream"]);
+    assert.isNull(manifestSubstreamsSourceIds(v1Manifest("cap")));
+    assert.isNull(manifestSubstreamsSourceIds("not json"));
+    // A selector-less binding stays the bare id (it is malformed as a window
+    // reference, but the drain must still see the source binding attempt).
+    assert.deepEqual(manifestSubstreamsSourceIds(v2ManifestBinding("cap", ["substreams:pool"])), [
+      "pool",
+    ]);
+  });
+});
+
+describe("DetectorScheduler.drainOutbox", () => {
+  it("enqueues only armed v2 capabilities bound to the entry's source, then acks", async () => {
+    const root = await tempRoot();
+    try {
+      await seedEnvironmentDir(root);
+      const reactor = stubReactor();
+      const outbox = fakeOutbox([entry("ob-1", "pool-obs-main")]);
+      const store = stubStore([
+        {
+          capabilityId: "bound-armed",
+          active: { version: 1, bundleSha256: "aa", status: "installed", armed: true },
+          manifestJson: v2ManifestBinding("bound-armed", [
+            "substreams:pool-obs-main:3600000",
+            "external:devcon:doc-1",
+          ]),
+        },
+        {
+          // Bound to a DIFFERENT stream source: not this entry's consumer.
+          capabilityId: "bound-other-stream",
+          active: { version: 1, bundleSha256: "ee", status: "installed", armed: true },
+          manifestJson: v2ManifestBinding("bound-other-stream", ["substreams:unrelated:60000"]),
+        },
+        {
+          // Substreams-bound but unarmed: never evaluated.
+          capabilityId: "bound-unarmed",
+          active: { version: 1, bundleSha256: "bb", status: "installed", armed: false },
+          manifestJson: v2ManifestBinding("bound-unarmed", ["substreams:pool-obs-main:3600000"]),
+        },
+        {
+          // Armed v2 with no stream binding: the periodic sweep's business.
+          capabilityId: "plain-v2",
+          active: { version: 1, bundleSha256: "cc", status: "installed", armed: true },
+        },
+      ]);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const scheduler = yield* DetectorScheduler;
+          yield* scheduler.drainOutbox;
+        }).pipe(
+          Effect.provide(
+            schedulerOver({
+              stateRoot: root,
+              lease: fakeLease().layer,
+              store,
+              reactor: reactor.layer,
+              outbox: outbox.layer,
+            }),
+          ),
+        ),
+      );
+      assert.deepEqual(reactor.enqueues, [
+        { environmentId: ENV, capabilityId: "bound-armed", programKind: 2 },
+      ]);
+      assert.deepEqual(outbox.acked, ["ob-1"]);
+      assert.isEmpty(outbox.pending);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("acks without a second enqueue when a non-terminal job already covers the capability", async () => {
+    const root = await tempRoot();
+    try {
+      await seedEnvironmentDir(root);
+      const reactor = stubReactor();
+      // The stub mirrors each enqueue as a queued job; complete it so the
+      // FIRST drain's job is terminal, then leave the second drain's new job
+      // queued while a third entry arrives.
+      const outbox = fakeOutbox([entry("ob-1", "pool-obs-main")]);
+      const store = stubStore([
+        {
+          capabilityId: "bound-armed",
+          active: { version: 1, bundleSha256: "aa", status: "installed", armed: true },
+          manifestJson: v2ManifestBinding("bound-armed", ["substreams:pool-obs-main:3600000"]),
+        },
+      ]);
+      const layer = schedulerOver({
+        stateRoot: root,
+        lease: fakeLease().layer,
+        store,
+        reactor: reactor.layer,
+        outbox: outbox.layer,
+      });
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const scheduler = yield* DetectorScheduler;
+          yield* scheduler.drainOutbox;
+        }).pipe(Effect.provide(layer)),
+      );
+      assert.equal(reactor.enqueues.length, 1);
+      assert.deepEqual(outbox.acked, ["ob-1"]);
+      // New evidence while the first job is STILL queued: the entry is
+      // honored (acked) without piling a second job on the capability.
+      reactor.jobs[0]!.status = "running";
+      outbox.pending.push(entry("ob-2", "pool-obs-main"));
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const scheduler = yield* DetectorScheduler;
+          yield* scheduler.drainOutbox;
+        }).pipe(Effect.provide(layer)),
+      );
+      assert.equal(reactor.enqueues.length, 1);
+      assert.deepEqual(outbox.acked, ["ob-1", "ob-2"]);
+      assert.isEmpty(outbox.pending);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("acks an entry with no bound capabilities instead of replaying it forever", async () => {
+    const root = await tempRoot();
+    try {
+      await seedEnvironmentDir(root);
+      const reactor = stubReactor();
+      const outbox = fakeOutbox([entry("ob-lonely", "nobody-listens")]);
+      const store = stubStore([
+        {
+          capabilityId: "plain-v2",
+          active: { version: 1, bundleSha256: "aa", status: "installed", armed: true },
+        },
+      ]);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const scheduler = yield* DetectorScheduler;
+          yield* scheduler.drainOutbox;
+        }).pipe(
+          Effect.provide(
+            schedulerOver({
+              stateRoot: root,
+              lease: fakeLease().layer,
+              store,
+              reactor: reactor.layer,
+              outbox: outbox.layer,
+            }),
+          ),
+        ),
+      );
+      assert.isEmpty(reactor.enqueues);
+      assert.deepEqual(outbox.acked, ["ob-lonely"]);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("drains nothing when the lease is not held, and an unwired outbox is a no-op", async () => {
+    const root = await tempRoot();
+    try {
+      await seedEnvironmentDir(root);
+      const reactor = stubReactor();
+      const outbox = fakeOutbox([entry("ob-1", "pool-obs-main")]);
+      const store = stubStore([
+        {
+          capabilityId: "bound-armed",
+          active: { version: 1, bundleSha256: "aa", status: "installed", armed: true },
+          manifestJson: v2ManifestBinding("bound-armed", ["substreams:pool-obs-main:3600000"]),
+        },
+      ]);
+      const lease = fakeLease();
+      lease.lease.held = false;
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const scheduler = yield* DetectorScheduler;
+          yield* scheduler.drainOutbox;
+        }).pipe(
+          Effect.provide(
+            schedulerOver({
+              stateRoot: root,
+              lease: lease.layer,
+              store,
+              reactor: reactor.layer,
+              outbox: outbox.layer,
+            }),
+          ),
+        ),
+      );
+      assert.isEmpty(reactor.enqueues);
+      assert.isEmpty(outbox.acked);
+
+      // Lease held but no outbox wired: a silent no-op, never a crash.
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const scheduler = yield* DetectorScheduler;
+          yield* scheduler.drainOutbox;
+        }).pipe(
+          Effect.provide(
+            schedulerOver({
+              stateRoot: root,
+              lease: fakeLease().layer,
+              store,
+              reactor: reactor.layer,
+            }),
+          ),
+        ),
+      );
+      assert.isEmpty(reactor.enqueues);
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("one entry's store failure leaves it pending while the next entry still drains and acks", async () => {
+    const root = await tempRoot();
+    try {
+      await seedEnvironmentDir(root);
+      const reactor = stubReactor();
+      const outbox = fakeOutbox([
+        entry("ob-dying", "pool-obs-main"),
+        entry("ob-healthy", "other-source"),
+      ]);
+      const store = stubStore([
+        {
+          // Dies for this capability only; the dying entry drains it first
+          // (both entries name ENV, catalog order is fixture order).
+          capabilityId: "dying-v2",
+          active: { version: 1, bundleSha256: "aa", status: "installed", armed: true },
+          manifestJson: v2ManifestBinding("dying-v2", ["substreams:pool-obs-main:3600000"]),
+          dieOnActiveState: true,
+        },
+        {
+          capabilityId: "healthy-v2",
+          active: { version: 1, bundleSha256: "bb", status: "installed", armed: true },
+          manifestJson: v2ManifestBinding("healthy-v2", ["substreams:other-source:60000"]),
+        },
+      ]);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const scheduler = yield* DetectorScheduler;
+          yield* scheduler.drainOutbox;
+        }).pipe(
+          Effect.provide(
+            schedulerOver({
+              stateRoot: root,
+              lease: fakeLease().layer,
+              store,
+              reactor: reactor.layer,
+              outbox: outbox.layer,
+            }),
+          ),
+        ),
+      );
+      assert.deepEqual(reactor.enqueues, [
+        { environmentId: ENV, capabilityId: "healthy-v2", programKind: 2 },
+      ]);
+      // The dying entry stays pending for the next drain; the healthy one acked.
+      assert.deepEqual(outbox.acked, ["ob-healthy"]);
+      assert.deepEqual(
+        outbox.pending.map((pending) => pending.outboxId),
+        ["ob-dying"],
+      );
+    } finally {
+      await NodeFs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a full sweep drains the outbox before the periodic pass", async () => {
+    const root = await tempRoot();
+    try {
+      await seedEnvironmentDir(root);
+      const reactor = stubReactor();
+      const outbox = fakeOutbox([entry("ob-1", "pool-obs-main")]);
+      const store = stubStore([
+        {
+          capabilityId: "stream-bound",
+          active: { version: 1, bundleSha256: "aa", status: "installed", armed: true },
+          manifestJson: v2ManifestBinding("stream-bound", ["substreams:pool-obs-main:3600000"]),
+        },
+        {
+          capabilityId: "plain-v2",
+          active: { version: 1, bundleSha256: "bb", status: "installed", armed: true },
+        },
+      ]);
+      await withScheduler(
+        root,
+        schedulerOver({
+          stateRoot: root,
+          lease: fakeLease().layer,
+          store,
+          reactor: reactor.layer,
+          outbox: outbox.layer,
+        }),
+      );
+      // The stream-bound capability got its evidence-triggered job from the
+      // drain and then also appears in the periodic pass (it has no
+      // non-terminal job only if the stub mirrored it — it did, as queued,
+      // so the periodic pass skips it); plain-v2 is periodic-only.
+      assert.includeDeepMembers(reactor.enqueues, [
+        { environmentId: ENV, capabilityId: "stream-bound", programKind: 2 },
+        { environmentId: ENV, capabilityId: "plain-v2", programKind: 2 },
+      ]);
+      assert.isEmpty(outbox.pending);
     } finally {
       await NodeFs.rm(root, { recursive: true, force: true });
     }

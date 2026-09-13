@@ -286,3 +286,190 @@ layer("DetectorRunStore reads", (it) => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// Durable occurrences — false→true transitions across windows and restarts
+// ---------------------------------------------------------------------------
+
+import createOccurrenceTables from "../../persistence/Migrations/112_DetectorOccurrences.ts";
+
+const resetOccurrences = Effect.gen(function* () {
+  yield* createOccurrenceTables;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DELETE FROM forge_detector_occurrences`;
+});
+
+const occurrenceInput = (overrides?: {
+  readonly occurrenceKey?: string;
+  readonly version?: number;
+  readonly resetKey?: string | null;
+  readonly detectedAtMs?: number;
+  readonly validUntilMs?: number;
+}) => ({
+  environmentId: ENV,
+  capabilityId: CAP,
+  version: overrides?.version ?? 1,
+  occurrenceKey: overrides?.occurrenceKey ?? "devcon-8-entry",
+  resetKey: overrides?.resetKey ?? null,
+  detectedAtMs: overrides?.detectedAtMs ?? 1_000,
+  validUntilMs: overrides?.validUntilMs ?? 60_000,
+  evaluationId: "dtev_occurrence",
+});
+
+layer("DetectorRunStore occurrences", (it) => {
+  it.effect("the first detection records the transition; repeats confirm, never re-record", () =>
+    Effect.gen(function* () {
+      yield* resetOccurrences;
+      const store: DetectorRunStoreShape = yield* makeDetectorRunStore;
+      const first = yield* store.recordOccurrence(
+        occurrenceInput({ detectedAtMs: 1_000, validUntilMs: 60_000 }),
+      );
+      assert.equal(first.status, "recorded");
+      // A later window observing the SAME condition: confirmation only.
+      const again = yield* store.recordOccurrence(
+        occurrenceInput({ detectedAtMs: 5_000, validUntilMs: 90_000 }),
+      );
+      assert.equal(again.status, "confirmed");
+      const snapshot = yield* store.readOccurrence(ENV, CAP, 1, "devcon-8-entry");
+      assert.isNotNull(snapshot);
+      assert.equal(snapshot?.status, "active");
+      assert.equal(snapshot?.firstDetectedAtMs, 1_000);
+      assert.equal(snapshot?.lastConfirmedAtMs, 5_000);
+      // The validity horizon extends, never shortens.
+      assert.equal(snapshot?.validUntilMs, 90_000);
+    }),
+  );
+
+  it.effect(
+    "a consumed occurrence is never re-firable, even across a restart-shaped fresh store",
+    () =>
+      Effect.gen(function* () {
+        yield* resetOccurrences;
+        const store: DetectorRunStoreShape = yield* makeDetectorRunStore;
+        yield* store.recordOccurrence(occurrenceInput());
+        const consumed = yield* store.consumeOccurrence({
+          environmentId: ENV,
+          capabilityId: CAP,
+          version: 1,
+          occurrenceKey: "devcon-8-entry",
+          consumedAtMs: 2_000,
+        });
+        assert.equal(consumed.status, "consumed");
+        // Idempotent: a second consume is already-consumed, never a second fire.
+        const second = yield* store.consumeOccurrence({
+          environmentId: ENV,
+          capabilityId: CAP,
+          version: 1,
+          occurrenceKey: "devcon-8-entry",
+          consumedAtMs: 3_000,
+        });
+        assert.equal(second.status, "already-consumed");
+        // The same occurrence re-detected later windows on: refused for good.
+        const redetect = yield* store.recordOccurrence(occurrenceInput({ detectedAtMs: 9_000 }));
+        assert.equal(redetect.status, "consumed");
+        const snapshot = yield* store.readOccurrence(ENV, CAP, 1, "devcon-8-entry");
+        assert.equal(snapshot?.status, "consumed");
+        assert.equal(snapshot?.consumedAtMs, 2_000);
+      }),
+  );
+
+  it.effect(
+    "a changed reset discriminator is the specified reset: old row closes, new one opens",
+    () =>
+      Effect.gen(function* () {
+        yield* resetOccurrences;
+        const store: DetectorRunStoreShape = yield* makeDetectorRunStore;
+        yield* store.recordOccurrence(occurrenceInput({ resetKey: "window-epoch-1" }));
+        // Reset: the program's discriminator moved on; the re-match is a NEW
+        // occurrence (the false→true transition happened again).
+        const afterReset = yield* store.recordOccurrence(
+          occurrenceInput({ resetKey: "window-epoch-2", detectedAtMs: 7_000 }),
+        );
+        assert.equal(afterReset.status, "recorded");
+        const snapshot = yield* store.readOccurrence(ENV, CAP, 1, "devcon-8-entry");
+        assert.equal(snapshot?.status, "active");
+        assert.equal(snapshot?.resetKey, "window-epoch-2");
+        assert.equal(snapshot?.firstDetectedAtMs, 7_000);
+        // The reset old row is closed and cannot be consumed.
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql`
+        SELECT consumed_at_ms, reset_at_ms FROM forge_detector_occurrences
+        WHERE occurrence_key = ${"devcon-8-entry"} ORDER BY occurrence_row_id
+      `;
+        assert.equal(rows.length, 2);
+        assert.equal(rows[0]?.reset_at_ms, 7_000);
+        assert.isNull(rows[0]?.consumed_at_ms);
+        assert.isNull(rows[1]?.reset_at_ms);
+      }),
+  );
+
+  it.effect(
+    "a detector artifact revision is a new program identity with a fresh occurrence space",
+    () =>
+      Effect.gen(function* () {
+        yield* resetOccurrences;
+        const store: DetectorRunStoreShape = yield* makeDetectorRunStore;
+        yield* store.recordOccurrence(occurrenceInput({ version: 1 }));
+        yield* store.consumeOccurrence({
+          environmentId: ENV,
+          capabilityId: CAP,
+          version: 1,
+          occurrenceKey: "devcon-8-entry",
+          consumedAtMs: 2_000,
+        });
+        // The same occurrenceKey under version 2 (the revised artifact): a new
+        // program, its own transition — but the v1 row is untouched history.
+        const revised = yield* store.recordOccurrence(
+          occurrenceInput({ version: 2, detectedAtMs: 8_000 }),
+        );
+        assert.equal(revised.status, "recorded");
+        assert.equal(
+          (yield* store.readOccurrence(ENV, CAP, 1, "devcon-8-entry"))?.status,
+          "consumed",
+        );
+        assert.equal(
+          (yield* store.readOccurrence(ENV, CAP, 2, "devcon-8-entry"))?.status,
+          "active",
+        );
+        // Another capability's occurrence space reads nothing.
+        assert.isNull(yield* store.readOccurrence(ENV, "other-detector", 1, "devcon-8-entry"));
+      }),
+  );
+
+  it.effect(
+    "consume refuses not-found and reset occurrences; invalid records refuse before writes",
+    () =>
+      Effect.gen(function* () {
+        yield* resetOccurrences;
+        const store: DetectorRunStoreShape = yield* makeDetectorRunStore;
+        const missing = yield* store.consumeOccurrence({
+          environmentId: ENV,
+          capabilityId: CAP,
+          version: 1,
+          occurrenceKey: "never-seen",
+          consumedAtMs: 1,
+        });
+        assert.equal(missing.status, "not-found");
+        // A reset (never consumed) occurrence cannot fire either.
+        yield* store.recordOccurrence(occurrenceInput({ resetKey: "epoch-1" }));
+        yield* store.recordOccurrence(
+          occurrenceInput({ resetKey: "epoch-2", detectedAtMs: 5_000 }),
+        );
+        const sql = yield* SqlClient.SqlClient;
+        const oldRow = yield* sql`
+        SELECT occurrence_row_id FROM forge_detector_occurrences
+        WHERE occurrence_key = ${"devcon-8-entry"} ORDER BY occurrence_row_id LIMIT 1
+      `;
+        yield* sql`
+        UPDATE forge_detector_occurrences SET reset_at_ms = 4_000
+        WHERE occurrence_row_id = ${oldRow[0]?.occurrence_row_id}
+      `;
+        const invalid = yield* store.recordOccurrence({ ...occurrenceInput(), occurrenceKey: " " });
+        assert.equal(invalid.status, "refused");
+        if (invalid.status === "refused") assert.equal(invalid.reason, "invalid-occurrence");
+        // Boundary validation wrote nothing.
+        const count = yield* sql`SELECT COUNT(*) AS n FROM forge_detector_occurrences`;
+        assert.equal(count[0]?.n, 2);
+      }),
+  );
+});

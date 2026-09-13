@@ -8,11 +8,26 @@
  * evaluates anything itself and never writes a result — the reactor's
  * DetectorRunStore commit is the only result surface.
  *
+ * STREAM-TRIGGERED EVALUATION (the durable outbox drain): Worker A's
+ * ingestion commits facts, cursor, and OUTBOX entries atomically; each sweep
+ * first drains that outbox — for every committed-evidence entry, every armed
+ * v2 capability bound to that stream source gets a `ForgeReactor.
+ * enqueueEvaluation` job, with no provider turn — and only then runs the
+ * periodic fallback below. The drain is IDEMPOTENT by construction: an entry
+ * is durably acked only AFTER its evaluation job exists (or a non-terminal
+ * job already covers the capability, which will read the newest committed
+ * evidence when it runs). A crash between enqueue and ack replays the entry;
+ * the replay's extra job is a duplicate evaluation, never a duplicate
+ * occurrence (occurrences are keyed and committed through DetectorRunStore).
+ * The scheduler stays a lease-gated recovery sweep over A's committed
+ * evidence — never a second, independent source of occurrences.
+ *
  * Invariants this module owns:
  *
- * - Lease-gated: a sweep runs only while this process holds the trading
- *   lease (`held` is read per tick, so a lost lease stands the loop down
- *   without a restart). Single writer, the WatchEvaluator discipline.
+ * - Lease-gated: a sweep (and the drain inside it) runs only while this
+ *   process holds the trading lease (`held` is read per tick, so a lost
+ *   lease stands the loop down without a restart). Single writer, the
+ *   WatchEvaluator discipline.
  * - v2-only: a capability participates ONLY when its ACTIVE version's
  *   manifest discriminates as `manifestVersion === 2` (via
  *   `versionProgramKind` over the hash-verified stored bytes). v1
@@ -63,6 +78,77 @@ export const DETECTOR_SWEEP_DEFAULT_INTERVAL_MS = 60_000;
 /** The floor on the sweep cadence: nothing may poll the store faster. */
 export const DETECTOR_SWEEP_MIN_INTERVAL_MS = 5_000;
 
+/** The most outbox entries one drain processes (a burst bound, not a cap on
+ * total delivery: anything left stays pending for the next drain). */
+export const DETECTOR_DRAIN_MAX_ENTRIES = 128;
+
+// ---------------------------------------------------------------------------
+// The A→B outbox port. Worker A's SubstreamsIngestion commits facts + cursor
+// + outbox entries in ONE transaction; this port is the consumer side of that
+// outbox. The shapes bind (names on A's side may differ); until A's store
+// lands, tests bind a local fake implementing exactly this shape — replaced
+// at integration, never shipped.
+// ---------------------------------------------------------------------------
+
+/** One durable evidence-committed entry: A committed stream facts for `sourceId`. */
+export interface SubstreamsOutboxEntry {
+  /** Durable identity; acking it makes delivery permanently done. */
+  readonly outboxId: string;
+  readonly environmentId: string;
+  readonly sourceId: string;
+  readonly committedAtMs: number;
+}
+
+export interface SubstreamsOutboxShape {
+  /**
+   * Pending (unacked) entries for one environment, oldest first, at most
+   * `limit`. The claim is per environment because the committing store keys
+   * its outbox that way and the sweep is already per environment.
+   */
+  readonly readPending: (input: {
+    readonly environmentId: string;
+    readonly limit: number;
+  }) => Effect.Effect<ReadonlyArray<SubstreamsOutboxEntry>, never>;
+  /**
+   * Durably ack entries. The scheduler calls this ONLY after the evaluation
+   * job creation each entry honors has happened, so a crash before the ack
+   * replays the entry instead of losing it.
+   */
+  readonly ack: (input: {
+    readonly outboxIds: ReadonlyArray<string>;
+  }) => Effect.Effect<void, never>;
+}
+
+export class SubstreamsOutbox extends Context.Service<SubstreamsOutbox, SubstreamsOutboxShape>()(
+  "t3/trading/forge/DetectorScheduler/SubstreamsOutbox",
+) {}
+
+/**
+ * The bare stream source ids a v2 manifest binds through `substreams:`
+ * source references (`substreams:<sourceId>:<windowMs>`; the last colon
+ * splits the window selector, so prefix matching is exact at the source-id
+ * boundary). Null when the manifest bytes are not v2-shaped JSON.
+ */
+export const manifestSubstreamsSourceIds = (manifestJson: string): ReadonlyArray<string> | null => {
+  try {
+    const parsed = JSON.parse(manifestJson) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const record = parsed as { manifestVersion?: unknown; requiredSourceIds?: unknown };
+    if (record.manifestVersion !== 2 || !Array.isArray(record.requiredSourceIds)) return null;
+    const ids: Array<string> = [];
+    for (const id of record.requiredSourceIds) {
+      if (typeof id !== "string" || !id.startsWith("substreams:")) continue;
+      const rest = id.slice("substreams:".length);
+      // Strip the trailing window selector when a well-formed one exists.
+      const split = rest.lastIndexOf(":");
+      ids.push(split > 0 ? rest.slice(0, split) : rest);
+    }
+    return ids;
+  } catch {
+    return null;
+  }
+};
+
 /**
  * The `toIntOr` idiom (GraphSource): a positive integer or the fallback,
  * then clamped to the minimum so no environment value can hot-loop the
@@ -77,10 +163,22 @@ export function resolveDetectorSweepIntervalMs(env: Record<string, string | unde
 
 export interface DetectorSchedulerShape {
   /**
-   * One sweep pass: enqueue one v2 evaluation per armed, installed,
-   * unpaused v2 capability that has no non-terminal job. Never fails —
-   * every failure is caught, logged, and the pass continues; exposed so
-   * tests drive sweeps synchronously without a clock.
+   * Drain Worker A's durable evidence outbox: for every pending entry,
+   * enqueue one v2 evaluation per armed, installed, unpaused v2 capability
+   * whose manifest binds the entry's stream source, then durably ack the
+   * entry — the ack happens ONLY after the job creation (or an existing
+   * non-terminal job that will read the newest committed evidence). Lease-
+   * gated like the sweep; never fails (per-entry failures skip that entry
+   * without acking it). Exposed so tests and the ingestion wiring drive a
+   * drain without waiting for a sweep tick.
+   */
+  readonly drainOutbox: Effect.Effect<void>;
+  /**
+   * One sweep pass: drain the stream evidence outbox, then enqueue one v2
+   * evaluation per armed, installed, unpaused v2 capability that has no
+   * non-terminal job. Never fails — every failure is caught, logged, and
+   * the pass continues; exposed so tests drive sweeps synchronously without
+   * a clock.
    */
   readonly sweep: Effect.Effect<void>;
   /**
@@ -111,9 +209,11 @@ export const makeDetectorScheduler = (
     // crashing at build. One runtime provides the real instances.
     const storeOption = yield* Effect.serviceOption(ForgeCapabilityStore);
     const reactorOption = yield* Effect.serviceOption(ForgeReactor);
+    const outboxOption = yield* Effect.serviceOption(SubstreamsOutbox);
     // Resolved once at build; `null` is the unwired case every sweep names.
     const store = Option.isSome(storeOption) ? storeOption.value : null;
     const reactor = Option.isSome(reactorOption) ? reactorOption.value : null;
+    const outbox = Option.isSome(outboxOption) ? outboxOption.value : null;
     const unwiredReason =
       store === null && reactor === null
         ? "the Forge capability store and reactor are not wired"
@@ -200,6 +300,121 @@ export const makeDetectorScheduler = (
         }
       });
 
+    /**
+     * One outbox entry's drain: every armed, installed, unpaused v2
+     * capability whose manifest binds the entry's stream source gets an
+     * evaluation job (unless a non-terminal job already covers it — that job
+     * reads the newest committed evidence when it runs). Returns true when
+     * the entry is fully honored and may be acked; a capability BOUND to the
+     * entry's source whose step failed keeps the entry pending.
+     *
+     * Binding is read from the catalog version's manifest BEFORE the standing
+     * gates, so a capability that cannot even be considered never blocks an
+     * entry it is not bound to. A catalog/manifest race against an upgrade
+     * costs at most one extra reactor job (the reactor re-reads the ACTIVE
+     * version's manifest and rebuilds its window at run time) or one sweep of
+     * delay for a brand-new binding — never a missed or forged evaluation.
+     */
+    const drainEntry = (entry: SubstreamsOutboxEntry): Effect.Effect<boolean, ForgeStoreError> =>
+      Effect.gen(function* () {
+        if (store === null || reactor === null) return false;
+        const catalog = yield* store.listCatalog(entry.environmentId);
+        if (catalog.length === 0) return true;
+        const jobs = yield* reactor.listJobs({ environmentId: entry.environmentId });
+        const pendingCapabilities = new Set(
+          jobs
+            .filter((job) => job.status === "queued" || job.status === "running")
+            .map((job) => job.capabilityId),
+        );
+        let anyFailure = false;
+        for (const capability of catalog) {
+          const step: Effect.Effect<void, ForgeStoreError> = Effect.gen(function* () {
+            const manifestJson = yield* store.readArtifact({
+              environmentId: entry.environmentId,
+              capabilityId: capability.capabilityId,
+              version: capability.version,
+              path: "manifest.json",
+            });
+            if (manifestJson === null || versionProgramKind(manifestJson) !== "v2") return;
+            const boundSources = manifestSubstreamsSourceIds(manifestJson);
+            if (boundSources === null || !boundSources.includes(entry.sourceId)) return;
+            // Bound: from here a failure blocks the entry's ack — acking
+            // without the job creation this capability is owed would lose
+            // the evidence delivery on a crash.
+            const active = yield* store.activeState({
+              environmentId: entry.environmentId,
+              capabilityId: capability.capabilityId,
+            });
+            if (active === null || active.status !== "installed" || !active.armed) return;
+            // A non-terminal job covers the capability: it will evaluate
+            // over the newest committed evidence, so the entry is honored.
+            if (pendingCapabilities.has(capability.capabilityId)) return;
+            yield* reactor.enqueueEvaluation({
+              environmentId: entry.environmentId,
+              capabilityId: capability.capabilityId,
+              programKind: 2,
+            });
+          });
+          yield* step.pipe(
+            Effect.catchCause((cause) =>
+              Effect.gen(function* () {
+                anyFailure = true;
+                yield* Effect.logWarning(
+                  `DetectorScheduler: draining outbox entry ${entry.outboxId} for ${capability.capabilityId} failed; the entry stays pending`,
+                  { cause: Cause.pretty(cause) },
+                );
+              }),
+            ),
+          );
+        }
+        // Even zero bound capabilities honors the entry: the evidence is
+        // committed and nothing will ever consume it — acking keeps the
+        // outbox from replaying it forever. But a FAILED bound step does not.
+        return !anyFailure;
+      });
+
+    const drainOutbox: DetectorSchedulerShape["drainOutbox"] = Effect.gen(function* () {
+      // The drain is as lease-gated as the sweep: one writer per state root.
+      if (!lease.held) return;
+      // Unwired outbox (Worker A's store not integrated yet) or unwired
+      // store/reactor: a silent no-op, the same ambiently-optional rule the
+      // reactor follows — the periodic sweep's own unwired log names the rest.
+      if (outbox === null || store === null || reactor === null) return;
+      const environments = yield* listEnvironments;
+      for (const environmentId of environments) {
+        const entries = yield* outbox.readPending({
+          environmentId,
+          limit: DETECTOR_DRAIN_MAX_ENTRIES,
+        });
+        if (entries.length === 0) continue;
+        const ackIds: Array<string> = [];
+        for (const entry of entries) {
+          if (entry.environmentId !== environmentId) continue;
+          const honored = yield* drainEntry(entry).pipe(
+            Effect.catchCause((cause) =>
+              Effect.gen(function* () {
+                yield* Effect.logWarning(
+                  `DetectorScheduler: draining outbox entry ${entry.outboxId} failed; leaving it pending`,
+                  { cause: Cause.pretty(cause) },
+                );
+                return false;
+              }),
+            ),
+          );
+          // Durable ack ONLY after the job creation the entry honors happened
+          // (or was already covered): a crash before this point replays.
+          if (honored) ackIds.push(entry.outboxId);
+        }
+        if (ackIds.length > 0) yield* outbox.ack({ outboxIds: ackIds });
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("DetectorScheduler: outbox drain failed; retrying next sweep", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
     const sweep: DetectorSchedulerShape["sweep"] = Effect.gen(function* () {
       // Only the lease owner sweeps: a second runtime against the same state
       // must not enqueue alongside the live holder. Read per tick — the
@@ -209,6 +424,9 @@ export const makeDetectorScheduler = (
         yield* logSkip(unwiredReason);
         return;
       }
+      // Stream-triggered evaluation first: fresh committed evidence reaches
+      // bound detectors on this sweep, not the next one.
+      yield* drainOutbox;
       const environments = yield* listEnvironments;
       for (const environmentId of environments) {
         yield* sweepEnvironment(environmentId).pipe(
@@ -241,7 +459,7 @@ export const makeDetectorScheduler = (
         });
       });
 
-    return { sweep, start } satisfies DetectorSchedulerShape;
+    return { drainOutbox, sweep, start } satisfies DetectorSchedulerShape;
   });
 
 /**
