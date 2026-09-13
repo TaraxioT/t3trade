@@ -292,6 +292,12 @@ export const makeSubstreamsIngestion = Effect.gen(function* () {
               batchesCommitted += 1;
               blocksCommitted += outcome.blocks - outcome.replayed;
               blocksReplayed += outcome.replayed;
+              yield* Effect.logInfo("SubstreamsIngestion: batch committed", {
+                sourceId,
+                blocks: outcome.blocks,
+                replayed: outcome.replayed,
+                batches: batchesCommitted,
+              });
               return;
             }
             const detail = `commit refused (${outcome.status}): ${outcome.reason}`;
