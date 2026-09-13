@@ -448,71 +448,90 @@ export type DecodeBase64Utf8Result =
 /** Strictly decode standard (RFC 4648) base64 with UTF-8 payload validation.
  *  ASCII whitespace is ignored; every other deviation refuses by name. */
 export function decodeBase64Utf8(input: string): DecodeBase64Utf8Result {
-  let cleaned = "";
+  // Whitespace is rare: pay for the scan once, and only rebuild the string
+  // when it actually carries any.
+  let cleaned = input;
+  let carriesWhitespace = false;
   for (let i = 0; i < input.length; i += 1) {
     const code = input.charCodeAt(i);
-    if (code === 32 || code === 9 || code === 10 || code === 13) continue;
-    cleaned += input[i];
+    if (code === 32 || code === 9 || code === 10 || code === 13) { carriesWhitespace = true; break; }
+  }
+  if (carriesWhitespace) {
+    cleaned = "";
+    const parts: Array<string> = [];
+    let chunk = "";
+    for (let i = 0; i < input.length; i += 1) {
+      const code = input.charCodeAt(i);
+      if (code === 32 || code === 9 || code === 10 || code === 13) continue;
+      chunk += input[i];
+      if (chunk.length >= 4096) { parts.push(chunk); chunk = ""; }
+    }
+    parts.push(chunk);
+    cleaned = parts.join("");
   }
   if (cleaned.length === 0) return { ok: false, failure: "base64-empty" };
   if (cleaned.length % 4 !== 0) return { ok: false, failure: "base64-length-invalid" };
   let padding = 0;
   if (cleaned.endsWith("==")) padding = 2;
   else if (cleaned.endsWith("=")) padding = 1;
-  const body = padding > 0 ? cleaned.slice(0, cleaned.length - padding) : cleaned;
-  if (body.includes("=")) return { ok: false, failure: "base64-padding-invalid" };
-  const out: number[] = [];
+  const bodyLength = cleaned.length - padding;
+  if (cleaned.slice(0, bodyLength).includes("=")) return { ok: false, failure: "base64-padding-invalid" };
+  const byteLength = (bodyLength * 6) >> 3;
+  const bytes = new Uint8Array(byteLength);
   let buffer = 0;
   let bits = 0;
-  for (let i = 0; i < body.length; i += 1) {
-    const code = body.charCodeAt(i);
+  let write = 0;
+  for (let i = 0; i < bodyLength; i += 1) {
+    const code = cleaned.charCodeAt(i);
     const value = code < 256 ? BASE64_SEXTET[code] : -1;
     if (value < 0) return { ok: false, failure: "base64-character-invalid" };
     buffer = (buffer << 6) | value;
     bits += 6;
     if (bits >= 8) {
       bits -= 8;
-      out.push((buffer >>> bits) & 0xff);
+      bytes[write] = (buffer >>> bits) & 0xff;
+      write += 1;
     }
   }
   // The leftover bit count pins the padding shape: '=', 0, 2, or 4 bits.
   if ((padding === 0 && bits !== 0) || (padding === 1 && bits !== 2) || (padding === 2 && bits !== 4)) {
     return { ok: false, failure: "base64-length-invalid" };
   }
-  let text = "";
-  let i = 0;
-  while (i < out.length) {
-    const b0 = out[i];
-    if (b0 < 0x80) {
-      text += String.fromCharCode(b0);
-      i += 1;
-      continue;
+  // UTF-8 decode in chunks: latin1-encode byte slices, then combine. ASCII
+  // fast path avoids per-byte code point work for typical JSON payloads.
+  let ascii = true;
+  for (let i = 0; i < bytes.length; i += 1) {
+    if (bytes[i]! >= 0x80) { ascii = false; break; }
+  }
+  if (ascii) {
+    const parts: Array<string> = [];
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      parts.push(String.fromCharCode(...(bytes.subarray(offset, Math.min(offset + 8192, bytes.length)) as unknown as Array<number>)));
     }
+    return { ok: true, text: parts.join("") };
+  }
+  const chars: Array<string> = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const b0 = bytes[i]!;
+    if (b0 < 0x80) { chars.push(String.fromCharCode(b0)); i += 1; continue; }
     let len: number;
     let cp: number;
-    if (b0 >= 0xc2 && b0 <= 0xdf) {
-      len = 2;
-      cp = b0 & 0x1f;
-    } else if (b0 >= 0xe0 && b0 <= 0xef) {
-      len = 3;
-      cp = b0 & 0x0f;
-    } else if (b0 >= 0xf0 && b0 <= 0xf4) {
-      len = 4;
-      cp = b0 & 0x07;
-    } else {
-      return { ok: false, failure: "utf8-invalid" };
-    }
-    if (i + len > out.length) return { ok: false, failure: "utf8-invalid" };
+    if (b0 >= 0xc2 && b0 <= 0xdf) { len = 2; cp = b0 & 0x1f; }
+    else if (b0 >= 0xe0 && b0 <= 0xef) { len = 3; cp = b0 & 0x0f; }
+    else if (b0 >= 0xf0 && b0 <= 0xf4) { len = 4; cp = b0 & 0x07; }
+    else return { ok: false, failure: "utf8-invalid" };
+    if (i + len > bytes.length) return { ok: false, failure: "utf8-invalid" };
     for (let j = 1; j < len; j += 1) {
-      const b = out[i + j];
+      const b = bytes[i + j]!;
       if ((b & 0xc0) !== 0x80) return { ok: false, failure: "utf8-invalid" };
       cp = (cp << 6) | (b & 0x3f);
     }
     if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return { ok: false, failure: "utf8-invalid" };
-    text += String.fromCodePoint(cp);
+    chars.push(String.fromCodePoint(cp));
     i += len;
   }
-  return { ok: true, text };
+  return { ok: true, text: chars.join("") };
 }
 
 const registeredTests: Array<() => void | Promise<void>> = [];
