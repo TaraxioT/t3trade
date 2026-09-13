@@ -822,6 +822,15 @@ export const TradingForgeAction = Schema.Literals([
   "envelope",
   "evaluate_policy",
   "swap",
+  // The protected mainnet lane's only agent-reachable step: atomic admission
+  // (reserve + immutable intent). Signing/broadcast is never agent-reachable.
+  "protected_swap",
+  // Generated external-source adapters: declare an installed capability's
+  // transform as an http-document source (spec JSON, host allowlist enforced
+  // by the host), then capture it once — fetch, sandbox parse, schema
+  // validation, revisions with provenance.
+  "declare_source",
+  "capture_source",
 ]);
 export type TradingForgeAction = typeof TradingForgeAction.Type;
 
@@ -872,6 +881,12 @@ export const TradingForgeInput = Schema.Struct({
    * malformed input.
    */
   quote: Schema.optional(Schema.Unknown),
+  /** `protected_swap`: the execute(deadline) value, integer unix seconds. */
+  deadlineUnix: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  /** `declare_source`: the ExternalAdapterSourceSpec JSON (unknown-carried). */
+  sourceSpec: Schema.optional(Schema.Unknown),
+  /** `capture_source`/`declare_source`: the installed source's id. */
+  sourceId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
 });
 export type TradingForgeInput = typeof TradingForgeInput.Type;
 
@@ -933,6 +948,24 @@ export function toForgeDetectorResultSummary(result: DetectionResult): ForgeDete
 // -- P5.4 execution views (local mirrors; see the note on ForgeExecutionQuote) --
 
 /**
+ * The v3 identity field names the quote mirror carries beside the
+ * authoritative `SwapQuoteRecord` (see the mirror note below). One list, so
+ * the observation.test.ts drift guard can pin it without importing the
+ * authoritative module (the cycle rule below explains why).
+ */
+export const FORGE_EXECUTION_QUOTE_V3_FIELDS = {
+  routeConfigDigest: Schema.optional(Schema.String),
+  quotedBlockNumber: Schema.optional(Schema.String),
+  quotedBlockHash: Schema.optional(Schema.String),
+  quotedAmountOutRaw: Schema.optional(Schema.String),
+  quoterCodeHash: Schema.optional(Schema.String),
+  targetCodeHash: Schema.optional(Schema.String),
+  gasUnitsMeasured: Schema.optional(Schema.String),
+  maxFeePerGasWei: Schema.optional(Schema.String),
+  maxPriorityFeePerGasWei: Schema.optional(Schema.String),
+} as const;
+
+/**
  * A bounded mirror of the executionPolicy module's `SwapQuoteRecord` for the
  * tool result. Deliberately NOT an import: `executionPolicy.ts` already
  * imports this module (FORGE_CAPABILITY_ID_PATTERN), and a top-level schema
@@ -953,6 +986,10 @@ export const ForgeExecutionQuote = Schema.Struct({
   quotedAtMs: UnixMillis,
   expiresAtMs: UnixMillis,
   basis: Schema.Literals(["eth_call"]),
+  // v3 identity fields (optional for compatibility with retained v2-era
+  // rows): included in the quote id's digest when present, so admission can
+  // recompute identity against the CURRENT route registry.
+  ...FORGE_EXECUTION_QUOTE_V3_FIELDS,
 });
 export type ForgeExecutionQuote = typeof ForgeExecutionQuote.Type;
 
@@ -1142,6 +1179,34 @@ export const TradingForgeResult = Schema.Struct({
   policyEvaluation: Schema.optional(ForgePolicyEvaluationView),
   /** `swap`: the prepared intent's summary, including its refusal state. */
   swapIntent: Schema.optional(ForgeSwapIntentView),
+  /** `protected_swap`: the durable admission the reservation store returned. */
+  protectedAdmission: Schema.optional(
+    Schema.Struct({
+      reservationId: Schema.String.check(Schema.isNonEmpty()),
+      intentId: Schema.String.check(Schema.isNonEmpty()),
+      replayed: Schema.Boolean,
+    }),
+  ),
+  /** `capture_source`: the revisions one bounded capture wrote or refused. */
+  generatedSourceCapture: Schema.optional(
+    Schema.Struct({
+      status: Schema.Literals(["ok", "unavailable"]),
+      reason: Schema.optional(Schema.String),
+      documents: Schema.Array(
+        Schema.Struct({
+          documentIdentity: Schema.String,
+          revisionId: Schema.String,
+          changed: Schema.Boolean,
+          retracted: Schema.Boolean,
+          publishedAtMs: Schema.NullOr(UnixMillis),
+          timePrecision: Schema.String,
+          firstObservedAtMs: UnixMillis,
+          contentSha256: Schema.String,
+          sourceUrl: Schema.String,
+        }),
+      ),
+    }),
+  ),
 });
 export type TradingForgeResult = typeof TradingForgeResult.Type;
 

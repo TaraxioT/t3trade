@@ -1361,6 +1361,14 @@ export const WsOrchestrationForgeExecutionRevokeRpc = Rpc.make(
     error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
   },
 );
+export const WsOrchestrationForgeExecutionApproveRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.forgeExecutionApprove,
+  {
+    payload: OrchestrationRpcSchemas.forgeExecutionApprove.input,
+    success: OrchestrationRpcSchemas.forgeExecutionApprove.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsOrchestrationForgeDetectorControlRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.forgeDetectorControl,
@@ -1615,6 +1623,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetForgePoolStateRpc,
   WsOrchestrationGetForgeExecutionStateRpc,
   WsOrchestrationForgeExecutionRevokeRpc,
+  WsOrchestrationForgeExecutionApproveRpc,
   WsOrchestrationForgeDetectorControlRpc,
   WsOrchestrationForgePauseRpc,
   WsOrchestrationForgeUnpauseRpc,

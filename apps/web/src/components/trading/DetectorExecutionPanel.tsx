@@ -10,10 +10,12 @@ import { describeControlFailure } from "./useMissionControls";
 
 export function ExecutionStateDetails({
   data,
+  onApprove,
   onRevoke,
   busy,
 }: {
   data: ForgeExecutionStateView;
+  onApprove: (envelopeId: string) => void;
   onRevoke: (envelopeId: string) => void;
   busy: boolean;
 }) {
@@ -39,6 +41,13 @@ export function ExecutionStateDetails({
         Remaining {budget.remainingInputCapRaw} · settled {budget.settledRaw} · in flight{" "}
         {budget.inFlightRaw} (raw token units)
       </p>
+      {budget.budgetLedger === "corrupt" ? (
+        <p role="alert">
+          Budget ledger is CORRUPT — spending is refused and the remaining cap reads as zero, never
+          as fresh budget.
+          {budget.corruptDetail === undefined ? null : ` (${budget.corruptDetail})`}
+        </p>
+      ) : null}
       <ul className="space-y-1">
         {(grant?.candidates ?? []).map((candidate) => (
           <li key={candidate.candidateId}>
@@ -52,6 +61,16 @@ export function ExecutionStateDetails({
           </li>
         ))}
       </ul>
+      {envelope.status === "proposed" ? (
+        <Button
+          size="xs"
+          disabled={busy}
+          onClick={() => onApprove(envelope.envelopeId)}
+          variant="default"
+        >
+          Approve execution envelope
+        </Button>
+      ) : null}
       <Button
         size="xs"
         variant="outline"
@@ -61,7 +80,9 @@ export function ExecutionStateDetails({
         Revoke execution envelope
       </Button>
       <p className="text-muted-foreground">
-        Revocation stops future admissions. It does not reverse an already submitted transaction.
+        Approval binds exactly the terms above and only this envelope. Revocation stops future
+        admissions; it does not reverse an already submitted transaction. Neither the agent nor any
+        tool can approve.
       </p>
       {grant === null ? null : (
         <details>
@@ -156,6 +177,7 @@ export function DetectorExecutionPanel({
   );
   const state = useRetainedAtomValue(atom);
   const revoke = useAtomCommand(orchestrationEnvironment.forgeExecutionRevoke);
+  const approve = useAtomCommand(orchestrationEnvironment.forgeExecutionApprove);
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -165,21 +187,21 @@ export function DetectorExecutionPanel({
     const timer = window.setInterval(() => appAtomRegistry.refresh(atom), 30_000);
     return () => window.clearInterval(timer);
   }, [atom]);
-  const onRevoke = async (envelopeId: string) => {
+  const describeResult = (label: string, result: Awaited<ReturnType<typeof revoke>>): string =>
+    result._tag === "Failure"
+      ? (describeControlFailure(result) ??
+        "Result unavailable; refresh to check envelope standing.")
+      : result.value.applied
+        ? `${label} applied.`
+        : `${label} refused: ${result.value.reason ?? "No reason supplied"}`;
+  const runControl = async (label: string, run: () => Promise<unknown>) => {
     if (pending.current) return;
     pending.current = true;
     setBusy(true);
     setMessage(null);
     try {
-      const result = await revoke({ environmentId, input: { capabilityId, envelopeId } });
-      setMessage(
-        result._tag === "Failure"
-          ? (describeControlFailure(result) ??
-              "Result unavailable; refresh to check envelope standing.")
-          : result.value.applied
-            ? "Execution envelope revoked."
-            : `Revoke refused: ${result.value.reason ?? "No reason supplied"}`,
-      );
+      const result = (await run()) as Awaited<ReturnType<typeof revoke>>;
+      setMessage(describeResult(label, result));
       refresh();
     } catch {
       setMessage("Result unavailable; refresh to check envelope standing.");
@@ -188,6 +210,12 @@ export function DetectorExecutionPanel({
       setBusy(false);
     }
   };
+  const onApprove = (envelopeId: string) =>
+    void runControl("Approval", () =>
+      approve({ environmentId, input: { capabilityId, envelopeId, approvedVia: "web-ui" } }),
+    );
+  const onRevoke = (envelopeId: string) =>
+    void runControl("Revoke", () => revoke({ environmentId, input: { capabilityId, envelopeId } }));
   return (
     <div className="space-y-2 border-t border-border/50 pt-2">
       <Button size="xs" variant="ghost" onClick={refresh} disabled={state.isLoading}>
@@ -199,7 +227,12 @@ export function DetectorExecutionPanel({
       {state.data === null ? (
         <p>{state.isLoading ? "Loading execution state…" : "Execution state unavailable."}</p>
       ) : (
-        <ExecutionStateDetails data={state.data} onRevoke={(id) => void onRevoke(id)} busy={busy} />
+        <ExecutionStateDetails
+          data={state.data}
+          onApprove={(id) => onApprove(id)}
+          onRevoke={(id) => onRevoke(id)}
+          busy={busy}
+        />
       )}
     </div>
   );

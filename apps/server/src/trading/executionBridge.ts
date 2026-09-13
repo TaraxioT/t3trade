@@ -73,3 +73,43 @@ export const forgeExecutionRevokeView = (input: {
           reason: result.status === "refused" ? result.detail : "Envelope was not revoked",
         };
   }).pipe(Effect.catch(() => Effect.succeed({ applied: false, reason: UNAVAILABLE })));
+
+/**
+ * Approval is a DIRECT user act over the authenticated WS surface — the same
+ * boundary revocation uses. It binds the exact proposed envelope (immutable
+ * digest, caps, expiry) and never flows through the agent/tool path: the
+ * trading_forge approve_envelope action is refused by name. The env-derived
+ * F0 origin "server-config" is refused by the service itself.
+ */
+export const forgeExecutionApproveView = (input: {
+  readonly environmentId: string;
+  readonly capabilityId: string;
+  readonly envelopeId: string;
+  readonly approvedVia: string;
+}): Effect.Effect<{ readonly applied: boolean; readonly reason?: string }> =>
+  Effect.gen(function* () {
+    const policy = yield* Effect.serviceOption(ExecutionPolicyService);
+    const swaps = yield* Effect.serviceOption(SwapExecutionService);
+    if (Option.isNone(policy) || Option.isNone(swaps))
+      return { applied: false, reason: UNAVAILABLE };
+    const envelope = yield* swaps.value.envelopeById(input.envelopeId);
+    if (
+      envelope === null ||
+      envelope.environmentId !== input.environmentId ||
+      envelope.capabilityId !== input.capabilityId
+    ) {
+      return { applied: false, reason: "Envelope not found in this environment and capability" };
+    }
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const result = yield* policy.value.approveEnvelope({
+      envelopeId: input.envelopeId,
+      now,
+      approvedVia: input.approvedVia,
+    });
+    return result.status === "approved"
+      ? { applied: true }
+      : {
+          applied: false,
+          reason: result.status === "refused" ? result.detail : "Envelope was not approved",
+        };
+  }).pipe(Effect.catch(() => Effect.succeed({ applied: false, reason: UNAVAILABLE })));

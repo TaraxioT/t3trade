@@ -1,4 +1,8 @@
-import { forgeExecutionStateView, forgeExecutionRevokeView } from "./trading/executionBridge.ts";
+import {
+  forgeExecutionApproveView,
+  forgeExecutionStateView,
+  forgeExecutionRevokeView,
+} from "./trading/executionBridge.ts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -2345,6 +2349,18 @@ const makeWsRpcLayer = (
             Effect.gen(function* () {
               const environmentId = yield* serverEnvironment.getEnvironmentId;
               return yield* forgeExecutionRevokeView({ ...input, environmentId });
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        // Envelope approval: the DIRECT user act. The authenticated WS
+        // surface is the only path that reaches the approve service call;
+        // the agent tool layer refuses approve by name.
+        [ORCHESTRATION_WS_METHODS.forgeExecutionApprove]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.forgeExecutionApprove,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* forgeExecutionApproveView({ ...input, environmentId });
             }),
             { "rpc.aggregate": "orchestration" },
           ),

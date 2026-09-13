@@ -149,6 +149,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getForgePoolState: "orchestration.getForgePoolState",
   getForgeExecutionState: "orchestration.getForgeExecutionState",
   forgeExecutionRevoke: "orchestration.forgeExecutionRevoke",
+  forgeExecutionApprove: "orchestration.forgeExecutionApprove",
   forgeDetectorControl: "orchestration.forgeDetectorControl",
   forgePause: "orchestration.forgePause",
   forgeUnpause: "orchestration.forgeUnpause",
@@ -2717,6 +2718,10 @@ export const ForgeExecutionStateView = Schema.Union([
       remainingInputCapRaw: DecimalIntegerString,
       settledRaw: DecimalIntegerString,
       inFlightRaw: DecimalIntegerString,
+      // "corrupt" marks a persisted budget ledger that failed to read; the
+      // remaining cap is then "0" spendable, never a fresh full budget.
+      budgetLedger: Schema.optional(Schema.Literals(["ok", "corrupt"])),
+      corruptDetail: Schema.optional(TrimmedNonEmptyString),
     }),
   }),
 ]);
@@ -2859,6 +2864,19 @@ export const OrchestrationRpcSchemas = {
     input: Schema.Struct({
       capabilityId: TrimmedNonEmptyString,
       envelopeId: TrimmedNonEmptyString,
+    }),
+    output: Schema.Struct({
+      applied: Schema.Boolean,
+      reason: Schema.optional(TrimmedNonEmptyString),
+    }),
+  },
+  // Approval binds the exact proposed envelope. It is a direct user act over
+  // the authenticated WS surface; the agent tool path refuses it by name.
+  forgeExecutionApprove: {
+    input: Schema.Struct({
+      capabilityId: TrimmedNonEmptyString,
+      envelopeId: TrimmedNonEmptyString,
+      approvedVia: TrimmedNonEmptyString,
     }),
     output: Schema.Struct({
       applied: Schema.Boolean,

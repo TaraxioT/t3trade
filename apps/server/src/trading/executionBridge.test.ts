@@ -5,7 +5,11 @@ import {
   type ExecutionEnvelopeView,
 } from "./forge/ExecutionPolicyService.ts";
 import { SwapExecutionService } from "./forge/SwapExecutionService.ts";
-import { forgeExecutionRevokeView, forgeExecutionStateView } from "./executionBridge.ts";
+import {
+  forgeExecutionApproveView,
+  forgeExecutionRevokeView,
+  forgeExecutionStateView,
+} from "./executionBridge.ts";
 
 const scope = { environmentId: "env-a", capabilityId: "cap-a" };
 const envelope: ExecutionEnvelopeView = {
@@ -133,6 +137,93 @@ describe("execution bridge", () => {
       );
       assert.equal(result.applied, true);
       assert.equal(fake.counts().revoked, 1);
+    }),
+  );
+
+  it.effect(
+    "approve refuses unwired services, foreign scope, and the refused origin before side effects",
+    () =>
+      Effect.gen(function* () {
+        // Unwired: applied false, reason names unavailability.
+        const unwired = yield* forgeExecutionApproveView({
+          ...scope,
+          envelopeId: envelope.envelopeId,
+          approvedVia: "web-ui",
+        });
+        assert.equal(unwired.applied, false);
+
+        for (const foreign of [
+          { ...envelope, environmentId: "env-b" },
+          { ...envelope, capabilityId: "cap-b" },
+        ]) {
+          const fake = services(foreign);
+          const approved = yield* forgeExecutionApproveView({
+            ...scope,
+            envelopeId: envelope.envelopeId,
+            approvedVia: "web-ui",
+          }).pipe(
+            Effect.provideService(ExecutionPolicyService, fake.policy),
+            Effect.provideService(SwapExecutionService, fake.swaps),
+          );
+          assert.equal(approved.applied, false);
+          assert.deepEqual(fake.counts(), { revoked: 0, listed: 0 });
+        }
+      }),
+  );
+
+  it.effect("directly approves the matching envelope and reports a refused origin", () =>
+    Effect.gen(function* () {
+      let approvedCount = 0;
+      let refused: string | null = null;
+      const policy = ExecutionPolicyService.of({
+        proposeEnvelope: unused,
+        approveEnvelope: ({ approvedVia }) =>
+          Effect.sync((): import("./forge/ExecutionPolicyService.ts").EnvelopeTransitionOutcome => {
+            if (approvedVia === "server-config") {
+              refused = approvedVia;
+              return {
+                status: "refused",
+                reason: "forbidden-origin",
+                detail: "the server-config origin can never approve",
+              };
+            }
+            approvedCount++;
+            return { status: "approved", envelopeId: envelope.envelopeId };
+          }),
+        evaluatePolicy: unused,
+        envelopeFor: () => Effect.succeed(envelope),
+        listProposals: () => Effect.succeed([]),
+        revokeEnvelope: unused,
+      });
+      const swaps = SwapExecutionService.of({
+        prepareAndAttempt: unused,
+        intentFor: unused,
+        envelopeById: () => Effect.succeed(envelope),
+        listIntents: () => Effect.succeed([]),
+        remainingInputBudgetFor: () =>
+          Effect.succeed({ remainingInputCapRaw: "10", settledRaw: "0", inFlightRaw: "0" }),
+      });
+      const ok = yield* forgeExecutionApproveView({
+        ...scope,
+        envelopeId: envelope.envelopeId,
+        approvedVia: "web-ui",
+      }).pipe(
+        Effect.provideService(ExecutionPolicyService, policy),
+        Effect.provideService(SwapExecutionService, swaps),
+      );
+      assert.equal(ok.applied, true);
+      assert.equal(approvedCount, 1);
+
+      const blocked = yield* forgeExecutionApproveView({
+        ...scope,
+        envelopeId: envelope.envelopeId,
+        approvedVia: "server-config",
+      }).pipe(
+        Effect.provideService(ExecutionPolicyService, policy),
+        Effect.provideService(SwapExecutionService, swaps),
+      );
+      assert.equal(blocked.applied, false);
+      assert.equal(refused, "server-config");
     }),
   );
 });

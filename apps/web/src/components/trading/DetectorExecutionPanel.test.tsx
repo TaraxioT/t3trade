@@ -22,7 +22,9 @@ const state: Extract<ForgeExecutionStateView, { status: "ok" }> = {
   budget: { remainingInputCapRaw: "1000", settledRaw: "0", inFlightRaw: "0" },
 };
 const render = (data: ForgeExecutionStateView) =>
-  renderToStaticMarkup(<ExecutionStateDetails data={data} onRevoke={vi.fn()} busy={false} />);
+  renderToStaticMarkup(
+    <ExecutionStateDetails data={data} onApprove={vi.fn()} onRevoke={vi.fn()} busy={false} />,
+  );
 
 describe("execution details", () => {
   it("shows unavailable and absent envelopes explicitly", () => {
@@ -81,5 +83,29 @@ describe("execution details", () => {
     expect(tag).not.toContain(' disabled=""');
     expect(html).toContain("direct-user");
     expect(html).toContain("does not reverse an already submitted transaction");
+  });
+  it("offers direct approval only while the envelope is proposed, and never from tools", () => {
+    const proposed = render(state);
+    expect(proposed).toContain("Approve execution envelope");
+    expect(proposed).toContain("Neither the agent nor");
+    const approved = render({
+      ...state,
+      envelope: { ...state.envelope, status: "approved", approvedVia: "web-ui" },
+    });
+    expect(approved).not.toContain("Approve execution envelope");
+  });
+  it("labels a corrupt budget ledger as refused spending, not a spendable balance", () => {
+    const html = render({
+      ...state,
+      budget: {
+        remainingInputCapRaw: "0",
+        settledRaw: "0",
+        inFlightRaw: "0",
+        budgetLedger: "corrupt",
+        corruptDetail: "malformed settled row",
+      },
+    });
+    expect(html).toContain("Budget ledger is CORRUPT");
+    expect(html).toContain("malformed settled row");
   });
 });

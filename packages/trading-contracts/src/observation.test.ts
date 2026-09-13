@@ -4,6 +4,7 @@ import { Schema } from "effect";
 import { DERIVED_METRIC_CATALOG } from "./watch.ts";
 import {
   FORGE_CAPABILITY_ID_PATTERN,
+  FORGE_EXECUTION_QUOTE_V3_FIELDS,
   FORGE_SDK_SCHEMA_VERSION,
   ForgeAcceptanceCase,
   ForgeBuildReceipt,
@@ -641,6 +642,71 @@ describe("the forge execution actions (P5.4 additive)", () => {
     assert.deepEqual(decoded.quote, { quoteId: "sq_1" });
     assert.throws(() => decodeInput({ action: "quote", routeId: "" }));
     assert.throws(() => decodeInput({ action: "quote", maxSlippageBps: -1 }));
+  });
+
+  it("decodes the protected_swap input and the v3 quote identity fields", () => {
+    // The protected lane's only agent-reachable action: admission inputs.
+    const decoded = decodeInput({
+      action: "protected_swap",
+      proposalId: "pprop_1",
+      deadlineUnix: 1_789_000_000,
+    });
+    assert.equal(decoded.action, "protected_swap");
+    assert.equal(decoded.deadlineUnix, 1_789_000_000);
+    assert.throws(() => decodeInput({ action: "protected_swap", deadlineUnix: 0 }));
+
+    // The v3 identity fields the mirror added beside SwapQuoteRecord: a
+    // protected-lane record carries all nine; a retained v2-era record
+    // decodes unchanged without them.
+    const withIdentity = decodeResult({
+      outcome: "accepted",
+      action: "quote",
+      quoteRecord: {
+        quoteId: "sq_v3",
+        chainId: "1",
+        routeId: "ur-v3-usdc-weth-500",
+        tokenIn: "0xaaa",
+        tokenOut: "0xbbb",
+        amountInRaw: "1000000",
+        minAmountOutRaw: "900000",
+        gasEstimateWei: "150000000000000",
+        quotedAtMs: 1,
+        expiresAtMs: 2,
+        basis: "eth_call",
+        routeConfigDigest: "a".repeat(64),
+        quotedBlockNumber: "20000000",
+        quotedBlockHash: "0xhash",
+        quotedAmountOutRaw: "950000",
+        quoterCodeHash: "b".repeat(64),
+        targetCodeHash: "c".repeat(64),
+        gasUnitsMeasured: "180000",
+        maxFeePerGasWei: "30000000000",
+        maxPriorityFeePerGasWei: "1000000000",
+      },
+      protectedAdmission: {
+        reservationId: "res_1",
+        intentId: "intent_1",
+        replayed: false,
+      },
+    });
+    assert.equal(withIdentity.quoteRecord?.routeConfigDigest, "a".repeat(64));
+    assert.equal(withIdentity.quoteRecord?.quotedBlockNumber, "20000000");
+    assert.equal(withIdentity.protectedAdmission?.reservationId, "res_1");
+    assert.equal(withIdentity.protectedAdmission?.replayed, false);
+    // Drift guard, not duplication: the mirror must name exactly the nine
+    // v3 fields the authoritative SwapQuoteRecord declares.
+    const mirrorFields = Object.keys(FORGE_EXECUTION_QUOTE_V3_FIELDS).sort();
+    assert.deepEqual(mirrorFields, [
+      "gasUnitsMeasured",
+      "maxFeePerGasWei",
+      "maxPriorityFeePerGasWei",
+      "quotedAmountOutRaw",
+      "quotedBlockHash",
+      "quotedBlockNumber",
+      "quoterCodeHash",
+      "routeConfigDigest",
+      "targetCodeHash",
+    ]);
   });
 
   it("decodes a pre-P5.4 forge result unchanged, and the execution views when present", () => {

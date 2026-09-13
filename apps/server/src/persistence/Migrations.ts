@@ -119,6 +119,12 @@ import Migration0104 from "./Migrations/104_EventSetImports.ts";
 import Migration0105 from "./Migrations/105_DetectorRuns.ts";
 import Migration0106 from "./Migrations/106_ExecutionEnvelopes.ts";
 import Migration0107 from "./Migrations/107_SwapIntents.ts";
+import Migration0108 from "./Migrations/108_SubstreamsSources.ts";
+import Migration0109 from "./Migrations/109_ExternalAdapterSources.ts";
+import Migration0110 from "./Migrations/110_SwapReservations.ts";
+import Migration0111 from "./Migrations/111_SwapBroadcastLifecycle.ts";
+import Migration0112 from "./Migrations/112_DetectorOccurrences.ts";
+import Migration0113 from "./Migrations/113_GraphEventStudies.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -245,6 +251,12 @@ export const migrationEntries = [
   [105, "DetectorRuns", Migration0105],
   [106, "ExecutionEnvelopes", Migration0106],
   [107, "SwapIntents", Migration0107],
+  [108, "SubstreamsSources", Migration0108],
+  [109, "ExternalAdapterSources", Migration0109],
+  [110, "SwapReservations", Migration0110],
+  [111, "SwapBroadcastLifecycle", Migration0111],
+  [112, "DetectorOccurrences", Migration0112],
+  [113, "GraphEventStudies", Migration0113],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

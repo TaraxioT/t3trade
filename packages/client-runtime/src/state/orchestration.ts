@@ -246,6 +246,12 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:commands:trading:forge-execution-revoke",
       tag: ORCHESTRATION_WS_METHODS.forgeExecutionRevoke,
     }),
+    // Envelope approval is the user's direct act over the authenticated
+    // surface; the web client only forwards the explicit confirmation.
+    forgeExecutionApprove: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:forge-execution-approve",
+      tag: ORCHESTRATION_WS_METHODS.forgeExecutionApprove,
+    }),
     forgeDetectorControl: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:trading:forge-detector-control",
       tag: ORCHESTRATION_WS_METHODS.forgeDetectorControl,

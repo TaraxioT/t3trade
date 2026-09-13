@@ -763,6 +763,11 @@ const detectorRunStoreLayer = (input: { readonly latest?: DetectorEvaluationReco
       commitRun: () => die,
       latestEvaluation: () => Effect.succeed(input.latest ?? null),
       listEvaluations: () => die,
+      // Occurrence stubs: this fixture never evaluates a matched result, so
+      // the occurrence boundary is never taken.
+      recordOccurrence: () => die,
+      readOccurrence: () => Effect.succeed(null),
+      consumeOccurrence: () => Effect.succeed({ status: "not-found" as const }),
     }),
   );
 

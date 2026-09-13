@@ -30,7 +30,7 @@
  *
  * @module ExternalEventImportService
  */
-import { Context, DateTime, Effect, Layer, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
 import * as NodeCrypto from "node:crypto";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -45,9 +45,13 @@ import { TradingEventService } from "../TradingEventService.ts";
 import { contentDigestHex } from "../TradingHypothesisService.ts";
 import { ExternalSourceConnector } from "./ExternalSourceConnector.ts";
 import { ExternalSourceStore } from "./ExternalSourceStore.ts";
+import { GeneratedExternalSourceService } from "./GeneratedExternalSourceService.ts";
 
 /** Only the GitHub releases family has a projection today. */
 const IMPORTABLE_SOURCE_KIND = "github-releases";
+
+/** Generated adapters project through the same path with their own extraction. */
+const GENERATED_SOURCE_KIND_PREFIX = "generated:";
 
 /** The document cap one import walks; matches the store's listing cap. */
 const MAX_IMPORTED_DOCUMENTS = 100;
@@ -60,6 +64,12 @@ export interface ExternalEventImportInput {
   readonly now: number;
   /** The thread scoping the tool call; passed to `record` unchanged. */
   readonly threadId: string;
+  /**
+   * Which retained source family to import: the GitHub connector (default),
+   * or a generated adapter by its `generated:<sourceId>` kind. The capture
+   * step follows the kind — one bounded capture either way.
+   */
+  readonly sourceKind?: string | undefined;
   /**
    * Refuse when the pre-import capture fails instead of importing over the
    * retained revisions. Absent means the honest default: import what is
@@ -144,6 +154,65 @@ const extractRelease = (document: unknown): ExtractedRelease | null => {
   return { tagName, htmlUrl };
 };
 
+/**
+ * The generated-adapter occurrence projection. A generated revision's payload
+ * carries `{ kind: "generated-adapter-record", record }`; the record's own
+ * declared fields are the whole vocabulary. Convention, pinned here: `start`
+ * anchors the occurrence (ISO date or instant — an event's own date, NOT its
+ * publication time), optional `end` closes a window, `url` is the one source
+ * URL, and the adapter's identity field labels it. Null = skipped, never
+ * guessed.
+ */
+interface ExtractedGeneratedEvent {
+  readonly startAt: number;
+  readonly endAt: number;
+  readonly timePrecision: "instant" | "window" | "date";
+  readonly label: string | null;
+  readonly sourceUrl: string;
+}
+
+const parseIsoDateOrInstant = (
+  value: unknown,
+): { readonly ms: number; readonly precision: "instant" | "date" } | null => {
+  if (typeof value !== "string") return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const ms = Date.parse(`${value}T00:00:00Z`);
+    return Number.isNaN(ms) ? null : { ms, precision: "date" };
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$/.test(value)) {
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? null : { ms, precision: "instant" };
+  }
+  return null;
+};
+
+const extractGeneratedEvent = (document: unknown): ExtractedGeneratedEvent | null => {
+  if (typeof document !== "object" || document === null || Array.isArray(document)) return null;
+  const outer = document as Record<string, unknown>;
+  const record = outer["record"];
+  if (typeof record !== "object" || record === null || Array.isArray(record)) return null;
+  const fields = record as Record<string, unknown>;
+  const start = parseIsoDateOrInstant(fields["start"]);
+  if (start === null) return null;
+  let end = start;
+  let windowed = false;
+  if (fields["end"] !== undefined && fields["end"] !== null) {
+    const parsedEnd = parseIsoDateOrInstant(fields["end"]);
+    if (parsedEnd === null || parsedEnd.ms < start.ms) return null;
+    end = parsedEnd;
+    windowed = true;
+  }
+  const label = fields["name"] ?? fields["id"];
+  const url = fields["url"];
+  return {
+    startAt: start.ms,
+    endAt: end.ms,
+    timePrecision: windowed ? "window" : start.precision,
+    label: typeof label === "string" && label !== "" ? label : null,
+    sourceUrl: typeof url === "string" && url !== "" ? url : "",
+  };
+};
+
 /** Publication honesty, composed where the first-observed numbers live. */
 const renderAvailabilityNote = (fromMs: number, toMs: number): string =>
   `publication times are the source's claims, not availability times — this server first observed these documents between ${DateTime.formatIso(DateTime.makeUnsafe(fromMs))} and ${DateTime.formatIso(DateTime.makeUnsafe(toMs))}; import is a research snapshot, not a live feed`;
@@ -152,6 +221,7 @@ export const makeExternalEventImportService = Effect.gen(function* () {
   const connector = yield* ExternalSourceConnector;
   const store = yield* ExternalSourceStore;
   const events = yield* TradingEventService;
+  const generated = yield* Effect.serviceOption(GeneratedExternalSourceService);
   const sql = yield* SqlClient.SqlClient;
 
   const importExternalSource: ExternalEventImportServiceShape["importExternalSource"] = ({
@@ -159,6 +229,7 @@ export const makeExternalEventImportService = Effect.gen(function* () {
     eventSetName,
     now,
     threadId,
+    sourceKind,
     requireCapture,
   }) =>
     Effect.gen(function* () {
@@ -166,32 +237,73 @@ export const makeExternalEventImportService = Effect.gen(function* () {
       if (name.length === 0) {
         return { outcome: "refused", reason: "name cannot be empty" } as const;
       }
+      const kind =
+        sourceKind === undefined || sourceKind.trim() === ""
+          ? IMPORTABLE_SOURCE_KIND
+          : sourceKind.trim();
+      const isGenerated = kind.startsWith(GENERATED_SOURCE_KIND_PREFIX);
+      if (kind !== IMPORTABLE_SOURCE_KIND && !isGenerated) {
+        return {
+          outcome: "refused",
+          reason: `no projection exists for source kind ${kind}`,
+        } as const;
+      }
+      const generatedService = Option.isSome(generated) ? generated.value : null;
+      if (isGenerated && generatedService === null) {
+        return {
+          outcome: "refused",
+          reason: "the generated external-source service is not wired into this runtime",
+        } as const;
+      }
 
       // Exactly ONE bounded capture per explicit tool call. No loop, no
       // schedule; a source-side failure is a named value the result records.
-      const capture = yield* connector.captureLatest({ environmentId, now });
-      const captureOutcome: ImportCaptureOutcome =
-        capture.status === "ok"
-          ? { status: "ok" }
-          : { status: "unavailable", reason: capture.reason };
-      if (captureOutcome.status === "unavailable" && requireCapture === true) {
+      // The capture follows the kind: the GitHub connector, or the generated
+      // adapter's host fetch + sandbox parse.
+      const toCaptureOutcome = Effect.map(
+        (
+          result:
+            | { status: "ok"; documents: ReadonlyArray<{ readonly changed: boolean }> }
+            | { status: "unavailable"; reason: string },
+        ) =>
+          result.status === "ok"
+            ? {
+                status: "ok" as const,
+                changedCount: result.documents.filter((document) => document.changed).length,
+              }
+            : { status: "unavailable" as const, reason: result.reason },
+      );
+      const captureEffect =
+        isGenerated && generatedService !== null
+          ? generatedService
+              .captureLatest({
+                environmentId,
+                sourceId: kind.slice(GENERATED_SOURCE_KIND_PREFIX.length),
+                now,
+              })
+              .pipe(toCaptureOutcome, Effect.orDie)
+          : connector.captureLatest({ environmentId, now }).pipe(toCaptureOutcome, Effect.orDie);
+      const capture:
+        | { status: "ok"; changedCount: number }
+        | { status: "unavailable"; reason: string } = yield* captureEffect;
+      if (capture.status === "unavailable" && requireCapture === true) {
         return {
           outcome: "refused",
-          reason: `the capture before this import failed: ${captureOutcome.reason}`,
+          reason: `the capture before this import failed: ${capture.reason}`,
         } as const;
       }
 
       const documents = yield* store.listDocuments({
         environmentId,
-        sourceKind: IMPORTABLE_SOURCE_KIND,
+        sourceKind: kind,
         limit: MAX_IMPORTED_DOCUMENTS,
       });
       if (documents.length === 0) {
         return {
           outcome: "refused",
           reason:
-            captureOutcome.status === "unavailable"
-              ? `no external revisions retained and the capture failed: ${captureOutcome.reason}`
+            capture.status === "unavailable"
+              ? `no external revisions retained and the capture failed: ${capture.reason}`
               : "no external revisions retained: the capture succeeded but retained no documents",
         } as const;
       }
@@ -204,14 +316,38 @@ export const makeExternalEventImportService = Effect.gen(function* () {
       let skippedUnreadable = 0;
       let skippedUnpublished = 0;
       for (const { revision } of documents) {
+        const read = yield* store.readDocument({ revisionId: revision.revisionId });
+        if (read === null) {
+          skippedUnreadable += 1;
+          continue;
+        }
+        if (isGenerated) {
+          // A generated record anchors on the EVENT's own date, never on a
+          // publication claim; the occurrence's time precision follows what
+          // the record's own fields can support.
+          const extracted = extractGeneratedEvent(read.document);
+          if (extracted === null) {
+            skippedUnreadable += 1;
+            continue;
+          }
+          occurrences.push({
+            startAt: extracted.startAt,
+            endAt: extracted.endAt,
+            timePrecision: extracted.timePrecision,
+            ...(extracted.label === null ? {} : { label: extracted.label }),
+            source: extracted.sourceUrl !== "" ? extracted.sourceUrl : revision.sourceUrl,
+          });
+          revisionIds.push(revision.revisionId);
+          firstObserved.push(revision.firstObservedAtMs);
+          continue;
+        }
         // A document without a publication time cannot anchor a study window;
         // skip it before even reading its bytes.
         if (revision.publishedAtMs === null) {
           skippedUnpublished += 1;
           continue;
         }
-        const read = yield* store.readDocument({ revisionId: revision.revisionId });
-        const extracted = read === null ? null : extractRelease(read.document);
+        const extracted = extractRelease(read.document);
         if (extracted === null) {
           skippedUnreadable += 1;
           continue;
@@ -234,15 +370,20 @@ export const makeExternalEventImportService = Effect.gen(function* () {
           outcome: "refused",
           reason:
             `every retained revision was skipped (${skippedUnpublished} with no publication time, ` +
-            `${skippedUnreadable} unreadable); an import needs at least one document with a ` +
-            "publication time — an occurrence without one cannot anchor a study window",
+            `${skippedUnreadable} unextractable); an import needs at least one document that ` +
+            "can anchor a study window — an occurrence without one cannot anchor a study window",
         } as const;
       }
 
+      const captureOutcome: ImportCaptureOutcome =
+        capture.status === "ok"
+          ? { status: "ok" }
+          : { status: "unavailable", reason: capture.reason };
+
       // The authored path, untouched: the same record call, the same author,
       // the same whole-list replacement an agent's correction takes. A
-      // duplicate publication instant across releases refuses here (the
-      // occurrence rule is one start time, one occurrence) — surfaced, never
+      // duplicate start time across records refuses here (the occurrence
+      // rule is one start time, one occurrence) — surfaced, never
       // deduplicated by guesswork.
       const written = yield* events.record({
         name,
@@ -264,7 +405,7 @@ export const makeExternalEventImportService = Effect.gen(function* () {
           import_id, event_set_name, source_kind, revision_ids_json,
           event_set_content_sha256, imported_at_ms, capture_status, capture_note
         ) VALUES (
-          ${importId}, ${name}, ${IMPORTABLE_SOURCE_KIND}, ${encodeJsonText(revisionIds)},
+          ${importId}, ${name}, ${kind}, ${encodeJsonText(revisionIds)},
           ${contentSha256}, ${now}, ${captureOutcome.status},
           ${captureOutcome.status === "ok" ? null : captureOutcome.reason}
         )
@@ -278,10 +419,7 @@ export const makeExternalEventImportService = Effect.gen(function* () {
         eventSet: written.set,
         skippedUnreadable,
         skippedUnpublished,
-        correctionsObserved:
-          capture.status === "ok"
-            ? capture.documents.filter((document) => document.changed).length
-            : 0,
+        correctionsObserved: capture.status === "ok" ? capture.changedCount : 0,
         capture: captureOutcome,
         firstObservedFromMs,
         firstObservedToMs,

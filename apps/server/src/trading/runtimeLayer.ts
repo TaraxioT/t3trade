@@ -7,8 +7,20 @@
  *
  * @module TradingRuntimeLayer
  */
+// @effect-diagnostics nodeBuiltinImport:off - the streaming start layer hashes
+// the packed Substreams package with the host's own crypto/fs at startup (the
+// CapabilitySandbox precedent: host identity computation, not model access).
+// @effect-diagnostics effect(globalDate):off - the ingestion loop's `now`
+// supplier is the interface's plain wall-clock contract (its tests inject
+// deterministic suppliers); every OTHER time read in this module goes through
+// Clock.
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
+import * as Schedule from "effect/Schedule";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFs from "node:fs";
 import * as Path from "effect/Path";
 import { ServerConfig } from "../config.ts";
 import { ForgeCapabilityStoreConfig, ForgeCapabilityStoreLive } from "./forge/CapabilityStore.ts";
@@ -19,7 +31,38 @@ import {
   ForgeContainerRunnerFromEnv,
 } from "./forge/CapabilitySandbox.ts";
 import { ForgeReactorLive } from "./forge/ForgeReactor.ts";
-import { DetectorSchedulerLive, DetectorSchedulerStartLive } from "./forge/DetectorScheduler.ts";
+import {
+  DetectorSchedulerLive,
+  DetectorSchedulerStartLive,
+  SubstreamsOutbox,
+  type SubstreamsOutboxEntry,
+} from "./forge/DetectorScheduler.ts";
+import {
+  SubstreamsSourceStore,
+  SubstreamsSourceStoreLive,
+  type SubstreamsSourceIdentity,
+} from "./forge/SubstreamsSourceStore.ts";
+import { SubstreamsSourceReader } from "./forge/DetectorFactWindow.ts";
+import {
+  SubstreamsIngestion,
+  SubstreamsIngestionLive,
+  SubstreamsStreamClient,
+} from "./forge/SubstreamsIngestion.ts";
+import {
+  SUBSTREAMS_DEFAULT_TOKEN_ENV_NAME,
+  makeSubstreamsProviderClient,
+} from "./forge/SubstreamsProviderClient.ts";
+import { GraphEventWindowStudyServiceLive } from "./research/GraphEventWindowStudyService.ts";
+import {
+  GeneratedExternalSourceConfigLive,
+  GeneratedExternalSourceServiceLive,
+} from "./research/GeneratedExternalSourceService.ts";
+import { SpotDemoSignerConfigLive, SpotMainnetTransportLive } from "./forge/SpotMainnetTarget.ts";
+import { SwapReservationStoreLive } from "./forge/SwapReservationStore.ts";
+import {
+  SpotBroadcastSinkUnavailable,
+  SwapBroadcastLifecycleLive,
+} from "./forge/SwapBroadcastLifecycle.ts";
 import { ForgeAcceptanceLive } from "./forge/ForgeAcceptance.ts";
 import { ForgeSourceWindowLive } from "./forge/ForgeSourceWindow.ts";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -140,19 +183,6 @@ const externalSourceConnector = ExternalSourceConnectorLive.pipe(
   Layer.provide(ExternalSourceTransportLive.pipe(Layer.provide(httpWithNode))),
   Layer.provide(ExternalSourceStoreLive),
 );
-// Explicit event-set integration: one import call captures once through the
-// connector above and projects the retained revisions through the AUTHORED
-// TradingEventService.record path (author "agent"). Dependencies are provided
-// explicitly, the same style the backtest/validation wirings use, so the
-// import service's whole dependency set is readable here: SQL, the connector,
-// the store, the event service — nothing that could reach an order. Layer
-// memoization shares the one TradingEventService instance the merge below
-// also builds, so imports and every other reader see one calendar.
-const externalEventImport = ExternalEventImportServiceLive.pipe(
-  Layer.provide(externalSourceConnector),
-  Layer.provide(ExternalSourceStoreLive),
-  Layer.provide(TradingEventServiceLive),
-);
 // Use the server's resolved state directory so worktrees and installed apps never share a writer.
 const forgeStoreConfig = Layer.effect(
   ForgeCapabilityStoreConfig,
@@ -167,6 +197,35 @@ const forgeSandbox = ForgeCapabilitySandboxLive.pipe(
   Layer.provide(ForgeSandboxConfigFromEnv),
   Layer.provide(ForgeContainerRunnerFromEnv),
 );
+// Generated external-source adapters (Worker A; migration 109): the host
+// fetch + sandbox parse + revision path over the SAME connector transport
+// seam, evidence store, sandbox, and capability store everything else shares.
+// Additive — SQL, its own bounded HTTP reads, and contained parses only.
+const generatedExternalSource = GeneratedExternalSourceServiceLive.pipe(
+  Layer.provide(ExternalSourceTransportLive.pipe(Layer.provide(httpWithNode))),
+  Layer.provide(ExternalSourceStoreLive),
+  Layer.provide(forgeSandbox),
+  Layer.provide(forgeStore),
+  Layer.provide(GeneratedExternalSourceConfigLive),
+);
+// Explicit event-set integration: one import call captures once through the
+// connector above and projects the retained revisions through the AUTHORED
+// TradingEventService.record path (author "agent"). Dependencies are provided
+// explicitly, the same style the backtest/validation wirings use, so the
+// import service's whole dependency set is readable here: SQL, the connector,
+// the store, the event service — nothing that could reach an order. Layer
+// memoization shares the one TradingEventService instance the merge below
+// also builds, so imports and every other reader see one calendar.
+// Generated-adapter imports resolve the capture through the same generated
+// source service the declare/capture tool actions use (ambiently optional:
+// unwired means generated imports refuse by name, GitHub imports unchanged).
+const externalEventImport = ExternalEventImportServiceLive.pipe(
+  Layer.provide(externalSourceConnector),
+  Layer.provide(ExternalSourceStoreLive),
+  Layer.provide(TradingEventServiceLive),
+  Layer.provide(generatedExternalSource),
+);
+
 const forgeWindow = ForgeSourceWindowLive.pipe(
   Layer.provide(forgeGraphSource),
   Layer.provide(ForgeSourceStoreLive),
@@ -174,9 +233,54 @@ const forgeWindow = ForgeSourceWindowLive.pipe(
 // The sealed fact-set window for detector-program (v2) jobs, over the same
 // shared evidence stores the research paths read — one instance, referenced
 // by the reactor through serviceOption so nothing can fork it.
+//
+// The Substreams reader below adapts Worker A's store (migration 108 tables)
+// into Worker B's sealed-window port. The port is synchronous by design: the
+// window builder wraps every read in try/catch, so a store failure thrown by
+// runSync lands as a fail-closed incomplete (unknown) source carrying the
+// failure text — never as silent absence. Until the ingestion loop commits
+// anything, every `substreams:` reference resolves as absence the same way.
+const substreamsSourceStore = SubstreamsSourceStoreLive;
+const substreamsSourceReader = Layer.effect(
+  SubstreamsSourceReader,
+  Effect.gen(function* () {
+    const store = yield* SubstreamsSourceStore;
+    // The port bridge: SQL errors become defects here and are caught by the
+    // window builder's attempt() wrapper as a fail-closed incomplete source.
+    const strict = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(Effect.orDie(effect));
+    return {
+      committedWatermark: (environmentId: string, sourceId: string) =>
+        strict(store.committedWatermark(environmentId, sourceId)),
+      readBlockEnvelopes: (
+        environmentId: string,
+        sourceId: string,
+        fromBlock: string,
+        toBlock: string,
+      ) => strict(store.readBlockEnvelopes({ environmentId, sourceId, fromBlock, toBlock })),
+      readPoolEvents: (
+        environmentId: string,
+        sourceId: string,
+        fromBlock: string,
+        toBlock: string,
+      ) => strict(store.readPoolEvents({ environmentId, sourceId, fromBlock, toBlock })),
+      sourceHealth: (environmentId: string, sourceId: string) =>
+        strict(store.sourceHealth(environmentId, sourceId)),
+      sourceRevision: (environmentId: string, sourceId: string) => {
+        try {
+          return strict(store.sourceRevision(environmentId, sourceId));
+        } catch {
+          // An unreadable revision is an unknown source, never a fabricated
+          // identity; the window resolves it as absence.
+          return null;
+        }
+      },
+    };
+  }),
+).pipe(Layer.provide(substreamsSourceStore));
 const detectorFactWindow = DetectorFactWindowLive.pipe(
   Layer.provide(ForgeSourceStoreLive),
   Layer.provide(ExternalSourceStoreLive),
+  Layer.provide(substreamsSourceReader),
 );
 // P5.3: the execution-policy evaluator and durable envelope store (migration
 // 106 tables) over the SAME store, sandbox, and detector-run instances the
@@ -209,15 +313,163 @@ const forgeReactor = ForgeReactorLive.pipe(
 // lease-gated per tick. The start layer forks the loop into its scope, so
 // the sweep begins when the trading runtime builds and stops with it; a
 // runtime that does not hold the lease runs the loop as a per-tick no-op.
+// Worker A's durable outbox → Worker B's drain port. The claim and the ack
+// are per environment on the store side; a failed claim reads as "nothing
+// pending this tick" and a failed ack leaves rows pending for replay — both
+// fail toward re-delivery, never toward loss.
+const substreamsOutbox = Layer.effect(
+  SubstreamsOutbox,
+  Effect.gen(function* () {
+    const store = yield* SubstreamsSourceStore;
+    return {
+      readPending: (input: { readonly environmentId: string; readonly limit: number }) =>
+        store.claimPendingOutbox(input).pipe(
+          Effect.map((rows) =>
+            rows.map((row): SubstreamsOutboxEntry => ({
+              outboxId: row.outboxId,
+              environmentId: row.environmentId,
+              sourceId: row.sourceId,
+              committedAtMs: row.createdAtMs,
+            })),
+          ),
+          Effect.catch(() => Effect.succeed<Array<SubstreamsOutboxEntry>>([])),
+        ),
+      ack: (input: { readonly outboxIds: ReadonlyArray<string> }) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          for (const outboxId of input.outboxIds) {
+            yield* store
+              .ackOutbox({ outboxId, now })
+              .pipe(Effect.catch(() => Effect.succeed(false)));
+          }
+        }),
+    };
+  }),
+).pipe(Layer.provide(substreamsSourceStore));
 const detectorScheduler = DetectorSchedulerLive.pipe(
   Layer.provide(forgeStore),
   Layer.provide(forgeStoreConfig),
   Layer.provide(forgeReactor),
+  Layer.provide(substreamsOutbox),
   Layer.provide(TradingRuntimeLeaseLive),
 );
 const detectorSchedulerStart = DetectorSchedulerStartLive.pipe(
   Layer.provideMerge(detectorScheduler),
 );
+
+// The protected mainnet spot lane (Worker C; 03-protected-execution): one
+// chain-1 JSON-RPC transport over the shared node HTTP layer, the atomic
+// admission store (migrations 110/111), and the broadcast lifecycle gated on
+// the fail-closed spot-demo signer and the REFUSING broadcast sink — nothing
+// signs until a funded lane explicitly replaces that sink, and the shipped
+// composition never does.
+const spotMainnetTransport = SpotMainnetTransportLive.pipe(Layer.provide(httpWithNode));
+const swapReservationStore = SwapReservationStoreLive.pipe(
+  Layer.provide(forgeStore),
+  Layer.provide(SwapRouteConfigLive),
+  // Protected admissions verify live chain state (target, quoter/router code
+  // pins) through the same memoized chain-1 transport the lifecycle uses.
+  Layer.provide(spotMainnetTransport),
+);
+const swapBroadcastLifecycle = SwapBroadcastLifecycleLive.pipe(
+  Layer.provide(spotMainnetTransport),
+  Layer.provide(SpotBroadcastSinkUnavailable),
+  Layer.provide(SpotDemoSignerConfigLive),
+  Layer.provide(DetectorRunStoreLive),
+);
+
+// The streaming lane's start layer: when the provider credential, the packed
+// package, the pool filter, and the owning environment are ALL configured
+// (T3_SUBSTREAMS_PACKAGE, T3_SUBSTREAMS_POOLS, T3_SUBSTREAMS_ENVIRONMENT, and
+// the token env — T3_SUBSTREAMS_TOKEN_ENV or the default SUBSTREAMS_API_TOKEN),
+// register the source and run ONE ingestion connection that reconnects with a
+// bounded pause from the committed cursor. Anything missing is a named no-op:
+// the store stays empty and every `substreams:` source reference resolves as
+// absence — never a fabricated feed.
+const substreamsIngestionService = SubstreamsIngestionLive.pipe(
+  Layer.provide(substreamsSourceStore),
+  Layer.provide(Layer.succeed(SubstreamsStreamClient, makeSubstreamsProviderClient())),
+);
+const SUBSTREAMS_RECONNECT_PAUSE_MS = 30_000;
+const substreamsIngestionStart = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const rawEnv: Readonly<Record<string, string | undefined>> = process.env;
+    const tokenEnvName = rawEnv.T3_SUBSTREAMS_TOKEN_ENV ?? SUBSTREAMS_DEFAULT_TOKEN_ENV_NAME;
+    const packageRef = rawEnv.T3_SUBSTREAMS_PACKAGE ?? null;
+    const pools = rawEnv.T3_SUBSTREAMS_POOLS ?? null;
+    const environmentId = rawEnv.T3_SUBSTREAMS_ENVIRONMENT ?? null;
+    if (
+      packageRef === null ||
+      pools === null ||
+      environmentId === null ||
+      rawEnv[tokenEnvName] === undefined
+    ) {
+      yield* Effect.logInfo(
+        "SubstreamsIngestion: not configured (needs T3_SUBSTREAMS_PACKAGE, T3_SUBSTREAMS_POOLS, T3_SUBSTREAMS_ENVIRONMENT, and the token env) — substreams sources stay empty",
+      );
+      return;
+    }
+    // The package identity is its content hash, computed at startup — a
+    // changed file is a changed source identity, never a silent rebind.
+    const packageBytes = NodeFs.readFileSync(packageRef);
+    const packageSha256 = NodeCrypto.createHash("sha256").update(packageBytes).digest("hex");
+    const store = yield* SubstreamsSourceStore;
+    const ingestion = yield* SubstreamsIngestion;
+    const identity: SubstreamsSourceIdentity = {
+      environmentId,
+      chainId: "1",
+      network: rawEnv.T3_SUBSTREAMS_NETWORK ?? "mainnet",
+      packageSha256,
+      moduleName: rawEnv.T3_SUBSTREAMS_MODULE ?? "map_pool_blocks",
+      params: pools,
+      schemaVersion: 1,
+    };
+    const registered = yield* store.ensureSource({
+      identity,
+      now: yield* Clock.currentTimeMillis,
+    });
+    yield* Effect.logInfo("SubstreamsIngestion: source registered", {
+      sourceId: registered.sourceId,
+      packageSha256,
+    });
+    yield* Effect.forkScoped(
+      Effect.gen(function* () {
+        const summary = yield* ingestion
+          .run({
+            identity,
+            endpoint: rawEnv.T3_SUBSTREAMS_ENDPOINT ?? "",
+            packageRef,
+            tokenEnvName,
+            startBlock: rawEnv.T3_SUBSTREAMS_START_BLOCK ?? null,
+            productionMode: true,
+          })
+          .pipe(
+            Effect.catch((failure) =>
+              Effect.gen(function* () {
+                yield* Effect.logWarning(
+                  `SubstreamsIngestion: run ended with ${String(failure).slice(0, 200)}; reconnecting from the committed cursor`,
+                );
+                return null;
+              }),
+            ),
+          );
+        if (summary !== null) {
+          yield* Effect.logInfo("SubstreamsIngestion: stream ended; reconnecting", {
+            blocks: summary.blocksCommitted,
+            replayed: summary.blocksReplayed,
+          });
+        }
+      }).pipe(
+        Effect.repeat(Schedule.spaced(Duration.millis(SUBSTREAMS_RECONNECT_PAUSE_MS))),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("SubstreamsIngestion: reconnect loop stopped", {
+            cause: String(cause).slice(0, 200),
+          }),
+        ),
+      ),
+    );
+  }),
+).pipe(Layer.provide(substreamsIngestionService), Layer.provide(substreamsSourceStore));
 
 // T3 Forge F3: the durable intent machinery. SQLite ledger + immutable grant
 // guard on the shared SqlClient (satisfied where TradingLayerLive is
@@ -247,6 +499,9 @@ const forgeAdapter = UniswapTestnetAdapterLive.pipe(
 const forgeQuoteService = UniswapQuoteServiceLive.pipe(
   Layer.provide(SwapRouteConfigLive),
   Layer.provide(forgeSepoliaTransport),
+  // The protected mainnet lane's transport (ur-v3 routes): absent, ur-v3
+  // quotes refuse by name; present, they measure against chain 1 only.
+  Layer.provide(spotMainnetTransport),
 );
 // P5.4: the swap-intent flow — prepare an exact-input transaction from a
 // persisted proposal plus a fresh quote, then honestly refuse submission at
@@ -438,6 +693,12 @@ const graphResearchServices = Layer.effect(GraphResearchService, makeGraphResear
   Layer.provide(ForgeSourceStoreLive),
 );
 
+// The Devcon-style event-window study over retained Graph datasets (Worker
+// B; migration 113), over the same Graph research service the merge builds.
+const graphEventWindowStudy = GraphEventWindowStudyServiceLive.pipe(
+  Layer.provide(graphResearchServices),
+);
+
 export const TradingLayerLive = Layer.mergeAll(
   // `trading_look`'s archive-backed fetch keys (plan 38 §2.4). Read-only over
   // the archiver's own file; a missing archive answers unavailable, not zero.
@@ -620,6 +881,23 @@ export const TradingLayerLive = Layer.mergeAll(
   ExternalSourceStoreLive,
   externalSourceConnector,
   externalEventImport,
+  // Generated external-source adapters (Worker A) and the retained
+  // event-window study (Worker B): additive SQL + bounded reads; no guard,
+  // signer, or order surface changes.
+  generatedExternalSource,
+  graphEventWindowStudy,
+  // Substreams ingestion store + the adapters that feed sealed windows and
+  // the scheduler drain (Worker A → Worker B). Empty until the ingestion
+  // loop commits; additive.
+  substreamsSourceStore,
+  // The ingestion connection itself: a no-op until the provider credential,
+  // package, pool filter, and owning environment are all configured.
+  substreamsIngestionService,
+  // The protected mainnet spot lane (Worker C): atomic admission, measured
+  // quotes through the shared registry above, and the broadcast lifecycle
+  // that refuses closed until a funded lane is explicitly wired.
+  swapReservationStore,
+  swapBroadcastLifecycle,
 ).pipe(
   Layer.provideMerge(infoWithHttp),
   // T3 Forge F3 durable machinery: SQLite intent ledger + grant guard +
@@ -630,4 +908,7 @@ export const TradingLayerLive = Layer.mergeAll(
   // executes; the layers beneath the future live pass are real.
   Layer.provideMerge(ForgeF3ServicesLive),
   Layer.provideMerge(forgeStartupReconciliation),
+  // The streaming connection fork: builds (or no-ops) after the merge so its
+  // store/ingestion instances are the memoized shared ones.
+  Layer.provideMerge(substreamsIngestionStart),
 );

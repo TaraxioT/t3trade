@@ -248,6 +248,8 @@ import { ForgeReactor } from "../../../trading/forge/ForgeReactor.ts";
 import { DetectorRunStore } from "../../../trading/forge/DetectorRunStore.ts";
 import { ExecutionPolicyService } from "../../../trading/forge/ExecutionPolicyService.ts";
 import { SwapExecutionService } from "../../../trading/forge/SwapExecutionService.ts";
+import { SwapReservationStore } from "../../../trading/forge/SwapReservationStore.ts";
+import { GeneratedExternalSourceService } from "../../../trading/research/GeneratedExternalSourceService.ts";
 import { UniswapQuoteService } from "../../../trading/forge/UniswapQuoteService.ts";
 import {
   ARCHIVE_INTERVALS,
@@ -5802,6 +5804,35 @@ export const handlers = {
               quotedAtMs: outcome.record.quotedAtMs,
               expiresAtMs: outcome.record.expiresAtMs,
               basis: outcome.record.basis,
+              // v3 identity fields: the protected lane's admission recomputes
+              // identity from these; absent on the Sepolia draft lane.
+              ...(outcome.record.routeConfigDigest === undefined
+                ? {}
+                : { routeConfigDigest: outcome.record.routeConfigDigest }),
+              ...(outcome.record.quotedBlockNumber === undefined
+                ? {}
+                : { quotedBlockNumber: outcome.record.quotedBlockNumber }),
+              ...(outcome.record.quotedBlockHash === undefined
+                ? {}
+                : { quotedBlockHash: outcome.record.quotedBlockHash }),
+              ...(outcome.record.quotedAmountOutRaw === undefined
+                ? {}
+                : { quotedAmountOutRaw: outcome.record.quotedAmountOutRaw }),
+              ...(outcome.record.quoterCodeHash === undefined
+                ? {}
+                : { quoterCodeHash: outcome.record.quoterCodeHash }),
+              ...(outcome.record.targetCodeHash === undefined
+                ? {}
+                : { targetCodeHash: outcome.record.targetCodeHash }),
+              ...(outcome.record.gasUnitsMeasured === undefined
+                ? {}
+                : { gasUnitsMeasured: outcome.record.gasUnitsMeasured }),
+              ...(outcome.record.maxFeePerGasWei === undefined
+                ? {}
+                : { maxFeePerGasWei: outcome.record.maxFeePerGasWei }),
+              ...(outcome.record.maxPriorityFeePerGasWei === undefined
+                ? {}
+                : { maxPriorityFeePerGasWei: outcome.record.maxPriorityFeePerGasWei }),
             },
             detail:
               `quote ${outcome.record.quoteId} prices ${outcome.record.amountInRaw} in for at least ${outcome.record.minAmountOutRaw} out ` +
@@ -6097,6 +6128,134 @@ export const handlers = {
               `the transaction was prepared and retained (intent ${outcome.intent.intentId}), ` +
               `submission was refused because no signer is authorized (${outcome.refusal}), ` +
               "and nothing executed — the proposal stays proposed and no budget is consumed",
+          });
+        }
+        case "protected_swap": {
+          // The protected mainnet lane's ONLY agent-reachable step: atomic
+          // admission of an approved proposal under a fresh quote. Admission
+          // reserves input + worst-case fees and persists the immutable
+          // intent; it never signs and never broadcasts — the funded lane is
+          // a separate coordinator-held surface behind explicit approval.
+          if (
+            input.proposalId === undefined ||
+            input.quote === undefined ||
+            input.deadlineUnix === undefined
+          ) {
+            return rejected(
+              "needs_input",
+              "protected_swap needs proposalId, the quote JSON, and deadlineUnix (seconds)",
+            );
+          }
+          if (typeof input.deadlineUnix !== "number" || !Number.isSafeInteger(input.deadlineUnix)) {
+            return rejected("invalid_deadline", "deadlineUnix must be integer unix seconds");
+          }
+          const reservations = yield* Effect.serviceOption(SwapReservationStore);
+          if (reservations._tag === "None") {
+            return rejected(
+              "execution_service_unavailable",
+              "the protected swap reservation store is not wired into this runtime",
+            );
+          }
+          const decodedQuote = yield* Effect.result(
+            Schema.decodeUnknownEffect(SwapQuoteRecord)(input.quote),
+          );
+          if (decodedQuote._tag === "Failure") {
+            return rejected(
+              "invalid_quote",
+              "the quote does not satisfy the SwapQuoteRecord contract",
+            );
+          }
+          const now = yield* Clock.currentTimeMillis;
+          const outcome = yield* reservations.value
+            .admitProtectedSwap({
+              environmentId,
+              proposalId: input.proposalId,
+              quote: decodedQuote.success,
+              deadlineUnix: input.deadlineUnix,
+              now,
+            })
+            .pipe(Effect.orDie);
+          if (outcome.status === "refused") {
+            return rejected(
+              `protected_swap_${outcome.refusal.replace(/-/g, "_")}`,
+              `${outcome.detail} — nothing was reserved or prepared`,
+            );
+          }
+          return accepted({
+            protectedAdmission: {
+              reservationId: outcome.reservationId,
+              intentId:
+                outcome.status === "already-admitted" ? outcome.intentId : outcome.intent.intentId,
+              replayed: outcome.status === "already-admitted",
+            },
+            detail:
+              outcome.status === "already-admitted"
+                ? "this stage already holds a reservation; its durable state stands and nothing new was written"
+                : "the protected swap was atomically admitted: input and worst-case fees reserved, immutable intent persisted. Signing and broadcast require the separately approved funded lane — nothing has executed.",
+          });
+        }
+        case "declare_source": {
+          // Install a GENERATED external-source adapter: the spec names an
+          // installed capability's transform.ts as the network-less parse.
+          // The HOST performs all I/O against its allowlist; the spec's URL
+          // host must already be allowed (T3_GENERATED_SOURCE_HOSTS).
+          if (input.sourceSpec === undefined) {
+            return rejected("needs_input", "declare_source needs the sourceSpec JSON");
+          }
+          const generated = yield* Effect.serviceOption(GeneratedExternalSourceService);
+          if (generated._tag === "None") {
+            return rejected(
+              "generated_source_unavailable",
+              "the generated external-source service is not wired into this runtime",
+            );
+          }
+          const now = yield* Clock.currentTimeMillis;
+          const outcome = yield* generated.value
+            .installSource({ environmentId, spec: input.sourceSpec, now })
+            .pipe(Effect.orDie);
+          if (outcome.status === "refused") {
+            return rejected("declare_source_refused", outcome.reason);
+          }
+          return accepted({
+            detail:
+              "source declared: the host will fetch this URL under its allowlist and run the installed transform network-less in the sandbox; call capture_source to capture once",
+          });
+        }
+        case "capture_source": {
+          if (input.sourceId === undefined) {
+            return rejected("needs_input", "capture_source needs sourceId");
+          }
+          const generated = yield* Effect.serviceOption(GeneratedExternalSourceService);
+          if (generated._tag === "None") {
+            return rejected(
+              "generated_source_unavailable",
+              "the generated external-source service is not wired into this runtime",
+            );
+          }
+          const now = yield* Clock.currentTimeMillis;
+          const capture = yield* generated.value
+            .captureLatest({ environmentId, sourceId: input.sourceId, now })
+            .pipe(Effect.orDie);
+          if (capture.status === "unavailable") {
+            return rejected("capture_unavailable", capture.reason);
+          }
+          return accepted({
+            generatedSourceCapture: {
+              status: "ok",
+              documents: capture.documents.map((document) => ({
+                documentIdentity: document.documentIdentity,
+                revisionId: document.revisionId,
+                changed: document.changed,
+                retracted: document.retracted,
+                publishedAtMs: document.manifest.publishedAtMs,
+                timePrecision: document.manifest.timePrecision,
+                firstObservedAtMs: document.manifest.firstObservedAtMs,
+                contentSha256: document.manifest.contentSha256,
+                sourceUrl: document.manifest.sourceUrl,
+              })),
+            },
+            detail:
+              "one bounded capture: the host fetched the document, the generated transform parsed it network-less in the sandbox, and every record passed the declared schema. Publication times are the source's own claims; first observation is when THIS server first saw them",
           });
         }
       }

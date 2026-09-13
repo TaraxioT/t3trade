@@ -75,6 +75,9 @@ export const RPC_REQUIRED_SCOPES = {
   // are operates, like every other standing-state write.
   [ORCHESTRATION_WS_METHODS.getForgeExecutionState]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.forgeExecutionRevoke]: AuthOrchestrationOperateScope,
+  // Approval binds real spending authority on an envelope; it is the direct
+  // user act and requires the operate scope like every standing-state write.
+  [ORCHESTRATION_WS_METHODS.forgeExecutionApprove]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.forgeDetectorControl]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.forgePause]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.forgeUnpause]: AuthOrchestrationOperateScope,
