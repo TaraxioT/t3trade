@@ -4407,6 +4407,12 @@ export const handlers = {
               eventSetName: input.name,
               now,
               threadId,
+              // A generated adapter's revisions import through their own
+              // kind (generated:<sourceId>); absent stays the GitHub
+              // connector for compatibility.
+              ...(typeof input.sourceKind === "string" && input.sourceKind.trim() !== ""
+                ? { sourceKind: input.sourceKind.trim() }
+                : {}),
             })
             .pipe(Effect.orDie);
           if (imported.outcome === "refused") return yield* refuse(imported.reason);

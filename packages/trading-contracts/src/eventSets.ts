@@ -1510,6 +1510,10 @@ export const TradingEventsInput = Schema.Struct({
   eventSetId: Schema.optional(Schema.String),
   /** Required by `record` and `import_external`, and by `preview` when the preview is for a record. */
   name: Schema.optional(Schema.String),
+  /** `import_external`: which retained source family to import — the GitHub
+   *  connector (default) or a generated adapter by its `generated:<sourceId>`
+   *  kind (declare it first with trading_forge declare_source). */
+  sourceKind: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   /** Required by `record`, `add` and `preview`: the dated occurrences with their sources. */
   occurrences: Schema.optional(Schema.Array(TradingEventsOccurrenceInput)),
