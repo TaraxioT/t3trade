@@ -45,6 +45,7 @@ import {
   CapabilityManifestV2,
   detectorArtifactPaths,
   v2BundleKind,
+  SOURCE_ADAPTER_V2_ARTIFACT_ROLES,
   DETECTOR_V2_ARTIFACT_ROLES,
   DetectorProgramInputV2,
   DetectorProgramOutputV2,
@@ -996,6 +997,7 @@ export const FORGE_WORKSPACE_READ_PATHS: ReadonlyArray<string> = [
   ...new Set([
     ...FORGE_CAPABILITY_ARTIFACT_PATHS,
     ...Object.values(DETECTOR_V2_ARTIFACT_ROLES).map((role) => role.path),
+    ...Object.values(SOURCE_ADAPTER_V2_ARTIFACT_ROLES).map((role) => role.path),
   ]),
 ];
 
