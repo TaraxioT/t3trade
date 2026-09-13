@@ -84,6 +84,23 @@ none and the evaluate compile simply excludes `*.test.ts` as everywhere else.
 Same rebuild rule as above: the mode exists only in an image rebuilt after
 this shim was added.
 
+## Source-adapter parse mode
+
+`forge-parse-v2` is a sixth shim: it reads a source-document envelope JSON
+(`{ schemaVersion, sourceId, url, contentType, capturedAtMs, bodyBase64 }`)
+from stdin, requires the compiled `transform.ts` of a generated
+external-source capability, and calls its exported `parseDocument` — which
+must be synchronous; an async return or a missing export is a named error
+(`parseDocument must be synchronous` / `parseDocument export missing`), the
+same guard style as `detect`/`propose`. The stdout is the `{ records }` JSON
+under the shared output cap; the host validates every record against the
+adapter's declared schema and refuses the whole capture on any deviation.
+The sandbox compiles with lib ES2022 only (no Buffer, no atob, no
+TextDecoder), so the pinned v2 SDK exports a pure `decodeBase64Utf8` and the
+generated transform decodes `bodyBase64` with it — there is no other byte
+channel. Same rebuild rule as above: the shim exists only in an image rebuilt
+after it was added.
+
 ## No model-authored Dockerfile is ever built
 
 The only Dockerfile in play is the host-reviewed one in this directory, fed a

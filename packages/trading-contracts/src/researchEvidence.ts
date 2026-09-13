@@ -244,6 +244,54 @@ export const ExternalSourceManifest = Schema.Struct({
 export type ExternalSourceManifest = typeof ExternalSourceManifest.Type;
 
 // ---------------------------------------------------------------------------
+// Generated external-source adapter specs
+// ---------------------------------------------------------------------------
+
+/** One declared field of a generated adapter's output event schema. */
+export const ExternalAdapterFieldSchema = Schema.Struct({
+  name: Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_]{0,63}$/)),
+  type: Schema.Literals(["text", "url", "iso8601-instant", "iso8601-date", "integer"]),
+  required: Schema.Boolean,
+});
+export type ExternalAdapterFieldSchema = typeof ExternalAdapterFieldSchema.Type;
+
+/** The event schema a generated source adapter declares it emits. The host
+ *  validates every parsed record against this before any revision is written. */
+export const ExternalAdapterEventSchema = Schema.Struct({
+  recordKind: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,63}$/)),
+  identityField: Schema.String.check(Schema.isNonEmpty()),
+  publishedAtField: Schema.NullOr(Schema.String.check(Schema.isNonEmpty())),
+  fields: Schema.Array(ExternalAdapterFieldSchema).check(Schema.isMinLength(1)),
+});
+export type ExternalAdapterEventSchema = typeof ExternalAdapterEventSchema.Type;
+
+/** The capture policy a generated source runs under. */
+export const ExternalAdapterCapturePolicy = Schema.Struct({
+  minIntervalMs: Schema.Number.check(Schema.isGreaterThan(0)),
+  maxDocumentBytes: Schema.Number.check(Schema.isBetween({ minimum: 1, maximum: 1_048_576 })),
+});
+export type ExternalAdapterCapturePolicy = typeof ExternalAdapterCapturePolicy.Type;
+
+/** A declared, installed generated external-source adapter. The host performs
+ *  ALL network I/O against the URL allowlist; the referenced capability's
+ *  `transform` artifact (transform.ts) is the network-less parse transform. */
+export const ExternalAdapterSourceSpec = Schema.Struct({
+  sourceId: TradingId,
+  kind: Schema.Literal("http-document"),
+  url: Schema.String.check(Schema.isPattern(/^https:\/\/[^\s]+$/)),
+  method: Schema.Literal("GET"),
+  credentialEnvName: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]{0,63}$/))),
+  transformRef: Schema.Struct({
+    capabilityId: TradingId,
+    version: Schema.Number.check(Schema.isGreaterThan(0)),
+    bundleSha256: Sha256Hex,
+  }),
+  outputEventSchema: ExternalAdapterEventSchema,
+  capturePolicy: ExternalAdapterCapturePolicy,
+});
+export type ExternalAdapterSourceSpec = typeof ExternalAdapterSourceSpec.Type;
+
+// ---------------------------------------------------------------------------
 // Versioned generated artifacts (SDK v2 manifests)
 // ---------------------------------------------------------------------------
 

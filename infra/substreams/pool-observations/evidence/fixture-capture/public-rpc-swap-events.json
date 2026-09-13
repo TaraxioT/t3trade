@@ -1,0 +1,24 @@
+{
+  "kind": "substreams-fixture-capture",
+  "status": "NOT provider output. Derived locally from a public Ethereum RPC (ethereum-rpc.publicnode.com) eth_getLogs read for local fault-injection checks only; never acceptable as provider-backed acceptance evidence.",
+  "source": {
+    "chainId": 1,
+    "network": "mainnet",
+    "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+    "topic0": "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+    "acquiredAtNote": "2026-09-13, one bounded eth_getLogs call covering blocks 25964736-25964738 (0x18c30c0-0x18c30c2)"
+  },
+  "events": [
+    {
+      "blockNumber": "25964737",
+      "transactionHash": "0xe7e04aaf51fe1b8b4cebd1992f674757e93a1f070b51b31131034e76dd5c9bad",
+      "logIndex": 899,
+      "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+      "sender": "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45",
+      "recipient": "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45",
+      "amount0Raw": "9290",
+      "amount1Raw": "-3677177486975",
+      "sqrtPriceX96": "1576688594310331604911707777799742"
+    }
+  ]
+}

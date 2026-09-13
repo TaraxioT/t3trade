@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package t3trade.pool.v1;
+
+// Generated from spec by infra/substreams/codegen — do not edit by hand.
+// Output contract: the frozen PoolBlock shape from the Substreams extraction
+// plan. Exact quantities ride decimal strings so no consumer ever coerces a
+// uint64/int256 through a double.
+
+message SwapEvent {
+  // 0x-prefixed lowercase hex; the transaction that emitted the log.
+  string transaction_hash = 1;
+  // The log's index within its block (as the block model reports it).
+  uint32 log_index = 2;
+  // 0x-prefixed lowercase hex; the pool that emitted the event.
+  string pool = 3;
+  // Exact signed decimal integer (int256), raw token units of token0.
+  string amount0_raw = 4;
+  // Exact signed decimal integer (int256), raw token units of token1.
+  string amount1_raw = 5;
+  // Exact decimal integer (uint160).
+  string sqrt_price_x96 = 6;
+  // 0x-prefixed lowercase hex; the address that initiated the swap call.
+  // Routers and contracts appear here — never call senders distinct people.
+  string sender = 7;
+  // 0x-prefixed lowercase hex; the address that received the swap output.
+  string recipient = 8;
+}
+
+message PoolBlocks {
+  // Output schema version of this package's normalized shape.
+  uint32 schema_version = 1;
+  // The chain this package was generated for (spec chainId, e.g. 1 mainnet).
+  uint64 chain_id = 2;
+  // Block number (uint64; JSON consumers read it as a decimal string).
+  uint64 block_number = 3;
+  // 0x-prefixed lowercase hex block hash.
+  string block_hash = 4;
+  // Block timestamp in seconds since epoch (uint64; decimal string in JSON).
+  uint64 block_timestamp_seconds = 5;
+  // Decoded Swap events from this block; may be empty (the envelope still
+  // proves the block was observed complete).
+  repeated SwapEvent events = 6;
+}

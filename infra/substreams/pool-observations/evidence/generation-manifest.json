@@ -1,0 +1,45 @@
+{
+  "generator": "infra/substreams/codegen/generate.ts",
+  "generatorVersion": 1,
+  "specPath": "infra/substreams/pool-observations/spec.json",
+  "specSha256": "9c9a22309f36262d8362e367b1531cbaebabbcba47f092a6eca1b30d86fcfc61",
+  "generatedAtNote": "file hashes are a pure function of the spec; no timestamps inside generated files",
+  "files": [
+    {
+      "path": "substreams.yaml",
+      "sha256": "49b8ac6f7ab669c5c67a244e551975228b69f3595c33b3fccceba5353f6b8c34"
+    },
+    {
+      "path": "proto/pool.proto",
+      "sha256": "d874699b4290c1a26a36d10a50de269e33d9dff543ff783c241b6b706e977d97"
+    },
+    {
+      "path": "abi/pool-events.json",
+      "sha256": "75923af3b3e3d7d12e4f553148cbd5deb1b6fd7cab41c115c54e2be661034ffc"
+    },
+    {
+      "path": "build.rs",
+      "sha256": "1d9210196cbf71660b9f341f96d32bbbdd79801b932aae0cdc5569352edff0e9"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "97389c64b5dd9482c35c0af709bda2f9b73c48baf0ff62906e40c0f2d5850e9f"
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "3b79ac7ab6eaa30fa7dd62fb67ef644f29715231e4a38edb12da83c9f563e9d3"
+    },
+    {
+      "path": "src/abi/mod.rs",
+      "sha256": "3370bdcee7585dce1b46ca8251c4aadfff9d74e2271697ba0879eefc642afd83"
+    },
+    {
+      "path": "README.md",
+      "sha256": "b6fbbdd3d7bd720a1e8711fa4ce91a055cea3c740b4c99dfba4abc5a3ed2c7a5"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "e0608a7b6fb1b1cce9b49369e7c003e7ea059497ac97b274febb49525cc5526a"
+    }
+  ]
+}

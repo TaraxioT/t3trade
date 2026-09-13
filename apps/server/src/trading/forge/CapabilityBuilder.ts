@@ -423,6 +423,95 @@ export function decodeDetectorState(serialized: string): DecodeDetectorStateResu
   return { ok: true, envelope: parsed };
 }
 
+// -- base64 document decoding (source-adapter transforms) --------------------
+// The sandbox compiles with lib ES2022 only: no Buffer, no atob, no
+// TextDecoder. A generated external-source transform receives its document as
+// the envelope's bodyBase64 and decodes it with THIS helper — the only byte
+// channel in or out beside the JSON stdin/stdout.
+
+const BASE64_SEXTET = (() => {
+  const table = new Array<number>(256).fill(-1);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  for (let i = 0; i < alphabet.length; i += 1) table[alphabet.charCodeAt(i)] = i;
+  return table;
+})();
+
+export type Base64Failure = "base64-empty" | "base64-length-invalid" | "base64-padding-invalid" | "base64-character-invalid" | "utf8-invalid";
+
+export type DecodeBase64Utf8Result =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly failure: Base64Failure };
+
+/** Strictly decode standard (RFC 4648) base64 with UTF-8 payload validation.
+ *  ASCII whitespace is ignored; every other deviation refuses by name. */
+export function decodeBase64Utf8(input: string): DecodeBase64Utf8Result {
+  let cleaned = "";
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    if (code === 32 || code === 9 || code === 10 || code === 13) continue;
+    cleaned += input[i];
+  }
+  if (cleaned.length === 0) return { ok: false, failure: "base64-empty" };
+  if (cleaned.length % 4 !== 0) return { ok: false, failure: "base64-length-invalid" };
+  let padding = 0;
+  if (cleaned.endsWith("==")) padding = 2;
+  else if (cleaned.endsWith("=")) padding = 1;
+  const body = padding > 0 ? cleaned.slice(0, cleaned.length - padding) : cleaned;
+  if (body.includes("=")) return { ok: false, failure: "base64-padding-invalid" };
+  const out: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    const code = body.charCodeAt(i);
+    const value = code < 256 ? BASE64_SEXTET[code] : -1;
+    if (value < 0) return { ok: false, failure: "base64-character-invalid" };
+    buffer = (buffer << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buffer >>> bits) & 0xff);
+    }
+  }
+  // The leftover bit count pins the padding shape: '=', 0, 2, or 4 bits.
+  if ((padding === 0 && bits !== 0) || (padding === 1 && bits !== 2) || (padding === 2 && bits !== 4)) {
+    return { ok: false, failure: "base64-length-invalid" };
+  }
+  let text = "";
+  let i = 0;
+  while (i < out.length) {
+    const b0 = out[i];
+    if (b0 < 0x80) {
+      text += String.fromCharCode(b0);
+      i += 1;
+      continue;
+    }
+    let len: number;
+    let cp: number;
+    if (b0 >= 0xc2 && b0 <= 0xdf) {
+      len = 2;
+      cp = b0 & 0x1f;
+    } else if (b0 >= 0xe0 && b0 <= 0xef) {
+      len = 3;
+      cp = b0 & 0x0f;
+    } else if (b0 >= 0xf0 && b0 <= 0xf4) {
+      len = 4;
+      cp = b0 & 0x07;
+    } else {
+      return { ok: false, failure: "utf8-invalid" };
+    }
+    if (i + len > out.length) return { ok: false, failure: "utf8-invalid" };
+    for (let j = 1; j < len; j += 1) {
+      const b = out[i + j];
+      if ((b & 0xc0) !== 0x80) return { ok: false, failure: "utf8-invalid" };
+      cp = (cp << 6) | (b & 0x3f);
+    }
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return { ok: false, failure: "utf8-invalid" };
+    text += String.fromCodePoint(cp);
+    i += len;
+  }
+  return { ok: true, text };
+}
+
 const registeredTests: Array<() => void | Promise<void>> = [];
 export function describe(_name: string, body: () => void): void { body(); }
 export function test(_name: string, body: () => void | Promise<void>): void { registeredTests.push(body); }

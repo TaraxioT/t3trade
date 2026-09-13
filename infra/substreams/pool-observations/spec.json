@@ -1,0 +1,55 @@
+{
+  "specVersion": 1,
+  "chainId": 1,
+  "network": "mainnet",
+  "sourceBlockType": "sf.ethereum.type.v2.Block",
+  "packageName": "t3trade-pool-observations",
+  "crateName": "t3trade_pool_observations",
+  "packageVersion": "v0.1.0",
+  "packageUrl": "https://github.com/TaraxioT/t3trade",
+  "initialBlock": 12369621,
+  "initialBlockProvenance": "Uniswap v3 factory deployment block on Ethereum mainnet (matches the v3 pool universe start; pool 0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640 was created shortly after)",
+  "poolFilter": ["0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"],
+  "poolProvenance": "Primary demo pool from apps/server/src/trading/forge/GraphSource.ts DEFAULT_FORGE_POOLS (USDC/WETH 0.05%, token0 USDC 6 decimals, token1 WETH 18 decimals, baseIsToken1)",
+  "event": {
+    "name": "Swap",
+    "canonicalSignature": "Swap(address,address,int256,int256,uint160,uint128,int24)",
+    "topic0": "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+    "abiProvenance": "https://github.com/Uniswap/v3-core/blob/main/contracts/interfaces/pool/IUniswapV3PoolEvents.sol (event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick))",
+    "abiJson": [
+      {
+        "anonymous": false,
+        "inputs": [
+          { "indexed": true, "internalType": "address", "name": "sender", "type": "address" },
+          { "indexed": true, "internalType": "address", "name": "recipient", "type": "address" },
+          { "indexed": false, "internalType": "int256", "name": "amount0", "type": "int256" },
+          { "indexed": false, "internalType": "int256", "name": "amount1", "type": "int256" },
+          {
+            "indexed": false,
+            "internalType": "uint160",
+            "name": "sqrtPriceX96",
+            "type": "uint160"
+          },
+          { "indexed": false, "internalType": "uint128", "name": "liquidity", "type": "uint128" },
+          { "indexed": false, "internalType": "int24", "name": "tick", "type": "int24" }
+        ],
+        "name": "Swap",
+        "type": "event"
+      }
+    ]
+  },
+  "outputFields": [
+    "transactionHash",
+    "logIndex",
+    "pool",
+    "amount0Raw",
+    "amount1Raw",
+    "sqrtPriceX96",
+    "sender",
+    "recipient"
+  ],
+  "blockEnvelope": {
+    "emitOnZeroSwapBlocks": true,
+    "fields": ["schemaVersion", "chainId", "blockNumber", "blockHash", "blockTimestampSeconds"]
+  }
+}

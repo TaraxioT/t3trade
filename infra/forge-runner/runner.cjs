@@ -10,13 +10,17 @@
 //                      stdin, call the synchronous detect export of detector.ts
 //   evaluate-policy  — same compile rule, read a PolicyProgramInputV2 JSON from
 //                      stdin, call the synchronous propose export of policy.ts
+//   parse-v2         — same compile rule, read a source-document envelope JSON
+//                      from stdin, call the synchronous parseDocument export of
+//                      transform.ts (generated external-source transform)
 //
 // The compile set is DISCOVERED from /work (flat, sorted): the host stages the
 // run's file set into the container, so the runner stays data-driven instead
-// of naming a bundle's files. Three entry names remain contractual because the
-// host's mode dispatch pins them — the v1 entry signal.js, the v2 entry
+// of naming a bundle's files. Three entry names remain contractual because
+// the host's mode dispatch pins them — the v1 entry signal.js, the v2 entry
 // detector.js, and the execution-policy entry policy.js (plus whichever
-// *.test.js file the bundle authored).
+// *.test.js file the bundle authored). The parse-v2 entry transform.js is
+// contractual the same way for generated external-source adapters.
 //
 // Required as a module, this file exports runMode so the local unit test can
 // exercise the dispatch against a real tsc without Docker; nothing executes
@@ -25,7 +29,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const MODES = ["typecheck", "test", "evaluate", "evaluate-v2", "evaluate-policy"];
+const MODES = ["typecheck", "test", "evaluate", "evaluate-v2", "evaluate-policy", "parse-v2"];
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
@@ -138,6 +142,16 @@ function runMode(mode, harness) {
     if (typeof program.propose !== "function") throw new Error("propose export missing");
     const output = program.propose(JSON.parse(input));
     if (output && typeof output.then === "function") throw new Error("propose must be synchronous");
+    writeJsonOutput(harness, output);
+  } else if (mode === "parse-v2") {
+    const input = readStdinUtf8(harness);
+    if (Buffer.byteLength(input) > MAX_INPUT_BYTES) throw new Error("input limit");
+    const program = require(path.join(harness.outDir, "transform.js"));
+    if (typeof program.parseDocument !== "function")
+      throw new Error("parseDocument export missing");
+    const output = program.parseDocument(JSON.parse(input));
+    if (output && typeof output.then === "function")
+      throw new Error("parseDocument must be synchronous");
     writeJsonOutput(harness, output);
   }
 }

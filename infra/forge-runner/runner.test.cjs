@@ -73,6 +73,84 @@ export async function runRegisteredTests(): Promise<number> {
   for (const body of registeredTests) await body();
   return registeredTests.length;
 }
+// The pinned v2 SDK's pure base64 decoder, copied verbatim so the parse-v2
+// fixture exercises the real contract under the same tsc flags (lib ES2022:
+// no Buffer, no atob, no TextDecoder).
+const BASE64_SEXTET = (() => {
+  const table = new Array<number>(256).fill(-1);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  for (let i = 0; i < alphabet.length; i += 1) table[alphabet.charCodeAt(i)] = i;
+  return table;
+})();
+export type DecodeBase64Utf8Result =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly failure: string };
+export function decodeBase64Utf8(input: string): DecodeBase64Utf8Result {
+  let cleaned = "";
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    if (code === 32 || code === 9 || code === 10 || code === 13) continue;
+    cleaned += input[i];
+  }
+  if (cleaned.length === 0) return { ok: false, failure: "base64-empty" };
+  if (cleaned.length % 4 !== 0) return { ok: false, failure: "base64-length-invalid" };
+  let padding = 0;
+  if (cleaned.endsWith("==")) padding = 2;
+  else if (cleaned.endsWith("=")) padding = 1;
+  const body = padding > 0 ? cleaned.slice(0, cleaned.length - padding) : cleaned;
+  if (body.includes("=")) return { ok: false, failure: "base64-padding-invalid" };
+  const out: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    const code = body.charCodeAt(i);
+    const value = code < 256 ? BASE64_SEXTET[code] : -1;
+    if (value < 0) return { ok: false, failure: "base64-character-invalid" };
+    buffer = (buffer << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buffer >>> bits) & 0xff);
+    }
+  }
+  if ((padding === 0 && bits !== 0) || (padding === 1 && bits !== 2) || (padding === 2 && bits !== 4)) {
+    return { ok: false, failure: "base64-length-invalid" };
+  }
+  let text = "";
+  let i = 0;
+  while (i < out.length) {
+    const b0 = out[i];
+    if (b0 < 0x80) {
+      text += String.fromCharCode(b0);
+      i += 1;
+      continue;
+    }
+    let len: number;
+    let cp: number;
+    if (b0 >= 0xc2 && b0 <= 0xdf) {
+      len = 2;
+      cp = b0 & 0x1f;
+    } else if (b0 >= 0xe0 && b0 <= 0xef) {
+      len = 3;
+      cp = b0 & 0x0f;
+    } else if (b0 >= 0xf0 && b0 <= 0xf4) {
+      len = 4;
+      cp = b0 & 0x07;
+    } else {
+      return { ok: false, failure: "utf8-invalid" };
+    }
+    if (i + len > out.length) return { ok: false, failure: "utf8-invalid" };
+    for (let j = 1; j < len; j += 1) {
+      const b = out[i + j];
+      if ((b & 0xc0) !== 0x80) return { ok: false, failure: "utf8-invalid" };
+      cp = (cp << 6) | (b & 0x3f);
+    }
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return { ok: false, failure: "utf8-invalid" };
+    text += String.fromCodePoint(cp);
+    i += len;
+  }
+  return { ok: true, text };
+}
 `;
 
 const V2_DETECTOR = `import type { Detect, DetectorProgramInput, DetectorProgramOutput } from "./sdk";
@@ -205,7 +283,14 @@ test("unknown modes refuse by name", async () => {
   const run = await drive("evaluate-v3", { "sdk.ts": V2_SDK, "detector.ts": V2_DETECTOR });
   assert.ok(run.error instanceof Error);
   assert.equal(run.error.message, "unknown runner mode");
-  assert.deepEqual(MODES, ["typecheck", "test", "evaluate", "evaluate-v2", "evaluate-policy"]);
+  assert.deepEqual(MODES, [
+    "typecheck",
+    "test",
+    "evaluate",
+    "evaluate-v2",
+    "evaluate-policy",
+    "parse-v2",
+  ]);
 });
 
 // -- shared modes over both bundle generations ---------------------------------
@@ -449,6 +534,85 @@ test("evaluate-policy refuses a policy without the propose export by name", asyn
   );
   assert.ok(run.error instanceof Error, "the missing-export guard must throw");
   assert.equal(run.error.message, "propose export missing");
+});
+
+// -- parse-v2 --------------------------------------------------------------------
+
+// The generated external-source transform fixture. The envelope is opaque to
+// the runner beyond JSON; the host validates records against the adapter's
+// declared schema. bodyBase64 carries the document bytes; the pinned SDK's
+// pure decoder is the only byte channel (the sandbox compiles without
+// node/DOM types, so Buffer/atob do not exist there).
+const V2_TRANSFORM = `import { decodeBase64Utf8 } from "./sdk";
+export interface AdapterParseEnvelope {
+  readonly schemaVersion: number;
+  readonly sourceId: string;
+  readonly url: string;
+  readonly contentType: string;
+  readonly capturedAtMs: number;
+  readonly bodyBase64: string;
+}
+export interface ParsedRecord { readonly id: string; readonly title: string }
+export type ParseDocument = (envelope: AdapterParseEnvelope) => { readonly records: ReadonlyArray<ParsedRecord> };
+export const parseDocument: ParseDocument = (envelope) => {
+  const decoded = decodeBase64Utf8(envelope.bodyBase64);
+  if (!decoded.ok) throw new Error("document decode failed: " + decoded.failure);
+  const parsed = JSON.parse(decoded.text) as Array<{ id: string; title: string }>;
+  return { records: parsed.map((row) => ({ id: row.id, title: row.title })) };
+};
+`;
+
+const parseEnvelope = (bodyRows) =>
+  JSON.stringify({
+    schemaVersion: 1,
+    sourceId: "gen_devcon",
+    url: "https://example.test/calendar",
+    contentType: "application/json",
+    capturedAtMs: 1_700_000_060_000,
+    bodyBase64: Buffer.from(JSON.stringify(bodyRows), "utf8").toString("base64"),
+  });
+
+test("parse-v2 runs the sync parseDocument export and echoes { records }", async () => {
+  const run = await drive(
+    "parse-v2",
+    { "sdk.ts": V2_SDK, "transform.ts": V2_TRANSFORM },
+    parseEnvelope([
+      { id: "evt-1", title: "Devcon 8" },
+      { id: "evt-2", title: "Devcon 7" },
+    ]),
+  );
+  assert.equal(run.error, undefined);
+  assert.equal(run.exitCode, undefined);
+  assert.deepEqual(JSON.parse(run.stdout), {
+    records: [
+      { id: "evt-1", title: "Devcon 8" },
+      { id: "evt-2", title: "Devcon 7" },
+    ],
+  });
+});
+
+test("parse-v2 refuses an async parseDocument by name", async () => {
+  const asyncWrap = `${V2_TRANSFORM.replace("export const parseDocument: ParseDocument", "const parseImpl: ParseDocument")}
+export const parseDocument = async (envelope: Parameters<ParseDocument>[0]) => parseImpl(envelope);
+export type ParseDocument2 = typeof parseDocument;
+`;
+  const run = await drive(
+    "parse-v2",
+    { "sdk.ts": V2_SDK, "transform.ts": asyncWrap },
+    parseEnvelope([]),
+  );
+  assert.ok(run.error instanceof Error, "the async guard must throw");
+  assert.equal(run.error.message, "parseDocument must be synchronous");
+});
+
+test("parse-v2 refuses a transform without the parseDocument export by name", async () => {
+  const run = await drive(
+    "parse-v2",
+    { "sdk.ts": V2_SDK, "transform.ts": "export const notParse = 1;\n" },
+    parseEnvelope([]),
+  );
+  assert.ok(run.error instanceof Error, "the missing-export guard must throw");
+  assert.equal(run.error.message, "parseDocument export missing");
 });
 
 // -- v1 evaluate unchanged -------------------------------------------------------

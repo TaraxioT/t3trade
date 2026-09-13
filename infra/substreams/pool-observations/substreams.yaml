@@ -1,0 +1,32 @@
+specVersion: v0.1.0
+package:
+  name: t3trade-pool-observations
+  version: v0.1.0
+  url: https://github.com/TaraxioT/t3trade
+  description: Parameterized Uniswap v3 Swap observations with one block envelope per block, including zero-swap blocks. Generated from spec by infra/substreams/codegen — do not edit by hand.
+network: mainnet
+protobuf:
+  files:
+    - pool.proto
+  importPaths:
+    - ./proto
+binaries:
+  default:
+    type: wasm/rust-v1
+    file: ./target/wasm32-unknown-unknown/release/t3trade_pool_observations.wasm
+modules:
+  - name: map_pool_blocks
+    kind: map
+    initialBlock: 12369621
+    inputs:
+      - params: string
+      - source: sf.ethereum.type.v2.Block
+    output:
+      type: proto:t3trade.pool.v1.PoolBlocks
+    doc: >
+      One PoolBlocks envelope per block (zero-swap blocks included, so empty
+      intervals are provable). The params string is a comma-separated list of
+      0x-prefixed pool addresses; an empty params string falls back to the
+      spec-embedded default pool filter. Each Swap log is ABI-decoded into
+      exact signed decimal amount0/amount1 strings, sqrtPriceX96, sender,
+      recipient and transaction/log identity. No network calls, no stores.
