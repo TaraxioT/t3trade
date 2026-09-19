@@ -46,7 +46,7 @@ import { readTakeProfitOrders } from "./TradingProtectionLedger.ts";
 import { retryTransientRead } from "./RetryTransient.ts";
 
 /** The reconciler failed at a named stage. */
-export class TradingReconciliationError extends Schema.TaggedErrorClass<TradingReconciliationError>()(
+export class TradingReconciliationError extends Schema.TaggedError<TradingReconciliationError>()(
   "TradingReconciliationError",
   {
     reason: Schema.Literals([

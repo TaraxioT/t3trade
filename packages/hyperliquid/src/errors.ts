@@ -10,7 +10,7 @@
 import { Schema } from "effect";
 
 /** The exchange returned a non-2xx response, or the fetch failed. */
-export class HyperliquidRequestError extends Schema.TaggedErrorClass<HyperliquidRequestError>()(
+export class HyperliquidRequestError extends Schema.TaggedError<HyperliquidRequestError>()(
   "HyperliquidRequestError",
   {
     /** The Info POST `type` or "ws_connect" for socket failures. */
@@ -26,7 +26,7 @@ export class HyperliquidRequestError extends Schema.TaggedErrorClass<Hyperliquid
 }
 
 /** The exchange returned 2xx but the body did not match the expected schema. */
-export class HyperliquidDecodeError extends Schema.TaggedErrorClass<HyperliquidDecodeError>()(
+export class HyperliquidDecodeError extends Schema.TaggedError<HyperliquidDecodeError>()(
   "HyperliquidDecodeError",
   {
     operation: Schema.String,
@@ -45,7 +45,7 @@ export class HyperliquidDecodeError extends Schema.TaggedErrorClass<HyperliquidD
  * This fires if a caller tries to pass the execution-wallet address as account
  * identity. It is a programming error, not a retriable condition.
  */
-export class HyperliquidIdentityError extends Schema.TaggedErrorClass<HyperliquidIdentityError>()(
+export class HyperliquidIdentityError extends Schema.TaggedError<HyperliquidIdentityError>()(
   "HyperliquidIdentityError",
   {
     address: Schema.String,
@@ -58,7 +58,7 @@ export class HyperliquidIdentityError extends Schema.TaggedErrorClass<Hyperliqui
 }
 
 /** A market symbol could not be resolved from live metadata. */
-export class HyperliquidMarketError extends Schema.TaggedErrorClass<HyperliquidMarketError>()(
+export class HyperliquidMarketError extends Schema.TaggedError<HyperliquidMarketError>()(
   "HyperliquidMarketError",
   {
     symbol: Schema.String,

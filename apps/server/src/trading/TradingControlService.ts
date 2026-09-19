@@ -47,7 +47,7 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 
 /** A deterministic control could not be carried out. */
-export class TradingControlError extends Schema.TaggedErrorClass<TradingControlError>()(
+export class TradingControlError extends Schema.TaggedError<TradingControlError>()(
   "TradingControlError",
   {
     reason: Schema.Literals([

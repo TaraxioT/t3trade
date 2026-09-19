@@ -1,6 +1,6 @@
 /**
  * Browser import service - lists importable sources and writes their cookies
- * into a T3 Code browser profile's Electron partition.
+ * into a T3 Trade browser profile's Electron partition.
  *
  * @module BrowserImport
  */
@@ -39,7 +39,7 @@ import {
   type BrowserImportSourceDefinition,
 } from "./Sources.ts";
 
-export class BrowserImportFailedError extends Schema.TaggedErrorClass<BrowserImportFailedError>()(
+export class BrowserImportFailedError extends Schema.TaggedError<BrowserImportFailedError>()(
   "BrowserImportFailedError",
   {
     sourceId: Schema.String,
@@ -55,7 +55,7 @@ export class BrowserImportFailedError extends Schema.TaggedErrorClass<BrowserImp
   }
 }
 
-export class BrowserCookieWriteError extends Schema.TaggedErrorClass<BrowserCookieWriteError>()(
+export class BrowserCookieWriteError extends Schema.TaggedError<BrowserCookieWriteError>()(
   "BrowserCookieWriteError",
   {
     url: Schema.String,

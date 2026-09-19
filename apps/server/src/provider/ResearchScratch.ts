@@ -31,7 +31,7 @@ export function projectlessWorkspaceDir(input: {
 }
 
 /** The workspace could not be created, and the caller must refuse to start. */
-export class ResearchScratchError extends Schema.TaggedErrorClass<ResearchScratchError>()(
+export class ResearchScratchError extends Schema.TaggedError<ResearchScratchError>()(
   "ResearchScratchError",
   {
     /** What the caller should relay: the workspace could not be established. */

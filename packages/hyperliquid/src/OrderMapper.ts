@@ -21,7 +21,7 @@ import type { TradingOrderIntent, TradingWireOrder } from "@t3tools/trading-cont
 import { deriveCloid } from "./Cloid.ts";
 
 /** The order mapper rejected the intent before any signing. */
-export class HyperliquidOrderMapperError extends Schema.TaggedErrorClass<HyperliquidOrderMapperError>()(
+export class HyperliquidOrderMapperError extends Schema.TaggedError<HyperliquidOrderMapperError>()(
   "HyperliquidOrderMapperError",
   {
     reason: Schema.Literals([

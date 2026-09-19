@@ -1,3 +1,5 @@
+import { DeviceService } from "../../../device/DeviceService.ts";
+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 /**
  * Trading toolkit integration tests.
  *
@@ -641,6 +643,8 @@ type TradingLayerInput = typeof TradingLayerLive;
 
 const mcpLayerOver = (tradingLayer: TradingLayerInput) =>
   McpHttpServer.layer.pipe(
+    Layer.provide(Layer.mock(DeviceService)({})),
+    Layer.provide(Layer.mock(ProjectionSnapshotQuery)({})),
     Layer.provideMerge(McpSessionRegistry.layer),
     Layer.provideMerge(tradingLayer),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
@@ -1062,7 +1066,11 @@ const withMcpServer = <A, E>(
 
       const callTool = (threadId: ThreadId, name: string, args: unknown) =>
         Effect.gen(function* () {
-          const issued = yield* registry.issue({ threadId, providerInstanceId: PROVIDER_INSTANCE });
+          const issued = yield* registry.issue({
+            threadId,
+            providerInstanceId: PROVIDER_INSTANCE,
+            capabilities: new Set(["preview"]),
+          });
           const authorization = issued.config.authorizationHeader;
           const accept = "application/json, text/event-stream";
 

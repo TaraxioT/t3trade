@@ -1,3 +1,4 @@
+import { HostProcessIsExecutable } from "@t3tools/shared/hostProcess";
 // @effect-diagnostics nodeBuiltinImport:off - resolving files the supervisor resolves.
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -105,64 +106,72 @@ describe("supervisor transitions", () => {
   // R1-1: the account view refreshes only on the account doorbell, so every
   // supervisor state transition must ring it — and R5-1: the spawned child is
   // told the network the app trades (the default endpoints are testnet).
-  it.effect("started and restarting transitions ring the account doorbell", () => {
-    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "archive-supervisor-"));
-    const previousHome = process.env["T3CODE_HOME"];
-    process.env["T3CODE_HOME"] = dir;
+  for (const isExecutable of [false, true]) {
+    it.effect(
+      `started and restarting transitions ring the account doorbell (executable=${isExecutable})`,
+      () => {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "archive-supervisor-"));
+        const previousHome = process.env["T3CODE_HOME"];
+        process.env["T3CODE_HOME"] = dir;
 
-    return Effect.gen(function* () {
-      const reasons: Array<string> = [];
-      const commands: Array<ChildProcess.Command> = [];
-      const latch = yield* Deferred.make<void>();
+        return Effect.gen(function* () {
+          const reasons: Array<string> = [];
+          const commands: Array<ChildProcess.Command> = [];
+          const latch = yield* Deferred.make<void>();
 
-      const projection = TradingAccountProjection.of({
-        view: () => Effect.succeed({ accounts: [], updatedAt: "1970-01-01T00:00:00.000Z" }),
-        invalidate: ({ reason }) =>
-          Effect.suspend(() => {
-            reasons.push(reason);
-            return reasons.length >= 2 ? Deferred.succeed(latch, undefined) : Effect.void;
-          }),
-        changes: Stream.empty,
-      });
-      const spawner = ChildProcessSpawner.make((command) =>
-        Effect.sync(() => {
-          commands.push(command);
-          return fakeHandle();
-        }),
-      );
+          const projection = TradingAccountProjection.of({
+            view: () => Effect.succeed({ accounts: [], updatedAt: "1970-01-01T00:00:00.000Z" }),
+            invalidate: ({ reason }) =>
+              Effect.suspend(() => {
+                reasons.push(reason);
+                return reasons.length >= 2 ? Deferred.succeed(latch, undefined) : Effect.void;
+              }),
+            changes: Stream.empty,
+          });
+          const spawner = ChildProcessSpawner.make((command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              return fakeHandle();
+            }),
+          );
 
-      const supervisor = yield* makeArchiveSupervisor.pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(TradingAccountProjection, projection),
-      );
+          const supervisor = yield* makeArchiveSupervisor.pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(HostProcessIsExecutable, isExecutable),
+            Effect.provideService(TradingAccountProjection, projection),
+          );
 
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          yield* supervisor.start();
-          yield* Deferred.await(latch);
-        }),
-      );
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* supervisor.start();
+              yield* Deferred.await(latch);
+            }),
+          );
 
-      assert.deepStrictEqual(reasons.slice(0, 2), ["archiver_started", "archiver_restarting"]);
+          assert.deepStrictEqual(reasons.slice(0, 2), ["archiver_started", "archiver_restarting"]);
 
-      // The child is told which network to record — the same testnet the
-      // default trading endpoints point at.
-      const command = commands[0];
-      assert.ok(command !== undefined && command._tag === "StandardCommand");
-      if (command === undefined || command._tag !== "StandardCommand") return;
-      assert.strictEqual(command.options.env?.["T3TRADE_ARCHIVE_NETWORK"], "testnet");
-      assert.strictEqual(command.options.extendEnv, true);
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (previousHome === undefined) {
-            delete process.env["T3CODE_HOME"];
-          } else {
-            process.env["T3CODE_HOME"] = previousHome;
-          }
-          NodeFS.rmSync(dir, { recursive: true, force: true });
-        }),
-      ),
+          // The child is told which network to record — the same testnet the
+          // default trading endpoints point at.
+          const command = commands[0];
+          assert.ok(command !== undefined && command._tag === "StandardCommand");
+          if (command === undefined || command._tag !== "StandardCommand") return;
+          assert.strictEqual(command.options.env?.["T3TRADE_ARCHIVE_NETWORK"], "testnet");
+          assert.strictEqual(command.options.extendEnv, true);
+          if (isExecutable) assert.deepEqual(command.args, ["__archive-worker"]);
+          else assert.ok(command.args[0]?.endsWith("archive/main.ts"));
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (previousHome === undefined) {
+                delete process.env["T3CODE_HOME"];
+              } else {
+                process.env["T3CODE_HOME"] = previousHome;
+              }
+              NodeFS.rmSync(dir, { recursive: true, force: true });
+            }),
+          ),
+        );
+      },
     );
-  });
+  }
 });

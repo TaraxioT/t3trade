@@ -47,6 +47,7 @@ function makeReadModel(archivedAt: string | null = null): OrchestrationReadModel
         settledOverride: null,
         settledAt: null,
         deletedAt: null,
+        pullRequests: [],
         messages: [],
         proposedPlans: [],
         activities: [],

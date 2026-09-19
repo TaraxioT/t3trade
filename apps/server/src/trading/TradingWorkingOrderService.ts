@@ -102,7 +102,7 @@ import {
 import { allocateExecutionSequence } from "./TradingExecutionSequence.ts";
 
 /** The working loop could not complete a pass. */
-export class TradingWorkingOrderError extends Schema.TaggedErrorClass<TradingWorkingOrderError>()(
+export class TradingWorkingOrderError extends Schema.TaggedError<TradingWorkingOrderError>()(
   "TradingWorkingOrderError",
   {
     reason: Schema.Literals(["canonical_read_failed", "book_read_failed", "sequence_alloc_failed"]),

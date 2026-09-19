@@ -53,7 +53,8 @@ function detectCliRunner(entryPath: string): CliRunner | null {
  * telling people to run upstream's.
  */
 function suggestedPackageSpec(version: string): string {
-  return version.includes("-nightly.") ? `${CLI_PACKAGE_NAME}@nightly` : CLI_PACKAGE_NAME;
+  const channel = /^[^-+]+-(nightly|preview)\./.exec(version)?.[1];
+  return channel === undefined ? CLI_PACKAGE_NAME : `${CLI_PACKAGE_NAME}@${channel}`;
 }
 
 /**

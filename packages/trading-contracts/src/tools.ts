@@ -188,7 +188,7 @@ const REJECTION_PROSE: Record<TradingToolRejectionReason, string> = {
     "Refused: this mission is watching, not trading, so nothing was planned, placed or closed. Say what you see and tell the user that trading the idea needs a mission that holds the market.",
 };
 
-export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToolRejectedError>()(
+export class TradingToolRejectedError extends Schema.TaggedError<TradingToolRejectedError>()(
   "TradingToolRejectedError",
   {
     reason: TradingToolRejectionReason,

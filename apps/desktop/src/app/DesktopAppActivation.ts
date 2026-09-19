@@ -31,7 +31,7 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
 const isDesktopAppActivationRequest = Schema.is(DesktopAppActivationRequest);
 
-export class DesktopAppActivationStartError extends Schema.TaggedErrorClass<DesktopAppActivationStartError>()(
+export class DesktopAppActivationStartError extends Schema.TaggedError<DesktopAppActivationStartError>()(
   "DesktopAppActivationStartError",
   {
     address: Schema.String,
@@ -151,7 +151,7 @@ export async function startDesktopAppControlServer(input: {
       activeRequestId = parsed.requestId;
       void input.handle(parsed).then(finish, () => {
         finish(
-          invalidResponse(parsed.requestId, "T3 Code could not process the desktop app request."),
+          invalidResponse(parsed.requestId, "T3 Trade could not process the desktop app request."),
         );
       });
     });

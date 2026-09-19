@@ -17,6 +17,7 @@ import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
 import { TradingRuntimeLease } from "../../trading/TradingRuntimeLease.ts";
 import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
 import * as ThreadSettlementReactor from "../ThreadSettlementReactor.ts";
+import * as PullRequestSyncReactor from "../PullRequestSyncReactor.ts";
 import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
@@ -135,6 +136,16 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
+          Layer.succeed(PullRequestSyncReactor.PullRequestSyncReactor, {
+            start: () => {
+              started.push("pull-request-sync-reactor");
+              return Effect.void;
+            },
+            drain: Effect.void,
+            requestSync: () => Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
           Layer.succeed(AgentAwarenessRelay.AgentAwarenessRelay, {
             publishThread: () => Effect.void,
             start: () => {
@@ -158,6 +169,7 @@ describe("OrchestrationReactor", () => {
       "thread-deletion-reactor",
       "thread-pull-request-reactor",
       "thread-settlement-reactor",
+      "pull-request-sync-reactor",
       "agent-awareness-relay",
       "trading-mission-reactor",
     ]);
@@ -201,6 +213,13 @@ describe("OrchestrationReactor", () => {
               Layer.succeed(ThreadSettlementReactor.ThreadSettlementReactor, {
                 start: () => Effect.void,
                 drain: Effect.void,
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(PullRequestSyncReactor.PullRequestSyncReactor, {
+                start: () => Effect.void,
+                drain: Effect.void,
+                requestSync: () => Effect.void,
               }),
             ),
             Layer.provideMerge(

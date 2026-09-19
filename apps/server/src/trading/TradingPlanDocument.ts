@@ -43,7 +43,7 @@ import {
 } from "@t3tools/trading-contracts/plan-document";
 
 /** Why a plan-document operation refused. One name per rule, the server's own. */
-export class TradingPlanDocumentError extends Schema.TaggedErrorClass<TradingPlanDocumentError>()(
+export class TradingPlanDocumentError extends Schema.TaggedError<TradingPlanDocumentError>()(
   "TradingPlanDocumentError",
   {
     reason: Schema.Literals([

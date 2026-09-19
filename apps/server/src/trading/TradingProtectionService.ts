@@ -78,7 +78,7 @@ export const withinManualEntryGrace = (openedAt: number | null, nowMs: number): 
   openedAt !== null && nowMs - openedAt < MANUAL_PROTECTION_GRACE_MILLIS;
 
 /** Protection could not be established. */
-export class TradingProtectionError extends Schema.TaggedErrorClass<TradingProtectionError>()(
+export class TradingProtectionError extends Schema.TaggedError<TradingProtectionError>()(
   "TradingProtectionError",
   {
     reason: Schema.Literals([

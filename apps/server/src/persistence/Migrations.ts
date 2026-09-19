@@ -1,3 +1,6 @@
+import Migration0103 from "./Migrations/103_ProjectionThreadTitleState.ts";
+import Migration0102 from "./Migrations/102_ProjectionThreadMessageContext.ts";
+import Migration0101 from "./Migrations/101_ProjectionThreadPullRequests.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -123,7 +126,7 @@ import Migration0100 from "./Migrations/100_ProjectionThreadsActiveOrderKey.ts";
  * Uses Migrator.fromRecord which parses the key format and
  * returns migrations sorted by ID.
  */
-export const migrationEntries = [
+const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
@@ -231,11 +234,14 @@ export const migrationEntries = [
   [98, "ProjectionProjectIcon", Migration0098],
   [99, "ProjectionThreadBranchPullRequest", Migration0099],
   [100, "ProjectionThreadsActiveOrderKey", Migration0100],
+  [101, "ProjectionThreadPullRequests", Migration0101],
+  [102, "ProjectionThreadMessageContext", Migration0102],
+  [103, "ProjectionThreadTitleState", Migration0103],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
-export const makeMigrationLoader = (throughId?: number) =>
+const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
     Object.fromEntries(
       migrationEntries

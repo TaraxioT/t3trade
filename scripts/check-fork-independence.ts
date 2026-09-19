@@ -17,6 +17,8 @@ import * as NodePath from "node:path";
 const UPSTREAM_REPO_PATTERN = /pingdotgg\/t3code/;
 
 const ALLOWED_FILES = new Set([
+  // Static title-quality evaluation fixtures reference the original upstream PRs.
+  "apps/server/scripts/threadTitleEvaluationCases.ts",
   // Simulated demo project shown in App Store screenshots; see PATCH_LEDGER.md.
   "scripts/mobile-showcase-environment.ts",
   // This file's own pattern/allow-list.

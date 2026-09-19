@@ -1,3 +1,4 @@
+import { HostProcessIsExecutable } from "@t3tools/shared/hostProcess";
 /**
  * ArchiveSupervisor — the market archiver runs because the server runs.
  *
@@ -228,6 +229,7 @@ export const exitSignal = (error: unknown): string | null => {
 /** Exported for tests: the supervisor's construction with its dependencies visible. */
 export const makeArchiveSupervisor = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const isExecutable = yield* HostProcessIsExecutable;
   // The account view carries the archiver-health rider, and the account view
   // refreshes only when this doorbell rings — so every supervisor transition
   // rings it, exactly as the reconciler does after a pass (R1-1).
@@ -451,7 +453,7 @@ export const makeArchiveSupervisor = Effect.gen(function* () {
         });
       }
 
-      const entry = resolveArchiverEntry(import.meta.url);
+      const entry = isExecutable ? "__archive-worker" : resolveArchiverEntry(import.meta.url);
       if (entry === null) {
         yield* stopped("the archiver entry file was not found");
         yield* Effect.logWarning("ArchiveSupervisor: could not find the archiver entry file");

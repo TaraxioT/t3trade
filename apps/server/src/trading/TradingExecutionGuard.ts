@@ -37,7 +37,7 @@ import {
 import { HyperliquidReconciler, TradingReconciliationError } from "./HyperliquidReconciler.ts";
 
 /** The guard rejected an action under §16.4. */
-export class TradingExhaustionError extends Schema.TaggedErrorClass<TradingExhaustionError>()(
+export class TradingExhaustionError extends Schema.TaggedError<TradingExhaustionError>()(
   "TradingExhaustionError",
   {
     reason: Schema.Literals([

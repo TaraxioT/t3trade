@@ -8,6 +8,19 @@ resolve independently during a sync.
 Statuses: `applied` (change is in `main`), `deferred` (identified, not yet
 applied — listed so a later phase doesn't have to rediscover it).
 
+## Current integration seams (v0.0.42)
+
+- Upstream migrations 050–052 map to fork migrations 101–103; never renumber the
+  existing fork migrations 1–100. The fork and upstream histories use different
+  numbering after the original 049 boundary.
+- Self-contained CLI archives, executables, npm launchers, SSH runtime caches,
+  WSL caches, and desktop capture helpers use T3 Trade identities. Reusing an
+  upstream path can select its binary or overwrite an adjacent installation.
+- Keep the self-hosted relay database and Hyperdrive configuration. Upstream's
+  managed Postgres provisioning is not this deployment's topology.
+- Release/deploy workflows remain intentionally absent. Generated relay bundles
+  and marketing capture files are local artifacts, not merge inputs.
+
 ## PROMPT-00 · Fork and integration baseline
 
 ### Applied

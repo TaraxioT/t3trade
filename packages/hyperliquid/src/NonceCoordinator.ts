@@ -25,7 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 
 /** A nonce that could not be issued. */
-export class HyperliquidNonceError extends Schema.TaggedErrorClass<HyperliquidNonceError>()(
+export class HyperliquidNonceError extends Schema.TaggedError<HyperliquidNonceError>()(
   "HyperliquidNonceError",
   {
     reason: Schema.Literals(["clock_before_last", "persist_failed"]),

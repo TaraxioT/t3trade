@@ -160,7 +160,7 @@ interface RemainingPosition {
  * boundaries and answered with the explicit unknown outcome, never with a
  * fabricated flat or a stale size (06C).
  */
-class EmergencyReadFailure extends Schema.TaggedErrorClass<EmergencyReadFailure>()(
+class EmergencyReadFailure extends Schema.TaggedError<EmergencyReadFailure>()(
   "EmergencyReadFailure",
   {
     phase: Schema.String,

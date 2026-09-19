@@ -1,0 +1,71 @@
+/**
+ * Entry point for the market archiver: `bun run archive` from `apps/server`.
+ *
+ * Opens (or creates) the archive, applies its schema, and hands control to
+ * the loop. The only other job here is a clean shutdown — on SIGINT or
+ * SIGTERM the loop is asked to stop after the tick it is in, and the database
+ * handle is closed so WAL is checkpointed rather than left for recovery.
+ *
+ * The archive's value compounds with uptime. Nothing in here is a one-shot
+ * job; the intended state of this process is "running".
+ *
+ * @module trading/archive/main
+ */
+
+// @effect-diagnostics globalTimers:off - a standalone always-on process.
+import { runArchiver } from "./archiver.ts";
+import {
+  ARCHIVE_NETWORK_ENV,
+  archiveDatabasePath,
+  archiveInfoUrl,
+  archiveNetworkFromEnv,
+  archiveVenue,
+  archiveWsUrl,
+} from "./config.ts";
+import { openArchiveDatabase } from "./db.ts";
+import { makeInfoClient } from "./info.ts";
+import { logInfo } from "./log.ts";
+import { startCandleFeed } from "./ws.ts";
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+export async function runArchiveWorker(): Promise<void> {
+  // The supervised child records the network the app trades — the supervisor
+  // passes it down from the trading gateway's own endpoint decision. A
+  // hand-run archiver with nothing set keeps recording mainnet.
+  const network = archiveNetworkFromEnv(process.env[ARCHIVE_NETWORK_ENV]);
+  const venue = archiveVenue(network);
+  const path = archiveDatabasePath();
+  const db = openArchiveDatabase(path);
+  logInfo(`archiver: ${network} public data (venue ${venue}) -> ${path}`);
+
+  // The first signal asks the loop to stop at its next checkpoint; a second
+  // one leaves immediately. Leaving immediately is safe — every write is an
+  // idempotent upsert and startup re-fetches its window — so an operator in a
+  // hurry never has to reach for `kill -9`.
+  let running = true;
+  const stop = (signal: string) => {
+    if (!running) {
+      logInfo(`archiver: second ${signal}, exiting now`);
+      process.exit(0);
+    }
+    logInfo(`archiver: ${signal} received, stopping at the next checkpoint`);
+    running = false;
+  };
+  process.on("SIGINT", () => stop("SIGINT"));
+  process.on("SIGTERM", () => stop("SIGTERM"));
+
+  try {
+    await runArchiver({
+      db,
+      info: makeInfoClient(archiveInfoUrl(network)),
+      shouldContinue: () => running,
+      sleep,
+      makeFeed: (onCandle) => startCandleFeed({ onCandle, url: archiveWsUrl(network) }),
+      venue,
+    });
+  } finally {
+    db.close();
+    logInfo("archiver: stopped");
+  }
+}

@@ -31,7 +31,7 @@ const encodeBuildMetadataJson = Schema.encodeEffect(fromJsonStringPretty(BuildMe
 
 const BASELINE_SHA_PATTERN = /\| Pinned commit \(full SHA\)\s*\| `([0-9a-f]{40})`\s*\|/;
 
-export class BuildMetadataParseError extends Schema.TaggedErrorClass<BuildMetadataParseError>()(
+export class BuildMetadataParseError extends Schema.TaggedError<BuildMetadataParseError>()(
   "BuildMetadataParseError",
   {
     filePath: Schema.String,

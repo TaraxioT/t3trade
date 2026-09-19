@@ -1,0 +1,10 @@
+{
+  "uuid": "snap-shot@t3trade.athelstan.xyz",
+  "files": [
+    "metadata.json",
+    "extension.js",
+    "captureService.js",
+    "captureFeedback.js",
+    "feedbackGeometry.js"
+  ]
+}

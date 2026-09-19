@@ -71,7 +71,7 @@ export const PREVIEW_CHECKLIST_ITEMS = [
 export type PreviewChecklistItem = (typeof PREVIEW_CHECKLIST_ITEMS)[number];
 
 /** A preview was rejected. `item` names the §16.3 row that failed. */
-export class TradingPreviewRejection extends Schema.TaggedErrorClass<TradingPreviewRejection>()(
+export class TradingPreviewRejection extends Schema.TaggedError<TradingPreviewRejection>()(
   "TradingPreviewRejection",
   {
     item: Schema.Literals(PREVIEW_CHECKLIST_ITEMS),

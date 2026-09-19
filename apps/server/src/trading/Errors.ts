@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 
 import { TradingMissionBlockedReason, TradingMissionStatus } from "./Schemas.ts";
 
-export class TradingMissionNotFoundError extends Schema.TaggedErrorClass<TradingMissionNotFoundError>()(
+export class TradingMissionNotFoundError extends Schema.TaggedError<TradingMissionNotFoundError>()(
   "TradingMissionNotFoundError",
   {
     missionId: Schema.String,
@@ -19,7 +19,7 @@ export class TradingMissionNotFoundError extends Schema.TaggedErrorClass<Trading
 }
 
 /** D4: only one active mission may hold a `{venue, market}` at a time. */
-export class TradingMissionAlreadyActiveError extends Schema.TaggedErrorClass<TradingMissionAlreadyActiveError>()(
+export class TradingMissionAlreadyActiveError extends Schema.TaggedError<TradingMissionAlreadyActiveError>()(
   "TradingMissionAlreadyActiveError",
   {
     userId: Schema.String,
@@ -50,7 +50,7 @@ export class TradingMissionAlreadyActiveError extends Schema.TaggedErrorClass<Tr
  * position, a resting manual order, or a manual submission in flight — so a
  * mission may not take authority over it until the user is out.
  */
-export class TradingMarketManualExposureError extends Schema.TaggedErrorClass<TradingMarketManualExposureError>()(
+export class TradingMarketManualExposureError extends Schema.TaggedError<TradingMarketManualExposureError>()(
   "TradingMarketManualExposureError",
   {
     market: Schema.String,
@@ -65,7 +65,7 @@ export class TradingMarketManualExposureError extends Schema.TaggedErrorClass<Tr
   }
 }
 
-export class TradingMissionTransitionError extends Schema.TaggedErrorClass<TradingMissionTransitionError>()(
+export class TradingMissionTransitionError extends Schema.TaggedError<TradingMissionTransitionError>()(
   "TradingMissionTransitionError",
   {
     missionId: Schema.String,
@@ -91,7 +91,7 @@ export class TradingMissionTransitionError extends Schema.TaggedErrorClass<Tradi
  * frozen. Session id, resume cursor, and availability are runtime bookkeeping
  * that ProviderService updates as the session starts, resumes, and drops.
  */
-export class TradingHarnessBindingImmutableError extends Schema.TaggedErrorClass<TradingHarnessBindingImmutableError>()(
+export class TradingHarnessBindingImmutableError extends Schema.TaggedError<TradingHarnessBindingImmutableError>()(
   "TradingHarnessBindingImmutableError",
   {
     missionId: Schema.String,
@@ -105,7 +105,7 @@ export class TradingHarnessBindingImmutableError extends Schema.TaggedErrorClass
 }
 
 /** A stale optimistic version was supplied for a mission row. */
-export class TradingMissionVersionConflictError extends Schema.TaggedErrorClass<TradingMissionVersionConflictError>()(
+export class TradingMissionVersionConflictError extends Schema.TaggedError<TradingMissionVersionConflictError>()(
   "TradingMissionVersionConflictError",
   {
     missionId: Schema.String,

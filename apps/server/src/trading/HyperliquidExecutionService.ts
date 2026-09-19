@@ -70,7 +70,7 @@ import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { TradingPreviewService, type PreviewContext } from "./TradingPreviewService.ts";
 
 /** The execution service failed at a named stage. */
-export class TradingExecutionError extends Schema.TaggedErrorClass<TradingExecutionError>()(
+export class TradingExecutionError extends Schema.TaggedError<TradingExecutionError>()(
   "TradingExecutionError",
   {
     stage: Schema.Literals([
@@ -684,22 +684,18 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
           SELECT trading_account_id FROM trading_missions
           WHERE mission_id = ${intent.missionId}
         `.pipe(
-          Effect.map(
-            (rows): OwnerColumns => ({
-              missionId: intent.missionId,
-              accountId: rows[0]?.trading_account_id ?? "unattributed",
-              venue: "hyperliquid",
-              asset: intent.market,
-            }),
-          ),
-          Effect.orElseSucceed(
-            (): OwnerColumns => ({
-              missionId: intent.missionId,
-              accountId: "unattributed",
-              venue: "hyperliquid",
-              asset: intent.market,
-            }),
-          ),
+          Effect.map((rows): OwnerColumns => ({
+            missionId: intent.missionId,
+            accountId: rows[0]?.trading_account_id ?? "unattributed",
+            venue: "hyperliquid",
+            asset: intent.market,
+          })),
+          Effect.orElseSucceed((): OwnerColumns => ({
+            missionId: intent.missionId,
+            accountId: "unattributed",
+            venue: "hyperliquid",
+            asset: intent.market,
+          })),
         )
       : Effect.succeed<OwnerColumns>({
           missionId: null,

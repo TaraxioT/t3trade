@@ -41,7 +41,7 @@ import {
 } from "../trading/TradingRunTelemetry.ts";
 import { baseDirFlag } from "./config.ts";
 
-export class SessionReportDatabaseMissingError extends Schema.TaggedErrorClass<SessionReportDatabaseMissingError>()(
+export class SessionReportDatabaseMissingError extends Schema.TaggedError<SessionReportDatabaseMissingError>()(
   "SessionReportDatabaseMissingError",
   {
     databasePath: Schema.String,
@@ -52,7 +52,7 @@ export class SessionReportDatabaseMissingError extends Schema.TaggedErrorClass<S
   }
 }
 
-export class SessionReportMissionNotFoundError extends Schema.TaggedErrorClass<SessionReportMissionNotFoundError>()(
+export class SessionReportMissionNotFoundError extends Schema.TaggedError<SessionReportMissionNotFoundError>()(
   "SessionReportMissionNotFoundError",
   {
     databasePath: Schema.String,

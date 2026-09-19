@@ -49,7 +49,7 @@ import { TradingProtectionService, type ProtectionOutcome } from "./TradingProte
 import type { TradingPlanState } from "./Schemas.ts";
 
 /** The reconcile could not even be attempted. */
-export class TradingPlanProtectionError extends Schema.TaggedErrorClass<TradingPlanProtectionError>()(
+export class TradingPlanProtectionError extends Schema.TaggedError<TradingPlanProtectionError>()(
   "TradingPlanProtectionError",
   {
     reason: Schema.Literals(["position_read_failed", "orders_read_failed"]),

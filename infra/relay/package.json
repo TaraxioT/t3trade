@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "deploy": "node -- scripts/deploy.ts",
+    "push:android:smoke": "node scripts/android-push-smoke.ts",
+    "push:android:watch": "node scripts/android-push-watch.ts",
     "destroy": "alchemy destroy",
     "migrate": "node -- scripts/migrate.ts",
     "test": "vp test run",
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@clerk/backend": "catalog:",
@@ -17,8 +19,8 @@
     "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
-    "alchemy": "2.0.0-beta.65",
-    "drizzle-orm": "1.0.0-rc.4",
+    "alchemy": "2.0.0-beta.76",
+    "drizzle-orm": "1.0.0-rc.5-ab785fc",
     "effect": "catalog:",
     "pg": "^8.22.0"
   },
@@ -28,7 +30,7 @@
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@types/pg": "^8.15.6",
-    "drizzle-kit": "1.0.0-rc.4",
+    "drizzle-kit": "1.0.0-rc.5-ab785fc",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   }

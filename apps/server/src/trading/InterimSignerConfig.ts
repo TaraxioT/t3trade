@@ -49,7 +49,7 @@ import { addressFromPrivateKey } from "@t3tools/hyperliquid/Signing";
 import { INTERIM_SIGNER_SECRET_NAME, t3tradeSecretsDir } from "@t3tools/hyperliquid/KeyLocation";
 
 /** The secret file could not be read — absent, unreadable, or wrong perms. */
-export class SecretFileReadError extends Schema.TaggedErrorClass<SecretFileReadError>()(
+export class SecretFileReadError extends Schema.TaggedError<SecretFileReadError>()(
   "SecretFileReadError",
   { path: Schema.String, cause: Schema.Unknown },
 ) {}
@@ -90,7 +90,7 @@ export const readFileText = (path: string): Effect.Effect<SecretFile, SecretFile
   });
 
 /** The key is invalid or the env shape was wrong. */
-export class InterimSignerError extends Schema.TaggedErrorClass<InterimSignerError>()(
+export class InterimSignerError extends Schema.TaggedError<InterimSignerError>()(
   "InterimSignerError",
   {
     reason: Schema.Literals([
