@@ -31,8 +31,8 @@ EAS preview and production environments need the publishable key, JWT template n
 Bundled servers also accept runtime overrides for operator-managed deployments.
 
 Copy `infra/relay/.env.example` to `infra/relay/.env` for relay deployment settings.
-Deploy `prod` before personal stages because it owns the retained database that their branches
-depend on. The deploy wrapper writes the resulting relay URL back to the root `.env`.
+Provision the stage database and roles in Neon before deployment, as described in the relay README.
+The deploy wrapper writes the resulting relay URL back to the root `.env`.
 
 ## CLI OAuth application
 

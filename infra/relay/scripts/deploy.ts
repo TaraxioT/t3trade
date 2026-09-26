@@ -433,7 +433,7 @@ export const deploy = Effect.fn("relay.deploy")(function* (options: RelayDeployO
   // The Worker must never boot against a database missing a table it queries,
   // so migrations run before the plan is applied and abort the deploy on failure.
   if (!options.readState && !options.dryRun && !options.skipMigrations) {
-    yield* migrate({ stage: Option.some(stage) });
+    yield* migrate({ stage: Option.some(stage), envFile: options.envFile });
   }
   const outcome = options.readState
     ? yield* readRelayPublicConfig(stage).pipe(Effect.provide(Cloudflare.state()))

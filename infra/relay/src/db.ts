@@ -46,27 +46,23 @@ export const RelaySchema = Drizzle.Schema("RelaySchema", {
 });
 
 /**
- * The relay's Postgres lives on a self-hosted origin behind Cloudflare Access,
- * reached through a Cloudflare Tunnel. Access supplies the origin credential,
- * so there is no port here — the tunnel's TCP ingress owns it.
+ * Hyperdrive pools connections to Neon's direct endpoint. Do not use the Neon
+ * pooler endpoint here: Hyperdrive already owns pooling.
  */
 export const RelayHyperdrive = Effect.gen(function* () {
   const { stage } = yield* Alchemy.Stack;
   const host = yield* Config.nonEmptyString("RELAY_DB_HOST");
   const user = yield* Config.nonEmptyString("RELAY_DB_USER");
   const password = yield* Config.redacted("RELAY_DB_PASSWORD");
-  const accessClientId = yield* Config.redacted("RELAY_DB_ACCESS_CLIENT_ID");
-  const accessClientSecret = yield* Config.redacted("RELAY_DB_ACCESS_CLIENT_SECRET");
 
   return yield* Cloudflare.Hyperdrive.Connection("RelayHyperdrive", {
     origin: {
       scheme: "postgres",
       host,
+      port: 5432,
       database: relayDatabaseName(stage),
       user,
       password,
-      accessClientId,
-      accessClientSecret,
     },
     // The relay reads credentials, allocations and DPoP proofs. A stale read
     // here is an auth bug, so this cache stays off.
@@ -74,18 +70,18 @@ export const RelayHyperdrive = Effect.gen(function* () {
       disabled: true,
     },
     originConnectionLimit: 20,
-    // Alchemy evaluates the dev origin while planning, not only in dev mode, and
-    // refuses an Access-fronted origin without one. Local development reaches
-    // the same database through its own tunnel session:
-    //   cloudflared access tcp --hostname $RELAY_DB_HOST --url 127.0.0.1:5432
+    // Hyperdrive's require mode validates public certificates against WebPKI.
+    // Its verify-full mode instead requires a separately uploaded CA bundle.
+    mtls: { sslmode: "require" },
+    // Local development uses the selected stage's database with verified TLS.
     dev: {
       scheme: "postgres",
-      host: "127.0.0.1",
+      host,
       port: 5432,
       user,
       password,
       database: relayDatabaseName(stage),
-      sslmode: "require",
+      sslmode: "verify-full",
     },
   });
 });

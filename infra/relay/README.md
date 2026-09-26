@@ -64,13 +64,6 @@ To run a smaller test set while iterating:
 vp test run src/environments/EnvironmentLinker.test.ts
 ```
 
-Before considering a change complete, run the repository-wide checks from the root:
-
-```sh
-vp check
-vp run typecheck
-```
-
 Backend changes should include tests. Prefer testing the real business logic with external
 dependencies represented at their boundary rather than mocking internal behavior.
 
@@ -90,14 +83,29 @@ file from the relay directory. Runtime secrets include Clerk, APNs, and optional
 the configured API and tunnel DNS zones as retained Cloudflare resources. Personal stages reference
 the production-owned zones.
 
-The `prod` Alchemy stage owns the retained PlanetScale database and is the shared hosted relay for
-stable and nightly clients. Every other stage references that database and provisions an isolated
-PlanetScale branch and runtime role for local development, so deploy `prod` before creating
-developer stages:
+The database is provisioned separately in Neon. Production uses project `t3trade-relay`
+(`blue-river-77981900`, AWS Singapore), branch `main`, and database `t3coderelay`.
+Alchemy owns Hyperdrive, which connects to the **direct, unpooled** Neon endpoint on port 5432
+with verified TLS and query caching disabled. The deploy wrapper applies the checked-in SQL
+migrations before updating the stack. No database tunnel or Cloudflare Access token is needed.
+
+Set `RELAY_DB_HOST`, runtime credentials (`RELAY_DB_USER` / `RELAY_DB_PASSWORD`), and separate
+migration-owner credentials (`RELAY_DB_ADMIN_USER` / `RELAY_DB_ADMIN_PASSWORD`) in the ignored
+`infra/relay/.env`. Never use a Neon Console/API-created role for runtime access: those roles
+inherit `neon_superuser`. Create the runtime login with SQL and grant only database `CONNECT`,
+schema `USAGE`, table `SELECT/INSERT/UPDATE/DELETE`, and sequence `USAGE/SELECT`. Set matching
+owner default privileges for future tables and sequences; revoke public schema `CREATE`.
+
+Personal stages require their own database named `t3coderelay_<stage-slug>` and restricted runtime
+role, provisioned before deploying. They may use a separate Neon branch or project; select its
+credentials using `--env-file`. Alchemy does not create Neon projects, branches, roles, or databases.
+Both migrations and deployment read the selected environment file.
 
 ```sh
 vp run --filter t3code-relay deploy -- --stage prod
-vp run --filter t3code-relay deploy -- --env-file .env.local
+vp run --filter t3code-relay deploy -- --stage dev_george --env-file .env.local
+# Apply migrations without deploying the Worker (safe to repeat):
+vp run --filter t3code-relay migrate -- --stage prod
 ```
 
 Alchemy defaults personal deployments to the `dev_$USER` stage. Relay custom domains apply the same
@@ -113,51 +121,28 @@ After a successful deploy, the wrapper updates the repository-root `.env` file w
 URL. That makes subsequent source builds point at the relay that was just deployed without copying
 the URL manually.
 
-### Deployment CI
+### Deployment credentials
 
-The relay is versioned separately from client releases. `.github/workflows/deploy-relay.yml` deploys
-the shared Alchemy `prod` stage on every push to `main`. Stable and nightly release builds both
-resolve their static public config from the same
-`production` GitHub environment. Pull requests do not deploy relay stages. Developers can
-deploy personal non-production stages locally with any stage name other than `prod`.
+Deployment requires Cloudflare and Axiom provider credentials, the database settings above,
+and the existing Clerk configuration. APNs and FCM remain optional inherited integrations.
+Database owner credentials belong only on the deployment host. Runtime database credentials
+are stored in Hyperdrive, not shipped to clients. The fork has no automatic relay deployment
+workflow; deploy the production stage explicitly after focused verification.
 
-The repository must define these Actions variables shared by relay deployments:
+### Verify a database move
 
-- `CLOUDFLARE_ACCOUNT_ID`
-- `PLANETSCALE_ORGANIZATION`
-- `AXIOM_ORG_ID`
+1. Run `curl --fail https://relay.athelstan.xyz/health`; expect
+   `{"ok":true,"service":"relay"}`. This endpoint executes a database query.
+2. In T3 Trade, open **Settings > Connections**, sign in, and link the local environment.
+   After a database reset, remove the old local link if necessary and link again.
+3. From another client signed into the same account, refresh the environment list and connect.
+   Open a thread, then reconnect to check that discovery and credential issuance work.
+4. Unlink the test environment, refresh the other client, and confirm it is no longer available.
+   Relink it if you want to keep using it.
 
-The repository must define these Actions secrets shared by relay deployments:
-
-- `CLOUDFLARE_API_TOKEN`
-- `PLANETSCALE_API_TOKEN_ID`
-- `PLANETSCALE_API_TOKEN`
-- `AXIOM_TOKEN`
-
-The `production` GitHub environment must define these Actions variables:
-
-- `RELAY_API_ZONE_NAME`
-- `RELAY_TUNNEL_ZONE_NAME`
-- `RELAY_DOMAIN` if overriding the derived production relay domain
-- `CLERK_PUBLISHABLE_KEY`
-- `CLERK_JWT_AUDIENCE`
-- `CLERK_JWT_TEMPLATE`
-- `APNS_ENVIRONMENT`
-- `APNS_TEAM_ID`
-- `APNS_KEY_ID`
-- `APNS_BUNDLE_ID`
-
-The `production` GitHub environment must define these Actions secrets:
-
-- `CLERK_SECRET_KEY`
-- `APNS_PRIVATE_KEY`
-- `FCM_SERVICE_ACCOUNT` when Android push is enabled
-
-The account-scoped repository credentials are consumed by Alchemy while provisioning relay stages; they
-are not bound into the relay Worker. The production deployment uses an Axiom personal access token,
-so `AXIOM_ORG_ID` must accompany `AXIOM_TOKEN`. The release workflow reads the production relay's
-derived public URL and Clerk publishable key from the same environment for downstream desktop, CLI,
-and hosted web builds.
+A reset removes relay environment links and connection credentials, not local application data
+or Clerk accounts. A successful health response checks database connectivity; the linking and
+connection steps also check schema access, writes, authentication, and managed endpoints.
 
 See:
 
