@@ -311,6 +311,7 @@ export const makeEventResearchService = (options: { readonly autoStart?: boolean
           updatedAt: now,
           completedWindows: 0,
           plannedWindows: plans.length,
+          resultKind: "event_study",
         };
         const job = yield* studies.createJob({ jobId, studyId, recipe, view });
         if (autoStart && job.status === "queued") {

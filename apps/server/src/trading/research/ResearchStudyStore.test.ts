@@ -152,6 +152,20 @@ layer("ResearchStudyStore", (it) => {
         }),
       );
       assert.equal(falseHash._tag, "Failure");
+      const forgedReport = { ...study.report, cutoffAt: 2 };
+      const forgedJson = yield* Schema.encodeEffect(Schema.fromJsonString(EventResearchReport))(
+        forgedReport,
+      );
+      const forgedHash = NodeCrypto.createHash("sha256").update(forgedJson).digest("hex");
+      const forged = yield* Effect.result(
+        store.completeStudy({
+          jobId: "job",
+          ownerToken: "owner",
+          study: { ...study, report: forgedReport, reportHash: forgedHash },
+          now: 3,
+        }),
+      );
+      assert.equal(forged._tag, "Failure");
       yield* store.completeStudy({ jobId: "job", ownerToken: "owner", study, now: 3 });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE graph_research_results SET report_hash = 'tampered' WHERE result_id = 'study'`;

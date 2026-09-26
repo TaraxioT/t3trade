@@ -183,6 +183,10 @@
     "./eventResearch": {
       "types": "./src/eventResearch.ts",
       "import": "./src/eventResearch.ts"
+    },
+    "./eventLongSimulation": {
+      "types": "./src/eventLongSimulation.ts",
+      "import": "./src/eventLongSimulation.ts"
     }
   },
   "scripts": {

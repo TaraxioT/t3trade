@@ -166,4 +166,12 @@ describe("calculateEventResearch", () => {
       meanReturnPct: 1,
     });
   });
+
+  it("rejects nonfinite return arithmetic", () => {
+    expect(() =>
+      calculateEventResearch(
+        input([sample("pre", eventAt - 1_000, 1e-300), sample("hour", eventAt + 3_600_000, 1e308)]),
+      ),
+    ).toThrow();
+  });
 });

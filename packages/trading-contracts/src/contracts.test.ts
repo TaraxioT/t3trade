@@ -907,6 +907,7 @@ describe("subpath exports", () => {
         "./plan-document",
         "./researchData",
         "./eventResearch",
+        "./eventLongSimulation",
         "./researchScenes",
       ].sort(),
     );

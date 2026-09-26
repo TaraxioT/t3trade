@@ -152,6 +152,9 @@ export function calculateEventResearch(input: EventResearchInput): EventResearch
           sample.at <= recipe.cutoffAt,
       );
       if (!horizon) return { horizonMs, status: "uncovered", reason: "missing_horizon" };
+      const returnPct = ((horizon.price - reference.price) / reference.price) * 100;
+      if (!Number.isFinite(returnPct))
+        throw new Error("Event return arithmetic exceeded finite bounds");
       return {
         horizonMs,
         status: "measured",
@@ -161,7 +164,7 @@ export function calculateEventResearch(input: EventResearchInput): EventResearch
         horizonAt: horizon.at,
         referencePrice: reference.price,
         horizonPrice: horizon.price,
-        returnPct: ((horizon.price - reference.price) / reference.price) * 100,
+        returnPct,
       };
     });
     return { eventId: event.id, event, horizons };
@@ -172,6 +175,12 @@ export function calculateEventResearch(input: EventResearchInput): EventResearch
     const uncovered = outcomes.filter(
       (outcome) => outcome.status === "uncovered" && outcome.reason !== "timestamp_unknown",
     );
+    const meanReturnPct =
+      measured.length === 0
+        ? null
+        : measured.reduce((sum, outcome) => sum + outcome.returnPct, 0) / measured.length;
+    if (meanReturnPct !== null && !Number.isFinite(meanReturnPct))
+      throw new Error("Event summary arithmetic exceeded finite bounds");
     return {
       horizonMs,
       eligibleCount: measured.length + uncovered.length,
@@ -181,10 +190,7 @@ export function calculateEventResearch(input: EventResearchInput): EventResearch
       unknownTimeCount: outcomes.filter(
         (outcome) => outcome.status === "uncovered" && outcome.reason === "timestamp_unknown",
       ).length,
-      meanReturnPct:
-        measured.length === 0
-          ? null
-          : measured.reduce((sum, outcome) => sum + outcome.returnPct, 0) / measured.length,
+      meanReturnPct,
     };
   });
   return {

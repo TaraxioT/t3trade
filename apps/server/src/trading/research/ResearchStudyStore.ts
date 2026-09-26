@@ -6,12 +6,20 @@ import {
   EventResearchRecipe,
   EventResearchReport,
   SavedEventStudy,
+  calculateEventResearch,
 } from "@t3tools/trading-contracts/eventResearch";
+import {
+  EventLongSimulationReport,
+  EventLongSimulationRequest,
+  SavedEventLongSimulation,
+  simulateEventLongs,
+} from "@t3tools/trading-contracts/eventLongSimulation";
 import { ResearchError, ResearchJobView } from "@t3tools/trading-contracts/researchData";
 
 interface StudyJobRow {
   readonly job_id: string;
   readonly result_id: string;
+  readonly kind: "event_study" | "long_simulation";
   readonly environment_id: string;
   readonly thread_id: string;
   readonly recipe_json: string;
@@ -71,6 +79,34 @@ export interface ResearchStudyStoreShape {
     readonly now: number;
   }) => Effect.Effect<ResearchJobView, ResearchError>;
   readonly readStudy: (studyId: string) => Effect.Effect<SavedEventStudy, ResearchError>;
+  readonly createSimulationJob: (input: {
+    readonly jobId: string;
+    readonly simulationId: string;
+    readonly request: EventLongSimulationRequest;
+    readonly view: ResearchJobView;
+  }) => Effect.Effect<ResearchJobView, ResearchError>;
+  readonly getSimulationRequest: (
+    jobId: string,
+  ) => Effect.Effect<EventLongSimulationRequest, ResearchError>;
+  readonly listSimulationRunnable: (
+    now: number,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<string>, ResearchError>;
+  readonly claimSimulationJob: (
+    jobId: string,
+    ownerToken: string,
+    now: number,
+    leaseMs: number,
+  ) => Effect.Effect<ResearchJobView | null, ResearchError>;
+  readonly completeSimulation: (input: {
+    readonly jobId: string;
+    readonly ownerToken: string;
+    readonly simulation: SavedEventLongSimulation;
+    readonly now: number;
+  }) => Effect.Effect<ResearchJobView, ResearchError>;
+  readonly readSimulation: (
+    simulationId: string,
+  ) => Effect.Effect<SavedEventLongSimulation, ResearchError>;
 }
 
 export class ResearchStudyStore extends Context.Service<
@@ -82,6 +118,9 @@ const recipeJson = Schema.fromJsonString(EventResearchRecipe);
 const viewJson = Schema.fromJsonString(ResearchJobView);
 const studyJson = Schema.fromJsonString(SavedEventStudy);
 const reportJson = Schema.fromJsonString(EventResearchReport);
+const simulationRequestJson = Schema.fromJsonString(EventLongSimulationRequest);
+const simulationJson = Schema.fromJsonString(SavedEventLongSimulation);
+const simulationReportJson = Schema.fromJsonString(EventLongSimulationReport);
 const encodeRecipe = Schema.encodeSync(recipeJson);
 const decodeRecipe = Schema.decodeUnknownSync(recipeJson);
 const encodeView = Schema.encodeSync(viewJson);
@@ -89,9 +128,53 @@ const decodeView = Schema.decodeUnknownSync(viewJson);
 const encodeStudy = Schema.encodeSync(studyJson);
 const decodeStudy = Schema.decodeUnknownSync(studyJson);
 const encodeReport = Schema.encodeSync(reportJson);
+const encodeSimulationRequest = Schema.encodeSync(simulationRequestJson);
+const decodeSimulationRequest = Schema.decodeUnknownSync(simulationRequestJson);
+const encodeSimulation = Schema.encodeSync(simulationJson);
+const decodeSimulation = Schema.decodeUnknownSync(simulationJson);
+const encodeSimulationReport = Schema.encodeSync(simulationReportJson);
 
 function reportHash(report: EventResearchReport): string {
   return NodeCrypto.createHash("sha256").update(encodeReport(report)).digest("hex");
+}
+
+function simulationReportHash(report: EventLongSimulationReport): string {
+  return NodeCrypto.createHash("sha256").update(encodeSimulationReport(report)).digest("hex");
+}
+
+function matchesStudyEvidence(study: SavedEventStudy): boolean {
+  try {
+    const calculated = calculateEventResearch({
+      recipe: study.recipe,
+      priceSamples: study.priceSamples,
+    });
+    return encodeReport(calculated) === encodeReport(study.report);
+  } catch {
+    return false;
+  }
+}
+
+function matchesSimulationEvidence(
+  simulation: SavedEventLongSimulation,
+  parent: SavedEventStudy,
+): boolean {
+  const retained = new Map(simulation.priceSamples.map((sample) => [sample.id, sample]));
+  if (
+    parent.priceSamples.some((sample) => {
+      const found = retained.get(sample.id);
+      return !found || found.at !== sample.at || found.price !== sample.price;
+    })
+  )
+    return false;
+  try {
+    const calculated = simulateEventLongs({
+      parentStudy: { ...parent, priceSamples: simulation.priceSamples },
+      scenario: simulation.scenario,
+    });
+    return encodeSimulationReport(calculated) === encodeSimulationReport(simulation.report);
+  } catch {
+    return false;
+  }
 }
 
 function error(reason: ResearchError["reason"], detail: string): ResearchError {
@@ -105,9 +188,9 @@ function storageError(): ResearchError {
 export const makeResearchStudyStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const findJob = (jobId: string) => sql<StudyJobRow>`
-    SELECT job_id, result_id, environment_id, thread_id, recipe_json, view_json,
+    SELECT job_id, result_id, kind, environment_id, thread_id, recipe_json, view_json,
       status, owner_token, lease_until
-    FROM graph_research_result_jobs WHERE job_id = ${jobId} AND kind = 'event_study'
+    FROM graph_research_result_jobs WHERE job_id = ${jobId}
   `;
   const getJob: ResearchStudyStoreShape["getJob"] = (jobId) =>
     Effect.gen(function* () {
@@ -136,11 +219,12 @@ export const makeResearchStudyStore = Effect.gen(function* () {
         ) VALUES (
           ${input.jobId}, ${input.studyId}, 'event_study', ${input.recipe.environmentId},
           ${input.recipe.threadId}, ${encodedRecipe}, ${encodedView}, 'queued', ${input.view.updatedAt}
-        ) ON CONFLICT(result_id) DO NOTHING
+        ) ON CONFLICT DO NOTHING
       `.pipe(Effect.mapError(storageError));
       const row = (yield* findJob(input.jobId).pipe(Effect.mapError(storageError)))[0];
       if (
         !row ||
+        row.kind !== "event_study" ||
         row.result_id !== input.studyId ||
         row.recipe_json !== encodedRecipe ||
         row.environment_id !== input.recipe.environmentId ||
@@ -153,7 +237,8 @@ export const makeResearchStudyStore = Effect.gen(function* () {
   const getRecipe: ResearchStudyStoreShape["getRecipe"] = (jobId) =>
     Effect.gen(function* () {
       const row = (yield* findJob(jobId).pipe(Effect.mapError(storageError)))[0];
-      if (!row) return yield* error("not_found", "Research study job was not found");
+      if (!row || row.kind !== "event_study")
+        return yield* error("not_found", "Research study job was not found");
       return yield* Effect.try({ try: () => decodeRecipe(row.recipe_json), catch: storageError });
     });
   const listRunnable: ResearchStudyStoreShape["listRunnable"] = (now, limit) =>
@@ -170,7 +255,8 @@ export const makeResearchStudyStore = Effect.gen(function* () {
       if (!ownerToken || !Number.isSafeInteger(leaseMs) || leaseMs <= 0)
         return yield* error("invalid_request", "Study job lease is invalid");
       const row = (yield* findJob(jobId).pipe(Effect.mapError(storageError)))[0];
-      if (!row) return yield* error("not_found", "Research study job was not found");
+      if (!row || row.kind !== "event_study")
+        return yield* error("not_found", "Research study job was not found");
       const running = { ...decodeView(row.view_json), status: "running" as const, updatedAt: now };
       const claimed = yield* sql<{ readonly job_id: string }>`
         UPDATE graph_research_result_jobs SET status = 'running', owner_token = ${ownerToken},
@@ -301,7 +387,8 @@ export const makeResearchStudyStore = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           const row = (yield* findJob(input.jobId))[0];
-          if (!row) return yield* error("not_found", "Research study job was not found");
+          if (!row || row.kind !== "event_study")
+            return yield* error("not_found", "Research study job was not found");
           if (
             row.result_id !== input.study.studyId ||
             row.environment_id !== input.study.environmentId ||
@@ -313,7 +400,8 @@ export const makeResearchStudyStore = Effect.gen(function* () {
             !Schema.is(SavedEventStudy)(input.study) ||
             row.recipe_json !== encodeRecipe(input.study.recipe) ||
             input.study.reportHash !== reportHash(input.study.report) ||
-            input.study.report.inventoryId !== input.study.recipe.eventInventory.id
+            input.study.report.inventoryId !== input.study.recipe.eventInventory.id ||
+            !matchesStudyEvidence(input.study)
           ) {
             return yield* error(
               "conflict",
@@ -390,6 +478,219 @@ export const makeResearchStudyStore = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.mapError((cause) => (Schema.is(ResearchError)(cause) ? cause : storageError())));
+  const createSimulationJob: ResearchStudyStoreShape["createSimulationJob"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        !input.jobId ||
+        !input.simulationId ||
+        !Schema.is(EventLongSimulationRequest)(input.request) ||
+        !Schema.is(ResearchJobView)(input.view) ||
+        input.view.jobId !== input.jobId
+      ) {
+        return yield* error("invalid_request", "Long simulation job is invalid");
+      }
+      const parent = yield* readStudy(input.request.parentStudyId);
+      if (
+        input.view.environmentId !== parent.environmentId ||
+        input.view.threadId !== parent.threadId ||
+        input.view.source.deployment !== parent.recipe.source.deployment
+      ) {
+        return yield* error("conflict", "Long simulation job is outside its parent study");
+      }
+      const encodedRequest = encodeSimulationRequest(input.request);
+      yield* sql`
+        INSERT INTO graph_research_result_jobs (
+          job_id, result_id, kind, environment_id, thread_id, recipe_json, view_json, status, updated_at
+        ) VALUES (
+          ${input.jobId}, ${input.simulationId}, 'long_simulation', ${parent.environmentId},
+          ${parent.threadId}, ${encodedRequest}, ${encodeView(input.view)}, 'queued', ${input.view.updatedAt}
+        ) ON CONFLICT DO NOTHING
+      `.pipe(Effect.mapError(storageError));
+      const row = (yield* findJob(input.jobId).pipe(Effect.mapError(storageError)))[0];
+      if (
+        !row ||
+        row.kind !== "long_simulation" ||
+        row.result_id !== input.simulationId ||
+        row.recipe_json !== encodedRequest ||
+        row.environment_id !== parent.environmentId ||
+        row.thread_id !== parent.threadId
+      ) {
+        return yield* error("conflict", "Long simulation identity conflicts with an existing job");
+      }
+      return yield* getJob(input.jobId);
+    });
+  const getSimulationRequest: ResearchStudyStoreShape["getSimulationRequest"] = (jobId) =>
+    Effect.gen(function* () {
+      const row = (yield* findJob(jobId).pipe(Effect.mapError(storageError)))[0];
+      if (!row || row.kind !== "long_simulation")
+        return yield* error("not_found", "Long simulation job was not found");
+      return yield* Effect.try({
+        try: () => decodeSimulationRequest(row.recipe_json),
+        catch: storageError,
+      });
+    });
+  const listSimulationRunnable: ResearchStudyStoreShape["listSimulationRunnable"] = (now, limit) =>
+    sql<{ readonly job_id: string }>`
+      SELECT job_id FROM graph_research_result_jobs
+      WHERE kind = 'long_simulation' AND (status = 'queued' OR (status = 'running' AND lease_until < ${now}))
+      ORDER BY updated_at ASC LIMIT ${limit}
+    `.pipe(
+      Effect.map((rows) => rows.map((row) => row.job_id)),
+      Effect.mapError(storageError),
+    );
+  const claimSimulationJob: ResearchStudyStoreShape["claimSimulationJob"] = (
+    jobId,
+    ownerToken,
+    now,
+    leaseMs,
+  ) =>
+    Effect.gen(function* () {
+      if (!ownerToken || !Number.isSafeInteger(leaseMs) || leaseMs <= 0)
+        return yield* error("invalid_request", "Long simulation lease is invalid");
+      const row = (yield* findJob(jobId).pipe(Effect.mapError(storageError)))[0];
+      if (!row || row.kind !== "long_simulation")
+        return yield* error("not_found", "Long simulation job was not found");
+      const running = { ...decodeView(row.view_json), status: "running" as const, updatedAt: now };
+      const claimed = yield* sql<{ readonly job_id: string }>`
+        UPDATE graph_research_result_jobs SET status = 'running', owner_token = ${ownerToken},
+          lease_until = ${now + leaseMs}, view_json = ${encodeView(running)}, updated_at = ${now}
+        WHERE job_id = ${jobId} AND kind = 'long_simulation'
+          AND (status = 'queued' OR (status = 'running' AND lease_until < ${now}))
+        RETURNING job_id
+      `.pipe(Effect.mapError(storageError));
+      return claimed.length === 0 ? null : running;
+    });
+  const readSimulation: ResearchStudyStoreShape["readSimulation"] = (simulationId) =>
+    Effect.gen(function* () {
+      const row = (yield* sql<StudyRow>`
+        SELECT payload_json, report_hash FROM graph_research_results
+        WHERE result_id = ${simulationId} AND kind = 'long_simulation'
+      `.pipe(Effect.mapError(storageError)))[0];
+      if (!row) return yield* error("not_found", "Saved long simulation was not found");
+      return yield* Effect.try({
+        try: () => {
+          const simulation = decodeSimulation(row.payload_json);
+          if (
+            simulation.reportHash !== row.report_hash ||
+            simulationReportHash(simulation.report) !== row.report_hash
+          )
+            throw storageError();
+          return simulation;
+        },
+        catch: storageError,
+      });
+    });
+  const completeSimulation: ResearchStudyStoreShape["completeSimulation"] = (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const row = (yield* findJob(input.jobId))[0];
+          if (!row || row.kind !== "long_simulation")
+            return yield* error("not_found", "Long simulation job was not found");
+          const simulation = input.simulation;
+          if (
+            !Schema.is(SavedEventLongSimulation)(simulation) ||
+            row.result_id !== simulation.simulationId ||
+            row.environment_id !== simulation.environmentId ||
+            row.thread_id !== simulation.threadId ||
+            row.recipe_json !==
+              encodeSimulationRequest({
+                parentStudyId: simulation.parentStudyId,
+                scenario: simulation.scenario,
+              }) ||
+            simulation.reportHash !== simulationReportHash(simulation.report) ||
+            simulation.report.parentStudyId !== simulation.parentStudyId ||
+            simulation.report.parentReportHash !== simulation.parentReportHash
+          ) {
+            return yield* error(
+              "conflict",
+              "Long simulation does not match its saved job and report",
+            );
+          }
+          const parent = yield* readStudy(simulation.parentStudyId);
+          if (
+            parent.environmentId !== simulation.environmentId ||
+            parent.threadId !== simulation.threadId ||
+            parent.reportHash !== simulation.parentReportHash ||
+            parent.report.version !== simulation.parentReportVersion
+          ) {
+            return yield* error("conflict", "Long simulation parent lineage changed");
+          }
+          if (!matchesSimulationEvidence(simulation, parent)) {
+            return yield* error(
+              "conflict",
+              "Long simulation report does not match retained price samples",
+            );
+          }
+          const recorded = yield* sql<{ readonly dataset_id: string }>`
+        SELECT dataset_id FROM graph_research_result_job_datasets WHERE job_id = ${input.jobId}
+      `;
+          const expected = new Set([
+            ...parent.datasetIds,
+            ...recorded.map((item) => item.dataset_id),
+          ]);
+          if (
+            expected.size !== simulation.datasetIds.length ||
+            simulation.datasetIds.some((datasetId) => !expected.has(datasetId))
+          ) {
+            return yield* error("conflict", "Long simulation dataset lineage is incomplete");
+          }
+          for (const datasetId of simulation.datasetIds) {
+            const dataset = (yield* sql<{
+              readonly status: string;
+              readonly environment_id: string;
+            }>`
+          SELECT status, environment_id FROM graph_research_datasets WHERE dataset_id = ${datasetId}
+        `)[0];
+            if (dataset?.status !== "complete" || dataset.environment_id !== row.environment_id) {
+              return yield* error(
+                "conflict",
+                "Long simulation references an incomplete or foreign dataset",
+              );
+            }
+          }
+          const encoded = encodeSimulation(simulation);
+          const existing = (yield* sql<StudyRow>`
+        SELECT payload_json, report_hash FROM graph_research_results WHERE result_id = ${simulation.simulationId}
+      `)[0];
+          if (
+            existing &&
+            (existing.payload_json !== encoded || existing.report_hash !== simulation.reportHash)
+          ) {
+            return yield* error("conflict", "Long simulation ID already has different evidence");
+          }
+          if (row.status === "complete" && existing) return decodeView(row.view_json);
+          if (row.status !== "running" || row.owner_token !== input.ownerToken)
+            return yield* error("conflict", "Long simulation worker does not own this job");
+          yield* sql`
+        INSERT INTO graph_research_results (
+          result_id, kind, environment_id, thread_id, parent_id, payload_json, report_hash, created_at
+        ) VALUES (
+          ${simulation.simulationId}, 'long_simulation', ${simulation.environmentId},
+          ${simulation.threadId}, ${simulation.parentStudyId}, ${encoded}, ${simulation.reportHash}, ${simulation.createdAt}
+        ) ON CONFLICT(result_id) DO NOTHING
+      `;
+          for (const datasetId of simulation.datasetIds) {
+            yield* sql`
+          INSERT INTO graph_research_result_datasets (result_id, dataset_id)
+          VALUES (${simulation.simulationId}, ${datasetId}) ON CONFLICT DO NOTHING
+        `;
+          }
+          const view = {
+            ...decodeView(row.view_json),
+            status: "complete" as const,
+            simulationId: simulation.simulationId,
+            updatedAt: input.now,
+          };
+          yield* sql`
+        UPDATE graph_research_result_jobs SET status = 'complete', view_json = ${encodeView(view)},
+          owner_token = NULL, lease_until = NULL, updated_at = ${input.now}
+        WHERE job_id = ${input.jobId}
+      `;
+          return view;
+        }),
+      )
+      .pipe(Effect.mapError((cause) => (Schema.is(ResearchError)(cause) ? cause : storageError())));
   return {
     createJob,
     getJob,
@@ -401,6 +702,12 @@ export const makeResearchStudyStore = Effect.gen(function* () {
     failJob,
     completeStudy,
     readStudy,
+    createSimulationJob,
+    getSimulationRequest,
+    listSimulationRunnable,
+    claimSimulationJob,
+    completeSimulation,
+    readSimulation,
   } satisfies ResearchStudyStoreShape;
 });
 

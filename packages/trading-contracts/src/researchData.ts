@@ -139,6 +139,8 @@ export const ResearchJobView = Schema.Struct({
   updatedAt: NonNegativeInt,
   failureReason: Schema.optional(Schema.String),
   studyId: Schema.optional(Schema.String),
+  simulationId: Schema.optional(Schema.String),
+  resultKind: Schema.optional(Schema.Literals(["event_study", "long_simulation"])),
   completedWindows: Schema.optional(NonNegativeInt),
   plannedWindows: Schema.optional(NonNegativeInt),
 });

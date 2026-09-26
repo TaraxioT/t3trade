@@ -77,6 +77,7 @@ import { ResearchAcquisitionWorkerLive } from "./research/ResearchAcquisitionWor
 import { FomcCalendarServiceLive } from "./research/FomcCalendarService.ts";
 import { ResearchStudyStoreLive } from "./research/ResearchStudyStore.ts";
 import { EventResearchServiceLive } from "./research/EventResearchService.ts";
+import { EventLongSimulationServiceLive } from "./research/EventLongSimulationService.ts";
 
 const GraphResearchStoresLive = Layer.mergeAll(
   ResearchDatasetStoreLive,
@@ -89,6 +90,7 @@ const GraphResearchWorkerLive = ResearchAcquisitionWorkerLive.pipe(
 const GraphResearchLayerLive = Layer.mergeAll(
   ResearchAcquisitionServiceLive,
   EventResearchServiceLive(),
+  EventLongSimulationServiceLive(),
 ).pipe(Layer.provideMerge(GraphResearchWorkerLive), Layer.provideMerge(GraphResearchStoresLive));
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
